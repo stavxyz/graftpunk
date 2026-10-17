@@ -103,8 +103,8 @@ print("exported", kept)
 
 @pytest.mark.parametrize("original_stdout", ["pipe", "none", "pythonw"])
 def test_a_session_exports_under_a_stringio_stdout(tmp_path: Path, original_stdout: str) -> None:
-    """A fresh interpreter, so importing graftpunk.session makes httpie's first
-    import, under the StringIO (or ``None``) stdout.
+    """A fresh interpreter, so save_httpie_session makes httpie's first import,
+    under the StringIO (or ``None``) stdout.
 
     ``pipe`` leaves ``sys.__stdout__`` as the subprocess pipe, ``none`` sets it
     to ``None`` so devnull stands in, and ``pythonw`` sets stdout, stderr and

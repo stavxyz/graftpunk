@@ -31,6 +31,7 @@ from typing import Any
 import requests
 
 from graftpunk.cache import list_sessions, load_session_for_api_resolved, update_session_cookies
+from graftpunk.cookies import BrowserCookieSession
 from graftpunk.exceptions import GraftpunkError, PluginError
 from graftpunk.har.naming import to_cli_name
 from graftpunk.logging import get_logger
@@ -489,7 +490,7 @@ class GraftpunkClient:
         # re-points self._session_name in between.
         operating_name = self._session_name
 
-        session = self._session if needs_session else requests.Session()
+        session = self._session if needs_session else BrowserCookieSession()
         if session is None:
             # Unreachable: the lazy load above either set _session or raised.
             # A real check rather than an assert, which -O would strip out.

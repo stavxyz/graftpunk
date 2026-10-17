@@ -6,8 +6,11 @@ descriptor, and httpie catches only ``curses.error``, so importing it while
 stdout is an ``io.StringIO`` (or anything else without ``fileno()``) raises
 ``io.UnsupportedOperation`` (#250). The same class body calls
 ``sys.stderr.isatty()``, which fails when ``sys.stderr`` is ``None`` (as under
-``pythonw``). ``graftpunk.session`` is the one graftpunk module that imports
-``httpie.context``, and it does so under :func:`stdout_with_a_file_descriptor`.
+``pythonw``). graftpunk imports ``httpie.context`` only inside
+:func:`graftpunk.cookies.importing_httpie`, which runs the import under
+:func:`stdout_with_a_file_descriptor`. (Loading a session cached by 1.21.0 or
+earlier imports ``httpie.cookies`` outside it; that module does no terminal
+setup.)
 
 The swap is process-wide for the duration of the block, as with
 ``contextlib.redirect_stdout``: output another thread writes to ``sys.stdout``

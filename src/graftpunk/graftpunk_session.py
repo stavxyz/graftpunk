@@ -13,6 +13,7 @@ from typing import Any, Final
 
 import requests
 
+from graftpunk.cookies import BrowserCookiesMixin
 from graftpunk.logging import get_logger
 from graftpunk.tokens import _CSRF_TOKENS_ATTR
 
@@ -147,7 +148,7 @@ def _case_insensitive_get(mapping: dict[str, str], key: str) -> str | None:
     return next((v for k, v in mapping.items() if k.lower() == lower_key), None)
 
 
-class GraftpunkSession(requests.Session):
+class GraftpunkSession(BrowserCookiesMixin, requests.Session):
     """A requests.Session that auto-applies captured browser header roles.
 
     Header roles are dicts of real browser headers captured during login,
@@ -549,7 +550,8 @@ class GraftpunkSession(requests.Session):
 
         Args:
             request: The request to prepare.
-            **kwargs: Additional arguments passed to requests.Session.prepare_request().
+            **kwargs: Passed on to the next prepare_request in the MRO
+                (BrowserCookiesMixin's, which, like requests', takes none).
 
         Returns:
             A PreparedRequest with applied role headers (if configured).

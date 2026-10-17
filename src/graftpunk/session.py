@@ -21,38 +21,34 @@ Example:
 """
 
 import asyncio
+import copy
+from http import cookiejar
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
 import requestium
 import requests.cookies
-import requests.utils
 import selenium.common.exceptions
 import slugify as slugify_lib
 import webdriver_manager.chrome
 
 from graftpunk import console as gp_console
-from graftpunk._stdout_fd import stdout_with_a_file_descriptor
 from graftpunk.backends.nodriver import DEFAULT_CALL_TIMEOUT_S, DEFAULT_NAVIGATE_TIMEOUT_S
 from graftpunk.chrome import get_chrome_version
+from graftpunk.cookies import (
+    BrowserCookiesMixin,
+    _browser_cookie_domain,
+    _without_userinfo,
+    cookie_from_browser,
+    importing_httpie,
+)
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.capture import create_capture_backend
 from graftpunk.observe.storage import ObserveStorage, session_dirname
 from graftpunk.tokens import PICKLED_SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
-
-# At module scope, not in save_httpie_session: importing httpie replaces
-# http.cookiejar.DefaultCookiePolicy process-wide with one that treats
-# localhost as secure, and every cookie jar created after this import (and
-# every session pickled from one) carries that policy (#253). The first import of
-# httpie.context needs a stdout with a file descriptor (#250); this module can
-# be first imported under a captured stdout, by unpickling a cached session
-# inside GraftpunkClient.
-with stdout_with_a_file_descriptor():
-    import httpie.context
-    import httpie.sessions
 
 LOG = get_logger(__name__)
 
@@ -81,7 +77,7 @@ def _restore_session_riders(session: Any, state: dict[str, Any]) -> None:
 
 
 # requestium.Session has no type stubs, inheritance typing unavailable
-class BrowserSession(requestium.Session):
+class BrowserSession(BrowserCookiesMixin, requestium.Session):
     """Extended Requestium session with pluggable browser backends.
 
     This class combines browser automation with the requests library for
@@ -257,6 +253,9 @@ class BrowserSession(requestium.Session):
                     "Failed to create browser session. Try clearing session cache with: gp clear"
                 ) from exc
 
+        # The nodriver branch initializes requests.Session directly, past the mixin.
+        self._give_new_jar_the_browser_cookie_policy()
+
     @property
     def session_name(self) -> str:
         """Get the session name based on page title or hostname.
@@ -376,8 +375,27 @@ class BrowserSession(requestium.Session):
             if cookie.value is None:
                 LOG.debug("skipping_none_valued_cookie", name=cookie.name, domain=cookie.domain)
                 continue
-            self.cookies.set(cookie.name, cookie.value, domain=cookie.domain, path=cookie.path)
+            self.cookies.set_cookie(cookie_from_browser(cookie))
         LOG.info("transferred_nodriver_cookies", count=len(cookies))
+
+    def transfer_driver_cookies_to_session(self, *, copy_user_agent: bool | None = True) -> None:
+        """Copy the selenium WebDriver's cookies into the requests session.
+
+        requestium's method keeps only each cookie's name, value and domain,
+        so every cookie was stored as a non-``Secure`` session cookie for path
+        ``/``. This keeps the attributes that decide
+        where the browser sends it (see
+        :func:`graftpunk.cookies.cookie_from_browser`). Like requestium's, it
+        copies every cookie the driver returns.
+
+        Args:
+            copy_user_agent: Also copy the browser's ``User-Agent`` into the
+                session headers, as requestium does by default.
+        """
+        if copy_user_agent:
+            self.copy_user_agent_from_driver()
+        for cookie in self.driver.get_cookies():
+            self.cookies.set_cookie(cookie_from_browser(cookie))
 
     async def start_async(self) -> None:
         """Start the browser asynchronously (for nodriver backend).
@@ -705,12 +723,18 @@ class BrowserSession(requestium.Session):
             import requests
 
             requests.Session.__init__(self)
+            # Past the mixin, as in __init__; kept when the state has no cookies.
+            self._give_new_jar_the_browser_cookie_policy()
             # Restore headers if present
             if "headers" in state and state["headers"]:
                 self.headers.update(state["headers"])
             # Restore cookies if present
             if "cookies" in state and state["cookies"]:
                 self.cookies = state["cookies"]
+            # A loaded jar carries the standard library's class (how this
+            # release pickles BrowserCookiePolicy) or HTTPie's (1.21.0 and
+            # earlier); give it the browser policy.
+            self._use_browser_cookie_policy()
             # Restore session name
             if "session_name" in state:
                 self._session_name = state["session_name"]
@@ -718,8 +742,9 @@ class BrowserSession(requestium.Session):
             _restore_session_riders(self, state)
         else:
             # Selenium/requestium path
-            # requestium/requests don't define __setstate__, so this resolves
-            # to object.__setstate__ which does self.__dict__.update(state).
+            # super() is BrowserCookiesMixin.__setstate__, which runs
+            # requests.Session.__setstate__ and gives the restored jar the
+            # browser cookie policy (#253).
             # We keep __dict__.update as a safety net to ensure our custom
             # attributes (_backend_type, _use_stealth, etc.) are restored,
             # in case a future requestium version overrides __setstate__.
@@ -756,6 +781,12 @@ class BrowserSession(requestium.Session):
 
         LOG.info("saving_httpie_session", name=session_name)
 
+        # Imported here, under importing_httpie, so that HTTPie's process-wide
+        # cookie policy never applies outside this call (#253).
+        with importing_httpie():
+            import httpie.context
+            import httpie.sessions
+
         env = httpie.context.Environment()
         httpie_session_path = (
             output.expanduser().resolve()
@@ -782,9 +813,16 @@ class BrowserSession(requestium.Session):
 
         # get_httpie_session has already read any existing file, so assigning
         # the jar here replaces that file's cookies with this session's.
-        cookiejar_dict = requests.utils.dict_from_cookiejar(self.cookies)
-        cookiejar = requests.utils.cookiejar_from_dict(cookiejar_dict)
-        httpie_session.cookie_jar = cookiejar
+        # Copies, so HTTPie's session never holds this session's Cookie objects;
+        # each keeps its domain, path, Secure flag and expiry (#260). A cookie
+        # set through a "user:password@" URL is stored with the credentials in
+        # its domain, which the file must not hold.
+        exported = requests.cookies.RequestsCookieJar()
+        for cookie in self.cookies:
+            copied = copy.copy(cookie)
+            copied.domain = _without_userinfo(cookie.domain)
+            exported.set_cookie(copied)
+        httpie_session.cookie_jar = exported
         httpie_session.post_process_data(httpie_session)
         httpie_session.save()
 
@@ -868,7 +906,9 @@ async def inject_cookies_to_nodriver(
             LOG.debug(
                 "inject_skipping_malformed_cookie",
                 name=cookie.name,
-                domain=getattr(cookie, "domain", None),
+                domain=_browser_cookie_domain(cookie)
+                if isinstance(cookie, cookiejar.Cookie)
+                else getattr(cookie, "domain", None),
             )
             skipped += 1
             continue
@@ -880,7 +920,7 @@ async def inject_cookies_to_nodriver(
             LOG.debug(
                 "inject_skipping_bot_cookie",
                 name=cookie.name,
-                domain=cookie.domain,
+                domain=_browser_cookie_domain(cookie),
             )
             skipped += 1
             continue
@@ -888,7 +928,7 @@ async def inject_cookies_to_nodriver(
             cdp_net.CookieParam(
                 name=cookie.name,
                 value=cookie.value,
-                domain=cookie.domain,
+                domain=_browser_cookie_domain(cookie),
                 path=cookie.path,
             )
         )

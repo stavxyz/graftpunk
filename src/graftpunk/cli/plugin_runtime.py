@@ -21,6 +21,7 @@ from graftpunk import console as gp_console
 from graftpunk.cache import list_sessions, load_session_for_api_resolved, update_session_cookies
 from graftpunk.cli.command_factory import BUILTIN_OPTIONS
 from graftpunk.cli.errors import exit_ambiguous_session, exit_missing_browser_stack
+from graftpunk.cookies import BrowserCookieSession
 from graftpunk.exceptions import (
     AmbiguousSessionError,
     BrowserError,
@@ -36,13 +37,6 @@ from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandContext, Comm
 from graftpunk.plugins.formatters import format_output
 from graftpunk.session_context import get_active_session
 from graftpunk.session_identity import compute_operating_session_name, split_session_name
-
-if _distribution.has_browser_stack():
-    # Loaded as plugins register, so that httpie's process-wide cookie policy
-    # (see graftpunk.session, #253) is in place for every plugin command, including
-    # one that loads no session. graftpunk-lite has no browser stack to
-    # import, so there it is skipped.
-    import graftpunk.session  # noqa: F401
 
 LOG = get_logger(__name__)
 _format_console = Console()
@@ -151,7 +145,7 @@ def run_plugin_command(
                 resolve=pinned and split_session_name(operating_name)[1] is None,
             )
         else:
-            session = requests.Session()
+            session = BrowserCookieSession()
     except SessionNotFoundError:
         # operating_name is "" when the failure came from the resolution step
         # itself; name the plugin's base session rather than an empty string.
