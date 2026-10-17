@@ -35,7 +35,12 @@ import webdriver_manager.chrome
 from graftpunk import console as gp_console
 from graftpunk.backends.nodriver import DEFAULT_CALL_TIMEOUT_S, DEFAULT_NAVIGATE_TIMEOUT_S
 from graftpunk.chrome import get_chrome_version
-from graftpunk.cookies import BrowserCookiesMixin, cookie_from_browser, importing_httpie
+from graftpunk.cookies import (
+    BrowserCookiesMixin,
+    _browser_cookie_domain,
+    cookie_from_browser,
+    importing_httpie,
+)
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
@@ -915,7 +920,7 @@ async def inject_cookies_to_nodriver(
             cdp_net.CookieParam(
                 name=cookie.name,
                 value=cookie.value,
-                domain=cookie.domain,
+                domain=_browser_cookie_domain(cookie.domain),
                 path=cookie.path,
             )
         )

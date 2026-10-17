@@ -166,6 +166,8 @@ def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]
     Returns:
         Dictionary with extracted metadata
     """
+    from graftpunk.cookies import _browser_cookie_domain
+
     metadata: dict[str, Any] = {"name": session_name}
     metadata["account_identifier"] = getattr(session, GP_ACCOUNT_ATTR, None)
 
@@ -185,7 +187,7 @@ def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]
         domains = set()
         for cookie in cookie_list:
             if hasattr(cookie, "domain"):
-                domains.add(cookie.domain)
+                domains.add(_browser_cookie_domain(cookie.domain))
         metadata["cookie_domains"] = sorted(domains)
     else:
         metadata["cookie_count"] = 0

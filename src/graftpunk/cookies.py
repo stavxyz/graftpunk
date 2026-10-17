@@ -127,11 +127,11 @@ class BrowserCookiePolicy(_STDLIB_DEFAULT_POLICY):
     def return_ok_domain(self, cookie: cookiejar.Cookie, request: Any) -> bool:
         # A cookie set without a Domain attribute is host-only: sent to the
         # host that set it and no other. The standard library also sends it to
-        # subdomains unless strict_ns_domain says otherwise, and never sends a
-        # dotless host's cookie whose domain names the host itself (it files
-        # its own under "<host>.local", the effective host), which is how a
-        # browser reports a localhost cookie. An empty domain is requests'
-        # cookie for every host, and is left to the standard library.
+        # subdomains unless strict_ns_domain says otherwise. A dotless host's
+        # cookie is filed under "<host>.local", the effective host, by the
+        # standard library and by cookie_from_browser; the bare host is
+        # accepted too, for a jar other code filled. An empty domain is
+        # requests' cookie for every host, and is left to the standard library.
         if cookie.domain and not cookie.domain_specified:
             # eff_request_host is in http.cookiejar but not in its stubs.
             req_host, effective_host = cookiejar.eff_request_host(request)  # ty: ignore[unresolved-attribute]
@@ -166,6 +166,40 @@ class BrowserCookiePolicy(_STDLIB_DEFAULT_POLICY):
         return new
 
 
+_DOTLESS_HOST_SUFFIX = ".local"
+
+
+def _jar_host(host: str) -> str:
+    # The domain http.cookiejar files a Set-Cookie from *host* under, so that a
+    # server's refresh of a captured host-only cookie replaces it rather than
+    # sitting beside it: lowercase, an IPv6 literal in brackets (CDP reports
+    # "[::1]"; the brackets are added in case a driver reports it without), and
+    # "<host>.local" for a host without a dot (eff_request_host).
+    host = host.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if "." not in host:
+        host += _DOTLESS_HOST_SUFFIX
+    return host
+
+
+def _browser_cookie_domain(domain: str) -> str:
+    """The domain to give a browser for a jar cookie stored under *domain*.
+
+    ``http.cookiejar`` files a cookie from a host without a dot under
+    ``<host>.local``, and :func:`cookie_from_browser` does the same, so
+    ``localhost`` is stored as ``localhost.local`` and ``[::1]`` as
+    ``[::1].local``. Those two come back without the suffix. Any other
+    ``<name>.local`` is returned as it is, since it may be a real
+    ``.local`` (mDNS) host rather than a dotless name.
+    """
+    if domain.endswith(_DOTLESS_HOST_SUFFIX):
+        host = domain.removesuffix(_DOTLESS_HOST_SUFFIX)
+        if host == "localhost" or (host.startswith("[") and host.endswith("]")):
+            return host
+    return domain
+
+
 def cookie_from_browser(record: Any) -> cookiejar.Cookie:
     """A jar cookie for one cookie a browser reported, sent where the browser sends it.
 
@@ -182,6 +216,10 @@ def cookie_from_browser(record: Any) -> cookiejar.Cookie:
     ``http.cookiejar`` records it from a ``Set-Cookie`` header. A domain with
     a leading dot is a domain cookie, sent to subdomains; one without is
     host-only, which :class:`BrowserCookiePolicy` sends to that host alone.
+    A host-only cookie is stored under the domain ``http.cookiejar`` files
+    that host's ``Set-Cookie`` cookies under, so a server's refresh replaces
+    it: ``localhost`` as ``localhost.local``, ``[::1]`` as ``[::1].local``,
+    and any other host without a dot likewise.
     """
     if isinstance(record, Mapping):
         name, value, domain = record["name"], record["value"], record["domain"]
@@ -198,6 +236,8 @@ def cookie_from_browser(record: Any) -> cookiejar.Cookie:
     if expires is not None and expires < 0:
         expires = None
     domain_cookie = domain.startswith(".")
+    if not domain_cookie:
+        domain = _jar_host(domain)
     return cookiejar.Cookie(
         version=0,
         name=name,

@@ -792,8 +792,8 @@ def _browser_session() -> Any:
     return session
 
 
-def _captured_by_nodriver() -> requests.Session:
-    cookies = [_cdp_cookie(record) for record in _CAPTURED]
+def _captured_by_nodriver(records: list[dict[str, Any]] = _CAPTURED) -> requests.Session:
+    cookies = [_cdp_cookie(record) for record in records]
 
     async def get_all() -> list[Any]:
         return cookies
@@ -805,11 +805,11 @@ def _captured_by_nodriver() -> requests.Session:
     return session
 
 
-def _captured_by_selenium() -> requests.Session:
+def _captured_by_selenium(records: list[dict[str, Any]] = _CAPTURED) -> requests.Session:
     session = _browser_session()
     session._backend_type = "selenium"
     session._webdriver = types.SimpleNamespace(
-        get_cookies=lambda: [_webdriver_cookie(record) for record in _CAPTURED],
+        get_cookies=lambda: [_webdriver_cookie(record) for record in records],
         execute_script=lambda script: "BrowserUA/1.0",
     )
     session.transfer_driver_cookies_to_session()
@@ -817,7 +817,10 @@ def _captured_by_selenium() -> requests.Session:
     return session
 
 
-_CAPTURE_PATHS = {"nodriver": _captured_by_nodriver, "selenium": _captured_by_selenium}
+_CAPTURE_PATHS: dict[str, Callable[..., requests.Session]] = {
+    "nodriver": _captured_by_nodriver,
+    "selenium": _captured_by_selenium,
+}
 
 
 @pytest.mark.parametrize("capture", sorted(_CAPTURE_PATHS))
@@ -874,3 +877,89 @@ def test_captured_cookies_keep_their_attributes_through_the_cache(capture: str) 
 
     assert _cookie_header(session, "http://example.com/") == "host=1"
     assert _cookie_header(session, "https://sub.example.com/") == "sid=1"
+
+
+def _dotless(name: str, domain: str) -> dict[str, Any]:
+    return {"name": name, "domain": domain, "path": "/", "secure": False, "expiry": None}
+
+
+# Hosts without a dot, as CDP reports them (Chrome 155, measured 2026-10-16).
+_DOTLESS_HOSTS = [("localhost", "http://localhost:8080/"), ("[::1]", "http://[::1]:8080/")]
+
+
+@pytest.mark.parametrize("capture", sorted(_CAPTURE_PATHS))
+@pytest.mark.parametrize(("host", "url"), [*_DOTLESS_HOSTS, ("intranet", "http://intranet/")])
+def test_a_servers_refresh_replaces_a_captured_cookie_for_a_host_without_a_dot(
+    capture: str, host: str, url: str
+) -> None:
+    """http.cookiejar files the refresh under "<host>.local"; a captured cookie
+    stored under the bare host would be sent beside it, stale value first."""
+    session = _CAPTURE_PATHS[capture]([_dotless("tok", host)])
+    assert _cookie_header(session, url) == "tok=1"
+
+    headers = email.message.Message()
+    headers["Set-Cookie"] = "tok=NEW; Path=/"
+    response = types.SimpleNamespace(info=lambda: headers)
+    session.cookies.extract_cookies(response, urllib.request.Request(url))  # noqa: S310
+
+    assert _cookie_header(session, url) == "tok=NEW"
+    assert session.cookies.get("tok") == "NEW"
+
+
+@pytest.mark.parametrize("capture", sorted(_CAPTURE_PATHS))
+def test_a_captured_ipv6_host_without_brackets_is_sent_to_that_host(capture: str) -> None:
+    session = _CAPTURE_PATHS[capture]([_dotless("v6", "::1")])
+
+    assert _cookie_header(session, "http://[::1]:8080/") == "v6=1"
+
+
+def test_an_exported_session_sends_captured_cookies_for_hosts_without_a_dot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    with importing_httpie():
+        import httpie.context
+    monkeypatch.setattr(httpie.context.Environment, "config_dir", tmp_path / "httpie")
+    session = _captured_by_nodriver([_dotless("lh", "localhost"), _dotless("v6", "[::1]")])
+    session._session_name = "local"
+    session._webdriver = types.SimpleNamespace(current_url="http://localhost:8080/")
+    target = session.save_httpie_session(output=tmp_path / "local.json")
+
+    assert _httpie_cookie(target, "http://localhost:8080/", tmp_path) == "lh=1"
+    assert _httpie_cookie(target, "http://[::1]:8080/", tmp_path) == "v6=1"
+    assert _httpie_cookie(target, "http://example.com/", tmp_path) is None
+
+
+def test_injecting_captured_cookies_gives_the_browser_the_host_that_set_them() -> None:
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    session = _captured_by_nodriver(
+        [
+            _dotless("lh", "localhost"),
+            _dotless("v6", "[::1]"),
+            _dotless("mdns", "printer.local"),
+            _dotless("dom", ".example.com"),
+        ]
+    )
+    sent: list[dict[str, Any]] = []
+
+    class _Tab:
+        async def send(self, command: Any) -> None:
+            sent.extend(next(command)["params"]["cookies"])
+
+    asyncio.run(inject_cookies_to_nodriver(_Tab(), session.cookies))
+
+    assert {cookie["name"]: cookie["domain"] for cookie in sent} == {
+        "lh": "localhost",
+        "v6": "[::1]",
+        "mdns": "printer.local",
+        "dom": ".example.com",
+    }
+
+
+def test_a_cached_sessions_cookie_domains_name_the_hosts_that_set_them() -> None:
+    session = _captured_by_nodriver([_dotless("lh", "localhost"), _dotless("v6", "[::1]")])
+
+    metadata = cache._extract_session_metadata(session, "local")
+
+    assert metadata["cookie_domains"] == ["[::1]", "localhost"]
+    assert metadata["domain"] == "[::1]"
