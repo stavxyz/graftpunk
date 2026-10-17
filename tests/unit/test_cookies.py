@@ -1227,6 +1227,12 @@ def test_credentials_in_the_url_stay_out_of_the_recorded_host_and_the_domains_gr
     assert cache._extract_session_metadata(unrecorded, "c")["cookie_domains"] == ["localhost"]
 
 
+def test_cache_metadata_takes_a_custom_sessions_cookie_domains_as_they_are() -> None:
+    session = types.SimpleNamespace(cookies=[types.SimpleNamespace(name="a", domain="x.example")])
+
+    assert cache._extract_session_metadata(session, "custom")["cookie_domains"] == ["x.example"]
+
+
 def test_the_public_names_are_the_ones_the_changelog_lists() -> None:
     namespace: dict[str, Any] = {}
     exec("from graftpunk.cookies import *", namespace)  # noqa: S102

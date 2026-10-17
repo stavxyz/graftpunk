@@ -17,6 +17,7 @@ Thread Safety:
 import hashlib
 import io
 from datetime import UTC, datetime, timedelta
+from http import cookiejar
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 from urllib.parse import urlparse
 
@@ -186,8 +187,12 @@ def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]
         # Get unique domains from cookies
         domains = set()
         for cookie in cookie_list:
-            if hasattr(cookie, "domain"):
+            if isinstance(cookie, cookiejar.Cookie):
                 domains.add(_browser_cookie_domain(cookie))
+            elif hasattr(cookie, "domain"):
+                # A custom session's cookie objects; _browser_cookie_domain
+                # reads attributes only http.cookiejar.Cookie has.
+                domains.add(cookie.domain)
         metadata["cookie_domains"] = sorted(domains)
     else:
         metadata["cookie_count"] = 0
