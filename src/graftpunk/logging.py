@@ -156,14 +156,15 @@ def _quiet_logger(initial_values: dict[str, Any]) -> Any:
     processors = _quiet_processors.get(colors)
     if processors is None:
         processors = _quiet_processors.setdefault(colors, _processors(False, colors))
+    # The context is bound afterwards, never passed to wrap_logger, whose
+    # keyword parameters (logger, processors, ...) a context key may share.
     return structlog.wrap_logger(
         _current_stderr_logger,
         processors=processors,
         wrapper_class=_quiet_wrapper,
         context_class=dict,
         cache_logger_on_first_use=False,
-        **initial_values,
-    ).bind()
+    ).bind(**initial_values)
 
 
 class GraftpunkLogger:
@@ -201,7 +202,8 @@ class GraftpunkLogger:
 
     def _resolve(self) -> Any:
         if structlog.is_configured():
-            return structlog.get_logger(*self._factory_args, **self._initial_values).bind()
+            # As in _quiet_logger: get_logger's keyword parameters are not context.
+            return structlog.get_logger(*self._factory_args).bind(**self._initial_values)
         return _quiet_logger(self._initial_values)
 
     def _with(self, values: dict[str, Any]) -> GraftpunkLogger:

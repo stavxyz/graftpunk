@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -430,6 +431,56 @@ class TestGraftpunkLoggerContext:
         assert "info_marker" not in captured.err
         assert "debug_marker" not in captured.err
         assert not structlog.is_configured()
+
+
+# The keyword parameters of structlog.wrap_logger and structlog.get_logger. A
+# context key with one of these names must reach the line like any other key.
+_WRAP_LOGGER_PARAMETER_NAMES = [
+    "logger",
+    "processors",
+    "wrapper_class",
+    "context_class",
+    "cache_logger_on_first_use",
+    "logger_factory_args",
+]
+
+
+class TestBoundKeysNamedLikeStructlogParameters:
+    @pytest.mark.parametrize("key", _WRAP_LOGGER_PARAMETER_NAMES)
+    def test_unconfigured(self, key: str, capsys: pytest.CaptureFixture[str]) -> None:
+        import structlog
+
+        from graftpunk.logging import get_logger
+
+        structlog.get_logger().bind(**{key: "bound_value"}).warning("line")
+        plain = capsys.readouterr().out
+        get_logger("t").bind(**{key: "bound_value"}).warning("line")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert not structlog.is_configured()
+        # The timestamp formats differ; the rest of the console line is the same.
+        level = "[warning  ] "
+        assert "bound_value" in plain
+        assert captured.err.split(level, 1)[1] == plain.split(level, 1)[1]
+
+    @pytest.mark.parametrize("key", _WRAP_LOGGER_PARAMETER_NAMES)
+    def test_configured(self, key: str) -> None:
+        import io
+
+        import structlog
+
+        from graftpunk.logging import get_logger
+
+        buf = io.StringIO()
+        structlog.configure(
+            processors=[structlog.processors.JSONRenderer(sort_keys=True)],
+            logger_factory=structlog.PrintLoggerFactory(file=buf),
+        )
+        structlog.get_logger("t").bind(**{key: "bound_value"}).warning("line")
+        get_logger("t").bind(**{key: "bound_value"}).warning("line")
+        plain, graftpunk = buf.getvalue().splitlines()
+        assert json.loads(plain) == {"event": "line", key: "bound_value"}
+        assert graftpunk == plain
 
 
 class TestQuietLoggerStream:
