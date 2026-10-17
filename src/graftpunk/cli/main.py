@@ -46,11 +46,14 @@ from graftpunk.plugins import (
 )
 from graftpunk.plugins.yaml_plugin import create_yaml_plugins
 
-# Configure logging BEFORE workstation-env bootstrap so any warning
-# ensure_bootstrap() emits (permissive file mode, malformed line, mixed
-# substitution) routes through structlog's configured stderr renderer
-# instead of structlog's default PrintLoggerFactory (stdout) -- which would
-# otherwise corrupt piped `gp` output for CSV/JSON consumers. We avoid
+# Configure logging BEFORE workstation-env bootstrap so any line
+# ensure_bootstrap() logs (permissive file mode, malformed line, mixed
+# substitution) uses the level and format GRAFTPUNK_LOG_LEVEL and
+# GRAFTPUNK_LOG_FORMAT ask for. (Unconfigured, graftpunk's loggers already
+# write WARNING and above to stderr, never to stdout.) Importing this module
+# is starting the gp program; graftpunk.cli imports it only on first access
+# to graftpunk.cli.app, so importing a sibling submodule configures nothing.
+# We avoid
 # calling get_settings() here because GraftpunkSettings.__init__ creates
 # directories as a side effect, which breaks test isolation; env vars are
 # read directly instead.

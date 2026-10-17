@@ -86,8 +86,9 @@ def _reset_structlog():
     It also resets before each test: importing ``graftpunk.cli.main`` (which
     test collection does) runs ``configure_logging()``, so without this the
     first test on each xdist worker sees the CLI's configuration while every
-    later test sees structlog's defaults, and a test that reads structlog's
-    default stdout output passes or fails by which worker ran it first.
+    later test sees an unconfigured structlog, and a test that reads log output
+    passes or fails by which worker ran it first. Unconfigured, graftpunk's own
+    loggers write WARNING and above to stderr (graftpunk.logging.get_logger).
 
     Note: With cache_logger_on_first_use=False (our current setting), the
     bind-cache clearing loop below is no longer strictly necessary, but we
@@ -108,12 +109,12 @@ def gp_logging() -> None:
 
     Opt-in, for a test that invokes a command without main.py's bootstrap (a
     sub-app built directly, or the real app under CliRunner) and asserts on its
-    exact output. Without it, structlog is whatever the previous test in this
-    worker left: _reset_structlog above restores structlog's own defaults, an
-    unfiltered logger on stdout, and a command's INFO or DEBUG event then lands
-    in the output ahead of the text the test reads. _reset_structlog stays as it
-    is because other tests rely on that unconfigured library-consumer state, or
-    configure DEBUG themselves; it resets this configuration after the test too.
+    exact output. Without it, structlog is unconfigured (_reset_structlog above
+    restores structlog's own defaults), so graftpunk's loggers use their quiet
+    stderr fallback rather than the CLI's configuration. _reset_structlog stays
+    as it is because other tests rely on that unconfigured library-consumer
+    state, or configure DEBUG themselves; it resets this configuration after the
+    test too.
     """
     from graftpunk.logging import configure_logging
 
@@ -122,13 +123,15 @@ def gp_logging() -> None:
 
 @pytest.fixture
 def captured_logs():  # noqa: ANN201
-    """``capture_logs()`` with graftpunk's import-time WARNING filter lifted.
+    """``capture_logs()`` over structlog's unfiltered defaults, so INFO is captured.
 
-    ``graftpunk.logging.ensure_library_defaults()`` runs at import and installs
-    a filtering bound logger at WARNING, which ``capture_logs`` keeps, so
-    INFO events would never reach the capture. ``reset_defaults()`` restores
-    structlog's unfiltered builtins (the autouse ``_reset_structlog`` fixture
-    does the same after every test, so this changes nothing for its neighbours).
+    ``capture_logs`` replaces only the processors and keeps the wrapper class,
+    so a WARNING filter installed by ``configure_logging()`` (the CLI, or the
+    ``gp_logging`` fixture) would drop INFO events before the capture.
+    ``reset_defaults()`` restores structlog's unfiltered builtins first (the
+    autouse ``_reset_structlog`` fixture does the same after every test, so
+    this changes nothing for its neighbours). Inside the block structlog is
+    configured, so graftpunk's loggers log through it.
     """
     structlog.reset_defaults()
     with capture_logs() as logs:

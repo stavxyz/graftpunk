@@ -102,10 +102,10 @@ class TestLocalSessionStorage:
         metadata_path = tmp_path / "test-session" / "metadata.json"
         os.chmod(metadata_path, 0o644)
 
-        # capture_logs() keeps the library's import-time WARNING filter by
-        # default, which would drop this DEBUG event before it is captured;
-        # reset_defaults() lifts it (the autouse _reset_structlog fixture
-        # restores it after the test, so this does not affect neighbours).
+        # capture_logs() keeps a configured WARNING filter (configure_logging(),
+        # as the CLI installs it), which would drop this DEBUG event before it
+        # is captured; reset_defaults() lifts any such filter (the autouse
+        # _reset_structlog fixture resets again after the test).
         structlog.reset_defaults()
         with (
             patch("os.fchmod", side_effect=PermissionError("no permission")),

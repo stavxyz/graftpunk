@@ -29,11 +29,8 @@ def _write_env_file(tmp_path, content: str) -> None:
     # _atomic_write, which chmods 0600 on every write. Match that here —
     # otherwise the default umask leaves the file group/other-readable,
     # workstation_env.load() logs a workstation_env_permissive_mode
-    # warning, and (since this fires during ensure_bootstrap(), before
-    # cli/main.py's configure_logging() call rewires structlog to
-    # stderr) that warning lands on stdout via structlog's default
-    # PrintLoggerFactory — polluting the exact stdout match below with
-    # noise unrelated to the ordering/laziness invariant under test.
+    # warning: noise unrelated to the ordering/laziness invariant under
+    # test, on stderr next to the stdout match below.
     path = tmp_path / "env"
     path.write_text(content)
     path.chmod(0o600)

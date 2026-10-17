@@ -6,6 +6,8 @@ import logging
 import os
 import subprocess
 import sys
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -124,8 +126,10 @@ def _run(code: str) -> subprocess.CompletedProcess[str]:
 class TestLibraryLoggingDefaults:
     """Importing graftpunk as a library must never write log lines to stdout.
 
-    Only the gp CLI calls configure_logging(); a library consumer gets whatever
-    structlog does by default, which is a stdout PrintLogger with no level filter.
+    Only the gp CLI calls configure_logging(). With structlog unconfigured,
+    graftpunk's own loggers write WARNING and above to stderr through a
+    configuration they keep to themselves, rather than structlog's default
+    stdout PrintLogger with no level filter.
     Regression for https://github.com/stavxyz/graftpunk/issues/163.
     """
 
@@ -258,3 +262,171 @@ def test_with_only_stderr_missing_log_lines_do_not_reach_stdout() -> None:
     # The exit handler was registered before graftpunk, so it runs after anything
     # graftpunk registers; its log call must still find an open sink.
     assert result.stdout == "program output\nexit handler done\n"
+
+
+def _run_isolated(code: str, home: Path) -> subprocess.CompletedProcess[str]:
+    """Run *code* in a fresh interpreter from the repo root, with HOME and the
+    graftpunk config dir under *home* so nothing touches the real home."""
+    env = {
+        **os.environ,
+        "NO_COLOR": "1",
+        "FORCE_COLOR": "",
+        "HOME": str(home),
+        "GRAFTPUNK_CONFIG_DIR": str(home / "config"),
+    }
+    env.pop("GRAFTPUNK_SESSION", None)
+    return subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        timeout=120,
+    )
+
+
+_EXERCISE_GRAFTPUNK = """
+import requests
+import graftpunk
+import graftpunk.plugins
+from graftpunk import cache_session, load_session_for_api
+cache_session(requests.Session(), "probe")
+load_session_for_api("probe")
+
+from graftpunk.plugins.cli_plugin import SitePlugin, command
+from tests.unit.cli_harness import invoke_plugin_app
+
+class Probe(SitePlugin):
+    site_name = "probesite"
+    base_url = "http://localhost:9"
+    requires_session = False
+
+    @command(help="Say hi")
+    def hi(self, ctx):
+        return {"ok": True}
+
+result = invoke_plugin_app(Probe(), ["probesite", "hi"])
+assert result.exit_code == 0, result.output
+"""
+
+
+class TestProgramStructlogIsUntouched:
+    """graftpunk never configures structlog for the program that imports it."""
+
+    def test_using_graftpunk_leaves_structlog_unconfigured(self, tmp_path: Path) -> None:
+        proc = _run_isolated(
+            "import sys, warnings, structlog\n"
+            + _EXERCISE_GRAFTPUNK
+            + "assert 'graftpunk.cli.main' not in sys.modules\n"
+            "assert not structlog.is_configured()\n"
+            "structlog.get_logger().info('consumer_info_line')\n"
+            "with warnings.catch_warnings():\n"
+            "    warnings.simplefilter('error')\n"
+            "    structlog.configure_once(processors=[structlog.processors.JSONRenderer()])\n"
+            "structlog.get_logger().warning('after_configure_once')\n",
+            tmp_path,
+        )
+        assert proc.returncode == 0, proc.stderr
+        lines = proc.stdout.splitlines()
+        assert "consumer_info_line" in lines[0], proc.stdout
+        assert lines[1:] == ['{"event": "after_configure_once"}']
+
+    @pytest.mark.parametrize("configure_first", [True, False])
+    def test_graftpunk_lines_follow_the_program_configuration(self, configure_first: bool) -> None:
+        configure = (
+            "import io, logging, structlog\n"
+            "buf = io.StringIO()\n"
+            "structlog.configure(\n"
+            "    processors=[structlog.processors.JSONRenderer()],\n"
+            "    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),\n"
+            "    logger_factory=structlog.PrintLoggerFactory(file=buf),\n"
+            ")\n"
+        )
+        use = (
+            "from graftpunk.logging import get_logger\n"
+            "get_logger('t').debug('debug_marker')\n"
+            "get_logger('t').info('info_marker', k=1)\n"
+            'assert buf.getvalue() == \'{"k": 1, "event": "info_marker"}\\n\', buf.getvalue()\n'
+        )
+        imported = "import graftpunk\n"
+        code = configure + imported + use if configure_first else imported + configure + use
+        proc = _run(code)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == ""
+        assert proc.stderr == ""
+
+    def test_a_logger_bound_before_configuration_follows_it(self) -> None:
+        proc = _run(
+            "import io, structlog\n"
+            "from graftpunk.logging import get_logger\n"
+            "log = get_logger('t').bind(site='s')\n"
+            "log.info('dropped_info')\n"
+            "buf = io.StringIO()\n"
+            "structlog.configure(\n"
+            "    processors=[structlog.processors.JSONRenderer()],\n"
+            "    logger_factory=structlog.PrintLoggerFactory(file=buf),\n"
+            ")\n"
+            "log.info('kept_info')\n"
+            "assert buf.getvalue() == "
+            '\'{"site": "s", "event": "kept_info"}\\n\', buf.getvalue()\n'
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == ""
+        assert "dropped_info" not in proc.stderr
+
+
+class TestGraftpunkLoggerContext:
+    def test_bind_new_unbind_and_try_unbind(self, captured_logs: list[dict[str, Any]]) -> None:
+        from graftpunk.logging import get_logger
+
+        log = get_logger("t").bind(a=1, b=2)
+        log.info("bound")
+        log.unbind("a").info("unbound")
+        log.try_unbind("a", "missing").info("try_unbound")
+        log.new(c=3).info("fresh")
+        log.bind(b=5).warning("rebound")
+
+        contexts = [{k: v for k, v in e.items() if k != "log_level"} for e in captured_logs]
+        assert contexts == [
+            {"a": 1, "b": 2, "event": "bound"},
+            {"b": 2, "event": "unbound"},
+            {"b": 2, "event": "try_unbound"},
+            {"c": 3, "event": "fresh"},
+            {"a": 1, "b": 5, "event": "rebound"},
+        ]
+
+    def test_unbind_of_an_unbound_key_raises(self) -> None:
+        from graftpunk.logging import get_logger
+
+        with pytest.raises(KeyError):
+            get_logger("t").unbind("missing")
+
+    def test_copy_and_pickle_keep_the_context(self) -> None:
+        import copy
+        import pickle
+
+        from graftpunk.logging import get_logger
+
+        log = get_logger("t").bind(a=1)
+        for clone in (copy.copy(log), copy.deepcopy(log), pickle.loads(pickle.dumps(log))):  # noqa: S301
+            assert clone._context == {"a": 1}
+
+    def test_unconfigured_info_and_debug_are_dropped_and_warning_reaches_stderr(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import structlog
+
+        from graftpunk.logging import get_logger
+
+        assert not structlog.is_configured()
+        log = get_logger("t")
+        log.debug("debug_marker")
+        log.info("info_marker")
+        log.warning("warning_marker")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "warning_marker" in captured.err
+        assert "info_marker" not in captured.err
+        assert "debug_marker" not in captured.err
+        assert not structlog.is_configured()
