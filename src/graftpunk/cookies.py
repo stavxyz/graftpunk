@@ -106,12 +106,26 @@ def _settings(policy: object) -> dict[str, Any]:
     return {k: v for k, v in vars(policy).items() if k != "_now"}
 
 
+def _request_host(request: Any) -> str:
+    # request_host is in http.cookiejar but not in its stubs.
+    return cookiejar.request_host(request)  # ty: ignore[unresolved-attribute]
+
+
 class BrowserCookiePolicy(_STDLIB_DEFAULT_POLICY):
     """The standard library's policy, plus Chrome's rule that a loopback origin is secure.
 
     A host-only cookie (one stored without ``domain_specified``, as
     :func:`cookie_from_browser` stores a browser's host-only cookie and the
     jar stores a ``Set-Cookie`` without ``Domain``) goes to its own host only.
+    When the jar accepts a host-only ``Set-Cookie``, the policy records the
+    host that set it as the cookie's ``graftpunk-host`` nonstandard
+    attribute, as :func:`cookie_from_browser` does for a captured one, and a
+    cookie that carries it is sent to that host alone. The jar files a cookie
+    from a host without a dot under ``<host>.local``, so ``printer`` and
+    ``printer.local`` share a domain, and the recorded host tells them apart.
+    A host-only cookie without it (stored by an earlier release, or by other
+    code) goes to the host its domain names, which for ``printer.local``
+    means ``printer`` and ``printer.local`` both.
 
     It pickles as a call of ``http.cookiejar.DefaultCookiePolicy``, looked up
     by name when loaded, with the same settings, so a session cached by this
@@ -128,18 +142,30 @@ class BrowserCookiePolicy(_STDLIB_DEFAULT_POLICY):
         host = urlsplit(request.get_full_url()).hostname
         return host is not None and _is_secure_loopback_host(host)
 
+    def set_ok(self, cookie: cookiejar.Cookie, request: Any) -> bool:
+        # The jar asks this of every cookie it extracts from a response, with
+        # the request that got it, and stores the cookie only on True; this is
+        # the one point where the host that set a host-only cookie is known.
+        if not super().set_ok(cookie, request):
+            return False
+        if cookie.domain and not cookie.domain_specified:
+            cookie.set_nonstandard_attr(_SET_BY_HOST_ATTR, _request_host(request))
+        return True
+
     def return_ok_domain(self, cookie: cookiejar.Cookie, request: Any) -> bool:
         # A cookie set without a Domain attribute is host-only: sent to the
         # host that set it and no other. The standard library also sends it to
-        # subdomains unless strict_ns_domain says otherwise. A dotless host's
-        # cookie is filed under "<host>.local", the effective host, by the
-        # standard library and by cookie_from_browser; the bare host is
-        # accepted too, for a jar other code filled. An empty domain is
+        # subdomains unless strict_ns_domain says otherwise. An empty domain is
         # requests' cookie for every host, and is left to the standard library.
         if cookie.domain and not cookie.domain_specified:
+            if set_by := cookie.get_nonstandard_attr(_SET_BY_HOST_ATTR):
+                return _request_host(request) == set_by
+            # No recorded host. A dotless host's cookie is filed under
+            # "<host>.local", the effective host, by the standard library; the
+            # bare host is accepted too, for a jar other code filled.
             # eff_request_host is in http.cookiejar but not in its stubs.
             req_host, effective_host = cookiejar.eff_request_host(request)  # ty: ignore[unresolved-attribute]
-            return cookie.domain.lower() in (req_host, effective_host)
+            return cookie.domain in (req_host, effective_host)
         return super().return_ok_domain(cookie, request)
 
     def __reduce__(self) -> tuple[Any, ...]:
@@ -173,30 +199,45 @@ class BrowserCookiePolicy(_STDLIB_DEFAULT_POLICY):
 _DOTLESS_HOST_SUFFIX = ".local"
 
 
-def _jar_host(host: str) -> str:
-    # The domain http.cookiejar files a Set-Cookie from *host* under, so that a
-    # server's refresh of a captured host-only cookie replaces it rather than
-    # sitting beside it: lowercase, an IPv6 literal in brackets (CDP reports
-    # "[::1]"; the brackets are added in case a driver reports it without), and
-    # "<host>.local" for a host without a dot (eff_request_host).
+# The nonstandard attribute in which a host-only jar cookie records the host
+# that set it, in http.cookiejar.request_host's form: lowercase, without a
+# port, an IPv6 literal in brackets. A nonstandard attribute is never sent and
+# pickles with the cookie; the HTTPie export does not write it.
+_SET_BY_HOST_ATTR = "graftpunk-host"
+
+
+def _browser_host(host: str) -> str:
+    # A host as a browser reported it, in request_host's form: lowercase, and
+    # an IPv6 literal in brackets (CDP reports "[::1]"; the brackets are added
+    # in case a driver reports it without).
     host = host.lower()
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
-    if "." not in host:
-        host += _DOTLESS_HOST_SUFFIX
     return host
 
 
-def _browser_cookie_domain(domain: str) -> str:
-    """The domain to give a browser for a jar cookie stored under *domain*.
+def _jar_host(host: str) -> str:
+    # The domain http.cookiejar files a Set-Cookie from *host* (in
+    # _browser_host's form) under, so that a server's refresh of a captured
+    # host-only cookie replaces it rather than sitting beside it:
+    # "<host>.local" for a host without a dot (eff_request_host).
+    return host if "." in host else host + _DOTLESS_HOST_SUFFIX
 
-    ``http.cookiejar`` files a cookie from a host without a dot under
-    ``<host>.local``, and :func:`cookie_from_browser` does the same, so
-    ``localhost`` is stored as ``localhost.local`` and ``[::1]`` as
-    ``[::1].local``. Those two come back without the suffix. Any other
-    ``<name>.local`` is returned as it is, since it may be a real
-    ``.local`` (mDNS) host rather than a dotless name.
+
+def _browser_cookie_domain(cookie: cookiejar.Cookie) -> str:
+    """The domain to give a browser for *cookie*, a jar cookie.
+
+    A host-only cookie that recorded the host that set it (see
+    :class:`BrowserCookiePolicy`) gets that host. Otherwise the stored domain
+    is used, except that ``http.cookiejar`` files a cookie from a host without
+    a dot under ``<host>.local``, so ``localhost.local`` and ``[<ipv6>].local``
+    come back without the suffix. Any other unrecorded ``<name>.local`` is
+    returned as it is, since it may be a real ``.local`` (mDNS) host rather
+    than a dotless name.
     """
+    if not cookie.domain_specified and (set_by := cookie.get_nonstandard_attr(_SET_BY_HOST_ATTR)):
+        return set_by
+    domain = cookie.domain
     if domain.endswith(_DOTLESS_HOST_SUFFIX):
         host = domain.removesuffix(_DOTLESS_HOST_SUFFIX)
         if host == "localhost" or (host.startswith("[") and host.endswith("]")):
@@ -220,10 +261,14 @@ def cookie_from_browser(record: Any) -> cookiejar.Cookie:
     ``http.cookiejar`` records it from a ``Set-Cookie`` header. A domain with
     a leading dot is a domain cookie, sent to subdomains; one without is
     host-only, which :class:`BrowserCookiePolicy` sends to that host alone.
-    A host-only cookie is stored under the domain ``http.cookiejar`` files
-    that host's ``Set-Cookie`` cookies under, so a server's refresh replaces
-    it: ``localhost`` as ``localhost.local``, ``[::1]`` as ``[::1].local``,
-    and any other host without a dot likewise.
+    A host-only cookie records that host, lowercase and an IPv6 literal in
+    brackets, as the ``graftpunk-host`` nonstandard attribute, and is stored
+    under the domain ``http.cookiejar`` files that host's ``Set-Cookie``
+    cookies under, so a server's refresh replaces it: ``localhost`` as
+    ``localhost.local``, ``[::1]`` as ``[::1].local``, and any other host
+    without a dot likewise. ``printer`` and ``printer.local`` are then both
+    stored as ``printer.local``, and the recorded host keeps each cookie to
+    its own host.
     """
     if isinstance(record, Mapping):
         name, value, domain = record["name"], record["value"], record["domain"]
@@ -240,8 +285,13 @@ def cookie_from_browser(record: Any) -> cookiejar.Cookie:
     if expires is not None and expires < 0:
         expires = None
     domain_cookie = domain.startswith(".")
+    # http.cookiejar records a valueless attribute such as HttpOnly as None.
+    rest: dict[str, str | None] = {"HttpOnly": None} if http_only else {}
     if not domain_cookie:
-        domain = _jar_host(domain)
+        set_by = _browser_host(domain)
+        rest[_SET_BY_HOST_ATTR] = set_by
+        # cookiejar.Cookie lowercases the domain itself.
+        domain = _jar_host(set_by)
     return cookiejar.Cookie(
         version=0,
         name=name,
@@ -258,9 +308,8 @@ def cookie_from_browser(record: Any) -> cookiejar.Cookie:
         discard=expires is None,
         comment=None,
         comment_url=None,
-        # http.cookiejar records a valueless attribute such as HttpOnly as None;
-        # the stubs type rest as str values.
-        rest={"HttpOnly": None} if http_only else {},  # ty: ignore[invalid-argument-type]
+        # The stubs type rest as str values.
+        rest=rest,  # ty: ignore[invalid-argument-type]
     )
 
 

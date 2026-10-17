@@ -187,7 +187,7 @@ def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]
         domains = set()
         for cookie in cookie_list:
             if hasattr(cookie, "domain"):
-                domains.add(_browser_cookie_domain(cookie.domain))
+                domains.add(_browser_cookie_domain(cookie))
         metadata["cookie_domains"] = sorted(domains)
     else:
         metadata["cookie_count"] = 0

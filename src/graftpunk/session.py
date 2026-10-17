@@ -920,7 +920,7 @@ async def inject_cookies_to_nodriver(
             cdp_net.CookieParam(
                 name=cookie.name,
                 value=cookie.value,
-                domain=_browser_cookie_domain(cookie.domain),
+                domain=_browser_cookie_domain(cookie),
                 path=cookie.path,
             )
         )

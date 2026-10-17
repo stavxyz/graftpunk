@@ -936,6 +936,7 @@ def test_injecting_captured_cookies_gives_the_browser_the_host_that_set_them() -
         [
             _dotless("lh", "localhost"),
             _dotless("v6", "[::1]"),
+            _dotless("dotless", "printer"),
             _dotless("mdns", "printer.local"),
             _dotless("dom", ".example.com"),
         ]
@@ -951,18 +952,157 @@ def test_injecting_captured_cookies_gives_the_browser_the_host_that_set_them() -
     assert {cookie["name"]: cookie["domain"] for cookie in sent} == {
         "lh": "localhost",
         "v6": "[::1]",
+        "dotless": "printer",
         "mdns": "printer.local",
         "dom": ".example.com",
     }
 
 
 def test_a_cached_sessions_cookie_domains_name_the_hosts_that_set_them() -> None:
-    session = _captured_by_nodriver([_dotless("lh", "localhost"), _dotless("v6", "[::1]")])
+    session = _captured_by_nodriver(
+        [_dotless("lh", "localhost"), _dotless("v6", "[::1]"), _dotless("p", "printer")]
+    )
 
     metadata = cache._extract_session_metadata(session, "local")
 
-    assert metadata["cookie_domains"] == ["[::1]", "localhost"]
+    assert metadata["cookie_domains"] == ["[::1]", "localhost", "printer"]
     assert metadata["domain"] == "[::1]"
+
+
+def test_gp_session_show_names_the_dotless_host_a_cookie_was_captured_from(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    from tests.unit.test_cache import _setup_local_env
+
+    _setup_local_env(tmp_path, monkeypatch)
+    session = GraftpunkSession()
+    session.cookies = _captured_by_nodriver([_dotless("tok", "printer")]).cookies
+    cache.cache_session(session, "printer")
+
+    result = CliRunner().invoke(session_app, ["show", "printer"], terminal_width=200)
+
+    assert result.exit_code == 0, result.output
+    shown = {
+        label: value.split()[0]
+        for line in result.output.splitlines()
+        if ":" in line
+        for label, value in [line.strip("│ ").split(":", 1)]
+    }
+    assert shown["Domain"] == "printer"
+    assert shown["Domains"] == "printer"
+
+
+# A host without a dot and the mDNS name with ".local" added are both stored
+# under "<host>.local"; the host each was captured from keeps them apart.
+_DOTLESS_AND_MDNS = [("printer", "http://printer/"), ("printer.local", "http://printer.local/")]
+
+
+@pytest.mark.parametrize("capture", sorted(_CAPTURE_PATHS))
+@pytest.mark.parametrize(("host", "url"), _DOTLESS_AND_MDNS)
+def test_a_captured_cookie_for_a_dotless_host_or_its_local_name_goes_to_that_host_alone(
+    capture: str, host: str, url: str
+) -> None:
+    session = _CAPTURE_PATHS[capture]([_dotless("c", host)])
+
+    assert {u: _cookie_header(session, u) for _, u in _DOTLESS_AND_MDNS} == {
+        u: "c=1" if u == url else None for _, u in _DOTLESS_AND_MDNS
+    }
+
+
+@pytest.mark.parametrize("capture", sorted(_CAPTURE_PATHS))
+@pytest.mark.parametrize(("host", "url"), _DOTLESS_AND_MDNS)
+def test_a_servers_refresh_keeps_a_dotless_or_local_cookie_to_its_own_host(
+    capture: str, host: str, url: str
+) -> None:
+    session = _CAPTURE_PATHS[capture]([_dotless("c", host)])
+    headers = email.message.Message()
+    headers["Set-Cookie"] = "c=NEW; Path=/"
+    response = types.SimpleNamespace(info=lambda: headers)
+    session.cookies.extract_cookies(response, urllib.request.Request(url))  # noqa: S310
+
+    assert [cookie.value for cookie in session.cookies] == ["NEW"]
+    assert {u: _cookie_header(session, u) for _, u in _DOTLESS_AND_MDNS} == {
+        u: "c=NEW" if u == url else None for _, u in _DOTLESS_AND_MDNS
+    }
+    sent: list[dict[str, Any]] = []
+
+    class _Tab:
+        async def send(self, command: Any) -> None:
+            sent.extend(next(command)["params"]["cookies"])
+
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    asyncio.run(inject_cookies_to_nodriver(_Tab(), session.cookies))
+    assert [cookie["domain"] for cookie in sent] == [host]
+
+
+def test_a_captured_host_is_stored_lowercase_and_matched_whatever_its_case() -> None:
+    session = _captured_by_nodriver([_dotless("c", "PrinTer")])
+
+    assert [cookie.domain for cookie in session.cookies] == ["printer.local"]
+    assert _cookie_header(session, "http://PRINTER/") == "c=1"
+    assert _cookie_header(session, "http://printer.local/") is None
+
+
+_JAR_COPIES: dict[str, Callable[[Any], Any]] = {
+    "pickle": lambda jar: dill.loads(dill.dumps(jar)),  # noqa: S301
+    "RequestsCookieJar.copy": lambda jar: jar.copy(),
+}
+
+
+@pytest.mark.parametrize("copy_jar", sorted(_JAR_COPIES))
+def test_a_cookies_setting_host_survives_the_cache_and_a_jar_copy(copy_jar: str) -> None:
+    session = GraftpunkSession()
+    session.cookies = _JAR_COPIES[copy_jar](
+        _captured_by_nodriver([_dotless("c", "printer")]).cookies
+    )
+
+    assert _cookie_header(session, "http://printer/") == "c=1"
+    assert _cookie_header(session, "http://printer.local/") is None
+
+
+def test_a_host_only_cookie_without_a_recorded_host_keeps_the_earlier_rule() -> None:
+    """A session cached by an earlier release holds such cookies, stored by
+    the standard library under "<host>.local"."""
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    session = GraftpunkSession()
+    for name, domain in (("lh", "localhost.local"), ("p", "printer.local")):
+        session.cookies.set_cookie(
+            cookiejar.Cookie(
+                0, name, "1", None, False, domain, False, False, "/", True,
+                False, None, True, None, None, {},
+            )
+        )  # fmt: skip
+
+    assert _cookie_header(session, "http://localhost:8080/") == "lh=1"
+    assert _cookie_header(session, "http://printer/") == "p=1"
+    assert _cookie_header(session, "http://printer.local/") == "p=1"
+    sent: list[dict[str, Any]] = []
+
+    class _Tab:
+        async def send(self, command: Any) -> None:
+            sent.extend(next(command)["params"]["cookies"])
+
+    asyncio.run(inject_cookies_to_nodriver(_Tab(), session.cookies))
+    assert {cookie["name"]: cookie["domain"] for cookie in sent} == {
+        "lh": "localhost",
+        "p": "printer.local",
+    }
+
+
+def test_a_cookie_a_server_sets_through_requests_goes_to_that_host_alone(
+    cookie_server: int,
+) -> None:
+    session = GraftpunkSession()
+    session.get(f"http://localhost:{cookie_server}/set", timeout=10)
+
+    assert session.get(f"http://localhost:{cookie_server}/echo", timeout=10).text == (
+        "sec=1; plain=1"
+    )
+    # localhost.local is where the standard library files localhost's cookies.
+    assert _cookie_header(session, "http://localhost.local/") is None
+    assert session.get(f"http://127.0.0.1:{cookie_server}/echo", timeout=10).text == ""
 
 
 def test_the_public_names_are_the_ones_the_changelog_lists() -> None:
