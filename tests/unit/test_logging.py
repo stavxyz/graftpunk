@@ -430,3 +430,40 @@ class TestGraftpunkLoggerContext:
         assert "info_marker" not in captured.err
         assert "debug_marker" not in captured.err
         assert not structlog.is_configured()
+
+
+class TestQuietLoggerStream:
+    def test_dropped_lines_keep_no_redirected_stderr_alive(self) -> None:
+        import gc
+        import weakref
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        from graftpunk.logging import get_logger
+
+        log = get_logger("t")
+        refs = []
+        for _ in range(1000):
+            stream = StringIO()
+            refs.append(weakref.ref(stream))
+            with redirect_stderr(stream):
+                log.debug("dropped")
+            del stream
+        gc.collect()
+        assert [ref for ref in refs if ref() is not None] == []
+
+    def test_a_warning_goes_to_the_stderr_of_the_moment(self) -> None:
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        from graftpunk.logging import get_logger
+
+        log = get_logger("t")
+        first, second = StringIO(), StringIO()
+        with redirect_stderr(first):
+            log.warning("first_marker")
+        with redirect_stderr(second):
+            log.warning("second_marker")
+        assert "first_marker" in first.getvalue()
+        assert "second_marker" not in first.getvalue()
+        assert "second_marker" in second.getvalue()

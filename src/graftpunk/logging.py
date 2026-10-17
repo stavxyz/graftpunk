@@ -127,14 +127,37 @@ _quiet_wrapper = structlog.make_filtering_bound_logger(stdlib_logging.WARNING)
 _quiet_processors: dict[bool, list[Any]] = {}
 
 
+class _CurrentStderrLogger:
+    """structlog's PrintLogger, writing to whatever ``sys.stderr`` is at write time.
+
+    CliRunner, pytest and ``contextlib.redirect_stderr`` swap ``sys.stderr``,
+    and pythonw sets it to None. A PrintLogger per stream would also register
+    each stream in structlog's process-wide lock table, which never lets go of
+    it, so one instance serves every stream under one lock.
+    """
+
+    _lock = threading.Lock()
+
+    def msg(self, message: str) -> None:
+        with self._lock:
+            stream = _stderr_or_devnull()
+            stream.write(message + "\n")
+            stream.flush()
+
+    log = debug = info = warn = warning = msg
+    fatal = failure = err = error = critical = exception = msg
+
+
+_current_stderr_logger = _CurrentStderrLogger()
+
+
 def _quiet_logger(initial_values: dict[str, Any]) -> Any:
     colors = _stderr_wants_color()
     processors = _quiet_processors.get(colors)
     if processors is None:
         processors = _quiet_processors.setdefault(colors, _processors(False, colors))
     return structlog.wrap_logger(
-        # Resolved per call: CliRunner, pytest and pythonw swap or drop sys.stderr.
-        structlog.PrintLogger(file=_stderr_or_devnull()),
+        _current_stderr_logger,
         processors=processors,
         wrapper_class=_quiet_wrapper,
         context_class=dict,
