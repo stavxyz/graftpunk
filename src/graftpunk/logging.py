@@ -139,7 +139,10 @@ class _CurrentStderrLogger:
     CliRunner, pytest and ``contextlib.redirect_stderr`` swap ``sys.stderr``,
     and pythonw sets it to None. A PrintLogger per stream would also register
     each stream in structlog's process-wide lock table, which never lets go of
-    it, so one instance serves every stream under one lock.
+    it, so one instance serves every stream under one lock. A stream that is
+    closed or fails to write loses the line instead of raising: a log call must
+    not crash the program, and the stream that failed is where a report of the
+    failure would go.
     """
 
     _lock = threading.Lock()
@@ -147,8 +150,11 @@ class _CurrentStderrLogger:
     def msg(self, message: str) -> None:
         with self._lock:
             stream = _stderr_or_devnull()
-            stream.write(message + "\n")
-            stream.flush()
+            try:
+                stream.write(message + "\n")
+                stream.flush()
+            except (OSError, ValueError):
+                pass
 
     log = debug = info = warn = warning = msg
     fatal = failure = err = error = critical = exception = msg

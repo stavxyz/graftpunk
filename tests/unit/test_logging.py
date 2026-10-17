@@ -524,6 +524,45 @@ class TestQuietLoggerStream:
         assert "second_marker" not in first.getvalue()
         assert "second_marker" in second.getvalue()
 
+    def test_a_closed_stderr_drops_the_line(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        from graftpunk.logging import get_logger
+
+        closed = StringIO()
+        closed.close()
+        with redirect_stderr(closed):
+            get_logger("t").warning("dropped_marker")
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize("failing", ["write", "flush"])
+    def test_a_stderr_that_raises_oserror_drops_the_line(
+        self, failing: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        from graftpunk.logging import get_logger
+
+        class Broken(StringIO):
+            def write(self, s: str) -> int:
+                if failing == "write":
+                    raise OSError(5, "Input/output error")
+                return super().write(s)
+
+            def flush(self) -> None:
+                if failing == "flush":
+                    raise BrokenPipeError(32, "Broken pipe")
+
+        stream = Broken()
+        with redirect_stderr(stream):
+            get_logger("t").warning("first_marker")
+            get_logger("t").warning("second_marker")
+        assert capsys.readouterr().out == ""
+        if failing == "flush":
+            assert "second_marker" in stream.getvalue()
+
 
 def _log_an_exception() -> None:
     from graftpunk.logging import get_logger
