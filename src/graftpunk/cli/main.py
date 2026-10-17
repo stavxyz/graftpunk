@@ -53,10 +53,9 @@ from graftpunk.plugins.yaml_plugin import create_yaml_plugins
 # write WARNING and above to stderr, never to stdout.) Importing this module
 # is starting the gp program; graftpunk.cli imports it only on first access
 # to graftpunk.cli.app, so importing a sibling submodule configures nothing.
-# We avoid
-# calling get_settings() here because GraftpunkSettings.__init__ creates
-# directories as a side effect, which breaks test isolation; env vars are
-# read directly instead.
+# We avoid calling get_settings() here because GraftpunkSettings.__init__
+# creates directories as a side effect, which breaks test isolation; env vars
+# are read directly instead.
 #
 # A host program that embeds this Typer app and configured structlog itself
 # keeps its configuration: only the -v/--log-format flags in main_callback()
