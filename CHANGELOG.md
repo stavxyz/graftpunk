@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.22.0] - 2026-10-17
+
+This is a minor release. graftpunk no longer changes state outside its own objects: loading a session no longer installs HTTPie's cookie policy for the whole process, and importing graftpunk no longer configures structlog. graftpunk's own sessions send cookies where the browser that captured them would: a captured cookie keeps its `Secure` flag, path, expiry and host-only scope, `Secure` cookies go over plain HTTP only to the loopback hosts Chrome sends them to, and `gp session export` keeps each cookie's scope. It ships in a minor rather than a patch release because several of these change what a program sees on the first run after the upgrade: its own `requests` sessions stop sending `Secure` cookies to `http://localhost` (Upgrading, item 1), a cookie a server set without `Domain` stops going to subdomains (item 3), and a program that uses structlog gets its own configuration back (items 5 to 8).
 
 ### Upgrading
 
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 6. **A program that configures structlog after importing graftpunk gets the configuration it asked for, and graftpunk's lines follow it** (#163). Through 1.21.0, a later `structlog.configure_once()` was ignored, with `RuntimeWarning: Repeated configuration attempted`; it now applies. A later `structlog.configure()` merged into graftpunk's configuration, so a call that left out `logger_factory` kept graftpunk's stderr and one that left out `wrapper_class` kept its WARNING filter, for the program's lines and graftpunk's. It now gets structlog's defaults for what it leaves out: stdout, and no level filter. A call that passed neither now prints the program's INFO and DEBUG lines, and graftpunk's DEBUG lines and up, on stdout. A call that passed only `wrapper_class` prints the lines its filter lets through, the program's and graftpunk's, on stdout. A call that passed only `logger_factory` gets every level, DEBUG included, through that factory. Pass both, as in item 5's example, to keep them on stderr at WARNING.
 7. **A plugin's `CliRunner` tests can find graftpunk's lines at WARNING and above in `result.output`** (#163). When nothing in the test process has configured structlog (the test does not import `graftpunk.cli.main` or read `graftpunk.cli.app`, either of which configures it), a line graftpunk logs at WARNING or above during the command goes to the stderr `CliRunner` installs, and in Click 8.3.1 `result.output` holds stderr as well as stdout (measured on 2026-10-17: Click 8.2.0's does not, and under Click 8.1.7, which `typer>=0.21` also allows, `result.stdout` holds it too). Through 1.21.0 that line went to the process's own stderr. Parse `result.stdout` where you parse the command's output, and on Click 8.1 build the runner as `CliRunner(mix_stderr=False)`.
 8. **`graftpunk.logging.ensure_library_defaults()` is removed** (#163). Calling it raises `AttributeError`. Delete the call: graftpunk's lines need no setup, and if you called it to quiet your own lines, configure structlog as in item 5's example.
+9. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
 
 ### Added
 
