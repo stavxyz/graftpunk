@@ -913,6 +913,16 @@ async def inject_cookies_to_nodriver(
             )
             skipped += 1
             continue
+        # A browser holds no expired cookie, and the jar keeps one until it is
+        # cleared, so the browser does not get it back.
+        if cookie.is_expired():
+            LOG.debug(
+                "inject_skipping_expired_cookie",
+                name=cookie.name,
+                domain=_browser_cookie_domain(cookie),
+            )
+            skipped += 1
+            continue
         # Cookie name matching is case-sensitive (intentional — Akamai bot
         # cookies are consistently lowercase across known deployments).
         if skip_bot_cookies and any(
