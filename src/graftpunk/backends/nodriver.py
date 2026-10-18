@@ -371,16 +371,17 @@ def _close_transport(proc: Any) -> None:
     process then reports exit status 255). ``Process.wait()`` is no signal
     for that, since it also waits for the helpers to release the pipes, so
     the close is scheduled on the loop and checks the status there
-    (``_close_once_collected``). That includes a loop that has stopped but
+    (``_ScheduledClose``). That includes a loop that has stopped but
     is not closed (a hand-managed loop between ``run_until_complete()``
     calls): its watcher still runs once the loop runs again.
 
-    The trade-off: a scheduled close runs only if its loop runs again. A
-    stopped loop that is closed without running again leaves the transport
-    open, and collecting it later prints the ``__del__`` noise above. Only
-    on the loop's own thread with the status already collected, or on a
-    loop already closed, does this close at once; on a closed loop the
-    close marks the transport closed and then fails, quietly.
+    A scheduled close runs only if its loop runs again. A stopped loop that
+    is closed without running again drops the scheduled close instead, and
+    the close then happens as it is dropped (``_ScheduledClose.__del__``):
+    on a closed loop the close marks the transport closed and then fails,
+    quietly, so collecting the transport later prints nothing. Only on the
+    loop's own thread with the status already collected, or on a loop
+    already closed, does this close at once.
     """
     transport = getattr(proc, "_transport", None)
     if transport is None:
@@ -392,7 +393,7 @@ def _close_transport(proc: Any) -> None:
         and (_running_loop() is not loop or not _already_reaped(proc))
     ):
         try:
-            loop.call_soon_threadsafe(_close_once_collected, proc, transport, None, 0)
+            loop.call_soon_threadsafe(_ScheduledClose(proc, transport, loop).run)
             return
         except RuntimeError:
             # The loop closed after the check.
@@ -407,25 +408,52 @@ def _close_transport(proc: Any) -> None:
 _CLOSE_QUICK_CHECKS = 20
 
 
-def _close_once_collected(proc: Any, transport: Any, deadline: float | None, checks: int) -> None:
-    """On the transport's loop: close it once the loop has collected Chrome's exit status.
+class _ScheduledClose:
+    """A transport close scheduled on its loop, run once that loop has collected Chrome's exit.
 
-    Past *deadline* it closes anyway: a watcher that has not collected the
+    Past its deadline it closes anyway: a watcher that has not collected the
     status by then is not going to, and an open transport is the worse leak.
     The first run sets the deadline (``_REAP_TERM_TIMEOUT_S`` plus
     ``_REAP_KILL_TIMEOUT_S`` from then), so a loop that was blocked or
     stopped after the close was scheduled still gives its watcher that long.
+
+    Only the loop's pending callback refers to it. A loop closed before
+    running it drops that callback, and with it this object, while the
+    transport is still referenced here: ``__del__`` then closes the
+    transport on the closed loop, where the close marks it closed and fails
+    quietly, before the transport's own ``__del__`` would try the same close
+    and print ``Exception ignored in ... Event loop is closed``.
     """
-    now = time.monotonic()
-    if deadline is None:
-        deadline = now + _REAP_TERM_TIMEOUT_S + _REAP_KILL_TIMEOUT_S
-    if _already_reaped(proc) or now >= deadline:
-        _close_transport_now(transport)
-        return
-    delay = 0.0 if checks < _CLOSE_QUICK_CHECKS else _EXIT_POLL_S
-    asyncio.get_running_loop().call_later(
-        delay, _close_once_collected, proc, transport, deadline, checks + 1
-    )
+
+    def __init__(self, proc: Any, transport: Any, loop: asyncio.AbstractEventLoop) -> None:
+        self._proc = proc
+        self._transport = transport
+        self._loop = loop
+        self._deadline: float | None = None
+        self._checks = 0
+        self._done = False
+
+    def run(self) -> None:
+        """On the transport's loop: close it now if the exit was collected, else check again."""
+        now = time.monotonic()
+        if self._deadline is None:
+            self._deadline = now + _REAP_TERM_TIMEOUT_S + _REAP_KILL_TIMEOUT_S
+        if _already_reaped(self._proc) or now >= self._deadline:
+            self._done = True
+            _close_transport_now(self._transport)
+            return
+        delay = 0.0 if self._checks < _CLOSE_QUICK_CHECKS else _EXIT_POLL_S
+        self._checks += 1
+        self._loop.call_later(delay, self.run)
+
+    def __del__(self) -> None:
+        # Only a loop that closed can drop a pending close; a loop still open
+        # would run it, and closing from here would race it.
+        try:
+            if not self._done and self._loop.is_closed():
+                _close_transport_now(self._transport)
+        except Exception:  # noqa: BLE001, S110 - a finalizer must not raise, even at shutdown
+            pass
 
 
 def _close_transport_now(transport: Any) -> None:
@@ -762,9 +790,10 @@ class NoDriverBackend:
         propagates; from a coroutine (``start_async()``, ``stop_async()``)
         that end runs on a worker thread, so the caller's loop keeps running.
         Chrome's subprocess transport is closed on its loop's thread once the
-        loop has collected Chrome's exit status, or after a bounded wait; the
-        close needs that loop to run again, so a loop closed right after the
-        stop without running again leaves it open (``_close_transport``).
+        loop has collected Chrome's exit status, or after a bounded wait. A
+        loop closed right after the stop without running again never runs
+        that close, so the close happens as the closing loop drops it
+        (``_close_transport``).
 
         ``start()``, ``stop()``, and ``stop_async()`` hold a per-backend lock,
         so two threads starting one backend launch one Chrome, and a stop

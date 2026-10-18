@@ -3115,6 +3115,60 @@ class TestNoDriverBackendTransportClosedOnItsLoop:
         assert closed_while_stopped is False
         assert transport.closed_at is not None
 
+    @pytest.mark.parametrize("stop", ["stop", "stop_async"])
+    def test_a_stopped_loop_closed_without_running_again_prints_no_noise(
+        self, stop: str, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hand-managed caller loop that started Chrome has stopped; the stop
+        ends Chrome without it and schedules the transport's close there, and
+        the caller then closes the loop without running it again (#243)."""
+        import gc
+        import sys
+
+        unraisable: list[Any] = []
+        monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+        profile = temp_profiles / f"uc_closed_after_{stop}"
+        profile.mkdir()
+
+        async def spawn() -> asyncio.subprocess.Process:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                _CHILD_UNTIL_TERM,
+                str(profile),
+                "0",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            assert process.stdout is not None
+            assert (await process.stdout.readline()).strip() == b"ready"
+            return process
+
+        loop = asyncio.new_event_loop()
+        try:
+            process = loop.run_until_complete(spawn())
+            transport = process._transport  # type: ignore[attr-defined]
+            backend = NoDriverBackend()
+            backend._browser = _temp_browser(profile, process)
+            backend._started = True
+            backend._loop = loop
+            del process
+            if stop == "stop":
+                _within(10, backend.stop)
+            else:
+                _within(10, lambda: asyncio.run(backend.stop_async()))
+            closing_before_the_loop_closed = transport.is_closing()
+            del transport
+        finally:
+            loop.close()
+        gc.collect()
+
+        assert closing_before_the_loop_closed is False
+        assert [repr(u.exc_value) for u in unraisable] == []
+        assert backend.is_running is False
+        assert not profile.exists()
+
 
 class TestNoDriverBackendStartThatNeverReturned:
     """A start that fails or is interrupted inside uc.start() never returns its browser."""
@@ -4651,3 +4705,27 @@ class TestNoDriverBackendCallTimeout:
 
         assert restored._call_timeout == 60.0
         assert restored._navigate_timeout == 120.0
+
+
+def _within(seconds: float, call: Callable[[], Any]) -> float:
+    """Run *call* on a watchdog thread, fail if it is still running after *seconds*; its duration.
+
+    A lock wait that regresses into waiting forever then fails the test
+    instead of hanging the suite. What *call* raises is raised here.
+    """
+    errors: list[BaseException] = []
+    started = time.monotonic()
+
+    def run() -> None:
+        try:
+            call()
+        except BaseException as exc:  # noqa: BLE001 - re-raised below
+            errors.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    assert not worker.is_alive(), f"still running after {seconds} s"
+    if errors:
+        raise errors[0]
+    return time.monotonic() - started
