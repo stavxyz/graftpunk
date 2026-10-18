@@ -240,7 +240,8 @@ _SET_BY_HOST_ATTR = "graftpunk-host"
 # under another policy (a stock requests.Session, then copied into a graftpunk
 # jar) keeps whatever graftpunk-http-only attribute the server sent and gets
 # no marker for a real HttpOnly; either way it reaches a browser no less
-# strict than without the marker.
+# strict than without the marker. So does a cookie built from an
+# http.cookies.Morsel, whose httponly flag no graftpunk code reads.
 _HTTP_ONLY_ATTR = "graftpunk-http-only"
 
 

@@ -958,10 +958,16 @@ async def inject_cookies_to_nodriver(
             "inject_all_cookies_filtered",
             skipped=skipped,
             hint="All cookies were filtered. Session may not work. "
-            + (
-                "Use skip_bot_cookies=False to disable bot-cookie filtering."
-                if bot_skipped
-                else "They were expired or had no name or value; log in again."
+            + " ".join(
+                reason
+                for reason, applies in (
+                    ("Use skip_bot_cookies=False to disable bot-cookie filtering.", bot_skipped),
+                    (
+                        "Some were expired or had no name or value; log in again.",
+                        skipped > bot_skipped,
+                    ),
+                )
+                if applies
             ),
         )
     if cookie_params:

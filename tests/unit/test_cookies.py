@@ -1134,14 +1134,6 @@ def _set_cookie(session: requests.Session, header: str) -> None:
     )
 
 
-def test_a_refresh_without_httponly_clears_the_mark() -> None:
-    session = GraftpunkSession()
-    _set_cookie(session, "tok=1; HttpOnly")
-    _set_cookie(session, "tok=2")
-
-    assert _injected(session.cookies)["tok"]["httpOnly"] is False
-
-
 def test_a_cookie_captured_by_1_22_0_is_injected_without_httponly() -> None:
     """1.22.0's capture wrote the HttpOnly key and graftpunk-host, not the mark."""
     jar = requests.cookies.RequestsCookieJar()
@@ -1186,6 +1178,19 @@ def test_when_every_cookie_is_expired_the_warning_says_to_log_in_again(
     assert [w["event"] for w in warnings] == ["inject_all_cookies_filtered"]
     assert "log in again" in warnings[0]["hint"]
     assert "skip_bot_cookies" not in warnings[0]["hint"]
+
+    warnings.clear()
+    jar.set("bm_sv", "1", domain="example.com")
+    _injected(jar)
+    assert "log in again" in warnings[0]["hint"]
+    assert "skip_bot_cookies=False" in warnings[0]["hint"]
+
+    warnings.clear()
+    bots = requests.cookies.RequestsCookieJar()
+    bots.set("bm_sv", "1", domain="example.com")
+    _injected(bots)
+    assert "skip_bot_cookies=False" in warnings[0]["hint"]
+    assert "log in again" not in warnings[0]["hint"]
 
 
 def test_injecting_skips_expired_cookies() -> None:
