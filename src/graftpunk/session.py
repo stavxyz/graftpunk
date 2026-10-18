@@ -406,8 +406,10 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
 
         Raises:
             BrowserError: If backend is not nodriver or backend instance is missing.
-            RuntimeError: While a ``stop_async()`` on this thread is still
-                stopping the nodriver backend.
+            RuntimeError: While a ``start_async()`` or ``stop_async()`` on
+                this thread is still starting or stopping the nodriver
+                backend, or when another thread's has held the backend's lock
+                past its limit (see ``NoDriverBackend.start_async()``).
 
         Example:
             >>> session = BrowserSession(backend="nodriver")
@@ -427,8 +429,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 "The session may have been closed or not properly initialized."
             )
         LOG.info("starting_nodriver_backend_async")
-        await backend_instance._start_async()
-        backend_instance._started = True
+        await backend_instance.start_async()
 
     def _start_observe(self) -> None:
         """Initialize observability capture if mode is not 'off' and driver exists."""

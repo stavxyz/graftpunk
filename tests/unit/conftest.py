@@ -366,7 +366,7 @@ def with_private_loop(backend: Any) -> Any:
     ``_started`` and a browser by hand has to supply one for its sync calls to
     reach the coroutine at all.
     """
-    with backend._locked():
+    with backend._lock:
         backend._ensure_private_loop()
     return backend
 

@@ -5,6 +5,7 @@ for integration tests. These unit tests focus on testable components that
 don't require actual browser instantiation.
 """
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -566,22 +567,26 @@ class TestTransferNodriverCookies:
 class TestStartAsync:
     """Tests for async start_async method."""
 
-    async def test_start_async_calls_backend(self):
-        """start_async calls _start_async on backend and sets _started."""
+    async def test_start_async_starts_the_backend_on_the_running_loop(self, fake_chrome):
+        """start_async starts the nodriver backend on this loop, under its lock."""
+        from graftpunk.backends.nodriver import NoDriverBackend
         from graftpunk.session import BrowserSession
 
+        backend = NoDriverBackend()
         with patch.object(BrowserSession, "__init__", return_value=None):
             session = BrowserSession.__new__(BrowserSession)
             session._backend_type = "nodriver"
-            mock_backend = MagicMock()
-            mock_backend._start_async = AsyncMock()
-            mock_backend._started = False
-            session._backend_instance = mock_backend
+            session._backend_instance = backend
 
             await session.start_async()
 
-            mock_backend._start_async.assert_awaited_once()
-            assert mock_backend._started is True
+        try:
+            assert backend.is_running is True
+            assert backend._loop is asyncio.get_running_loop()
+            assert len(fake_chrome.browsers) == 1
+            assert backend._lock.locked() is False
+        finally:
+            await backend.stop_async()
 
     async def test_start_async_raises_on_selenium_backend(self):
         """start_async raises BrowserError when backend is not nodriver."""
