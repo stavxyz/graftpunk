@@ -890,8 +890,8 @@ async def inject_cookies_to_nodriver(
 
     Returns:
         Tuple of (injected, skipped) — count of cookies sent to CDP and
-        count of cookies skipped (bot-detection cookies and cookies with
-        no name or value).
+        count of cookies skipped (bot-detection cookies, expired cookies,
+        and cookies with no name or value).
     """
     import nodriver.cdp.network as cdp_net
     import nodriver.cdp.storage as cdp_storage
@@ -902,6 +902,7 @@ async def inject_cookies_to_nodriver(
     # Use the low-level CDP approach instead.
     cookie_params = []
     skipped = 0
+    bot_skipped = 0
     for cookie in cookies:
         if cookie.value is None or cookie.name is None:
             LOG.debug(
@@ -934,6 +935,7 @@ async def inject_cookies_to_nodriver(
                 domain=_browser_cookie_domain(cookie),
             )
             skipped += 1
+            bot_skipped += 1
             continue
         # Without secure, http_only and expires, Chrome stores every injected
         # cookie as a non-Secure, script-readable session cookie (#261). A
@@ -949,14 +951,18 @@ async def inject_cookies_to_nodriver(
                 expires=None if cookie.expires is None else cdp_net.TimeSinceEpoch(cookie.expires),
             )
         )
-    if skipped:
-        LOG.info("inject_bot_cookies_skipped", count=skipped)
+    if bot_skipped:
+        LOG.info("inject_bot_cookies_skipped", count=bot_skipped)
     if skipped and not cookie_params:
         LOG.warning(
             "inject_all_cookies_filtered",
             skipped=skipped,
             hint="All cookies were filtered. Session may not work. "
-            "Use skip_bot_cookies=False to disable filtering.",
+            + (
+                "Use skip_bot_cookies=False to disable bot-cookie filtering."
+                if bot_skipped
+                else "They were expired or had no name or value; log in again."
+            ),
         )
     if cookie_params:
         await tab.send(cdp_storage.set_cookies(cookie_params))

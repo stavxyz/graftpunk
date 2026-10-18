@@ -1124,6 +1124,70 @@ def test_only_the_set_cookie_header_decides_httponly() -> None:
     assert _injected(reloaded)["real"]["httpOnly"] is True
 
 
+def _set_cookie(session: requests.Session, header: str) -> None:
+    message = email.message.Message()
+    message["Set-Cookie"] = header
+    response = types.SimpleNamespace(info=lambda: message)
+    session.cookies.extract_cookies(
+        response,
+        urllib.request.Request("https://example.com/"),  # noqa: S310
+    )
+
+
+def test_a_refresh_without_httponly_clears_the_mark() -> None:
+    session = GraftpunkSession()
+    _set_cookie(session, "tok=1; HttpOnly")
+    _set_cookie(session, "tok=2")
+
+    assert _injected(session.cookies)["tok"]["httpOnly"] is False
+
+
+def test_a_cookie_captured_by_1_22_0_is_injected_without_httponly() -> None:
+    """1.22.0's capture wrote the HttpOnly key and graftpunk-host, not the mark."""
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set_cookie(
+        cookiejar.Cookie(
+            0,
+            "sid",
+            "1",
+            None,
+            False,
+            "example.com",
+            False,
+            False,
+            "/",
+            True,
+            True,
+            None,
+            True,
+            None,
+            None,
+            {"HttpOnly": None, "graftpunk-host": "example.com"},
+        )
+    )
+
+    sent = _injected(jar)["sid"]
+    assert (sent["secure"], sent["httpOnly"]) == (True, False)
+
+
+def test_when_every_cookie_is_expired_the_warning_says_to_log_in_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graftpunk import session as session_module
+
+    warnings: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        session_module.LOG, "warning", lambda event, **kw: warnings.append({"event": event, **kw})
+    )
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set("old", "1", domain="example.com", expires=int(time.time()) - 60)
+
+    assert _injected(jar) == {}
+    assert [w["event"] for w in warnings] == ["inject_all_cookies_filtered"]
+    assert "log in again" in warnings[0]["hint"]
+    assert "skip_bot_cookies" not in warnings[0]["hint"]
+
+
 def test_injecting_skips_expired_cookies() -> None:
     from graftpunk.session import inject_cookies_to_nodriver
 

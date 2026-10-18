@@ -236,7 +236,11 @@ _SET_BY_HOST_ATTR = "graftpunk-host"
 # RequestsCookieJar.set() and create_cookie() give every cookie an HttpOnly
 # key, so every cookie a session cached by 1.21.0 or earlier holds has one.
 # cookie_from_browser writes the marker, and BrowserCookiePolicy.set_ok writes
-# or clears it from the Set-Cookie header the jar is storing.
+# or clears it from the Set-Cookie header the jar is storing. A cookie stored
+# under another policy (a stock requests.Session, then copied into a graftpunk
+# jar) keeps whatever graftpunk-http-only attribute the server sent and gets
+# no marker for a real HttpOnly; either way it reaches a browser no less
+# strict than without the marker.
 _HTTP_ONLY_ATTR = "graftpunk-http-only"
 
 
