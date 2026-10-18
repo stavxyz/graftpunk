@@ -170,6 +170,11 @@ class BrowserCookiePolicy(_STDLIB_DEFAULT_POLICY):
             return False
         if cookie.domain and not cookie.domain_specified:
             cookie.set_nonstandard_attr(_SET_BY_HOST_ATTR, _request_host(request))
+        # Written or cleared from the header itself, so a server cannot
+        # forge the marker as an attribute of its own.
+        cookie._rest.pop(_HTTP_ONLY_ATTR, None)  # ty: ignore[unresolved-attribute]
+        if _sent_http_only(cookie):
+            cookie.set_nonstandard_attr(_HTTP_ONLY_ATTR, "")
         return True
 
     def return_ok_domain(self, cookie: cookiejar.Cookie, request: Any) -> bool:
@@ -225,6 +230,19 @@ _DOTLESS_HOST_SUFFIX = ".local"
 # nonstandard attribute is never sent and pickles with the cookie; the HTTPie
 # export does not write it.
 _SET_BY_HOST_ATTR = "graftpunk-host"
+
+# The nonstandard attribute that marks a jar cookie the browser or the server
+# set HttpOnly. The HttpOnly attribute alone cannot say so: requests'
+# RequestsCookieJar.set() and create_cookie() give every cookie an HttpOnly
+# key, so every cookie a session cached by 1.21.0 or earlier holds has one.
+# cookie_from_browser writes the marker, and BrowserCookiePolicy.set_ok writes
+# or clears it from the Set-Cookie header the jar is storing. A cookie stored
+# under another policy (a stock requests.Session, then copied into a graftpunk
+# jar) keeps whatever graftpunk-http-only attribute the server sent and gets
+# no marker for a real HttpOnly; either way it reaches a browser no less
+# strict than without the marker. So does a cookie built from an
+# http.cookies.Morsel, whose httponly flag no graftpunk code reads.
+_HTTP_ONLY_ATTR = "graftpunk-http-only"
 
 
 def _browser_host(host: str) -> str:
@@ -289,6 +307,18 @@ def _browser_cookie_domain(cookie: cookiejar.Cookie) -> str:
     return domain
 
 
+def _is_http_only(cookie: cookiejar.Cookie) -> bool:
+    return cookie.has_nonstandard_attr(_HTTP_ONLY_ATTR)
+
+
+def _sent_http_only(cookie: cookiejar.Cookie) -> bool:
+    # Whether the Set-Cookie header the jar built *cookie* from carried
+    # HttpOnly. http.cookiejar keeps an attribute's name as the server spelled
+    # it (HttpOnly, httponly and HTTPONLY all occur), in the private _rest dict
+    # it has no public reader for.
+    return any(key.lower() == "httponly" for key in cookie._rest)  # ty: ignore[unresolved-attribute]
+
+
 def cookie_from_browser(record: Any) -> cookiejar.Cookie:
     """A jar cookie for one cookie a browser reported, sent where the browser sends it.
 
@@ -302,7 +332,9 @@ def cookie_from_browser(record: Any) -> cookiejar.Cookie:
     The cookie keeps its name, value, domain, path, ``Secure`` flag and
     expiry; a session cookie stays one (no expiry, discarded with the
     session). HttpOnly is kept as the ``HttpOnly`` nonstandard attribute, as
-    ``http.cookiejar`` records it from a ``Set-Cookie`` header. A domain with
+    ``http.cookiejar`` records it from a ``Set-Cookie`` header, and as the
+    ``graftpunk-http-only`` marker, which is what graftpunk reads, since
+    ``requests`` gives every cookie it creates an ``HttpOnly`` key. A domain with
     a leading dot is a domain cookie, sent to subdomains; one without is
     host-only, which :class:`BrowserCookiePolicy` sends to that host alone.
     A host-only cookie records that host, lowercase and an IPv6 literal in
@@ -330,7 +362,7 @@ def cookie_from_browser(record: Any) -> cookiejar.Cookie:
         expires = None
     domain_cookie = domain.startswith(".")
     # http.cookiejar records a valueless attribute such as HttpOnly as None.
-    rest: dict[str, str | None] = {"HttpOnly": None} if http_only else {}
+    rest: dict[str, str | None] = {"HttpOnly": None, _HTTP_ONLY_ATTR: ""} if http_only else {}
     if not domain_cookie:
         set_by = _browser_host(domain)
         rest[_SET_BY_HOST_ATTR] = set_by

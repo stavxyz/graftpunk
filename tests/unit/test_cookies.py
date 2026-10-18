@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import types
 import urllib.parse
 import urllib.request
@@ -1020,6 +1021,196 @@ def test_inject_logs_name_the_host_without_credentials_from_the_url(
         "inject_skipping_malformed_cookie": "localhost",
     }
     assert "secretpw" not in repr(events)
+
+
+def test_injecting_cookies_gives_the_browser_their_secure_httponly_and_expiry() -> None:
+    """Chrome 155 stored every injected cookie as a non-Secure, script-readable
+    session cookie when these were left out (measured 2026-10-18, #261). The
+    capture helper marks the cookie named sid HttpOnly."""
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    later = 2_000_000_000
+    session = _captured_by_nodriver(
+        [
+            {
+                "name": "sid",
+                "value": "1",
+                "domain": "example.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+                "expiry": later,
+            },
+            {
+                "name": "plain",
+                "value": "1",
+                "domain": ".example.com",
+                "path": "/app",
+                "secure": False,
+                "expiry": None,
+            },
+        ]
+    )
+    for header in ("srv=1; Secure; httponly; Max-Age=3600", "lower=1; HTTPONLY"):
+        message = email.message.Message()
+        message["Set-Cookie"] = header
+        response = types.SimpleNamespace(info=lambda m=message: m)
+        request = urllib.request.Request("https://example.com/")  # noqa: S310
+        session.cookies.extract_cookies(response, request)
+    sent: list[dict[str, Any]] = []
+
+    class _Tab:
+        async def send(self, command: Any) -> None:
+            sent.extend(next(command)["params"]["cookies"])
+
+    asyncio.run(inject_cookies_to_nodriver(_Tab(), session.cookies))
+
+    by_name = {cookie["name"]: cookie for cookie in sent}
+    assert by_name["sid"]["secure"] is True
+    assert by_name["sid"]["httpOnly"] is True
+    assert by_name["sid"]["expires"] == later
+    assert by_name["plain"]["secure"] is False
+    assert by_name["plain"]["httpOnly"] is False
+    assert "expires" not in by_name["plain"]
+    assert by_name["plain"]["path"] == "/app"
+    assert by_name["srv"]["secure"] is True
+    assert by_name["srv"]["httpOnly"] is True
+    assert abs(by_name["srv"]["expires"] - (time.time() + 3600)) < 60
+    assert by_name["lower"]["httpOnly"] is True
+    assert "expires" not in by_name["lower"]
+
+
+def _injected(jar: Any) -> dict[str, dict[str, Any]]:
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    sent: list[dict[str, Any]] = []
+
+    class _Tab:
+        async def send(self, command: Any) -> None:
+            sent.extend(next(command)["params"]["cookies"])
+
+    asyncio.run(inject_cookies_to_nodriver(_Tab(), jar))
+    return {cookie["name"]: cookie for cookie in sent}
+
+
+def test_a_cookie_requests_created_is_not_injected_httponly() -> None:
+    """requests gives every cookie it creates an HttpOnly key, so a session
+    cached by 1.21.0 or earlier holds one on each cookie; Chrome must not get
+    those back as script-unreadable."""
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set("legacy", "1", domain="example.com")
+    jar.set_cookie(requests.cookies.create_cookie("made", "1", domain="example.com"))
+    reloaded = dill.loads(dill.dumps(jar))  # noqa: S301
+
+    assert _injected(jar)["legacy"]["httpOnly"] is False
+    assert _injected(jar)["made"]["httpOnly"] is False
+    assert _injected(reloaded)["legacy"]["httpOnly"] is False
+
+
+def test_only_the_set_cookie_header_decides_httponly() -> None:
+    session = GraftpunkSession()
+    for header in ("real=1; HttpOnly", "forged=1; graftpunk-http-only"):
+        message = email.message.Message()
+        message["Set-Cookie"] = header
+        response = types.SimpleNamespace(info=lambda m=message: m)
+        session.cookies.extract_cookies(
+            response,
+            urllib.request.Request("https://example.com/"),  # noqa: S310
+        )
+    reloaded = dill.loads(dill.dumps(session.cookies))  # noqa: S301
+
+    assert _injected(session.cookies)["real"]["httpOnly"] is True
+    assert _injected(session.cookies)["forged"]["httpOnly"] is False
+    assert _injected(reloaded)["real"]["httpOnly"] is True
+
+
+def _set_cookie(session: requests.Session, header: str) -> None:
+    message = email.message.Message()
+    message["Set-Cookie"] = header
+    response = types.SimpleNamespace(info=lambda: message)
+    session.cookies.extract_cookies(
+        response,
+        urllib.request.Request("https://example.com/"),  # noqa: S310
+    )
+
+
+def test_a_cookie_captured_by_1_22_0_is_injected_without_httponly() -> None:
+    """1.22.0's capture wrote the HttpOnly key and graftpunk-host, not the mark."""
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set_cookie(
+        cookiejar.Cookie(
+            0,
+            "sid",
+            "1",
+            None,
+            False,
+            "example.com",
+            False,
+            False,
+            "/",
+            True,
+            True,
+            None,
+            True,
+            None,
+            None,
+            {"HttpOnly": None, "graftpunk-host": "example.com"},
+        )
+    )
+
+    sent = _injected(jar)["sid"]
+    assert (sent["secure"], sent["httpOnly"]) == (True, False)
+
+
+def test_when_every_cookie_is_expired_the_warning_says_to_log_in_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graftpunk import session as session_module
+
+    warnings: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        session_module.LOG, "warning", lambda event, **kw: warnings.append({"event": event, **kw})
+    )
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set("old", "1", domain="example.com", expires=int(time.time()) - 60)
+
+    assert _injected(jar) == {}
+    assert [w["event"] for w in warnings] == ["inject_all_cookies_filtered"]
+    assert "log in again" in warnings[0]["hint"]
+    assert "skip_bot_cookies" not in warnings[0]["hint"]
+
+    warnings.clear()
+    jar.set("bm_sv", "1", domain="example.com")
+    _injected(jar)
+    assert "log in again" in warnings[0]["hint"]
+    assert "skip_bot_cookies=False" in warnings[0]["hint"]
+
+    warnings.clear()
+    bots = requests.cookies.RequestsCookieJar()
+    bots.set("bm_sv", "1", domain="example.com")
+    _injected(bots)
+    assert "skip_bot_cookies=False" in warnings[0]["hint"]
+    assert "log in again" not in warnings[0]["hint"]
+
+
+def test_injecting_skips_expired_cookies() -> None:
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set("live", "1", domain="example.com", expires=int(time.time()) + 3600)
+    jar.set("past", "1", domain="example.com", expires=int(time.time()) - 3600)
+    jar.set("zero", "1", domain="example.com", expires=0)
+    jar.set("session", "1", domain="example.com")
+    sent: list[dict[str, Any]] = []
+
+    class _Tab:
+        async def send(self, command: Any) -> None:
+            sent.extend(next(command)["params"]["cookies"])
+
+    injected, skipped = asyncio.run(inject_cookies_to_nodriver(_Tab(), jar))
+
+    assert sorted(cookie["name"] for cookie in sent) == ["live", "session"]
+    assert (injected, skipped) == (2, 2)
 
 
 def test_injecting_captured_cookies_gives_the_browser_the_host_that_set_them() -> None:
