@@ -316,6 +316,8 @@ The filter lives in `inject_cookies_to_nodriver()`, the single chokepoint throug
 
 Cookies with `None` name or value are also skipped with a debug log (malformed cookie guard).
 
+Each injected cookie keeps its domain, path, `Secure` flag, HttpOnly flag and expiry; a session cookie stays a session cookie. A domain without a leading dot reaches Chrome as host-only (Chrome 155, measured on 2026-10-18: a cookie injected for `site.localhost` was not sent to `sub.site.localhost`). Through 1.22.0 only the name, value, domain and path were passed, so Chrome stored every injected cookie as a non-`Secure`, script-readable session cookie ([#261](https://github.com/stavxyz/graftpunk/issues/261)).
+
 The filter can be disabled per-call with `skip_bot_cookies=False`. The `BOT_DETECTION_COOKIE_PREFIXES` tuple can be extended with patterns for Cloudflare, Imperva, PerimeterX, DataDome, and other WAFs as they are encountered.
 
 ### Cookie Policy

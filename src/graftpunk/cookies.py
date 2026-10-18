@@ -289,6 +289,13 @@ def _browser_cookie_domain(cookie: cookiejar.Cookie) -> str:
     return domain
 
 
+def _is_http_only(cookie: cookiejar.Cookie) -> bool:
+    # http.cookiejar keeps a Set-Cookie attribute's name as the server spelled
+    # it (HttpOnly, httponly, HTTPONLY all occur); cookie_from_browser writes
+    # HttpOnly.
+    return any(key.lower() == "httponly" for key in getattr(cookie, "_rest", {}))
+
+
 def cookie_from_browser(record: Any) -> cookiejar.Cookie:
     """A jar cookie for one cookie a browser reported, sent where the browser sends it.
 

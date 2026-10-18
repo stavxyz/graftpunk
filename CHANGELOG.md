@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Cookies injected into a browser keep their `Secure` flag, HttpOnly flag and expiry** (#261). `inject_cookies_to_nodriver`, which loads a cached session's cookies into the browser for `gp observe` with a session, token extraction and interactive observe, passed Chrome only each cookie's name, value, domain and path, so Chrome 155 stored every injected cookie as a non-`Secure`, script-readable session cookie (measured on 2026-10-18). It now passes `secure`, `http_only` and `expires` as well. Host-only scope already survived: Chrome takes a domain without a leading dot as host-only.
+
 ## [1.22.0] - 2026-10-17
 
 This is a minor release. Several changes reach a program on the first run after the upgrade. Its own `requests` sessions stop sending `Secure` cookies to `http://localhost` after graftpunk loads a session (Upgrading, item 1; to keep them, build the session as `graftpunk.cookies.BrowserCookieSession()`). graftpunk's own sessions send `Secure` cookies over plain HTTP to `127.0.0.1` and `[::1]` as well as `localhost` names, as Chrome does (item 2). A cookie a server set without `Domain` stops going to subdomains, with no switch to restore it (item 3). A program that uses structlog gets its own configuration back, since importing graftpunk no longer configures it (items 5 to 7; to keep graftpunk's old stderr and WARNING setup, configure structlog yourself as item 5 shows), and `graftpunk.logging.ensure_library_defaults()` is gone, so a call to it raises `AttributeError` (item 8). From the next login, a captured cookie keeps its `Secure` flag, path, expiry and host, and from the next `gp session export` the file keeps each cookie's domain, path, `Secure` flag and expiry (items 3 and 4). Behind all of these, graftpunk no longer changes state outside its own objects. The removal in item 8 would call for a major release under a strict reading of semantic versioning; it ships in a minor, as earlier releases shipped their removals, because the function only set up logging that graftpunk no longer needs and item 8 says what to do instead.

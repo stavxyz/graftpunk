@@ -39,6 +39,7 @@ from graftpunk.chrome import get_chrome_version
 from graftpunk.cookies import (
     BrowserCookiesMixin,
     _browser_cookie_domain,
+    _is_http_only,
     _without_userinfo,
     cookie_from_browser,
     importing_httpie,
@@ -924,12 +925,18 @@ async def inject_cookies_to_nodriver(
             )
             skipped += 1
             continue
+        # Without secure, http_only and expires, Chrome stores every injected
+        # cookie as a non-Secure, script-readable session cookie (#261). A
+        # domain without a leading dot is already host-only to CDP.
         cookie_params.append(
             cdp_net.CookieParam(
                 name=cookie.name,
                 value=cookie.value,
                 domain=_browser_cookie_domain(cookie),
                 path=cookie.path,
+                secure=bool(cookie.secure),
+                http_only=_is_http_only(cookie),
+                expires=None if cookie.expires is None else cdp_net.TimeSinceEpoch(cookie.expires),
             )
         )
     if skipped:

@@ -1022,6 +1022,63 @@ def test_inject_logs_name_the_host_without_credentials_from_the_url(
     assert "secretpw" not in repr(events)
 
 
+def test_injecting_cookies_gives_the_browser_their_secure_httponly_and_expiry() -> None:
+    """Chrome 155 stored every injected cookie as a non-Secure, script-readable
+    session cookie when these were left out (measured 2026-10-18, #261). The
+    capture helper marks the cookie named sid HttpOnly."""
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    later = 2_000_000_000
+    session = _captured_by_nodriver(
+        [
+            {
+                "name": "sid",
+                "value": "1",
+                "domain": "example.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+                "expiry": later,
+            },
+            {
+                "name": "plain",
+                "value": "1",
+                "domain": ".example.com",
+                "path": "/app",
+                "secure": False,
+                "expiry": None,
+            },
+        ]
+    )
+    for header in ("srv=1; Secure; httponly; Max-Age=3600", "lower=1; HTTPONLY"):
+        message = email.message.Message()
+        message["Set-Cookie"] = header
+        response = types.SimpleNamespace(info=lambda m=message: m)
+        request = urllib.request.Request("https://example.com/")  # noqa: S310
+        session.cookies.extract_cookies(response, request)
+    sent: list[dict[str, Any]] = []
+
+    class _Tab:
+        async def send(self, command: Any) -> None:
+            sent.extend(next(command)["params"]["cookies"])
+
+    asyncio.run(inject_cookies_to_nodriver(_Tab(), session.cookies))
+
+    by_name = {cookie["name"]: cookie for cookie in sent}
+    assert by_name["sid"]["secure"] is True
+    assert by_name["sid"]["httpOnly"] is True
+    assert by_name["sid"]["expires"] == later
+    assert by_name["plain"]["secure"] is False
+    assert by_name["plain"]["httpOnly"] is False
+    assert "expires" not in by_name["plain"]
+    assert by_name["plain"]["path"] == "/app"
+    assert by_name["srv"]["secure"] is True
+    assert by_name["srv"]["httpOnly"] is True
+    assert by_name["srv"]["expires"] > later - 2_000_000_000
+    assert by_name["lower"]["httpOnly"] is True
+    assert "expires" not in by_name["lower"]
+
+
 def test_injecting_captured_cookies_gives_the_browser_the_host_that_set_them() -> None:
     from graftpunk.session import inject_cookies_to_nodriver
 
