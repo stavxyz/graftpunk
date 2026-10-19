@@ -6067,6 +6067,89 @@ class TestNoDriverBackendAbandonedLockHolder:
         assert fake_chrome.browsers[1].stopped_on is not None
         assert backend._lock.locked() is False
 
+    def test_a_start_async_behind_a_holder_on_its_own_loop_waits_after_a_give_up(
+        self,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        """A stop_async() and a start_async() behind it share a loop that stops,
+        and a stop on another thread gives up on the stop_async(). When the
+        loop runs again, the stop_async() can finish, so the start_async()
+        keeps waiting for it rather than give up too, then starts."""
+        profile = temp_profiles / "uc_same_loop_after_give_up"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        gate = threading.Event()
+        paused = threading.Event()
+        resume = threading.Event()
+        _within(10, backend.start)
+        real_stop = backend._stop_async
+
+        async def gated_stop() -> None:
+            await _until(gate)
+            await real_stop()
+
+        results: list[Any] = []
+        errors: list[BaseException] = []
+
+        def run_loop() -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                stopping = loop.create_task(backend.stop_async())
+
+                async def start_behind_it() -> asyncio.Future[Any]:
+                    while backend._holding_method() != "stop_async":
+                        await asyncio.sleep(0.01)
+                    starting = asyncio.ensure_future(backend.start_async())
+                    # Long enough for the start to be polling for the lock.
+                    await asyncio.sleep(0.2)
+                    return starting
+
+                starting = loop.run_until_complete(asyncio.wait_for(start_behind_it(), 10))
+                paused.set()
+                # The loop stops here until the test resumes it.
+                resume.wait(10)
+                gate.set()
+                results.extend(
+                    loop.run_until_complete(
+                        asyncio.wait_for(
+                            asyncio.gather(stopping, starting, return_exceptions=True), 10
+                        )
+                    )
+                )
+                results.append(backend.is_running)
+                loop.run_until_complete(asyncio.wait_for(backend.stop_async(), 10))
+            except BaseException as exc:  # noqa: BLE001 - asserted below
+                errors.append(exc)
+            finally:
+                loop.close()
+
+        with _chrome_like_child(profile) as child:
+            assert backend._browser is not None
+            self._give_chrome(backend._browser, child, profile)
+            monkeypatch.setattr(backend, "_stop_async", gated_stop)
+            loop_thread = threading.Thread(target=run_loop, daemon=True)
+            loop_thread.start()
+            try:
+                assert paused.wait(10)
+                _within(10, backend.stop)
+                exited = child.poll() is not None
+            finally:
+                resume.set()
+                gate.set()
+                loop_thread.join(15)
+
+        assert not loop_thread.is_alive()
+        assert errors == []
+        assert results == [None, None, True]
+        assert exited
+        assert self._given_up(captured_logs) == [("stop", "stop_async")]
+        assert len(fake_chrome.browsers) == 2
+        assert fake_chrome.browsers[1].stopped_on is not None
+        assert backend._lock.locked() is False
+
     @pytest.mark.parametrize("a_start_gave_up_first", [False, True])
     def test_giving_up_on_a_hold_that_has_ended_does_nothing(
         self, a_start_gave_up_first: bool

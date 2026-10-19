@@ -711,7 +711,8 @@ class _LockWait:
     waited for, however long it takes, and so is a synchronous holder, whose
     thread is running the start or stop. Whether a stopped loop ran between
     two polls is told by a callback this wait leaves on it, so a loop run in
-    bursts shorter than the poll counts as running.
+    bursts shorter than the poll counts as running. A holder on the waiter's
+    own running loop is always waited for: it runs whenever the waiter polls.
 
     *ends* is whether the waiter is a stop, which ends Chrome once it gives
     up. A start that gives up waits first for a stop's end of Chrome in
@@ -732,7 +733,7 @@ class _LockWait:
         """The hold this wait gives up on now, and whether it is the one to end Chrome, or None."""
         backend = self._backend
         holding = backend._holding
-        if holding is None or holding.loop is None:
+        if holding is None or holding.loop is None or holding.loop is _running_loop():
             self._hold = None
             return None
         abandoned = backend._abandoned
