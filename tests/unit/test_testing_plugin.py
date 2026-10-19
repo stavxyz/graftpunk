@@ -28,6 +28,7 @@ def _load_script() -> ModuleType:
         "plain text",
         '{"url": "/x?a=1\\u0026csrftoken=abc", "s": "\\ud83d\\ude00 \\/"}',
         "var u = '/x?a=1\\x26csrftoken=abc';",
+        '{"raw": "Host: x\\r\\nmyshop_session=abc\\tz\\b\\f"}',
         '<a href="/x?a=1&amp;csrftoken=abc&#38;b=&#x27;">',
         "next=a%253D1%2526csrftoken%253Dabc",
         "a%25252525",

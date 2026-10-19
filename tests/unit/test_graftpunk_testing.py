@@ -727,6 +727,13 @@ class TestCheckFixturesTree:
             b"<a href='/r?next=%2522text%2522'>",
             b"next=a%253D1%2526text%253Dabc",
             b'<a href="/x?a=1&amp;text=abc">',
+            b'{"note": "line one\\ntext=Qm7Lp2Xv9Kd4"}',
+            b'{"note": "a\\ttext=Qm7Lp2Xv9Kd4"}',
+            b'{"raw": "Host: x\\r\\ntext=Qm7Lp2Xv9Kd4"}',
+            b"{'cookies': 'a=1\\ntext=Qm7'}",
+            b'{"location": "https://app.example.com/cb#text=eyJhbGciOi"}',
+            b"next=https%3A%2F%2Fapp.example.com%2Fcb%23text%3DeyJ",
+            b"name|text|value",
         ],
         ids=[
             "json-key",
@@ -746,6 +753,13 @@ class TestCheckFixturesTree:
             "double-percent-quote",
             "double-percent-pair",
             "html-entity",
+            "json-newline",
+            "json-tab",
+            "json-crlf",
+            "python-repr-newline",
+            "url-fragment",
+            "percent-encoded-url-fragment",
+            "pipe-separated",
         ],
     )
     def test_a_flagged_name_as_a_whole_name_fails(self, tmp_path: Path, body: bytes) -> None:

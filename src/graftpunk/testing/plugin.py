@@ -378,11 +378,13 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
 # continue a name. The token's other punctuation continues a name only between two
 # of those, as in connect.sid or text.v2; anywhere else it is text around the name:
 # a full stop ending a sentence, Markdown's backticks and asterisks, an exclamation
-# mark, or a $ starting a variable. & ' % and + always end a name, since in a
-# fixture they separate query pairs, quote strings, and encode text. Anything
-# outside the token, US-ASCII or not, ends a name.
+# mark, or a $ starting a variable. & ' % + # and | always end a name: in a
+# fixture the first four separate query pairs, quote strings, and encode text, #
+# starts a URL fragment (cb#access_token=), | separates fields, and no common
+# cookie name holds # or |. Anything outside the token, US-ASCII or not, ends a
+# name.
 _NAME_CORE = r"A-Za-z0-9_\-"
-_NAME_PUNCTUATION = r"!#$*.^`|~"
+_NAME_PUNCTUATION = r"!$*.^`~"
 
 # The forms a fixture is read in besides as written, kept in step with
 # skills/graft/scripts/fixture-leaks.py's _escape_decodings (a test compares the
@@ -390,13 +392,17 @@ _NAME_PUNCTUATION = r"!#$*.^`|~"
 _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
 _HEX_ESCAPE = re.compile(r"\\x([0-9a-fA-F]{2})")
+# A one-letter control escape (\n, \r, \t, \b, \f), so a name on the line after
+# a JSON or Python string's \n is read as starting that line.
+_CONTROL_ESCAPE = re.compile(r"\\([nrtbf])")
+_CONTROL_CHARACTERS = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f"}
 _PERCENT_ROUNDS = 3
 
 
 def _backslash_unescaped(text: str) -> str:
     """*text* with its ``\\uXXXX`` escapes decoded (a surrogate pair rejoined into
-    the one character it spells), its ``\\xXX`` escapes decoded, and ``\\/`` read
-    as ``/``."""
+    the one character it spells), its ``\\xXX`` escapes and its ``\\n``, ``\\r``,
+    ``\\t``, ``\\b`` and ``\\f`` escapes decoded, and ``\\/`` read as ``/``."""
 
     def pair(m: re.Match[str]) -> str:
         high, low = int(m.group(1), 16), int(m.group(2), 16)
@@ -405,6 +411,7 @@ def _backslash_unescaped(text: str) -> str:
     decoded = _SURROGATE_PAIR.sub(pair, text)
     decoded = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
     decoded = _HEX_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
+    decoded = _CONTROL_ESCAPE.sub(lambda m: _CONTROL_CHARACTERS[m.group(1)], decoded)
     return decoded.replace("\\/", "/")
 
 

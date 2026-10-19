@@ -14,7 +14,7 @@ of words with one of those in it.
 
 Where it looks, in the fixture, in Unicode compatibility form: the raw text, its
 JSON or HTML values decoded, its backslash escapes decoded (``\\u00e9``, a
-surrogate pair, ``\\x26``, ``\\/``), its HTML character references decoded
+surrogate pair, ``\\x26``, ``\\n``, ``\\/``), its HTML character references decoded
 (``&amp;``), and its percent-encoding decoded (``%40``), repeated up to
 three times while it keeps changing (``%2540``). A piece with a
 space, a digit, or an ``@`` matches in any case; a single word matches as written,
@@ -91,6 +91,10 @@ _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
 # A \xXX escape as JavaScript and Python source spell one.
 _HEX_ESCAPE = re.compile(r"\\x([0-9a-fA-F]{2})")
+# A one-letter control escape (\n, \r, \t, \b, \f), so a name on the line after
+# a JSON or Python string's \n is read as starting that line.
+_CONTROL_ESCAPE = re.compile(r"\\([nrtbf])")
+_CONTROL_CHARACTERS = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f"}
 # Percent-decoding is repeated, so a URL nested in another URL's query is read as
 # written, until the text stops changing or this many rounds have run.
 _PERCENT_ROUNDS = 3
@@ -216,8 +220,8 @@ def _normal(text: str) -> str:
 
 def _unescape(text: str) -> str:
     """*text* with its ``\\uXXXX`` escapes decoded, a surrogate pair rejoined into
-    the one character it spells, its ``\\xXX`` escapes decoded, and ``\\/`` read
-    as ``/``."""
+    the one character it spells, its ``\\xXX`` escapes and its ``\\n``, ``\\r``,
+    ``\\t``, ``\\b`` and ``\\f`` escapes decoded, and ``\\/`` read as ``/``."""
 
     def pair(m: re.Match[str]) -> str:
         high, low = int(m.group(1), 16), int(m.group(2), 16)
@@ -228,6 +232,7 @@ def _unescape(text: str) -> str:
     decoded = _SURROGATE_PAIR.sub(pair, text)
     decoded = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
     decoded = _HEX_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
+    decoded = _CONTROL_ESCAPE.sub(lambda m: _CONTROL_CHARACTERS[m.group(1)], decoded)
     return decoded.replace("\\/", "/")
 
 
