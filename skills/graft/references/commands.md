@@ -100,8 +100,8 @@ uv run --no-project --with-editable . gp <site-name> <command>
 ## Allow rules for a prompt-free run
 
 The rules the skill offers, all `gp` but its read-only leak check; a file write
-still asks. The last two cover the plugin's help and login; the live read-only
-command and a HAR read have no rule and ask each time: they read the account.
+still asks. The last two cover the plugin's help and login. None is offered for
+the live read-only command, which reads the account, or for reading a HAR.
 
 ```text
 Bash(gp plugin info *)

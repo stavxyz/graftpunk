@@ -1,12 +1,13 @@
 # From the digest to a command proposal
 
 The user should never have to know the commands in advance. The source is the
-projection the Understand block of `references/commands.md` prints: one entry
+projection the `--endpoints-json` line of the Understand block of
+`references/commands.md` prints: one entry
 per endpoint with `method`, `template`, `host`, `login_flow`, `content_type`,
 `shape`, `query_params`, `body_params`, and `custom_headers`, plus a `login`
 summary and the recording's `primary_host`.
-Build the proposal from that projection, which is shaped for it; the `--json`
-digest and the HAR answer what it leaves out ("Beyond the projection").
+Build the proposal from that projection, which is shaped for it;
+`references/har.md` says where to look for what it leaves out.
 
 ## The base host
 
@@ -69,25 +70,10 @@ scaffold step.
 `forms` holds each login form's `action`, its `fields` selectors by role, its
 `submit` selector, `neutral_roles`, and `unresolved_roles`. Name every
 unresolved role in the proposal: the generated login config carries a `GP-FILL`
-for each, which the implement step fills with a selector the user reads off the
-login page in their browser (guide: Login).
-
-## Beyond the projection
-
-When a step needs what the projection does not carry, such as a cookie's
-`Secure`, `HttpOnly`, `SameSite`, expiry, domain, or path, a header, or a
-request body, look it up rather than sending the user to their browser's
-developer tools. First run the `--json` line of the Understand block of
-`references/commands.md` on the chosen session and run: the whole digest model,
-with names and types but no values. Then read the run's HAR at
-`~/.local/share/graftpunk/observe/<session>/<run>/network.har`, with the
-session and run ID as `gp observe list` prints them; a response body too large
-to inline sits in `bodies/` beside it. A HAR is one JSON document, often large:
-Grep it for the URL path or the cookie name and Read the lines around a match.
-It lies outside the project, so the Read and Grep tools ask before each read;
-no allow rule is offered for it, since it holds the login's password. Answer
-with names, attributes, shapes, and counts, under the Secrets rule in
-`SKILL.md`.
+for each, which the implement step fills with a selector read from the login
+page's markup in the recording (`references/har.md`), or, when the recording
+does not hold it, one the user reads off the login page in their browser
+(guide: Login).
 
 ## A worked example
 

@@ -92,8 +92,9 @@ tool result carries the exit status. Run no command the references do not
 declare, a look-around such as `command -v gp` included, and read and write
 files with the file tools. Read a reference only at the step that names it.
 Never fetch a page of the site yourself, at any step: what the site shows comes
-from the user, read off it in their own browser, or from the live calls they
-agree to at the kick-the-tires step.
+from the recording (`references/har.md`), from the live calls the user agrees
+to at the kick-the-tires step, or, for anything the recording does not show,
+from the user, read off it in their own browser.
 
 ## The steps
 
@@ -131,9 +132,12 @@ agree to at the kick-the-tires step.
 5. **Implement** (guide: Implement). For each stub, fill in the request, name
    the parameters, decide the return shape, and replace every `GP-FILL` marker.
    Raise `CommandError` or `PluginError` on failure. Read `references/rules.md`
-   and read the guide section behind any rule the work touches. The login's
-   markers need what only the user can see, so ask for each one the generated
-   config marks, one question at a time, and wait for each answer: the exact
+   and read the guide section behind any rule the work touches. For the login's
+   markers, first take what the recording holds (`references/har.md`): a
+   selector the digest left unresolved, from the login page's markup, and a
+   selector on the page a login lands on, from that page's markup. Ask the user
+   for each marker the generated config marks that the recording does not
+   answer, one question at a time, and wait for each answer: the exact
    sentence the site shows after a wrong password (they try one in their own
    browser), a CSS selector of an element on the page a successful login lands
    on, a selector for any login field or submit button the digest left
@@ -208,17 +212,18 @@ Never ask for a password, and never write a credential anywhere. Never read
 what `gp config get --resolve` returns. From a recording, read the
 `--endpoints-json` projection first, and at the harden step the captures
 `gp observe fixtures` writes into the git-ignored `tests/captures/`. When the
-projection does not answer a question, such as a cookie's attributes, a header,
-or a request body it leaves out, read the run's `--json` digest or its HAR, as
-`references/digest.md` says ("Beyond the projection"). A HAR holds the account's
-own data and, when the recording logged in, the password the user typed; a
-capture holds the account's data too. All of them stay on this workstation, so
-no value from one goes into anything that is committed or shared, such as a
-fixture, a test, code, a comment, a docstring, a commit message, or a pull
-request. Reading a cookie or token value is not forbidden, since a HAR cannot be
-read around them, but no step needs one: never repeat a password, a token, a
-session cookie's value, or any other credential in a reply, and never write
-one. Report names, attributes, shapes, and counts instead. A token value inside
+projection does not answer a question, read the `--json` digest and then the
+run's HAR, narrowly, as `references/har.md` says. The `--json` digest prints
+paths as recorded, which can carry account or order ids; a capture holds the
+account's own data; a HAR holds both and, when the recording logged in, the
+password the user typed. All of them stay on this workstation: no value from
+one goes into anything that is committed or shared, such as a fixture, a test,
+code, a comment, a docstring, a commit message, or a pull request, nor into a
+reply the user may paste elsewhere. Reading a cookie or token value is not
+forbidden, since a HAR cannot always be read around one, but no step needs a
+value, so read attributes rather than values: never repeat a password, a
+token, a session cookie's value, or any other credential in a reply, and never
+write one. Report names, attributes, shapes, and counts. A token value inside
 a capture is replaced like any other captured value. The output of the live
 read-only command the user agreed to at the kick-the-tires step is the same:
 show it to them, confirm it returned data, and use no value from it. When the
