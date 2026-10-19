@@ -1241,13 +1241,14 @@ class TestPlainWordCookies:
         (problem,) = check_fixtures_tree(tree).problems
         assert "'csrf-token'" in problem
 
-    def test_a_django_style_session_stays_flagged_beside_script_written_form_state(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """sessionid set HttpOnly, csrftoken set without it, and form state the page
-        writes by script, which no response sets: the session and the token stay
-        flagged even with word-shaped values, and the fixture keeping the form
-        state's names passes."""
+    @staticmethod
+    def _django_style_sidecar(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, form_state_http_only: bool
+    ) -> Path:
+        """sessionid set HttpOnly and csrftoken set without it at login, word-shaped
+        both; the search response sets the form state (text, lot) by Set-Cookie,
+        and the next request sends all four back. Returns gp's sidecar for the
+        search capture."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         login = _entry("POST", "https://myshop.example.com/accounts/login/", body="{}")
@@ -1260,20 +1261,55 @@ class TestPlainWordCookies:
             "https://myshop.example.com/api/search?lot=12",
             body=json.dumps({"results": [{"subdivision": "Oak Hills", "block": "4", "lot": "12"}]}),
         )
-        search["request"]["cookies"] = [
+        form_flags = {"secure": True, "httpOnly": True} if form_state_http_only else {}
+        search["response"]["cookies"] = [
+            {"name": "text", "value": "running%20shoes", **form_flags},
+            {"name": "lot", "value": "12", **form_flags},
+        ]
+        again = _entry("GET", "https://myshop.example.com/api/search?lot=12")
+        again["request"]["cookies"] = [
             {"name": "sessionid", "value": "lanterns"},
             {"name": "csrftoken", "value": "harbor"},
             {"name": "text", "value": "running%20shoes"},
             {"name": "lot", "value": "12"},
         ]
-        _write_run(observe_base, "myshop", "run-1", [login, search])
+        _write_run(observe_base, "myshop", "run-1", [login, search, again])
         out_dir = tmp_path / "captures"
         result = runner.invoke(
             _build_app(),
-            ["observe", "fixtures", "myshop", "--match", "GET /api/search", "--out", str(out_dir)],
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "GET /api/search",
+                "--limit",
+                "1",
+                "--out",
+                str(out_dir),
+            ],
         )
         assert result.exit_code == 0, result.output
-        meta = out_dir / "get_api_search.json.meta.json"
+        return out_dir / "get_api_search.json.meta.json"
+
+    def test_the_httponly_guard_keeps_form_state_a_server_sets_httponly_flagged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        meta = self._django_style_sidecar(tmp_path, monkeypatch, form_state_http_only=True)
+        assert json.loads(meta.read_text())["flagged_names"] == [
+            "csrftoken",
+            "lot",
+            "sessionid",
+            "text",
+        ]
+
+    def test_a_django_style_session_stays_flagged_beside_server_set_form_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The session and the token stay flagged with word-shaped values; the form
+        state a response set without HttpOnly is left out, and the fixture keeping
+        its names passes."""
+        meta = self._django_style_sidecar(tmp_path, monkeypatch, form_state_http_only=False)
         assert json.loads(meta.read_text())["flagged_names"] == ["csrftoken", "sessionid"]
         tree = tmp_path / "fixtures"
         tree.mkdir()
