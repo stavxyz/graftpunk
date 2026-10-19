@@ -1547,22 +1547,32 @@ before the recording starts. Record a fresh login, so that the server's
 `Set-Cookie` for the session is in the HAR, then run `gp observe fixtures`
 again. A session cookie a response does set can still be left out when its
 name has no session part, the response did not set it with `HttpOnly`, and
-every value it held reads as words: a numeric id of 5 digits or fewer always
-does, so does one made of space- or `+`-separated pieces of 3 or fewer
-characters with a letter among them (`aB3+xY7+qW2`), and a short random id
-sometimes does (14.8% of random 8-letter lowercase ids and 0.77% of random
-8-character standard-base64 ids, measured on 100,000 each).
+every value it held reads as words. A numeric id of 5 digits or fewer always
+does. So does a value made of space- or `+`-separated pieces of 3 or fewer
+letters and digits with a letter among them (`aB3+xY7+qW2`), and so do groups
+of digits separated by spaces or `+` (`4111 1111 1111 1111`, `555 123 4567`):
+a cookie holding only such values is not flagged. A short random id sometimes
+does (14.8% of random 8-letter lowercase ids and 0.77% of random 8-character
+standard-base64 ids, measured on 100,000 each). The graft skill's
+`fixture-leaks.py`, which compares a fixture with the capture it was derived
+from, still reports any value from the captured response body left in the
+fixture, each run of 3 or more digits included. It reads the capture's body,
+not its cookie headers, and runs when the skill derives a fixture, not in the
+suite.
 
 A form-state cookie can stay flagged the other way, when one of its values does
 not read as words. The rule `graftpunk.har.paths.reads_as_words` applies is:
 
-- A value of one word reads as words when it is a number of at most 5 digits, a
-  date, or a word of at most 15 letters, all lowercase, all capitals or
-  capitalised, spelled with letter pairs English words use, optionally followed
-  by 1 or 2 digits (`shoes`, `USD`, `Austin`, `shoes2`). So `iPad`, `iPhone`,
-  `eBay`, `NASA`, `XL`, `LEGO`, `512gb`, `24ct` and `50lbs` typed alone do not
-  (`XL` fails on its `xl` pair, `NASA` on its run of 4 capitals, `512gb` because a
-  quantity counts only beside other words).
+- A value of one word reads as words when no run of 6 or more digits or other
+  id shape is in it and each of its runs of letters and digits, split at `-`,
+  `/`, `.`, `_` and other punctuation, is a number, a version (`v2`), or a word
+  of at most 15 letters, all lowercase, all capitals or capitalised, spelled with
+  letter pairs English words use, optionally followed by 1 or 2 digits. So
+  `shoes`, `USD`, `Austin`, `shoes2`, `en-US`, `t-shirt`, `USB-C` and a date
+  such as `2026-10-19` read as words, and `iPad`, `iPhone`, `eBay`, `NASA`,
+  `XL`, `LEGO`, `512gb`, `24ct` and `50lbs` typed alone do not (`XL` fails on
+  its `xl` pair, `NASA` on its run of 4 capitals, `512gb` because a quantity
+  counts only beside other words).
 - A value of several words reads as words when no word holds an id and every
   word is one of: such a word, a number, at most 3 letters and digits (`4K`,
   `TV`), a quantity of a number and a lowercase unit from a fixed list (`512gb`,

@@ -387,16 +387,17 @@ def reads_as_words(value: str) -> bool:
     as words; a session id (``Zq9XkLmPwR4t7Bv2Hn8Ks3Jd``), a mixed-case run
     (``kQzPwM``), ``lot 123456``, and an empty value do not.
 
-    The known limits: a number of 5 digits or fewer reads as words, and so can a
-    short random value, and so does any value made of space- or ``+``-separated
-    pieces of 3 or fewer letters and digits with a letter among them
-    (``aB3+xY7+qW2``), since each piece passes as a short typed word. Measured on
-    100,000 random values per row (seed 273, 2026-10-19): of lowercase letters
-    alone, 14.8% at 8 letters, 5.3% at 12 and 2.4% at 15 read as words, and none
-    at 16 or more; of standard base64 (``+`` and ``/`` included, ``+`` decoded as
-    a space), 0.77% at 8 characters, 0.04% at 12 and none at 16 or more; of
-    base64url, 0.30% at 8 and none at 16 or more; of ``[a-z0-9]``, 1.96% at 8,
-    0.008% at 16 and none at 26.
+    The known limits: a number of 5 digits or fewer reads as words, so do groups
+    of digits separated by spaces or ``+`` (``4111 1111 1111 1111``), so does any
+    value made of space- or ``+``-separated pieces of 3 or fewer letters and
+    digits with a letter among them (``aB3+xY7+qW2``), since each piece passes as
+    a short typed word, and so can a short random value. Measured on 100,000
+    random values per row (seed 273, 2026-10-19): of lowercase letters alone,
+    14.8% at 8 letters, 5.3% at 12 and 2.4% at 15 read as words, and none at 16
+    or more; of standard base64 (``+`` and ``/`` included, ``+`` decoded as a
+    space), 0.77% at 8 characters, 0.04% at 12, about 0.001% at 16
+    (``Wmx+akr4/CSG++n7``) and none at 22 or more; of base64url, 0.30% at 8 and
+    none at 16 or more; of ``[a-z0-9]``, 1.96% at 8, 0.008% at 16 and none at 26.
     """
     text = unquote_plus(value)
     parts = _VALUE_PART_RE.findall(text)
