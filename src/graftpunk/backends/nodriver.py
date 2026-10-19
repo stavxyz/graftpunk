@@ -2097,7 +2097,9 @@ class NoDriverBackend:
         """
         running = _running_loop()
         if self._held_by_this_thread():
-            LOG.info("nodriver_backend_stop_during_stop_async")
+            LOG.info(
+                "nodriver_backend_stop_while_this_thread_holds_lock", holder=self._holding_method()
+            )
             self._stop_holding_lock(running)
             return
         if running is not None and running is self._loop:
@@ -2233,7 +2235,9 @@ class NoDriverBackend:
         if self._held_by_this_thread() and not (
             self._held_on_this_loop() and self._holding_method() == "start_async"
         ):
-            LOG.info("nodriver_backend_stop_during_stop_async")
+            LOG.info(
+                "nodriver_backend_stop_while_this_thread_holds_lock", holder=self._holding_method()
+            )
             await self._stop_async_holding_lock()
             return
         given_up = await self._acquire_lock_async("stop_async")
