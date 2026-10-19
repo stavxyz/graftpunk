@@ -802,10 +802,11 @@ def _response_cookie_names(entry: HAREntry) -> list[str]:
     ``response.cookies`` array and ``response.set_cookie_names``.
 
     ``set_cookie_names`` is parsed at parse time in ``har/parser.py`` from
-    every ``Set-Cookie`` header on the raw response, deduplicated, in
-    order; that is the only place header text is read, since a response can
-    carry more than one ``Set-Cookie`` header and a header dict collapses
-    duplicate names to the last value.
+    every line of every ``Set-Cookie`` header on the raw response,
+    deduplicated, in order, by the same parse that gives
+    ``set_cookie_http_only``. The raw headers list is read there, not here,
+    since a response can carry more than one ``Set-Cookie`` header and a
+    header dict collapses duplicate names to the last value.
     """
     names: list[str] = []
     for cookie in entry.response.cookies:
