@@ -1321,6 +1321,71 @@ class TestPlainWordCookies:
         (problem,) = check_fixtures_tree(tree).problems
         assert "'sessionid'" in problem
 
+    def test_httponly_read_from_set_cookie_headers_when_the_cookies_array_omits_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recording whose response.cookies never says httpOnly while some
+        Set-Cookie headers do: sessionid set HttpOnly and Secure, csrftoken set
+        both ways, a word-valued remember cookie set HttpOnly in one header of
+        two, and eleven form-state cookies set by the server, never HttpOnly,
+        some Secure with SameSite=Lax. The form state is left out; the cookies a
+        header set HttpOnly stay flagged."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        form = {
+            "text": "running%20shoes",
+            "lot": "12",
+            "block": "4",
+            "subdivision": "Oak%20Hills",
+            "since": "2026-10-01",
+            "until": "2026-10-19",
+            "county": "Travis",
+            "sort": "price",
+            "order": "asc",
+            "page": "2",
+            "view": "list",
+        }
+
+        def setting(url: str, lines: list[str]) -> dict:
+            entry = _entry("GET", url, body=json.dumps({"results": []}))
+            entry["response"]["headers"] += [
+                {"name": "Set-Cookie", "value": line} for line in lines
+            ]
+            entry["response"]["cookies"] = [
+                {"name": line.split("=", 1)[0], "value": line.split(";")[0].split("=", 1)[1]}
+                for line in lines
+            ]
+            return entry
+
+        login = setting(
+            "https://myshop.example.com/accounts/login/",
+            [
+                "sessionid=lanterns; Path=/; Secure; HttpOnly; SameSite=Lax",
+                "csrftoken=harbor; Path=/; Secure; HttpOnly",
+                "visitor=lanterns; Path=/",
+            ],
+        )
+        search = setting(
+            "https://myshop.example.com/api/search",
+            [
+                *(
+                    f"{name}={value}; Path=/" + ("; Secure; SameSite=Lax" if i % 2 else "")
+                    for i, (name, value) in enumerate(form.items())
+                ),
+                "csrftoken=harbor; Path=/",
+                "visitor=lanterns; Path=/; HttpOnly",
+            ],
+        )
+        _write_run(observe_base, "myshop", "run-1", [login, search])
+        out_dir = tmp_path / "captures"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /api/search", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 0, result.output
+        sidecar = json.loads((out_dir / "get_api_search.json.meta.json").read_text())
+        assert sidecar["flagged_names"] == ["csrftoken", "sessionid", "visitor"]
+
 
 @contextmanager
 def _unwritable_dir(parent: Path, name: str = "readonly") -> Iterator[Path]:

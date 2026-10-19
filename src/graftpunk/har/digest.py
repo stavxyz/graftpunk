@@ -1909,7 +1909,10 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
       whatever its values;
     - one any response in *entries* set with ``HttpOnly``, whatever its values:
       a server hides a cookie from scripts to protect it, and form state written
-      by script never carries the flag;
+      by script never carries the flag. The flag counts when the HAR's
+      ``response.cookies`` entry says ``httpOnly`` is true or when a
+      ``Set-Cookie`` header carries the attribute: the array often leaves it out
+      when the header has it, so an absent flag there is unknown, not false;
     - one with any non-empty value that does not read as words (a session id);
     - one with no non-empty value *entries* show, which covers a ``Set-Cookie``
       the recorder kept only as a name, a cookie only ever empty, and a call
@@ -2001,8 +2004,10 @@ def _cookies_seen(entries: Iterable[HAREntry]) -> _CookiesSeen:
     """Every non-empty value *entries* record for each cookie name, in requests and
     responses; the names a response set with no value kept (a ``Set-Cookie`` only
     in ``set_cookie_names``, or a value that is not a string); and the names a
-    response set with ``HttpOnly``. An empty value is skipped, so a cookie whose
-    only values are empty has no entry in ``values``."""
+    response set with ``HttpOnly``, by its ``response.cookies`` entry's
+    ``httpOnly`` being true or by a ``Set-Cookie`` header carrying the attribute
+    (``set_cookie_http_only``). An empty value is skipped, so a cookie whose only
+    values are empty has no entry in ``values``."""
     seen = _CookiesSeen()
     for entry in entries:
         for cookie in entry.request.cookies + entry.response.cookies:
@@ -2014,9 +2019,13 @@ def _cookies_seen(entries: Iterable[HAREntry]) -> _CookiesSeen:
                 seen.unseen.add(name)
             elif value:
                 seen.values.setdefault(name, set()).add(value)
+        # Either source is enough: the response.cookies array often leaves
+        # httpOnly out when the Set-Cookie header carries it, so an absent
+        # flag there is unknown, not false.
         for cookie in entry.response.cookies:
             if cookie.get("httpOnly") is True and cookie.get("name"):
                 seen.http_only.add(cookie["name"])
+        seen.http_only.update(entry.response.set_cookie_http_only)
         with_values = {cookie.get("name", "") for cookie in entry.response.cookies}
         seen.unseen.update(
             name for name in entry.response.set_cookie_names if name not in with_values

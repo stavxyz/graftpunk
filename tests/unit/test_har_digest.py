@@ -4276,6 +4276,52 @@ class TestFlaggedNamesOf:
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ()
 
+    @pytest.mark.parametrize(
+        "set_cookie",
+        [
+            "visit=lanterns; Path=/; Secure; HttpOnly",
+            "visit=lanterns; path=/; httponly; samesite=Lax",
+            "lot=12; Path=/\nvisit=lanterns; Path=/; HTTPONLY",
+        ],
+        ids=["header-attribute", "lowercase-attribute", "second-line-of-a-joined-header"],
+    )
+    def test_an_httponly_set_cookie_header_flags_a_cookie_the_cookies_array_does_not_mark(
+        self, tmp_path: Path, set_cookie: str
+    ) -> None:
+        """A HAR's response.cookies often leaves httpOnly out when the header
+        carries it; absent there is unknown, so the header decides."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            response_headers={"Set-Cookie": set_cookie},
+        )
+        entry["response"]["cookies"] = [
+            {"name": "visit", "value": "lanterns"},
+            {"name": "lot", "value": "12"},
+        ]
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    def test_a_cookie_neither_the_array_nor_the_header_marks_httponly_is_judged_by_value(
+        self, tmp_path: Path
+    ) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            set_cookies=[
+                "lot=12; Path=/; Secure; SameSite=Lax",
+                "text=running%20shoes; Path=/",
+            ],
+        )
+        entry["response"]["cookies"] = [
+            {"name": "lot", "value": "12", "secure": True},
+            {"name": "text", "value": "running%20shoes"},
+        ]
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
     def test_a_cookie_set_with_httponly_stays_flagged_whatever_its_value(
         self, tmp_path: Path
     ) -> None:
