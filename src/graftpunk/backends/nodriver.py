@@ -162,7 +162,7 @@ _ABANDONED_HOLD_MESSAGE = (
 # The same, once that holder has returned and left the lock to the end of
 # Chrome a stop that gave up on it is running.
 _GIVEN_UP_END_MESSAGE = (
-    "NoDriverBackend.{method}() gave up waiting for a stop on another thread "
+    "NoDriverBackend.{method}() gave up waiting for a stop "
     "to finish ending Chrome for a {holder}() it gave up on (the event loop "
     "that call ran on {reason}): that end has not finished after {wait:g} s. "
     "The {holder}() has returned, and the backend's lock is released when "

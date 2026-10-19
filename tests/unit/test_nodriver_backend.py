@@ -6570,7 +6570,7 @@ class TestNoDriverBackendAbandonedLockHolder:
         assert 1.0 <= waited < 4.0
         if late == "start_async":
             assert isinstance(outcome, RuntimeError)
-            assert "for a stop on another thread to finish ending Chrome" in str(outcome)
+            assert "gave up waiting for a stop to finish ending Chrome" in str(outcome)
             assert "The stop_async() has returned" in str(outcome)
         else:
             assert outcome is None
