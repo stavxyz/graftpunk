@@ -1529,7 +1529,8 @@ cookie that only ever held words, and the token names the digest found.
 A cookie whose every non-empty value in the recording (in any request or
 response) reads as words holds no credential, so its name is left out of
 `flagged_names`: an invented fixture keeps such a name as a key or in prose.
-Words are a search term such as `running shoes`, `iPhone 15` or `café`, a number
+Words are a search term such as `running shoes`, `iPhone 15`, `café`,
+`salt & pepper` or `512gb ssd`, a number
 of at most 5 digits such as `lot=12`, or a date. An empty value beside another
 value is a cleared field and is ignored. A cookie stays flagged, whatever its
 values, when its name reads as a token name (`csrftoken`) or has a session part
@@ -1548,12 +1549,16 @@ again. A session cookie a response does set can still be left out when its
 name has no session part, the response did not set it with `HttpOnly`, and
 every value it held reads as words, such as a numeric id of 5 digits or fewer.
 
-A form-state cookie can stay flagged the other way: a single brand-cased or
-capitals term (`iPad`, `eBay`, `XL`) does not read as words, and neither does a
-cookie the server set with `HttpOnly`. When a plain-word cookie you expected to
-be left out is in `flagged_names` and an honest fixture fails on its name,
-record again searching only plain words and regenerate the sidecar, or rename
-the name in the fixture where its structure allows.
+A form-state cookie can stay flagged the other way. A search term typed alone
+in brand casing or capitals (`iPad`, `eBay`, `XL`, `LEGO`) does not read as
+words. Nor does a several-word term with a word cased with two capitals inside
+it or with a run of 4 or more capitals (`YouTube Premium`, `MacBook Air`,
+`PlayStation 5`, `LEGO set`); `iPad Pro`, `eBay deals` and `XL shirt` do read as
+words. A cookie the server set with `HttpOnly` stays flagged whatever its
+values. When a plain-word cookie you expected to be left out is in
+`flagged_names` and an honest fixture fails on its name, record again searching
+only plain words and regenerate the sidecar, or rename the name in the fixture
+where its structure allows.
 
 A body key that does not read as a field name, or that holds an id by the
 digest's rule, is dropped from `body_params`, and a cookie or token name that
