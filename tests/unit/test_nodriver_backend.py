@@ -5043,7 +5043,10 @@ class TestNoDriverBackendStartAsyncTakesTheLock:
 
         async def slow_start(**kwargs: Any) -> Any:
             launching.set()
-            await asyncio.sleep(0.4)
+            # Long enough for a loop that is not blocked to tick 10 times on
+            # a loaded machine; a loop blocked by the wait does not tick
+            # until the wait ends.
+            await asyncio.sleep(1.0)
             return await fake_chrome.start(**kwargs)
 
         monkeypatch.setattr(nodriver, "start", slow_start)
