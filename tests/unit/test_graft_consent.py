@@ -43,7 +43,8 @@ _GATE_SLOT = "<gate-command>"
 _SITE_RULES = [f"{_SITE_RUNNER} gp <site-name> --help", f"{_SITE_RUNNER} gp <site-name> login"]
 _LIVE_READ_ONLY = f"{_SITE_RUNNER} gp <site-name> <command>"
 # The two offered rules that are not gp: the skill's own read-only scripts, the
-# leak check and the HAR reader, which prints no value from a HAR. SKILL.md offers
+# leak check and the HAR reader, which prints no cookie, header, query, or body
+# value from a HAR. SKILL.md offers
 # them with the skill's directory in place of the variable.
 _LEAK_CHECK_RULE = "uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/fixture-leaks.py *"
 _HAR_FACTS_RULE = "uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py *"

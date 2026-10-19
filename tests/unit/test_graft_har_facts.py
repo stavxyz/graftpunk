@@ -1,6 +1,6 @@
 """The graft skill's har-facts script: it answers questions about a recording's HAR
-with names, attributes, shapes, and counts, and prints recorded text only when it
-passes the one allowlist gate, so no value from the HAR reaches its output."""
+with names, attributes, shapes, and counts, prints no cookie, header, query, or body
+value, and prints names only when they pass a heuristic gate."""
 
 from __future__ import annotations
 
@@ -76,6 +76,7 @@ _SECRETS = [
     "ACTPORT",
     "DATAURL",
     "PGgx",
+    "xqzkvbtrwamplhab",
     "dark",
     "12.5",
 ]
@@ -111,6 +112,8 @@ _SEARCH_PAGE = (
     '<form method="post" action="/search/40912873/results">'
     '<input type="hidden" name="csrfmiddlewaretoken" value="CSRF_SECRET_VALUE">'
     '<input name="search_type" value="parcel"><input name="startDate" value="2026-01-01">'
+    '<input type="hidden" name="xqzkvbtrwamplhab-TOTAL_FORMS" value="1">'
+    '<input name="xqzkvbtrwamplhab-0-name" value="x">'
     + "".join(f'<input type="checkbox" name="types1" value="t{n}">' for n in range(41))
     + "</form></body></html>"
 )
@@ -207,6 +210,7 @@ def _har(tmp_path: Path) -> Path:
                     _STRIPE: {"a": 1},
                     _UUID: 4,
                     _RESET: 3,
+                    "xqzkvbtrwamplhab-TOTAL_FORMS": 1,
                 }
             ),
         ),
@@ -315,7 +319,8 @@ def _har(tmp_path: Path) -> Path:
                 "mimeType": "application/x-www-form-urlencoded",
                 "text": "csrfmiddlewaretoken=CSRF_SECRET_VALUE&"
                 + "&".join(["search_type=parcel"] * 11)
-                + "&startDate=2026-01-01",
+                + "&startDate=2026-01-01&form-TOTAL_FORMS=1&form-0-book=7"
+                + "&xqzkvbtrwamplhab-0-name=x&xqzkvbtrwamplhab-TOTAL_FORMS=1",
             },
             content={"mimeType": "text/html", "text": _SEARCH_PAGE},
         ),
@@ -509,7 +514,7 @@ def test_a_json_response_gives_keys_and_types_and_counts_value_like_keys(tmp_pat
     assert lines[2] == "  response headers: Set-Cookie"
     assert lines[3] == "  sets cookies: sid"
     for expected in (
-        "    JSON object of 7 keys",
+        "    JSON object of 8 keys",
         "      orders: array of 1 item",
         "        [first item]: object of 4 keys",
         "          id: string (short)",
@@ -518,7 +523,7 @@ def test_a_json_response_gives_keys_and_types_and_counts_value_like_keys(tmp_pat
         "          note: null",
         "      page: number",
         "      auth_token: (name reads as a secret; not described)",
-        "      (4 keys that read as values, not shown)",
+        "      (5 keys that read as values, not shown)",
     ):
         assert expected in lines, "\n".join(lines)
 
@@ -677,8 +682,9 @@ def test_a_secret_looking_name_is_recognised(name: str, secret: bool) -> None:
     assert _load_script().looks_secret(name) is secret
 
 
-# The gate's measured rates: each kind of random value fails it at least 99.9% of
-# the time over 10,000 samples, and real field names pass.
+# The gate's measured rates: each kind of random value passes it at most the
+# number of times in _MAX_PASSES out of 10,000 (seed 277), 0 for a kind not listed;
+# letter-only tokens are the known weak spot. Real field names pass.
 _RNG_SEED = 277
 _B62 = string.ascii_letters + string.digits
 
@@ -761,7 +767,7 @@ def test_the_gate_fails_random_values(kind: str) -> None:
     rng = random.Random(_RNG_SEED)  # noqa: S311 - a fixed sample, not a secret
     make = _samples()[kind]
     passed = [value for value in (make(rng) for _ in range(10_000)) if gate(value)]
-    assert len(passed) <= _MAX_PASSES.get(kind, 10), passed[:10]
+    assert len(passed) <= _MAX_PASSES.get(kind, 0), passed[:10]
 
 
 @pytest.mark.parametrize(
@@ -815,8 +821,10 @@ def test_the_gate_fails_random_values(kind: str) -> None:
         "ctl00$MainContent$txtUserName",
         "ctl00_ContentPlaceHolder1_txtPassword",
         "form-TOTAL_FORMS",
-        "bvp-MAX_NUM_FORMS",
-        "bvp-0-book",
+        "form-MAX_NUM_FORMS",
+        "form-0-book",
+        "pwdConfirm",
+        "txtPwd",
         "form-12-title",
     ],
 )
@@ -847,6 +855,10 @@ def test_the_gate_passes_field_names(name: str) -> None:
         # Letter-only tokens of the length the old shortcut let through.
         "xqzkvbtrwamplh",
         "HFCENCSGAYRCXOII",
+        # A formset prefix is gated like the field after it.
+        "xqzkvbtrwamplhab-0-name",
+        "xqzkvbtrwamplhab-TOTAL_FORMS",
+        "bvp-0-book",
     ],
 )
 def test_the_gate_fails_values(value: str) -> None:
@@ -913,3 +925,18 @@ def test_a_symlinked_bodies_directory_is_not_followed(tmp_path: Path) -> None:
     (tmp_path / "bodies").symlink_to(outside, target_is_directory=True)
     lines = _lines("response", str(_one_entry_har(tmp_path, "bodies/page.html")), "/a")
     assert "    a body file outside the recording, not read" in lines
+
+
+def test_a_formset_prefix_that_reads_as_a_value_is_withheld(tmp_path: Path) -> None:
+    """A real formset prefix shows; a token in the prefix position is counted, in a
+    request body, an HTML form, and a JSON key alike."""
+    har = str(_har(tmp_path))
+    body = _lines("request", har, "/search/", "--method", "POST")
+    assert "    form-TOTAL_FORMS: string (short)" in body
+    assert "    form-0-book: string (short)" in body
+    assert "    (2 names that read as values, not shown)" in body
+    page = _lines("response", har, "/search/")
+    assert "      (name not shown) hidden, control 4 of the form" in page
+    assert "      (name not shown) text, control 5 of the form" in page
+    orders = _lines("response", har, "/api/orders")
+    assert "      (5 keys that read as values, not shown)" in orders

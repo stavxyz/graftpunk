@@ -7,7 +7,9 @@ Usage:
 
 A HAR holds the account's data and, from a recorded login, the password the user
 typed. The graft skill reads one through this script. What the script guarantees:
-it prints no cookie, header, query, or body value. Names and path segments are
+it prints no cookie, header, query, or body value, apart from four pieces that
+print as recorded after a shape check alone: the request method, a non-web URL
+scheme, a content type's subtype, and the host. Names and path segments are
 recorded text too, and those print only when they pass a heuristic allowlist
 gate, ``printable_name``, which withholds most value-shaped text but not all of
 it. A name passes when it is a fixed framework name (below), or at most 48
@@ -18,19 +20,20 @@ capitals only as a known acronym or in a name all in capitals, digits only as a
 run of at most 2 ending a word, and nothing graftpunk's ``holds_an_id`` reads as
 an id. The spelling pairs and rule, and ``holds_an_id``, are copied here (the
 script cannot import graftpunk) and held equal to graftpunk's by tests. A path
-segment must also hold no run of more than three capitals.
+segment must also hold no run of more than three capitals outside a
+listed acronym.
 
 The fixed framework names pass by exact name: standard, CDN, and bot-manager
 header names (``Upgrade-Insecure-Requests``, ``WWW-Authenticate``, ``cf-ray``,
 ``x-amz-cf-id``), framework cookie names (``.ASPXAUTH``, ``ASP.NET_SessionId``,
 ``__cf_bm``, ``cf_clearance``, ``_abck``, ``bm_sz``, ``_fbp``, ``_gcl_au``),
-ASP.NET WebForms page state (``__VIEWSTATE``, ``__EVENTVALIDATION``), Django
-formset management fields (``<prefix>-TOTAL_FORMS`` and the other three), and
-route segments (``graphql``, ``jsonrpc``, ``xmlrpc.php``, ``cgi-bin``, ``2fa``). A
-shape a framework fixes passes when its account-chosen piece passes the gate: a
-WebForms control (``ctl00$MainContent$txtUserName``, ``btnLogin``), a Django
-formset field (``<prefix>-<index>-<field>``, the index at most 2 digits), and a
-server page (``Login.aspx``, ``index.php``).
+ASP.NET WebForms page state (``__VIEWSTATE``, ``__EVENTVALIDATION``), and route
+segments (``graphql``, ``jsonrpc``, ``xmlrpc.php``, ``cgi-bin``, ``2fa``). A shape a
+framework fixes passes when its other pieces pass the gate: a WebForms control
+(``ctl00$MainContent$txtUserName``, ``btnLogin``, ``pwdConfirm``), a Django
+formset field (``<prefix>-<index>-<field>``, the index at most 2 digits) or
+management field (``<prefix>-TOTAL_FORMS`` and the other three), the prefix and
+the field both gated, and a server page (``Login.aspx``, ``index.php``).
 
 What fails the gate is replaced or counted:
 
@@ -55,8 +58,9 @@ What the gate lets through. A plain word that is also a value cannot be told
 from a field name: a username, a person's or place's name, a label, or a handle
 with a two-digit suffix, used as a JSON key or a path segment, prints (``alice``,
 ``Mapleton``, ``main-street``, ``alice84``). A letter-only random token passes
-when it happens to spell like a word. A host prints as recorded, so a
-per-account subdomain prints. Measured on 10,000 samples per row (seed 277,
+when it happens to spell like a word. The method, a non-web scheme, a content
+type's subtype, and the host print as recorded, so a per-account subdomain
+prints. Measured on 10,000 samples per row (seed 277,
 2026-10-19), the share of random values that pass: none of base62 at 12, 16, or
 32 characters, hex at 16 or 40, base64url at 16, 22, or 43, base36 at 32, JWT
 pieces, emails, prefixed ids, or UUIDs; 0.17% of base62 at 8, 0.38% of base64url
@@ -261,7 +265,7 @@ def _part_reads_as_words(part: str) -> bool:
     if _WEBFORMS_CONTAINER_RE.fullmatch(part):
         return True
     hungarian = _HUNGARIAN_RE.fullmatch(part)
-    if hungarian and _plain_part(hungarian.group(2)):
+    if hungarian and (hungarian.group(2) == "Pwd" or _plain_part(hungarian.group(2))):
         return True
     return _plain_part(part)
 
@@ -334,10 +338,10 @@ _FRAMEWORK_NAMES = frozenset(
 # name that itself passes the gate (txtUserName, btnLogin, chkRememberMe).
 _WEBFORMS_CONTAINER_RE = re.compile(r"ctl\d{2}")
 _HUNGARIAN_RE = re.compile(
-    r"(txt|btn|chk|ddl|lbl|hdn|rdo|rbl|cbl|lnk|img|pnl|cbo|cmb|lst|gv|rpt|hl)([A-Z]\w*)"
+    r"(txt|btn|chk|ddl|lbl|hdn|pwd|rdo|rbl|cbl|lnk|img|pnl|cbo|cmb|lst|gv|rpt|hl)([A-Z]\w*)"
 )
 # Django formsets: <prefix>-<index>-<field> and the four management fields. The
-# prefix and the suffixes are code's; the field still goes through the gate.
+# suffixes are code's; the prefix and the field still go through the gate.
 _FORMSET_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z_]{0,23})-(\d{1,2})-(.+)")
 _FORMSET_MANAGEMENT_RE = re.compile(
     r"[A-Za-z][A-Za-z_]{0,23}-(?:TOTAL_FORMS|INITIAL_FORMS|MIN_NUM_FORMS|MAX_NUM_FORMS)"
@@ -348,11 +352,13 @@ def printable_name(text: str) -> bool:
     """The one output gate: whether recorded *text* may be printed as a name."""
     if not text or len(text) > _MAX_NAME_LEN or not _NAME_CHARS_RE.fullmatch(text):
         return False
-    if text.lower() in _FRAMEWORK_NAMES or _FORMSET_MANAGEMENT_RE.fullmatch(text):
+    if text.lower() in _FRAMEWORK_NAMES:
         return True
+    if _FORMSET_MANAGEMENT_RE.fullmatch(text):
+        return printable_name(text.rpartition("-")[0])
     formset = _FORMSET_FIELD_RE.fullmatch(text)
     if formset:
-        return printable_name(formset.group(3))
+        return printable_name(formset.group(1)) and printable_name(formset.group(3))
     parts = [part for part in _NAME_SPLIT_RE.split(text) if part]
     if not parts or len(parts) > _MAX_PARTS or not any(_has_letter(part) for part in parts):
         return False

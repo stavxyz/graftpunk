@@ -45,7 +45,9 @@ header, query, or body value; answer from its output:
   has shown the array lacking `httpOnly` where the header carried it (cause
   unverified), so trust the header's line. It then names the cookies the
   recording only sends. With `--name '<cookie>'` it prints that one cookie's
-  block, for a name you already hold; leave it off to list every cookie.
+  block, for a name you already hold; leave it off to list every cookie. It
+  answers yes or no for an exact name, so a guess at a name that carries an
+  account value is confirmed by the answer: ask only for names the task needs.
 - `request` with a piece of the URL's path in place of `<url-part>` (as
   recorded, or as the templated path the script prints): for each request whose
   own URL holds it, the method, the templated URL with its query keys, the
@@ -65,7 +67,8 @@ scheme alone, an unnamed blob of N bytes, a title's length class) or a count
 digits or mixed case, but a plain word used as a key or path segment (a
 username, a person's or place's name, a label, a handle like `alice84`), a
 letter-only token that spells like a word (10.84% of 9-letter random tokens,
-5.20% at 12), and the host can still print and be the account's own: never copy
+5.20% at 12), and the method, a non-web scheme, a content type's subtype, and
+the host, which print as recorded, can still be the account's own: never copy
 one into code without the user's word. A field whose name reads as a secret is
 listed by name alone. Exit 1 means nothing matched; exit 2 means the HAR is
 missing, is not a HAR, or holds an entry the script could not read.
