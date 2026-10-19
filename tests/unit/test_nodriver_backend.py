@@ -6783,3 +6783,68 @@ class TestNoDriverBackendAbandonedLockHolder:
             assert ender_outcome == [None]
         _within(10, backend.stop)
         assert backend._lock.locked() is False
+
+    @pytest.mark.parametrize("without", ["the_loops_executor", "any_new_thread"])
+    def test_a_give_up_stop_async_ends_chrome_without_a_worker_to_hand_it_to(
+        self,
+        without: str,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The give-up stop_async()'s loop has shut its default executor down
+        (as an ``asyncio.run()`` teardown or an interpreter at exit does), and
+        possibly no new thread can start either. The end runs on a thread of
+        its own, or else on the loop itself, so Chrome is ended and the lock
+        is not left held for good."""
+        from graftpunk.backends import nodriver as nodriver_module
+
+        if without == "any_new_thread":
+
+            def no_thread(target: Callable[[], None]) -> None:
+                raise RuntimeError("can't create new thread at interpreter shutdown")
+
+            monkeypatch.setattr(nodriver_module, "_start_daemon_thread", no_thread)
+        profile = temp_profiles / f"uc_no_worker_{without}"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        entered = threading.Event()
+        gate = threading.Event()
+        _within(10, backend.start)
+        real_stop = backend._stop_async
+
+        async def gated_stop() -> None:
+            entered.set()
+            await _until(gate)
+            await real_stop()
+
+        async def stop_without_an_executor() -> None:
+            await asyncio.get_running_loop().shutdown_default_executor()
+            await backend.stop_async()
+
+        with _chrome_like_child(profile) as child:
+            assert backend._browser is not None
+            self._give_chrome(backend._browser, child, profile)
+            monkeypatch.setattr(backend, "_stop_async", gated_stop)
+            stranded = _Stranded(backend, backend.stop_async, "stop_async", entered.is_set)
+            try:
+                _within(10, lambda: asyncio.run(stop_without_an_executor()))
+                exited = child.poll() is not None
+                assert backend._abandoned is not None
+                ended = backend._abandoned.ended.is_set()
+                gate.set()
+                stranded.finish(resume=True)
+                lock_free_after_the_holder = not backend._lock.locked()
+                monkeypatch.setattr(backend, "_stop_async", real_stop)
+                _within(10, backend.start)
+                running = backend.is_running
+            finally:
+                gate.set()
+                stranded.finish(resume=True)
+
+        assert exited
+        assert ended is True
+        assert lock_free_after_the_holder is True
+        assert running is True
+        _within(10, backend.stop)
+        assert backend._lock.locked() is False

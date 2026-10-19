@@ -49,7 +49,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Coroutine
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Self
 
@@ -657,14 +657,58 @@ def _end_browsers_without_loop(browsers: list[Any]) -> None:
         _end_browser_without_loop(browser)
 
 
-def _start_off_loop(work: Callable[[], None]) -> "asyncio.Future[None]":
-    """Start *work* on the running loop's default executor now; a future for its outcome.
+def _start_daemon_thread(target: Callable[[], None]) -> None:
+    """Start *target* on a daemon thread of its own."""
+    threading.Thread(target=target, name="graftpunk-nodriver-end", daemon=True).start()
 
-    It is handed to the executor before this returns, not in a later
-    iteration of the loop, so it runs even if the loop stops in this one.
+
+def _start_off_loop(work: Callable[[], None]) -> "asyncio.Future[None]":
+    """Start *work* off the running loop now, and return a future for its outcome.
+
+    It is handed to a thread before this returns, not in a later iteration
+    of the loop, so it runs even if the loop stops in this one. The loop's
+    default executor runs it; when that cannot (shut down, or the
+    interpreter is finalising), a thread of its own does; and when no
+    thread can be started either, it runs here, blocking the loop.
     """
     loop = asyncio.get_running_loop()
-    return loop.run_in_executor(None, functools.partial(contextvars.copy_context().run, work))
+    call = functools.partial(contextvars.copy_context().run, work)
+    try:
+        return loop.run_in_executor(None, call)
+    except RuntimeError:
+        return _start_on_own_thread(loop, call)
+
+
+def _start_on_own_thread(
+    loop: asyncio.AbstractEventLoop, call: Callable[[], None]
+) -> "asyncio.Future[None]":
+    """``_start_off_loop()`` without the loop's executor: a thread of its own, or else here."""
+    future: asyncio.Future[None] = loop.create_future()
+
+    def settle(error: BaseException | None) -> None:
+        if future.done():
+            return
+        if error is None:
+            future.set_result(None)
+        else:
+            future.set_exception(error)
+
+    def run() -> None:
+        error: BaseException | None = None
+        try:
+            call()
+        except BaseException as exc:  # noqa: BLE001 - handed to the awaiting coroutine
+            error = exc
+        # A closed loop raises RuntimeError: nothing awaits the outcome then.
+        with suppress(RuntimeError):
+            loop.call_soon_threadsafe(settle, error)
+
+    try:
+        _start_daemon_thread(run)
+    except RuntimeError:
+        call()
+        future.set_result(None)
+    return future
 
 
 async def _finish_on_worker_thread(work: Callable[[], None]) -> None:
