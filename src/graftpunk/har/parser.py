@@ -9,6 +9,7 @@ HAR format specification: http://www.softwareishard.com/blog/har-12-spec/
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -146,6 +147,9 @@ def _parse_cookies(cookies_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
+
+
 def _set_cookie_lines(headers_list: list[dict[str, str]]) -> list[tuple[str, bool]]:
     """``(name, http_only)`` for every cookie a ``Set-Cookie`` header in
     *headers_list* sets, in order: the one parse both ``set_cookie_names`` and
@@ -155,7 +159,8 @@ def _set_cookie_lines(headers_list: list[dict[str, str]]) -> list[tuple[str, boo
     dict collapses duplicate header names to the last value and a response can
     carry more than one ``Set-Cookie`` header. Each line of a header value is
     one cookie, since Chromium joins several ``Set-Cookie`` headers into one
-    value with newlines. A cookie's name is before the first ``=`` of the part
+    value with newlines; a line ends at ``\\r\\n``, a bare ``\\r`` or ``\\n``,
+    and an empty line sets nothing. A cookie's name is before the first ``=`` of the part
     before the first ``;``; a line whose part holds no ``=`` sets no cookie. Its
     attributes are the ``;``-separated parts after it, matched by attribute name
     without regard to case. Values are never returned.
@@ -164,7 +169,7 @@ def _set_cookie_lines(headers_list: list[dict[str, str]]) -> list[tuple[str, boo
     for header in headers_list:
         if header.get("name", "").lower() != "set-cookie":
             continue
-        for line in header.get("value", "").split("\n"):
+        for line in _LINE_BREAK_RE.split(header.get("value", "")):
             pair, *attributes = line.split(";")
             if "=" not in pair:
                 continue
