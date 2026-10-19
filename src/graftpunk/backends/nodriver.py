@@ -38,6 +38,8 @@ Example:
 
 import asyncio
 import concurrent.futures
+import contextvars
+import functools
 import io
 import math
 import os
@@ -655,15 +657,27 @@ def _end_browsers_without_loop(browsers: list[Any]) -> None:
         _end_browser_without_loop(browser)
 
 
+def _start_off_loop(work: Callable[[], None]) -> "asyncio.Future[None]":
+    """Start *work* on the running loop's default executor now; a future for its outcome.
+
+    It is handed to the executor before this returns, not in a later
+    iteration of the loop, so it runs even if the loop stops in this one.
+    """
+    loop = asyncio.get_running_loop()
+    return loop.run_in_executor(None, functools.partial(contextvars.copy_context().run, work))
+
+
 async def _finish_on_worker_thread(work: Callable[[], None]) -> None:
     """Run *work* on a worker thread and wait for it, even through a cancellation.
 
     For ending Chrome from a coroutine: the end polls and sleeps for up to a
     few seconds, which would block the event loop, and abandoning it halfway
     would leave Chrome running or its profile behind. A cancellation that
-    arrives meanwhile is raised once *work* has finished.
+    arrives meanwhile is raised once *work* has finished. The work starts
+    before the first await (``_start_off_loop()``), so a loop that stops in
+    this iteration does not keep it from running.
     """
-    task = asyncio.ensure_future(asyncio.to_thread(work))
+    task = _start_off_loop(work)
     cancelled = False
     while not task.done():
         try:

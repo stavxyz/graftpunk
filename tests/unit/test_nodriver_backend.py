@@ -6678,3 +6678,108 @@ class TestNoDriverBackendAbandonedLockHolder:
         assert "nodriver_loop_thread_still_running" not in events
         assert self._given_up(captured_logs) == [("stop_async", "stop_async")]
         assert backend._lock.locked() is False
+
+    @pytest.mark.parametrize("then", ["close_its_loop", "run_its_loop_again"])
+    def test_a_give_up_stop_async_whose_loop_stops_as_it_gives_up_still_ends_chrome(
+        self,
+        then: str,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The stop_async() that gives up and claims the end of Chrome has its
+        loop stopped in that same iteration, and the loop is then closed (or
+        run again only later). The end was handed to a worker before the
+        iteration ended, so Chrome is ended and, once the holder returns,
+        the lock is free and a start launches."""
+        profile = temp_profiles / f"uc_stops_as_it_gives_up_{then}"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        entered = threading.Event()
+        gate = threading.Event()
+        _within(10, backend.start)
+        real_stop = backend._stop_async
+
+        async def gated_stop() -> None:
+            entered.set()
+            await _until(gate)
+            await real_stop()
+
+        ender_threads: list[threading.Thread] = []
+        stopped_as_it_gave_up = threading.Event()
+        real_give_up = backend._give_up_on
+
+        def give_up_then_stop_the_loop(holding: Any, reason: str, *, ends: bool) -> Any:
+            given_up = real_give_up(holding, reason, ends=ends)
+            if given_up is not None and given_up[1] and threading.current_thread() in ender_threads:
+                asyncio.get_running_loop().stop()
+                stopped_as_it_gave_up.set()
+            return given_up
+
+        go_on = threading.Event()
+        ender_outcome: list[Any] = []
+
+        def run_ender() -> None:
+            loop = asyncio.new_event_loop()
+            task = loop.create_task(backend.stop_async())
+            try:
+                # Returns at the end of the iteration in which the stop gave up.
+                loop.run_forever()
+                go_on.wait(10)
+                if then == "close_its_loop":
+                    task._log_destroy_pending = False  # type: ignore[attr-defined]
+                    loop.close()
+                    task.get_coro().close()  # type: ignore[union-attr]
+                    return
+                ender_outcome.extend(
+                    loop.run_until_complete(
+                        asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 10)
+                    )
+                )
+            finally:
+                if not loop.is_closed():
+                    loop.close()
+
+        with _chrome_like_child(profile) as child:
+            assert backend._browser is not None
+            self._give_chrome(backend._browser, child, profile)
+            monkeypatch.setattr(backend, "_stop_async", gated_stop)
+            monkeypatch.setattr(backend, "_give_up_on", give_up_then_stop_the_loop)
+            stranded = _Stranded(backend, backend.stop_async, "stop_async", entered.is_set)
+            ender = threading.Thread(target=run_ender, daemon=True)
+            ender_threads.append(ender)
+            try:
+                ender.start()
+                assert stopped_as_it_gave_up.wait(10)
+                for _ in range(500):
+                    abandoned = backend._abandoned
+                    if child.poll() is not None and abandoned and abandoned.ended.is_set():
+                        break
+                    time.sleep(0.01)
+                exited_with_its_loop_stopped = child.poll() is not None
+                assert backend._abandoned is not None
+                ended = backend._abandoned.ended.is_set()
+                if then == "close_its_loop":
+                    go_on.set()
+                    ender.join(10)
+                gate.set()
+                stranded.finish(resume=True)
+                lock_free_after_the_holder = not backend._lock.locked()
+                monkeypatch.setattr(backend, "_stop_async", real_stop)
+                _within(10, backend.start)
+                running = backend.is_running
+            finally:
+                gate.set()
+                go_on.set()
+                ender.join(10)
+                stranded.finish(resume=True)
+
+        assert not ender.is_alive()
+        assert exited_with_its_loop_stopped
+        assert ended is True
+        assert lock_free_after_the_holder is True
+        assert running is True
+        if then == "run_its_loop_again":
+            assert ender_outcome == [None]
+        _within(10, backend.stop)
+        assert backend._lock.locked() is False
