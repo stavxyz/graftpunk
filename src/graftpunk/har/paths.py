@@ -406,11 +406,14 @@ def reads_as_words(value: str) -> bool:
     if len(words) > 1 or any(ch.isalpha() and not ch.isascii() for ch in text):
         # Several words or a non-ASCII letter mark typed text (``iPhone 15``,
         # ``café``), but plus-decoding also splits a standard-base64 id at each
-        # ``+``, so every word must look typed on its own, and one must hold a
-        # letter, so pieces of punctuation and digits alone are not words.
+        # ``+``, so every word must look typed on its own. A word of punctuation
+        # alone counts as typed (``salt & pepper``) only beside a letter, so
+        # digit pieces split by punctuation (``12+/+34``) are not words, while
+        # numbers alone (``10 19 2026``, ``12 34``) are.
+        has_punctuation_word = any(not any(ch.isalnum() for ch in word) for word in words)
         return (
             not any(holds_an_id(word) for word in words)
-            and any(ch.isalpha() for ch in text)
+            and (not has_punctuation_word or any(ch.isalpha() for ch in text))
             and all(_typed_word(word) for word in words)
         )
     return all(_plain_value_part(part) for part in parts)
