@@ -4303,6 +4303,25 @@ class TestFlaggedNamesOf:
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
 
+    def test_a_cookie_only_on_a_later_line_of_a_joined_set_cookie_header_is_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        """Chromium joins several Set-Cookie headers with newlines. A cookie on the
+        second line that response.cookies leaves out has no recorded value, so it
+        is flagged; the first line's word-valued cookie is judged by value."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            response_headers={
+                "Set-Cookie": "lot=12; Path=/\nshopper=Zq9XkLmPwR4t7Bv2Hn8Ks3Jd; Path=/"
+            },
+        )
+        entry["response"]["cookies"] = [{"name": "lot", "value": "12"}]
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert "shopper" in result.cookies
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("shopper",)
+
     def test_a_cookie_neither_the_array_nor_the_header_marks_httponly_is_judged_by_value(
         self, tmp_path: Path
     ) -> None:

@@ -146,38 +146,21 @@ def _parse_cookies(cookies_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _parse_set_cookie_names(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
-    """The NAME of every ``Set-Cookie`` header in *headers_list*, in order, deduplicated.
+def _set_cookie_lines(headers_list: list[dict[str, str]]) -> list[tuple[str, bool]]:
+    """``(name, http_only)`` for every cookie a ``Set-Cookie`` header in
+    *headers_list* sets, in order: the one parse both ``set_cookie_names`` and
+    ``set_cookie_http_only`` read, so they cannot drift.
 
-    Values are never stored. Reads the raw headers list (not the
-    ``_parse_headers`` dict), because that dict collapses duplicate header
-    names to the last value and a response can carry more than one
-    ``Set-Cookie`` header.
+    Reads the raw headers list (not the ``_parse_headers`` dict), because that
+    dict collapses duplicate header names to the last value and a response can
+    carry more than one ``Set-Cookie`` header. Each line of a header value is
+    one cookie, since Chromium joins several ``Set-Cookie`` headers into one
+    value with newlines. A cookie's name is before the first ``=`` of the part
+    before the first ``;``; a line whose part holds no ``=`` sets no cookie. Its
+    attributes are the ``;``-separated parts after it, matched by attribute name
+    without regard to case. Values are never returned.
     """
-    names: list[str] = []
-    for header in headers_list:
-        if header.get("name", "").lower() != "set-cookie":
-            continue
-        value = header.get("value", "")
-        if "=" not in value:
-            continue
-        name = value.split("=", 1)[0].strip()
-        if name and name not in names:
-            names.append(name)
-    return tuple(names)
-
-
-def _parse_set_cookie_http_only(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
-    """The NAME of every cookie a ``Set-Cookie`` header in *headers_list* sets with
-    the ``HttpOnly`` attribute, in order, deduplicated.
-
-    Each line of a header value is one cookie (Chromium joins several
-    ``Set-Cookie`` headers into one value with newlines): its name is before the
-    first ``=`` of the part before the first ``;``, and its attributes are the
-    ``;``-separated parts after it, matched by attribute name without regard to
-    case. Values are never stored.
-    """
-    names: list[str] = []
+    cookies: list[tuple[str, bool]] = []
     for header in headers_list:
         if header.get("name", "").lower() != "set-cookie":
             continue
@@ -186,12 +169,29 @@ def _parse_set_cookie_http_only(headers_list: list[dict[str, str]]) -> tuple[str
             if "=" not in pair:
                 continue
             name = pair.split("=", 1)[0].strip()
+            if not name:
+                continue
             http_only = any(
                 attribute.split("=", 1)[0].strip().lower() == "httponly" for attribute in attributes
             )
-            if name and http_only and name not in names:
-                names.append(name)
-    return tuple(names)
+            cookies.append((name, http_only))
+    return cookies
+
+
+def _parse_set_cookie_names(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
+    """The NAME of every cookie a ``Set-Cookie`` header in *headers_list* sets,
+    every line of a newline-joined value included (:func:`_set_cookie_lines`),
+    in order, deduplicated."""
+    return tuple(dict.fromkeys(name for name, _http_only in _set_cookie_lines(headers_list)))
+
+
+def _parse_set_cookie_http_only(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
+    """The NAME of every cookie a ``Set-Cookie`` header in *headers_list* sets with
+    the ``HttpOnly`` attribute (:func:`_set_cookie_lines`), in order,
+    deduplicated."""
+    return tuple(
+        dict.fromkeys(name for name, http_only in _set_cookie_lines(headers_list) if http_only)
+    )
 
 
 _TEXT_CONTENT_KEYWORDS = ("json", "html", "text", "xml", "javascript", "css")

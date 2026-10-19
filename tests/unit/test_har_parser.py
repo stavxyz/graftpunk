@@ -290,6 +290,26 @@ class TestHARResponse:
         )
         assert response.set_cookie_names == ("session_id", "csrf_token")
 
+    def test_every_line_of_a_newline_joined_set_cookie_value_is_a_cookie(self) -> None:
+        """Chromium joins several Set-Cookie headers into one value with newlines;
+        both name fields read every line, with one parse."""
+        response = _parse_response(
+            {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [
+                    {
+                        "name": "set-cookie",
+                        "value": "lot=12; Path=/\nmyshop_session=Zq9Xk; HttpOnly\nnot a cookie",
+                    },
+                    {"name": "Set-Cookie", "value": "csrftoken=abc; path=/; httponly=1"},
+                ],
+                "cookies": [],
+            }
+        )
+        assert response.set_cookie_names == ("lot", "myshop_session", "csrftoken")
+        assert response.set_cookie_http_only == ("myshop_session", "csrftoken")
+
     def test_no_set_cookie_headers_is_empty(self) -> None:
         """A response with no Set-Cookie header has an empty tuple, not None."""
         response = _parse_response(
