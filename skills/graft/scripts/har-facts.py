@@ -33,7 +33,8 @@ framework fixes passes when its other pieces pass the gate: a WebForms control
 (``ctl00$MainContent$txtUserName``, ``btnLogin``, ``pwdConfirm``), a Django
 formset field (``<prefix>-<index>-<field>``, the index at most 2 digits) or
 management field (``<prefix>-TOTAL_FORMS`` and the other three), the prefix and
-the field both gated, and a server page (``Login.aspx``, ``index.php``).
+the field gated and the prefix gated unless it is 1 to 4 lower-case letters
+(``bvp``), and a server page (``Login.aspx``, ``index.php``).
 
 What fails the gate is replaced or counted:
 
@@ -341,11 +342,20 @@ _HUNGARIAN_RE = re.compile(
     r"(txt|btn|chk|ddl|lbl|hdn|pwd|rdo|rbl|cbl|lnk|img|pnl|cbo|cmb|lst|gv|rpt|hl)([A-Z]\w*)"
 )
 # Django formsets: <prefix>-<index>-<field> and the four management fields. The
-# suffixes are code's; the prefix and the field still go through the gate.
+# suffixes are code's; the field goes through the gate, and so does the prefix
+# unless it is 1 to 4 lower-case letters (bvp): formset prefixes are short by
+# convention, and 4 random letters carry under 19 bits, too few for a token.
 _FORMSET_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z_]{0,23})-(\d{1,2})-(.+)")
 _FORMSET_MANAGEMENT_RE = re.compile(
     r"[A-Za-z][A-Za-z_]{0,23}-(?:TOTAL_FORMS|INITIAL_FORMS|MIN_NUM_FORMS|MAX_NUM_FORMS)"
 )
+
+
+_SHORT_PREFIX_RE = re.compile(r"[a-z]{1,4}")
+
+
+def _formset_prefix(prefix: str) -> bool:
+    return bool(_SHORT_PREFIX_RE.fullmatch(prefix)) or printable_name(prefix)
 
 
 def printable_name(text: str) -> bool:
@@ -355,10 +365,10 @@ def printable_name(text: str) -> bool:
     if text.lower() in _FRAMEWORK_NAMES:
         return True
     if _FORMSET_MANAGEMENT_RE.fullmatch(text):
-        return printable_name(text.rpartition("-")[0])
+        return _formset_prefix(text.rpartition("-")[0])
     formset = _FORMSET_FIELD_RE.fullmatch(text)
     if formset:
-        return printable_name(formset.group(1)) and printable_name(formset.group(3))
+        return _formset_prefix(formset.group(1)) and printable_name(formset.group(3))
     parts = [part for part in _NAME_SPLIT_RE.split(text) if part]
     if not parts or len(parts) > _MAX_PARTS or not any(_has_letter(part) for part in parts):
         return False

@@ -824,6 +824,8 @@ def test_the_gate_fails_random_values(kind: str) -> None:
         "form-MAX_NUM_FORMS",
         "form-0-book",
         "pwdConfirm",
+        "bvp-0-book",
+        "bvp-TOTAL_FORMS",
         "txtPwd",
         "form-12-title",
     ],
@@ -858,7 +860,6 @@ def test_the_gate_passes_field_names(name: str) -> None:
         # A formset prefix is gated like the field after it.
         "xqzkvbtrwamplhab-0-name",
         "xqzkvbtrwamplhab-TOTAL_FORMS",
-        "bvp-0-book",
     ],
 )
 def test_the_gate_fails_values(value: str) -> None:
