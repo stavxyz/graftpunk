@@ -1162,8 +1162,8 @@ class TestPlainWordCookies:
             "https://myshop.example.com/api/search?lot=12",
             body=json.dumps(
                 {
-                    "query": {"subdivision": "Oak Hills", "block": "4", "lot": "12"},
-                    "results": [{"subdivision": "Oak Hills", "block": "4", "lot": "12"}],
+                    "query": {"subdivision": "Area One", "block": "4", "lot": "12"},
+                    "results": [{"subdivision": "Area One", "block": "4", "lot": "12"}],
                 }
             ),
         )
@@ -1222,7 +1222,7 @@ class TestPlainWordCookies:
             "</form></body></html>"
         )
         api = tree / "get_api_search.json"
-        row = {"subdivision": "Maple Run", "block": "B", "lot": "7"}
+        row = {"subdivision": "Area Two", "block": "B", "lot": "7"}
         api.write_text(json.dumps({"query": row, "results": [row], "text": "garden hose"}))
         # gp's HTML sidecar says text/html, and the bodies hold the plain words as
         # keys, attribute values and prose.
@@ -1259,7 +1259,7 @@ class TestPlainWordCookies:
         search = _entry(
             "GET",
             "https://myshop.example.com/api/search?lot=12",
-            body=json.dumps({"results": [{"subdivision": "Oak Hills", "block": "4", "lot": "12"}]}),
+            body=json.dumps({"results": [{"subdivision": "Area One", "block": "4", "lot": "12"}]}),
         )
         form_flags = {"secure": True, "httpOnly": True} if form_state_http_only else {}
         search["response"]["cookies"] = [
@@ -1336,10 +1336,10 @@ class TestPlainWordCookies:
             "text": "running%20shoes",
             "lot": "12",
             "block": "4",
-            "subdivision": "Oak%20Hills",
+            "subdivision": "Area%20One",
             "since": "2026-10-01",
             "until": "2026-10-19",
-            "county": "Travis",
+            "region": "north",
             "sort": "price",
             "order": "asc",
             "page": "2",

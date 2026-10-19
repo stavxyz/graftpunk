@@ -1570,7 +1570,7 @@ not read as words. The rule `graftpunk.har.paths.reads_as_words` applies is:
   `/`, `.`, `_` and other punctuation, is a number, a version (`v2`), or a word
   of at most 15 letters, all lowercase, all capitals or capitalised, spelled with
   letter pairs English words use, optionally followed by 1 or 2 digits. So
-  `shoes`, `USD`, `Austin`, `shoes2`, `en-US`, `t-shirt`, `USB-C` and a date
+  `shoes`, `USD`, `Monday`, `shoes2`, `en-US`, `t-shirt`, `USB-C` and a date
   such as `2026-10-19` read as words, and `iPad`, `iPhone`, `eBay`, `NASA`,
   `XL`, `LEGO`, `512gb`, `24ct` and `50lbs` typed alone do not (`XL` fails on
   its `xl` pair, `NASA` on its run of 4 capitals, `512gb` because a quantity

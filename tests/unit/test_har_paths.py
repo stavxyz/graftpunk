@@ -571,7 +571,7 @@ class TestReadsAsWords:
             "10%2F01%2F2026",
             "en-US",
             "USD",
-            "Austin",
+            "Monday",
             "page2",
             "transportations",
             "café",

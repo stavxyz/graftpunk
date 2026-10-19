@@ -380,7 +380,7 @@ def reads_as_words(value: str) -> bool:
       (:func:`_typed_word`: ``iPhone 15``, ``4K TV``, ``café``), or
     - every run of letters and digits in it is ASCII and is a number, a version
       (``v2``), or a word of at most 15 letters in one case shape (``shoes``,
-      ``USD``, ``Austin``) spelled with the consonant pairs English uses,
+      ``USD``, ``Monday``) spelled with the consonant pairs English uses,
       optionally followed by a digit run of at most 2.
 
     ``running shoes``, ``12``, ``2026-10-01``, ``10/01/2026``, and ``en-US`` read
