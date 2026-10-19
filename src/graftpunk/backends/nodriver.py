@@ -49,7 +49,7 @@ import uuid
 from collections.abc import Callable, Coroutine
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, NamedTuple, Self
 
 from graftpunk._distribution import install_command
 from graftpunk.backends.base import Cookie
@@ -123,33 +123,46 @@ _IN_OWN_LOOP_MESSAGE = (
 )
 
 # A start_async() or stop_async() on the calling thread holds the backend's
-# lock. It may be paused at an await or suspended on a loop that will not
-# run again, so there is nothing a start can wait for.
+# lock, on an event loop other than the running one (or there is none): it
+# may be suspended on a loop that will not run again, so there is nothing a
+# start can wait for.
 _HELD_ON_THIS_THREAD_MESSAGE = (
     "NoDriverBackend.{method}() was called while a {holder}() on this thread "
     "is still {doing} the backend; it cannot start until that {holder}() "
     "has returned."
 )
 
-# How long a call waits for the backend's lock while a start_async() or
-# stop_async() holds it, before it gives up on that holder. Those two hold
-# the lock across awaits, so a task abandoned on a loop that stopped and
-# never runs again keeps it for good. A working holder releases it well
-# within this: a stop_async() holds it for at most about 14 s (Chrome's end,
-# _REAP_TERM_TIMEOUT_S plus _REAP_KILL_TIMEOUT_S, twice when a cancellation
-# restarts it without the loop, plus the private loop's join,
-# _LOOP_JOIN_TIMEOUT_S), and a start_async() for about 35 s (the orphan
-# sweep, then three connect attempts with their back-off and the end of each
-# failed one). A synchronous start() or stop() holds the lock on a thread
-# that is running, so a wait for one has no limit, as before.
+# How long the event loop of a start_async() or stop_async() holding the
+# backend's lock may go without running before a call waiting for the lock
+# gives up on it. Those two hold the lock across awaits, so a task left on a
+# loop that stopped and never runs again keeps it for good. Elapsed time
+# alone cannot tell that holder from a slow one, so the wait watches the
+# holder's loop instead: while it runs, the holder can finish and is waited
+# for however long it takes; once it is closed, the holder cannot, and is
+# given up on at once. A loop that has stopped but is not closed (a
+# hand-managed loop between run_until_complete() calls) may run again, so
+# it gets this long. A synchronous start() or stop() holds the lock on a
+# thread that is running, so a wait for one has no limit, as before.
 _ABANDONED_HOLD_S: float = 60.0
-_ASYNC_HOLDERS = frozenset({"start_async", "stop_async"})
+
+# How long a stop that gives up on a hold another call already gave up on
+# waits for that call's end of Chrome: Chrome's exit, up to
+# _REAP_TERM_TIMEOUT_S plus _REAP_KILL_TIMEOUT_S, the profile's removal,
+# and the private loop's join, up to _LOOP_JOIN_TIMEOUT_S, with room to spare.
+_GIVEN_UP_END_WAIT_S: float = 20.0
 
 _ABANDONED_HOLD_MESSAGE = (
-    "NoDriverBackend.{method}() gave up after waiting {waited:g} s for a "
-    "{holder}() on another thread that still holds the backend's lock; that "
-    "{holder}() is not finishing, as happens when its task is left on an "
-    "event loop that stopped. This backend cannot start again until it returns."
+    "NoDriverBackend.{method}() gave up waiting for a {holder}() on another "
+    "thread that holds the backend's lock: the event loop it runs on {reason}, "
+    "so it cannot finish. This backend cannot start again until it returns."
+)
+
+# A start_async() whose event loop ran again after a call on another thread
+# gave up on it and stopped the backend.
+_RESUMED_AFTER_GIVE_UP_MESSAGE = (
+    "NoDriverBackend.start_async() resumed after a call on another thread gave "
+    "up waiting for it and stopped the backend; whatever this start launched "
+    "was ended, and the backend is stopped."
 )
 
 
@@ -652,40 +665,97 @@ async def _finish_on_worker_thread(work: Callable[[], None]) -> None:
     task.result()
 
 
+class _Hold(NamedTuple):
+    """One hold of a backend's lock: its number, thread, method, and event loop.
+
+    *loop* is the running loop of a ``start_async()`` or ``stop_async()``,
+    and None for a synchronous ``start()`` or ``stop()``. The thread object
+    rather than its ident: a holder abandoned along with its thread leaves
+    an ident that a new thread can be given.
+    """
+
+    number: int
+    owner: threading.Thread
+    method: str
+    loop: asyncio.AbstractEventLoop | None
+
+
+class _Abandonment:
+    """A hold that waiters gave up on, and the end of Chrome the first of them runs.
+
+    A stop that gives up on the hold after the first one waits for
+    *ended* (``_GIVEN_UP_END_WAIT_S`` at most), so it does not return while
+    the first is still ending Chrome.
+    """
+
+    def __init__(self, hold: int, holder: str, reason: str) -> None:
+        self.hold = hold
+        self.holder = holder
+        self.reason = reason
+        self.ended = threading.Event()
+
+
 class _LockWait:
     """One caller's wait for a backend's lock, and when it gives up on the holder.
 
-    It gives up on a ``start_async()`` or ``stop_async()`` that has held the
-    lock for ``_ABANDONED_HOLD_S`` of this wait, and at once on a hold an
-    earlier waiter gave up on. A synchronous holder is waited for without a
-    limit: its thread is running the start or stop.
+    It gives up on a ``start_async()`` or ``stop_async()`` whose event loop
+    is closed, or has not run for ``_ABANDONED_HOLD_S`` straight, and at once
+    on a hold an earlier waiter gave up on. A holder whose loop runs is
+    waited for, however long it takes, and so is a synchronous holder, whose
+    thread is running the start or stop. Whether a stopped loop ran between
+    two polls is told by a callback this wait leaves on it, so a loop run in
+    bursts shorter than the poll counts as running.
     """
 
     def __init__(self, backend: "NoDriverBackend") -> None:
         self._backend = backend
         self._hold: int | None = None
-        self._since = 0.0
+        self._idle_since = 0.0
+        # The holder's loop and a list its callback appends to once it runs.
+        self._beat: tuple[asyncio.AbstractEventLoop, list[bool]] | None = None
 
-    def gave_up_on(self) -> str | None:
-        """The holder's method name if this wait gives up on it now, else None."""
+    def gave_up_on(self) -> "tuple[_Abandonment, bool] | None":
+        """The hold this wait gives up on now, and whether it is the first to, or None."""
         backend = self._backend
-        # Read without the lock: a hold changing meanwhile restarts the clock.
-        hold = backend._lock_hold
-        holder = backend._lock_holder
-        if holder not in _ASYNC_HOLDERS:
+        holding = backend._holding
+        if holding is None or holding.loop is None:
             self._hold = None
             return None
-        if hold == backend._abandoned_hold:
-            return holder
+        abandoned = backend._abandoned
+        if abandoned is not None and abandoned.hold == holding.number:
+            return abandoned, False
+        ran = self._loop_ran(holding.loop)
         now = time.monotonic()
-        if hold != self._hold:
-            self._hold = hold
-            self._since = now
+        if ran is None:
+            reason = "is closed"
+        elif ran or holding.number != self._hold:
+            self._hold = holding.number
+            self._idle_since = now
             return None
-        if now - self._since < _ABANDONED_HOLD_S:
+        elif now - self._idle_since < _ABANDONED_HOLD_S:
             return None
-        backend._abandoned_hold = hold
-        return holder
+        else:
+            reason = f"has not run for {_ABANDONED_HOLD_S:g} s"
+        return backend._give_up_on(holding, reason)
+
+    def _loop_ran(self, loop: asyncio.AbstractEventLoop) -> bool | None:
+        """Whether *loop* is running or ran since this wait last looked; None once it is closed."""
+        if loop.is_closed():
+            return None
+        if loop.is_running():
+            self._beat = None
+            return True
+        beat = self._beat
+        ran = beat is not None and beat[0] is loop and bool(beat[1])
+        if beat is None or beat[0] is not loop or ran:
+            flag: list[bool] = []
+            try:
+                loop.call_soon_threadsafe(flag.append, True)
+            except RuntimeError:
+                # The loop closed after the check.
+                return None
+            self._beat = (loop, flag)
+        return ran
 
 
 def _patch_nodriver_cookie_parsing() -> None:
@@ -897,31 +967,48 @@ class NoDriverBackend:
         async methods wait for it by polling, so their loop keeps running. A
         ``stop()`` inside the browser's own loop does not take the lock (a
         start may hold it while waiting on that loop). The lock is not
-        reentrant, and no call waits for it while its own thread holds it:
-        while a ``start_async()`` or ``stop_async()`` on a thread holds it
-        (paused at an await, or suspended on a loop that stopped), a
-        ``stop()`` or ``stop_async()`` on that thread stops the browser
-        itself without the lock (through the browser's loop while that loop
-        runs, and without it otherwise; during a start there is nothing to
-        stop yet), and a ``start()`` or ``start_async()`` there raises
-        ``RuntimeError``. The paused ``stop_async()``, if it resumes, finds
-        the backend stopped. If
-        that ``stop_async()`` is already ending Chrome without the loop (it
-        was cancelled, or the browser's loop had stopped), the call finds
-        nothing left to stop and returns before Chrome has exited (up to
-        about 4 s before), and the paused ``stop_async()`` finishes ending
-        Chrome. Either way the private loop is closed only after Chrome has
-        exited or the stop has given up on it, since on Linux its child
-        watcher collects Chrome's exit status.
+        reentrant. A coroutine whose own loop holds it through another task's
+        ``start_async()`` (or, for a ``start_async()``, a ``stop_async()``)
+        waits for that task, which can finish meanwhile: a second
+        ``start_async()`` then finds the backend started, and a
+        ``stop_async()`` stops the browser the start launched. Otherwise no
+        call waits for the lock while its own thread holds it: while a
+        ``stop_async()`` on a thread holds it (paused at an await, or
+        suspended on a loop that stopped), a ``stop()`` or ``stop_async()``
+        on that thread stops the browser itself without the lock (through
+        the browser's loop while that loop runs, and without it otherwise),
+        and a ``start()`` there raises ``RuntimeError``, as does a
+        ``start_async()`` on another loop of that thread. The paused
+        ``stop_async()``, if it resumes, finds the backend stopped. If that
+        ``stop_async()`` is already ending Chrome without the loop (it was
+        cancelled, or the browser's loop had stopped), the call finds nothing
+        left to stop and returns before Chrome has exited (up to about 4 s
+        before), and the paused ``stop_async()`` finishes ending Chrome.
+        Either way the private loop is closed only after Chrome has exited or
+        the stop has given up on it, since on Linux its child watcher
+        collects Chrome's exit status. While a ``start_async()`` on a thread
+        holds the lock, a ``start()`` there raises, and a ``stop()`` there,
+        or a ``stop_async()`` on another loop of that thread, finds the
+        backend not started yet and returns; the start then finishes and
+        leaves the backend started.
 
         A ``start_async()`` or ``stop_async()`` holds the lock across awaits,
         so one whose task is left on a loop that stopped and never runs again
-        would hold it for good. A call on another thread therefore gives up
-        on such a holder once it has waited ``_ABANDONED_HOLD_S`` (60 s) for
-        it, and logs ``nodriver_backend_lock_holder_abandoned``: a stop then
-        ends Chrome without the browser's loop, as above, and a start raises
+        would hold it for good. A call on another thread therefore watches
+        the holder's event loop while it waits. While that loop runs, the
+        holder can finish, and the call waits however long it takes; a
+        ``start_async()`` whose Chrome never answers its first CDP call is
+        waited for without a limit, as a synchronous ``start()`` is. Once
+        the loop is closed, or has not run for ``_ABANDONED_HOLD_S`` (60 s)
+        straight, the call gives up on the holder and logs
+        ``nodriver_backend_lock_holder_abandoned``: a stop then ends Chrome
+        without the browser's loop, as above, and a start raises
         ``RuntimeError`` naming the holder. Later calls give up on that same
-        hold at once. A synchronous ``start()`` or ``stop()`` holding the lock
+        hold at once; a later stop also waits for the first one's end of
+        Chrome before it returns. If the holder's loop runs again after all,
+        a ``start_async()`` ends whatever it launched and raises rather than
+        mark the backend started, and a ``stop_async()`` finds the backend
+        stopped. A synchronous ``start()`` or ``stop()`` holding the lock
         is waited for without a limit, since its thread is doing the work.
         ``start_async()`` on a backend already started on a running loop, or
         on the current one, does nothing; one whose loop has finished is
@@ -1084,21 +1171,23 @@ class NoDriverBackend:
         # backend. Not reentrant: start_async() and stop_async() hold it
         # across awaits, so with an RLock a sync call from another coroutine
         # on the same thread would walk into a start or stop in progress.
-        # _lock_owner tells that caller apart instead.
+        # _holding tells that caller apart instead.
         self._lock = threading.Lock()
         self._clear_lock_state()
 
     def _clear_lock_state(self) -> None:
         """Record the lock as free, with no hold given up on."""
-        # The holder's thread and method, and a count of holds, so a waiter
-        # can tell one long hold from a series of short ones. The thread
-        # object rather than its ident: a holder abandoned along with its
-        # thread leaves an ident that a new thread can be given.
-        self._lock_owner: threading.Thread | None = None
-        self._lock_holder: str | None = None
-        self._lock_hold = 0
-        # The hold a waiter gave up on: later waiters give up on it at once.
-        self._abandoned_hold: int | None = None
+        # The current hold (None while the lock is free), and a count of
+        # holds, so a waiter can tell one long hold from a series of short
+        # ones and a holder can tell whether its own hold was given up on.
+        # One attribute, replaced whole, so a reader never sees half of one.
+        self._holding: _Hold | None = None
+        self._hold_count = 0
+        # The hold waiters gave up on: later waiters give up on it at once.
+        self._abandoned: _Abandonment | None = None
+        # Makes giving up on a hold one decision, so two waiters giving up
+        # at the same moment do not both end Chrome.
+        self._give_up_lock = threading.Lock()
 
     def __getstate__(self) -> dict[str, Any]:
         """Pickle the configuration only, as a stopped backend.
@@ -1113,7 +1202,7 @@ class NoDriverBackend:
         state["_started"] = False
         state["_browser"] = None
         state["_page"] = None
-        for name in ("_lock", "_lock_owner", "_lock_holder", "_lock_hold", "_abandoned_hold"):
+        for name in ("_lock", "_holding", "_hold_count", "_abandoned", "_give_up_lock"):
             state.pop(name, None)
         return state
 
@@ -1148,50 +1237,67 @@ class NoDriverBackend:
             self._private_loop = _PrivateLoop()
             self._loop = self._private_loop.loop
 
-    def _took_lock(self, method: str) -> None:
-        """Record this thread's *method* as the holder of the lock it just acquired."""
-        self._lock_hold += 1
-        self._lock_owner = threading.current_thread()
-        self._lock_holder = method
+    def _took_lock(self, method: str, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """Record this thread's *method* (on *loop*, if async) as the holder of the lock it took."""
+        self._hold_count += 1
+        self._holding = _Hold(self._hold_count, threading.current_thread(), method, loop)
 
     def _release_lock(self) -> None:
         """Release the lock this thread holds."""
-        self._lock_owner = None
-        self._lock_holder = None
+        self._holding = None
         self._lock.release()
 
-    def _acquire_lock(self, method: str) -> str | None:
+    def _acquire_lock(self, method: str) -> "tuple[_Abandonment, bool] | None":
         """Wait for the lock and take it for *method*, blocking this thread.
 
         Returns:
-            None once the lock is held, or the name of the holder the wait
-            gave up on (``_LockWait``), in which case the lock is not held.
+            None once the lock is held, or the hold the wait gave up on and
+            whether this wait was the first to (``_LockWait``), in which
+            case the lock is not held.
         """
         wait = _LockWait(self)
         while not self._lock.acquire(timeout=_EXIT_POLL_S):
-            abandoned = wait.gave_up_on()
-            if abandoned is not None:
-                return abandoned
+            given_up = wait.gave_up_on()
+            if given_up is not None:
+                return given_up
         self._took_lock(method)
         return None
 
-    async def _acquire_lock_async(self, method: str) -> str | None:
+    async def _acquire_lock_async(self, method: str) -> "tuple[_Abandonment, bool] | None":
         """``_acquire_lock()`` without blocking the running event loop.
 
         It polls rather than block a worker thread on the lock: a cancelled
         caller then holds nothing, where a worker would take the lock after
         the caller had gone and nothing would release it. The poll also
         keeps the caller's loop running, which a start on another thread may
-        be waiting on.
+        be waiting on, and which a holder on this same loop needs in order
+        to finish.
         """
         wait = _LockWait(self)
         while not self._lock.acquire(blocking=False):
-            abandoned = wait.gave_up_on()
-            if abandoned is not None:
-                return abandoned
+            given_up = wait.gave_up_on()
+            if given_up is not None:
+                return given_up
             await asyncio.sleep(_EXIT_POLL_S)
-        self._took_lock(method)
+        self._took_lock(method, asyncio.get_running_loop())
         return None
+
+    def _give_up_on(self, holding: _Hold, reason: str) -> "tuple[_Abandonment, bool] | None":
+        """Give up on *holding*, once for all waiters; None if it ended meanwhile."""
+        with self._give_up_lock:
+            abandoned = self._abandoned
+            if abandoned is not None and abandoned.hold == holding.number:
+                return abandoned, False
+            if self._holding is not holding:
+                return None
+            abandoned = _Abandonment(holding.number, holding.method, reason)
+            self._abandoned = abandoned
+            return abandoned, True
+
+    def _hold_given_up(self, hold: int | None) -> bool:
+        """Whether a waiter gave up on hold number *hold*."""
+        abandoned = self._abandoned
+        return hold is not None and abandoned is not None and abandoned.hold == hold
 
     def _held_by_this_thread(self) -> bool:
         """Whether this thread holds the lock.
@@ -1202,11 +1308,26 @@ class NoDriverBackend:
         points use it to refuse a start, or to stop without the lock, rather
         than wait for a lock this thread would never release.
         """
-        return self._lock_owner is threading.current_thread()
+        holding = self._holding
+        return holding is not None and holding.owner is threading.current_thread()
+
+    def _held_on_this_loop(self) -> bool:
+        """Whether an async call on this thread's running loop holds the lock.
+
+        That holder is a task on this loop, so it can finish while a
+        coroutine here polls for the lock, which therefore cannot deadlock.
+        """
+        holding = self._holding
+        return holding is not None and holding.loop is not None and holding.loop is _running_loop()
+
+    def _holding_method(self) -> str | None:
+        """The method holding the lock, or None while it is free."""
+        holding = self._holding
+        return holding.method if holding is not None else None
 
     def _held_on_this_thread_error(self, method: str) -> RuntimeError:
-        """The error a start raises while this thread's own async call holds the lock."""
-        holder = self._lock_holder or "stop_async"
+        """The error a start raises while this thread's own call holds the lock."""
+        holder = self._holding_method() or "stop_async"
         doing = "starting" if holder.startswith("start") else "stopping"
         return RuntimeError(
             _HELD_ON_THIS_THREAD_MESSAGE.format(method=method, holder=holder, doing=doing)
@@ -1403,8 +1524,13 @@ class NoDriverBackend:
             else:
                 self._release_loop()
             self._loop = loop
+        # This start's hold of the lock when start_async() holds it, so the
+        # launch can tell that a waiter gave up on it; a sync start() holds
+        # it on another thread and is never given up on.
+        holding = self._holding
+        hold = holding.number if holding is not None and holding.loop is loop else None
         try:
-            await self._launch(uc, _max_attempts)
+            await self._launch(uc, _max_attempts, hold)
         except BaseException:
             # A failed start_async() must not leave the caller's loop recorded:
             # a later synchronous start() would find it stopped. The private
@@ -1414,8 +1540,16 @@ class NoDriverBackend:
                 self._loop = None
             raise
 
-    async def _launch(self, uc: Any, max_attempts: int) -> None:
-        """Sweep orphaned Chromes, then start Chrome and open its first tab, with retries."""
+    async def _launch(self, uc: Any, max_attempts: int, hold: int | None = None) -> None:
+        """Sweep orphaned Chromes, then start Chrome and open its first tab, with retries.
+
+        *hold* is the ``start_async()`` hold of the lock this runs under. A
+        call on another thread can give up on that hold while this is
+        suspended on a loop that stopped, and then stops the backend without
+        the lock. If this loop runs again afterwards, the launch must not
+        record a browser on top of that stop: it ends what it launched and
+        raises instead, at its next step.
+        """
         # Arm the termination handlers if the CLI asked for them, on this
         # thread: signal dispositions can only be set from the main thread,
         # and arming inside the to_thread call below would silently do
@@ -1462,14 +1596,17 @@ class NoDriverBackend:
         registry = _nodriver_registry()
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
+            self._raise_if_given_up(hold)
             before = set(registry) if registry is not None else set()
             try:
                 self._browser = await uc.start(**start_kwargs)
+                self._raise_if_given_up(hold)
                 # Registered before the first tab: a signal arriving during
                 # navigation must still find this browser (#96).
                 register_live_browser(self)
                 # Get initial page/tab - navigate to blank page
                 self._page = await self._browser.get("about:blank")
+                self._raise_if_given_up(hold)
                 return
             except Exception as exc:
                 last_exc = exc
@@ -1506,6 +1643,11 @@ class NoDriverBackend:
 
         raise BrowserError(browser_connect_failure_message(max_attempts)) from last_exc
 
+    def _raise_if_given_up(self, hold: int | None) -> None:
+        """Raise ``RuntimeError`` if a waiter gave up on hold number *hold*."""
+        if self._hold_given_up(hold):
+            raise RuntimeError(_RESUMED_AFTER_GIVE_UP_MESSAGE)
+
     async def start_async(self) -> None:
         """Start the browser on the running event loop.
 
@@ -1520,36 +1662,55 @@ class NoDriverBackend:
         launches no second Chrome, and a stop on another thread waits for
         this start and then stops the browser it launched. It waits for the
         lock by polling, so this loop keeps running meanwhile. A cancellation
-        during that wait propagates without starting anything.
+        during that wait propagates without starting anything. It also waits
+        when the holder is a ``start_async()`` or ``stop_async()`` on this
+        same running loop (two tasks starting one backend under
+        ``asyncio.gather``, say), since that holder can finish meanwhile; the
+        second start then finds the backend started.
+
+        A holder on another thread is waited for while its event loop runs,
+        however long it takes, and a synchronous holder without a limit.
+        When the holder's loop is closed, or has not run for
+        ``_ABANDONED_HOLD_S`` (60 s) straight, this gives up, logs
+        ``nodriver_backend_lock_holder_abandoned`` and raises.
+
+        If this start is itself suspended on a loop that stopped, a stop on
+        another thread can give up on it and stop the backend. Should the
+        loop run again, the start ends whatever it launched and raises
+        rather than mark the backend started.
 
         Raises:
             BrowserError: If the browser fails to start.
             RuntimeError: While a ``start_async()`` or ``stop_async()`` on
-                this thread holds the backend's lock, or when another
-                thread's ``start_async()`` or ``stop_async()`` has held it for
-                ``_ABANDONED_HOLD_S`` seconds of this wait.
+                this thread holds the backend's lock from an event loop other
+                than the running one (one left stopped, say), which cannot
+                finish while this waits; when the event loop of another
+                thread's ``start_async()`` or ``stop_async()`` holding the
+                lock is closed or has not run for ``_ABANDONED_HOLD_S``
+                seconds; or when this start resumed after a call on another
+                thread gave up on it.
         """
-        if self._held_by_this_thread():
+        if self._held_by_this_thread() and not self._held_on_this_loop():
             raise self._held_on_this_thread_error("start_async")
-        abandoned = await self._acquire_lock_async("start_async")
-        if abandoned is not None:
-            raise RuntimeError(self._abandoned_hold_message("start_async", abandoned))
+        given_up = await self._acquire_lock_async("start_async")
+        if given_up is not None:
+            raise RuntimeError(self._gave_up_message("start_async", given_up[0]))
         try:
             await self._start_async()
             self._started = True
         finally:
             self._release_lock()
 
-    def _abandoned_hold_message(self, method: str, holder: str) -> str:
-        """Log, and return, why *method* gave up waiting for *holder*'s lock."""
+    def _gave_up_message(self, method: str, abandonment: _Abandonment) -> str:
+        """Log, and return, why *method* gave up waiting for the lock's holder."""
         LOG.warning(
             "nodriver_backend_lock_holder_abandoned",
             method=method,
-            holder=holder,
-            waited_s=_ABANDONED_HOLD_S,
+            holder=abandonment.holder,
+            reason=abandonment.reason,
         )
         return _ABANDONED_HOLD_MESSAGE.format(
-            method=method, holder=holder, waited=_ABANDONED_HOLD_S
+            method=method, holder=abandonment.holder, reason=abandonment.reason
         )
 
     def start(
@@ -1577,17 +1738,18 @@ class NoDriverBackend:
                 where waiting for the lock can deadlock (a stop on another
                 thread may hold it while it waits on this loop), while a
                 ``start_async()`` or ``stop_async()`` on this thread holds the
-                backend's lock, or when another thread's ``start_async()`` or
-                ``stop_async()`` has held it for ``_ABANDONED_HOLD_S`` seconds
-                of this wait.
+                backend's lock, which cannot finish while this call blocks
+                the thread, or when the event loop of another thread's
+                ``start_async()`` or ``stop_async()`` holding the lock is
+                closed or has not run for ``_ABANDONED_HOLD_S`` seconds.
         """
         if self._loop is not None and _running_loop() is self._loop:
             raise RuntimeError(_IN_OWN_LOOP_MESSAGE)
         if self._held_by_this_thread():
             raise self._held_on_this_thread_error("start")
-        abandoned = self._acquire_lock("start")
-        if abandoned is not None:
-            raise RuntimeError(self._abandoned_hold_message("start", abandoned))
+        given_up = self._acquire_lock("start")
+        if given_up is not None:
+            raise RuntimeError(self._gave_up_message("start", given_up[0]))
         try:
             if self._started:
                 LOG.debug("nodriver_backend_already_started")
@@ -1831,13 +1993,19 @@ class NoDriverBackend:
         loop (it was cancelled, or the browser's loop had stopped), this call
         finds nothing left to stop and returns before Chrome has exited (up
         to about 4 s before), while that ``stop_async()`` finishes ending
-        Chrome.
+        Chrome. Called while a ``start_async()`` on this thread holds the
+        lock, it finds the backend not started yet and returns, and that
+        start then finishes and leaves the backend started; ``await
+        stop_async()`` on the start's loop waits for the start instead.
 
         A ``start_async()`` or ``stop_async()`` on another thread that holds
-        the lock and has not finished after ``_ABANDONED_HOLD_S`` seconds of
-        this wait (its task left on an event loop that stopped, say) is given
-        up on: this call logs ``nodriver_backend_lock_holder_abandoned`` and
-        ends Chrome without the browser's loop, as above, without the lock.
+        the lock is waited for while its event loop runs. Once that loop is
+        closed, or has not run for ``_ABANDONED_HOLD_S`` seconds straight
+        (its task left on an event loop that stopped, say), it is given up
+        on: this call logs ``nodriver_backend_lock_holder_abandoned`` and ends
+        Chrome without the browser's loop, as above, without the lock. A stop
+        that gives up on a hold another call is already ending Chrome for
+        waits for that end (up to ``_GIVEN_UP_END_WAIT_S``) and returns.
         """
         running = _running_loop()
         if self._held_by_this_thread():
@@ -1847,15 +2015,32 @@ class NoDriverBackend:
         if running is not None and running is self._loop:
             self._stop_holding_lock(running)
             return
-        abandoned = self._acquire_lock("stop")
-        if abandoned is not None:
-            self._abandoned_hold_message("stop", abandoned)
-            self._stop_holding_lock(running, without_loop=True)
+        given_up = self._acquire_lock("stop")
+        if given_up is not None:
+            self._stop_after_giving_up(running, *given_up)
             return
         try:
             self._stop_holding_lock(running)
         finally:
             self._release_lock()
+
+    def _stop_after_giving_up(
+        self, running: asyncio.AbstractEventLoop | None, abandonment: _Abandonment, first: bool
+    ) -> None:
+        """``stop()`` once its wait gave up on the lock's holder, without the lock.
+
+        The first stop to give up on a hold ends Chrome; a later one waits
+        for that end, so it does not return while Chrome is still running.
+        """
+        self._gave_up_message("stop", abandonment)
+        if not first:
+            if not abandonment.ended.wait(_GIVEN_UP_END_WAIT_S):
+                LOG.warning("nodriver_backend_given_up_end_still_running")
+            return
+        try:
+            self._stop_holding_lock(running, without_loop=True)
+        finally:
+            abandonment.ended.set()
 
     def _stop_holding_lock(
         self, running: asyncio.AbstractEventLoop | None, *, without_loop: bool = False
@@ -1928,8 +2113,11 @@ class NoDriverBackend:
         polling the backend's lock, so the caller's loop keeps running (that
         start may be waiting on it), and holds the lock until the stop is
         done. A cancellation during that wait propagates without stopping
-        anything, since the stop has not begun. It never waits for a lock
-        this thread holds: while another ``stop_async()`` on this thread is
+        anything, since the stop has not begun. It waits the same way for a
+        ``start_async()`` in progress on this same running loop, which can
+        finish meanwhile, and then stops the browser that start launched.
+        Otherwise it never waits for a lock this thread holds: while another
+        ``stop_async()`` on this thread is
         paused at an await (two on one loop, or one left suspended on a loop
         that stopped), it stops the browser itself, as above, and the paused
         one finds the backend stopped if it resumes. If the paused one is
@@ -1941,29 +2129,48 @@ class NoDriverBackend:
         so the loop's child watcher can still collect Chrome's exit status.
 
         A ``start_async()`` or ``stop_async()`` on another thread that holds
-        the lock and has not finished after ``_ABANDONED_HOLD_S`` seconds of
-        this wait is given up on, as in ``stop()``: this call logs
+        the lock is waited for while its event loop runs, and given up on
+        once that loop is closed or has not run for ``_ABANDONED_HOLD_S``
+        seconds straight, as in ``stop()``: this call logs
         ``nodriver_backend_lock_holder_abandoned`` and ends Chrome without the
-        browser's loop, on a worker thread, without the lock.
+        browser's loop, on a worker thread, without the lock, or waits for
+        the end another call that gave up on the same hold is running.
 
         When the browser's loop cancels the stop submitted to it (the loop is
         shutting down) and nobody cancelled this call, Chrome is ended without
         the loop and this returns normally rather than raise a
         ``CancelledError`` its caller never asked for.
         """
-        if self._held_by_this_thread():
+        if self._held_by_this_thread() and not (
+            self._held_on_this_loop() and self._holding_method() == "start_async"
+        ):
             LOG.info("nodriver_backend_stop_during_stop_async")
             await self._stop_async_holding_lock()
             return
-        abandoned = await self._acquire_lock_async("stop_async")
-        if abandoned is not None:
-            self._abandoned_hold_message("stop_async", abandoned)
-            await self._stop_async_holding_lock(without_loop=True)
+        given_up = await self._acquire_lock_async("stop_async")
+        if given_up is not None:
+            await self._stop_async_after_giving_up(*given_up)
             return
         try:
             await self._stop_async_holding_lock()
         finally:
             self._release_lock()
+
+    async def _stop_async_after_giving_up(self, abandonment: _Abandonment, first: bool) -> None:
+        """``_stop_after_giving_up()`` for ``stop_async()``, polling rather than blocking."""
+        self._gave_up_message("stop_async", abandonment)
+        if not first:
+            deadline = time.monotonic() + _GIVEN_UP_END_WAIT_S
+            while not abandonment.ended.is_set():
+                if time.monotonic() >= deadline:
+                    LOG.warning("nodriver_backend_given_up_end_still_running")
+                    return
+                await asyncio.sleep(_EXIT_POLL_S)
+            return
+        try:
+            await self._stop_async_holding_lock(without_loop=True)
+        finally:
+            abandonment.ended.set()
 
     async def _stop_async_holding_lock(self, *, without_loop: bool = False) -> None:
         """The body of ``stop_async()``. *without_loop* as for ``_stop_holding_lock()``."""
