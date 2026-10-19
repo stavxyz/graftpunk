@@ -38,6 +38,7 @@ from graftpunk.har.paths import (
     looks_dynamic,
     normal_host,
     param_name_for_segment,
+    reads_as_words,
     template_path,
 )
 from graftpunk.logging import get_logger
@@ -1886,7 +1887,8 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     every cookie name the digest recorded on any in-scope host (not the primary
     host alone: a second first-party host can set its own session cookie), every
     token candidate's name, and every cookie name any of *entries* sets, whatever
-    its host and whether or not the digest counted it as static.
+    its host and whether or not the digest counted it as static, except a cookie
+    that only ever holds words (below).
 
     ``d.cookies`` stays the digest's own scoped list; *entries* widens only this
     safety net. ``gp observe fixtures`` passes every entry in the HAR, since a
@@ -1895,12 +1897,57 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     lives beside the digest that records the names, so the sidecar writer takes
     plain strings and imports nothing from the digest.
 
+    The list stands in for a leak the suite cannot see: a copied cookie or token
+    whose value sits next to its name. A cookie whose every recorded value reads
+    as words (graftpunk.har.paths.reads_as_words: a search term, a lot number, a
+    date) holds no credential, and its name is often an ordinary word that an
+    invented fixture keeps as a key or in prose (``text``, ``lot``), so it is
+    left out. Every other cookie stays: one whose name reads as a token name
+    (``csrftoken``), one with any value that does not read as words (a session
+    id), and one with a value *entries* do not show, which covers a ``Set-Cookie``
+    the recorder kept only as a name, an empty value, and a call without
+    *entries*. Values are read from every entry's request and response cookies,
+    whatever its host.
+
     A name that holds an account value (graftpunk.har.paths.holds_an_id) is not
     among them, in any form: :func:`redacted_names_of` counts those."""
+    entries = tuple(entries)
+    values, unseen = _cookie_values(entries)
     entry_cookies = {
         name for entry in entries for name in _response_cookie_names(entry) if not holds_an_id(name)
     }
-    return tuple(sorted(set(d.cookies) | {token.name for token in d.tokens} | entry_cookies))
+
+    def holds_only_words(name: str) -> bool:
+        return (
+            name in values
+            and name not in unseen
+            and not looks_like_token_name(name)
+            and all(reads_as_words(value) for value in values[name])
+        )
+
+    cookies = {name for name in set(d.cookies) | entry_cookies if not holds_only_words(name)}
+    return tuple(sorted(cookies | {token.name for token in d.tokens}))
+
+
+def _cookie_values(entries: Iterable[HAREntry]) -> tuple[dict[str, set[str]], set[str]]:
+    """Every value *entries* record for each cookie name, in requests and responses,
+    and the names some entry sets or sends without a value it records: a
+    ``Set-Cookie`` kept only in ``set_cookie_names``, or an empty value."""
+    values: dict[str, set[str]] = {}
+    unseen: set[str] = set()
+    for entry in entries:
+        for cookie in entry.request.cookies + entry.response.cookies:
+            name = cookie.get("name", "")
+            value = cookie.get("value", "")
+            if not name:
+                continue
+            if isinstance(value, str) and value:
+                values.setdefault(name, set()).add(value)
+            else:
+                unseen.add(name)
+        with_values = {cookie.get("name", "") for cookie in entry.response.cookies}
+        unseen.update(name for name in entry.response.set_cookie_names if name not in with_values)
+    return values, unseen
 
 
 def redacted_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> int:

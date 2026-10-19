@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import unquote, unquote_plus, urlsplit, urlunsplit
 
 # The name rule's length thresholds (see holds_an_id): mixed hex, a prefixed id's
 # tail, and a base64-like token.
@@ -41,6 +41,7 @@ __all__ = [
     "looks_dynamic",
     "normal_host",
     "param_name_for_segment",
+    "reads_as_words",
     "template_path",
     "templated_url",
     "templates_a_segment",
@@ -340,6 +341,59 @@ def _joined_token(text: str) -> bool:
         2 <= len(part) <= 6 and _has_digit(part) and _has_letter(part) and part.isalnum()
         for part in parts
     )
+
+
+_VALUE_PART_RE = re.compile(r"[^\W_]+")
+# A run of letters longer than this is not read as a word in a cookie value: few
+# words a form keeps are longer, and without the cap 1.8% of random 16-letter
+# lowercase values read as words (measured with reads_as_words on 2026-10-19).
+_MAX_VALUE_WORD_LEN = 15
+
+
+def _word_cased(letters: str) -> bool:
+    return letters.islower() or letters.isupper() or letters.istitle()
+
+
+def _plain_value_part(part: str) -> bool:
+    if not part.isascii():
+        return False
+    if part.isdigit():
+        return True
+    if part.isalpha():
+        return len(part) <= _MAX_VALUE_WORD_LEN and _word_cased(part) and _spelled(part)
+    if _VERSION_RE.fullmatch(part):
+        return True
+    match = _WORD_WITH_DIGITS_RE.fullmatch(part)
+    return match is not None and _word_cased(match.group(1)) and _spelled(match.group(1))
+
+
+def reads_as_words(value: str) -> bool:
+    """True when *value*, a cookie value, is plain words, short numbers, or a date:
+    the state a form or a preference keeps, not a credential.
+
+    *value* is percent- and plus-decoded and split into its runs of letters and
+    digits. It reads as words when it has at least one run, :func:`holds_an_id`
+    does not hold it (so no run of 6 or more digits, no long hex, no base64-like
+    token), and every run is ASCII and is a number, a version (``v2``), or a word
+    of at most 15 letters in one case shape (``shoes``, ``USD``, ``Austin``) spelled
+    with the consonant pairs English uses, optionally followed by a digit run of at
+    most 2.
+    ``running shoes``, ``12``, ``2026-10-01``, ``10/01/2026``, and ``en-US`` read
+    as words; a session id (``Zq9XkLmPwR4t7Bv2Hn8Ks3Jd``), a mixed-case run
+    (``kQzPwM``), and an empty value do not.
+
+    The known limits: a number of 5 digits or fewer reads as words, and so can a
+    random value of 15 lowercase letters or fewer, spelled by chance. Measured on
+    100,000 random values per length (2026-10-19): of lowercase letters alone,
+    14.7% at 8 letters, 5.1% at 12 and 2.4% at 15 read as words, and none at 16
+    or more; of letters in both cases and digits, 49 at 8 characters and none at
+    12 or more.
+    """
+    text = unquote_plus(value)
+    parts = _VALUE_PART_RE.findall(text)
+    if not parts or holds_an_id(text):
+        return False
+    return all(_plain_value_part(part) for part in parts)
 
 
 def is_placeholder(segment: str) -> bool:

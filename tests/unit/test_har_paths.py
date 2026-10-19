@@ -14,6 +14,7 @@ from graftpunk.har.paths import (
     keys_are_ids,
     looks_dynamic,
     param_name_for_segment,
+    reads_as_words,
     template_path,
     templated_url,
     templates_a_segment,
@@ -553,3 +554,46 @@ class TestKeysAreIds:
     def test_a_numbered_field_group_is_not_ids(self, keys: list[str]) -> None:
         """Keys that differ only in a trailing digit run are one field, numbered."""
         assert not keys_are_ids(keys)
+
+
+class TestReadsAsWords:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "running%20shoes",
+            "running+shoes",
+            "12",
+            "12345",
+            "2026-10-01",
+            "10%2F01%2F2026",
+            "en-US",
+            "USD",
+            "Austin",
+            "page2",
+            "transportations",
+            "v2",
+            '{"q":"garden hose","page":3}',
+        ],
+    )
+    def test_form_state_reads_as_words(self, value: str) -> None:
+        assert reads_as_words(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "",
+            "%20",
+            "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd",
+            "x7Kq29Lp",
+            "kQzPwM",
+            "kqzpwmxtrv",
+            "lalalalalalalalala",
+            "a3f9c2d1e0b4",
+            "40912873",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+            "s%3AZq9XkLmPwR4t7Bv2.Hn8Ks3Jd",
+            "café",
+        ],
+    )
+    def test_a_credential_shaped_or_empty_value_does_not(self, value: str) -> None:
+        assert not reads_as_words(value)

@@ -28,6 +28,10 @@ from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
 
+# A cookie value shaped like a session id: flagged_names leaves out a cookie whose
+# every value reads as words, so a cookie that must be flagged needs one like it.
+_SESSION_VALUE = "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"
+
 
 def _git(argv: list[str], cwd: Path) -> None:
     # argv is always a fixed git invocation built by this test module, never
@@ -550,7 +554,7 @@ class TestFixturesCommand:
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         order = _entry("GET", "https://api.myshop.example.com/orders/1001?page=2", body='{"id": 1}')
-        order["response"]["cookies"] = [{"name": "shop_session", "value": "planted"}]
+        order["response"]["cookies"] = [{"name": "shop_session", "value": _SESSION_VALUE}]
         _write_run(observe_base, "myshop", "run-1", [order])
         out_dir = tmp_path / "out"
         result = _invoke_fixtures(out_dir)
@@ -582,8 +586,8 @@ class TestFixturesCommand:
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         order = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
         order["response"]["cookies"] = [
-            {"name": "shop_session", "value": "planted"},
-            {"name": "sess_40912873", "value": "planted"},
+            {"name": "shop_session", "value": _SESSION_VALUE},
+            {"name": "sess_40912873", "value": _SESSION_VALUE},
         ]
         _write_run(observe_base, "myshop", "run-1", [order])
         out_dir = tmp_path / "out"
@@ -655,9 +659,9 @@ class TestFixturesCommand:
             content_type="application/javascript",
             body="var a = 1;",
         )
-        asset["response"]["cookies"] = [{"name": "asset_cookie", "value": "planted"}]
+        asset["response"]["cookies"] = [{"name": "asset_cookie", "value": _SESSION_VALUE}]
         other_host = _entry("GET", "https://tracker.example.net/orders/1003", body='{"id": 3}')
-        other_host["response"]["cookies"] = [{"name": "other_host_cookie", "value": "planted"}]
+        other_host["response"]["cookies"] = [{"name": "other_host_cookie", "value": _SESSION_VALUE}]
         _write_run(observe_base, "myshop", "run-1", [*orders, asset, other_host])
         out_dir = tmp_path / "out"
         result = _invoke_fixtures(out_dir, "--limit", "1")
@@ -1128,6 +1132,114 @@ class TestResponsesRecordedWithNoText:
         assert sidecar["status"] == status
         assert sidecar["capture_sha256"] is None
         assert check_fixtures_tree(out_dir).problems == ()
+
+
+class TestPlainWordCookies:
+    """A site that keeps a search form's state in cookies with plain-word names
+    (#270): gp's own sidecars and honest fixtures pass the sanitised check, and a
+    fixture that still names the session cookie or the CSRF token fails it."""
+
+    def _record(self, observe_base: Path) -> None:
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/search",
+            content_type="text/html; charset=utf-8",
+            body=(
+                '<html><head><meta name="csrf-token" content="Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb">'
+                '</head><body><form><input name="text" value="running shoes">'
+                '<input name="lot" value="12"></form></body></html>'
+            ),
+        )
+        page["response"]["cookies"] = [
+            {"name": "text", "value": "running%20shoes"},
+            {"name": "lot", "value": "12"},
+            {"name": "since", "value": "2026-10-01"},
+            {"name": "myshop_session", "value": _SESSION_VALUE},
+            {"name": "csrftoken", "value": "planted"},
+        ]
+        results = _entry(
+            "GET",
+            "https://myshop.example.com/api/search?lot=12",
+            body=json.dumps(
+                {
+                    "query": {"subdivision": "Oak Hills", "block": "4", "lot": "12"},
+                    "results": [{"subdivision": "Oak Hills", "block": "4", "lot": "12"}],
+                }
+            ),
+        )
+        results["request"]["cookies"] = [
+            {"name": "text", "value": "running+shoes"},
+            {"name": "lot", "value": "12"},
+            {"name": "myshop_session", "value": _SESSION_VALUE},
+            {"name": "csrftoken", "value": "planted"},
+        ]
+        _write_run(observe_base, "myshop", "run-1", [page, results])
+
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """The recording through gp observe fixtures, with gp's sidecars copied
+        unchanged into a fixtures tree."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        self._record(observe_base)
+        out_dir = tmp_path / "captures"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "GET /search",
+                "--match",
+                "GET /api/search",
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        tree = tmp_path / "fixtures"
+        tree.mkdir()
+        for meta in out_dir.glob("*.meta.json"):
+            (tree / meta.name).write_text(meta.read_text())
+        return tree
+
+    def test_the_sidecars_flag_the_session_cookie_and_the_csrf_token_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tree = self._fixtures(tmp_path, monkeypatch)
+        for name in ("get_search.html.meta.json", "get_api_search.json.meta.json"):
+            sidecar = json.loads((tree / name).read_text())
+            assert sidecar["flagged_names"] == ["csrf-token", "csrftoken", "myshop_session"]
+
+    def test_gps_sidecars_and_honest_fixtures_pass_and_a_named_session_cookie_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tree = self._fixtures(tmp_path, monkeypatch)
+        page = tree / "get_search.html"
+        page.write_text(
+            "<html><body><form><label>Enter text to search; the context is kept.</label>"
+            '<input name="text" value="garden hose"><input name="lot" value="7">'
+            "</form></body></html>"
+        )
+        api = tree / "get_api_search.json"
+        row = {"subdivision": "Maple Run", "block": "B", "lot": "7"}
+        api.write_text(json.dumps({"query": row, "results": [row], "text": "garden hose"}))
+        # gp's HTML sidecar says text/html, and the bodies hold the plain words as
+        # keys, attribute values and prose.
+        assert check_fixtures_tree(tree).problems == ()
+
+        api.write_text(json.dumps({"query": row, "myshop_session": "invented"}))
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "'myshop_session'" in problem
+        api.write_text(json.dumps({"query": row, "results": []}))
+
+        page.write_text("<p>Sign in again to renew your myshop_session cookie.</p>")
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "'myshop_session'" in problem
+
+        page.write_text('<meta name="csrf-token" content="invented">')
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "'csrf-token'" in problem
 
 
 @contextmanager
