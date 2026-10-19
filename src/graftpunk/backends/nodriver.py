@@ -2330,9 +2330,12 @@ class NoDriverBackend:
         the end another stop that gave up on the same hold is running (up to
         ``_GIVEN_UP_END_WAIT_S``). The lock stays held until that end is
         done, as in ``stop()``. The whole end, including the lock's release,
-        runs on that worker thread, so it finishes even if this call's own
-        event loop stops meanwhile, and should that loop run again later,
-        this call only returns. The exception is a ``stop_async()`` awaited on the
+        runs on that worker thread, handed to it before this call's loop can
+        run again, so it finishes even if that loop stops meanwhile, in the
+        same iteration or later, and should the loop run again, this call
+        only returns. When the loop's default executor is shut down, the end
+        runs on a thread of its own, or, if no thread can start, on the loop
+        itself. The exception is a ``stop_async()`` awaited on the
         browser's private loop, whose end runs on that loop, since a worker
         closing the loop would join its thread while that thread waits for
         the worker; that loop runs on its own thread until the end stops it.
