@@ -26,47 +26,53 @@ on, and the page each token was seen on.
 `network.har` in the run's directory,
 `~/.local/share/graftpunk/observe/<session>/<run>/`, with the session and run
 ID as `gp observe list` prints them (it prints the names, not the directory).
-The Read and Grep tools take an absolute path, so resolve `~` to the user's
-home directory before using either. Beside the HAR, `bodies/` holds the
-response bodies too large to inline, and `page-source.html` the page that was
-open when the recording stopped.
+Resolve `~` to the user's home directory: the HAR reader, Read, and Grep each
+get the absolute path, which is `<har>` in `references/commands.md`. Beside the
+HAR, `bodies/` holds the response bodies too large to inline, and
+`page-source.html` the page that was open when the recording stopped.
 
-## Where the answers sit
+## The HAR reader
 
-The HAR is JSON written with a two-space indent, one key per line. Its
-`log.entries[]` each hold a `request` and a `response`:
+Ask the HAR through the `har-facts.py` lines of the Understand block of
+`references/commands.md`. The script reads the HAR as JSON and prints names,
+attributes, types, and counts, never a cookie, header, query, or body value, so
+answer from its output:
 
-- `request.url` is the full URL, query string included: find an entry by it.
-- `response.cookies[]` holds one object per `Set-Cookie` line: `name`, then
-  `value`, then `httpOnly`, `secure`, `path`, `domain`, and `expires` when the
-  server set them. `SameSite` and `Max-Age` have no field there and appear only
-  in the raw `Set-Cookie` entry of `response.headers[]`. A flag missing from
-  the array does not show it is off, since the array often leaves out a flag
-  the header carries: confirm in the header with the count-mode match below,
-  `HttpOnly` or `Secure` in place of `SameSite=Lax`.
-- `request.postData` holds a request body as `mimeType` and `text`.
-- `response.content.text` holds a response body, or `response.content._bodyFile`
-  names its file under `bodies/`.
-- `request.headers[]` and `response.headers[]` hold `name` and `value` pairs.
+- `cookies`: for each cookie a response sets, every response that sets it (by
+  method, host, and path, with a count) and that setting's `HttpOnly`,
+  `Secure`, `SameSite`, `Path`, `Domain`, and whether it expires. It reads the
+  raw `Set-Cookie` header and the entry's `response.cookies` array and says
+  when they disagree: in a real recording the array lacked `httpOnly` for a
+  cookie whose header carried it, so trust the header's line. It then names
+  the cookies the recording only sends.
+- `request` with a piece of the URL's path in place of `<url-part>`: for each
+  request whose own URL holds it, the method, the URL with its query keys only,
+  the request header and cookie names, and the body's field names with each
+  value's type. Leave `--method <METHOD>` off to match every method.
+- `response`, matched the same way: the status, the content type, the names of
+  the cookies it sets, and the body's shape, JSON keys and types or an HTML
+  page's title and its forms' field names and input types.
 
-## Reading narrowly
+A field whose name reads as a password, secret, token, card, or key is listed
+by name alone. Exit 1 means nothing matched (no request URL held the piece, or
+no cookie was set or sent), and exit 2 that the HAR is missing or is not a HAR.
 
-Never read the whole HAR. Grep it with a narrow pattern, the URL path or
-`"name": "<cookie>"`, with line numbers and a head limit, then Read with an
-offset and a limit of a few lines around a match. For a cookie's attributes,
-start the Read two lines below its `name` line, past its `value`. A body
-inlined in the HAR sits on one line, often a very long one: Grep for a key
-inside it rather than reading the line. To learn a cookie's `SameSite` without
-printing its header line, Grep in count mode, case-insensitive, for
-`("|\\n)<cookie>=[^\\]*;\s*SameSite=Lax`, then `Strict`, then `None`: a header's
-`Set-Cookie` lines are joined by an escaped newline, so the pattern starts at
-that cookie's own name and stops at the next line.
+## Reading the HAR by hand
 
-Never read the credential post's `request.postData`, which holds the password
-the user typed (the `login` summary's `credential_post` names that request),
-and never read the value of a request's `Cookie` or `Authorization` header.
-Read a cookie's attributes, not its value. Answer with names, attributes,
-shapes, and counts.
+Read the HAR yourself only for what the reader does not cover, and narrowly;
+the skill offers no allow rule for it, since it holds the login's password. The
+file is JSON with a two-space indent, one key per line, and within an entry the
+request's `method` and `url` come first, then its `headers` (where `Cookie` and
+`Authorization` values sit), its `cookies` (with their values), its
+`queryString`, and its `postData`, then the `response`.
 
-No allow rule is offered for reading the HAR, since it holds the login's
-password.
+- Find an entry with a Grep anchored on the URL key, `"url": "[^"]*<path>`, so
+  a `Referer`, `Location`, or `redirectURL` line does not match, with line
+  numbers and a head limit. That line holds the query string too.
+- Never Read forward from a `url` line, and never read a `postData`, a `Cookie`
+  or `Authorization` value, or a cookie's `value`. Treat any form or body with a
+  password-like field as holding a secret, and leave it to the reader.
+- A body inlined in the HAR sits on one line, and a Grep that matches it prints
+  the whole line: test for a key with a Grep in count mode, never content mode.
+
+Answer with names, attributes, shapes, and counts.

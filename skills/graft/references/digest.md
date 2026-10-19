@@ -70,10 +70,10 @@ scaffold step.
 `forms` holds each login form's `action`, its `fields` selectors by role, its
 `submit` selector, `neutral_roles`, and `unresolved_roles`. Name every
 unresolved role in the proposal: the generated login config carries a `GP-FILL`
-for each, which the implement step fills with a selector read from the login
-page's markup in the recording (`references/har.md`), or, when the recording
-does not hold it, one the user reads off the login page in their browser
-(guide: Login).
+for each, which the implement step fills from the login form's field names the
+HAR reader prints for the login page (`references/har.md`), or, when the
+recording does not hold them, with a selector the user reads off the login page
+in their browser (guide: Login).
 
 ## A worked example
 

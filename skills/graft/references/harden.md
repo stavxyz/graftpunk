@@ -56,8 +56,8 @@ line; without it the project lacks wiring: run the gate's plugin check first.
 When gp says it can write no fixture for a command's endpoint, write a fixture
 and its sidecar yourself, with invented values in the shape the projection gives
 (guide: Test against fixtures, not against the site). If it reads `shape
-unavailable`, take the shape from the recorded body (`references/har.md`); ask
-the user only when none was recorded.
+unavailable`, take it from the HAR reader's `response` line for the endpoint
+(`references/har.md`); ask the user only when no body was recorded.
 
 ## A test per command
 

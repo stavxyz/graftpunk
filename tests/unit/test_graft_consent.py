@@ -42,9 +42,12 @@ _GATE_SLOT = "<gate-command>"
 # it offers them. The live read-only command gets no rule and asks each time.
 _SITE_RULES = [f"{_SITE_RUNNER} gp <site-name> --help", f"{_SITE_RUNNER} gp <site-name> login"]
 _LIVE_READ_ONLY = f"{_SITE_RUNNER} gp <site-name> <command>"
-# The one offered rule that is not gp: the skill's own leak check, a read-only
-# script. SKILL.md offers it with the skill's directory in place of the variable.
+# The two offered rules that are not gp: the skill's own read-only scripts, the
+# leak check and the HAR reader, which prints no value from a HAR. SKILL.md offers
+# them with the skill's directory in place of the variable.
 _LEAK_CHECK_RULE = "uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/fixture-leaks.py *"
+_HAR_FACTS_RULE = "uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py *"
+_SCRIPT_RULES = (_LEAK_CHECK_RULE, _HAR_FACTS_RULE)
 # What the kick-the-tires step asks before the first live call, whatever the
 # user's settings allow: the consent point for the live site and the login.
 _LIVE_CALL_QUESTION = "run a live login and one read-only command now?"
@@ -104,7 +107,7 @@ def _matches(pattern: str, command: str) -> bool:
     (https://code.claude.com/docs/en/permissions, Wildcard patterns).
 
     Valid only under the restriction
-    test_every_rule_is_a_scoped_gp_rule_or_the_leak_check enforces
+    test_every_rule_is_a_scoped_gp_rule_or_a_skill_script enforces
     (a "*" only as the trailing " *"); it models no other wildcard form. Re-check
     it against that page whenever the page changes."""
     if pattern.endswith(" *"):
@@ -154,15 +157,17 @@ class TestOfferedAllowRules:
         for command in preflight_only:
             assert not any(_matches(p, command) for p in _offered_rules()), command
 
-    def test_every_rule_is_a_scoped_gp_rule_or_the_leak_check(self) -> None:
+    def test_every_rule_is_a_scoped_gp_rule_or_a_skill_script(self) -> None:
         """Never Bash(*), never a bare Bash(gp *), never a command other than gp,
-        whether gp runs from PATH or through a uv runner, with one exception: the
-        skill's own read-only leak check, offered once."""
+        whether gp runs from PATH or through a uv runner, with two exceptions: the
+        skill's own read-only scripts, the leak check and the HAR reader, each
+        offered once."""
         rules = _offered_rules()
-        assert rules.count(_LEAK_CHECK_RULE) == 1
+        for script_rule in _SCRIPT_RULES:
+            assert rules.count(script_rule) == 1, script_rule
         for pattern in rules:
             assert "*" not in pattern.removesuffix(" *"), pattern
-            if pattern == _LEAK_CHECK_RULE:
+            if pattern in _SCRIPT_RULES:
                 continue
             command = pattern
             for runner in (_SITE_RUNNER, _GATE_RUNNER):
@@ -170,17 +175,17 @@ class TestOfferedAllowRules:
             assert command.startswith("gp "), pattern
             assert command not in ("*", "gp *"), pattern
 
-    def test_skill_md_offers_the_leak_check_rule_with_its_directory_in_place(self) -> None:
-        """A reference file's ${CLAUDE_SKILL_DIR} is not expanded, so the rule works
-        only when the skill puts its absolute directory in place when offering it."""
+    def test_skill_md_offers_the_script_rules_with_its_directory_in_place(self) -> None:
+        """A reference file's ${CLAUDE_SKILL_DIR} is not expanded, so the rules work
+        only when the skill puts its absolute directory in place when offering them."""
         text = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
         assert (
-            "Offer the leak check's rule with this skill's directory, `${CLAUDE_SKILL_DIR}`, "
-            "in place of the variable"
+            "Offer the rules of the skill's two scripts, the leak check and the HAR reader, "
+            "with this skill's directory, `${CLAUDE_SKILL_DIR}`, in place of the variable"
         ) in text
-        # That directory names this version of the skill, so the rule must not be
-        # committed and is offered again after an update.
-        assert "belongs in the project's local settings" in text
+        # That directory names this version of the skill, so the rules must not be
+        # committed and are offered again after an update.
+        assert "belong in the project's local settings" in text
         assert "offered again after an update" in text
 
     def test_no_offered_rule_reaches_the_recorder_or_every_gp_command(self) -> None:
@@ -219,7 +224,7 @@ class TestOfferedAllowRules:
         """The gate is policy.PROJECT_GATE's to list, and runs through the gate
         runner. Every gp command in it is covered by an offered rule; an
         offered rule is a gp rule or the leak check
-        (test_every_rule_is_a_scoped_gp_rule_or_the_leak_check), so commands.md says
+        (test_every_rule_is_a_scoped_gp_rule_or_a_skill_script), so commands.md says
         in words that the gate's other commands ask each time."""
         rules = _offered_rules()
         gate_gp = [f"{_GATE_RUNNER} {c}" for c in PROJECT_GATE if c.startswith("gp ")]
