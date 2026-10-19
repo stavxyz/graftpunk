@@ -5593,7 +5593,15 @@ class TestNoDriverBackendAbandonedLockHolder:
         captured_logs: list[dict[str, Any]],
     ) -> None:
         """The loop is stopped at almost every moment a waiter looks, but it
-        runs between looks, so its holder could still finish."""
+        runs between looks, so its holder could still finish.
+
+        The bursts come every 0.1 s. The bound here is 1.5 s rather than the
+        class's 0.5 s, so a burst thread that a loaded machine leaves
+        unscheduled for half a second is not taken for a loop that stopped;
+        the 2.5 s watch still outlasts the bound, so a waiter that sampled
+        only ``is_running()`` would give up within it."""
+        bound = 1.5
+        monkeypatch.setattr("graftpunk.backends.nodriver._ABANDONED_HOLD_S", bound)
         profile = temp_profiles / "uc_bursts"
         profile.mkdir()
         backend = NoDriverBackend()
@@ -5604,7 +5612,7 @@ class TestNoDriverBackendAbandonedLockHolder:
             waiter = threading.Thread(target=backend.stop, daemon=True)
             try:
                 waiter.start()
-                waiter.join(self.BOUND * 4)
+                waiter.join(bound + 1)
                 waited = waiter.is_alive()
                 given_up = self._given_up(captured_logs)
             finally:
