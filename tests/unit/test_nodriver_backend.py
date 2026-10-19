@@ -6445,6 +6445,112 @@ class TestNoDriverBackendAbandonedLockHolder:
         _within(10, backend.stop)
         assert backend._lock.locked() is False
 
+    @pytest.mark.parametrize("late", ["start_async", "stop_async"])
+    def test_a_call_on_the_holders_loop_waits_for_a_given_up_end_only_so_long(
+        self,
+        late: str,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        """Once the holder has returned and left the lock to a stop's end of
+        Chrome, a call on the holder's own loop is waiting for that end, not
+        for the holder, so it waits only up to ``_GIVEN_UP_END_WAIT_S`` like a
+        call on any other loop: a start raises saying the end is outstanding,
+        and a stop returns."""
+        from graftpunk.backends import nodriver as nodriver_module
+
+        monkeypatch.setattr(nodriver_module, "_GIVEN_UP_END_WAIT_S", 1.0)
+        began, may_finish = self._end_held_open(monkeypatch)
+        profile = temp_profiles / f"uc_holders_loop_{late}"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        entered = threading.Event()
+        gate = threading.Event()
+        held = threading.Event()
+        resume = threading.Event()
+        _within(10, backend.start)
+        real_stop = backend._stop_async
+
+        async def gated_stop() -> None:
+            entered.set()
+            await _until(gate)
+            await real_stop()
+
+        holder_outcome: list[Any] = []
+        late_outcome: list[Any] = []
+        errors: list[BaseException] = []
+
+        def run_holder_then_late_call() -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                task = loop.create_task(backend.stop_async())
+
+                async def until_held() -> None:
+                    while not (entered.is_set() and backend._holding_method() == "stop_async"):
+                        await asyncio.sleep(0.01)
+
+                loop.run_until_complete(asyncio.wait_for(until_held(), 10))
+                held.set()
+                # The loop stops here until the test resumes it.
+                resume.wait(10)
+                holder_outcome.extend(
+                    loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+                )
+                call = getattr(backend, late)
+                started = time.monotonic()
+                try:
+                    late_outcome.append(loop.run_until_complete(asyncio.wait_for(call(), 5)))
+                except BaseException as exc:  # noqa: BLE001 - asserted below
+                    late_outcome.append(exc)
+                late_outcome.append(time.monotonic() - started)
+            except BaseException as exc:  # noqa: BLE001 - asserted below
+                errors.append(exc)
+            finally:
+                loop.close()
+
+        with _chrome_like_child(profile) as child:
+            assert backend._browser is not None
+            self._give_chrome(backend._browser, child, profile)
+            monkeypatch.setattr(backend, "_stop_async", gated_stop)
+            holder_thread = threading.Thread(target=run_holder_then_late_call, daemon=True)
+            holder_thread.start()
+            ender = None
+            try:
+                assert held.wait(10)
+                ender = _OnALoopThatStops(backend.stop_async, began)
+                assert ender.stopped.wait(10)
+                gate.set()
+                resume.set()
+                holder_thread.join(10)
+                end_still_running = not may_finish.is_set()
+            finally:
+                gate.set()
+                resume.set()
+                may_finish.set()
+                holder_thread.join(10)
+                if ender is not None:
+                    ender.finish()
+
+        assert errors == []
+        assert not holder_thread.is_alive()
+        assert holder_outcome == [None]
+        assert end_still_running is True
+        outcome, waited = late_outcome
+        assert 1.0 <= waited < 4.0
+        if late == "start_async":
+            assert isinstance(outcome, RuntimeError)
+            assert "for a stop on another thread to finish ending Chrome" in str(outcome)
+            assert "The stop_async() has returned" in str(outcome)
+        else:
+            assert outcome is None
+            assert "nodriver_backend_given_up_end_still_running" in [
+                e["event"] for e in captured_logs
+            ]
+        _within(10, backend.stop)
+        assert backend._lock.locked() is False
+
     def test_a_give_up_stop_async_on_the_browsers_own_loop_ends_chrome_there(
         self,
         fake_chrome: FakeChrome,

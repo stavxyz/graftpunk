@@ -157,6 +157,16 @@ _ABANDONED_HOLD_MESSAGE = (
     "so it cannot finish. This backend cannot start again until it returns."
 )
 
+# The same, once that holder has returned and left the lock to the end of
+# Chrome a stop that gave up on it is running.
+_GIVEN_UP_END_MESSAGE = (
+    "NoDriverBackend.{method}() gave up waiting for a stop on another thread "
+    "to finish ending Chrome for a {holder}() it gave up on (the event loop "
+    "that call ran on {reason}): that end has not finished after {wait:g} s. "
+    "The {holder}() has returned, and the backend's lock is released when "
+    "the end finishes."
+)
+
 # A start_async() whose event loop ran again after a call on another thread
 # gave up on it and stopped the backend.
 _RESUMED_AFTER_GIVE_UP_MESSAGE = (
@@ -712,7 +722,9 @@ class _LockWait:
     thread is running the start or stop. Whether a stopped loop ran between
     two polls is told by a callback this wait leaves on it, so a loop run in
     bursts shorter than the poll counts as running. A holder on the waiter's
-    own running loop is always waited for: it runs whenever the waiter polls.
+    own running loop is waited for, since it runs whenever the waiter polls,
+    until it has returned and left the lock to a stop's end of Chrome; the
+    wait is then for that end, and is bounded as on any other loop.
 
     *ends* is whether the waiter is a stop, which ends Chrome once it gives
     up. A start that gives up waits first for a stop's end of Chrome in
@@ -733,11 +745,23 @@ class _LockWait:
         """The hold this wait gives up on now, and whether it is the one to end Chrome, or None."""
         backend = self._backend
         holding = backend._holding
-        if holding is None or holding.loop is None or holding.loop is _running_loop():
+        abandoned = backend._abandoned
+        if abandoned is not None and (holding is None or abandoned.hold != holding.number):
+            abandoned = None
+        # A holder on this wait's own running loop runs whenever the wait
+        # polls, so it is waited for, until it has returned and left the lock
+        # to a stop's end of Chrome: that end is what is waited for then.
+        if (
+            holding is None
+            or holding.loop is None
+            or (
+                holding.loop is _running_loop()
+                and not (abandoned is not None and abandoned.release_on_end)
+            )
+        ):
             self._hold = None
             return None
-        abandoned = backend._abandoned
-        if abandoned is not None and abandoned.hold == holding.number:
+        if abandoned is not None:
             reason = abandoned.reason
         else:
             ran = self._loop_ran(holding.loop)
@@ -1789,8 +1813,12 @@ class NoDriverBackend:
             holder=abandonment.holder,
             reason=abandonment.reason,
         )
-        return _ABANDONED_HOLD_MESSAGE.format(
-            method=method, holder=abandonment.holder, reason=abandonment.reason
+        template = _GIVEN_UP_END_MESSAGE if abandonment.release_on_end else _ABANDONED_HOLD_MESSAGE
+        return template.format(
+            method=method,
+            holder=abandonment.holder,
+            reason=abandonment.reason,
+            wait=_GIVEN_UP_END_WAIT_S,
         )
 
     def start(
