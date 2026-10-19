@@ -720,3 +720,16 @@ def test_a_console_that_cannot_encode_the_marks_gets_escapes_not_a_crash(tmp_pat
     assert result.returncode == 1
     assert b"Traceback" not in result.stderr
     assert b"\\xbb" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    ["Jos\\xe9 Garc\\xeda\n", "Jos%25C3%25A9%2520Garc%25C3%25ADa\n"],
+    ids=["hex-escapes", "double-percent"],
+)
+def test_a_value_behind_a_hex_escape_or_a_double_percent_encoding_is_found(
+    tmp_path: Path, fixture: str
+) -> None:
+    result = _run(tmp_path, json.dumps({"name": "José García"}), fixture)
+    assert result.returncode == 1
+    assert "José García" in result.stdout

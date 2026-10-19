@@ -9,6 +9,7 @@ HAR format specification: http://www.softwareishard.com/blog/har-12-spec/
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,6 +54,11 @@ class HARResponse:
     # names only, never values; a response can carry more than one Set-Cookie
     # header and the headers dict above collapses duplicates to the last one
     set_cookie_names: tuple[str, ...] = ()
+    # names a Set-Cookie header line sets with the HttpOnly attribute, read from
+    # the raw headers: a HAR's response.cookies array often omits httpOnly even
+    # when the header carries it, so the array alone cannot say a cookie was not
+    # HttpOnly
+    set_cookie_http_only: tuple[str, ...] = ()
     # where a redirect sent the client: the HAR's own redirectURL when the
     # recorder filled it in, else the Location header, else empty
     redirect_url: str = ""
@@ -141,25 +147,56 @@ def _parse_cookies(cookies_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _parse_set_cookie_names(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
-    """The NAME of every ``Set-Cookie`` header in *headers_list*, in order, deduplicated.
+_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 
-    Values are never stored. Reads the raw headers list (not the
-    ``_parse_headers`` dict), because that dict collapses duplicate header
-    names to the last value and a response can carry more than one
-    ``Set-Cookie`` header.
+
+def _set_cookie_lines(headers_list: list[dict[str, str]]) -> list[tuple[str, bool]]:
+    """``(name, http_only)`` for every cookie a ``Set-Cookie`` header in
+    *headers_list* sets, in order: the one parse both ``set_cookie_names`` and
+    ``set_cookie_http_only`` read, so they cannot drift.
+
+    Reads the raw headers list (not the ``_parse_headers`` dict), because that
+    dict collapses duplicate header names to the last value and a response can
+    carry more than one ``Set-Cookie`` header. Each line of a header value is
+    one cookie, since Chromium joins several ``Set-Cookie`` headers into one
+    value with newlines; a line ends at ``\\r\\n``, a bare ``\\r`` or ``\\n``,
+    and an empty line sets nothing. A cookie's name is before the first ``=`` of the part
+    before the first ``;``; a line whose part holds no ``=`` sets no cookie. Its
+    attributes are the ``;``-separated parts after it, matched by attribute name
+    without regard to case. Values are never returned.
     """
-    names: list[str] = []
+    cookies: list[tuple[str, bool]] = []
     for header in headers_list:
         if header.get("name", "").lower() != "set-cookie":
             continue
-        value = header.get("value", "")
-        if "=" not in value:
-            continue
-        name = value.split("=", 1)[0].strip()
-        if name and name not in names:
-            names.append(name)
-    return tuple(names)
+        for line in _LINE_BREAK_RE.split(header.get("value", "")):
+            pair, *attributes = line.split(";")
+            if "=" not in pair:
+                continue
+            name = pair.split("=", 1)[0].strip()
+            if not name:
+                continue
+            http_only = any(
+                attribute.split("=", 1)[0].strip().lower() == "httponly" for attribute in attributes
+            )
+            cookies.append((name, http_only))
+    return cookies
+
+
+def _parse_set_cookie_names(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
+    """The NAME of every cookie a ``Set-Cookie`` header in *headers_list* sets,
+    every line of a newline-joined value included (:func:`_set_cookie_lines`),
+    in order, deduplicated."""
+    return tuple(dict.fromkeys(name for name, _http_only in _set_cookie_lines(headers_list)))
+
+
+def _parse_set_cookie_http_only(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
+    """The NAME of every cookie a ``Set-Cookie`` header in *headers_list* sets with
+    the ``HttpOnly`` attribute (:func:`_set_cookie_lines`), in order,
+    deduplicated."""
+    return tuple(
+        dict.fromkeys(name for name, http_only in _set_cookie_lines(headers_list) if http_only)
+    )
 
 
 _TEXT_CONTENT_KEYWORDS = ("json", "html", "text", "xml", "javascript", "css")
@@ -216,6 +253,7 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
     headers = _parse_headers(raw_headers)
     content_type = headers.get("Content-Type") or headers.get("content-type")
     set_cookie_names = _parse_set_cookie_names(raw_headers)
+    set_cookie_http_only = _parse_set_cookie_http_only(raw_headers)
 
     # Extract body content
     body = None
@@ -251,6 +289,7 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
         body_size=body_size,
         body_file=body_file,
         set_cookie_names=set_cookie_names,
+        set_cookie_http_only=set_cookie_http_only,
         redirect_url=_redirect_url(response_data, headers),
     )
 

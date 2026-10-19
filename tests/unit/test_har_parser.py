@@ -290,6 +290,50 @@ class TestHARResponse:
         )
         assert response.set_cookie_names == ("session_id", "csrf_token")
 
+    def test_every_line_of_a_newline_joined_set_cookie_value_is_a_cookie(self) -> None:
+        """Chromium joins several Set-Cookie headers into one value with newlines;
+        both name fields read every line, with one parse."""
+        response = _parse_response(
+            {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [
+                    {
+                        "name": "set-cookie",
+                        "value": "lot=12; Path=/\nmyshop_session=Zq9Xk; HttpOnly\nnot a cookie",
+                    },
+                    {"name": "Set-Cookie", "value": "csrftoken=abc; path=/; httponly=1"},
+                ],
+                "cookies": [],
+            }
+        )
+        assert response.set_cookie_names == ("lot", "myshop_session", "csrftoken")
+        assert response.set_cookie_http_only == ("myshop_session", "csrftoken")
+
+    @pytest.mark.parametrize(
+        ("value", "names", "http_only"),
+        [
+            ("a=1\rb=2; HttpOnly", ("a", "b"), ("b",)),
+            ("a=1; HttpOnly\r\nb=2", ("a", "b"), ("a",)),
+            ("a=1\n\nb=2; HttpOnly\n", ("a", "b"), ("b",)),
+            ("a=1; Http-Only\nb=2; HttpOnlyX\nc=3; Http Only", ("a", "b", "c"), ()),
+        ],
+        ids=["bare-carriage-return", "crlf", "empty-lines", "near-miss-attributes"],
+    )
+    def test_set_cookie_lines_end_at_any_line_break_and_match_httponly_exactly(
+        self, value: str, names: tuple[str, ...], http_only: tuple[str, ...]
+    ) -> None:
+        response = _parse_response(
+            {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [{"name": "Set-Cookie", "value": value}],
+                "cookies": [],
+            }
+        )
+        assert response.set_cookie_names == names
+        assert response.set_cookie_http_only == http_only
+
     def test_no_set_cookie_headers_is_empty(self) -> None:
         """A response with no Set-Cookie header has an empty tuple, not None."""
         response = _parse_response(
