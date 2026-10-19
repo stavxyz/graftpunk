@@ -1776,7 +1776,11 @@ class NoDriverBackend:
         Chrome. While a stop that gave up on that holder is still ending
         Chrome, this waits for that end first (up to
         ``_GIVEN_UP_END_WAIT_S``), since the lock stays held until the end
-        is done, and then starts if the holder has returned meanwhile.
+        is done, and then starts if the holder has returned meanwhile. If
+        the end has not finished by then, it raises: naming the holder if
+        that holder has not returned, and saying the end is outstanding if
+        it has. The same applies on the holder's own loop once the holder
+        has returned and left the lock to that end.
 
         If this start is itself suspended on a loop that stopped, a stop on
         another thread can give up on it and stop the backend. Should the
@@ -1791,8 +1795,9 @@ class NoDriverBackend:
                 finish while this waits; when the event loop of another
                 thread's ``start_async()`` or ``stop_async()`` holding the
                 lock is closed or has not run for ``_ABANDONED_HOLD_S``
-                seconds; or when this start resumed after a call on another
-                thread gave up on it.
+                seconds; when a stop's end of Chrome for such a holder has
+                not finished after ``_GIVEN_UP_END_WAIT_S``; or when this
+                start resumed after a call on another thread gave up on it.
         """
         if self._held_by_this_thread() and not self._held_on_this_loop():
             raise self._held_on_this_thread_error("start_async")
@@ -2258,8 +2263,18 @@ class NoDriverBackend:
         seconds straight, as in ``stop()``: this call logs
         ``nodriver_backend_lock_holder_abandoned`` and ends Chrome without the
         browser's loop, on a worker thread, without the lock, or waits for
-        the end another stop that gave up on the same hold is running. The
-        lock stays held until that end is done, as in ``stop()``.
+        the end another stop that gave up on the same hold is running (up to
+        ``_GIVEN_UP_END_WAIT_S``). The lock stays held until that end is
+        done, as in ``stop()``. The whole end, including the lock's release,
+        runs on that worker thread, so it finishes even if this call's own
+        event loop stops meanwhile, and should that loop run again later,
+        this call only returns. The exception is a ``stop_async()`` awaited on the
+        browser's private loop, whose end runs on that loop, since a worker
+        closing the loop would join its thread while that thread waits for
+        the worker; that loop runs on its own thread until the end stops it.
+        Once the holder has returned and left the lock to such an end, a call
+        on the holder's own loop waits for the end up to
+        ``_GIVEN_UP_END_WAIT_S``, like a call on any other loop.
 
         When the browser's loop cancels the stop submitted to it (the loop is
         shutting down) and nobody cancelled this call, Chrome is ended without
