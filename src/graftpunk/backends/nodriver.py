@@ -398,11 +398,10 @@ def _close_transport(proc: Any) -> None:
 
     A scheduled close runs only if its loop runs again. A stopped loop that
     is closed without running again drops the scheduled close instead, and
-    the close then happens as it is dropped (``_ScheduledClose.__del__``):
-    on a closed loop the close marks the transport closed and then fails,
-    quietly, so collecting the transport later prints nothing. Only on the
-    loop's own thread with the status already collected, or on a loop
-    already closed, does this close at once.
+    the close then happens as it is dropped (``_ScheduledClose.__del__``),
+    without the loop (``_close_transport_now``). Only on the loop's own
+    thread with the status already collected, or on a loop already closed,
+    does this close at once.
     """
     transport = getattr(proc, "_transport", None)
     if transport is None:
@@ -441,9 +440,9 @@ class _ScheduledClose:
     Only the loop's pending callback refers to it. A loop closed before
     running it drops that callback, and with it this object, while the
     transport is still referenced here: ``__del__`` then closes the
-    transport on the closed loop, where the close marks it closed and fails
-    quietly, before the transport's own ``__del__`` would try the same close
-    and print ``Exception ignored in ... Event loop is closed``.
+    transport without the loop (``_close_transport_now``), before the
+    transport's own ``__del__`` would try a close on the closed loop and
+    print ``Exception ignored in ... Event loop is closed``.
     """
 
     def __init__(self, proc: Any, transport: Any, loop: asyncio.AbstractEventLoop) -> None:
@@ -478,11 +477,49 @@ class _ScheduledClose:
 
 
 def _close_transport_now(transport: Any) -> None:
-    """``transport.close()``, logging rather than raising what it raises."""
+    """``transport.close()``, finished by hand when its loop is closed. Never raises.
+
+    On a closed loop ``close()`` marks the transport closed and then raises
+    at its first pipe, since a pipe transport's close schedules its last
+    step on the loop. That leaves every pipe's file descriptor open and the
+    child's exit status unread, and each warns when collected (``unclosed
+    transport``, ``subprocess ... is still running``). So on a closed loop
+    the pipes are closed here directly, and the exit status is read with
+    ``Popen.poll()``: the loop's child watcher cannot collect it any more on
+    Linux, where it runs on the loop, and on macOS its thread has already
+    collected it once Chrome is known to have exited. A child still running
+    is left running.
+    """
     try:
         transport.close()
     except Exception:  # noqa: BLE001 - best-effort: a closed loop makes this raise
         LOG.debug("chrome_transport_close_failed", exc_info=True)
+    loop = getattr(transport, "_loop", None)
+    if isinstance(loop, asyncio.AbstractEventLoop) and loop.is_closed():
+        _release_transport_of_closed_loop(transport)
+
+
+def _release_transport_of_closed_loop(transport: Any) -> None:
+    """Close the pipes of a subprocess transport whose loop is closed, and poll its child."""
+    pipes = getattr(transport, "_pipes", None)
+    for protocol in list(pipes.values()) if isinstance(pipes, dict) else []:
+        pipe_transport: Any = getattr(protocol, "pipe", None)
+        raw = getattr(pipe_transport, "_pipe", None)
+        if raw is None:
+            continue
+        try:
+            raw.close()
+        except OSError:
+            LOG.debug("chrome_transport_pipe_close_failed", exc_info=True)
+        # What the pipe transport's own close sets last, on the loop; its
+        # __del__ warns while it is set.
+        pipe_transport._pipe = None
+    popen = getattr(transport, "_proc", None)
+    if popen is not None:
+        try:
+            popen.poll()
+        except Exception:  # noqa: BLE001 - best-effort: this runs on cleanup paths
+            LOG.debug("chrome_process_poll_failed", exc_info=True)
 
 
 def _wait_for_exit(proc: Any, timeout_s: float) -> bool:
@@ -849,8 +886,9 @@ class NoDriverBackend:
         Chrome's subprocess transport is closed on its loop's thread once the
         loop has collected Chrome's exit status, or after a bounded wait. A
         loop closed right after the stop without running again never runs
-        that close, so the close happens as the closing loop drops it
-        (``_close_transport``).
+        that close, so the close happens as the closing loop drops it,
+        without the loop: the transport's pipes are closed directly and
+        Chrome's exit status is read (``_close_transport``).
 
         ``start()``, ``start_async()``, ``stop()``, and ``stop_async()`` hold
         a per-backend lock, so two threads starting one backend launch one

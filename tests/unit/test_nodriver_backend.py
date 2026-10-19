@@ -5,6 +5,7 @@ import os
 import pickle
 import threading
 import time
+import warnings
 from collections.abc import Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -2624,19 +2625,23 @@ class TestNoDriverBackendEndingChromeWithoutItsLoop:
         backend = NoDriverBackend()
         backend._browser = _temp_browser(profile, process)
 
-        backend._release_failed_attempt()
-        # asyncio's child watcher holds the transport until it has reaped the
-        # child, so wait for that before collecting it.
-        for _ in range(100):
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.05)
-        del process
         gc.collect()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            backend._release_failed_attempt()
+            # asyncio's child watcher holds the transport until it has reaped
+            # the child, so wait for that before collecting it.
+            for _ in range(100):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            del process
+            gc.collect()
 
         assert [str(u.exc_value) for u in unraisable] == []
+        assert _resource_warnings(caught) == []
         assert not profile.exists()
 
     def test_a_stop_through_the_loop_closes_the_transport_so_exit_prints_no_noise(
@@ -3121,7 +3126,11 @@ class TestNoDriverBackendTransportClosedOnItsLoop:
     ) -> None:
         """A hand-managed caller loop that started Chrome has stopped; the stop
         ends Chrome without it and schedules the transport's close there, and
-        the caller then closes the loop without running it again (#243)."""
+        the caller then closes the loop without running it again (#243).
+
+        The dropped close closes the transport without the loop, pipes
+        included, and reads Chrome's exit status: nothing is left for a
+        ResourceWarning (``unclosed transport``, ``still running``)."""
         import gc
         import sys
 
@@ -3146,28 +3155,70 @@ class TestNoDriverBackendTransportClosedOnItsLoop:
             return process
 
         loop = asyncio.new_event_loop()
-        try:
-            process = loop.run_until_complete(spawn())
-            transport = process._transport  # type: ignore[attr-defined]
-            backend = NoDriverBackend()
-            backend._browser = _temp_browser(profile, process)
-            backend._started = True
-            backend._loop = loop
-            del process
-            if stop == "stop":
-                _within(10, backend.stop)
-            else:
-                _within(10, lambda: asyncio.run(backend.stop_async()))
-            closing_before_the_loop_closed = transport.is_closing()
-            del transport
-        finally:
-            loop.close()
+        # Earlier tests' garbage is collected outside the recording.
         gc.collect()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                process = loop.run_until_complete(spawn())
+                transport = process._transport  # type: ignore[attr-defined]
+                popen = transport._proc
+                pipe_transports = [p.pipe for p in transport._pipes.values() if p is not None]
+                backend = NoDriverBackend()
+                backend._browser = _temp_browser(profile, process)
+                backend._started = True
+                backend._loop = loop
+                del process
+                if stop == "stop":
+                    _within(10, backend.stop)
+                else:
+                    _within(10, lambda: asyncio.run(backend.stop_async()))
+                closing_before_the_loop_closed = transport.is_closing()
+                del transport
+            finally:
+                loop.close()
+            gc.collect()
+            pipes_left_open = [p for p in pipe_transports if p._pipe is not None]
+            exit_status = popen.returncode
+            del pipe_transports, popen
+            gc.collect()
 
         assert closing_before_the_loop_closed is False
         assert [repr(u.exc_value) for u in unraisable] == []
+        assert pipes_left_open == []
+        assert exit_status is not None
+        assert _resource_warnings(caught) == []
         assert backend.is_running is False
         assert not profile.exists()
+
+    def test_a_scheduled_close_dropped_while_its_loop_is_open_leaves_the_transport_alone(
+        self,
+    ) -> None:
+        """An open loop runs a pending close itself; closing from the finalizer
+        would race it on another thread."""
+        import gc
+
+        from graftpunk.backends.nodriver import _ScheduledClose
+
+        class Transport:
+            closed = 0
+
+            def close(self) -> None:
+                self.closed += 1
+
+        transport = Transport()
+        loop = asyncio.new_event_loop()
+        try:
+            _ScheduledClose(SimpleNamespace(returncode=None), transport, loop)
+            gc.collect()
+            closed_while_open = transport.closed
+        finally:
+            loop.close()
+        _ScheduledClose(SimpleNamespace(returncode=None), transport, loop)
+        gc.collect()
+
+        assert closed_while_open == 0
+        assert transport.closed == 1
 
 
 class TestNoDriverBackendStartThatNeverReturned:
@@ -4708,6 +4759,16 @@ class TestNoDriverBackendCallTimeout:
 
         assert restored._call_timeout == 60.0
         assert restored._navigate_timeout == 120.0
+
+
+def _resource_warnings(caught: list[warnings.WarningMessage]) -> list[str]:
+    """The warnings a subprocess transport or its child left open gives when collected."""
+    return [
+        str(w.message)
+        for w in caught
+        if issubclass(w.category, ResourceWarning)
+        and ("transport" in str(w.message) or "subprocess" in str(w.message))
+    ]
 
 
 def _within(seconds: float, call: Callable[[], Any]) -> float:
