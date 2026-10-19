@@ -221,7 +221,10 @@ projection first, and at the harden step the captures `gp observe fixtures`
 writes into the git-ignored `tests/captures/`. When the projection does not
 answer a question, read the `--json` digest and then ask the run's HAR through
 the skill's HAR reader, `scripts/har-facts.py`, which prints names, attributes,
-types, and counts and never a value; read the HAR by hand only for what the
+types, and counts and never a value: recorded text prints only when it passes one
+allowlist gate for plain field names, and everything else becomes a placeholder
+or a count. A username used as a key or a path segment can still pass, so treat
+the reader's output under this rule too. Read the HAR by hand only for what the
 reader does not cover, narrowly, as `references/har.md` says. The `--json`
 digest prints paths as recorded, which can carry account or order ids; a capture
 holds the account's own data; a HAR holds both and, when the recording logged

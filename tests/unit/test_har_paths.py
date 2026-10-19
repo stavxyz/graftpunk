@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import importlib.util
 import random
 import string
+import uuid
+from types import ModuleType
 
 import pytest
 
 from graftpunk.har.paths import (
     _MIN_BASE64_LEN,
     _MIN_HEX_LEN,
+    _WORD_CONSONANT_PAIRS,
     bare_host,
     bare_url,
     holds_an_id,
@@ -22,6 +26,7 @@ from graftpunk.har.paths import (
     templated_url,
     templates_a_segment,
 )
+from tests.unit.guide_harness import REPO_ROOT
 
 
 class TestTemplatePath:
@@ -643,3 +648,57 @@ class TestReadsAsWords:
         rng = random.Random(273)  # noqa: S311 - a fixed sample, not a secret
         ids = ["".join(rng.choices(alphabet, k=length)) for _ in range(5_000)]
         assert [value for value in ids if reads_as_words(value)] == []
+
+
+# The graft skill's HAR reader runs on the standard library alone, so it carries
+# its own copies of holds_an_id and the spelling pairs; these hold them equal.
+_HAR_FACTS = REPO_ROOT / "skills" / "graft" / "scripts" / "har-facts.py"
+
+
+def _load_har_facts() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("har_facts", _HAR_FACTS)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _id_corpus() -> list[str]:
+    rng = random.Random(277)  # noqa: S311 - a fixed sample, not a secret
+    alphabets = [
+        string.ascii_letters + string.digits,
+        string.ascii_letters + string.digits + "-_",
+        string.ascii_letters + string.digits + "+/=",
+        "0123456789abcdef",
+        string.digits + "-.() ",
+        string.ascii_lowercase + "_.-~$@",
+    ]
+    corpus = [
+        "".join(rng.choices(rng.choice(alphabets), k=rng.randint(1, 40))) for _ in range(5_000)
+    ]
+    corpus += [str(uuid.UUID(int=rng.getrandbits(128), version=4)) for _ in range(200)]
+    corpus += [
+        "cus_NffrFeUfNV2Hib",
+        "otp_cus_NffrFeUfNV2Hib",
+        "jane.victim@example.com",
+        "0xdeadbeefcafe12",
+        "4111-1111-1111-1111",
+        "2024-01-15",
+        "(555)123-4567",
+        "user_40912873",
+        "ctl00_ContentPlaceHolder1_txtUserName",
+        "csrfmiddlewaretoken",
+        "a%40b.co",
+        "",
+    ]
+    return corpus
+
+
+def test_the_har_readers_id_rule_is_graftpunks() -> None:
+    script = _load_har_facts()
+    differ = [text for text in _id_corpus() if script.holds_an_id(text) != holds_an_id(text)]
+    assert differ == []
+
+
+def test_the_har_readers_spelling_pairs_are_graftpunks() -> None:
+    assert _load_har_facts()._WORD_CONSONANT_PAIRS == _WORD_CONSONANT_PAIRS

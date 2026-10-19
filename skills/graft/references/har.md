@@ -34,28 +34,39 @@ HAR, `bodies/` holds the response bodies too large to inline, and
 ## The HAR reader
 
 Ask the HAR through the `har-facts.py` lines of the Understand block of
-`references/commands.md`. The script reads the HAR as JSON and prints names,
-attributes, types, and counts, never a cookie, header, query, or body value, so
-answer from its output:
+`references/commands.md`. The script reads the HAR as JSON and prints recorded
+text only when it passes one allowlist gate for plain field names, so it never
+prints a cookie, header, query, or body value; answer from its output:
 
 - `cookies`: for each cookie a response sets, every response that sets it (by
-  method, host, and path, with a count) and that setting's `HttpOnly`,
-  `Secure`, `SameSite`, `Path`, `Domain`, and whether it expires. It reads the
-  raw `Set-Cookie` header and the entry's `response.cookies` array and says
-  when they disagree: in a real recording the array lacked `httpOnly` for a
-  cookie whose header carried it, so trust the header's line. It then names
-  the cookies the recording only sends.
-- `request` with a piece of the URL's path in place of `<url-part>`: for each
-  request whose own URL holds it, the method, the URL with its query keys only,
-  the request header and cookie names, and the body's field names with each
-  value's type. Leave `--method <METHOD>` off to match every method.
-- `response`, matched the same way: the status, the content type, the names of
-  the cookies it sets, and the body's shape, JSON keys and types or an HTML
-  page's title and its forms' field names and input types.
+  method and templated URL, with a count) and that setting's `HttpOnly`,
+  `Secure`, `SameSite`, `Path`, `Domain`, and whether it expires, read from the
+  raw `Set-Cookie` header and the entry's `response.cookies` array, with a note
+  when they disagree. A recording made by another tool or an older graftpunk
+  has shown the array lacking `httpOnly` where the header carried it (cause
+  unverified), so trust the header's line. It then names the cookies the
+  recording only sends.
+- `request` with a piece of the URL's path in place of `<url-part>` (as
+  recorded, or as the templated path the script prints): for each request whose
+  own URL holds it, the method, the templated URL with its query keys, the
+  request header and cookie names, and the body's field names with each value's
+  type. Leave `--method <METHOD>` off to match every method.
+- `response`, matched the same way: the status, the content type, the response
+  header and set cookie names, and the body's shape, JSON keys and types or an
+  HTML page's title length and its forms, each with its method, templated
+  action, and controls by name and input type.
 
-A field whose name reads as a password, secret, token, card, or key is listed
-by name alone. Exit 1 means nothing matched (no request URL held the piece, or
-no cookie was set or sent), and exit 2 that the HAR is missing or is not a HAR.
+What fails the gate never prints: a path segment that reads as a value is
+`{id}`, `{token}`, or `{}`; a URL of another scheme is its scheme alone; a query
+or body with no `=` is an unnamed blob of N bytes; a name that reads as a value
+is counted ("N names that read as values, not shown"); a title is its length
+class; a cookie's `Domain` outside the response's host and an unknown `SameSite`
+are named as such. The gate cannot tell a username used as a key or a path
+segment from a field name, so a plain word in the output can still be one. A
+field whose name reads as a password, secret, token, card, or key is listed by
+name alone. Exit 1 means nothing matched (no request URL held the piece, or no
+cookie was set or sent); exit 2 means the HAR is missing, is not a HAR, or
+holds an entry the script could not read.
 
 ## Reading the HAR by hand
 
@@ -68,7 +79,8 @@ request's `method` and `url` come first, then its `headers` (where `Cookie` and
 
 - Find an entry with a Grep anchored on the URL key, `"url": "[^"]*<path>`, so
   a `Referer`, `Location`, or `redirectURL` line does not match, with line
-  numbers and a head limit. That line holds the query string too.
+  numbers and a head limit. That line holds the query string, values and all;
+  the reader's `request` line gives the keys alone.
 - Never Read forward from a `url` line, and never read a `postData`, a `Cookie`
   or `Authorization` value, or a cookie's `value`. Treat any form or body with a
   password-like field as holding a secret, and leave it to the reader.
