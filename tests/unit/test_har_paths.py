@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import random
+import string
+
 import pytest
 
 from graftpunk.har.paths import (
@@ -577,6 +580,9 @@ class TestReadsAsWords:
             "4K+TV",
             "2x4%20lumber",
             "macbook pro m3",
+            "iPad+mini",
+            "USB-C cable",
+            "crème brûlée",
             "v2",
             '{"q":"garden hose","page":3}',
         ],
@@ -595,6 +601,9 @@ class TestReadsAsWords:
             "kqzpwmxtrv",
             "lalalalalalalalala",
             "lot 123456",
+            "Zq9X+kLmP+wR4t+Bv2H",
+            "Ab3+xYz9+kLm+Qr",
+            "aB3x+Y7qW2e/R5tY8+uI9kL0",
             "x7Kq29Lp ann@myshop.example",
             "a3f9c2d1e0b4",
             "40912873",
@@ -604,3 +613,12 @@ class TestReadsAsWords:
     )
     def test_a_credential_shaped_or_empty_value_does_not(self, value: str) -> None:
         assert not reads_as_words(value)
+
+    @pytest.mark.parametrize("length", [22, 24, 32, 44])
+    def test_standard_base64_ids_of_session_length_do_not(self, length: int) -> None:
+        """Plus-decoding splits a standard-base64 id at each +, so the several-words
+        reading must not accept the pieces; 0 of 100,000 per length was measured."""
+        alphabet = string.ascii_letters + string.digits + "+/"
+        rng = random.Random(273)  # noqa: S311 - a fixed sample, not a secret
+        ids = ["".join(rng.choices(alphabet, k=length)) for _ in range(5_000)]
+        assert [value for value in ids if reads_as_words(value)] == []

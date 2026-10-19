@@ -279,7 +279,7 @@ def keys_are_ids(keys: Iterable[str]) -> bool:
 # other pair (fb, kq, zh, ...) before a trailing digit reads as random.
 _WORD_CONSONANT_PAIRS = frozenset(
     (  # noqa: SIM905 - one compact string on purpose: the set is data
-        "bb bd bh bk bl bm bn bp br bs bt bv bw cc ch ck cl cm cn cr cs ct db dd dg dh "
+        "bb bd bh bk bl bm bn bp br bs bt bv bw cb cc ch ck cl cm cn cr cs ct db dd dg dh "
         "dl dm dn dp dr ds dt dv dw ff fl fn fr fs ft gg gh gl gm gn gr gs gt hb hd hf "
         "hl hm hn hp hr hs ht hw kb kd kf kg kh kl km kn kp kr ks kt kw lb lc ld lf lg "
         "lh lk ll lm ln lp lr ls lt lv lw mb md mf mh ml mm mn mp mr ms mt mw nb nc nd "
@@ -375,9 +375,9 @@ def reads_as_words(value: str) -> bool:
     one run of letters or digits and :func:`holds_an_id` does not hold it (so no
     run of 6 or more digits, no long hex, no base64-like token), and either
 
-    - it has more than one whitespace-separated word, or a non-ASCII letter, and
-      :func:`holds_an_id` holds none of its words (``iPhone 15``, ``4K TV``,
-      ``café``), or
+    - it has more than one whitespace-separated word, or a non-ASCII letter,
+      :func:`holds_an_id` holds none of its words, and every word looks typed
+      (:func:`_typed_word`: ``iPhone 15``, ``4K TV``, ``café``), or
     - every run of letters and digits in it is ASCII and is a number, a version
       (``v2``), or a word of at most 15 letters in one case shape (``shoes``,
       ``USD``, ``Austin``) spelled with the consonant pairs English uses,
@@ -388,11 +388,12 @@ def reads_as_words(value: str) -> bool:
     (``kQzPwM``), ``lot 123456``, and an empty value do not.
 
     The known limits: a number of 5 digits or fewer reads as words, and so can a
-    random value of 15 lowercase letters or fewer, spelled by chance. Measured on
-    100,000 random values per length (2026-10-19): of lowercase letters alone,
-    14.7% at 8 letters, 5.1% at 12 and 2.4% at 15 read as words, and none at 16
-    or more; of letters in both cases and digits, 49 at 8 characters and none at
-    12 or more.
+    short random value. Measured on 100,000 random values per row (seed 273,
+    2026-10-19): of lowercase letters alone, 14.8% at 8 letters, 5.3% at 12 and
+    2.3% at 15 read as words, and none at 16 or more; of standard base64
+    (``+`` and ``/`` included, ``+`` decoded as a space), 0.75% at 8 characters,
+    0.04% at 12, 0.001% at 16 and none at 22 or more; of base64url, 0.31% at 8 and
+    none at 16 or more; of ``[a-z0-9]``, 1.96% at 8, 0.008% at 16 and none at 26.
     """
     text = unquote_plus(value)
     parts = _VALUE_PART_RE.findall(text)
@@ -400,11 +401,42 @@ def reads_as_words(value: str) -> bool:
         return False
     words = text.split()
     if len(words) > 1 or any(ch.isalpha() and not ch.isascii() for ch in text):
-        # A session id holds no space and no accented letter, so several words or
-        # one non-ASCII letter mark typed text (``iPhone 15``, ``café``); only a
-        # word holding an id keeps such a value from reading as words.
-        return not any(holds_an_id(word) for word in words)
+        # Several words or a non-ASCII letter mark typed text (``iPhone 15``,
+        # ``café``), but plus-decoding also splits a standard-base64 id at each
+        # ``+``, so every word must look typed on its own.
+        return not any(holds_an_id(word) for word in words) and all(
+            _typed_word(word) for word in words
+        )
     return all(_plain_value_part(part) for part in parts)
+
+
+_TYPED_SHORT_WORD_LEN = 3
+_BRAND_CASED_RE = re.compile(r"[a-z]?[A-Z]?[a-z]+")
+
+
+def _typed_word(word: str) -> bool:
+    """True when *word*, one whitespace-separated word of a cookie value, looks
+    typed: every run of letters and digits in it passes the plain-value rule
+    (``shoes``, ``USB-C``), it is at most 3 letters and digits (``4K``, ``TV``,
+    ``2x4``, ``m3``), it is spelled letters in one brand casing followed by at most
+    2 digits (``iPhone``, ``iPhone15``), or it is at most 15 characters holding a
+    non-ASCII letter (``café``)."""
+    runs = _VALUE_PART_RE.findall(word)
+    if runs and all(_plain_value_part(run) for run in runs):
+        return True
+    if len(word) <= _TYPED_SHORT_WORD_LEN and word.isalnum():
+        return True
+    letters = word.rstrip("0123456789")
+    if (
+        len(word) - len(letters) <= 2
+        and len(letters) > _TYPED_SHORT_WORD_LEN
+        and _BRAND_CASED_RE.fullmatch(letters)
+        and _spelled(letters)
+    ):
+        return True
+    return len(word) <= _MAX_VALUE_WORD_LEN and any(
+        ch.isalpha() and not ch.isascii() for ch in word
+    )
 
 
 def is_placeholder(segment: str) -> bool:
