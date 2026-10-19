@@ -371,16 +371,21 @@ def reads_as_words(value: str) -> bool:
     """True when *value*, a cookie value, is plain words, short numbers, or a date:
     the state a form or a preference keeps, not a credential.
 
-    *value* is percent- and plus-decoded and split into its runs of letters and
-    digits. It reads as words when it has at least one run, :func:`holds_an_id`
-    does not hold it (so no run of 6 or more digits, no long hex, no base64-like
-    token), and every run is ASCII and is a number, a version (``v2``), or a word
-    of at most 15 letters in one case shape (``shoes``, ``USD``, ``Austin``) spelled
-    with the consonant pairs English uses, optionally followed by a digit run of at
-    most 2.
+    *value* is percent- and plus-decoded. It reads as words when it has at least
+    one run of letters or digits and :func:`holds_an_id` does not hold it (so no
+    run of 6 or more digits, no long hex, no base64-like token), and either
+
+    - it has more than one whitespace-separated word, or a non-ASCII letter, and
+      :func:`holds_an_id` holds none of its words (``iPhone 15``, ``4K TV``,
+      ``café``), or
+    - every run of letters and digits in it is ASCII and is a number, a version
+      (``v2``), or a word of at most 15 letters in one case shape (``shoes``,
+      ``USD``, ``Austin``) spelled with the consonant pairs English uses,
+      optionally followed by a digit run of at most 2.
+
     ``running shoes``, ``12``, ``2026-10-01``, ``10/01/2026``, and ``en-US`` read
     as words; a session id (``Zq9XkLmPwR4t7Bv2Hn8Ks3Jd``), a mixed-case run
-    (``kQzPwM``), and an empty value do not.
+    (``kQzPwM``), ``lot 123456``, and an empty value do not.
 
     The known limits: a number of 5 digits or fewer reads as words, and so can a
     random value of 15 lowercase letters or fewer, spelled by chance. Measured on
@@ -393,6 +398,12 @@ def reads_as_words(value: str) -> bool:
     parts = _VALUE_PART_RE.findall(text)
     if not parts or holds_an_id(text):
         return False
+    words = text.split()
+    if len(words) > 1 or any(ch.isalpha() and not ch.isascii() for ch in text):
+        # A session id holds no space and no accented letter, so several words or
+        # one non-ASCII letter mark typed text (``iPhone 15``, ``café``); only a
+        # word holding an id keeps such a value from reading as words.
+        return not any(holds_an_id(word) for word in words)
     return all(_plain_value_part(part) for part in parts)
 
 
