@@ -388,12 +388,15 @@ def reads_as_words(value: str) -> bool:
     (``kQzPwM``), ``lot 123456``, and an empty value do not.
 
     The known limits: a number of 5 digits or fewer reads as words, and so can a
-    short random value. Measured on 100,000 random values per row (seed 273,
-    2026-10-19): of lowercase letters alone, 14.8% at 8 letters, 5.3% at 12 and
-    2.3% at 15 read as words, and none at 16 or more; of standard base64
-    (``+`` and ``/`` included, ``+`` decoded as a space), 0.75% at 8 characters,
-    0.04% at 12, 0.001% at 16 and none at 22 or more; of base64url, 0.31% at 8 and
-    none at 16 or more; of ``[a-z0-9]``, 1.96% at 8, 0.008% at 16 and none at 26.
+    short random value, and so does any value made of space- or ``+``-separated
+    pieces of 3 or fewer letters and digits with a letter among them
+    (``aB3+xY7+qW2``), since each piece passes as a short typed word. Measured on
+    100,000 random values per row (seed 273, 2026-10-19): of lowercase letters
+    alone, 14.8% at 8 letters, 5.3% at 12 and 2.4% at 15 read as words, and none
+    at 16 or more; of standard base64 (``+`` and ``/`` included, ``+`` decoded as
+    a space), 0.77% at 8 characters, 0.04% at 12 and none at 16 or more; of
+    base64url, 0.30% at 8 and none at 16 or more; of ``[a-z0-9]``, 1.96% at 8,
+    0.008% at 16 and none at 26.
     """
     text = unquote_plus(value)
     parts = _VALUE_PART_RE.findall(text)
@@ -403,28 +406,46 @@ def reads_as_words(value: str) -> bool:
     if len(words) > 1 or any(ch.isalpha() and not ch.isascii() for ch in text):
         # Several words or a non-ASCII letter mark typed text (``iPhone 15``,
         # ``café``), but plus-decoding also splits a standard-base64 id at each
-        # ``+``, so every word must look typed on its own.
-        return not any(holds_an_id(word) for word in words) and all(
-            _typed_word(word) for word in words
+        # ``+``, so every word must look typed on its own, and one must hold a
+        # letter, so pieces of punctuation and digits alone are not words.
+        return (
+            not any(holds_an_id(word) for word in words)
+            and any(ch.isalpha() for ch in text)
+            and all(_typed_word(word) for word in words)
         )
     return all(_plain_value_part(part) for part in parts)
 
 
 _TYPED_SHORT_WORD_LEN = 3
 _BRAND_CASED_RE = re.compile(r"[a-z]?[A-Z]?[a-z]+")
+# A quantity typed into a search box: a number and a unit from this list (512gb,
+# 500ml, 12pk, 55inch), or dimensions (10x10). A fixed list, not any 1 to 4
+# lowercase letters: that open shape read 0.85% of random 8-character
+# standard-base64 ids as words against 0.77% without it; the list reads 0.77%
+# (100,000 values, seed 273, 2026-10-19).
+_QUANTITY_UNITS = (  # noqa: SIM905 - one compact string on purpose: the set is data
+    "kb mb gb tb mah mm cm km in inch ft yd ml cl oz lb lbs kg mg g l pk ct pc pcs "
+    "pack w kw v hz ghz mhz"
+).split()
+_QUANTITY_RE = re.compile(rf"\d{{1,4}}(?:{'|'.join(_QUANTITY_UNITS)})|\d{{1,3}}x\d{{1,3}}")
 
 
 def _typed_word(word: str) -> bool:
     """True when *word*, one whitespace-separated word of a cookie value, looks
-    typed: every run of letters and digits in it passes the plain-value rule
-    (``shoes``, ``USB-C``), it is at most 3 letters and digits (``4K``, ``TV``,
-    ``2x4``, ``m3``), it is spelled letters in one brand casing followed by at most
-    2 digits (``iPhone``, ``iPhone15``), or it is at most 15 characters holding a
-    non-ASCII letter (``café``)."""
+    typed: it holds no letter or digit (``&`` in ``salt & pepper``), every run of
+    letters and digits in it passes the plain-value rule (``shoes``, ``USB-C``), it
+    is at most 3 letters and digits (``4K``, ``TV``, ``2x4``, ``m3``), it is a
+    quantity (``512gb``, ``55inch``, ``10x10``), it is spelled letters in one brand
+    casing followed by at most 2 digits (``iPhone``, ``iPhone15``), or it is at
+    most 15 characters holding a non-ASCII letter (``café``)."""
+    if not any(ch.isalnum() for ch in word):
+        return True
     runs = _VALUE_PART_RE.findall(word)
     if runs and all(_plain_value_part(run) for run in runs):
         return True
     if len(word) <= _TYPED_SHORT_WORD_LEN and word.isalnum():
+        return True
+    if _QUANTITY_RE.fullmatch(word):
         return True
     letters = word.rstrip("0123456789")
     if (
