@@ -6264,3 +6264,50 @@ class TestNoDriverBackendAbandonedLockHolder:
         assert given_up is None
         assert backend._abandoned is (earlier if a_start_gave_up_first else None)
         assert earlier.ender_claimed is False
+
+    def test_a_start_waits_for_a_given_up_holds_end_only_so_long(
+        self,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        """An end of Chrome that does not finish (its stop_async()'s own loop
+        stopped, say) holds a start up for ``_GIVEN_UP_END_WAIT_S``, after
+        which the start raises, since the holder still has the lock."""
+        from graftpunk.backends import nodriver as nodriver_module
+
+        monkeypatch.setattr(nodriver_module, "_GIVEN_UP_END_WAIT_S", 1.0)
+        ending = threading.Event()
+        may_finish = threading.Event()
+        real_end = nodriver_module._end_browser_without_loop
+
+        def end_held_open(browser: Any) -> None:
+            ending.set()
+            may_finish.wait(10)
+            real_end(browser)
+
+        monkeypatch.setattr(nodriver_module, "_end_browser_without_loop", end_held_open)
+        profile = temp_profiles / "uc_end_wait_bound"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        with _chrome_like_child(profile) as child:
+            stranded = self._start_then_strand_a_stop_async(backend, child, profile, monkeypatch)
+            ender = threading.Thread(target=backend.stop, daemon=True)
+            try:
+                ender.start()
+                assert ending.wait(10)
+                began = time.monotonic()
+                with pytest.raises(RuntimeError, match="gave up waiting for a stop_async()"):
+                    _within(5, backend.start)
+                waited = time.monotonic() - began
+                ending_still = ender.is_alive()
+            finally:
+                may_finish.set()
+                ender.join(10)
+                stranded.finish()
+
+        assert ending_still is True
+        assert not ender.is_alive()
+        assert waited >= 1.0
+        assert self._given_up(captured_logs) == [("stop", "stop_async"), ("start", "stop_async")]
