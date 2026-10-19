@@ -1547,15 +1547,36 @@ before the recording starts. Record a fresh login, so that the server's
 `Set-Cookie` for the session is in the HAR, then run `gp observe fixtures`
 again. A session cookie a response does set can still be left out when its
 name has no session part, the response did not set it with `HttpOnly`, and
-every value it held reads as words, such as a numeric id of 5 digits or fewer.
+every value it held reads as words: a numeric id of 5 digits or fewer always
+does, so does one made of space- or `+`-separated pieces of 3 or fewer
+characters with a letter among them (`aB3+xY7+qW2`), and a short random id
+sometimes does (14.8% of random 8-letter lowercase ids and 0.77% of random
+8-character standard-base64 ids, measured on 100,000 each).
 
-A form-state cookie can stay flagged the other way. A search term typed alone
-in brand casing or capitals (`iPad`, `eBay`, `XL`, `LEGO`) does not read as
-words. Nor does a several-word term with a word cased with two capitals inside
-it or with a run of 4 or more capitals (`YouTube Premium`, `MacBook Air`,
-`PlayStation 5`, `LEGO set`); `iPad Pro`, `eBay deals` and `XL shirt` do read as
-words. A cookie the server set with `HttpOnly` stays flagged whatever its
-values. When a plain-word cookie you expected to be left out is in
+A form-state cookie can stay flagged the other way, when one of its values does
+not read as words. The rule `graftpunk.har.paths.reads_as_words` applies is:
+
+- A value of one word reads as words when it is a number of at most 5 digits, a
+  date, or a word of at most 15 letters, all lowercase, all capitals or
+  capitalised, spelled with letter pairs English words use, optionally followed
+  by 1 or 2 digits (`shoes`, `USD`, `Austin`, `shoes2`). So `iPad`, `iPhone`,
+  `eBay`, `NASA`, `XL`, `LEGO`, `512gb`, `24ct` and `50lbs` typed alone do not
+  (`XL` fails on its `xl` pair, `NASA` on its run of 4 capitals, `512gb` because a
+  quantity counts only beside other words).
+- A value of several words reads as words when no word holds an id and every
+  word is one of: such a word, a number, at most 3 letters and digits (`4K`,
+  `TV`), a quantity of a number and a lowercase unit from a fixed list (`512gb`,
+  `12pk`, `10x10`), a word of 4 or more letters in one brand casing (`iPhone`,
+  `eBay`), a word holding an accented letter, or punctuation (`&`), with a letter
+  somewhere when a punctuation word is present. So `iPhone 15`, `iPad Pro`,
+  `XL shirt`, `512gb ssd`, `salt & pepper` and `10 19 2026` read as words, and
+  `YouTube Premium`, `MacBook Air`, `PlayStation 5`, `LEGO set`, `HDMI cable`,
+  `512GB ssd`, `16GB ram`, `1.5l bottle`, `2.4ghz router`, `1080p tv`,
+  `xbox one` and `mcdonalds menu` do not (`xbox` holds the pair `xb`, and
+  `mcdonalds` the pairs `mc` and `cd`).
+
+A cookie the server set with `HttpOnly` stays flagged whatever its values. When
+a plain-word cookie you expected to be left out is in
 `flagged_names` and an honest fixture fails on its name, record again searching
 only plain words and regenerate the sidecar, or rename the name in the fixture
 where its structure allows.
