@@ -20,7 +20,6 @@ from graftpunk.testing.sidecar import (
     load_sidecar,
     sidecar_path,
     sidecar_payload,
-    sidecar_scannable_text,
     sidecar_text,
 )
 
@@ -306,23 +305,6 @@ def test_the_name_fields_must_be_a_tuple_or_list(kwargs: dict) -> None:
     """A string is iterable but is not a list of names."""
     with pytest.raises(SidecarError):
         Sidecar(status=200, content_type="application/json", **kwargs)
-
-
-class TestScannableText:
-    def test_status_and_content_type_are_scanned(self) -> None:
-        sidecar = Sidecar(
-            status=403,
-            content_type="text/plain",
-            body_params=("page",),
-            capture_sha256="ab" * 32,
-            flagged_names=("shop_session",),
-        )
-        text = sidecar_scannable_text(sidecar)
-        for value in ("403", "text/plain"):
-            assert value in text
-        assert "page" not in text
-        assert "shop_session" not in text
-        assert "ab" * 32 not in text
 
 
 def test_the_placeholder_is_the_gitkeep() -> None:

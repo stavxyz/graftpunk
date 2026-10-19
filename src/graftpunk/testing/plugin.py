@@ -22,12 +22,15 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import html
 import os
+import re
 import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote_plus
 
 import pytest
 
@@ -39,7 +42,6 @@ from graftpunk.testing.sidecar import (
     is_sidecar,
     load_sidecar,
     sidecar_path,
-    sidecar_scannable_text,
 )
 
 __all__ = [
@@ -305,7 +307,7 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     outside its declared format (through the owner,
     :mod:`graftpunk.testing.sidecar`), a fixture that cannot be read, a
     fixture that is byte for byte its capture, and a flagged cookie or token
-    name in a fixture or in its sidecar's other fields. It does not judge
+    name in a fixture. It does not judge
     whether invented content is invented well. A sidecar with no capture hash
     is the author's declaration that the file came off no account (or gp's,
     for an empty capture, which holds nothing to sanitise); it is trusted,
@@ -367,36 +369,107 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
                     f"{relative}: an unchanged copy of its capture. A fixture keeps the "
                     f"capture's structure and invents every value."
                 )
-        problems.extend(_flagged_name_problems(relative, meta.name, sidecar, body))
+        problems.extend(_flagged_name_problems(relative, sidecar, body))
     return FixturesTreeReport(problems=tuple(problems), verified=verified, declared=declared)
 
 
-def _flagged_name_problems(
-    relative: Path, meta_name: str, sidecar: Sidecar, body: bytes
-) -> list[str]:
-    """One problem per flagged name found in the fixture's body or in a sidecar field
-    other than ``flagged_names``. Matched case-insensitively: an HTTP header name is
-    case-insensitive by the protocol, and a capture recorded over HTTP/2 lowercases
-    every header name, so a flagged ``X-Csrf-Token`` copied into a fixture as
-    ``x-csrf-token`` still counts."""
+# Where a flagged name ends in a fixture. RFC 6265 makes a cookie name an RFC 2616
+# token: letters, digits, and !#$%&'*+-.^_`|~. Letters, digits, _ and - always
+# continue a name. The token's other punctuation continues a name only between two
+# of those, as in connect.sid or text.v2; anywhere else it is text around the name:
+# a full stop ending a sentence, Markdown's backticks and asterisks, an exclamation
+# mark, or a $ starting a variable. & ' % + # and | always end a name: in a
+# fixture the first four separate query pairs, quote strings, and encode text, #
+# starts a URL fragment (cb#access_token=), | separates fields, and no common
+# cookie name holds # or |. Anything outside the token, US-ASCII or not, ends a
+# name.
+_NAME_CORE = r"A-Za-z0-9_\-"
+_NAME_PUNCTUATION = r"!$*.^`~"
+
+# The forms a fixture is read in besides as written, kept in step with
+# skills/graft/scripts/fixture-leaks.py's _escape_decodings (a test compares the
+# two): that script runs with the standard library alone and cannot import this.
+_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+_SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
+_HEX_ESCAPE = re.compile(r"\\x([0-9a-fA-F]{2})")
+# A one-letter control escape (\n, \r, \t, \b, \f), so a name on the line after
+# a JSON or Python string's \n is read as starting that line.
+_CONTROL_ESCAPE = re.compile(r"\\([nrtbf])")
+_CONTROL_CHARACTERS = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f"}
+_PERCENT_ROUNDS = 3
+
+
+def _backslash_unescaped(text: str) -> str:
+    """*text* with its ``\\uXXXX`` escapes decoded (a surrogate pair rejoined into
+    the one character it spells), its ``\\xXX`` escapes and its ``\\n``, ``\\r``,
+    ``\\t``, ``\\b`` and ``\\f`` escapes decoded, and ``\\/`` read as ``/``."""
+
+    def pair(m: re.Match[str]) -> str:
+        high, low = int(m.group(1), 16), int(m.group(2), 16)
+        return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+
+    decoded = _SURROGATE_PAIR.sub(pair, text)
+    decoded = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
+    decoded = _HEX_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
+    decoded = _CONTROL_ESCAPE.sub(lambda m: _CONTROL_CHARACTERS[m.group(1)], decoded)
+    return decoded.replace("\\/", "/")
+
+
+def _decoded_forms(text: str) -> list[str]:
+    """*text* with its backslash escapes decoded, with its HTML character
+    references decoded, and percent-decoded (``+`` as a space) once per round
+    until it stops changing, at most three rounds, so a URL nested in another
+    URL's query is read as written."""
+    forms = [_backslash_unescaped(text), html.unescape(text)]
+    current = text
+    for _ in range(_PERCENT_ROUNDS):
+        decoded = unquote_plus(current)
+        if decoded == current:
+            break
+        forms.append(decoded)
+        current = decoded
+    return forms
+
+
+def _flagged_name_pattern(name: str) -> re.Pattern[str]:
+    """*name*, casefolded, as a whole name (see ``_NAME_CORE``): a flagged
+    ``text`` matches ``"text":``, ``text=``, ``text.`` at a sentence's end, and
+    ``$text``, but not ``context``, ``text-align`` or ``text.v2``."""
+    core, punctuation = _NAME_CORE, _NAME_PUNCTUATION
+    return re.compile(
+        rf"(?<![{core}])(?<![{core}][{punctuation}])"
+        rf"{re.escape(name.casefold())}"
+        rf"(?![{core}])(?![{punctuation}][{core}])"
+    )
+
+
+def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> list[str]:
+    """One problem per flagged name found in the fixture's body, as a whole name
+    (:func:`_flagged_name_pattern`), in the body as written or in any of its
+    decoded forms (:func:`_decoded_forms`), so a name beside an escaped ``&`` or
+    ``"`` still counts. Matched case-insensitively: an HTTP header name is case-insensitive by the
+    protocol, and a capture recorded over HTTP/2 lowercases every header name,
+    so a flagged ``X-Csrf-Token`` copied into a fixture as ``x-csrf-token``
+    still counts.
+
+    No sidecar field is scanned. ``status`` and ``content_type`` are written by
+    gp from the response and hold no cookie value (a media type such as
+    ``text/html`` is not a leak of a cookie named ``text``); ``body_params``
+    holds request field names, which legitimately include a posted form's own
+    CSRF field; and the rest are the names themselves, a digest, a count, and
+    the schema number."""
     problems: list[str] = []
-    text = body.decode("utf-8", errors="replace").casefold()
-    rest = sidecar_scannable_text(sidecar).casefold()
+    raw = body.decode("utf-8", errors="replace")
+    texts = {form.casefold() for form in (raw, *_decoded_forms(raw))}
     for name in sidecar.flagged_names:
         if not name:
-            # An empty string is a substring of every fixture; a sidecar
-            # holding one would flag every file it checks.
+            # An empty name would match between every two characters.
             continue
-        folded = name.casefold()
-        if folded in text:
+        pattern = _flagged_name_pattern(name)
+        if any(pattern.search(text) for text in texts):
             problems.append(
                 f"{relative}: contains the flagged name {name!r}, a cookie or token "
                 f"name the capture's digest recorded; rename it in the fixture."
-            )
-        if folded in rest:
-            problems.append(
-                f"{relative.parent / meta_name}: carries the flagged name {name!r} "
-                f"outside flagged_names."
             )
     return problems
 

@@ -703,8 +703,12 @@ fixtures` names captures. A plugin added to an existing suite gets
 and two plugins in one suite can share an endpoint path. `gp observe
 fixtures` writes a `<file>.meta.json` sidecar beside every capture (a `schema`
 number, the status, the content type, the body parameter names, the hash of the
-captured body, every cookie name the recording set, and the token names the
-run's digest recorded, a name that holds an id left out and counted in
+captured body, every cookie name the recording set except a cookie whose every
+non-empty recorded value reads as words (`graftpunk.har.paths.reads_as_words`: a
+search term, a short number, a date) and that has neither a token or
+session-like name nor a `Set-Cookie` with `HttpOnly` (in the header or in the
+HAR's `response.cookies` array), and the token names the run's digest recorded, a
+name that holds an id left out and counted in
 `redacted_names`, but never the URL or the capture time), written to be
 committed beside the fixture derived from it once you have read its body
 parameter names and its `flagged_names`: a body key that does not read as a

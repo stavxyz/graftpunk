@@ -1523,14 +1523,83 @@ A `<filename>.meta.json` sidecar beside a fixture supplies its status and
 content type. `gp observe fixtures` writes one for every capture to commit
 beside the fixture. It holds no URL, no time, and no header, cookie, or query
 value: only the status, the content type, the hash of the captured body, the
-request's body parameter names, every cookie name the recording set, and the
-token names the digest found. A body key that does not read as a field name,
-or that holds an id by the digest's rule, is dropped from `body_params`, and a
-cookie or token name that holds an id is left out of `flagged_names`, in any
-form; `redacted_names` counts those cookie and token names (a dropped body
-key is not in the count). The rule is lexical, so an
-account value in a shape it does not read as an id is kept: read both lists
-before you commit a sidecar.
+request's body parameter names, every cookie name the recording set except a
+cookie that only ever held words, and the token names the digest found.
+
+A cookie whose every non-empty value in the recording (in any request or
+response) reads as words holds no credential, so its name is left out of
+`flagged_names`: an invented fixture keeps such a name as a key or in prose.
+Words are a search term such as `running shoes`, `iPhone 15`, `café`,
+`salt & pepper` or `512gb ssd`, a number
+of at most 5 digits such as `lot=12`, or a date. An empty value beside another
+value is a cleared field and is ignored. A cookie stays flagged, whatever its
+values, when its name reads as a token name (`csrftoken`) or has a session part
+(`sessionid`, `PHPSESSID`, `JSESSIONID`, `connect.sid`, `myshop_session`,
+`auth`, `jwt`, `login`), or when a response in the recording set it with
+`HttpOnly`, either by its `Set-Cookie` header carrying the attribute or by the
+HAR's `response.cookies` entry saying `httpOnly` is true (a HAR often leaves
+`httpOnly` out of that array when the header has it). It also stays flagged
+when any value it held does not read as words (a session id), or when the
+recording shows no non-empty value for it.
+
+Check that your session cookie is in `flagged_names` before you commit a
+sidecar. A cookie the recording only sends, which no response in it sets, is
+never flagged, whatever its name or value. That is the state of the session
+cookie in a recording made with a cached session, which reaches the browser
+before the recording starts. Record a fresh login, so that the server's
+`Set-Cookie` for the session is in the HAR, then run `gp observe fixtures`
+again. A session cookie a response does set can still be left out when its
+name has no session part, the response did not set it with `HttpOnly`, and
+every value it held reads as words. A numeric id of 5 digits or fewer always
+does. So does a value made of space- or `+`-separated pieces of 3 or fewer
+letters and digits with a letter among them (`aB3+xY7+qW2`), and so do groups
+of digits separated by spaces or `+` (`4111 1111 1111 1111`, `555 123 4567`):
+a cookie holding only such values is not flagged. A short random id sometimes
+does (14.8% of random 8-letter lowercase ids and 0.77% of random 8-character
+standard-base64 ids, measured on 100,000 each). The graft skill's
+`fixture-leaks.py`, which compares a fixture with the capture it was derived
+from, still reports any value from the captured response body left in the
+fixture, each run of 3 or more digits included. It reads the capture's body,
+not its cookie headers, and runs when the skill derives a fixture, not in the
+suite.
+
+A form-state cookie can stay flagged the other way, when one of its values does
+not read as words. The rule `graftpunk.har.paths.reads_as_words` applies is:
+
+- A value of one word reads as words when no run of 6 or more digits or other
+  id shape is in it and each of its runs of letters and digits, split at `-`,
+  `/`, `.`, `_` and other punctuation, is a number, a version (`v2`), or a word
+  of at most 15 letters, all lowercase, all capitals or capitalised, spelled with
+  letter pairs English words use, optionally followed by 1 or 2 digits. So
+  `shoes`, `USD`, `Monday`, `shoes2`, `en-US`, `t-shirt`, `USB-C` and a date
+  such as `2026-10-19` read as words, and `iPad`, `iPhone`, `eBay`, `NASA`,
+  `XL`, `LEGO`, `512gb`, `24ct` and `50lbs` typed alone do not (`XL` fails on
+  its `xl` pair, `NASA` on its run of 4 capitals, `512gb` because a quantity
+  counts only beside other words).
+- A value of several words reads as words when no word holds an id and every
+  word is one of: such a word, a number, at most 3 letters and digits (`4K`,
+  `TV`), a quantity of a number and a lowercase unit from a fixed list (`512gb`,
+  `12pk`, `10x10`), a word of 4 or more letters in one brand casing (`iPhone`,
+  `eBay`), a word holding an accented letter, or punctuation (`&`), with a letter
+  somewhere when a punctuation word is present. So `iPhone 15`, `iPad Pro`,
+  `XL shirt`, `512gb ssd`, `salt & pepper` and `10 19 2026` read as words, and
+  `YouTube Premium`, `MacBook Air`, `PlayStation 5`, `LEGO set`, `HDMI cable`,
+  `512GB ssd`, `16GB ram`, `1.5l bottle`, `2.4ghz router`, `1080p tv`,
+  `xbox one` and `mcdonalds menu` do not (`xbox` holds the pair `xb`, and
+  `mcdonalds` the pairs `mc` and `cd`).
+
+A cookie the server set with `HttpOnly` stays flagged whatever its values. When
+a plain-word cookie you expected to be left out is in
+`flagged_names` and an honest fixture fails on its name, record again searching
+only plain words and regenerate the sidecar, or rename the name in the fixture
+where its structure allows.
+
+A body key that does not read as a field name, or that holds an id by the
+digest's rule, is dropped from `body_params`, and a cookie or token name that
+holds an id is left out of `flagged_names`, in any form; `redacted_names`
+counts those cookie and token names (a dropped body key is not in the count).
+The rule is lexical, so an account value in a shape it does not read as an id
+is kept: read both lists before you commit a sidecar.
 
 ```json
 {
@@ -1608,11 +1677,26 @@ The generated suite holds you to part of that. Its `tests/conftest.py` wires in
 `fixtures_are_sanitised`, which walks every non-dotfile under `tests/fixtures/`
 on every run (a `.DS_Store` or an editor swap file is skipped, like `.gitkeep`)
 and fails when a fixture has no sidecar, when a fixture is still byte for byte
-its capture, when a name the sidecar flags turns up in the fixture or elsewhere in
-the sidecar, when a sidecar is outside its declared format, or when a fixture, or
-a directory under `tests/fixtures/`, cannot be read. A flagged name is
-matched as a substring, case-insensitively, so a short cookie name can match an
-ordinary word in the fixture; rename that value in the fixture. It cannot tell
+its capture, when a name the sidecar flags turns up in the fixture, when a
+sidecar is outside its declared format, or when a fixture, or a directory under
+`tests/fixtures/`, cannot be read. A flagged name is matched case-insensitively
+and only as a whole name. Letters, digits, `_` and `-` continue a name. The rest
+of the punctuation an RFC 6265 cookie name can hold (`` . $ ! * ^ ` ~ ``)
+continues it only between two of those, as in `connect.sid`; anywhere else it
+ends the name, and so does every other character, `#` and `|` included. The
+fixture is read as written and in decoded forms: its `\uXXXX`, `\xXX`, `\n`,
+`\r`, `\t`, `\b` and `\f` escapes decoded, its HTML
+character references decoded, and percent-decoded up to three times while it
+keeps changing. A flagged `myshop_session` therefore fails
+`{"myshop_session": "x"}`, `?a=1&myshop_session=x`, the same pair behind an
+escaped `&` (`\u0026`, `\x26`, `%2526`), the same pair after an escaped newline
+(`\nmyshop_session=`) or a URL's `#`, `` `myshop_session` ``, and a sentence
+ending in `myshop_session.`, and a flagged `text` does not fail `context`,
+`text-align` or `text.v2`. A name joined to another by a full stop
+(`req.cookies.myshop_session`) is read as one longer name and does not fail. The
+sidecar's own fields are not scanned: gp writes `status` and `content_type` from
+the response, and a media type such as `text/html` is not a cookie value. When a
+flagged name turns up, rename it in the fixture. It cannot tell
 whether invented content was invented well; that part stays yours. A fixture
 you wrote from nothing needs a sidecar too, with all seven keys: its own
 `status` and `content_type`, `"schema": 1`, `"body_params": []`,

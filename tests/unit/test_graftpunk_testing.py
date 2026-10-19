@@ -316,21 +316,23 @@ class TestCheckFixturesTree:
         assert "'myshop_session'" in problem
         assert problem.endswith("rename it in the fixture.")
 
-    def test_a_flagged_name_in_the_sidecar_fails(self, tmp_path: Path) -> None:
+    def test_a_flagged_name_in_the_content_type_passes(self, tmp_path: Path) -> None:
+        """gp writes content_type from the response; a media type holds no cookie
+        value, so a cookie named text does not fail the text/html sidecar gp wrote
+        (#270)."""
         sidecar = Sidecar(
             status=200,
-            content_type="application/vnd.myshop_session+json",
+            content_type="text/html; charset=utf-8",
             capture_sha256=hashlib.sha256(b"captured").hexdigest(),
-            flagged_names=("myshop_session",),
+            flagged_names=("text", "html", "charset", "utf-8"),
         )
-        _fixture(tmp_path, "get_orders.json", b'{"orders": []}', sidecar)
-        (problem,) = check_fixtures_tree(tmp_path).problems
-        assert problem.startswith("get_orders.json.meta.json")
+        _fixture(tmp_path, "get_search.html", b"<p>Results</p>", sidecar)
+        assert check_fixtures_tree(tmp_path).problems == ()
 
     def test_a_flagged_name_in_body_params_alone_passes(self, tmp_path: Path) -> None:
         """body_params holds request field names, which can legitimately include
-        a flagged CSRF field's name; sidecar_scannable_text exempts body_params,
-        so this is not a leak."""
+        a flagged CSRF field's name; no sidecar field is scanned, so this is not
+        a leak."""
         sidecar = Sidecar(
             status=200,
             content_type="application/json",
@@ -673,7 +675,7 @@ class TestCheckFixturesTree:
         assert check_fixtures_tree(tmp_path).problems == ()
 
     def test_an_empty_flagged_name_is_ignored(self, tmp_path: Path) -> None:
-        """An empty string in flagged_names would match every fixture as a substring."""
+        """An empty string in flagged_names would match between every two characters."""
         _fixture(
             tmp_path,
             "get_orders.json",
@@ -705,18 +707,81 @@ class TestCheckFixturesTree:
         (problem,) = check_fixtures_tree(tmp_path).problems
         assert "'X-Csrf-Token'" in problem
 
-    def test_a_flagged_name_is_matched_case_insensitively_in_the_sidecar(
-        self, tmp_path: Path
-    ) -> None:
-        sidecar = Sidecar(
-            status=200,
-            content_type="application/vnd.x-csrf-token+json",
-            capture_sha256=hashlib.sha256(b"captured").hexdigest(),
-            flagged_names=("X-Csrf-Token",),
-        )
-        _fixture(tmp_path, "get_orders.json", b'{"orders": []}', sidecar)
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"text": "invented"}',
+            b"<input name='text' value='invented'>",
+            b"q=shoes&text=invented",
+            b"Enter TEXT to search",
+            b"next=%22text%22",
+            b"[text]",
+            b"Type your search into the text.",
+            b"the `text` cookie",
+            b"*text* holds the search",
+            b"text!",
+            b"var $text = 1;",
+            b'{"url": "/x?a=1\\u0026text=Qm7Lp2Xv9Kd4"}',
+            b'{"note": "\\u0022text\\u0022: zz"}',
+            b"var u = '/x?a=1\\x26text=Qm7Lp2Xv9Kd4';",
+            b"<a href='/r?next=%2522text%2522'>",
+            b"next=a%253D1%2526text%253Dabc",
+            b'<a href="/x?a=1&amp;text=abc">',
+            b'{"note": "line one\\ntext=Qm7Lp2Xv9Kd4"}',
+            b'{"note": "a\\ttext=Qm7Lp2Xv9Kd4"}',
+            b'{"raw": "Host: x\\r\\ntext=Qm7Lp2Xv9Kd4"}',
+            b"{'cookies': 'a=1\\ntext=Qm7'}",
+            b'{"location": "https://app.example.com/cb#text=eyJhbGciOi"}',
+            b"next=https%3A%2F%2Fapp.example.com%2Fcb%23text%3DeyJ",
+            b"name|text|value",
+        ],
+        ids=[
+            "json-key",
+            "single-quoted",
+            "after-ampersand",
+            "prose",
+            "percent-encoded",
+            "bracket",
+            "sentence-end",
+            "backticks",
+            "asterisks",
+            "exclamation",
+            "dollar-variable",
+            "json-escaped-ampersand",
+            "json-escaped-quote",
+            "js-hex-escape",
+            "double-percent-quote",
+            "double-percent-pair",
+            "html-entity",
+            "json-newline",
+            "json-tab",
+            "json-crlf",
+            "python-repr-newline",
+            "url-fragment",
+            "percent-encoded-url-fragment",
+            "pipe-separated",
+        ],
+    )
+    def test_a_flagged_name_as_a_whole_name_fails(self, tmp_path: Path, body: bytes) -> None:
+        _fixture(tmp_path, "get_search.json", body, _captured(b"captured", "text"))
         (problem,) = check_fixtures_tree(tmp_path).problems
-        assert problem.startswith("get_orders.json.meta.json")
+        assert "'text'" in problem
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"context": "invented"}',
+            b"textarea { text-align: left; }",
+            b'{"subtext": 1, "text_size": 2, "text.v2": 3, "a$text": 4, "my.text": 5}',
+        ],
+        ids=["inside-a-word", "hyphenated", "joined-by-name-characters"],
+    )
+    def test_a_flagged_name_inside_a_longer_name_passes(self, tmp_path: Path, body: bytes) -> None:
+        """A cookie name is an RFC 6265 token, so a flagged name counts only where
+        the characters around it cannot be part of the same name (#270): letters,
+        digits, _ and -, or token punctuation between two of those."""
+        _fixture(tmp_path, "get_search.json", body, _captured(b"captured", "text"))
+        assert check_fixtures_tree(tmp_path).problems == ()
 
 
 class TestFixturesAreSanitisedInASuite:

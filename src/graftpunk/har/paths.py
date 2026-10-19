@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import unquote, unquote_plus, urlsplit, urlunsplit
 
 # The name rule's length thresholds (see holds_an_id): mixed hex, a prefixed id's
 # tail, and a base64-like token.
@@ -41,6 +41,7 @@ __all__ = [
     "looks_dynamic",
     "normal_host",
     "param_name_for_segment",
+    "reads_as_words",
     "template_path",
     "templated_url",
     "templates_a_segment",
@@ -278,7 +279,7 @@ def keys_are_ids(keys: Iterable[str]) -> bool:
 # other pair (fb, kq, zh, ...) before a trailing digit reads as random.
 _WORD_CONSONANT_PAIRS = frozenset(
     (  # noqa: SIM905 - one compact string on purpose: the set is data
-        "bb bd bh bk bl bm bn bp br bs bt bv bw cc ch ck cl cm cn cr cs ct db dd dg dh "
+        "bb bd bh bk bl bm bn bp br bs bt bv bw cb cc ch ck cl cm cn cr cs ct db dd dg dh "
         "dl dm dn dp dr ds dt dv dw ff fl fn fr fs ft gg gh gl gm gn gr gs gt hb hd hf "
         "hl hm hn hp hr hs ht hw kb kd kf kg kh kl km kn kp kr ks kt kw lb lc ld lf lg "
         "lh lk ll lm ln lp lr ls lt lv lw mb md mf mh ml mm mn mp mr ms mt mw nb nc nd "
@@ -339,6 +340,127 @@ def _joined_token(text: str) -> bool:
     return len(parts) >= 3 and all(
         2 <= len(part) <= 6 and _has_digit(part) and _has_letter(part) and part.isalnum()
         for part in parts
+    )
+
+
+_VALUE_PART_RE = re.compile(r"[^\W_]+")
+# A run of letters longer than this is not read as a word in a cookie value: few
+# words a form keeps are longer, and without the cap 1.8% of random 16-letter
+# lowercase values read as words (measured with reads_as_words on 2026-10-19).
+_MAX_VALUE_WORD_LEN = 15
+
+
+def _word_cased(letters: str) -> bool:
+    return letters.islower() or letters.isupper() or letters.istitle()
+
+
+def _plain_value_part(part: str) -> bool:
+    if not part.isascii():
+        return False
+    if part.isdigit():
+        return True
+    if part.isalpha():
+        return len(part) <= _MAX_VALUE_WORD_LEN and _word_cased(part) and _spelled(part)
+    if _VERSION_RE.fullmatch(part):
+        return True
+    match = _WORD_WITH_DIGITS_RE.fullmatch(part)
+    return match is not None and _word_cased(match.group(1)) and _spelled(match.group(1))
+
+
+def reads_as_words(value: str) -> bool:
+    """True when *value*, a cookie value, is plain words, short numbers, or a date:
+    the state a form or a preference keeps, not a credential.
+
+    *value* is percent- and plus-decoded. It reads as words when it has at least
+    one run of letters or digits and :func:`holds_an_id` does not hold it (so no
+    run of 6 or more digits, no long hex, no base64-like token), and either
+
+    - it has more than one whitespace-separated word, or a non-ASCII letter,
+      :func:`holds_an_id` holds none of its words, and every word looks typed
+      (:func:`_typed_word`: ``iPhone 15``, ``4K TV``, ``café``), or
+    - every run of letters and digits in it is ASCII and is a number, a version
+      (``v2``), or a word of at most 15 letters in one case shape (``shoes``,
+      ``USD``, ``Monday``) spelled with the consonant pairs English uses,
+      optionally followed by a digit run of at most 2.
+
+    ``running shoes``, ``12``, ``2026-10-01``, ``10/01/2026``, and ``en-US`` read
+    as words; a session id (``Zq9XkLmPwR4t7Bv2Hn8Ks3Jd``), a mixed-case run
+    (``kQzPwM``), ``lot 123456``, and an empty value do not.
+
+    The known limits: a number of 5 digits or fewer reads as words, so do groups
+    of digits separated by spaces or ``+`` (``4111 1111 1111 1111``), so does any
+    value made of space- or ``+``-separated pieces of 3 or fewer letters and
+    digits with a letter among them (``aB3+xY7+qW2``), since each piece passes as
+    a short typed word, and so can a short random value. Measured on 100,000
+    random values per row (seed 273, 2026-10-19): of lowercase letters alone,
+    14.8% at 8 letters, 5.3% at 12 and 2.4% at 15 read as words, and none at 16
+    or more; of standard base64 (``+`` and ``/`` included, ``+`` decoded as a
+    space), 0.77% at 8 characters, 0.04% at 12, about 0.001% at 16
+    (``Wmx+akr4/CSG++n7``) and none at 22 or more; of base64url, 0.30% at 8 and
+    none at 16 or more; of ``[a-z0-9]``, 1.96% at 8, 0.008% at 16 and none at 26.
+    """
+    text = unquote_plus(value)
+    parts = _VALUE_PART_RE.findall(text)
+    if not parts or holds_an_id(text):
+        return False
+    words = text.split()
+    if len(words) > 1 or any(ch.isalpha() and not ch.isascii() for ch in text):
+        # Several words or a non-ASCII letter mark typed text (``iPhone 15``,
+        # ``café``), but plus-decoding also splits a standard-base64 id at each
+        # ``+``, so every word must look typed on its own. A word of punctuation
+        # alone counts as typed (``salt & pepper``) only beside a letter, so
+        # digit pieces split by punctuation (``12+/+34``) are not words, while
+        # numbers alone (``10 19 2026``, ``12 34``) are.
+        has_punctuation_word = any(not any(ch.isalnum() for ch in word) for word in words)
+        return (
+            not any(holds_an_id(word) for word in words)
+            and (not has_punctuation_word or any(ch.isalpha() for ch in text))
+            and all(_typed_word(word) for word in words)
+        )
+    return all(_plain_value_part(part) for part in parts)
+
+
+_TYPED_SHORT_WORD_LEN = 3
+_BRAND_CASED_RE = re.compile(r"[a-z]?[A-Z]?[a-z]+")
+# A quantity typed into a search box: a number and a unit from this list (512gb,
+# 500ml, 12pk, 55inch), or dimensions (10x10). A fixed list, not any 1 to 4
+# lowercase letters: that open shape read 0.85% of random 8-character
+# standard-base64 ids as words against 0.77% without it; the list reads 0.77%
+# (100,000 values, seed 273, 2026-10-19).
+_QUANTITY_UNITS = (  # noqa: SIM905 - one compact string on purpose: the set is data
+    "kb mb gb tb mah mm cm km in inch ft yd ml cl oz lb lbs kg mg g l pk ct pc pcs "
+    "pack w kw v hz ghz mhz"
+).split()
+_QUANTITY_RE = re.compile(rf"\d{{1,4}}(?:{'|'.join(_QUANTITY_UNITS)})|\d{{1,3}}x\d{{1,3}}")
+
+
+def _typed_word(word: str) -> bool:
+    """True when *word*, one whitespace-separated word of a cookie value, looks
+    typed: it holds no letter or digit (``&`` in ``salt & pepper``), every run of
+    letters and digits in it passes the plain-value rule (``shoes``, ``USB-C``), it
+    is at most 3 letters and digits (``4K``, ``TV``, ``2x4``, ``m3``), it is a
+    quantity (``512gb``, ``55inch``, ``10x10``), it is spelled letters in one brand
+    casing followed by at most 2 digits (``iPhone``, ``iPhone15``), or it is at
+    most 15 characters holding a non-ASCII letter (``café``)."""
+    if not any(ch.isalnum() for ch in word):
+        return True
+    runs = _VALUE_PART_RE.findall(word)
+    if runs and all(_plain_value_part(run) for run in runs):
+        return True
+    if len(word) <= _TYPED_SHORT_WORD_LEN and word.isalnum():
+        return True
+    if _QUANTITY_RE.fullmatch(word):
+        return True
+    letters = word.rstrip("0123456789")
+    if (
+        len(word) - len(letters) <= 2
+        and len(letters) > _TYPED_SHORT_WORD_LEN
+        and _BRAND_CASED_RE.fullmatch(letters)
+        and _spelled(letters)
+    ):
+        return True
+    return len(word) <= _MAX_VALUE_WORD_LEN and any(
+        ch.isalpha() and not ch.isascii() for ch in word
     )
 
 

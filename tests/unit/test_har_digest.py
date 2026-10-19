@@ -4167,6 +4167,196 @@ class TestFlaggedNamesOf:
         assert "shop_session" in result.cookies
         assert "shop_session" in flagged_names_of(result)
 
+    @staticmethod
+    def _with_cookies(
+        response: list[tuple[str, str]], request: tuple[tuple[str, str], ...] = ()
+    ) -> dict:
+        entry = _entry("GET", "https://myshop.example.com/api/search")
+        entry["response"]["cookies"] = [{"name": n, "value": v} for n, v in response]
+        entry["request"]["cookies"] = [{"name": n, "value": v} for n, v in request]
+        return entry
+
+    def test_a_cookie_that_only_holds_words_is_left_out(self, tmp_path: Path) -> None:
+        """A search form's state (#270): a term, a lot number, and a date are no
+        credential, and their names are words an invented fixture keeps."""
+        entry = self._with_cookies(
+            [("text", "running%20shoes"), ("lot", "12"), ("since", "2026-10-01")],
+            (("text", "running+shoes"), ("lot", "7")),
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert set(result.cookies) == {"text", "lot", "since"}
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
+    def test_session_and_csrf_cookies_stay_flagged_by_name(self, tmp_path: Path) -> None:
+        """A session id's value does not read as words; a token-named cookie is
+        flagged whatever its value."""
+        entry = self._with_cookies(
+            [("session", "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"), ("csrftoken", "planted"), ("lot", "12")]
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("csrftoken", "session")
+
+    def test_one_value_that_does_not_read_as_words_flags_the_cookie(self, tmp_path: Path) -> None:
+        entries = [
+            self._with_cookies([("sid", "guest")]),
+            self._with_cookies([], (("sid", "x7Kq29LpVb"),)),
+        ]
+        har = _write_har(tmp_path, entries)
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("sid",)
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            _entry("GET", "https://myshop.example.com/api/search", set_cookies=["lot=12; Path=/"]),
+            {
+                **_entry("GET", "https://myshop.example.com/api/search"),
+                "response": {
+                    **_entry("GET", "https://myshop.example.com/api/search")["response"],
+                    "cookies": [{"name": "lot", "value": ""}],
+                },
+            },
+        ],
+        ids=["set-cookie-header-only", "empty-value"],
+    )
+    def test_a_cookie_with_no_recorded_value_stays_flagged(
+        self, tmp_path: Path, entry: dict
+    ) -> None:
+        """No value to judge is no evidence the cookie holds only words."""
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("lot",)
+        assert flagged_names_of(result) == ("lot",)
+
+    def test_an_empty_value_beside_a_word_value_is_a_cleared_field(self, tmp_path: Path) -> None:
+        """A search reset sends text= with an expiry; it holds nothing, so the
+        cookie is judged on the values it did hold."""
+        entries = [
+            self._with_cookies([("text", "running%20shoes"), ("lot", "12")]),
+            self._with_cookies([("text", "")], (("lot", ""),)),
+        ]
+        har = _write_har(tmp_path, entries)
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "myshop_session",
+            "sessionid",
+            "PHPSESSID",
+            "JSESSIONID",
+            "connect.sid",
+            "laravel_session",
+            "ASP.NET_SessionId",
+            ".ASPXAUTH",
+            "_session_id",
+            "auth",
+            "jwt",
+            "login",
+            "rememberMe",
+            "XSRF-TOKEN",
+            "sess",
+        ],
+    )
+    def test_a_session_named_cookie_stays_flagged_whatever_its_value(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        har = _write_har(tmp_path, [self._with_cookies([(name, "lanterns")])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == (name,)
+
+    @pytest.mark.parametrize("name", ["sidebar", "author", "inside", "outside", "assessment"])
+    def test_a_name_holding_a_session_word_inside_another_word_is_judged_by_value(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        har = _write_har(tmp_path, [self._with_cookies([(name, "open")])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
+    @pytest.mark.parametrize(
+        "set_cookie",
+        [
+            "visit=lanterns; Path=/; Secure; HttpOnly",
+            "visit=lanterns; path=/; httponly; samesite=Lax",
+            "lot=12; Path=/\nvisit=lanterns; Path=/; HTTPONLY",
+        ],
+        ids=["header-attribute", "lowercase-attribute", "second-line-of-a-joined-header"],
+    )
+    def test_an_httponly_set_cookie_header_flags_a_cookie_the_cookies_array_does_not_mark(
+        self, tmp_path: Path, set_cookie: str
+    ) -> None:
+        """A HAR's response.cookies often leaves httpOnly out when the header
+        carries it; absent there is unknown, so the header decides."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            response_headers={"Set-Cookie": set_cookie},
+        )
+        entry["response"]["cookies"] = [
+            {"name": "visit", "value": "lanterns"},
+            {"name": "lot", "value": "12"},
+        ]
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    def test_a_cookie_only_on_a_later_line_of_a_joined_set_cookie_header_is_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        """Chromium joins several Set-Cookie headers with newlines. A cookie on the
+        second line that response.cookies leaves out has no recorded value, so it
+        is flagged; the first line's word-valued cookie is judged by value."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            response_headers={
+                "Set-Cookie": "lot=12; Path=/\nshopper=Zq9XkLmPwR4t7Bv2Hn8Ks3Jd; Path=/"
+            },
+        )
+        entry["response"]["cookies"] = [{"name": "lot", "value": "12"}]
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert "shopper" in result.cookies
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("shopper",)
+
+    def test_a_cookie_neither_the_array_nor_the_header_marks_httponly_is_judged_by_value(
+        self, tmp_path: Path
+    ) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            set_cookies=[
+                "lot=12; Path=/; Secure; SameSite=Lax",
+                "text=running%20shoes; Path=/",
+            ],
+        )
+        entry["response"]["cookies"] = [
+            {"name": "lot", "value": "12", "secure": True},
+            {"name": "text", "value": "running%20shoes"},
+        ]
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
+    def test_a_cookie_set_with_httponly_stays_flagged_whatever_its_value(
+        self, tmp_path: Path
+    ) -> None:
+        """A server hides a cookie from scripts to protect it; Secure alone says
+        nothing, since an HTTPS-only site can mark every cookie Secure."""
+        entry = _entry("GET", "https://myshop.example.com/api/search")
+        entry["response"]["cookies"] = [
+            {"name": "visit", "value": "lanterns", "httpOnly": True, "secure": True},
+            {"name": "lot", "value": "12", "secure": True},
+        ]
+        later = _entry("GET", "https://myshop.example.com/api/search")
+        later["request"]["cookies"] = [{"name": "visit", "value": "lanterns"}]
+        har = _write_har(tmp_path, [entry, later])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
 
 class TestEveryNamePositionGoesThroughTheIdRule:
     """Response keys, header names, and cookie names go through

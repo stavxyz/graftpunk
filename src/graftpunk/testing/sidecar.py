@@ -5,8 +5,9 @@ writes and travels with the fixture into a plugin's committed fixtures tree.
 Every field in it is meant to be committed: the capture's URL and time are not
 in it (the HAR and the digest hold them), ``capture_sha256`` is the hash of the
 captured body (null for an empty body, which holds nothing to sanitise), and
-``flagged_names`` is every cookie name the recording set and the token names the
-digest recorded, never a value. A name that holds an account
+``flagged_names`` is every cookie name the recording set, less a cookie whose every
+recorded value reads as words (``graftpunk.har.digest.flagged_names_of``), and the
+token names the digest recorded, never a value. A name that holds an account
 value (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``
 counts how many were left out. ``body_params`` is the request's body keys that read as
@@ -48,7 +49,6 @@ __all__ = [
     "load_sidecar",
     "sidecar_path",
     "sidecar_payload",
-    "sidecar_scannable_text",
     "sidecar_text",
 ]
 
@@ -247,19 +247,3 @@ def _names(data: dict[str, object], key: str, path: Path) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise SidecarError(f"{path}: {key} must be a list of strings, got {value!r}")
     return tuple(value)
-
-
-def sidecar_scannable_text(sidecar: Sidecar) -> str:
-    """The values of the fields of *sidecar* that were copied from the capture,
-    space-separated: the text a flagged name must not appear in. Four fields
-    are exempt. ``flagged_names`` lists the names themselves; ``capture_sha256``
-    and ``redacted_names`` are a digest and a count the writer computed, never
-    text copied from the capture, so scanning either could only produce a false
-    match on a name that happens to be a run of hex digits or a small integer.
-    ``body_params`` holds request field names, never values, and the writer
-    records them unfiltered against ``flagged_names``, so a posted form's own
-    CSRF field is legitimately both a body parameter and a flagged name; a
-    fixture derived exactly as ``gp observe fixtures`` writes it must not fail
-    on that overlap. ``schema`` is the file's number, not a field of the loaded
-    sidecar."""
-    return " ".join([str(sidecar.status), sidecar.content_type])

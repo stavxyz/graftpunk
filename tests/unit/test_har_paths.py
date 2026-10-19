@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import random
+import string
+
 import pytest
 
 from graftpunk.har.paths import (
@@ -14,6 +17,7 @@ from graftpunk.har.paths import (
     keys_are_ids,
     looks_dynamic,
     param_name_for_segment,
+    reads_as_words,
     template_path,
     templated_url,
     templates_a_segment,
@@ -553,3 +557,89 @@ class TestKeysAreIds:
     def test_a_numbered_field_group_is_not_ids(self, keys: list[str]) -> None:
         """Keys that differ only in a trailing digit run are one field, numbered."""
         assert not keys_are_ids(keys)
+
+
+class TestReadsAsWords:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "running%20shoes",
+            "running+shoes",
+            "12",
+            "12345",
+            "2026-10-01",
+            "10%2F01%2F2026",
+            "en-US",
+            "USD",
+            "Monday",
+            "page2",
+            "transportations",
+            "café",
+            "naïve",
+            "iPhone 15",
+            "4K+TV",
+            "2x4%20lumber",
+            "macbook pro m3",
+            "iPad+mini",
+            "USB-C cable",
+            "crème brûlée",
+            "salt & pepper",
+            "Tom+%26+Jerry",
+            "black - white",
+            "a / b",
+            "512gb ssd",
+            "500ml bottle",
+            "12pk soda",
+            "55inch tv",
+            "10x10 tent",
+            "12 34",
+            "10 19 2026",
+            "2026 10 19",
+            "1 2 3",
+            "12 34 56",
+            "12345 678",
+            "2 + 2",
+            "5 10 15",
+            "9.5 11",
+            "v2",
+            '{"q":"garden hose","page":3}',
+        ],
+    )
+    def test_form_state_reads_as_words(self, value: str) -> None:
+        assert reads_as_words(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "",
+            "%20",
+            "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd",
+            "x7Kq29Lp",
+            "kQzPwM",
+            "kqzpwmxtrv",
+            "lalalalalalalalala",
+            "lot 123456",
+            "Zq9X+kLmP+wR4t+Bv2H",
+            "Ab3+xYz9+kLm+Qr",
+            "aB3x+Y7qW2e/R5tY8+uI9kL0",
+            "12+/+34",
+            "12 / 34",
+            "512zq ssd",
+            "x7Kq29Lp ann@myshop.example",
+            "a3f9c2d1e0b4",
+            "40912873",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+            "s%3AZq9XkLmPwR4t7Bv2.Hn8Ks3Jd",
+        ],
+    )
+    def test_a_credential_shaped_or_empty_value_does_not(self, value: str) -> None:
+        assert not reads_as_words(value)
+
+    @pytest.mark.parametrize("length", [22, 24, 32, 44])
+    def test_standard_base64_ids_of_session_length_do_not(self, length: int) -> None:
+        """Plus-decoding splits a standard-base64 id at each +, so the several-words
+        reading must not accept the pieces; 0 of 100,000 per length was measured."""
+        alphabet = string.ascii_letters + string.digits + "+/"
+        rng = random.Random(273)  # noqa: S311 - a fixed sample, not a secret
+        ids = ["".join(rng.choices(alphabet, k=length)) for _ in range(5_000)]
+        assert [value for value in ids if reads_as_words(value)] == []
