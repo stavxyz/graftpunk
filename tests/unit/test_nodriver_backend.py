@@ -6311,6 +6311,35 @@ class TestNoDriverBackendAbandonedLockHolder:
         assert backend._abandoned is (earlier if a_start_gave_up_first else None)
         assert earlier.ender_claimed is False
 
+    def test_an_earlier_hold_left_to_its_end_does_not_free_this_threads_next_hold(self) -> None:
+        """The record of an earlier hold whose holder left the lock to a stop's
+        end stays after that end released it. A later stop_async() on this
+        thread that holds the lock, left on a stopped loop, is still this
+        thread's hold, so a start here raises at once rather than wait for
+        a holder that cannot run while it waits."""
+        from graftpunk.backends.nodriver import _Abandonment, _Hold
+
+        backend = NoDriverBackend()
+        stopped = asyncio.new_event_loop()
+        earlier = _Abandonment(1, "stop_async", "has not run for 0.5 s")
+        earlier.ender_claimed = True
+        earlier.release_on_end = True
+        earlier.ended.set()
+        backend._abandoned = earlier
+
+        def hold_then_start() -> None:
+            assert backend._lock.acquire(blocking=False)
+            backend._holding = _Hold(2, threading.current_thread(), "stop_async", stopped)
+            backend.start()
+
+        try:
+            with pytest.raises(RuntimeError, match="a stop_async\\(\\) on this thread"):
+                _within(5, hold_then_start)
+        finally:
+            backend._holding = None
+            backend._lock.release()
+            stopped.close()
+
     def test_a_start_waits_for_a_given_up_holds_end_only_so_long(
         self,
         fake_chrome: FakeChrome,
