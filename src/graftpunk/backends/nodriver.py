@@ -2127,6 +2127,12 @@ class NoDriverBackend:
             if not abandonment.ended.wait(_GIVEN_UP_END_WAIT_S):
                 LOG.warning("nodriver_backend_given_up_end_still_running")
             return
+        self._end_for_given_up_hold(running, abandonment)
+
+    def _end_for_given_up_hold(
+        self, running: asyncio.AbstractEventLoop | None, abandonment: _Abandonment
+    ) -> None:
+        """End Chrome for a hold this stop gave up on; release the lock if its holder returned."""
         try:
             self._stop_holding_lock(running, without_loop=True)
         finally:
@@ -2260,6 +2266,18 @@ class NoDriverBackend:
                     return
                 await asyncio.sleep(_EXIT_POLL_S)
             return
+        private = self._private_loop
+        if private is None or private.loop is not asyncio.get_running_loop():
+            # The whole end, the lock's release included, runs on a worker
+            # thread, as stop() runs it on its own: should this coroutine's
+            # loop stop meanwhile, Chrome is still ended and the lock still
+            # released, and the coroutine only returns if it resumes.
+            await _finish_on_worker_thread(lambda: self._end_for_given_up_hold(None, abandonment))
+            return
+        # On the browser's private loop, a worker running the end would join
+        # this loop's thread while that thread waits for the worker. The end
+        # runs here instead, as in a stop_async() holding the lock on this
+        # loop, which keeps running until the end has scheduled its stop.
         try:
             await self._stop_async_holding_lock(without_loop=True)
         finally:

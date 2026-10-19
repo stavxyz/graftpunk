@@ -4914,6 +4914,52 @@ async def _until(event: threading.Event) -> None:
         await asyncio.sleep(0.01)
 
 
+class _OnALoopThatStops:
+    """*call* on a hand-managed loop of its own thread, which stops once *until* is set.
+
+    The loop then stays stopped, the way one driven by ``run_until_complete()``
+    does when its caller stops driving it, until ``finish()`` runs it again
+    to let the call end, records the call's outcome in ``outcome``, and
+    closes the loop.
+    """
+
+    def __init__(
+        self, call: Callable[[], Coroutine[Any, Any, Any]], until: threading.Event
+    ) -> None:
+        self.stopped = threading.Event()
+        self.outcome: list[Any] = []
+        self.errors: list[BaseException] = []
+        self._go = threading.Event()
+
+        def main() -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                task = loop.create_task(call())
+                loop.run_until_complete(asyncio.wait_for(_until(until), 10))
+                self.stopped.set()
+                self._go.wait(30)
+                self.outcome.extend(
+                    loop.run_until_complete(
+                        asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 10)
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001 - reported by finish()
+                self.errors.append(exc)
+            finally:
+                loop.close()
+                self.stopped.set()
+
+        self._thread = threading.Thread(target=main, daemon=True)
+        self._thread.start()
+
+    def finish(self) -> None:
+        """Run the loop again until the call ends, and close it."""
+        self._go.set()
+        self._thread.join(15)
+        assert not self._thread.is_alive()
+        assert self.errors == []
+
+
 async def _ticks_during(call: Coroutine[Any, Any, Any]) -> int:
     """Await *call* while counting the turns a 10 ms ticker gets on this loop."""
     ticks = 0
@@ -6272,9 +6318,9 @@ class TestNoDriverBackendAbandonedLockHolder:
         monkeypatch: pytest.MonkeyPatch,
         captured_logs: list[dict[str, Any]],
     ) -> None:
-        """An end of Chrome that does not finish (its stop_async()'s own loop
-        stopped, say) holds a start up for ``_GIVEN_UP_END_WAIT_S``, after
-        which the start raises, since the holder still has the lock."""
+        """An end of Chrome that does not finish (held open here) holds a
+        start up for ``_GIVEN_UP_END_WAIT_S``, after which the start raises,
+        since the holder still has the lock."""
         from graftpunk.backends import nodriver as nodriver_module
 
         monkeypatch.setattr(nodriver_module, "_GIVEN_UP_END_WAIT_S", 1.0)
@@ -6311,3 +6357,142 @@ class TestNoDriverBackendAbandonedLockHolder:
         assert not ender.is_alive()
         assert waited >= 1.0
         assert self._given_up(captured_logs) == [("stop", "stop_async"), ("start", "stop_async")]
+
+    def _end_held_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[threading.Event, threading.Event]:
+        """Hold a give-up stop's end of Chrome open until the test lets it finish.
+
+        Returns the event the end sets once it has begun, and the one that
+        lets it finish.
+        """
+        from graftpunk.backends import nodriver as nodriver_module
+
+        began = threading.Event()
+        may_finish = threading.Event()
+        real_end = nodriver_module._end_browser_without_loop
+
+        def end_held_open(browser: Any) -> None:
+            began.set()
+            may_finish.wait(10)
+            real_end(browser)
+
+        monkeypatch.setattr(nodriver_module, "_end_browser_without_loop", end_held_open)
+        return began, may_finish
+
+    def test_a_given_up_end_releases_the_lock_after_its_stop_asyncs_loop_stopped(
+        self,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The stop_async() that gave up on a stranded holder is ending Chrome
+        when its own loop stops, and the holder returns meanwhile, leaving the
+        lock to that end. The end runs on a worker thread, so it still ends
+        Chrome and releases the lock with that loop stopped, and a start then
+        launches at once."""
+        from graftpunk.backends import nodriver as nodriver_module
+
+        monkeypatch.setattr(nodriver_module, "_GIVEN_UP_END_WAIT_S", 1.0)
+        began, may_finish = self._end_held_open(monkeypatch)
+        profile = temp_profiles / "uc_end_after_its_loop_stopped"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        entered = threading.Event()
+        gate = threading.Event()
+        _within(10, backend.start)
+        real_stop = backend._stop_async
+
+        async def gated_stop() -> None:
+            entered.set()
+            await _until(gate)
+            await real_stop()
+
+        with _chrome_like_child(profile) as child:
+            assert backend._browser is not None
+            self._give_chrome(backend._browser, child, profile)
+            monkeypatch.setattr(backend, "_stop_async", gated_stop)
+            stranded = _Stranded(backend, backend.stop_async, "stop_async", entered.is_set)
+            ender = _OnALoopThatStops(backend.stop_async, began)
+            try:
+                assert ender.stopped.wait(10)
+                gate.set()
+                stranded.finish(resume=True)
+                lock_held_after_the_holder = backend._lock.locked()
+                may_finish.set()
+                for _ in range(500):
+                    if not backend._lock.locked():
+                        break
+                    time.sleep(0.01)
+                lock_free_with_its_loop_stopped = not backend._lock.locked()
+                exited = child.poll() is not None
+                monkeypatch.setattr(backend, "_stop_async", real_stop)
+                start_took = _within(10, backend.start)
+                running = backend.is_running
+            finally:
+                gate.set()
+                may_finish.set()
+                ender.finish()
+                stranded.finish(resume=True)
+
+        assert stranded.outcome == [None]
+        assert lock_held_after_the_holder is True
+        assert lock_free_with_its_loop_stopped is True
+        assert exited
+        assert start_took < 0.5
+        assert running is True
+        assert ender.outcome == [None]
+        _within(10, backend.stop)
+        assert backend._lock.locked() is False
+
+    def test_a_give_up_stop_async_on_the_browsers_own_loop_ends_chrome_there(
+        self,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        """A stop_async() awaited on the private loop gives up on a holder
+        stranded on another loop. Its end of Chrome runs on that loop, as a
+        stop_async() holding the lock there does: a worker running it would
+        join the loop's thread, which would be waiting for the worker."""
+        profile = temp_profiles / "uc_give_up_on_private_loop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        entered = threading.Event()
+        gate = threading.Event()
+        _within(10, backend.start)
+        real_stop = backend._stop_async
+
+        async def gated_stop() -> None:
+            entered.set()
+            await _until(gate)
+            await real_stop()
+
+        result: list[Any] = []
+        with _chrome_like_child(profile) as child:
+            assert backend._browser is not None
+            assert backend._private_loop is not None
+            private = backend._private_loop.loop
+            self._give_chrome(backend._browser, child, profile)
+            monkeypatch.setattr(backend, "_stop_async", gated_stop)
+            stranded = _Stranded(backend, backend.stop_async, "stop_async", entered.is_set)
+            try:
+                took = _within(
+                    10,
+                    lambda: result.append(
+                        asyncio.run_coroutine_threadsafe(backend.stop_async(), private).result(10)
+                    ),
+                )
+                exited = child.poll() is not None
+            finally:
+                gate.set()
+                stranded.finish()
+
+        assert result == [None]
+        assert took < 3.0
+        assert exited
+        events = [e["event"] for e in captured_logs]
+        assert "nodriver_loop_thread_still_running" not in events
+        assert self._given_up(captured_logs) == [("stop_async", "stop_async")]
+        assert backend._lock.locked() is False
