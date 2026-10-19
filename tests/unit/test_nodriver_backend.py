@@ -2907,7 +2907,15 @@ class TestNoDriverBackendTransportClosedOnItsLoop:
 
     @pytest.fixture(autouse=True)
     def _armed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Armed so a stop can signal the stand-in process these tests own; the
+        # launch sweeps stay stubbed, since armed they would act on the real
+        # process table and temp directory (tests/unit/conftest.py).
+        from graftpunk.browser_launch import CleanupReport
+
         monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.prepare_browser_launch", lambda: CleanupReport()
+        )
 
     @staticmethod
     def _spawning_start(
