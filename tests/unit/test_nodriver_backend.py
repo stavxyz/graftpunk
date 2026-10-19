@@ -5077,8 +5077,17 @@ class TestNoDriverBackendAbandonedLockHolder:
 
     @pytest.fixture(autouse=True)
     def _short_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from graftpunk.browser_launch import CleanupReport
+
         monkeypatch.setattr("graftpunk.backends.nodriver._ABANDONED_HOLD_S", self.BOUND)
+        # Armed so the end of Chrome signals the test's own child process.
         monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        # The orphan sweep and the stale-profile sweep are replaced at their
+        # call site, so an armed start in this class never reaches the real
+        # process table or the real temp directory.
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.prepare_browser_launch", lambda: CleanupReport()
+        )
 
     @staticmethod
     def _give_chrome(browser: Any, child: Any, profile: Path) -> None:
