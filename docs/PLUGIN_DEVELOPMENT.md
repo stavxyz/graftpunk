@@ -1536,7 +1536,9 @@ value is a cleared field and is ignored. A cookie stays flagged, whatever its
 values, when its name reads as a token name (`csrftoken`) or has a session part
 (`sessionid`, `PHPSESSID`, `JSESSIONID`, `connect.sid`, `myshop_session`,
 `auth`, `jwt`, `login`), or when a response in the recording set it with
-`HttpOnly`. It also stays flagged when any value it held does not read as words
+`HttpOnly`, either by its `Set-Cookie` header carrying the attribute or by the
+HAR's `response.cookies` entry saying `httpOnly` is true (a HAR often leaves
+`httpOnly` out of that array when the header has it). It also stays flagged when any value it held does not read as words
 (a session id), or when the recording shows no non-empty value for it.
 
 Check that your session cookie is in `flagged_names` before you commit a
