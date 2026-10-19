@@ -1523,9 +1523,16 @@ A `<filename>.meta.json` sidecar beside a fixture supplies its status and
 content type. `gp observe fixtures` writes one for every capture to commit
 beside the fixture. It holds no URL, no time, and no header, cookie, or query
 value: only the status, the content type, the hash of the captured body, the
-request's body parameter names, every cookie name the recording set, and the
-token names the digest found. A body key that does not read as a field name,
-or that holds an id by the digest's rule, is dropped from `body_params`, and a
+request's body parameter names, every cookie name the recording set except a
+cookie that only ever held words, and the token names the digest found. A
+cookie whose every recorded value (in any request or response of the
+recording) is plain words, a number of at most 5 digits, or a date, such as a
+search form's `text=running shoes` or `lot=12`, holds no credential, so its
+name is left out of `flagged_names`: an invented fixture keeps such a name as a
+key or in prose. A cookie stays flagged when its name reads as a token name
+(`csrftoken`), when any value it held does not read as words (a session id),
+or when the recording shows no value for it. A body key that does not read as a
+field name, or that holds an id by the digest's rule, is dropped from `body_params`, and a
 cookie or token name that holds an id is left out of `flagged_names`, in any
 form; `redacted_names` counts those cookie and token names (a dropped body
 key is not in the count). The rule is lexical, so an
@@ -1608,11 +1615,20 @@ The generated suite holds you to part of that. Its `tests/conftest.py` wires in
 `fixtures_are_sanitised`, which walks every non-dotfile under `tests/fixtures/`
 on every run (a `.DS_Store` or an editor swap file is skipped, like `.gitkeep`)
 and fails when a fixture has no sidecar, when a fixture is still byte for byte
-its capture, when a name the sidecar flags turns up in the fixture or elsewhere in
-the sidecar, when a sidecar is outside its declared format, or when a fixture, or
-a directory under `tests/fixtures/`, cannot be read. A flagged name is
-matched as a substring, case-insensitively, so a short cookie name can match an
-ordinary word in the fixture; rename that value in the fixture. It cannot tell
+its capture, when a name the sidecar flags turns up in the fixture, when a
+sidecar is outside its declared format, or when a fixture, or a directory under
+`tests/fixtures/`, cannot be read. A flagged name is matched case-insensitively,
+in the fixture as written and percent-decoded, and only as a whole name: the
+characters on each side must be ones a cookie name cannot hold. A cookie name is
+an RFC 6265 token, so letters, digits, and `` ! # $ * . ^ _ ` | ~ - `` continue
+a name, and anything else ends it, including `&`, `'`, `%`, and `+`, which RFC
+6265 allows in a name but which in a fixture separate query pairs, quote
+strings, and encode text. A flagged `myshop_session` therefore fails
+`{"myshop_session": "x"}`, `?a=1&myshop_session=x`, and prose naming it, and a
+flagged `text` does not fail `context` or `text-align`. The sidecar's own
+fields are not scanned: gp writes `status` and `content_type` from the
+response, and a media type such as `text/html` is not a cookie value. When a
+flagged name turns up, rename it in the fixture. It cannot tell
 whether invented content was invented well; that part stays yours. A fixture
 you wrote from nothing needs a sidecar too, with all seven keys: its own
 `status` and `content_type`, `"schema": 1`, `"body_params": []`,
