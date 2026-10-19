@@ -1536,11 +1536,24 @@ values, when its name reads as a token name (`csrftoken`) or has a session part
 (`sessionid`, `PHPSESSID`, `JSESSIONID`, `connect.sid`, `myshop_session`,
 `auth`, `jwt`, `login`), or when a response in the recording set it with
 `HttpOnly`. It also stays flagged when any value it held does not read as words
-(a session id), or when the recording shows no non-empty value for it. A
-session cookie can still be left out when its name has no session part, no
-response sets it with `HttpOnly`, and every value it held reads as words: a
-numeric id of 5 digits or fewer, for example. Check that your session cookie is
-in `flagged_names` before you commit a sidecar.
+(a session id), or when the recording shows no non-empty value for it.
+
+Check that your session cookie is in `flagged_names` before you commit a
+sidecar. A cookie the recording only sends, which no response in it sets, is
+never flagged, whatever its name or value. That is the state of the session
+cookie in a recording made with a cached session, which reaches the browser
+before the recording starts. Record a fresh login, so that the server's
+`Set-Cookie` for the session is in the HAR, then run `gp observe fixtures`
+again. A session cookie a response does set can still be left out when its
+name has no session part, the response did not set it with `HttpOnly`, and
+every value it held reads as words, such as a numeric id of 5 digits or fewer.
+
+A form-state cookie can stay flagged the other way: a single brand-cased or
+capitals term (`iPad`, `eBay`, `XL`) does not read as words, and neither does a
+cookie the server set with `HttpOnly`. When a plain-word cookie you expected to
+be left out is in `flagged_names` and an honest fixture fails on its name,
+record again searching only plain words and regenerate the sidecar, or rename
+the name in the fixture where its structure allows.
 
 A body key that does not read as a field name, or that holds an id by the
 digest's rule, is dropped from `body_params`, and a cookie or token name that
@@ -1629,14 +1642,16 @@ its capture, when a name the sidecar flags turns up in the fixture, when a
 sidecar is outside its declared format, or when a fixture, or a directory under
 `tests/fixtures/`, cannot be read. A flagged name is matched case-insensitively
 and only as a whole name. Letters, digits, `_` and `-` continue a name. The rest
-of the punctuation an RFC 6265 cookie name can hold (`` . $ ! * # ^ ` | ~ ``)
+of the punctuation an RFC 6265 cookie name can hold (`` . $ ! * ^ ` ~ ``)
 continues it only between two of those, as in `connect.sid`; anywhere else it
-ends the name, and so does every other character. The fixture is read as written
-and in decoded forms: its `\uXXXX` and `\xXX` escapes decoded, its HTML
+ends the name, and so does every other character, `#` and `|` included. The
+fixture is read as written and in decoded forms: its `\uXXXX`, `\xXX`, `\n`,
+`\r`, `\t`, `\b` and `\f` escapes decoded, its HTML
 character references decoded, and percent-decoded up to three times while it
 keeps changing. A flagged `myshop_session` therefore fails
 `{"myshop_session": "x"}`, `?a=1&myshop_session=x`, the same pair behind an
-escaped `&` (`\u0026`, `\x26`, `%2526`), `` `myshop_session` ``, and a sentence
+escaped `&` (`\u0026`, `\x26`, `%2526`), the same pair after an escaped newline
+(`\nmyshop_session=`) or a URL's `#`, `` `myshop_session` ``, and a sentence
 ending in `myshop_session.`, and a flagged `text` does not fail `context`,
 `text-align` or `text.v2`. A name joined to another by a full stop
 (`req.cookies.myshop_session`) is read as one longer name and does not fail. The
