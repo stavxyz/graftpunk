@@ -61,6 +61,7 @@ gp observe list
 
 ```bash
 gp observe digest <session> <run> --endpoints-json
+gp observe digest <session> <run> --json
 ```
 
 ### Scaffold
@@ -88,8 +89,7 @@ uv run --no-project --with-editable '.[dev]' --with pytest --with ruff <gate-com
 
 ### Kick the tires
 
-The login and command lines touch the live site; the skill asks in words before
-either runs, whatever the settings allow; `<command>` is agreed and read-only.
+The login and command lines touch the live site; ask first, as `SKILL.md` says.
 
 ```bash
 uv run --no-project --with-editable . gp <site-name> --help
@@ -101,7 +101,7 @@ uv run --no-project --with-editable . gp <site-name> <command>
 
 The rules the skill offers, all `gp` but its read-only leak check; a file write
 still asks. The last two cover the plugin's help and login; the live read-only
-command has no rule and asks each time, since it reads the account.
+command and a HAR read have no rule and ask each time: they read the account.
 
 ```text
 Bash(gp plugin info *)

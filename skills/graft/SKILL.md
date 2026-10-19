@@ -109,8 +109,9 @@ agree to at the kick-the-tires step.
    recording to the user exactly as it says, and choose the session and run as
    its "After the recording" section says. You never run the recorder yourself.
    Every later step reads that session and that run.
-3. **Understand** (guide: Understand). Run the command in the Understand block
-   of `references/commands.md` on the chosen session and run, then read
+3. **Understand** (guide: Understand). Run the `--endpoints-json` line of the
+   Understand block of `references/commands.md` on the chosen session and run,
+   then read
    `references/digest.md` and build the proposal it describes. When the host of
    the site URL the user gave differs from the projection's `primary_host`,
    first ask once which of the two is the plugin's base, as that file says
@@ -203,17 +204,25 @@ the references hold the details.
 
 ## Secrets
 
-Never ask for a password, and never write a credential anywhere. Never read a
-HAR, a cookie, or what `gp config get --resolve` returns; a token value inside a
-capture is replaced like any other captured value. From a recording, read the
-`--endpoints-json` projection, and at the harden step the captures
-`gp observe fixtures` writes into the git-ignored `tests/captures/`: they hold
-the account's own data and stay on this workstation, so no value from one goes
-into anything that is committed or shared, such as a fixture, a test, code, a
-comment, a docstring, a commit message, or a pull request. The output of the
-live read-only command the user agreed to at the kick-the-tires step is the
-same: show it to them, confirm it returned data, and use no value from it. When
-the user pastes a secret into the conversation, say it belongs in the
-workstation env file through the `gp config set` line of the "Run by the user"
-block in `references/commands.md`, with a `$(your-secret-tool read ...)` value,
-and do not use it.
+Never ask for a password, and never write a credential anywhere. Never read
+what `gp config get --resolve` returns. From a recording, read the
+`--endpoints-json` projection first, and at the harden step the captures
+`gp observe fixtures` writes into the git-ignored `tests/captures/`. When the
+projection does not answer a question, such as a cookie's attributes, a header,
+or a request body it leaves out, read the run's `--json` digest or its HAR, as
+`references/digest.md` says ("Beyond the projection"). A HAR holds the account's
+own data and, when the recording logged in, the password the user typed; a
+capture holds the account's data too. All of them stay on this workstation, so
+no value from one goes into anything that is committed or shared, such as a
+fixture, a test, code, a comment, a docstring, a commit message, or a pull
+request. Reading a cookie or token value is not forbidden, since a HAR cannot be
+read around them, but no step needs one: never repeat a password, a token, a
+session cookie's value, or any other credential in a reply, and never write
+one. Report names, attributes, shapes, and counts instead. A token value inside
+a capture is replaced like any other captured value. The output of the live
+read-only command the user agreed to at the kick-the-tires step is the same:
+show it to them, confirm it returned data, and use no value from it. When the
+user pastes a secret into the conversation, say it belongs in the workstation
+env file through the `gp config set` line of the "Run by the user" block in
+`references/commands.md`, with a `$(your-secret-tool read ...)` value, and do
+not use it.
