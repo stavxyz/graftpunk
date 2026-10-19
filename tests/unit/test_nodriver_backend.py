@@ -6905,3 +6905,27 @@ class TestNoDriverBackendAbandonedLockHolder:
         assert self._given_up(captured_logs) == []
         assert backend._abandoned is earlier
         assert backend._lock.locked() is False
+
+    def test_a_start_that_sees_the_end_done_after_its_holder_returned_waits_for_the_lock(
+        self,
+    ) -> None:
+        """A start that read the hold just before the end finished, and finds
+        that end done and its holder gone, waits one more poll for the lock
+        the end releases, rather than raise about an unfinished end."""
+        from graftpunk.backends.nodriver import _Abandonment, _Hold, _LockWait
+
+        backend = NoDriverBackend()
+        stopped = asyncio.new_event_loop()
+        abandonment = _Abandonment(1, "stop_async", "has not run for 0.5 s")
+        abandonment.ender_claimed = True
+        abandonment.release_on_end = True
+        abandonment.ended.set()
+        backend._abandoned = abandonment
+        try:
+            backend._holding = _Hold(1, threading.current_thread(), "stop_async", stopped)
+            given_up = _LockWait(backend, ends=False).gave_up_on()
+        finally:
+            backend._holding = None
+            stopped.close()
+
+        assert given_up is None

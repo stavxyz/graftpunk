@@ -841,8 +841,14 @@ class _LockWait:
 
     def _end_running(self, abandonment: _Abandonment) -> bool:
         """Whether a stop is ending Chrome for *abandonment*, and this start still waits for it."""
-        if not abandonment.ender_claimed or abandonment.ended.is_set():
+        if not abandonment.ender_claimed:
             return False
+        if abandonment.ended.is_set():
+            # Done. If its holder had returned, the end has released the
+            # lock or releases it right after setting *ended*, so the next
+            # poll takes it, rather than this start raising about an end
+            # that finished as it looked.
+            return abandonment.release_on_end
         now = time.monotonic()
         if self._end_seen is None:
             self._end_seen = now
