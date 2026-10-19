@@ -1,48 +1,68 @@
 """Answer a question about a recording's HAR with names, attributes, shapes, and counts.
 
 Usage:
-  har-facts.py cookies HAR
+  har-facts.py cookies HAR [--name NAME]
   har-facts.py request HAR URL_PART [--method METHOD]
   har-facts.py response HAR URL_PART [--method METHOD]
 
 A HAR holds the account's data and, from a recorded login, the password the user
-typed. The graft skill reads one through this script so that no value from it
-reaches the skill's context. The script prints recorded text only when it passes
-one allowlist gate, ``printable_name``: a field name of at most 48 characters made
-of words joined by ``_``, ``-``, ``.``, brackets, or camel case, each word spelled
-with the consonant pairs English uses (graftpunk.har.paths's spelling rule,
-copied here and held equal by a test), a short or capitalised word holding a
-vowel, capitals only as a known acronym or a name all in capitals, digits only as
-a run of at most 2 ending a word, and nothing graftpunk's own id rule
-(``graftpunk.har.paths.holds_an_id``, copied here as ``holds_an_id`` and held
-equal by a test) reads as an id. A path segment must also hold no run of more
-than three capitals. Every other piece of recorded text is replaced or counted,
-never printed:
+typed. The graft skill reads one through this script. What the script guarantees:
+it prints no cookie, header, query, or body value. Names and path segments are
+recorded text too, and those print only when they pass a heuristic allowlist
+gate, ``printable_name``, which withholds most value-shaped text but not all of
+it. A name passes when it is a fixed framework name (below), or at most 48
+characters of words joined by ``_``, ``-``, ``.``, ``$``, brackets, or camel case,
+with every word spelled with the consonant pairs English uses (graftpunk's
+``har.paths`` spelling rule), a short or capitalised word holding a vowel,
+capitals only as a known acronym or in a name all in capitals, digits only as a
+run of at most 2 ending a word, and nothing graftpunk's ``holds_an_id`` reads as
+an id. The spelling pairs and rule, and ``holds_an_id``, are copied here (the
+script cannot import graftpunk) and held equal to graftpunk's by tests. A path
+segment must also hold no run of more than three capitals.
+
+The fixed framework names pass by exact name: standard, CDN, and bot-manager
+header names (``Upgrade-Insecure-Requests``, ``WWW-Authenticate``, ``cf-ray``,
+``x-amz-cf-id``), framework cookie names (``.ASPXAUTH``, ``ASP.NET_SessionId``,
+``__cf_bm``, ``cf_clearance``, ``_abck``, ``bm_sz``, ``_fbp``, ``_gcl_au``),
+ASP.NET WebForms page state (``__VIEWSTATE``, ``__EVENTVALIDATION``), Django
+formset management fields (``<prefix>-TOTAL_FORMS`` and the other three), and
+route segments (``graphql``, ``jsonrpc``, ``xmlrpc.php``, ``cgi-bin``, ``2fa``). A
+shape a framework fixes passes when its account-chosen piece passes the gate: a
+WebForms control (``ctl00$MainContent$txtUserName``, ``btnLogin``), a Django
+formset field (``<prefix>-<index>-<field>``, the index at most 2 digits), and a
+server page (``Login.aspx``, ``index.php``).
+
+What fails the gate is replaced or counted:
 
 - a URL prints as its scheme, a host of hostname characters, and its path with
-  each segment that fails the gate written ``{id}`` (digits or an id shape),
-  ``{token}`` (16 characters or more), or ``{}``; a URL of a scheme other than
-  http, https, ws, or wss prints as that scheme alone;
-- a query string prints its keys that pass the gate, never a value, and counts
-  the rest; a query or form body with no ``=`` is an unnamed blob of N bytes;
-- a JSON key, a form, multipart, or ``params`` field name, an HTML control's
-  name or id, a header name, and a cookie name print only when they pass, and
-  are otherwise counted as names that read as values;
-- an HTML page's title prints as its length class only, never its text, and a
-  control's type prints only when it is a standard input type;
+  each segment that fails written ``{id}`` (digits or an id shape), ``{token}``
+  (16 characters or more), or ``{}``; a URL of a scheme other than http, https,
+  ws, or wss prints as that scheme alone;
+- a query string prints its keys that pass, never a value, and counts the rest;
+  a query or form body with no ``=`` is an unnamed blob of N bytes;
+- a JSON key, a form, multipart, or ``params`` field name, a header name, and a
+  cookie name print only when they pass, and are otherwise counted as names that
+  read as values; an HTML control whose name fails keeps its type and position;
+- an HTML page's title prints as its length class only, and a control's type
+  prints only when it is a standard input type;
 - a cookie's ``Path`` prints templated like a URL path, its ``Domain`` only when
   it is the setting response's host or a parent of it, and its ``SameSite`` only
   as ``Lax``, ``Strict``, or ``None``;
 - a value's type and a string's length class (empty, short up to 16 characters,
   medium up to 64, long) print, never the value.
 
-The gate cannot tell a word that is also a value from a field name: a username
-used as a JSON key or a path segment (``jsmith``), or a name all in capitals
-used as a key, reads as a name and prints. Random tokens of 12 characters or
-more, hex, UUIDs, emails, JWT pieces, and prefixed ids fail it at least 99.9% of
-the time (the test suite measures 10,000 samples of each); random tokens of 8
-characters fail it 99.69% (base64url) to 99.98% (hex) of the time (10,000 samples
-each, seed 277, 2026-10-19).
+What the gate lets through. A plain word that is also a value cannot be told
+from a field name: a username, a person's or place's name, a label, or a handle
+with a two-digit suffix, used as a JSON key or a path segment, prints (``alice``,
+``Mapleton``, ``main-street``, ``alice84``). A letter-only random token passes
+when it happens to spell like a word. A host prints as recorded, so a
+per-account subdomain prints. Measured on 10,000 samples per row (seed 277,
+2026-10-19), the share of random values that pass: none of base62 at 12, 16, or
+32 characters, hex at 16 or 40, base64url at 16, 22, or 43, base36 at 32, JWT
+pieces, emails, prefixed ids, or UUIDs; 0.17% of base62 at 8, 0.38% of base64url
+at 8, 0.05% of hex at 8, and 0.25% of base36 at 12; and of letter-only tokens,
+lower or upper case, 14.59% at 8 letters, 10.84% at 9, 5.20% at 12, and 1.97% at
+16.
 
 ``cookies`` prints one block per cookie a response sets: each response that sets
 it (method and templated URL) with a count, and each setting's ``HttpOnly``,
@@ -51,7 +71,8 @@ the raw ``Set-Cookie`` header, every line of a newline-joined value, parsed as
 graftpunk's own HAR parser does (``set_cookie_lines``, held equal by a test), and
 from the entry's ``response.cookies`` array, paired by position within a name; a
 line says when the two disagree. Then it names the cookies the recording only
-sends.
+sends. With ``--name``, it prints only the block of that exact name, whatever
+the gate says, since the caller already holds the name.
 
 ``request`` and ``response`` match URL_PART against each entry's own request URL
 path, as recorded or templated (never a ``Referer`` or ``Location`` header), and
@@ -59,12 +80,13 @@ path, as recorded or templated (never a ``Referer`` or ``Location`` header), and
 query keys, the request header and cookie names, and the body's content type and
 field names with each value's type. ``response`` prints the status, the content
 type, the response header names, the names of the cookies it sets, and the
-body's shape: JSON keys and types, or an HTML page's title length and its forms,
-each with its method, templated action, and controls by name and type (repeats
-collapsed with a count, an unnamed control by type and position). A field whose
-name reads as a password, a secret, a token, a card, or a key is listed by name
-alone. A response body streamed to ``bodies/`` is read only from the HAR's own
-``bodies/`` directory.
+body's shape: JSON keys and types (JSON nested deeper than 64 levels is not
+parsed), or an HTML page's title length and its forms, each with its method,
+templated action, and controls by name and type (repeats collapsed with a count,
+a control with no name or a name that fails by type and position). A field
+whose name reads as a password, a secret, a token, a card, or a key is listed by
+name alone. A response body streamed to ``bodies/`` is read only from the HAR's
+own ``bodies/`` directory, never through a link.
 
 At most 20 matching entries are described; past that, a count prints. Exit 0 when
 something was described, 1 when nothing matched, 2 on a usage error, a HAR that
@@ -172,8 +194,9 @@ def holds_an_id(text: str) -> bool:
     )
 
 
-# graftpunk.har.paths's spelling rule, copied (a test holds the pair set equal):
-# the consonant pairs English words are spelled with, y counting as a vowel.
+# graftpunk.har.paths's spelling rule, copied (a test holds the pair set and the
+# rule equal): the consonant pairs English words are spelled with, y counting as a
+# vowel, and no run of more than 3 capitals.
 _WORD_CONSONANT_PAIRS = frozenset(
     (  # noqa: SIM905 - one compact string on purpose: the set is data
         "bb bd bh bk bl bm bn bp br bs bt bv bw cb cc ch ck cl cm cn cr cs ct db dd dg dh "
@@ -186,14 +209,19 @@ _WORD_CONSONANT_PAIRS = frozenset(
         "wf wh wk wl wm wn wp wr ws wt xc xp xs xt zz"
     ).split()
 )
-_VOWELS = frozenset("aeiouy")
+_VOWELS = frozenset("aeiouyAEIOUY")
+_MAX_CAPITALS_RUN = 3
 
 
 def _spelled(letters: str) -> bool:
-    """Whether lower-case *letters* use only consonant pairs English words use."""
+    """Whether *letters* use only consonant pairs English words use and are not a
+    run of more than 3 capitals."""
+    if len(letters) > _MAX_CAPITALS_RUN and letters.isupper():
+        return False
+    lowered = letters.lower()
     return all(
         a in _VOWELS or b in _VOWELS or a + b in _WORD_CONSONANT_PAIRS
-        for a, b in zip(letters, letters[1:])  # noqa: B905 - Python 3.9 has no strict=
+        for a, b in zip(lowered, lowered[1:])  # noqa: B905 - Python 3.9 has no strict=
     )
 
 
@@ -203,8 +231,8 @@ def _spelled(letters: str) -> bool:
 # spelled; a short lower-case word, and every capitalised word, also holds a
 # vowel; a capitals run inside camel case is a known acronym. Random tokens break
 # into short unspelled or vowel-less words and fail.
-_NAME_CHARS_RE = re.compile(r"[A-Za-z0-9_.\-\[\]]+")
-_NAME_SPLIT_RE = re.compile(r"[_.\-\[\]]+")
+_NAME_CHARS_RE = re.compile(r"[A-Za-z0-9_.$\-\[\]]+")
+_NAME_SPLIT_RE = re.compile(r"[_.$\-\[\]]+")
 _CAMEL_WORD_RE = re.compile(r"[A-Z]{2,5}(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+")
 _ACRONYMS = frozenset(
     (  # noqa: SIM905 - one compact string on purpose: the set is data
@@ -225,11 +253,20 @@ def _lower_word(word: str) -> bool:
     if word.upper() in _ACRONYMS:
         return True
     if len(word) >= _LONG_LOWER:
-        return any(ch in _VOWELS for ch in word)
+        return _spelled(word) and any(ch in _VOWELS for ch in word)
     return _spelled(word) and (len(word) <= 3 or any(ch in _VOWELS for ch in word))
 
 
 def _part_reads_as_words(part: str) -> bool:
+    if _WEBFORMS_CONTAINER_RE.fullmatch(part):
+        return True
+    hungarian = _HUNGARIAN_RE.fullmatch(part)
+    if hungarian and _plain_part(hungarian.group(2)):
+        return True
+    return _plain_part(part)
+
+
+def _plain_part(part: str) -> bool:
     letters = part.rstrip("0123456789")
     digits = len(part) - len(letters)
     if not letters:
@@ -270,10 +307,52 @@ def _part_reads_as_words(part: str) -> bool:
     return True
 
 
+# Names a framework, a browser, a CDN, or a bot manager fixes, which no account
+# varies: they pass by exact name, compared without regard to case.
+_FRAMEWORK_NAMES = frozenset(
+    (  # noqa: SIM905 - one compact string on purpose: the set is data
+        # header names
+        "upgrade-insecure-requests www-authenticate proxy-authenticate etag x-xss-protection "
+        "alt-svc nel dnt cf-ray cf-cache-status cf-connecting-ip x-amz-cf-id x-amz-cf-pop "
+        "x-amz-date x-amz-request-id x-amzn-requestid x-amzn-trace-id x-amz-id-2 x-fb-debug "
+        "x-aspnet-version x-aspnetmvc-version x-dtpc grpc-status grpc-message x-cdn "
+        "x-akamai-transformed akamai-grn x-iinfo x-sucuri-id apollographql-client-name "
+        "apollographql-client-version "
+        # cookie names
+        ".aspxauth asp.net_sessionid .aspnetcore.session .aspnetcore.antiforgery "
+        ".aspnetcore.cookies __cf_bm cf_clearance __cfruid __cflb _cfuvid _abck bm_sz bm_sv "
+        "bm_mi ak_bmsc _fbp _fbc _gcl_au _gcl_aw _gcl_dc phpsessid jsessionid django_language "
+        "dtcookie rxvisitor rxvt arraffinity arraffinitysamesite _hjid _clck _clsk anonchk "
+        "srm_b nlbi visid_incap awsalb awsalbcors awselb hubspotutk __hstc __hssc __hssrc "
+        "_uetsid _uetvid muid csrftoken sessionid csrfmiddlewaretoken "
+        # ASP.NET WebForms page state
+        "__viewstate __viewstategenerator __viewstateencrypted __eventvalidation "
+        "__eventtarget __eventargument __lastfocus __previouspage __requestverificationtoken"
+    ).split()
+)
+# ASP.NET WebForms: a naming container (ctl00) and a control-type prefix before a
+# name that itself passes the gate (txtUserName, btnLogin, chkRememberMe).
+_WEBFORMS_CONTAINER_RE = re.compile(r"ctl\d{2}")
+_HUNGARIAN_RE = re.compile(
+    r"(txt|btn|chk|ddl|lbl|hdn|rdo|rbl|cbl|lnk|img|pnl|cbo|cmb|lst|gv|rpt|hl)([A-Z]\w*)"
+)
+# Django formsets: <prefix>-<index>-<field> and the four management fields. The
+# prefix and the suffixes are code's; the field still goes through the gate.
+_FORMSET_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z_]{0,23})-(\d{1,2})-(.+)")
+_FORMSET_MANAGEMENT_RE = re.compile(
+    r"[A-Za-z][A-Za-z_]{0,23}-(?:TOTAL_FORMS|INITIAL_FORMS|MIN_NUM_FORMS|MAX_NUM_FORMS)"
+)
+
+
 def printable_name(text: str) -> bool:
     """The one output gate: whether recorded *text* may be printed as a name."""
     if not text or len(text) > _MAX_NAME_LEN or not _NAME_CHARS_RE.fullmatch(text):
         return False
+    if text.lower() in _FRAMEWORK_NAMES or _FORMSET_MANAGEMENT_RE.fullmatch(text):
+        return True
+    formset = _FORMSET_FIELD_RE.fullmatch(text)
+    if formset:
+        return printable_name(formset.group(3))
     parts = [part for part in _NAME_SPLIT_RE.split(text) if part]
     if not parts or len(parts) > _MAX_PARTS or not any(_has_letter(part) for part in parts):
         return False
@@ -297,8 +376,21 @@ def _printable_segment(segment: str) -> bool:
     """A path segment prints when it passes the gate and holds no run of capitals
     longer than an acronym: routes are words, and capitals in one are a code."""
     text = unquote(segment)
+    if text.lower() in _ENDPOINT_SEGMENTS:
+        return True
+    page = _PAGE_RE.fullmatch(text)
+    if page:
+        text = page.group(1)
     parts = [part for part in _NAME_SPLIT_RE.split(text) if part]
     return printable_name(text) and not any(_long_capitals(part) for part in parts)
+
+
+# Route segments a framework or protocol fixes, and server pages by extension, the
+# stem of which still goes through the gate (Login.aspx, index.php).
+_ENDPOINT_SEGMENTS = frozenset(
+    "graphql gql jsonrpc xmlrpc.php cgi-bin 2fa robots.txt favicon.ico sitemap.xml".split()  # noqa: SIM905
+)
+_PAGE_RE = re.compile(r"(.+)\.(?:aspx|ashx|asmx|php|jsp|do|cfm|html?)", re.I)
 
 
 def _placeholder(segment: str) -> str:
@@ -591,7 +683,13 @@ def _describe(view: dict[str, str]) -> str:
     return " ".join(f"{key}={value}" for key, value in view.items())
 
 
-def cookies(entries: list[dict[str, Any]]) -> list[str]:
+def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]:
+    """One block per cookie set, or with *only*, the block of that exact name,
+    which the caller already holds and so may print whatever the gate says."""
+
+    def shown(name: str) -> bool:
+        return name == only if only is not None else printable_name(name)
+
     settings: dict[str, Counter[tuple[str, str]]] = {}
     hidden_set: set[str] = set()
     sent: dict[str, None] = {}
@@ -624,13 +722,17 @@ def cookies(entries: list[dict[str, Any]]) -> list[str]:
             else:
                 text += "; not in the response.cookies array"
             seen[name] += 1
-            if not printable_name(name):
+            if only is not None and name != only:
+                continue
+            if not shown(name):
                 hidden_set.add(name)
                 continue
             settings.setdefault(name, Counter())[(where, text)] += 1
         for name, cookies_of_name in array.items():
             for cookie in cookies_of_name[seen[name] :]:
-                if not printable_name(name):
+                if only is not None and name != only:
+                    continue
+                if not shown(name):
                     hidden_set.add(name)
                     continue
                 view = _describe(_array_view(cookie, host))
@@ -644,6 +746,10 @@ def cookies(entries: list[dict[str, Any]]) -> list[str]:
             lines.append(f"  set by {where} ({times}); {text}")
     if hidden_set:
         lines.append(f"set: {_value_names(len(hidden_set), 'cookie name')}")
+    if only is not None:
+        if not lines and only in sent:
+            lines.append(f"cookie {only}: sent in requests and never set in this recording")
+        return lines
     only_sent = [name for name in sent if name not in settings and name not in hidden_set]
     if only_sent:
         lines.append(
@@ -719,7 +825,42 @@ def _shape(value: Any, indent: str, depth: int) -> list[str]:
     return lines
 
 
+_MAX_JSON_NESTING = 64
+
+
+def _nesting(text: str) -> int:
+    """How deep JSON *text* nests objects and arrays, strings skipped; the script
+    bounds this itself, since how deep json.loads goes before RecursionError
+    changed across Python versions."""
+    depth = deepest = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            if depth > deepest:
+                deepest = depth
+                if deepest > _MAX_JSON_NESTING:
+                    return deepest
+        elif ch in "]}":
+            depth -= 1
+    return deepest
+
+
 def _json_shape(text: str, indent: str) -> list[str] | None:
+    if _nesting(text) > _MAX_JSON_NESTING:
+        return [
+            f"{indent}{len(text)} characters of JSON nested deeper than "
+            f"{_MAX_JSON_NESTING} levels, not parsed"
+        ]
     try:
         value = json.loads(text)
     except (ValueError, RecursionError):
@@ -834,24 +975,30 @@ class _PageReader(HTMLParser):
 
 def _controls(controls: list[tuple[str, str, str]], indent: str) -> list[str]:
     lines: list[str] = []
-    named = [(name, kind) for name, kind, _id in controls if name]
+    named = [(name, kind) for name, kind, _id in controls if name and printable_name(name)]
     counts = Counter(named)
-    hidden = 0
     for name, kind in dict.fromkeys(named):
-        if not printable_name(name):
-            hidden += 1
-            continue
         repeat = f" ({counts[(name, kind)]} controls)" if counts[(name, kind)] > 1 else ""
         lines.append(f"{indent}{name}: {kind}{repeat}")
+    listed = 0
+    unlisted = 0
     for position, (name, kind, ident) in enumerate(controls, start=1):
-        if name:
+        if name and printable_name(name):
             continue
+        if listed == _MAX_UNNAMED:
+            unlisted += 1
+            continue
+        listed += 1
+        label = "(name not shown)" if name else "(no name)"
         shown = f", id {ident}" if ident and printable_name(ident) else ""
         hidden_id = ", an id that reads as a value" if ident and not shown else ""
-        lines.append(f"{indent}(no name) {kind}, control {position} of the form{shown}{hidden_id}")
-    if hidden:
-        lines.append(f"{indent}({_value_names(hidden)})")
+        lines.append(f"{indent}{label} {kind}, control {position} of the form{shown}{hidden_id}")
+    if unlisted:
+        lines.append(f"{indent}({unlisted} more controls with no name or a name not shown)")
     return lines
+
+
+_MAX_UNNAMED = 12
 
 
 _TOKEN_NAME_RE = re.compile(r"token|csrf|xsrf|nonce", re.I)
@@ -964,15 +1111,21 @@ def _response_text(entry: dict[str, Any], har_path: Path) -> tuple[str | None, s
     content = _part(_part(entry, "response"), "content")
     body_file = content.get("_bodyFile")
     if isinstance(body_file, str) and body_file:
-        bodies = (har_path.parent / "bodies").resolve()
-        target = (har_path.parent / body_file).resolve()
+        unlinked = har_path.parent / "bodies"
+        try:
+            if unlinked.is_symlink():
+                return None, "a body file outside the recording, not read"
+            bodies = unlinked.resolve()
+            target = (har_path.parent / body_file).resolve()
+        except (OSError, ValueError):
+            return None, "a body file that cannot be read"
         if bodies not in target.parents:
             return None, "a body file outside the recording, not read"
         try:
             return target.read_text(encoding="utf-8"), ""
         except UnicodeDecodeError:
             return None, "a body that is not text"
-        except OSError:
+        except (OSError, ValueError):
             return None, "a body file that cannot be read"
     text = content.get("text")
     if not isinstance(text, str):
@@ -1017,7 +1170,9 @@ def main(argv: list[str]) -> int:
         reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(prog="har-facts.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("cookies").add_argument("har")
+    named = sub.add_parser("cookies")
+    named.add_argument("har")
+    named.add_argument("--name")
     for name in ("request", "response"):
         one = sub.add_parser(name)
         one.add_argument("har")
@@ -1041,7 +1196,10 @@ def main(argv: list[str]) -> int:
 
 def _run(args: argparse.Namespace, entries: list[dict[str, Any]]) -> int:
     if args.command == "cookies":
-        lines = cookies(entries)
+        lines = cookies(entries, args.name)
+        if not lines and args.name is not None:
+            print(f"har-facts: no cookie named {args.name!r} is set or sent.", file=sys.stderr)
+            return 1
         if not lines:
             print(
                 "har-facts: no response in this HAR sets a cookie, and no request sends one.",

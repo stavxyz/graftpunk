@@ -34,9 +34,8 @@ HAR, `bodies/` holds the response bodies too large to inline, and
 ## The HAR reader
 
 Ask the HAR through the `har-facts.py` lines of the Understand block of
-`references/commands.md`. The script reads the HAR as JSON and prints recorded
-text only when it passes one allowlist gate for plain field names, so it never
-prints a cookie, header, query, or body value; answer from its output:
+`references/commands.md`. The script reads the HAR as JSON and prints no cookie,
+header, query, or body value; answer from its output:
 
 - `cookies`: for each cookie a response sets, every response that sets it (by
   method and templated URL, with a count) and that setting's `HttpOnly`,
@@ -45,7 +44,8 @@ prints a cookie, header, query, or body value; answer from its output:
   when they disagree. A recording made by another tool or an older graftpunk
   has shown the array lacking `httpOnly` where the header carried it (cause
   unverified), so trust the header's line. It then names the cookies the
-  recording only sends.
+  recording only sends. With `--name '<cookie>'` it prints that one cookie's
+  block, for a name you already hold; leave it off to list every cookie.
 - `request` with a piece of the URL's path in place of `<url-part>` (as
   recorded, or as the templated path the script prints): for each request whose
   own URL holds it, the method, the templated URL with its query keys, the
@@ -54,19 +54,25 @@ prints a cookie, header, query, or body value; answer from its output:
 - `response`, matched the same way: the status, the content type, the response
   header and set cookie names, and the body's shape, JSON keys and types or an
   HTML page's title length and its forms, each with its method, templated
-  action, and controls by name and input type.
+  action, and controls by name (or by position) and input type.
 
-What fails the gate never prints: a path segment that reads as a value is
-`{id}`, `{token}`, or `{}`; a URL of another scheme is its scheme alone; a query
-or body with no `=` is an unnamed blob of N bytes; a name that reads as a value
-is counted ("N names that read as values, not shown"); a title is its length
-class; a cookie's `Domain` outside the response's host and an unknown `SameSite`
-are named as such. The gate cannot tell a username used as a key or a path
-segment from a field name, so a plain word in the output can still be one. A
-field whose name reads as a password, secret, token, card, or key is listed by
-name alone. Exit 1 means nothing matched (no request URL held the piece, or no
-cookie was set or sent); exit 2 means the HAR is missing, is not a HAR, or
-holds an entry the script could not read.
+Names and path segments print only when they pass a heuristic gate for field
+names, which also lets fixed framework names through (CDN and bot-manager
+headers and cookies, ASP.NET WebForms controls, Django formset fields, routes
+such as `graphql`). What fails is a placeholder (`{id}`, `{token}`, `{}`, a
+scheme alone, an unnamed blob of N bytes, a title's length class) or a count
+("N names that read as values, not shown"). The gate stops random tokens with
+digits or mixed case, but a plain word used as a key or path segment (a
+username, a person's or place's name, a label, a handle like `alice84`), a
+letter-only token that spells like a word (10.84% of 9-letter random tokens,
+5.20% at 12), and the host can still print and be the account's own: never copy
+one into code without the user's word. A field whose name reads as a secret is
+listed by name alone. Exit 1 means nothing matched; exit 2 means the HAR is
+missing, is not a HAR, or holds an entry the script could not read.
+
+When a name a step needs is counted as reading like a value, use `--name` for a
+cookie whose name you hold, and ask the user for any other name (a login field,
+a form field). Never read the HAR by hand for it.
 
 ## Reading the HAR by hand
 

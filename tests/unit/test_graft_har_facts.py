@@ -539,7 +539,8 @@ def test_an_html_response_gives_title_length_and_forms_never_text(tmp_path: Path
         "    form POST /account/{}/update",
         "      ship: select",
         "      note: textarea",
-        "      (3 names that read as values, not shown)",
+        "      (name not shown) text, control 1 of the form",
+        "      (name not shown) text, control 3 of the form",
         "    form GET http://shop.test/x",
     ):
         assert expected in lines, "\n".join(lines)
@@ -623,7 +624,8 @@ def test_a_body_too_deep_to_parse_is_counted_not_quoted(tmp_path: Path) -> None:
     )
     result = _run("response", str(path), "/d")
     assert result.returncode == 0, result.stderr
-    assert "    200000 characters of application/json, not parsed" in result.stdout.splitlines()
+    expected = "    200000 characters of JSON nested deeper than 64 levels, not parsed"
+    assert expected in result.stdout.splitlines()
     assert "[[[" not in result.stdout + result.stderr
 
 
@@ -635,7 +637,7 @@ def test_an_unexpected_failure_names_only_its_type(
     path.write_text(json.dumps({"log": {"entries": [{"request": {"url": "https://s.test/x"}}]}}))
     script = _load_script()
 
-    def explode(_entries: list[dict[str, Any]]) -> list[str]:
+    def explode(*_args: object) -> list[str]:
         raise ValueError("SECRET_IN_TRACEBACK")
 
     script.cookies = explode
@@ -719,7 +721,38 @@ def _samples() -> dict[str, Callable[[random.Random], str]]:
         "email": email,
         "Stripe-style id": stripe,
         "UUID": lambda rng: str(uuid.UUID(int=rng.getrandbits(128), version=4)),
+        "base62 8": text(_B62, 8),
+        "base64url 8": text(_B62 + "-_", 8),
+        "hex 8": text("0123456789abcdef", 8),
+        "lowercase 8": text(string.ascii_lowercase, 8),
+        "lowercase 9": text(string.ascii_lowercase, 9),
+        "lowercase 12": text(string.ascii_lowercase, 12),
+        "lowercase 16": text(string.ascii_lowercase, 16),
+        "capitals 9": text(string.ascii_uppercase, 9),
+        "capitals 12": text(string.ascii_uppercase, 12),
+        "capitals 16": text(string.ascii_uppercase, 16),
+        "base36 12": text(string.ascii_lowercase + string.digits, 12),
+        "base36 32": text(string.ascii_lowercase + string.digits, 32),
     }
+
+
+# How many of 10,000 samples of each kind pass the gate, at most: measured with
+# seed 277 on 2026-10-19. Letter-only tokens are the gate's known weak spot, since
+# spelling is the only rule that can tell them from words.
+_MAX_PASSES = {
+    "base62 8": 17,
+    "base64url 8": 38,
+    "hex 8": 5,
+    "lowercase 8": 1459,
+    "lowercase 9": 1084,
+    "lowercase 12": 520,
+    "lowercase 16": 197,
+    "capitals 9": 1084,
+    "capitals 12": 520,
+    "capitals 16": 197,
+    "base36 12": 25,
+    "base36 32": 0,
+}
 
 
 @pytest.mark.parametrize("kind", list(_samples()))
@@ -728,7 +761,7 @@ def test_the_gate_fails_random_values(kind: str) -> None:
     rng = random.Random(_RNG_SEED)  # noqa: S311 - a fixed sample, not a secret
     make = _samples()[kind]
     passed = [value for value in (make(rng) for _ in range(10_000)) if gate(value)]
-    assert len(passed) <= 10, passed[:10]
+    assert len(passed) <= _MAX_PASSES.get(kind, 10), passed[:10]
 
 
 @pytest.mark.parametrize(
@@ -757,6 +790,34 @@ def test_the_gate_fails_random_values(kind: str) -> None:
         "zipCode",
         "XSRF-TOKEN",
         "__RequestVerificationToken",
+        # Framework, CDN, and bot-manager names, which no account varies.
+        "Upgrade-Insecure-Requests",
+        "WWW-Authenticate",
+        "ETag",
+        "cf-ray",
+        "x-amz-cf-id",
+        "x-amzn-requestid",
+        ".ASPXAUTH",
+        "ASP.NET_SessionId",
+        ".AspNetCore.Session",
+        "__cf_bm",
+        "cf_clearance",
+        "_abck",
+        "bm_sz",
+        "_fbp",
+        "_gcl_au",
+        "__VIEWSTATEGENERATOR",
+        "__EVENTVALIDATION",
+        # ASP.NET WebForms controls and Django formset fields.
+        "txtUserName",
+        "btnLogin",
+        "chkRememberMe",
+        "ctl00$MainContent$txtUserName",
+        "ctl00_ContentPlaceHolder1_txtPassword",
+        "form-TOTAL_FORMS",
+        "bvp-MAX_NUM_FORMS",
+        "bvp-0-book",
+        "form-12-title",
     ],
 )
 def test_the_gate_passes_field_names(name: str) -> None:
@@ -778,7 +839,77 @@ def test_the_gate_passes_field_names(name: str) -> None:
         _RESET,
         "",
         "a" * 49,
+        # A framework shape does not carry an account piece through.
+        "bvp-0-alice.example@mail.example",
+        "txt88812345",
+        "ctl00$MainContent$kqzvbxmtrplwyd",
+        "form-123-title",
+        # Letter-only tokens of the length the old shortcut let through.
+        "xqzkvbtrwamplh",
+        "HFCENCSGAYRCXOII",
     ],
 )
 def test_the_gate_fails_values(value: str) -> None:
     assert not _load_script().printable_name(value)
+
+
+@pytest.mark.parametrize(
+    ("segment", "printed"),
+    [
+        ("graphql", "graphql"),
+        ("jsonrpc", "jsonrpc"),
+        ("xmlrpc.php", "xmlrpc.php"),
+        ("cgi-bin", "cgi-bin"),
+        ("2fa", "2fa"),
+        ("Login.aspx", "Login.aspx"),
+        ("index.php", "index.php"),
+        ("88812345.aspx", "{id}"),
+        ("xqzkvbtrwamplh", "{}"),
+    ],
+)
+def test_framework_route_segments_print(segment: str, printed: str) -> None:
+    assert _load_script().templated_path(f"/{segment}/x") == f"/{printed}/x"
+
+
+def test_cookies_by_name_prints_a_name_the_gate_would_hide(tmp_path: Path) -> None:
+    """The caller already holds the name, so echoing it adds nothing."""
+    har = str(_har(tmp_path))
+    lines = _lines("cookies", har, "--name", "uid_SAMCOOKIE_X")
+    assert lines == [
+        "cookie uid_SAMCOOKIE_X",
+        "  set by GET https://shop.test/setck (1 time); header: HttpOnly=no Secure=no "
+        "SameSite=- Path=/ Domain=- expiry=no; not in the response.cookies array",
+    ]
+    assert _lines("cookies", har, "--name", "pre") == [
+        "cookie pre: sent in requests and never set in this recording"
+    ]
+    missing = _run("cookies", har, "--name", "absent")
+    assert missing.returncode == 1
+    assert missing.stderr == "har-facts: no cookie named 'absent' is set or sent.\n"
+
+
+def _one_entry_har(tmp_path: Path, body_file: str) -> Path:
+    path = tmp_path / "network.har"
+    entries = [
+        _entry(
+            "GET", "https://s.test/a", content={"mimeType": "text/html", "_bodyFile": body_file}
+        ),
+        _entry("GET", "https://s.test/b", content={"mimeType": "text/html", "text": "<p></p>"}),
+    ]
+    path.write_text(json.dumps({"log": {"entries": entries}}))
+    return path
+
+
+def test_a_body_file_name_with_a_nul_fails_that_entry_alone(tmp_path: Path) -> None:
+    lines = _lines("response", str(_one_entry_har(tmp_path, "bodies/a\x00b.html")), "/")
+    assert "    a body file that cannot be read" in lines
+    assert "GET https://s.test/b" in lines
+
+
+def test_a_symlinked_bodies_directory_is_not_followed(tmp_path: Path) -> None:
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "page.html").write_text("<title>OUTSIDE_FILE</title>")
+    (tmp_path / "bodies").symlink_to(outside, target_is_directory=True)
+    lines = _lines("response", str(_one_entry_har(tmp_path, "bodies/page.html")), "/a")
+    assert "    a body file outside the recording, not read" in lines

@@ -61,12 +61,15 @@ accepts edits for the session. Offer the rules of the skill's two scripts, the
 leak check and the HAR reader, with this skill's directory,
 `${CLAUDE_SKILL_DIR}`, in place of the variable: that path names this version of
 the skill, so the rules belong in the project's local settings, which are not
-committed, and are offered again after an update. Say that the skill works
-either way: without the rules, each command asks first. Offer the rules that
-hold `<site-name>` once the plugin's name is fixed, with that name in its place:
-in create mode at the end of the frame step, since the name `gp plugin new`
-takes becomes the plugin's `site_name`; in enhance mode once the plugin is
-chosen, from its `site_name` in `project.plugins`.
+committed, and are offered again after an update. The HAR reader's rule is
+offered because its output holds no cookie, header, query, or body value, and a
+permission prompt shows the command, not what it prints, so asking each time
+would protect nothing. Say that the skill works either way: without the rules,
+each command asks first. Offer the rules that hold `<site-name>` once the
+plugin's name is fixed, with that name in its place: in create mode at the end
+of the frame step, since the name `gp plugin new` takes becomes the plugin's
+`site_name`; in enhance mode once the plugin is chosen, from its `site_name` in
+`project.plugins`.
 
 This invocation's arguments: plugin name `$0`, site URL `$1`. Claude Code puts
 each argument given in its place, and a position with no argument keeps its
@@ -220,26 +223,28 @@ Never ask for a password, and never write a credential anywhere. Never read what
 projection first, and at the harden step the captures `gp observe fixtures`
 writes into the git-ignored `tests/captures/`. When the projection does not
 answer a question, read the `--json` digest and then ask the run's HAR through
-the skill's HAR reader, `scripts/har-facts.py`, which prints names, attributes,
-types, and counts and never a value: recorded text prints only when it passes one
-allowlist gate for plain field names, and everything else becomes a placeholder
-or a count. A username used as a key or a path segment can still pass, so treat
-the reader's output under this rule too. Read the HAR by hand only for what the
-reader does not cover, narrowly, as `references/har.md` says. The `--json`
-digest prints paths as recorded, which can carry account or order ids; a capture
-holds the account's own data; a HAR holds both and, when the recording logged
-in, the password the user typed. All of them stay on this workstation: no value
-from one goes into anything that is committed or shared, such as a fixture, a
-test, code, a comment, a docstring, a commit message, or a pull request, nor
-into a reply the user may paste elsewhere. Reading a cookie or token value is
-not forbidden, since a HAR cannot always be read around one, but no step needs a
-value, so read attributes rather than values: never repeat a password, a token,
-a session cookie's value, or any other credential in a reply, and never write
-one. Report names, attributes, shapes, and counts. A token value inside a
-capture is replaced like any other captured value. The output of the live
-read-only command the user agreed to at the kick-the-tires step is the same:
-show it to them, confirm it returned data, and use no value from it. When the
-user pastes a secret into the conversation, say it belongs in the workstation
-env file through the `gp config set` line of the "Run by the user" block in
-`references/commands.md`, with a `$(your-secret-tool read ...)` value, and do
-not use it.
+the skill's HAR reader, `scripts/har-facts.py`, which prints no cookie, header,
+query, or body value; names and path segments pass a heuristic gate that
+withholds most value-shaped text, but a plain word used as a key or a path
+segment (a username, a person's or place's name, a label, a handle such as
+`alice84`), a letter-only token that spells like a word, and the host can still
+print and be the account's own, so never copy one into code without the user's
+word, and treat the reader's output under this rule too. Read the HAR by hand
+only for what the reader does not cover, narrowly, as `references/har.md` says.
+The `--json` digest prints paths as recorded, which can carry account or order
+ids; a capture holds the account's own data; a HAR holds both and, when the
+recording logged in, the password the user typed. All of them stay on this
+workstation: no value from one goes into anything that is committed or shared,
+such as a fixture, a test, code, a comment, a docstring, a commit message, or a
+pull request, nor into a reply the user may paste elsewhere. Reading a cookie or
+token value is not forbidden, since a HAR cannot always be read around one, but
+no step needs a value, so read attributes rather than values: never repeat a
+password, a token, a session cookie's value, or any other credential in a reply,
+and never write one. Report names, attributes, shapes, and counts. A token value
+inside a capture is replaced like any other captured value. The output of the
+live read-only command the user agreed to at the kick-the-tires step is the
+same: show it to them, confirm it returned data, and use no value from it. When
+the user pastes a secret into the conversation, say it belongs in the
+workstation env file through the `gp config set` line of the "Run by the user"
+block in `references/commands.md`, with a `$(your-secret-tool read ...)` value,
+and do not use it.

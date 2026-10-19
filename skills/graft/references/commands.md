@@ -8,9 +8,9 @@ name a block by its step and never spell a templated command. Placeholders:
 `<fixture>` (the plain-named capture `gp observe fixtures` wrote),
 `<fixtures-dir>` (the tests' `FIXTURES_DIR`), `<variable>` and `<value>`
 (`SKILL.md`, step 7), `<har>` (the run's HAR, by absolute path), `<url-part>`
-(a piece of a request URL's path), `<url>`, `<base-url>`, `<version>`, `<n>`,
-`<METHOD>`, and `<template>`. Only preflight is pre-approved; the rules at the
-end cover "Run by the skill" alone.
+(a piece of a request URL's path), `<cookie>` (a cookie name already held),
+`<url>`, `<base-url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`. Only
+preflight is pre-approved; the rules at the end cover "Run by the skill" alone.
 
 ## Run by preflight
 
@@ -22,8 +22,6 @@ gp plugin info --json
 ```
 
 ## Run by the user
-
-The skill prints these for the user to run, and never runs them.
 
 ```bash
 gp observe --no-session interactive <url>
@@ -57,7 +55,7 @@ gp observe list
 ```bash
 gp observe digest <session> <run> --endpoints-json
 gp observe digest <session> <run> --json
-uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py cookies '<har>'
+uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py cookies '<har>' --name '<cookie>'
 uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py request '<har>' '<url-part>' --method <METHOD>
 uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py response '<har>' '<url-part>' --method <METHOD>
 ```
@@ -98,9 +96,10 @@ uv run --no-project --with-editable . gp <site-name> <command>
 ## Allow rules for a prompt-free run
 
 The rules the skill offers, all `gp` but its two read-only scripts, the leak
-check and the HAR reader, which prints no value; a file write still asks. The
-last two cover the plugin's help and login. None is offered for the live
-read-only command, which reads the account, or for reading a HAR by hand.
+check and the HAR reader, which prints no cookie, header, query, or body value
+(`references/har.md`); a file write still asks. The last two cover the plugin's
+help and login. None is offered for the live read-only command, which reads the
+account, or for reading a HAR by hand.
 
 ```text
 Bash(gp plugin info *)

@@ -10,10 +10,10 @@ from types import ModuleType
 
 import pytest
 
+import graftpunk.har.paths as paths_module
 from graftpunk.har.paths import (
     _MIN_BASE64_LEN,
     _MIN_HEX_LEN,
-    _WORD_CONSONANT_PAIRS,
     bare_host,
     bare_url,
     holds_an_id,
@@ -689,6 +689,13 @@ def _id_corpus() -> list[str]:
         "ctl00_ContentPlaceHolder1_txtUserName",
         "csrfmiddlewaretoken",
         "a%40b.co",
+        # Inputs that exercise each piece of the rule a one-line drift would break.
+        "a~4111-1111-1111",
+        "(555) 123-4567",
+        "cus_nffrfeufnv2hib12",
+        "cus_x~1",
+        "otp~cus_NffrFeUfNV2Hib",
+        "cus_NFFRFEUFNV2HIB12",
         "",
     ]
     return corpus
@@ -700,5 +707,42 @@ def test_the_har_readers_id_rule_is_graftpunks() -> None:
     assert differ == []
 
 
-def test_the_har_readers_spelling_pairs_are_graftpunks() -> None:
-    assert _load_har_facts()._WORD_CONSONANT_PAIRS == _WORD_CONSONANT_PAIRS
+_COPIED = [
+    "_MIN_HEX_LEN",
+    "_MIN_PREFIXED_TAIL",
+    "_MIN_BASE64_LEN",
+    "_MIN_BASE64_SWITCHES",
+    "_MAX_CAPITALS_RUN",
+    "_VOWELS",
+    "_WORD_CONSONANT_PAIRS",
+]
+_COPIED_PATTERNS = [
+    "_EMAIL_SEARCH_RE",
+    "_PART_SPLIT_RE",
+    "_DIGIT_RUN_RE",
+    "_MIXED_HEX_RE",
+    "_PREFIXED_ID_RE",
+    "_BASE64_RE",
+    "_DATE_RE",
+    "_PARENTHESISED_PHONE_RE",
+    "_PREFIXED_HEX_RE",
+]
+
+
+@pytest.mark.parametrize("name", _COPIED)
+def test_the_har_readers_copied_constants_are_graftpunks(name: str) -> None:
+    assert getattr(_load_har_facts(), name) == getattr(paths_module, name)
+
+
+@pytest.mark.parametrize("name", _COPIED_PATTERNS)
+def test_the_har_readers_copied_patterns_are_graftpunks(name: str) -> None:
+    ours, theirs = getattr(_load_har_facts(), name), getattr(paths_module, name)
+    assert (ours.pattern, ours.flags) == (theirs.pattern, theirs.flags)
+
+
+def test_the_har_readers_spelling_rule_is_graftpunks() -> None:
+    script = _load_har_facts()
+    rng = random.Random(277)  # noqa: S311 - a fixed sample, not a secret
+    words = ["".join(rng.choices(string.ascii_letters, k=rng.randint(1, 12))) for _ in range(5_000)]
+    words += ["csrf", "CSRF", "ABC", "ABCD", "upgrade", "jsessionid", "JSESSIONID", ""]
+    assert [w for w in words if script._spelled(w) != paths_module._spelled(w)] == []
