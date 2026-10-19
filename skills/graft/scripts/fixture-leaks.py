@@ -14,7 +14,9 @@ of words with one of those in it.
 
 Where it looks, in the fixture, in Unicode compatibility form: the raw text, its
 JSON or HTML values decoded, its backslash escapes decoded (``\\u00e9``, a
-surrogate pair, ``\\/``), and its percent-encoding decoded (``%40``). A piece with a
+surrogate pair, ``\\x26``, ``\\/``), its HTML character references decoded
+(``&amp;``), and its percent-encoding decoded (``%40``), repeated up to
+three times while it keeps changing (``%2540``). A piece with a
 space, a digit, or an ``@`` matches in any case; a single word matches as written,
 in capitals, or in lower case inside an identifier or an address
 (``test_okonkwo_order``, ``okonkwo@example.com``). FIXTURE can be any text file, so
@@ -87,6 +89,11 @@ _MIN_LENGTH = 3
 # character outside the Basic Multilingual Plane.
 _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
+# A \xXX escape as JavaScript and Python source spell one.
+_HEX_ESCAPE = re.compile(r"\\x([0-9a-fA-F]{2})")
+# Percent-decoding is repeated, so a URL nested in another URL's query is read as
+# written, until the text stops changing or this many rounds have run.
+_PERCENT_ROUNDS = 3
 # The provenance phrase gp writes into a generated stub's docstring ("seen 2 time(s)
 # in run myshop/20261006-101500-4242."), wrapped at any space. Its run id starts
 # with the run's date and time, gp's and not captured data, yet the year matches any
@@ -209,7 +216,8 @@ def _normal(text: str) -> str:
 
 def _unescape(text: str) -> str:
     """*text* with its ``\\uXXXX`` escapes decoded, a surrogate pair rejoined into
-    the one character it spells, and ``\\/`` read as ``/``."""
+    the one character it spells, its ``\\xXX`` escapes decoded, and ``\\/`` read
+    as ``/``."""
 
     def pair(m: re.Match[str]) -> str:
         high, low = int(m.group(1), 16), int(m.group(2), 16)
@@ -219,12 +227,30 @@ def _unescape(text: str) -> str:
     # leaves every pair still rejoined.
     decoded = _SURROGATE_PAIR.sub(pair, text)
     decoded = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
+    decoded = _HEX_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
     return decoded.replace("\\/", "/")
+
+
+def _escape_decodings(text: str) -> list[str]:
+    """*text* with its backslash escapes decoded, with its HTML character
+    references decoded, and percent-decoded (``+`` as a space) once per round
+    until it stops changing, at most three rounds. graftpunk's fixtures check reads
+    a fixture in the same forms (graftpunk.testing.plugin._decoded_forms), and a
+    test holds the two to the same output."""
+    forms = [_unescape(text), unescape(text)]
+    current = text
+    for _ in range(_PERCENT_ROUNDS):
+        decoded = unquote_plus(current)
+        if decoded == current:
+            break
+        forms.append(decoded)
+        current = decoded
+    return forms
 
 
 def _decodings(fixture: str) -> list[str]:
     """*fixture* and the forms a copied value can hide behind in it."""
-    return [fixture, "\n".join(body_values(fixture)), _unescape(fixture), unquote_plus(fixture)]
+    return [fixture, "\n".join(body_values(fixture)), *_escape_decodings(fixture)]
 
 
 # Around a single word: no letter or digit on either side. An underscore counts as a

@@ -675,7 +675,7 @@ class TestCheckFixturesTree:
         assert check_fixtures_tree(tmp_path).problems == ()
 
     def test_an_empty_flagged_name_is_ignored(self, tmp_path: Path) -> None:
-        """An empty string in flagged_names would match every fixture as a substring."""
+        """An empty string in flagged_names would match between every two characters."""
         _fixture(
             tmp_path,
             "get_orders.json",
@@ -716,8 +716,37 @@ class TestCheckFixturesTree:
             b"Enter TEXT to search",
             b"next=%22text%22",
             b"[text]",
+            b"Type your search into the text.",
+            b"the `text` cookie",
+            b"*text* holds the search",
+            b"text!",
+            b"var $text = 1;",
+            b'{"url": "/x?a=1\\u0026text=Qm7Lp2Xv9Kd4"}',
+            b'{"note": "\\u0022text\\u0022: zz"}',
+            b"var u = '/x?a=1\\x26text=Qm7Lp2Xv9Kd4';",
+            b"<a href='/r?next=%2522text%2522'>",
+            b"next=a%253D1%2526text%253Dabc",
+            b'<a href="/x?a=1&amp;text=abc">',
         ],
-        ids=["json-key", "single-quoted", "after-ampersand", "prose", "percent-encoded", "bracket"],
+        ids=[
+            "json-key",
+            "single-quoted",
+            "after-ampersand",
+            "prose",
+            "percent-encoded",
+            "bracket",
+            "sentence-end",
+            "backticks",
+            "asterisks",
+            "exclamation",
+            "dollar-variable",
+            "json-escaped-ampersand",
+            "json-escaped-quote",
+            "js-hex-escape",
+            "double-percent-quote",
+            "double-percent-pair",
+            "html-entity",
+        ],
     )
     def test_a_flagged_name_as_a_whole_name_fails(self, tmp_path: Path, body: bytes) -> None:
         _fixture(tmp_path, "get_search.json", body, _captured(b"captured", "text"))
@@ -729,13 +758,14 @@ class TestCheckFixturesTree:
         [
             b'{"context": "invented"}',
             b"textarea { text-align: left; }",
-            b'{"subtext": 1, "text_size": 2, "text.v2": 3, "$text": 4}',
+            b'{"subtext": 1, "text_size": 2, "text.v2": 3, "a$text": 4, "my.text": 5}',
         ],
         ids=["inside-a-word", "hyphenated", "joined-by-name-characters"],
     )
     def test_a_flagged_name_inside_a_longer_name_passes(self, tmp_path: Path, body: bytes) -> None:
         """A cookie name is an RFC 6265 token, so a flagged name counts only where
-        the characters around it cannot be part of the same name (#270)."""
+        the characters around it cannot be part of the same name (#270): letters,
+        digits, _ and -, or token punctuation between two of those."""
         _fixture(tmp_path, "get_search.json", body, _captured(b"captured", "text"))
         assert check_fixtures_tree(tmp_path).problems == ()
 
