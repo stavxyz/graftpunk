@@ -1902,52 +1902,126 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     as words (graftpunk.har.paths.reads_as_words: a search term, a lot number, a
     date) holds no credential, and its name is often an ordinary word that an
     invented fixture keeps as a key or in prose (``text``, ``lot``), so it is
-    left out. Every other cookie stays: one whose name reads as a token name
-    (``csrftoken``), one with any value that does not read as words (a session
-    id), and one with a value *entries* do not show, which covers a ``Set-Cookie``
-    the recorder kept only as a name, an empty value, and a call without
-    *entries*. Values are read from every entry's request and response cookies,
-    whatever its host.
+    left out. Every other cookie stays:
+
+    - one whose name reads as a token name (``csrftoken``) or names a session
+      (:func:`_names_a_session`: ``sessionid``, ``PHPSESSID``, ``connect.sid``),
+      whatever its values;
+    - one any response in *entries* set with ``HttpOnly``, whatever its values:
+      a server hides a cookie from scripts to protect it, and form state written
+      by script never carries the flag;
+    - one with any non-empty value that does not read as words (a session id);
+    - one with no non-empty value *entries* show, which covers a ``Set-Cookie``
+      the recorder kept only as a name, a cookie only ever empty, and a call
+      without *entries*, where every cookie stays. (``gp observe digest`` does not
+      call this; its cookie list, ``d.cookies``, names every cookie.)
+
+    An empty value beside a non-empty one is a cleared field or an expired
+    cookie, and holds nothing. Values are read from every entry's request and
+    response cookies, whatever its host. ``Secure`` is not a guard: a site
+    served only over HTTPS can mark every cookie Secure.
 
     A name that holds an account value (graftpunk.har.paths.holds_an_id) is not
     among them, in any form: :func:`redacted_names_of` counts those."""
     entries = tuple(entries)
-    values, unseen = _cookie_values(entries)
+    seen = _cookies_seen(entries)
     entry_cookies = {
         name for entry in entries for name in _response_cookie_names(entry) if not holds_an_id(name)
     }
 
     def holds_only_words(name: str) -> bool:
         return (
-            name in values
-            and name not in unseen
+            name in seen.values
+            and name not in seen.unseen
+            and name not in seen.http_only
             and not looks_like_token_name(name)
-            and all(reads_as_words(value) for value in values[name])
+            and not _names_a_session(name)
+            and all(reads_as_words(value) for value in seen.values[name])
         )
 
     cookies = {name for name in set(d.cookies) | entry_cookies if not holds_only_words(name)}
     return tuple(sorted(cookies | {token.name for token in d.tokens}))
 
 
-def _cookie_values(entries: Iterable[HAREntry]) -> tuple[dict[str, set[str]], set[str]]:
-    """Every value *entries* record for each cookie name, in requests and responses,
-    and the names some entry sets or sends without a value it records: a
-    ``Set-Cookie`` kept only in ``set_cookie_names``, or an empty value."""
-    values: dict[str, set[str]] = {}
-    unseen: set[str] = set()
+# The parts of a cookie name that say it holds a session or a credential, so the
+# cookie is flagged whatever its values. Each is a default session or auth cookie
+# name of a common framework, or a part of one (Django's sessionid, PHP's
+# PHPSESSID, Java's JSESSIONID, Express's connect.sid, ASP.NET's
+# ASP.NET_SessionId and .ASPXAUTH, Rails' _<app>_session, Laravel's
+# laravel_session and remember_web_<hash>), or a word sites use for the same
+# (sess, auth, jwt, login, token, csrf, xsrf). Matched as whole parts, never as
+# substrings, so sidebar, author and inside are not session names.
+_SESSION_NAME_PARTS = frozenset(
+    {
+        "sess",
+        "session",
+        "sessid",
+        "sessionid",
+        "phpsessid",
+        "jsessionid",
+        "sid",
+        "auth",
+        "aspxauth",
+        "jwt",
+        "token",
+        "csrf",
+        "xsrf",
+        "login",
+        "remember",
+    }
+)
+_NAME_CHUNK_RE = re.compile(r"[^_\-.\s]+")
+_NAME_PART_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+
+
+def _names_a_session(name: str) -> bool:
+    """True when a part of *name*, split on ``_ - .`` and whitespace and then at
+    each change of case and between letters and digits, is in
+    ``_SESSION_NAME_PARTS``, case-insensitively (``ASP.NET_SessionId`` holds
+    ``Session``, ``rememberMe`` holds ``remember``)."""
+    return any(
+        part.lower() in _SESSION_NAME_PARTS
+        for chunk in _NAME_CHUNK_RE.findall(name)
+        for part in (chunk, *_NAME_PART_RE.findall(chunk))
+    )
+
+
+@dataclass
+class _CookiesSeen:
+    """What a recording shows of each cookie name: its non-empty values, the names
+    a response set without a value the recorder kept, and the names a response
+    set with ``HttpOnly``."""
+
+    values: dict[str, set[str]] = field(default_factory=dict)
+    unseen: set[str] = field(default_factory=set)
+    http_only: set[str] = field(default_factory=set)
+
+
+def _cookies_seen(entries: Iterable[HAREntry]) -> _CookiesSeen:
+    """Every non-empty value *entries* record for each cookie name, in requests and
+    responses; the names a response set with no value kept (a ``Set-Cookie`` only
+    in ``set_cookie_names``, or a value that is not a string); and the names a
+    response set with ``HttpOnly``. An empty value is skipped, so a cookie whose
+    only values are empty has no entry in ``values``."""
+    seen = _CookiesSeen()
     for entry in entries:
         for cookie in entry.request.cookies + entry.response.cookies:
             name = cookie.get("name", "")
             value = cookie.get("value", "")
             if not name:
                 continue
-            if isinstance(value, str) and value:
-                values.setdefault(name, set()).add(value)
-            else:
-                unseen.add(name)
+            if not isinstance(value, str):
+                seen.unseen.add(name)
+            elif value:
+                seen.values.setdefault(name, set()).add(value)
+        for cookie in entry.response.cookies:
+            if cookie.get("httpOnly") is True and cookie.get("name"):
+                seen.http_only.add(cookie["name"])
         with_values = {cookie.get("name", "") for cookie in entry.response.cookies}
-        unseen.update(name for name in entry.response.set_cookie_names if name not in with_values)
-    return values, unseen
+        seen.unseen.update(
+            name for name in entry.response.set_cookie_names if name not in with_values
+        )
+    return seen
 
 
 def redacted_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> int:

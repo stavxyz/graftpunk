@@ -1241,6 +1241,50 @@ class TestPlainWordCookies:
         (problem,) = check_fixtures_tree(tree).problems
         assert "'csrf-token'" in problem
 
+    def test_a_django_style_session_stays_flagged_beside_script_written_form_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """sessionid set HttpOnly, csrftoken set without it, and form state the page
+        writes by script, which no response sets: the session and the token stay
+        flagged even with word-shaped values, and the fixture keeping the form
+        state's names passes."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        login = _entry("POST", "https://myshop.example.com/accounts/login/", body="{}")
+        login["response"]["cookies"] = [
+            {"name": "sessionid", "value": "lanterns", "httpOnly": True, "secure": True},
+            {"name": "csrftoken", "value": "harbor", "secure": True},
+        ]
+        search = _entry(
+            "GET",
+            "https://myshop.example.com/api/search?lot=12",
+            body=json.dumps({"results": [{"subdivision": "Oak Hills", "block": "4", "lot": "12"}]}),
+        )
+        search["request"]["cookies"] = [
+            {"name": "sessionid", "value": "lanterns"},
+            {"name": "csrftoken", "value": "harbor"},
+            {"name": "text", "value": "running%20shoes"},
+            {"name": "lot", "value": "12"},
+        ]
+        _write_run(observe_base, "myshop", "run-1", [login, search])
+        out_dir = tmp_path / "captures"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /api/search", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 0, result.output
+        meta = out_dir / "get_api_search.json.meta.json"
+        assert json.loads(meta.read_text())["flagged_names"] == ["csrftoken", "sessionid"]
+        tree = tmp_path / "fixtures"
+        tree.mkdir()
+        (tree / meta.name).write_text(meta.read_text())
+        fixture = tree / "get_api_search.json"
+        fixture.write_text(json.dumps({"results": [{"block": "B", "lot": "7"}], "text": "x"}))
+        assert check_fixtures_tree(tree).problems == ()
+        fixture.write_text("See the `sessionid` cookie.")
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "'sessionid'" in problem
+
 
 @contextmanager
 def _unwritable_dir(parent: Path, name: str = "readonly") -> Iterator[Path]:

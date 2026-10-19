@@ -4230,6 +4230,68 @@ class TestFlaggedNamesOf:
         assert flagged_names_of(result, parse_har_file(har).entries) == ("lot",)
         assert flagged_names_of(result) == ("lot",)
 
+    def test_an_empty_value_beside_a_word_value_is_a_cleared_field(self, tmp_path: Path) -> None:
+        """A search reset sends text= with an expiry; it holds nothing, so the
+        cookie is judged on the values it did hold."""
+        entries = [
+            self._with_cookies([("text", "running%20shoes"), ("lot", "12")]),
+            self._with_cookies([("text", "")], (("lot", ""),)),
+        ]
+        har = _write_har(tmp_path, entries)
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "myshop_session",
+            "sessionid",
+            "PHPSESSID",
+            "JSESSIONID",
+            "connect.sid",
+            "laravel_session",
+            "ASP.NET_SessionId",
+            ".ASPXAUTH",
+            "_session_id",
+            "auth",
+            "jwt",
+            "login",
+            "rememberMe",
+            "XSRF-TOKEN",
+            "sess",
+        ],
+    )
+    def test_a_session_named_cookie_stays_flagged_whatever_its_value(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        har = _write_har(tmp_path, [self._with_cookies([(name, "lanterns")])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == (name,)
+
+    @pytest.mark.parametrize("name", ["sidebar", "author", "inside", "outside", "assessment"])
+    def test_a_name_holding_a_session_word_inside_another_word_is_judged_by_value(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        har = _write_har(tmp_path, [self._with_cookies([(name, "open")])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
+    def test_a_cookie_set_with_httponly_stays_flagged_whatever_its_value(
+        self, tmp_path: Path
+    ) -> None:
+        """A server hides a cookie from scripts to protect it; Secure alone says
+        nothing, since an HTTPS-only site can mark every cookie Secure."""
+        entry = _entry("GET", "https://myshop.example.com/api/search")
+        entry["response"]["cookies"] = [
+            {"name": "visit", "value": "lanterns", "httpOnly": True, "secure": True},
+            {"name": "lot", "value": "12", "secure": True},
+        ]
+        later = _entry("GET", "https://myshop.example.com/api/search")
+        later["request"]["cookies"] = [{"name": "visit", "value": "lanterns"}]
+        har = _write_har(tmp_path, [entry, later])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
 
 class TestEveryNamePositionGoesThroughTheIdRule:
     """Response keys, header names, and cookie names go through
