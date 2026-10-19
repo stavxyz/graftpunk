@@ -40,7 +40,10 @@ The HAR is JSON written with a two-space indent, one key per line. Its
 - `response.cookies[]` holds one object per `Set-Cookie` line: `name`, then
   `value`, then `httpOnly`, `secure`, `path`, `domain`, and `expires` when the
   server set them. `SameSite` and `Max-Age` have no field there and appear only
-  in the raw `Set-Cookie` entry of `response.headers[]`.
+  in the raw `Set-Cookie` entry of `response.headers[]`. A flag missing from
+  the array does not show it is off, since the array often leaves out a flag
+  the header carries: confirm in the header with the count-mode match below,
+  `HttpOnly` or `Secure` in place of `SameSite=Lax`.
 - `request.postData` holds a request body as `mimeType` and `text`.
 - `response.content.text` holds a response body, or `response.content._bodyFile`
   names its file under `bodies/`.
@@ -55,7 +58,7 @@ start the Read two lines below its `name` line, past its `value`. A body
 inlined in the HAR sits on one line, often a very long one: Grep for a key
 inside it rather than reading the line. To learn a cookie's `SameSite` without
 printing its header line, Grep in count mode, case-insensitive, for
-`("|\\n)<cookie>=[^\\]*SameSite=Lax`, then `Strict`, then `None`: a header's
+`("|\\n)<cookie>=[^\\]*;\s*SameSite=Lax`, then `Strict`, then `None`: a header's
 `Set-Cookie` lines are joined by an escaped newline, so the pattern starts at
 that cookie's own name and stops at the next line.
 
