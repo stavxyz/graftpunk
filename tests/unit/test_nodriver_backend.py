@@ -6848,3 +6848,60 @@ class TestNoDriverBackendAbandonedLockHolder:
         assert running is True
         _within(10, backend.stop)
         assert backend._lock.locked() is False
+
+    @pytest.mark.parametrize("waiter", ["stop_on_another_thread", "start_async_on_its_loop"])
+    def test_an_earlier_holds_give_up_does_not_apply_to_the_next_holder(
+        self, waiter: str, fake_chrome: FakeChrome, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        """The record of an earlier hold that was given up on, and left to its
+        end, stays after that end. A later holder whose loop runs is waited
+        for as usual, by a stop on another thread or a start on that holder's
+        own loop, rather than given up on at once with the earlier reason."""
+        from graftpunk.backends.nodriver import _Abandonment, _Hold
+
+        backend = NoDriverBackend()
+        earlier = _Abandonment(1, "stop_async", "has not run for 0.5 s")
+        earlier.ender_claimed = True
+        earlier.release_on_end = True
+        earlier.ended.set()
+        backend._abandoned = earlier
+        loop = asyncio.new_event_loop()
+        loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+        loop_thread.start()
+        try:
+            for _ in range(500):
+                if loop.is_running():
+                    break
+                time.sleep(0.01)
+            assert backend._lock.acquire(blocking=False)
+            backend._hold_count = 2
+            backend._holding = _Hold(2, loop_thread, "stop_async", loop)
+
+            def release_after_a_second() -> None:
+                time.sleep(1.0)
+                backend._holding = None
+                backend._lock.release()
+
+            threading.Thread(target=release_after_a_second, daemon=True).start()
+            if waiter == "stop_on_another_thread":
+                took = _within(10, backend.stop)
+            else:
+                took = _within(
+                    10,
+                    lambda: asyncio.run_coroutine_threadsafe(backend.start_async(), loop).result(
+                        10
+                    ),
+                )
+                started = backend.is_running
+                _within(10, backend.stop)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            loop_thread.join(5)
+            loop.close()
+
+        assert took >= 0.9
+        if waiter == "start_async_on_its_loop":
+            assert started is True
+        assert self._given_up(captured_logs) == []
+        assert backend._abandoned is earlier
+        assert backend._lock.locked() is False
