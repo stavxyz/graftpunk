@@ -6551,6 +6551,53 @@ class TestNoDriverBackendAbandonedLockHolder:
         _within(10, backend.stop)
         assert backend._lock.locked() is False
 
+    def test_a_holder_returning_after_only_a_start_gave_up_releases_the_lock(
+        self,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No stop claimed an end of Chrome for the hold, so the holder that
+        returns releases the lock itself, and a later start launches."""
+        profile = temp_profiles / "uc_only_a_start_gave_up"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        entered = threading.Event()
+        gate = threading.Event()
+        _within(10, backend.start)
+        real_stop = backend._stop_async
+
+        async def gated_stop() -> None:
+            entered.set()
+            await _until(gate)
+            await real_stop()
+
+        with _chrome_like_child(profile) as child:
+            assert backend._browser is not None
+            self._give_chrome(backend._browser, child, profile)
+            monkeypatch.setattr(backend, "_stop_async", gated_stop)
+            stranded = _Stranded(backend, backend.stop_async, "stop_async", entered.is_set)
+            try:
+                with pytest.raises(RuntimeError, match="gave up waiting for a stop_async()"):
+                    _within(10, backend.start)
+                gate.set()
+                stranded.finish(resume=True)
+                lock_held_after_the_holder = backend._lock.locked()
+                exited = child.poll() is not None
+                monkeypatch.setattr(backend, "_stop_async", real_stop)
+                _within(10, backend.start)
+                running = backend.is_running
+            finally:
+                gate.set()
+                stranded.finish(resume=True)
+
+        assert stranded.outcome == [None]
+        assert lock_held_after_the_holder is False
+        assert exited
+        assert running is True
+        _within(10, backend.stop)
+        assert backend._lock.locked() is False
+
     def test_a_give_up_stop_async_on_the_browsers_own_loop_ends_chrome_there(
         self,
         fake_chrome: FakeChrome,
