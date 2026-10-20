@@ -214,7 +214,8 @@ one flow on its own with nothing else in the way.
 Runs live under `~/.local/share/graftpunk/observe/<name>/<run id>/`, where
 `<name>` is the session when you named one and the name inferred from the host
 otherwise. A run holds `network.har` plus whatever else that run captured:
-`bodies/` for response bodies too large to inline in the HAR,
+`bodies/` for request and response bodies too large to inline in the HAR or
+not text,
 `page-source.html`, `screenshots/`, `console.jsonl`, `events.jsonl`, and
 `metadata.json`.
 
@@ -250,14 +251,21 @@ default), and `--output PATH` writes to a file.
 Each endpoint in `--endpoints-json` carries the `host` it was recorded on,
 beside the run's one `primary_host`, so a program can see a site whose pages
 and JSON come from different hosts. Its `body_not_captured` is true when a
-recording of the endpoint sent a request body the HAR does not hold (the HAR
-entry's `request._postDataNotCaptured`). The markdown digest says which case it
-was: a `body not captured` line for a body the recorder could not get, and a
-`body left out` line for one larger than `--max-body-size`, or not text, that
-the recorder had no `bodies/` directory to write to (`gp observe` always has
-one, so there such a body goes to `bodies/` instead, referenced by
-`request._postDataFile`). `gp plugin new` leaves a `GP-FILL` in the endpoint's
-stub for either.
+recording of the endpoint sent a request body whose fields the digest could not
+read. The markdown digest says which of three cases it was:
+
+- `body not captured`: the recorder could not get the body, or the file it was
+  written to under `bodies/` is missing or unreadable.
+- `body not text`: the body is binary. `gp observe go` and `gp observe
+  interactive` keep it in the run's `bodies/` directory, and the line names the
+  file and its size; read it there.
+- `body left out`: the body was over the capture's max body size, or not text,
+  and the capture had no `bodies/` directory to keep it in. Only a capture
+  without one does this, such as a `gp --observe=full` run of a plugin command;
+  `gp observe go` and `gp observe interactive` keep such a body in `bodies/`.
+
+`gp plugin new` leaves a `GP-FILL` in the endpoint's stub for each, naming the
+stored file for a binary body.
 
 The digest is redacted by construction. It records header names, cookie names,
 form field names, query parameter names and observed types, and response shapes.

@@ -6,12 +6,17 @@ projection the `--endpoints-json` line of the Understand block of
 per endpoint with `method`, `template`, `host`, `login_flow`, `content_type`,
 `shape`, `query_params`, `body_params`, `body_not_captured`, and
 `custom_headers`, plus a `login` summary and the recording's `primary_host`.
-A row with `body_not_captured` set has a request body that is not in the HAR,
-so its `body_params` are empty or partial: say so in the row rather than
-proposing a command with no inputs. The markdown digest tells the two causes
-apart: `body not captured` is a body gp could not record, and `body left out`
-is one over `--max-body-size`, or binary, that gp chose not to keep; for the
-second, suggest recording that flow again with a larger `--max-body-size`.
+A row with `body_not_captured` set has a request body gp could not read
+field names from, so its `body_params` are empty or partial: say so in the row
+rather than proposing a command with no inputs. The markdown digest's line for
+the endpoint says why. For `body not text`, the body is binary and its file in
+the run's `bodies/` directory is named on the line; the HAR reader reports its
+size class, and the user decides what the command sends. For `body left out`,
+the capture that made the recording had nowhere on disk to put the body (plugin
+commands recorded with the global `--observe=full` option work that way); a new
+recording of that flow, made the way `references/commands.md` records one,
+keeps the body. For `body not captured`, the recording holds no copy of the
+body at all.
 Build the proposal from that projection, which is shaped for it;
 `references/har.md` says where to look for what it leaves out.
 
