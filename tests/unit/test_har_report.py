@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -263,6 +264,7 @@ _ENDPOINT_V1 = {
     "shape",
     "query_params",
     "body_params",
+    "body_not_captured",
     "custom_headers",
 }
 _LOGIN_V1 = {"auth_urls", "forms"}
@@ -750,3 +752,50 @@ def test_render_json_carries_no_collapsed_member_beyond_the_capped_examples(
     assert len(retained) == len(endpoint.examples) < len(words)
     for word in words:
         assert (word in text) == (word in retained), word
+
+
+def _search_post(*, body: str | None, not_captured: bool = False) -> dict:
+    entry = _entry("POST", "https://myshop.example/api/search", body='{"results": []}')
+    if body is not None:
+        entry["request"]["postData"] = {"mimeType": "application/json", "text": body}
+    if not_captured:
+        entry["request"]["_postDataNotCaptured"] = True
+    return entry
+
+
+class TestBodyNotCaptured:
+    """A body the recorder could not get is reported as such (#269), never as an
+    endpoint with no parameters."""
+
+    def _digest(self, tmp_path: Path, entries: list[dict]) -> Any:
+        return digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+
+    def test_the_markdown_says_the_body_was_not_captured(self, tmp_path: Path) -> None:
+        text = render_markdown(self._digest(tmp_path, [_search_post(body=None, not_captured=True)]))
+        block = text[text.index("### POST /api/search") :]
+        expected = "- body not captured: 1 of 1 recording(s) sent a body the recorder could not get"
+        assert expected in block
+        assert "- body params" not in block
+
+    def test_partial_capture_keeps_the_params_and_counts_the_loss(self, tmp_path: Path) -> None:
+        entries = [
+            _search_post(body='{"query": "alice"}'),
+            _search_post(body=None, not_captured=True),
+        ]
+        result = self._digest(tmp_path, entries)
+        (endpoint,) = result.endpoints
+        assert endpoint.body_params == {"query": "str"}
+        assert endpoint.body_not_captured == 1
+        assert "- body not captured: 1 of 2 recording(s)" in render_markdown(result)
+
+    def test_a_request_that_sent_no_body_is_not_flagged(self, tmp_path: Path) -> None:
+        result = self._digest(tmp_path, [_search_post(body=None)])
+        (endpoint,) = result.endpoints
+        assert endpoint.body_not_captured == 0
+        assert "body not captured" not in render_markdown(result)
+        assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is False
+
+    def test_the_endpoints_projection_carries_the_flag(self, tmp_path: Path) -> None:
+        result = self._digest(tmp_path, [_search_post(body=None, not_captured=True)])
+        (row,) = endpoints_projection(result)["endpoints"]
+        assert (row["method"], row["body_params"], row["body_not_captured"]) == ("POST", {}, True)

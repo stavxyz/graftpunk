@@ -249,7 +249,11 @@ own observations, never a logout or a cart redirect recorded beside it),
 default), and `--output PATH` writes to a file.
 Each endpoint in `--endpoints-json` carries the `host` it was recorded on,
 beside the run's one `primary_host`, so a program can see a site whose pages
-and JSON come from different hosts.
+and JSON come from different hosts. Its `body_not_captured` is true when a
+recording of the endpoint sent a request body the recorder could not get (the
+HAR entry's `request._postDataNotCaptured`); the markdown digest prints a
+`body not captured` line for it, and `gp plugin new` leaves a `GP-FILL` saying
+so in the endpoint's stub.
 
 The digest is redacted by construction. It records header names, cookie names,
 form field names, query parameter names and observed types, and response shapes.

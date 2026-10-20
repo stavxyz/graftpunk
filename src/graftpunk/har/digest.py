@@ -291,6 +291,11 @@ class Endpoint:
     body_keys_dropped_as_ids: int = 0
     body_keys_dropped_as_non_names: int = 0
     header_names_dropped_as_ids: int = 0
+    # How many recordings sent a body the recorder could not capture
+    # (HARRequest.post_data_not_captured): body_params holds only what the other
+    # recordings showed, so the digest and a stub say the body was not captured
+    # rather than present a request with no or partial parameters as complete.
+    body_not_captured: int = 0
     # Every recorded response to this endpoint had no body (a redirect, a 204): a
     # generated test asserts the call completed, since an empty body is falsy.
     response_body_empty: bool = False
@@ -1192,6 +1197,7 @@ class _EndpointAccumulator:
         self.dropped_query: set[str] = set()
         self.dropped_body: set[str] = set()
         self.dropped_headers: set[str] = set()
+        self.body_not_captured = 0
 
     def record(self, entry: HAREntry, path: str, step: int, entry_index: int) -> None:
         text = capture_text(entry.response.body, entry.response.status)
@@ -1218,6 +1224,8 @@ class _EndpointAccumulator:
         field_types, body_kind, body_dropped = _parse_body_keys(entry)
         _merged_types(self.body_params, field_types, json_body=body_kind == "json")
         self.dropped_body |= body_dropped
+        if entry.request.post_data_not_captured and not entry.request.post_data:
+            self.body_not_captured += 1
         if body_kind != "none":
             self.body_kind = body_kind
         if entry.response.body:
@@ -1253,6 +1261,7 @@ class _EndpointAccumulator:
             body_keys_dropped_as_ids=_count_ids(self.dropped_body),
             body_keys_dropped_as_non_names=len(self.dropped_body) - _count_ids(self.dropped_body),
             header_names_dropped_as_ids=len(self.dropped_headers),
+            body_not_captured=self.body_not_captured,
             response_body_empty=not self.bodied,
             falsy_first_response=None if fixture_type is None else candidates[fixture_type][1],
             fixture_content_type="" if fixture_type is None else fixture_type,

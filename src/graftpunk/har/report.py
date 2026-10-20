@@ -77,6 +77,11 @@ def _endpoint_block(endpoint: Endpoint) -> list[str]:
     if endpoint.body_params:
         params = ", ".join(f"{k}: {v}" for k, v in sorted(endpoint.body_params.items()))
         lines.append(f"- body params ({endpoint.body_kind}): {params}")
+    if endpoint.body_not_captured:
+        lines.append(
+            f"- body not captured: {endpoint.body_not_captured} of {endpoint.count} "
+            "recording(s) sent a body the recorder could not get"
+        )
     if endpoint.custom_headers:
         lines.append(f"- custom headers: {', '.join(endpoint.custom_headers)}")
     lines.append(f"- shape: {summarize_shape(endpoint.shape)}")
@@ -254,6 +259,7 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
                 "shape": summarize_shape(endpoint.shape),
                 "query_params": dict(sorted(endpoint.query_params.items())),
                 "body_params": dict(sorted(endpoint.body_params.items())),
+                "body_not_captured": endpoint.body_not_captured > 0,
                 "custom_headers": list(endpoint.custom_headers),
             }
             for endpoint in sorted(d.endpoints, key=_endpoint_sort_key)
