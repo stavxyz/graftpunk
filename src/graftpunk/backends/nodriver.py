@@ -674,15 +674,30 @@ def _start_off_loop(work: Callable[[], None]) -> "asyncio.Future[None]":
     It runs at most once. ``ThreadPoolExecutor.submit()`` queues the work
     before it starts a thread, so when that start fails the queued work
     still runs once a busy worker frees, after the fallback ran it: a
-    second end of Chrome would end whatever the backend runs by then.
+    second end of Chrome would end whatever the backend runs by then. The
+    runner that finds the work taken waits for it to finish and raises
+    what it raised, so the coroutine awaiting that runner does not return
+    before Chrome is ended, nor miss a failure.
     """
     loop = asyncio.get_running_loop()
     run_in_context = functools.partial(contextvars.copy_context().run, work)
     claimed = threading.Lock()
+    finished = threading.Event()
+    failures: list[BaseException] = []
 
     def call() -> None:
-        if claimed.acquire(blocking=False):
+        if not claimed.acquire(blocking=False):
+            finished.wait()
+            if failures:
+                raise failures[0]
+            return
+        try:
             run_in_context()
+        except BaseException as exc:
+            failures.append(exc)
+            raise
+        finally:
+            finished.set()
 
     try:
         return loop.run_in_executor(None, call)

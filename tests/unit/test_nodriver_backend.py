@@ -7,7 +7,7 @@ import threading
 import time
 import warnings
 from collections.abc import Callable, Coroutine, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -7109,3 +7109,67 @@ class TestNoDriverWorkOffTheLoop:
         _within(10, lambda: asyncio.run(run_it()))
 
         assert seen == ["the caller's"]
+
+    @pytest.mark.parametrize("outcome", ["finishes", "fails"])
+    def test_the_runner_that_finds_the_work_taken_waits_for_it(
+        self, outcome: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The loop's executor queued the work, then failed to start a thread,
+        and a freed worker took the queued item before the fallback's own
+        thread could. The coroutine awaiting the fallback returns only once
+        the work is done, and raises what the work raised."""
+        import concurrent.futures
+
+        from graftpunk.backends import nodriver as nodriver_module
+
+        queued: list[Callable[[], None]] = []
+
+        class QueuesThenFails(concurrent.futures.ThreadPoolExecutor):
+            def submit(self, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
+                queued.append(fn)
+                raise RuntimeError("can't start new thread")
+
+        queued_runner: list[threading.Thread] = []
+        claimed_first = threading.Event()
+
+        def queued_item_first(target: Callable[[], None]) -> None:
+            def run_queued() -> None:
+                claimed_first.set()
+                # As an executor's worker does, keep the item's exception.
+                with suppress(ValueError):
+                    queued[0]()
+
+            worker = threading.Thread(target=run_queued, daemon=True)
+            queued_runner.append(worker)
+            worker.start()
+            assert claimed_first.wait(5)
+            # Long enough for the queued item to take the work.
+            time.sleep(0.1)
+            threading.Thread(target=target, daemon=True).start()
+
+        monkeypatch.setattr(nodriver_module, "_start_daemon_thread", queued_item_first)
+        done = threading.Event()
+
+        def work() -> None:
+            time.sleep(0.5)
+            done.set()
+            if outcome == "fails":
+                raise ValueError("the end failed")
+
+        done_when_awaited: list[bool] = []
+
+        async def await_it() -> None:
+            asyncio.get_running_loop().set_default_executor(QueuesThenFails(max_workers=1))
+            try:
+                await nodriver_module._start_off_loop(work)
+            finally:
+                done_when_awaited.append(done.is_set())
+
+        if outcome == "fails":
+            with pytest.raises(ValueError, match="the end failed"):
+                _within(10, lambda: asyncio.run(await_it()))
+        else:
+            _within(10, lambda: asyncio.run(await_it()))
+        queued_runner[0].join(5)
+
+        assert done_when_awaited == [True]
