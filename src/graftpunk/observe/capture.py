@@ -999,7 +999,7 @@ class SeleniumCaptureBackend:
                         max_body_size=self._max_body_size,
                         request_id=request_id,
                     )
-                except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
+                except Exception as exc:  # noqa: BLE001 - CDP body fetch is best-effort
                     data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
 
             # Fetch response body
