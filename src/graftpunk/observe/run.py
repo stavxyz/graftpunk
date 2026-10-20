@@ -106,7 +106,9 @@ def redact_request_body_files(
     root = run_dir.resolve()
     for entry in entries:
         request = entry.get("request") if isinstance(entry, dict) else None
-        ref = request.get("_postDataFile") if isinstance(request, dict) else None
+        if not isinstance(request, dict):
+            continue
+        ref = request.get("_postDataFile")
         if not isinstance(ref, str):
             continue
         path = (root / ref).resolve()
