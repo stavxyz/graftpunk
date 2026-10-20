@@ -799,3 +799,62 @@ class TestBodyNotCaptured:
         result = self._digest(tmp_path, [_search_post(body=None, not_captured=True)])
         (row,) = endpoints_projection(result)["endpoints"]
         assert (row["method"], row["body_params"], row["body_not_captured"]) == ("POST", {}, True)
+
+    _FAMILY = [
+        "alpha",
+        "bravo",
+        "charlie",
+        "delta",
+        "echo",
+        "foxtrot",
+        "golf",
+        "hotel",
+        "india",
+        "juliet",
+        "kilo",
+        "lima",
+    ]
+
+    def _family_post(self, word: str, *, captured: bool) -> dict:
+        entry = _entry(
+            "POST", f"https://myshop.example.com/products/{word}-widget-2", body='{"ok": 1}'
+        )
+        if captured:
+            entry["request"]["postData"] = {"mimeType": "application/json", "text": '{"q": "x"}'}
+        else:
+            entry["request"]["_postDataNotCaptured"] = True
+        return entry
+
+    def test_a_collapsed_family_counts_every_member_that_lost_its_body(
+        self, tmp_path: Path
+    ) -> None:
+        """Twelve URLs that collapse to one template: the merge sums the loss across
+        members, so the digest line and the stub's GP-FILL say 11 of 12."""
+        from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
+
+        entries = [
+            self._family_post(word, captured=index == 0) for index, word in enumerate(self._FAMILY)
+        ]
+        result = self._digest(tmp_path, entries)
+
+        (endpoint,) = result.endpoints
+        assert (endpoint.template, endpoint.count, endpoint.body_not_captured) == (
+            "/products/{product_id}",
+            12,
+            11,
+        )
+        assert "- body not captured: 11 of 12 recording(s)" in render_markdown(result)
+        assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=result,
+        )
+        stub = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in render(spec)["src/graftpunk_myshop/plugin.py"].splitlines()
+            if line.strip().startswith("#")
+        )
+        assert "GP-FILL: the request body was not captured in 11 of 12 recording(s)" in stub

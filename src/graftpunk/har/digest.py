@@ -1832,6 +1832,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.dropped_query |= acc.dropped_query
             target.dropped_body |= acc.dropped_body
             target.bodied = target.bodied or acc.bodied
+            target.body_not_captured += acc.body_not_captured
             # The family's fixture candidates are its members' first recordings of
             # each type, whichever member recorded them.
             for recorded_type, candidate in acc.fixture_candidates.items():
