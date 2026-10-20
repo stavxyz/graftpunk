@@ -299,15 +299,16 @@ class Endpoint:
     # How many recordings sent a body the recorder left out on purpose
     # (HARRequest.post_data_omitted): over the capture's max body size, or not
     # UTF-8, with no bodies/ directory to write it to. Counted apart from
-    # body_not_captured, so the digest and a stub can name --max-body-size.
+    # body_not_captured, so the digest and a stub can say the capture had no
+    # bodies/ directory to keep it in.
     body_omitted: int = 0
     # How many recordings sent a body the recorder kept in bodies/ that is not
     # text (HARRequest.post_data_binary), and the first such file, relative to
-    # the run directory, with its size in bytes: the digest and a stub point at
-    # it, since no field names can be read from it.
+    # the run directory, with its size in bytes when the HAR recorded one: the
+    # digest and a stub point at it, since no field names can be read from it.
     body_binary: int = 0
     body_binary_file: str = ""
-    body_binary_size: int = 0
+    body_binary_size: int | None = None
     # Every recorded response to this endpoint had no body (a redirect, a 204): a
     # generated test asserts the call completed, since an empty body is falsy.
     response_body_empty: bool = False
@@ -1213,7 +1214,7 @@ class _EndpointAccumulator:
         self.body_omitted = 0
         self.body_binary = 0
         self.body_binary_file = ""
-        self.body_binary_size = 0
+        self.body_binary_size: int | None = None
 
     def record(self, entry: HAREntry, path: str, step: int, entry_index: int) -> None:
         text = capture_text(entry.response.body, entry.response.status)
@@ -1244,7 +1245,7 @@ class _EndpointAccumulator:
             self.body_binary += 1
             if not self.body_binary_file:
                 self.body_binary_file = entry.request.post_data_file or ""
-                self.body_binary_size = entry.request.post_data_size or 0
+                self.body_binary_size = entry.request.post_data_size
         elif entry.request.post_data_not_captured and not entry.request.post_data:
             if entry.request.post_data_omitted:
                 self.body_omitted += 1

@@ -821,8 +821,9 @@ class TestBodyNotCaptured:
         text = render_markdown(result)
         assert (
             "- body left out: 1 of 2 recording(s) sent a body over the capture's max body "
-            "size, or not text, and the capture had no bodies/ directory to keep it in (as "
-            "on `gp --observe=full` runs of plugin commands)"
+            "size, or not text, and the capture had no bodies/ directory to keep it in ("
+            "gp's own recorders all have one; a capture backend built without bodies_dir "
+            "does not)"
         ) in text
         assert "- body not captured: 1 of 2 recording(s)" in text
         assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
@@ -831,6 +832,33 @@ class TestBodyNotCaptured:
         result = self._digest(tmp_path, [_search_post(body=None, omitted="binary")])
         assert "body not captured" not in render_markdown(result)
         assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
+
+    def _binary_post(self, run: Path, name: str, size: int | None) -> dict:
+        (run / "bodies").mkdir(exist_ok=True)
+        (run / "bodies" / name).write_bytes(b"\xff\xfe" * 4)
+        entry = _search_post(body=None)
+        entry["request"]["_postDataFile"] = f"bodies/{name}"
+        if size is not None:
+            entry["request"]["_postDataSize"] = size
+        return entry
+
+    def test_the_first_binary_file_of_an_endpoint_is_the_one_named(self, tmp_path: Path) -> None:
+        entries = [
+            self._binary_post(tmp_path, "1.request.bin", 8),
+            self._binary_post(tmp_path, "2.request.bin", 8),
+        ]
+        (endpoint,) = self._digest(tmp_path, entries).endpoints
+        assert (endpoint.body_binary, endpoint.body_binary_file) == (2, "bodies/1.request.bin")
+
+    def test_a_binary_body_with_no_recorded_size_prints_none(self, tmp_path: Path) -> None:
+        """A HAR from another tool may not carry _postDataSize: no "(0 bytes)"."""
+        result = self._digest(tmp_path, [self._binary_post(tmp_path, "1.request.bin", None)])
+        text = render_markdown(result)
+        assert (
+            "- body not text: 1 of 1 recording(s) sent a binary body, kept as "
+            "`bodies/1.request.bin`\n"
+        ) in text
+        assert "bytes" not in text.split("- body not text:", 1)[1].split("\n", 1)[0]
 
     def test_a_body_written_to_bodies_is_read_back_for_its_fields(self, tmp_path: Path) -> None:
         (tmp_path / "bodies").mkdir()

@@ -2163,11 +2163,10 @@ class TestPluginModuleCommandStubs:
         comments = self._comments(endpoint)
         assert (
             "GP-FILL: the request body was left out of the recording (1 of 1 recording(s) "
-            "sent one over the capture's max body size, or not text, and the capture had no "
-            "bodies/ directory to keep it in, as on `gp --observe=full` runs of plugin "
-            "commands), so this stub sends no body; record the flow with `gp observe go` or "
-            "`gp observe interactive`, which keep such a body in the run's bodies/ "
-            "directory, or add the body by hand."
+            "sent one over the capture's max body size, or not text, and the capture that "
+            "recorded it had no bodies/ directory to keep it in), so this stub sends no body; "
+            "record the flow again with `gp observe go` or `gp observe interactive`, which "
+            "keep such a body in the run's bodies/ directory, or add the body by hand."
         ) in comments
         assert "larger --max-body-size" not in comments
         assert "was not captured" not in comments
@@ -2196,7 +2195,7 @@ class TestPluginModuleCommandStubs:
         comments = self._comments(endpoint)
         assert (
             "GP-FILL: the request body is not text (1 of 1 recording(s) sent a binary body, "
-            "kept in the run directory as `bodies/9.1.request.bin` (9 bytes)), so this stub "
+            "kept in run myshop/run-1 as `bodies/9.1.request.bin` (9 bytes)), so this stub "
             "sends no body; read that file to see what the site sends, and build the body "
             "this command needs by hand."
         ) in comments
@@ -2211,8 +2210,8 @@ class TestPluginModuleCommandStubs:
             body_binary_size=9,
         )
         assert (
-            "GP-FILL: 1 of 2 recording(s) sent a request body that is not text, kept in the "
-            "run directory as `bodies/9.1.request.bin` (9 bytes), so the body fields below "
+            "GP-FILL: 1 of 2 recording(s) sent a request body that is not text, kept in run "
+            "myshop/run-1 as `bodies/9.1.request.bin` (9 bytes), so the body fields below "
             "come from the others; read that file and add what this command needs by hand."
         ) in self._comments(endpoint)
 

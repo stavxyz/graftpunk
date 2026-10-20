@@ -1179,7 +1179,7 @@ def _render_command_stub(
         lines.append("")
         lines.extend(wrapped_docstring_lines(shape_line))
     lines.append(f'{L2}"""')
-    for note in [*_recording_gap_notes(endpoint), *flag_notes]:
+    for note in [*_recording_gap_notes(endpoint, run_label), *flag_notes]:
         lines.extend(wrapped_comment_lines(note, indent=len(L2)))
     for field_name, reason in sorted(undeclared.items()):
         lines.extend(
@@ -1210,8 +1210,11 @@ def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
     return sorted(kept, key=lambda e: (not _is_json_endpoint(e), -e.count, e.template))
 
 
+_SUPPLIED_HAR = "the supplied HAR"
+
+
 def _run_label(d: RunDigest) -> str:
-    return f"{d.source.session}/{d.source.run_id}" if d.source.session else "the supplied HAR"
+    return f"{d.source.session}/{d.source.run_id}" if d.source.session else _SUPPLIED_HAR
 
 
 @dataclass(frozen=True)
@@ -1280,7 +1283,7 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
     )
 
 
-def _recording_gap_notes(endpoint: Endpoint) -> list[str]:
+def _recording_gap_notes(endpoint: Endpoint, run_label: str) -> list[str]:
     """The GP-FILL notes for what the recording holds and the stub cannot use: names
     the digest dropped, one note per cause, and a request body the recorder could
     not capture. A stub never loses a recorded field without saying so and why."""
@@ -1333,26 +1336,29 @@ def _recording_gap_notes(endpoint: Endpoint) -> list[str]:
             notes.append(
                 f"{GP_FILL_MARKER}: the request body was left out of the recording "
                 f"({recorded} sent one over the capture's max body size, or not text, and "
-                "the capture had no bodies/ directory to keep it in, as on `gp --observe=full` "
-                "runs of plugin commands), so this stub sends no body; record the "
-                "flow with `gp observe go` or `gp observe interactive`, which keep such a "
-                "body in the run's bodies/ directory, or add the body by hand."
+                "the capture that recorded it had no bodies/ directory to keep it in), so "
+                "this stub sends no body; record the flow again with `gp observe go` or "
+                "`gp observe interactive`, which keep such a body in the run's bodies/ "
+                "directory, or add the body by hand."
             )
     if endpoint.body_binary:
-        stored = f"`{endpoint.body_binary_file}` ({endpoint.body_binary_size} bytes)"
+        # The stub outlives the session that read the recording, so it names the run
+        # whose directory holds bodies/ (or the HAR the digest was given).
+        where = "beside the supplied HAR" if run_label == _SUPPLIED_HAR else f"in run {run_label}"
+        size = "" if endpoint.body_binary_size is None else f" ({endpoint.body_binary_size} bytes)"
+        stored = f"{where} as `{endpoint.body_binary_file}`{size}"
         recorded = f"{endpoint.body_binary} of {endpoint.count} recording(s)"
         if endpoint.body_params:
             notes.append(
                 f"{GP_FILL_MARKER}: {recorded} sent a request body that is not text, kept "
-                f"in the run directory as {stored}, so the body fields below come from the "
-                "others; read that file and add what this command needs by hand."
+                f"{stored}, so the body fields below come from the others; read that file "
+                "and add what this command needs by hand."
             )
         else:
             notes.append(
                 f"{GP_FILL_MARKER}: the request body is not text ({recorded} sent a binary "
-                f"body, kept in the run directory as {stored}), so this stub sends no "
-                "body; read that file to see what the site sends, and build the body "
-                "this command needs by hand."
+                f"body, kept {stored}), so this stub sends no body; read that file to see "
+                "what the site sends, and build the body this command needs by hand."
             )
     return notes
 
