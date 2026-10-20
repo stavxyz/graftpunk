@@ -2081,6 +2081,49 @@ class TestObserveStartHardening:
         assert "_postDataNotCaptured" not in entry["request"]
         assert (run / "bodies" / "7.1.request.json").read_text() == body
 
+    def test_an_oversized_login_body_in_bodies_is_scrubbed(self, tmp_path: Path) -> None:
+        """observe_redact reaches a request body written to bodies/, as it reaches
+        an inline postData."""
+        import json
+
+        from graftpunk.observe.capture import MAX_RESPONSE_BODY_SIZE
+        from graftpunk.observe.run import REDACTED
+
+        body = json.dumps(
+            {"password": "hunter2-correct-horse", "pad": "x" * MAX_RESPONSE_BODY_SIZE}
+        )
+        sent = {
+            "message": json.dumps(
+                {
+                    "message": {
+                        "method": "Network.requestWillBeSent",
+                        "params": {
+                            "requestId": "7.3",
+                            "request": {
+                                "url": "https://myshop.example.com/login",
+                                "method": "POST",
+                                "headers": {"Content-Type": "application/json"},
+                                "hasPostData": True,
+                                "postData": body,
+                            },
+                        },
+                    }
+                }
+            )
+        }
+        session = self._make_session(session_name="bank")
+        session.observe_redact = ["hunter2-correct-horse"]
+        session._webdriver.get_log = lambda kind: [sent] if kind == "performance" else []
+        with patch("graftpunk.session.OBSERVE_BASE_DIR", tmp_path):
+            session._start_observe()
+        session._capture.stop_capture()
+        session._write_observe_data()
+
+        run = session._observe_storage.run_dir
+        stored = (run / "bodies" / "7.3.request.json").read_text()
+        assert "hunter2-correct-horse" not in stored
+        assert REDACTED in stored
+
     def test_public_accessors(self) -> None:
         session = self._make_session()
         assert session.capture is None

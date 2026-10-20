@@ -494,16 +494,15 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         """Write HAR and console logs to storage."""
         if self._observe_storage is None or self._capture is None:
             return
-        from graftpunk.observe.run import redact_har_entries
+        from graftpunk.observe.run import redact_har_entries, redact_request_body_files
 
         try:
             # getattr: sessions restored via __setstate__ or built without
             # __init__ (tests) may predate the attribute.
-            self._observe_storage.write_har(
-                redact_har_entries(
-                    self._capture.get_har_entries(), getattr(self, "_observe_redact", ())
-                )
-            )
+            secrets = getattr(self, "_observe_redact", ())
+            entries = redact_har_entries(self._capture.get_har_entries(), secrets)
+            redact_request_body_files(entries, secrets, self._observe_storage.run_dir)
+            self._observe_storage.write_har(entries)
         except Exception as exc:
             LOG.error("observe_har_write_failed", error=str(exc), exc_type=type(exc).__name__)
         try:
