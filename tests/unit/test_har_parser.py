@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -15,10 +17,12 @@ from graftpunk.har.parser import (
     HARResponse,
     ParseError,
     _parse_response,
+    _set_cookie_lines,
     parse_har_file,
     parse_har_string,
     validate_har_schema,
 )
+from tests.unit.guide_harness import REPO_ROOT
 
 
 @pytest.fixture
@@ -710,3 +714,48 @@ class TestHARParserBodyFile:
 
         assert result.body_file == "some_file.txt"
         assert result.body is None
+
+
+# The graft skill's HAR reader runs on the standard library alone, so it carries
+# its own copy of the Set-Cookie parse; these hold the two equal.
+_HAR_FACTS = REPO_ROOT / "skills" / "graft" / "scripts" / "har-facts.py"
+
+
+def _load_har_facts() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("har_facts", _HAR_FACTS)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _header(name: str, value: str) -> dict[str, str]:
+    return {"name": name, "value": value}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [_header("Set-Cookie", "a=1; HttpOnly")],
+        [_header("set-cookie", "a=1; Path=/\r\nb=2; httponly\rc=3;HTTPONLY=x\n\nd")],
+        [
+            _header("Set-Cookie", "=v; HttpOnly"),
+            _header("Set-Cookie", " e = 5 ; Secure; HttpOnly "),
+        ],
+        [
+            _header("Set-Cookie", "f=1; Path=/"),
+            _header("X-Other", "g=1; HttpOnly"),
+            _header("Set-Cookie", "f=2; HttpOnly"),
+        ],
+        [_header("Set-Cookie", "noequals; HttpOnly"), _header("Set-Cookie", "h=a=b; Secure")],
+        [],
+    ],
+)
+def test_the_set_cookie_parse_is_graftpunks(headers: list[dict[str, str]]) -> None:
+    """The script cannot import graftpunk, so it carries its own copy of the parse
+    the digest reads cookie flags with; the two must agree."""
+    script = _load_har_facts()
+    ours = [
+        (name, "httponly" in attributes) for name, attributes in script.set_cookie_lines(headers)
+    ]
+    assert ours == _set_cookie_lines(headers)

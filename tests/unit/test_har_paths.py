@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 import random
 import string
+import uuid
+from types import ModuleType
 
 import pytest
 
+import graftpunk.har.paths as paths_module
 from graftpunk.har.paths import (
     _MIN_BASE64_LEN,
     _MIN_HEX_LEN,
@@ -22,6 +26,7 @@ from graftpunk.har.paths import (
     templated_url,
     templates_a_segment,
 )
+from tests.unit.guide_harness import REPO_ROOT
 
 
 class TestTemplatePath:
@@ -643,3 +648,101 @@ class TestReadsAsWords:
         rng = random.Random(273)  # noqa: S311 - a fixed sample, not a secret
         ids = ["".join(rng.choices(alphabet, k=length)) for _ in range(5_000)]
         assert [value for value in ids if reads_as_words(value)] == []
+
+
+# The graft skill's HAR reader runs on the standard library alone, so it carries
+# its own copies of holds_an_id and the spelling pairs; these hold them equal.
+_HAR_FACTS = REPO_ROOT / "skills" / "graft" / "scripts" / "har-facts.py"
+
+
+def _load_har_facts() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("har_facts", _HAR_FACTS)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _id_corpus() -> list[str]:
+    rng = random.Random(277)  # noqa: S311 - a fixed sample, not a secret
+    alphabets = [
+        string.ascii_letters + string.digits,
+        string.ascii_letters + string.digits + "-_",
+        string.ascii_letters + string.digits + "+/=",
+        "0123456789abcdef",
+        string.digits + "-.() ",
+        string.ascii_lowercase + "_.-~$@",
+    ]
+    corpus = [
+        "".join(rng.choices(rng.choice(alphabets), k=rng.randint(1, 40))) for _ in range(5_000)
+    ]
+    corpus += [str(uuid.UUID(int=rng.getrandbits(128), version=4)) for _ in range(200)]
+    corpus += [
+        "cus_NffrFeUfNV2Hib",
+        "otp_cus_NffrFeUfNV2Hib",
+        "jane.victim@example.com",
+        "0xdeadbeefcafe12",
+        "4111-1111-1111-1111",
+        "2024-01-15",
+        "(555)123-4567",
+        "user_40912873",
+        "ctl00_ContentPlaceHolder1_txtUserName",
+        "csrfmiddlewaretoken",
+        "a%40b.co",
+        # Inputs that exercise each piece of the rule a one-line drift would break.
+        "a~4111-1111-1111",
+        "(555) 123-4567",
+        "cus_nffrfeufnv2hib12",
+        "cus_x~1",
+        "otp~cus_NffrFeUfNV2Hib",
+        "cus_NFFRFEUFNV2HIB12",
+        "",
+    ]
+    return corpus
+
+
+def test_the_har_readers_id_rule_is_graftpunks() -> None:
+    script = _load_har_facts()
+    differ = [text for text in _id_corpus() if script.holds_an_id(text) != holds_an_id(text)]
+    assert differ == []
+
+
+_COPIED = [
+    "_MIN_HEX_LEN",
+    "_MIN_PREFIXED_TAIL",
+    "_MIN_BASE64_LEN",
+    "_MIN_BASE64_SWITCHES",
+    "_MAX_CAPITALS_RUN",
+    "_VOWELS",
+    "_WORD_CONSONANT_PAIRS",
+]
+_COPIED_PATTERNS = [
+    "_EMAIL_SEARCH_RE",
+    "_PART_SPLIT_RE",
+    "_DIGIT_RUN_RE",
+    "_MIXED_HEX_RE",
+    "_PREFIXED_ID_RE",
+    "_BASE64_RE",
+    "_DATE_RE",
+    "_PARENTHESISED_PHONE_RE",
+    "_PREFIXED_HEX_RE",
+]
+
+
+@pytest.mark.parametrize("name", _COPIED)
+def test_the_har_readers_copied_constants_are_graftpunks(name: str) -> None:
+    assert getattr(_load_har_facts(), name) == getattr(paths_module, name)
+
+
+@pytest.mark.parametrize("name", _COPIED_PATTERNS)
+def test_the_har_readers_copied_patterns_are_graftpunks(name: str) -> None:
+    ours, theirs = getattr(_load_har_facts(), name), getattr(paths_module, name)
+    assert (ours.pattern, ours.flags) == (theirs.pattern, theirs.flags)
+
+
+def test_the_har_readers_spelling_rule_is_graftpunks() -> None:
+    script = _load_har_facts()
+    rng = random.Random(277)  # noqa: S311 - a fixed sample, not a secret
+    words = ["".join(rng.choices(string.ascii_letters, k=rng.randint(1, 12))) for _ in range(5_000)]
+    words += ["csrf", "CSRF", "ABC", "ABCD", "upgrade", "jsessionid", "JSESSIONID", ""]
+    assert [w for w in words if script._spelled(w) != paths_module._spelled(w)] == []

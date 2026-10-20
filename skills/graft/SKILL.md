@@ -55,17 +55,21 @@ skill in an empty directory or in the plugin's project".
 Your first message after preflight offers the allow rules under "Allow rules for
 a prompt-free run" in `references/commands.md` that hold no `<site-name>`, and
 says that the user can add them to this project's settings with `/permissions`
-so no `gp` command and no leak check in the harden step asks first; the gate's
-other commands ask, and so does writing a file unless the user accepts edits for
-the session. Offer the leak check's rule with this skill's directory,
+so no `gp` command, no leak check in the harden step, and no HAR question asks
+first; the gate's other commands ask, and so does writing a file unless the user
+accepts edits for the session. Offer the rules of the skill's two scripts, the
+leak check and the HAR reader, with this skill's directory,
 `${CLAUDE_SKILL_DIR}`, in place of the variable: that path names this version of
-the skill, so the rule belongs in the project's local settings, which are not
-committed, and is offered again after an update. Say that the skill works either
-way: without the rules, each command asks first. Offer the rules that hold
-`<site-name>` once the plugin's name is fixed, with that name in its place: in
-create mode at the end of the frame step, since the name `gp plugin new` takes
-becomes the plugin's `site_name`; in enhance mode once the plugin is chosen,
-from its `site_name` in `project.plugins`.
+the skill, so the rules belong in the project's local settings, which are not
+committed, and are offered again after an update. The HAR reader's rule is
+offered because its output holds no cookie, header, query, or body value, and a
+permission prompt shows the command, not what it prints, so asking each time
+would protect nothing. Say that the skill works either way: without the rules,
+each command asks first. Offer the rules that hold `<site-name>` once the
+plugin's name is fixed, with that name in its place: in create mode at the end
+of the frame step, since the name `gp plugin new` takes becomes the plugin's
+`site_name`; in enhance mode once the plugin is chosen, from its `site_name` in
+`project.plugins`.
 
 This invocation's arguments: plugin name `$0`, site URL `$1`. Claude Code puts
 each argument given in its place, and a position with no argument keeps its
@@ -86,14 +90,19 @@ section the step cites, fix it, and run the step again once. If it fails again,
 show that output too and stop for the user. Never skip a step, and never
 summarise a failure away. Run each command as `references/commands.md` spells
 it, its placeholders filled and an argument a reference says to leave off left
-off, one per Bash call, with nothing chained to it (no `;`, `&&`, pipe,
-loop, or `echo`), since an allow rule matches only the command as written; the
-tool result carries the exit status. Run no command the references do not
-declare, a look-around such as `command -v gp` included, and read and write
-files with the file tools. Read a reference only at the step that names it.
-Never fetch a page of the site yourself, at any step: what the site shows comes
-from the user, read off it in their own browser, or from the live calls they
-agree to at the kick-the-tires step.
+off, one per Bash call, with nothing chained to it (no `;`, `&&`, pipe, loop, or
+`echo`), since an allow rule matches only the command as written; the tool
+result carries the exit status. In that file, the kick-the-tires lines run
+through the site runner (the project and its main dependencies, so its entry
+point), and the gate through the gate runner (adding the `dev` extra and the
+gate's tools); both build from `pyproject.toml` on every run. Other `gp` lines
+run the `gp` on PATH. Run no command the references do not declare, a
+look-around such as `command -v gp` included, and read and write files with the
+file tools. Read a reference only at the step that names it. Never fetch a page
+of the site yourself, at any step: what the site shows comes from the recording
+(`references/har.md`), from the live calls the user agrees to at the
+kick-the-tires step, or, for anything the recording does not show, from the
+user, read off it in their own browser.
 
 ## The steps
 
@@ -109,8 +118,9 @@ agree to at the kick-the-tires step.
    recording to the user exactly as it says, and choose the session and run as
    its "After the recording" section says. You never run the recorder yourself.
    Every later step reads that session and that run.
-3. **Understand** (guide: Understand). Run the command in the Understand block
-   of `references/commands.md` on the chosen session and run, then read
+3. **Understand** (guide: Understand). Run the `--endpoints-json` line of the
+   Understand block of `references/commands.md` on the chosen session and run,
+   then read
    `references/digest.md` and build the proposal it describes. When the host of
    the site URL the user gave differs from the projection's `primary_host`,
    first ask once which of the two is the plugin's base, as that file says
@@ -130,16 +140,19 @@ agree to at the kick-the-tires step.
 5. **Implement** (guide: Implement). For each stub, fill in the request, name
    the parameters, decide the return shape, and replace every `GP-FILL` marker.
    Raise `CommandError` or `PluginError` on failure. Read `references/rules.md`
-   and read the guide section behind any rule the work touches. The login's
-   markers need what only the user can see, so ask for each one the generated
-   config marks, one question at a time, and wait for each answer: the exact
-   sentence the site shows after a wrong password (they try one in their own
-   browser), a CSS selector of an element on the page a successful login lands
-   on, a selector for any login field or submit button the digest left
-   unresolved, and the login page's path, or its full URL when it is not on the
-   base URL's host. Ask for the URL a login lands on only when `success` is
-   still unset; once `success` is set, drop a `success_url` marker instead
-   (guide: Getting the signals right).
+   and read the guide section behind any rule the work touches. For the login's
+   markers, first take what the recording holds: for a login field or submit
+   button the digest left unresolved, the login form's field names and input
+   types that the HAR reader's `response` line prints for the login page
+   (`references/har.md`). Ask the user for each marker the generated config
+   marks that the recording does not answer, one question at a time, and wait
+   for each answer: the exact sentence the site shows after a wrong password
+   (they try one in their own browser), a CSS selector of an element on the page
+   a successful login lands on, a selector for any login field or submit button
+   the digest left unresolved, and the login page's path, or its full URL when
+   it is not on the base URL's host. Ask for the URL a login lands on only when
+   `success` is still unset; once `success` is set, drop a `success_url` marker
+   instead (guide: Getting the signals right).
 6. **Harden** (guide: Harden). Read `references/harden.md` and follow it: one
    fixture and one test per command, then the project's gate (guide: The gate),
    acting on gp's output as that file says. The gate must pass before the next
@@ -155,14 +168,16 @@ agree to at the kick-the-tires step.
    `password_envvar` names that field's variable instead), and prompts on the
    terminal for one it cannot find, which in this session aborts the login.
    Print the `gp config set` line of the "Run by the user" block in
-   `references/commands.md` once per field, with a placeholder value, never a
-   real one, and wait until the user says they have run them. Then run the help
-   line of the Kick the tires block and confirm every agreed command name is
-   listed, then its login line, then its read-only command line with one
-   read-only command from the agreed proposal, against the live site while the
-   user watches. If the login fails, diagnose it against the guide's Login
-   section, adjust the plugin's `LoginConfig`, and try once more; if it fails
-   again, show the output and stop for the user.
+   `references/commands.md` once per field, the field's variable in place of
+   `<variable>` and, in place of `<value>`, a placeholder, never a real value,
+   or a `$(...)`, kept inside the single quotes, which double quotes would let
+   the shell run at once. Then wait until the user says they have run them. Then
+   run the help line of the Kick the tires block and confirm every agreed
+   command name is listed, then its login line, then its read-only command line
+   with one read-only command from the agreed proposal, against the live site
+   while the user watches. If the login fails, diagnose it against the guide's
+   Login section, adjust the plugin's `LoginConfig`, and try once more; if it
+   fails again, show the output and stop for the user.
 8. **Publish checklist** (guide: Before you publish). Read that section of the
    guide. Its first item, the gate, already holds after the harden step. Walk
    the rest as the guide lists them and fix what you can. An item that needs
@@ -203,14 +218,31 @@ the references hold the details.
 
 ## Secrets
 
-Never ask for a password, and never write a credential anywhere. Never read a
-HAR, a cookie, or what `gp config get --resolve` returns; a token value inside a
-capture is replaced like any other captured value. From a recording, read the
-`--endpoints-json` projection, and at the harden step the captures
-`gp observe fixtures` writes into the git-ignored `tests/captures/`: they hold
-the account's own data and stay on this workstation, so no value from one goes
-into anything that is committed or shared, such as a fixture, a test, code, a
-comment, a docstring, a commit message, or a pull request. The output of the
+Never ask for a password, and never write a credential anywhere. Never read what
+`gp config get --resolve` returns. From a recording, read the `--endpoints-json`
+projection first, and at the harden step the captures `gp observe fixtures`
+writes into the git-ignored `tests/captures/`. When the projection does not
+answer a question, read the `--json` digest and then ask the run's HAR through
+the skill's HAR reader, `scripts/har-facts.py`, which prints no cookie, header,
+query, or body value; names and path segments pass a heuristic gate that
+withholds most value-shaped text, but a plain word used as a key or a path
+segment (a username, a person's or place's name, a label, a handle such as
+`alice84`), a letter-only token that spells like a word, and the method, a
+non-web scheme, a content type's subtype, and the host, which print as recorded,
+can still be the account's own, so never copy one into code without the user's
+word, and treat the reader's output under this rule too. Read the HAR by hand
+only for what the reader does not cover, narrowly, as `references/har.md` says.
+The `--json` digest prints paths as recorded, which can carry account or order
+ids; a capture holds the account's own data; a HAR holds both and, when the
+recording logged in, the password the user typed. All of them stay on this
+workstation: no value from one goes into anything that is committed or shared,
+such as a fixture, a test, code, a comment, a docstring, a commit message, or a
+pull request, nor into a reply the user may paste elsewhere. Reading a cookie or
+token value is not forbidden, since a HAR cannot always be read around one, but
+no step needs a value, so read attributes rather than values: never repeat a
+password, a token, a session cookie's value, or any other credential in a reply,
+and never write one. Report names, attributes, shapes, and counts. A token value
+inside a capture is replaced like any other captured value. The output of the
 live read-only command the user agreed to at the kick-the-tires step is the
 same: show it to them, confirm it returned data, and use no value from it. When
 the user pastes a secret into the conversation, say it belongs in the

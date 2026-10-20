@@ -6,11 +6,11 @@ name a block by its step and never spell a templated command. Placeholders:
 `entry_point` in `gp plugin info --json`), `<command>` (an agreed command),
 `<session>` and `<run>` (chosen at capture), `<gate-command>` (each, in order),
 `<fixture>` (the plain-named capture `gp observe fixtures` wrote),
-`<fixtures-dir>` (the tests' `FIXTURES_DIR`), `<variable>` and `<value>` (a
-credential's variable, and a placeholder or a `$(...)` kept inside the single
-quotes, which double quotes would let the shell run at once), `<url>`,
-`<base-url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`. Only preflight
-is pre-approved; the rules at the end cover "Run by the skill" alone.
+`<fixtures-dir>` (the tests' `FIXTURES_DIR`), `<variable>` and `<value>`
+(`SKILL.md`, step 7), `<har>` (the run's HAR, by absolute path), `<url-part>`
+(a piece of a request URL's path), `<cookie>` (a cookie name already held),
+`<url>`, `<base-url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`. Only
+preflight is pre-approved; the rules at the end cover "Run by the skill" alone.
 
 ## Run by preflight
 
@@ -23,8 +23,6 @@ gp plugin info --json
 
 ## Run by the user
 
-The skill prints these for the user to run, and never runs them.
-
 ```bash
 gp observe --no-session interactive <url>
 gp observe -s <session> interactive <url>
@@ -32,11 +30,6 @@ gp config set <variable> '<value>'
 ```
 
 ## Run by the skill
-
-Kick the tires runs through the site runner (the project and its main
-dependencies, so its entry point), and the gate through the gate runner (adding
-the `dev` extra and the gate's tools); both build from `pyproject.toml` on every
-run. Other `gp` lines run the `gp` on PATH.
 
 ### Start
 
@@ -61,6 +54,10 @@ gp observe list
 
 ```bash
 gp observe digest <session> <run> --endpoints-json
+gp observe digest <session> <run> --json
+uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py cookies '<har>' --name '<cookie>'
+uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py request '<har>' '<url-part>' --method <METHOD>
+uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py response '<har>' '<url-part>' --method <METHOD>
 ```
 
 ### Scaffold
@@ -88,8 +85,7 @@ uv run --no-project --with-editable '.[dev]' --with pytest --with ruff <gate-com
 
 ### Kick the tires
 
-The login and command lines touch the live site; the skill asks in words before
-either runs, whatever the settings allow; `<command>` is agreed and read-only.
+The login and command lines touch the live site; ask first, as `SKILL.md` says.
 
 ```bash
 uv run --no-project --with-editable . gp <site-name> --help
@@ -99,9 +95,11 @@ uv run --no-project --with-editable . gp <site-name> <command>
 
 ## Allow rules for a prompt-free run
 
-The rules the skill offers, all `gp` but its read-only leak check; a file write
-still asks. The last two cover the plugin's help and login; the live read-only
-command has no rule and asks each time, since it reads the account.
+The rules the skill offers, all `gp` but its two read-only scripts, the leak
+check and the HAR reader, which prints no cookie, header, query, or body value
+(`references/har.md`); a file write still asks. The last two cover the plugin's
+help and login. None is offered for the live read-only command, which reads the
+account, or for reading a HAR by hand.
 
 ```text
 Bash(gp plugin info *)
@@ -113,6 +111,7 @@ Bash(gp plugin new *)
 Bash(gp plugin add-command *)
 Bash(gp plugin upgrade *)
 Bash(uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/fixture-leaks.py *)
+Bash(uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py *)
 Bash(uv run --no-project --with-editable '.[dev]' --with pytest --with ruff gp plugin check *)
 Bash(uv run --no-project --with-editable . gp <site-name> --help)
 Bash(uv run --no-project --with-editable . gp <site-name> login)
