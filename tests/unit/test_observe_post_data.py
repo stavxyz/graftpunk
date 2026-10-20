@@ -11,6 +11,7 @@ commands the way Chrome does, including Chrome's ``-32000`` refusal.
 from __future__ import annotations
 
 import asyncio
+import base64
 import inspect
 import json
 from collections.abc import Callable
@@ -130,7 +131,7 @@ class FakeTab:
 
     def __init__(
         self,
-        bodies: dict[str, str],
+        bodies: dict[str, str | tuple[str, bool]],
         post_data_available: Callable[[str, FakeTab], bool],
         response_available: Callable[[str, FakeTab], bool] = lambda _rid, _t: True,
     ) -> None:
@@ -140,6 +141,7 @@ class FakeTab:
         self.handlers: dict[type, list[Callable[..., Any]]] = {}
         self.finished: set[str] = set()
         self.stopping = False
+        self.stop_task: asyncio.Task[Any] | None = None
         self.session_id: str | None = "session-1"
         self.network_sessions: set[str | None] = set()
         self.post_data_requests: list[str] = []
@@ -168,7 +170,9 @@ class FakeTab:
             )
             if not enabled or rid not in self.bodies or not available:
                 raise _refused()
-            reply: dict[str, Any] = {"postData": self.bodies[rid], "base64Encoded": False}
+            body = self.bodies[rid]
+            text, encoded = body if isinstance(body, tuple) else (body, False)
+            reply: dict[str, Any] = {"postData": text, "base64Encoded": encoded}
         elif method == "Network.getResponseBody":
             if not enabled or not self.response_available(rid, self):
                 raise _refused()
@@ -181,7 +185,7 @@ class FakeTab:
             return stop.value
         raise AssertionError(f"{method} did not finish on one reply")
 
-    async def dispatch(self, event: Any) -> None:
+    async def dispatch(self, event: Any, *, settle: bool = True) -> None:
         if type(event).__name__ == "LoadingFinished":
             self.finished.add(str(event.request_id))
         for callback in self.handlers.get(type(event), []):
@@ -190,7 +194,7 @@ class FakeTab:
             else:
                 callback(event)
         # Let the tasks nodriver would have scheduled run before the next event.
-        for _ in range(5):
+        for _ in range(5 if settle else 0):
             await asyncio.sleep(0)
 
 
@@ -202,6 +206,7 @@ async def _start(tab: FakeTab, **kwargs: Any) -> NodriverCaptureBackend:
 
 async def _stop(backend: NodriverCaptureBackend, tab: FakeTab) -> None:
     tab.stopping = True
+    tab.stop_task = asyncio.current_task()
     await backend.stop_capture_async()
 
 
@@ -431,14 +436,18 @@ class TestStopPaths:
 
 
 class SlowTab(FakeTab):
-    """A request-time body that arrives after a delay; Chrome refuses it at stop."""
+    """A request-time body that arrives after a delay; Chrome refuses the stop pass.
+
+    A fetch counts as the stop pass when it runs in the task that called stop, so a
+    request-time fetch that only starts after stop began is still answered.
+    """
 
     def __init__(self, delay: float) -> None:
         super().__init__({"8.6": BODY}, _before_stop)
         self.delay = delay
 
     async def send(self, cmd: Any, **kwargs: Any) -> Any:
-        asked_in_flight = not self.stopping
+        asked_in_flight = asyncio.current_task() is not self.stop_task
         if asked_in_flight and getattr(cmd, "__name__", "") == "get_request_post_data":
             await asyncio.sleep(self.delay)
         return self._answer(
@@ -476,9 +485,55 @@ class TestRequestTimeFetchesAtStop:
         assert [e["count"] for e in logs if e["event"].endswith("_fetch_cancelled")] == [1]
 
 
+BINARY = bytes(range(0x80, 0x89))  # 9 bytes, none of them valid UTF-8 alone
+
+
+def _b64(raw: bytes) -> tuple[str, bool]:
+    return (base64.b64encode(raw).decode(), True)
+
+
+class TestStopBeforeTheFetchStarts:
+    @pytest.mark.asyncio
+    async def test_a_fetch_task_not_yet_started_at_stop_is_waited_for(self) -> None:
+        """nodriver creates the fetch task with the event; stop in the same loop turn
+        still waits for it instead of flagging a body about to arrive."""
+        tab = SlowTab(delay=0.05)
+        backend = await _start(tab)
+        for event in _fetch_post("8.6"):
+            await tab.dispatch(event, settle=False)
+
+        with capture_logs() as logs:
+            await _stop(backend, tab)
+
+        request = _only_entry(backend)["request"]
+        assert request["postData"]["text"] == BODY
+        assert _events(logs, "post_data_unavailable") == []
+
+    @pytest.mark.asyncio
+    async def test_a_stop_cancelled_while_it_waits_still_marks_and_stops_the_fetch(
+        self,
+    ) -> None:
+        tab = SlowTab(delay=0.3)
+        backend = await _start(tab)
+        for event in _fetch_post("8.6"):
+            await tab.dispatch(event)
+
+        stopping = asyncio.create_task(_stop(backend, tab))
+        await asyncio.sleep(0.05)
+        stopping.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stopping
+        await asyncio.sleep(0.4)
+
+        request = _only_entry(backend)["request"]
+        assert request["_postDataNotCaptured"] is True
+        assert "postData" not in request
+
+
 class TestBodySizeCap:
-    """A request body over the cap a response body has is left out of the HAR, and
-    the entry says so with its size."""
+    """A request body over ``max_body_size``, or one that is not UTF-8, is handled as
+    an oversized response body is: written to ``bodies/`` when the capture has that
+    directory, and otherwise left out of the HAR with its size and reason."""
 
     @pytest.mark.asyncio
     async def test_an_inline_body_over_the_cap_is_left_out(self) -> None:
@@ -489,13 +544,13 @@ class TestBodySizeCap:
 
         request = _only_entry(backend)["request"]
         assert "postData" not in request
-        assert (request["_postDataNotCaptured"], request["_postDataOmittedSize"]) == (
-            True,
-            len(BODY),
-        )
+        assert request["_postDataNotCaptured"] is True
+        assert request["_postDataOmitted"] == {"size": len(BODY), "reason": "over_max_body_size"}
         assert [
-            (e["request_id"], e["size"]) for e in logs if e["event"] == "post_data_omitted"
-        ] == [("8.7", len(BODY))]
+            (e["request_id"], e["size"], e["reason"])
+            for e in logs
+            if e["event"] == "post_data_omitted"
+        ] == [("8.7", len(BODY), "over_max_body_size")]
         assert _events(logs, "post_data_unavailable") == []
         assert tab.post_data_requests == []
 
@@ -507,7 +562,7 @@ class TestBodySizeCap:
 
         request = _only_entry(backend)["request"]
         assert "postData" not in request
-        assert request["_postDataOmittedSize"] == len(BODY)
+        assert request["_postDataOmitted"] == {"size": len(BODY), "reason": "over_max_body_size"}
 
     @pytest.mark.asyncio
     async def test_a_body_at_the_cap_is_kept(self) -> None:
@@ -516,6 +571,111 @@ class TestBodySizeCap:
         backend = await _record(tab, _fetch_post("8.9"), max_body_size=len(BODY))
 
         assert _only_entry(backend)["request"]["postData"]["text"] == BODY
+
+    @pytest.mark.asyncio
+    async def test_the_cap_is_measured_in_bytes(self) -> None:
+        """Six characters, twelve UTF-8 bytes: over a cap of ten."""
+        tab = FakeTab({"8.10": "\u00e9" * 6}, _always)
+
+        backend = await _record(tab, _fetch_post("8.10"), max_body_size=10)
+
+        assert _only_entry(backend)["request"]["_postDataOmitted"]["size"] == 12
+
+    @pytest.mark.asyncio
+    async def test_a_body_over_the_cap_goes_to_bodies_when_the_capture_has_it(
+        self, tmp_path: Any
+    ) -> None:
+        from graftpunk.har.parser import parse_har_file
+
+        tab = FakeTab({"8.11": BODY}, _always)
+        bodies = tmp_path / "bodies"
+
+        with capture_logs() as logs:
+            backend = await _record(tab, _fetch_post("8.11"), max_body_size=10, bodies_dir=bodies)
+
+        request = _only_entry(backend)["request"]
+        assert (request["_postDataFile"], request["_postDataSize"]) == (
+            "bodies/8.11.request.json",
+            len(BODY),
+        )
+        assert "postData" not in request
+        assert "_postDataNotCaptured" not in request
+        assert (bodies / "8.11.request.json").read_text() == BODY
+        assert [
+            e for e in logs if e["event"] in ("post_data_omitted", "post_data_unavailable")
+        ] == []
+        har = tmp_path / "network.har"
+        har.write_text(json.dumps({"log": {"entries": backend.get_har_entries()}}))
+        (entry,) = parse_har_file(har).entries
+        assert (entry.request.post_data, entry.request.post_data_file) == (
+            BODY,
+            "bodies/8.11.request.json",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_binary_body_is_never_stored_as_replacement_text(self) -> None:
+        """A base64 body that is not UTF-8 is left out with its decoded size, not
+        written into the HAR as U+FFFD characters."""
+        tab = FakeTab({"8.12": _b64(BINARY)}, _always)
+
+        with capture_logs() as logs:
+            backend = await _record(tab, _fetch_post("8.12"))
+
+        request = _only_entry(backend)["request"]
+        assert "postData" not in request
+        assert request["_postDataOmitted"] == {"size": len(BINARY), "reason": "binary"}
+        assert [e["reason"] for e in logs if e["event"] == "post_data_omitted"] == ["binary"]
+
+    @pytest.mark.asyncio
+    async def test_a_binary_body_goes_to_bodies_as_its_bytes(self, tmp_path: Any) -> None:
+        from graftpunk.har.parser import parse_har_file
+
+        tab = FakeTab({"8.13": _b64(BINARY)}, _always)
+        bodies = tmp_path / "bodies"
+
+        backend = await _record(tab, _fetch_post("8.13"), bodies_dir=bodies)
+
+        request = _only_entry(backend)["request"]
+        assert request["_postDataFile"] == "bodies/8.13.request.json"
+        assert (bodies / "8.13.request.json").read_bytes() == BINARY
+        har = tmp_path / "network.har"
+        har.write_text(json.dumps({"log": {"entries": backend.get_har_entries()}}))
+        (entry,) = parse_har_file(har).entries
+        assert (entry.request.post_data, entry.request.post_data_file) == (
+            None,
+            "bodies/8.13.request.json",
+        )
+
+
+class TestRequestBodyFileReference:
+    def test_a_reference_outside_the_hars_directory_is_not_read(self, tmp_path: Any) -> None:
+        from graftpunk.har.parser import parse_har_file
+
+        run = tmp_path / "run"
+        run.mkdir()
+        (tmp_path / "outside.json").write_text(BODY)
+        entry = {
+            "startedDateTime": "2026-10-19T10:00:00.000Z",
+            "time": 0,
+            "request": {
+                "method": "POST",
+                "url": SEARCH,
+                "headers": [],
+                "cookies": [],
+                "queryString": [],
+                "_postDataFile": "../outside.json",
+            },
+            "response": {"status": 200, "statusText": "OK", "headers": [], "cookies": []},
+        }
+        har = run / "network.har"
+        har.write_text(json.dumps({"log": {"entries": [entry]}}))
+
+        (parsed,) = parse_har_file(har).entries
+
+        assert (parsed.request.post_data, parsed.request.post_data_file) == (
+            None,
+            "../outside.json",
+        )
 
 
 def _selenium_backend(execute: Callable[[str, dict[str, Any]], dict[str, Any]], **kwargs: Any):
@@ -579,7 +739,10 @@ class TestSeleniumPostData:
         backend = _selenium_backend(execute, max_body_size=10)
         backend.stop_capture()
 
-        assert _only_entry(backend)["request"]["_postDataOmittedSize"] == len(BODY)
+        assert _only_entry(backend)["request"]["_postDataOmitted"] == {
+            "size": len(BODY),
+            "reason": "over_max_body_size",
+        }
 
 
 class FakeTab048(FakeTab):
@@ -650,7 +813,8 @@ class TestCaptureSession:
     @pytest.mark.asyncio
     async def test_a_nodriver_048_shaped_tab_keeps_the_body(self) -> None:
         """No session to pin and no re-attach to route around: the plain fetch works.
-        Whether nodriver 0.48 recovers a Blob body live is unverified."""
+        Measured live on 2026-10-19 (probe 6 on nodriver 0.48.1): every body, the
+        Blob ones included, was kept with no session named."""
         tab = FakeTab048({"9.2": BODY}, _always)
 
         backend = await _record(tab, _fetch_post("9.2"))

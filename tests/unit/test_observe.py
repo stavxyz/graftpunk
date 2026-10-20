@@ -1589,11 +1589,11 @@ class TestNodriverHARCapture:
         assert resp["body"] == '{"ok": true}'
         assert resp["bodySize"] == len(b'{"ok": true}')
 
-    def test_a_base64_body_that_is_not_utf8_keeps_replacement_characters(self) -> None:
-        """HAR's postData has no encoding field: undecodable bytes become U+FFFD."""
-        from graftpunk.observe.capture import _post_data_text
+    def test_a_base64_body_that_is_not_utf8_keeps_its_bytes_and_no_text(self) -> None:
+        """HAR's postData has no encoding field: a body that is not UTF-8 is not text."""
+        from graftpunk.observe.capture import _post_body, _PostBody
 
-        assert _post_data_text(("/w==", True)) == "\ufffd"
+        assert _post_body(("/w==", True)) == _PostBody(b"\xff", None)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

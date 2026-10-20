@@ -37,10 +37,18 @@ class HARRequest:
     # HAR's own postData.mimeType: what the request declared its body to be,
     # for captures that carry no Content-Type request header.
     post_data_mime_type: str | None = None
-    # The recorder saw the request announce a body (CDP hasPostData) and could
-    # not get it: the capture's request._postDataNotCaptured. A request with no
-    # post_data and this False sent no body.
+    # The recorder saw the request announce a body (CDP hasPostData) and does
+    # not hold it: the capture's request._postDataNotCaptured. A request with no
+    # post_data, no post_data_file and this False sent no body.
     post_data_not_captured: bool = False
+    # Why the body is not held, when the recorder left it out on purpose
+    # (request._postDataOmitted.reason): "over_max_body_size" or "binary". None
+    # when it was not left out, including a body the recorder could not get.
+    post_data_omitted: str | None = None
+    # A body the recorder wrote to bodies/ instead of the HAR
+    # (request._postDataFile), relative to the HAR's directory. post_data holds
+    # its text when the file is UTF-8 and was found under that directory.
+    post_data_file: str | None = None
 
 
 @dataclass
@@ -212,11 +220,28 @@ def _is_text_content(mime: str) -> bool:
     return any(kw in mime_lower for kw in _TEXT_CONTENT_KEYWORDS)
 
 
-def _parse_request(request_data: dict[str, Any]) -> HARRequest:
+def _request_body_file(ref: Any, base_dir: Path | None) -> str | None:
+    """The text of the request body file *ref* names, when it is UTF-8 and inside
+    *base_dir*. A reference that leaves the HAR's directory is not followed."""
+    if not isinstance(ref, str) or base_dir is None:
+        return None
+    root = base_dir.resolve()
+    path = (root / ref).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        return None
+    try:
+        return path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -> HARRequest:
     """Parse request section of HAR entry.
 
     Args:
         request_data: Request dict from HAR entry.
+        base_dir: Directory containing the HAR file, used to resolve
+            _postDataFile references to request bodies written to disk.
 
     Returns:
         Parsed HARRequest object.
@@ -230,6 +255,13 @@ def _parse_request(request_data: dict[str, Any]) -> HARRequest:
             post_data_mime_type = post_data_obj.get("mimeType")
         elif isinstance(post_data_obj, str):
             post_data = post_data_obj
+    post_data_file = request_data.get("_postDataFile")
+    if not isinstance(post_data_file, str):
+        post_data_file = None
+    elif post_data is None:
+        post_data = _request_body_file(post_data_file, base_dir)
+    omitted = request_data.get("_postDataOmitted")
+    omitted_reason = omitted.get("reason") if isinstance(omitted, dict) else None
 
     return HARRequest(
         method=request_data.get("method", "GET"),
@@ -240,6 +272,8 @@ def _parse_request(request_data: dict[str, Any]) -> HARRequest:
         query_string=request_data.get("queryString", []),
         post_data_mime_type=post_data_mime_type,
         post_data_not_captured=request_data.get("_postDataNotCaptured") is True,
+        post_data_omitted=omitted_reason if isinstance(omitted_reason, str) else None,
+        post_data_file=post_data_file,
     )
 
 
@@ -380,7 +414,7 @@ def _parse_entries(data: dict[str, Any], base_dir: Path | None = None) -> HARPar
 
     for idx, entry_data in enumerate(data["log"]["entries"]):
         try:
-            request = _parse_request(entry_data.get("request", {}))
+            request = _parse_request(entry_data.get("request", {}), base_dir=base_dir)
             response = _parse_response(entry_data.get("response", {}), base_dir=base_dir)
             timestamp = _parse_timestamp(entry_data.get("startedDateTime", ""))
             time_ms = entry_data.get("time", 0.0)

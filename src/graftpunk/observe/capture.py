@@ -16,7 +16,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
 from graftpunk.logging import get_logger
@@ -190,27 +190,42 @@ def _har_entries_in_order(request_map: dict[str, dict[str, Any]]) -> list[dict[s
     return [_build_har_entry(data) for _rid, data in _ordered_request_items(request_map)]
 
 
-def _post_data_text(result: Any) -> str:
-    """The request body text from ``Network.getRequestPostData``'s result.
+class _PostBody(NamedTuple):
+    """A request body as received: its bytes, and its text when they are UTF-8."""
+
+    raw: bytes
+    text: str | None
+
+
+def _post_body(result: Any) -> _PostBody | None:
+    """The request body from an inline ``postData`` or ``getRequestPostData``'s result.
 
     nodriver 0.48 returns the ``postData`` string alone; nodriver 0.50 returns the
     pair ``(postData, base64Encoded)``, as the raw CDP reply Selenium gets carries
-    both fields. A base64 body is decoded, whitespace inside it ignored, so the HAR
-    holds the text the browser sent. HAR's ``postData`` has no encoding field, so a
-    body that is not UTF-8 keeps U+FFFD in place of each byte it cannot decode, and
-    a body that is not valid base64 is kept as the text Chrome sent.
+    both fields. A base64 body is decoded, whitespace inside it ignored. Its text
+    is ``None`` when the bytes are not UTF-8: HAR's ``postData`` has no encoding
+    field, and decoding with replacement would turn each such byte into U+FFFD,
+    written as six characters in the HAR. A body flagged base64 that is not valid
+    base64 is kept as the text Chrome sent.
     """
+    if result is None:
+        return None
     if not isinstance(result, tuple):
-        return result
+        return _PostBody(result.encode("utf-8", errors="surrogatepass"), result)
     text, base64_encoded = result
-    if not base64_encoded or text is None:
-        return text
+    if text is None:
+        return None
+    if not base64_encoded:
+        return _PostBody(text.encode("utf-8", errors="surrogatepass"), text)
     try:
         raw = base64.b64decode("".join(text.split()), validate=True)
     except (binascii.Error, ValueError):
-        LOG.warning("post_data_not_base64", length=len(text or ""))
-        return text
-    return raw.decode("utf-8", errors="replace")
+        LOG.warning("post_data_not_base64", length=len(text))
+        return _PostBody(text.encode("utf-8", errors="surrogatepass"), text)
+    try:
+        return _PostBody(raw, raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        return _PostBody(raw, None)
 
 
 def _is_redirect_hop(data: dict[str, Any]) -> bool:
@@ -250,38 +265,66 @@ def _post_data_missing(data: dict[str, Any]) -> bool:
     return (
         bool(data.get("has_post_data"))
         and data.get("post_data") is None
+        and not data.get("_post_data_file")
         and not data.get("_post_data_omitted")
     )
 
 
-def _keep_post_data(
-    data: dict[str, Any], text: str | None, *, max_body_size: int, request_id: str
-) -> None:
-    """Store *text* as the request's body, or leave it out when it is over the cap.
+def _request_content_type(data: dict[str, Any]) -> str:
+    headers = data.get("headers") or {}
+    return next((v for k, v in headers.items() if k.lower() == "content-type"), "")
 
-    The cap is the one a response body kept in the HAR has (``max_body_size``,
-    5 MB by default), measured in UTF-8 bytes. A body over it is not stored; the
-    entry is marked as not captured, with its size, and logged once as
-    ``post_data_omitted``, so the HAR says it was left out instead of holding
-    megabytes of decoded upload.
+
+def _keep_post_data(
+    data: dict[str, Any],
+    body: _PostBody | None,
+    *,
+    max_body_size: int,
+    bodies_dir: Path | None,
+    request_id: str,
+) -> None:
+    """Store *body* as the request's body, as a response body would be stored.
+
+    A UTF-8 body within ``max_body_size`` (measured on its bytes) goes into the
+    HAR's ``postData``. A larger one, or one that is not UTF-8, is written to
+    ``bodies_dir`` as ``<request id>.request<ext>`` and referenced from the HAR
+    as ``request._postDataFile``, the way an oversized or binary response body
+    is written there and referenced as ``_bodyFile``. With no ``bodies_dir`` (or
+    when the write fails) it is left out: the entry is marked as not captured,
+    with ``_postDataOmitted`` giving its size and why, and logged once as
+    ``post_data_omitted``.
     """
-    if text is None:
+    if body is None:
         return
-    size = len(text.encode("utf-8", errors="replace"))
-    if size > max_body_size:
-        data["post_data"] = None
-        data["_post_data_omitted"] = size
-        data["_post_data_unavailable"] = True
-        LOG.warning(
-            "post_data_omitted",
-            request_id=request_id,
-            method=data.get("method"),
-            url=data.get("url"),
-            size=size,
-            max_body_size=max_body_size,
-        )
+    size = len(body.raw)
+    if body.text is not None and size <= max_body_size:
+        data["post_data"] = body.text
         return
-    data["post_data"] = text
+    reason = "binary" if body.text is None else "over_max_body_size"
+    if bodies_dir is not None:
+        name = f"{request_id}.request{_mime_to_extension(_request_content_type(data))}"
+        try:
+            bodies_dir.mkdir(parents=True, exist_ok=True)
+            (bodies_dir / name).write_bytes(body.raw)
+        except OSError as exc:
+            LOG.warning("post_data_file_write_failed", request_id=request_id, error=str(exc))
+        else:
+            data["post_data"] = None
+            data["_post_data_file"] = f"bodies/{name}"
+            data["_post_data_size"] = size
+            return
+    data["post_data"] = None
+    data["_post_data_omitted"] = {"size": size, "reason": reason}
+    data["_post_data_unavailable"] = True
+    LOG.warning(
+        "post_data_omitted",
+        request_id=request_id,
+        method=data.get("method"),
+        url=data.get("url"),
+        size=size,
+        reason=reason,
+        max_body_size=max_body_size,
+    )
 
 
 def _flag_uncaptured_post_data(request_map: dict[str, dict[str, Any]]) -> None:
@@ -761,12 +804,15 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
             "mimeType": content_type,
             "text": post_data,
         }
-    elif request_data.get("_post_data_unavailable"):
+    elif request_data.get("_post_data_file"):
         # HAR 1.2 allows custom fields that start with an underscore, as _bodyFile does.
+        entry["request"]["_postDataFile"] = request_data["_post_data_file"]
+        entry["request"]["_postDataSize"] = request_data.get("_post_data_size", 0)
+    elif request_data.get("_post_data_unavailable"):
         entry["request"]["_postDataNotCaptured"] = True
         omitted = request_data.get("_post_data_omitted")
         if omitted:
-            entry["request"]["_postDataOmittedSize"] = omitted
+            entry["request"]["_postDataOmitted"] = dict(omitted)
     return entry
 
 
@@ -926,8 +972,9 @@ class SeleniumCaptureBackend:
                 }
                 _keep_post_data(
                     self._request_map[rid],
-                    request.get("postData"),
+                    _post_body(request.get("postData")),
                     max_body_size=self._max_body_size,
+                    bodies_dir=self._bodies_dir,
                     request_id=rid,
                 )
                 self._extra_info.entry_created(self._request_map, rid)
@@ -993,10 +1040,9 @@ class SeleniumCaptureBackend:
                     )
                     _keep_post_data(
                         data,
-                        _post_data_text(
-                            (result.get("postData"), result.get("base64Encoded", False))
-                        ),
+                        _post_body((result.get("postData"), result.get("base64Encoded", False))),
                         max_body_size=self._max_body_size,
+                        bodies_dir=self._bodies_dir,
                         request_id=request_id,
                     )
                 except Exception as exc:  # noqa: BLE001 - CDP body fetch is best-effort
@@ -1150,8 +1196,9 @@ def _capture_session_kwargs(tab: Any, session_id: Any) -> dict[str, Any]:
     measured on nodriver 0.50.6). nodriver 0.50 merges send kwargs into the
     CDP message, so ``sessionId`` sends the command to the session that saw the
     request. nodriver 0.48.1 has no session ids (each target has its own
-    websocket) and its ``Browser.get`` does not re-attach (read from its source,
-    not probed live), so nothing is passed there and nothing needs to be.
+    websocket) and its ``Browser.get`` does not re-attach (read from its source),
+    so nothing is passed there and nothing needs to be; a live recording on
+    0.48.1 on 2026-10-19 kept every body with no session named.
     """
     if not isinstance(session_id, str) or getattr(tab, "session_id", None) == session_id:
         return {}
@@ -1341,7 +1388,6 @@ class NodriverCaptureBackend:
             return
 
         self._extra_info.log_unmatched(self._request_map)
-        await self._settle_request_time_fetches()
 
         # One aggregate line so a systematic eager-fetch failure (e.g. a
         # nodriver internals change, issue #146) is visible at a glance rather
@@ -1359,8 +1405,12 @@ class NodriverCaptureBackend:
             )
 
         try:
+            await self._settle_request_time_fetches()
             await self._fetch_bodies_at_stop(tab)
         finally:
+            # Whatever ended stop, no request-time fetch writes after the marks.
+            for task in self._post_data_tasks:
+                task.cancel()
             _flag_uncaptured_post_data(self._request_map)
 
     async def _settle_request_time_fetches(self) -> None:
@@ -1371,6 +1421,10 @@ class NodriverCaptureBackend:
         running after the wait is cancelled, so nothing writes into an entry
         after the stop-time pass has judged it.
         """
+        # nodriver creates a fetch task for each event and does not keep it; a task
+        # joins _post_data_tasks on its first step. One pass of the loop lets every
+        # task already scheduled take that step before the snapshot.
+        await asyncio.sleep(0)
         pending = {task for task in self._post_data_tasks if not task.done()}
         if not pending:
             return
@@ -1401,8 +1455,9 @@ class NodriverCaptureBackend:
                     )
                     _keep_post_data(
                         data,
-                        _post_data_text(result),
+                        _post_body(result),
                         max_body_size=self._max_body_size,
+                        bodies_dir=self._bodies_dir,
                         request_id=request_id,
                     )
                     data.pop("_post_data_error", None)
@@ -1487,8 +1542,9 @@ class NodriverCaptureBackend:
             }
             _keep_post_data(
                 self._request_map[rid],
-                getattr(event.request, "post_data", None),
+                _post_body(getattr(event.request, "post_data", None)),
                 max_body_size=self._max_body_size,
+                bodies_dir=self._bodies_dir,
                 request_id=rid,
             )
             if _post_data_missing(self._request_map[rid]):
@@ -1535,7 +1591,11 @@ class NodriverCaptureBackend:
                 **_capture_session_kwargs(tab, self._capture_session_id),
             )
             _keep_post_data(
-                data, _post_data_text(result), max_body_size=self._max_body_size, request_id=rid
+                data,
+                _post_body(result),
+                max_body_size=self._max_body_size,
+                bodies_dir=self._bodies_dir,
+                request_id=rid,
             )
         except Exception as exc:  # noqa: BLE001 - best-effort; stop_capture_async retries
             data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
@@ -1679,8 +1739,10 @@ def create_capture_backend(
         backend_type: Either "nodriver" or "selenium".
         driver: The browser driver/browser instance.
         get_tab: Optional callable that returns the current nodriver tab.
-        max_body_size: Maximum response body size to keep in memory (bytes).
-        bodies_dir: Directory to stream large/binary bodies to disk.
+        max_body_size: Largest request or response body kept in the HAR itself
+            (bytes); a larger or binary body goes to ``bodies_dir``.
+        bodies_dir: Directory to stream large/binary request and response bodies to
+            disk. Without one, such a request body is left out and marked.
 
     Returns:
         A CaptureBackend implementation.
