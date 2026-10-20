@@ -2039,6 +2039,48 @@ class TestObserveStartHardening:
         assert "hunter2" not in har
         assert REDACTED in har
 
+    def test_an_oversized_request_body_is_kept_in_the_runs_bodies_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """A `gp --observe=full` run keeps a request body over the HAR's cap in
+        bodies/, as 1.22.0 kept it in the HAR, rather than leaving it out (#269)."""
+        import json
+
+        from graftpunk.observe.capture import MAX_RESPONSE_BODY_SIZE
+
+        body = json.dumps({"rows": "x" * MAX_RESPONSE_BODY_SIZE})
+        sent = {
+            "message": json.dumps(
+                {
+                    "message": {
+                        "method": "Network.requestWillBeSent",
+                        "params": {
+                            "requestId": "7.1",
+                            "request": {
+                                "url": "https://myshop.example.com/api/import",
+                                "method": "POST",
+                                "headers": {"Content-Type": "application/json"},
+                                "hasPostData": True,
+                                "postData": body,
+                            },
+                        },
+                    }
+                }
+            )
+        }
+        session = self._make_session(session_name="bank")
+        session._webdriver.get_log = lambda kind: [sent] if kind == "performance" else []
+        with patch("graftpunk.session.OBSERVE_BASE_DIR", tmp_path):
+            session._start_observe()
+        session._capture.stop_capture()
+        session._write_observe_data()
+
+        run = tmp_path / "bank" / session._observe_storage.run_dir.name
+        (entry,) = json.loads((run / "network.har").read_text())["log"]["entries"]
+        assert entry["request"]["_postDataFile"] == "bodies/7.1.request.json"
+        assert "_postDataNotCaptured" not in entry["request"]
+        assert (run / "bodies" / "7.1.request.json").read_text() == body
+
     def test_public_accessors(self) -> None:
         session = self._make_session()
         assert session.capture is None

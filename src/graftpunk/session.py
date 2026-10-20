@@ -470,7 +470,10 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             gp_console.warn(f"Observability capture unavailable: {exc}")
             self._observe_storage = None
             return
-        self._capture = create_capture_backend(self._backend_type, driver)
+        # Bodies too large for the HAR, or binary, go beside it, as gp observe's do.
+        self._capture = create_capture_backend(
+            self._backend_type, driver, bodies_dir=self._observe_storage.run_dir / "bodies"
+        )
         self._capture.start_capture()
         LOG.info("observe_capture_started", mode=self._observe_mode, run_id=run_id)
 
