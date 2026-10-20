@@ -6932,3 +6932,93 @@ class TestNoDriverBackendAbandonedLockHolder:
             stopped.close()
 
         assert given_up is None
+
+    def test_a_give_up_end_the_executor_queued_and_the_fallback_ran_runs_once(
+        self,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The loop's executor queues the give-up end and then fails to start a
+        thread for it, so the fallback runs it. When a busy worker later takes
+        the queued item, the end does not run again: it would end the browser a
+        later start launched."""
+        import concurrent.futures
+
+        profile = temp_profiles / "uc_end_queued_and_run"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        entered = threading.Event()
+        gate = threading.Event()
+        _within(10, backend.start)
+        real_stop = backend._stop_async
+
+        async def gated_stop() -> None:
+            entered.set()
+            await _until(gate)
+            await real_stop()
+
+        ends: list[str] = []
+        real_end = backend._end_for_given_up_hold
+
+        def counted_end(running: Any, abandonment: Any) -> None:
+            ends.append(threading.current_thread().name)
+            real_end(running, abandonment)
+
+        monkeypatch.setattr(backend, "_end_for_given_up_hold", counted_end)
+        refuse = threading.Event()
+        real_thread_start = threading.Thread.start
+
+        def start_unless_refused(thread: threading.Thread) -> None:
+            if refuse.is_set() and thread.name.startswith(("busy_executor", "graftpunk-nodriver")):
+                raise RuntimeError("can't start new thread")
+            real_thread_start(thread)
+
+        monkeypatch.setattr(threading.Thread, "start", start_unless_refused)
+        busy = threading.Event()
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="busy_executor"
+        )
+        executor.submit(busy.wait, 30)
+
+        async def give_up_stop() -> None:
+            asyncio.get_running_loop().set_default_executor(executor)
+            refuse.set()
+            try:
+                await backend.stop_async()
+            finally:
+                refuse.clear()
+
+        loop = asyncio.new_event_loop()
+        with _chrome_like_child(profile) as child:
+            assert backend._browser is not None
+            self._give_chrome(backend._browser, child, profile)
+            monkeypatch.setattr(backend, "_stop_async", gated_stop)
+            stranded = _Stranded(backend, backend.stop_async, "stop_async", entered.is_set)
+            try:
+                _within(15, lambda: loop.run_until_complete(give_up_stop()))
+                ends_after_the_stop = list(ends)
+                exited = child.poll() is not None
+                gate.set()
+                stranded.finish(resume=True)
+                monkeypatch.setattr(backend, "_stop_async", real_stop)
+                _within(10, backend.start)
+                busy.set()
+                # The freed worker takes the queued item, which returns at once.
+                _within(10, lambda: executor.shutdown(wait=True))
+                ends_in_all = list(ends)
+                still_running = backend.is_running
+            finally:
+                busy.set()
+                gate.set()
+                stranded.finish(resume=True)
+                _within(10, lambda: executor.shutdown(wait=True))
+                loop.close()
+
+        assert len(ends_after_the_stop) == 1
+        assert exited
+        assert ends_in_all == ends_after_the_stop
+        assert still_running is True
+        assert backend._lock.locked() is False
+        _within(10, backend.stop)
+        assert backend._lock.locked() is False

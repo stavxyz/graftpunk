@@ -670,9 +670,20 @@ def _start_off_loop(work: Callable[[], None]) -> "asyncio.Future[None]":
     default executor runs it; when that cannot (shut down, or the
     interpreter is finalising), a thread of its own does; and when no
     thread can be started either, it runs here, blocking the loop.
+
+    It runs at most once. ``ThreadPoolExecutor.submit()`` queues the work
+    before it starts a thread, so when that start fails the queued work
+    still runs once a busy worker frees, after the fallback ran it: a
+    second end of Chrome would end whatever the backend runs by then.
     """
     loop = asyncio.get_running_loop()
-    call = functools.partial(contextvars.copy_context().run, work)
+    run_in_context = functools.partial(contextvars.copy_context().run, work)
+    claimed = threading.Lock()
+
+    def call() -> None:
+        if claimed.acquire(blocking=False):
+            run_in_context()
+
     try:
         return loop.run_in_executor(None, call)
     except RuntimeError:
