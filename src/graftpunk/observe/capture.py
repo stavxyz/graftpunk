@@ -228,12 +228,6 @@ def _post_body(result: Any) -> _PostBody | None:
         return _PostBody(raw, None)
 
 
-# C0 controls other than tab, line feed and carriage return, and the C1 controls.
-_CONTROL_CODE_POINTS = frozenset(
-    [*range(0x00, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20), *range(0x7F, 0xA0)]
-)
-
-
 def _inline_post_body(post_data: Any, entries: Any) -> _PostBody | None:
     """The request body Chrome inlined on ``Network.requestWillBeSent``.
 
@@ -247,12 +241,10 @@ def _inline_post_body(post_data: Any, entries: Any) -> _PostBody | None:
     ``"\\x00\\xff"``), so storing it as text turned a binary body into text
     of another length that the digest reads as an endpoint with no parameters.
 
-    Without entries (an older Chrome or nodriver), a ``postData`` whose code
-    points all fit in a byte and that holds a control character other than tab,
-    line feed or carriage return is taken to be such mapped bytes, since a
-    page's text almost never holds those; its bytes are then the code points
-    themselves, not UTF-8. A mapped binary body with no control character (two
-    bytes such as ``C3 28``) cannot be told from text and is kept as text.
+    Without entries, or with an entry that carries no ``bytes`` or bytes that
+    are not base64, the body is stored as the ``postData`` text Chrome gave, as
+    before ``postDataEntries`` was read. Whether any Chrome sends a binary body
+    inline without entries is unverified.
     """
     if isinstance(entries, list) and entries and all(isinstance(b, str) for b in entries):
         try:
@@ -266,14 +258,6 @@ def _inline_post_body(post_data: Any, entries: Any) -> _PostBody | None:
                 return _PostBody(raw, None)
     if not isinstance(post_data, str):
         return None
-    if all(ord(c) < 0x100 for c in post_data) and any(
-        ord(c) in _CONTROL_CODE_POINTS for c in post_data
-    ):
-        raw = post_data.encode("latin-1")
-        try:
-            return _PostBody(raw, raw.decode("utf-8"))
-        except UnicodeDecodeError:
-            return _PostBody(raw, None)
     return _post_body(post_data)
 
 
