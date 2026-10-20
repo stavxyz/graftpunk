@@ -6,9 +6,9 @@ projection the `--endpoints-json` line of the Understand block of
 per endpoint with `method`, `template`, `host`, `login_flow`, `content_type`,
 `shape`, `query_params`, `body_params`, `body_not_captured`, and
 `custom_headers`, plus a `login` summary and the recording's `primary_host`.
-`body_not_captured` is true when a recording of the endpoint sent a body the
-recorder could not get; its `body_params` are then empty or partial, so say so
-in the row rather than proposing a command with no inputs.
+A row with `body_not_captured` set has a request body gp could not record, so
+its `body_params` are empty or partial: say so in the row rather than proposing
+a command with no inputs.
 Build the proposal from that projection, which is shaped for it;
 `references/har.md` says where to look for what it leaves out.
 
