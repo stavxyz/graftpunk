@@ -37,6 +37,10 @@ class HARRequest:
     # HAR's own postData.mimeType: what the request declared its body to be,
     # for captures that carry no Content-Type request header.
     post_data_mime_type: str | None = None
+    # The recorder saw the request announce a body (CDP hasPostData) and could
+    # not get it: the capture's request._postDataNotCaptured. A request with no
+    # post_data and this False sent no body.
+    post_data_not_captured: bool = False
 
 
 @dataclass
@@ -235,6 +239,7 @@ def _parse_request(request_data: dict[str, Any]) -> HARRequest:
         post_data=post_data,
         query_string=request_data.get("queryString", []),
         post_data_mime_type=post_data_mime_type,
+        post_data_not_captured=request_data.get("_postDataNotCaptured") is True,
     )
 
 

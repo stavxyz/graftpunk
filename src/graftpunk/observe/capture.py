@@ -228,11 +228,41 @@ def _note_lost_hop_body(request_id: str, data: dict[str, Any]) -> None:
     """
     if data.get("has_post_data") and not data.get("post_data") and not data.get("_hop_warned"):
         data["_hop_warned"] = True
+        data["_post_data_unavailable"] = True
         LOG.warning(
             "redirect_hop_post_data_unavailable",
             request_id=request_id,
             url=data.get("url"),
             hint="Request body was not inlined by CDP and is lost across the redirect",
+        )
+
+
+def _post_data_missing(data: dict[str, Any]) -> bool:
+    """True if the request announced a body (``hasPostData``) the recorder does not hold."""
+    return bool(data.get("has_post_data")) and not data.get("post_data")
+
+
+def _flag_uncaptured_post_data(request_map: dict[str, dict[str, Any]]) -> None:
+    """Mark and log, once each, the requests whose body is still missing after every fetch.
+
+    The mark becomes the HAR entry's ``request._postDataNotCaptured``, so the
+    digest and ``gp plugin new`` can say the body was not captured instead of
+    reporting a request with no parameters. A redirect hop is left to
+    ``_note_lost_hop_body``, which marks and logs it under its own event.
+    """
+    for request_id, data in request_map.items():
+        if _is_redirect_hop(data) or not _post_data_missing(data):
+            continue
+        if data.get("_post_data_unavailable"):
+            continue
+        data["_post_data_unavailable"] = True
+        LOG.warning(
+            "post_data_unavailable",
+            request_id=request_id,
+            method=data.get("method"),
+            url=data.get("url"),
+            error=data.get("_post_data_error", "not fetched"),
+            hint="The request sent a body that CDP did not inline and would not return",
         )
 
 
@@ -686,6 +716,9 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
             "mimeType": content_type,
             "text": post_data,
         }
+    elif request_data.get("_post_data_unavailable"):
+        # HAR 1.2 allows custom fields that start with an underscore, as _bodyFile does.
+        entry["request"]["_postDataNotCaptured"] = True
     return entry
 
 
@@ -897,8 +930,9 @@ class SeleniumCaptureBackend:
             if _is_redirect_hop(data):
                 _note_lost_hop_body(request_id, data)
                 continue
-            # Fetch POST body if hasPostData but no inline postData
-            if data.get("has_post_data") and not data.get("post_data"):
+            # Fetch POST body if hasPostData but no inline postData. Selenium reads
+            # the performance log only now, so this is the one chance to ask.
+            if _post_data_missing(data):
                 try:
                     result = self._driver.execute_cdp_cmd(
                         "Network.getRequestPostData", {"requestId": request_id}
@@ -907,11 +941,7 @@ class SeleniumCaptureBackend:
                         (result.get("postData"), result.get("base64Encoded", False))
                     )
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
-                    LOG.warning(
-                        "selenium_post_data_fetch_failed",
-                        request_id=request_id,
-                        error=str(exc),
-                    )
+                    data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
 
             # Fetch response body
             response = data.get("response", {})
@@ -938,6 +968,7 @@ class SeleniumCaptureBackend:
                         request_id=request_id,
                         error=str(exc),
                     )
+        _flag_uncaptured_post_data(self._request_map)
 
         # Also collect "browser" log for backward compat. CDP consoleAPICalled
         # events above cover JS console output; browser logs may contain additional
@@ -1185,6 +1216,9 @@ class NodriverCaptureBackend:
             )
         )
         tab.add_handler(network.RequestWillBeSent, self._on_request)
+        # After _on_request: nodriver calls sync handlers inline and runs async
+        # ones as tasks, so the entry this fills in already exists.
+        tab.add_handler(network.RequestWillBeSent, self._on_request_post_data)
         tab.add_handler(network.ResponseReceived, self._on_response)
         tab.add_handler(network.LoadingFinished, self._on_loading_finished)
         # Raw wire headers (Cookie / Set-Cookie) only arrive on the ExtraInfo
@@ -1211,9 +1245,8 @@ class NodriverCaptureBackend:
         """Stop capturing and fetch request/response bodies asynchronously."""
         tab = self._tab
         if tab is None:
+            _flag_uncaptured_post_data(self._request_map)
             return
-
-        import nodriver.cdp.network as cdp_net
 
         self._extra_info.log_unmatched(self._request_map)
 
@@ -1232,17 +1265,31 @@ class NodriverCaptureBackend:
                 ),
             )
 
+        try:
+            await self._fetch_bodies_at_stop(tab)
+        finally:
+            _flag_uncaptured_post_data(self._request_map)
+
+    async def _fetch_bodies_at_stop(self, tab: Any) -> None:
+        """Fetch what the event handlers did not: request bodies the request-time
+        fetch missed, and response bodies the eager fetch missed.
+
+        Returns early, leaving the rest unfetched, once the browser is gone.
+        """
+        import nodriver.cdp.network as cdp_net
+
         for request_id, data in list(self._request_map.items()):
             if _is_redirect_hop(data):
                 _note_lost_hop_body(request_id, data)
                 continue
-            # Fetch POST body if has_post_data but no inline post_data
-            if data.get("has_post_data") and not data.get("post_data"):
+            # Retry a request body the request-time fetch did not get.
+            if _post_data_missing(data):
                 try:
                     result = await tab.send(
                         cdp_net.get_request_post_data(cdp_net.RequestId(request_id))
                     )
                     data["post_data"] = _post_data_text(result)
+                    data.pop("_post_data_error", None)
                 except ConnectionError as exc:
                     LOG.warning(
                         "nodriver_browser_disconnected_during_stop",
@@ -1253,11 +1300,7 @@ class NodriverCaptureBackend:
                     )
                     return
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
-                    LOG.warning(
-                        "nodriver_post_data_fetch_failed",
-                        request_id=request_id,
-                        error=str(exc),
-                    )
+                    data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
 
             # Skip response body if already eagerly fetched by _on_loading_finished
             if request_id in self._bodies_fetched:
@@ -1325,11 +1368,51 @@ class NodriverCaptureBackend:
                 "has_post_data": getattr(event.request, "has_post_data", False),
                 "timestamp": getattr(event, "wall_time", None),
             }
+            if _post_data_missing(self._request_map[rid]):
+                self._request_map[rid]["_post_data_pending"] = True
             self._extra_info.entry_created(self._request_map, rid)
             if redirect is not None:
                 self._extra_info.status_known(self._request_map, rid)
         except Exception:
             LOG.exception("nodriver_on_request_failed")
+
+    async def _on_request_post_data(self, event: Any) -> None:
+        """Fetch a request body CDP did not inline, while the request is in flight.
+
+        ``Network.requestWillBeSent`` carries ``hasPostData`` without
+        ``postData`` for a body Chrome does not inline (a Blob body, for one).
+        Asking now rather than at stop time keeps a body Chrome no longer holds
+        once the request finished or its page went away. A failure here is
+        retried by ``stop_capture_async``; only a body both attempts miss is
+        marked and logged as ``post_data_unavailable``.
+
+        The entry is the one ``_on_request`` flagged pending for this event;
+        written through the dict, so a redirect that re-keys it as a hop before
+        the reply arrives still gets its own body.
+        """
+        rid = str(getattr(event, "request_id", ""))
+        data = self._request_map.get(rid)
+        if data is None or not data.pop("_post_data_pending", False):
+            return
+        tab = self._tab
+        if tab is None:
+            return
+        try:
+            import nodriver.cdp.network as cdp_net
+
+            result = await tab.send(
+                cdp_net.get_request_post_data(cdp_net.RequestId(rid)),
+                **_eager_send_kwargs(tab),
+            )
+            data["post_data"] = _post_data_text(result)
+        except Exception as exc:  # noqa: BLE001 — best-effort; stop_capture_async retries
+            data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
+            LOG.debug(
+                "nodriver_request_time_post_data_fetch_failed",
+                request_id=rid,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
 
     def _on_request_extra_info(self, event: Any) -> None:
         """Handle a CDP RequestWillBeSentExtraInfo event (raw request headers)."""

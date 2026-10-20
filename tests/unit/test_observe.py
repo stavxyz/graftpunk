@@ -1048,10 +1048,11 @@ class TestNodriverCaptureBackend:
         await backend.start_capture_async()
         # network.enable() and runtime.enable()
         assert tab.send.call_count == 2
-        # RequestWillBeSent, ResponseReceived, LoadingFinished,
+        # RequestWillBeSent (twice: the entry, then the request-time body fetch,
+        # issue #269), ResponseReceived, LoadingFinished,
         # RequestWillBeSentExtraInfo, ResponseReceivedExtraInfo (raw headers,
         # issue #157), ConsoleAPICalled
-        assert tab.add_handler.call_count == 6
+        assert tab.add_handler.call_count == 7
 
     @pytest.mark.asyncio
     async def test_start_capture_async_passes_buffer_params(self) -> None:
