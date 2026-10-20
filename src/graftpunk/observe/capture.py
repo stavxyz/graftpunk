@@ -302,9 +302,14 @@ def _keep_post_data(
         return
     reason = "binary" if body.text is None else "over_max_body_size"
     if bodies_dir is not None:
-        name = f"{request_id}.request{_mime_to_extension(_request_content_type(data))}"
+        # CDP keeps one request id across a redirect chain, and a 307 or 308 hop
+        # resends its body, so the hop and its successor each get their own file.
+        stem, ext = f"{request_id}.request", _mime_to_extension(_request_content_type(data))
+        name, copy = f"{stem}{ext}", 2
         try:
             bodies_dir.mkdir(parents=True, exist_ok=True)
+            while (bodies_dir / name).exists():
+                name, copy = f"{stem}-{copy}{ext}", copy + 1
             (bodies_dir / name).write_bytes(body.raw)
         except OSError as exc:
             LOG.warning("post_data_file_write_failed", request_id=request_id, error=str(exc))
@@ -885,10 +890,14 @@ class SeleniumCaptureBackend:
         driver: Any,
         max_body_size: int = MAX_RESPONSE_BODY_SIZE,
         bodies_dir: Path | None = None,
+        record_request_bodies: bool = True,
     ) -> None:
         self._driver = driver
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
+        # False for a capture whose HAR is never written (the login engine's
+        # header-only capture): no request body is kept, fetched or logged about.
+        self._record_request_bodies = record_request_bodies
         self._request_map: dict[str, dict[str, Any]] = {}
         self._console_logs: list[dict[str, Any]] = []
         self._extra_info = _ExtraInfoCorrelator()
@@ -970,13 +979,14 @@ class SeleniumCaptureBackend:
                     "has_post_data": request.get("hasPostData", False),
                     "timestamp": params.get("wallTime"),
                 }
-                _keep_post_data(
-                    self._request_map[rid],
-                    _post_body(request.get("postData")),
-                    max_body_size=self._max_body_size,
-                    bodies_dir=self._bodies_dir,
-                    request_id=rid,
-                )
+                if self._record_request_bodies:
+                    _keep_post_data(
+                        self._request_map[rid],
+                        _post_body(request.get("postData")),
+                        max_body_size=self._max_body_size,
+                        bodies_dir=self._bodies_dir,
+                        request_id=rid,
+                    )
                 self._extra_info.entry_created(self._request_map, rid)
                 if redirect is not None:
                     self._extra_info.status_known(self._request_map, rid)
@@ -1029,11 +1039,12 @@ class SeleniumCaptureBackend:
         # Fetch bodies for all captured requests
         for request_id, data in list(self._request_map.items()):
             if _is_redirect_hop(data):
-                _note_lost_hop_body(request_id, data)
+                if self._record_request_bodies:
+                    _note_lost_hop_body(request_id, data)
                 continue
             # Fetch POST body if hasPostData but no inline postData. Selenium reads
             # the performance log only now, so this is the one chance to ask.
-            if _post_data_missing(data):
+            if self._record_request_bodies and _post_data_missing(data):
                 try:
                     result = self._driver.execute_cdp_cmd(
                         "Network.getRequestPostData", {"requestId": request_id}
@@ -1073,7 +1084,8 @@ class SeleniumCaptureBackend:
                         request_id=request_id,
                         error=str(exc),
                     )
-        _flag_uncaptured_post_data(self._request_map)
+        if self._record_request_bodies:
+            _flag_uncaptured_post_data(self._request_map)
 
         # Also collect "browser" log for backward compat. CDP consoleAPICalled
         # events above cover JS console output; browser logs may contain additional
@@ -1224,11 +1236,18 @@ class NodriverCaptureBackend:
         get_tab: Callable[[], Any] | None = None,
         max_body_size: int = MAX_RESPONSE_BODY_SIZE,
         bodies_dir: Path | None = None,
+        record_request_bodies: bool = True,
     ) -> None:
         self._browser = browser
         self._get_tab = get_tab
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
+        # False for a capture whose HAR is never written (the login engine's
+        # header-only capture): no request body is kept, fetched or logged about.
+        self._record_request_bodies = record_request_bodies
+        # Set when stop has judged every request body; a request-time fetch that
+        # has not started by then marks its entry instead of writing into it.
+        self._post_data_closed = False
         self._request_map: dict[str, dict[str, Any]] = {}
         self._console_logs: list[dict[str, Any]] = []
         self._extra_info = _ExtraInfoCorrelator()
@@ -1249,6 +1268,7 @@ class NodriverCaptureBackend:
     def start_capture(self) -> None:
         """Begin capturing browser data."""
         self._extra_info = _ExtraInfoCorrelator()  # never carry slots across captures
+        self._post_data_closed = False
         LOG.debug("nodriver_capture_started")
 
     def stop_capture(self) -> None:
@@ -1355,8 +1375,9 @@ class NodriverCaptureBackend:
         )
         self._capture_session_id = getattr(tab, "session_id", None)
         tab.add_handler(network.RequestWillBeSent, self._on_request)
-        # After _on_request: nodriver calls sync handlers inline and runs async
-        # ones as tasks, so the entry this fills in already exists.
+        # After _on_request: nodriver calls sync handlers inline and runs async ones
+        # as tasks, so the entry this fills in already exists. It fetches only for
+        # an entry _on_request marked pending, which a header-only capture never does.
         tab.add_handler(network.RequestWillBeSent, self._on_request_post_data)
         tab.add_handler(network.ResponseReceived, self._on_response)
         tab.add_handler(network.LoadingFinished, self._on_loading_finished)
@@ -1384,7 +1405,9 @@ class NodriverCaptureBackend:
         """Stop capturing and fetch request/response bodies asynchronously."""
         tab = self._tab
         if tab is None:
-            _flag_uncaptured_post_data(self._request_map)
+            self._post_data_closed = True
+            if self._record_request_bodies:
+                _flag_uncaptured_post_data(self._request_map)
             return
 
         self._extra_info.log_unmatched(self._request_map)
@@ -1408,18 +1431,21 @@ class NodriverCaptureBackend:
             await self._settle_request_time_fetches()
             await self._fetch_bodies_at_stop(tab)
         finally:
-            # Whatever ended stop, no request-time fetch writes after the marks.
+            # Whatever ended stop, no request-time fetch writes after the marks: a
+            # running one is cancelled, and one not yet started sees the flag.
+            self._post_data_closed = True
             for task in self._post_data_tasks:
                 task.cancel()
-            _flag_uncaptured_post_data(self._request_map)
+            if self._record_request_bodies:
+                _flag_uncaptured_post_data(self._request_map)
 
     async def _settle_request_time_fetches(self) -> None:
         """Let the request-time body fetches still running finish first.
 
         Otherwise a body still arriving is retried, flagged and logged as
         ``post_data_unavailable`` at stop, and then written anyway. A fetch still
-        running after the wait is cancelled, so nothing writes into an entry
-        after the stop-time pass has judged it.
+        running after the wait is left to finish while the stop-time pass runs;
+        ``stop_capture_async``'s ``finally`` cancels it before the marks are set.
         """
         # nodriver creates a fetch task for each event and does not keep it; a task
         # joins _post_data_tasks on its first step. One pass of the loop lets every
@@ -1429,10 +1455,8 @@ class NodriverCaptureBackend:
         if not pending:
             return
         _done, still_running = await asyncio.wait(pending, timeout=_POST_DATA_SETTLE_TIMEOUT_S)
-        for task in still_running:
-            task.cancel()
         if still_running:
-            LOG.warning("nodriver_request_time_post_data_fetch_cancelled", count=len(still_running))
+            LOG.warning("nodriver_request_time_post_data_fetch_timed_out", count=len(still_running))
 
     async def _fetch_bodies_at_stop(self, tab: Any) -> None:
         """Fetch what the event handlers did not: request bodies the request-time
@@ -1444,10 +1468,11 @@ class NodriverCaptureBackend:
 
         for request_id, data in list(self._request_map.items()):
             if _is_redirect_hop(data):
-                _note_lost_hop_body(request_id, data)
+                if self._record_request_bodies:
+                    _note_lost_hop_body(request_id, data)
                 continue
             # Retry a request body the request-time fetch did not get.
-            if _post_data_missing(data):
+            if self._record_request_bodies and _post_data_missing(data):
                 try:
                     result = await tab.send(
                         cdp_net.get_request_post_data(cdp_net.RequestId(request_id)),
@@ -1540,15 +1565,16 @@ class NodriverCaptureBackend:
                 "has_post_data": getattr(event.request, "has_post_data", False),
                 "timestamp": getattr(event, "wall_time", None),
             }
-            _keep_post_data(
-                self._request_map[rid],
-                _post_body(getattr(event.request, "post_data", None)),
-                max_body_size=self._max_body_size,
-                bodies_dir=self._bodies_dir,
-                request_id=rid,
-            )
-            if _post_data_missing(self._request_map[rid]):
-                self._request_map[rid]["_post_data_pending"] = True
+            if self._record_request_bodies:
+                _keep_post_data(
+                    self._request_map[rid],
+                    _post_body(getattr(event.request, "post_data", None)),
+                    max_body_size=self._max_body_size,
+                    bodies_dir=self._bodies_dir,
+                    request_id=rid,
+                )
+                if _post_data_missing(self._request_map[rid]):
+                    self._request_map[rid]["_post_data_pending"] = True
             self._extra_info.entry_created(self._request_map, rid)
             if redirect is not None:
                 self._extra_info.status_known(self._request_map, rid)
@@ -1575,6 +1601,10 @@ class NodriverCaptureBackend:
         rid = str(getattr(event, "request_id", ""))
         data = self._request_map.get(rid)
         if data is None or not data.pop("_post_data_pending", False):
+            return
+        if self._post_data_closed:
+            data["_post_data_error"] = "recording stopped before the body was fetched"
+            _flag_uncaptured_post_data({rid: data})
             return
         tab = self._tab
         if tab is None:
@@ -1732,6 +1762,7 @@ def create_capture_backend(
     get_tab: Callable[[], Any] | None = None,
     max_body_size: int = MAX_RESPONSE_BODY_SIZE,
     bodies_dir: Path | None = None,
+    record_request_bodies: bool = True,
 ) -> CaptureBackend:
     """Factory to create the appropriate capture backend.
 
@@ -1743,6 +1774,8 @@ def create_capture_backend(
             (bytes); a larger or binary body goes to ``bodies_dir``.
         bodies_dir: Directory to stream large/binary request and response bodies to
             disk. Without one, such a request body is left out and marked.
+        record_request_bodies: False for a capture whose HAR is never written:
+            request bodies are then neither kept, fetched nor logged about.
 
     Returns:
         A CaptureBackend implementation.
@@ -1753,6 +1786,7 @@ def create_capture_backend(
             get_tab=get_tab,
             max_body_size=max_body_size,
             bodies_dir=bodies_dir,
+            record_request_bodies=record_request_bodies,
         )
     if backend_type == "selenium":
         if not _HAS_SELENIUM:
@@ -1762,6 +1796,7 @@ def create_capture_backend(
             driver,
             max_body_size=max_body_size,
             bodies_dir=bodies_dir,
+            record_request_bodies=record_request_bodies,
         )
     msg = f"Unknown capture backend type: {backend_type!r}. Must be 'selenium' or 'nodriver'."
     raise ValueError(msg)
