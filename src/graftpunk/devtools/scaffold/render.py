@@ -1305,6 +1305,20 @@ def _dropped_name_notes(endpoint: Endpoint) -> list[str]:
             "were left out because they held an account value; add any this command needs "
             "by hand."
         )
+    if endpoint.body_not_captured:
+        recorded = f"{endpoint.body_not_captured} of {endpoint.count} recording(s)"
+        if endpoint.body_params:
+            notes.append(
+                f"{GP_FILL_MARKER}: the request body was not captured in {recorded}, so the "
+                "body fields below come from the others and may be incomplete; add any this "
+                "command needs by hand."
+            )
+        else:
+            notes.append(
+                f"{GP_FILL_MARKER}: the request body was not captured ({recorded} sent one "
+                "the recorder could not get), so this stub sends no body; add the body this "
+                "command needs by hand."
+            )
     return notes
 
 

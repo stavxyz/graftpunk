@@ -2117,6 +2117,43 @@ class TestPluginModuleCommandStubs:
             "this command needs by hand."
         ) in comments
 
+    def _comments(self, endpoint: Endpoint) -> str:
+        return " ".join(
+            line.strip().lstrip("#").strip()
+            for line in self._plugin_code(endpoint).splitlines()
+            if line.strip().startswith("#")
+        )
+
+    def test_a_body_not_captured_leaves_a_gp_fill_instead_of_a_complete_looking_stub(
+        self,
+    ) -> None:
+        """#269: a POST whose body the recorder could not get has no body fields, and
+        the stub says why rather than reading as an endpoint that takes none."""
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/search", "POST"), count=2, body_not_captured=2
+        )
+        assert (
+            "GP-FILL: the request body was not captured (2 of 2 recording(s) sent one the "
+            "recorder could not get), so this stub sends no body; add the body this command "
+            "needs by hand."
+        ) in self._comments(endpoint)
+
+    def test_a_partly_captured_body_says_its_fields_may_be_incomplete(self) -> None:
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/search", "POST", body={"query": "str"}, body_kind="json"),
+            count=3,
+            body_not_captured=1,
+        )
+        assert (
+            "GP-FILL: the request body was not captured in 1 of 3 recording(s), so the body "
+            "fields below come from the others and may be incomplete; add any this command "
+            "needs by hand."
+        ) in self._comments(endpoint)
+
+    def test_a_captured_body_carries_no_such_note(self) -> None:
+        endpoint = self._endpoint("/api/search", "POST", body={"query": "str"}, body_kind="json")
+        assert "was not captured" not in self._comments(endpoint)
+
     @pytest.mark.parametrize(
         ("query", "body", "argv", "expected_query", "expected_body"),
         [
