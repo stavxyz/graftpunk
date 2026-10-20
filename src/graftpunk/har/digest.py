@@ -296,6 +296,11 @@ class Endpoint:
     # recordings showed, so the digest and a stub say the body was not captured
     # rather than present a request with no or partial parameters as complete.
     body_not_captured: int = 0
+    # How many recordings sent a body the recorder left out on purpose
+    # (HARRequest.post_data_omitted): over the capture's max body size, or not
+    # UTF-8, with no bodies/ directory to write it to. Counted apart from
+    # body_not_captured, so the digest and a stub can name --max-body-size.
+    body_omitted: int = 0
     # Every recorded response to this endpoint had no body (a redirect, a 204): a
     # generated test asserts the call completed, since an empty body is falsy.
     response_body_empty: bool = False
@@ -1198,6 +1203,7 @@ class _EndpointAccumulator:
         self.dropped_body: set[str] = set()
         self.dropped_headers: set[str] = set()
         self.body_not_captured = 0
+        self.body_omitted = 0
 
     def record(self, entry: HAREntry, path: str, step: int, entry_index: int) -> None:
         text = capture_text(entry.response.body, entry.response.status)
@@ -1225,7 +1231,10 @@ class _EndpointAccumulator:
         _merged_types(self.body_params, field_types, json_body=body_kind == "json")
         self.dropped_body |= body_dropped
         if entry.request.post_data_not_captured and not entry.request.post_data:
-            self.body_not_captured += 1
+            if entry.request.post_data_omitted:
+                self.body_omitted += 1
+            else:
+                self.body_not_captured += 1
         if body_kind != "none":
             self.body_kind = body_kind
         if entry.response.body:
@@ -1262,6 +1271,7 @@ class _EndpointAccumulator:
             body_keys_dropped_as_non_names=len(self.dropped_body) - _count_ids(self.dropped_body),
             header_names_dropped_as_ids=len(self.dropped_headers),
             body_not_captured=self.body_not_captured,
+            body_omitted=self.body_omitted,
             response_body_empty=not self.bodied,
             falsy_first_response=None if fixture_type is None else candidates[fixture_type][1],
             fixture_content_type="" if fixture_type is None else fixture_type,
@@ -1833,6 +1843,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.dropped_body |= acc.dropped_body
             target.bodied = target.bodied or acc.bodied
             target.body_not_captured += acc.body_not_captured
+            target.body_omitted += acc.body_omitted
             # The family's fixture candidates are its members' first recordings of
             # each type, whichever member recorded them.
             for recorded_type, candidate in acc.fixture_candidates.items():

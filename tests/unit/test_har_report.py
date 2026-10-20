@@ -754,12 +754,16 @@ def test_render_json_carries_no_collapsed_member_beyond_the_capped_examples(
         assert (word in text) == (word in retained), word
 
 
-def _search_post(*, body: str | None, not_captured: bool = False) -> dict:
+def _search_post(
+    *, body: str | None, not_captured: bool = False, omitted: str | None = None
+) -> dict:
     entry = _entry("POST", "https://myshop.example/api/search", body='{"results": []}')
     if body is not None:
         entry["request"]["postData"] = {"mimeType": "application/json", "text": body}
-    if not_captured:
+    if not_captured or omitted:
         entry["request"]["_postDataNotCaptured"] = True
+    if omitted:
+        entry["request"]["_postDataOmitted"] = {"size": 6_000_000, "reason": omitted}
     return entry
 
 
@@ -800,6 +804,44 @@ class TestBodyNotCaptured:
         (row,) = endpoints_projection(result)["endpoints"]
         assert (row["method"], row["body_params"], row["body_not_captured"]) == ("POST", {}, True)
 
+    @pytest.mark.parametrize("reason", ["over_max_body_size", "binary"])
+    def test_a_body_left_out_on_purpose_is_named_apart_from_a_lost_one(
+        self, tmp_path: Path, reason: str
+    ) -> None:
+        """A body over --max-body-size is not one the recorder could not get: the
+        digest says which, and names the option."""
+        entries = [
+            _search_post(body=None, omitted=reason),
+            _search_post(body=None, not_captured=True),
+        ]
+        result = self._digest(tmp_path, entries)
+
+        (endpoint,) = result.endpoints
+        assert (endpoint.body_omitted, endpoint.body_not_captured) == (1, 1)
+        text = render_markdown(result)
+        assert (
+            "- body left out: 1 of 2 recording(s) sent a body over the capture's "
+            "--max-body-size, or not text, with no bodies/ directory to write it to"
+        ) in text
+        assert "- body not captured: 1 of 2 recording(s)" in text
+        assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
+
+    def test_a_body_left_out_alone_sets_the_projection_flag(self, tmp_path: Path) -> None:
+        result = self._digest(tmp_path, [_search_post(body=None, omitted="binary")])
+        assert "body not captured" not in render_markdown(result)
+        assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
+
+    def test_a_body_written_to_bodies_is_read_back_for_its_fields(self, tmp_path: Path) -> None:
+        (tmp_path / "bodies").mkdir()
+        (tmp_path / "bodies" / "1.2.request.json").write_text('{"query": "alice"}')
+        entry = _search_post(body=None)
+        entry["request"]["_postDataFile"] = "bodies/1.2.request.json"
+        result = self._digest(tmp_path, [entry])
+
+        (endpoint,) = result.endpoints
+        assert endpoint.body_params == {"query": "str"}
+        assert (endpoint.body_not_captured, endpoint.body_omitted) == (0, 0)
+
     _FAMILY = [
         "alpha",
         "bravo",
@@ -815,7 +857,7 @@ class TestBodyNotCaptured:
         "lima",
     ]
 
-    def _family_post(self, word: str, *, captured: bool) -> dict:
+    def _family_post(self, word: str, *, captured: bool, omitted: bool = False) -> dict:
         entry = _entry(
             "POST", f"https://myshop.example.com/products/{word}-widget-2", body='{"ok": 1}'
         )
@@ -823,7 +865,22 @@ class TestBodyNotCaptured:
             entry["request"]["postData"] = {"mimeType": "application/json", "text": '{"q": "x"}'}
         else:
             entry["request"]["_postDataNotCaptured"] = True
+        if omitted:
+            entry["request"]["_postDataOmitted"] = {"size": 6_000_000, "reason": "binary"}
         return entry
+
+    def test_a_collapsed_family_counts_every_member_whose_body_was_left_out(
+        self, tmp_path: Path
+    ) -> None:
+        entries = [
+            self._family_post(word, captured=index == 0, omitted=index != 0)
+            for index, word in enumerate(self._FAMILY)
+        ]
+        result = self._digest(tmp_path, entries)
+
+        (endpoint,) = result.endpoints
+        assert (endpoint.count, endpoint.body_omitted, endpoint.body_not_captured) == (12, 11, 0)
+        assert "- body left out: 11 of 12 recording(s)" in render_markdown(result)
 
     def test_a_collapsed_family_counts_every_member_that_lost_its_body(
         self, tmp_path: Path

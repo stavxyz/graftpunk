@@ -82,6 +82,12 @@ def _endpoint_block(endpoint: Endpoint) -> list[str]:
             f"- body not captured: {endpoint.body_not_captured} of {endpoint.count} "
             "recording(s) sent a body the recorder could not get"
         )
+    if endpoint.body_omitted:
+        lines.append(
+            f"- body left out: {endpoint.body_omitted} of {endpoint.count} recording(s) sent "
+            "a body over the capture's --max-body-size, or not text, with no bodies/ "
+            "directory to write it to"
+        )
     if endpoint.custom_headers:
         lines.append(f"- custom headers: {', '.join(endpoint.custom_headers)}")
     lines.append(f"- shape: {summarize_shape(endpoint.shape)}")
@@ -259,7 +265,8 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
                 "shape": summarize_shape(endpoint.shape),
                 "query_params": dict(sorted(endpoint.query_params.items())),
                 "body_params": dict(sorted(endpoint.body_params.items())),
-                "body_not_captured": endpoint.body_not_captured > 0,
+                # Lost or left out: either way the HAR does not hold the body.
+                "body_not_captured": endpoint.body_not_captured + endpoint.body_omitted > 0,
                 "custom_headers": list(endpoint.custom_headers),
             }
             for endpoint in sorted(d.endpoints, key=_endpoint_sort_key)

@@ -2154,6 +2154,30 @@ class TestPluginModuleCommandStubs:
         endpoint = self._endpoint("/api/search", "POST", body={"query": "str"}, body_kind="json")
         assert "was not captured" not in self._comments(endpoint)
 
+    def test_a_body_left_out_for_size_names_max_body_size(self) -> None:
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/upload", "POST"), count=1, body_omitted=1
+        )
+        assert (
+            "GP-FILL: the request body was left out of the recording (1 of 1 recording(s) "
+            "sent one larger than --max-body-size, or not text, with no bodies/ directory to "
+            "hold it), so this stub sends no body; record again with a larger "
+            "--max-body-size, or add the body this command needs by hand."
+        ) in self._comments(endpoint)
+        assert "was not captured" not in self._comments(endpoint)
+
+    def test_a_body_partly_left_out_says_its_fields_may_be_incomplete(self) -> None:
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/upload", "POST", body={"name": "str"}, body_kind="json"),
+            count=2,
+            body_omitted=1,
+        )
+        assert (
+            "GP-FILL: the request body was left out of 1 of 2 recording(s) as larger than "
+            "--max-body-size or not text, so the body fields below come from the others and "
+            "may be incomplete; add any this command needs by hand."
+        ) in self._comments(endpoint)
+
     @pytest.mark.parametrize(
         ("query", "body", "argv", "expected_query", "expected_body"),
         [

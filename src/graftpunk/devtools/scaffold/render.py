@@ -1320,6 +1320,21 @@ def _recording_gap_notes(endpoint: Endpoint) -> list[str]:
                 "the recorder could not get), so this stub sends no body; add the body this "
                 "command needs by hand."
             )
+    if endpoint.body_omitted:
+        recorded = f"{endpoint.body_omitted} of {endpoint.count} recording(s)"
+        if endpoint.body_params:
+            notes.append(
+                f"{GP_FILL_MARKER}: the request body was left out of {recorded} as larger "
+                "than --max-body-size or not text, so the body fields below come from the "
+                "others and may be incomplete; add any this command needs by hand."
+            )
+        else:
+            notes.append(
+                f"{GP_FILL_MARKER}: the request body was left out of the recording ({recorded} "
+                "sent one larger than --max-body-size, or not text, with no bodies/ directory "
+                "to hold it), so this stub sends no body; record again with a larger "
+                "--max-body-size, or add the body this command needs by hand."
+            )
     return notes
 
 
