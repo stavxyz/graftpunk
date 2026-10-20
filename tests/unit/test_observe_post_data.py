@@ -14,6 +14,7 @@ import asyncio
 import base64
 import inspect
 import json
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -1440,9 +1441,9 @@ LIVE_BINARY_POSTDATA = "\x00\xff\xfe\x80\x81\xc3(\x10\x9f"
 LIVE_UTF8 = "h\u00e9llo \u20ac".encode()
 
 
-def _inline_binary_post(rid: str, *, entries: bool = True) -> list[Any]:
+def _inline_binary_post(rid: str) -> list[Any]:
     return [
-        _will_be_sent(rid, inline=LIVE_BINARY_POSTDATA, entries=[LIVE_BINARY] if entries else None),
+        _will_be_sent(rid, inline=LIVE_BINARY_POSTDATA, entries=[LIVE_BINARY]),
         _response_received(rid),
         _loading_finished(rid),
     ]
@@ -1499,41 +1500,43 @@ class TestInlineBodyBytes:
         assert (tmp_path / request["_postDataFile"]).read_bytes() == LIVE_BINARY
 
     @pytest.mark.asyncio
-    async def test_without_entries_mapped_bytes_are_recognised(self, tmp_path: Any) -> None:
-        """An older Chrome sends no postDataEntries: a postData of byte-range code
-        points holding control characters is taken as the mapped bytes."""
-        backend = await _record(
-            FakeTab({}, _never),
-            _inline_binary_post("10.5", entries=False),
-            bodies_dir=tmp_path / "bodies",
-        )
+    @pytest.mark.parametrize(
+        "post_data",
+        [LIVE_BINARY_POSTDATA, "caf\u00e9\x0cmenu", "caf\u00e9 \u00fc"],
+        ids=["mapped bytes", "text with a control character", "accented text"],
+    )
+    async def test_without_entries_postdata_is_kept_as_chrome_gave_it(
+        self, tmp_path: Any, post_data: str
+    ) -> None:
+        """No postDataEntries: the body is the postData text, whatever it holds.
+        Whether any Chrome sends a binary body inline without entries is unverified."""
+        events = [_will_be_sent("10.5", inline=post_data), _response_received("10.5")]
+
+        backend = await _record(FakeTab({}, _never), events, bodies_dir=tmp_path / "bodies")
 
         request = _only_entry(backend)["request"]
-        assert (tmp_path / request["_postDataFile"]).read_bytes() == LIVE_BINARY
+        assert request["postData"]["text"] == post_data
+        assert "_postDataFile" not in request
 
     @pytest.mark.asyncio
-    async def test_without_entries_accented_text_stays_text(self) -> None:
-        """Byte-range code points with no control character read as the page's text."""
-        events = [_will_be_sent("10.6", inline="caf\u00e9 \u00fc"), _response_received("10.6")]
+    async def test_an_entry_without_bytes_falls_back_to_postdata(self) -> None:
+        """CDP's PostDataEntry.bytes is optional: a list with one missing is treated
+        like no entries."""
+        event = _will_be_sent("10.6", inline=BODY)
+        event.request.post_data_entries = [
+            type("Entry", (), {"bytes_": base64.b64encode(b"{").decode()})(),
+            type("Entry", (), {"bytes_": None})(),
+        ]
 
-        backend = await _record(FakeTab({}, _never), events)
+        backend = await _record(FakeTab({}, _never), [event, _response_received("10.6")])
 
-        assert _only_entry(backend)["request"]["postData"]["text"] == "caf\u00e9 \u00fc"
-
-    @pytest.mark.asyncio
-    async def test_without_entries_mapped_utf8_bytes_are_text(self) -> None:
-        """Mapped bytes that do decode as UTF-8 are that text."""
-        mapped = "\x01".join(["ok", ""]) + "\u00c3\u00a9"
-        events = [_will_be_sent("10.7", inline=mapped), _response_received("10.7")]
-
-        backend = await _record(FakeTab({}, _never), events)
-
-        assert _only_entry(backend)["request"]["postData"]["text"] == "ok\x01\u00e9"
+        assert _only_entry(backend)["request"]["postData"]["text"] == BODY
 
     @pytest.mark.asyncio
     async def test_entries_that_are_not_base64_fall_back_to_postdata(self) -> None:
+        """Strict base64: an entry with a stray character is not read as its prefix."""
         event = _will_be_sent("10.8", inline=BODY)
-        event.request.post_data_entries = [type("Entry", (), {"bytes_": "not base64!"})()]
+        event.request.post_data_entries = [type("Entry", (), {"bytes_": "QUJD!"})()]
 
         with capture_logs() as logs:
             backend = await _record(FakeTab({}, _never), [event, _response_received("10.8")])
@@ -1566,7 +1569,7 @@ class TestInlineBodyBytes:
             "method": "POST",
             "headers": {"Content-Type": "application/octet-stream"},
             "hasPostData": True,
-            "postData": "\u00c3(\u00c3(",  # mapped bytes with no control character
+            "postData": "\u00c3(\u00c3(",  # Chrome maps these bytes to code points
             "postDataEntries": [{"bytes": base64.b64encode(b"\xc3(\xc3(").decode()}],
         }
         log = [perf("Network.requestWillBeSent", {"requestId": "10.10", "request": request})]
@@ -1614,7 +1617,9 @@ class TestRequestBodyFilesAreRedacted:
 
     SECRET = "hunter2-correct-horse"  # noqa: S105 - a test value, not a credential
 
-    async def _saved_run(self, tmp_path: Any, body: Any, **kwargs: Any) -> tuple[Any, list]:
+    async def _saved_run(
+        self, tmp_path: Any, body: Any, *, redact: Any = None, **kwargs: Any
+    ) -> tuple[Any, list]:
         from graftpunk.observe.run import save_observe_run
         from graftpunk.observe.storage import ObserveStorage
 
@@ -1627,15 +1632,19 @@ class TestRequestBodyFilesAreRedacted:
         for event in _fetch_post("11.1"):
             await tab.dispatch(event)
         with capture_logs() as logs:
-            await save_observe_run(storage, backend, "login", redact=[self.SECRET])
+            await save_observe_run(
+                storage, backend, "login", redact=[self.SECRET] if redact is None else redact
+            )
         return storage.run_dir, logs
 
     @pytest.mark.asyncio
     async def test_a_text_login_body_in_bodies_is_scrubbed(self, tmp_path: Any) -> None:
+        """Its size is recounted in bytes: the padding is not ASCII."""
         from graftpunk.observe.run import REDACTED
 
         body = json.dumps(
-            {"username": "alice@example.com", "password": self.SECRET, "pad": "x" * 40}
+            {"username": "alice@example.com", "password": self.SECRET, "pad": "\u00e9" * 40},
+            ensure_ascii=False,
         )
         run, _logs = await self._saved_run(tmp_path, body, max_body_size=10)
 
@@ -1646,13 +1655,132 @@ class TestRequestBodyFilesAreRedacted:
         assert entry["request"]["_postDataSize"] == len(stored.encode())
 
     @pytest.mark.asyncio
-    async def test_a_binary_body_in_bodies_is_left_as_recorded_and_said(
-        self, tmp_path: Any
-    ) -> None:
+    async def test_a_generator_of_secrets_reaches_the_body_files_too(self, tmp_path: Any) -> None:
+        body = json.dumps({"password": self.SECRET, "pad": "x" * 40})
+        run, _logs = await self._saved_run(
+            tmp_path, body, redact=(s for s in [self.SECRET]), max_body_size=10
+        )
+
+        (entry,) = json.loads((run / "network.har").read_text())["log"]["entries"]
+        assert self.SECRET not in (run / entry["request"]["_postDataFile"]).read_text()
+
+    @pytest.mark.asyncio
+    async def test_a_binary_body_has_the_secret_masked_byte_for_byte(self, tmp_path: Any) -> None:
+        """1.22.0 scrubbed a binary login body's ASCII password through its U+FFFD
+        text; the file keeps that, masking each form's bytes at the same length."""
+        recorded = b"\xff\x00user=a&pw=" + self.SECRET.encode() + b"&\xfe"
+        run, logs = await self._saved_run(tmp_path, _b64(recorded))
+
+        (entry,) = json.loads((run / "network.har").read_text())["log"]["entries"]
+        stored = (run / entry["request"]["_postDataFile"]).read_bytes()
+        assert self.SECRET.encode() not in stored
+        assert stored == recorded.replace(self.SECRET.encode(), b"*" * len(self.SECRET))
+        assert [e["file"] for e in logs if e["event"] == "request_body_file_scrubbed"] == [
+            entry["request"]["_postDataFile"]
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_binary_body_without_the_secret_is_left_untouched(self, tmp_path: Any) -> None:
         run, logs = await self._saved_run(tmp_path, _b64(BINARY))
 
         (entry,) = json.loads((run / "network.har").read_text())["log"]["entries"]
         assert (run / entry["request"]["_postDataFile"]).read_bytes() == BINARY
-        assert [e["reason"] for e in logs if e["event"] == "request_body_file_not_scrubbed"] == [
-            "binary"
-        ]
+        assert [e for e in logs if e["event"].startswith("request_body_file_")] == []
+
+
+class TestRequestBodyFileRedactionEdges:
+    """redact_request_body_files on its own: what it skips, and what a failure costs."""
+
+    SECRET = TestRequestBodyFilesAreRedacted.SECRET
+
+    def _entries(self, *refs: str) -> list[dict[str, Any]]:
+        return [{"request": {"_postDataFile": ref, "_postDataSize": 0}} for ref in refs]
+
+    def test_a_file_outside_the_run_is_not_touched(self, tmp_path: Any) -> None:
+        from graftpunk.observe.run import redact_request_body_files
+
+        run = tmp_path / "run"
+        (run / "bodies").mkdir(parents=True)
+        outside = tmp_path / "outside.txt"
+        outside.write_text(f"pw={self.SECRET}")
+        (run / "bodies" / "link.json").symlink_to(outside)
+
+        redact_request_body_files(
+            self._entries("../outside.txt", "bodies/link.json"), [self.SECRET], run
+        )
+
+        assert outside.read_text() == f"pw={self.SECRET}"
+
+    def test_a_missing_file_is_skipped_and_the_rest_are_scrubbed(self, tmp_path: Any) -> None:
+        from graftpunk.observe.run import redact_request_body_files
+
+        (tmp_path / "bodies").mkdir()
+        kept = tmp_path / "bodies" / "2.request.json"
+        kept.write_text(f"pw={self.SECRET}")
+
+        with capture_logs() as logs:
+            redact_request_body_files(
+                self._entries("bodies/gone.json", "bodies/2.request.json"), [self.SECRET], tmp_path
+            )
+
+        assert self.SECRET not in kept.read_text()
+        # A file that is not there has nothing in it to scrub: skipped, not an error.
+        assert [e for e in logs if e["event"] == "request_body_file_not_scrubbed"] == []
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+    def test_an_unreadable_file_is_logged_and_the_rest_are_scrubbed(self, tmp_path: Any) -> None:
+        from graftpunk.observe.run import redact_request_body_files
+
+        (tmp_path / "bodies").mkdir()
+        locked = tmp_path / "bodies" / "1.request.json"
+        locked.write_text(f"pw={self.SECRET}")
+        locked.chmod(0)
+        kept = tmp_path / "bodies" / "2.request.json"
+        kept.write_text(f"pw={self.SECRET}")
+
+        try:
+            with capture_logs() as logs:
+                redact_request_body_files(
+                    self._entries("bodies/1.request.json", "bodies/2.request.json"),
+                    [self.SECRET],
+                    tmp_path,
+                )
+        finally:
+            locked.chmod(0o600)
+
+        assert self.SECRET not in kept.read_text()
+        assert [
+            (e["file"], e["reason"]) for e in logs if e["event"] == "request_body_file_not_scrubbed"
+        ] == [("bodies/1.request.json", "error")]
+
+    def test_a_failed_rewrite_leaves_the_file_whole(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.observe import run as run_module
+
+        (tmp_path / "bodies").mkdir()
+        body = tmp_path / "bodies" / "1.request.json"
+        body.write_text(f"pw={self.SECRET}")
+
+        def no_space(src: Any, dst: Any) -> None:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(run_module.os, "replace", no_space)
+        run_module.redact_request_body_files(
+            self._entries("bodies/1.request.json"), [self.SECRET], tmp_path
+        )
+
+        assert body.read_text() == f"pw={self.SECRET}"
+        assert sorted(p.name for p in (tmp_path / "bodies").iterdir()) == ["1.request.json"]
+
+    def test_a_file_with_nothing_to_scrub_is_not_rewritten(self, tmp_path: Any) -> None:
+        from graftpunk.observe.run import redact_request_body_files
+
+        (tmp_path / "bodies").mkdir()
+        body = tmp_path / "bodies" / "1.request.json"
+        body.write_text('{"q": "nothing secret"}')
+        inode = body.stat().st_ino
+
+        redact_request_body_files(self._entries("bodies/1.request.json"), [self.SECRET], tmp_path)
+
+        assert body.stat().st_ino == inode

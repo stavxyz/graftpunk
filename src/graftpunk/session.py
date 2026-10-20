@@ -501,7 +501,16 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             # __init__ (tests) may predate the attribute.
             secrets = getattr(self, "_observe_redact", ())
             entries = redact_har_entries(self._capture.get_har_entries(), secrets)
-            redact_request_body_files(entries, secrets, self._observe_storage.run_dir)
+            # Scrub the body files first, since that can update an entry's
+            # _postDataSize; a failure there must not cost the HAR.
+            try:
+                redact_request_body_files(entries, secrets, self._observe_storage.run_dir)
+            except Exception as exc:
+                LOG.error(
+                    "observe_request_body_redaction_failed",
+                    error=str(exc),
+                    exc_type=type(exc).__name__,
+                )
             self._observe_storage.write_har(entries)
         except Exception as exc:
             LOG.error("observe_har_write_failed", error=str(exc), exc_type=type(exc).__name__)
