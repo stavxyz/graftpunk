@@ -287,7 +287,9 @@ def _keep_post_data(
 
     A UTF-8 body within ``max_body_size`` (measured on its bytes) goes into the
     HAR's ``postData``. A larger one, or one that is not UTF-8, is written to
-    ``bodies_dir`` as ``<request id>.request<ext>`` and referenced from the HAR
+    ``bodies_dir`` as ``<request id>.request<ext>`` (``-2``, ``-3`` and so on when
+    that name exists, as for the request a 307 or 308 redirects to, which keeps
+    the hop's CDP request id) and referenced from the HAR
     as ``request._postDataFile``, the way an oversized or binary response body
     is written there and referenced as ``_bodyFile``. With no ``bodies_dir`` (or
     when the write fails) it is left out: the entry is marked as not captured,
@@ -1444,8 +1446,10 @@ class NodriverCaptureBackend:
 
         Otherwise a body still arriving is retried, flagged and logged as
         ``post_data_unavailable`` at stop, and then written anyway. A fetch still
-        running after the wait is left to finish while the stop-time pass runs;
-        ``stop_capture_async``'s ``finally`` cancels it before the marks are set.
+        running after the wait is cancelled here, before the stop-time pass, so it
+        cannot answer beside that pass's own retry and store the body twice;
+        ``stop_capture_async``'s ``finally`` cancels again for a stop that ends
+        early.
         """
         # nodriver creates a fetch task for each event and does not keep it; a task
         # joins _post_data_tasks on its first step. One pass of the loop lets every
@@ -1455,8 +1459,10 @@ class NodriverCaptureBackend:
         if not pending:
             return
         _done, still_running = await asyncio.wait(pending, timeout=_POST_DATA_SETTLE_TIMEOUT_S)
+        for task in still_running:
+            task.cancel()
         if still_running:
-            LOG.warning("nodriver_request_time_post_data_fetch_timed_out", count=len(still_running))
+            LOG.warning("nodriver_request_time_post_data_fetch_cancelled", count=len(still_running))
 
     async def _fetch_bodies_at_stop(self, tab: Any) -> None:
         """Fetch what the event handlers did not: request bodies the request-time
