@@ -256,13 +256,14 @@ read. The markdown digest says which of three cases it was:
 
 - `body not captured`: the recorder could not get the body, or the file it was
   written to under `bodies/` is missing or unreadable.
-- `body not text`: the body is binary. `gp observe go` and `gp observe
-  interactive` keep it in the run's `bodies/` directory, and the line names the
-  file and its size; read it there.
+- `body not text`: the body is binary. Every gp recorder keeps it in the
+  run's `bodies/` directory, and the line names the file and its size; read it
+  there.
 - `body left out`: the body was over the capture's max body size, or not text,
-  and the capture had no `bodies/` directory to keep it in. Only a capture
-  without one does this, such as a `gp --observe=full` run of a plugin command;
-  `gp observe go` and `gp observe interactive` keep such a body in `bodies/`.
+  and the capture had no `bodies/` directory to keep it in. gp's own recorders
+  (`gp observe go`, `gp observe interactive`, an observed login, and
+  `gp --observe=full`) all have one, so this comes only from a capture backend
+  that library code built without `bodies_dir`.
 
 `gp plugin new` leaves a `GP-FILL` in the endpoint's stub for each, naming the
 stored file for a binary body.

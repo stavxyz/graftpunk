@@ -12,10 +12,9 @@ rather than proposing a command with no inputs. The markdown digest's line for
 the endpoint says why. For `body not text`, the body is binary and its file in
 the run's `bodies/` directory is named on the line; the HAR reader reports its
 size class, and the user decides what the command sends. For `body left out`,
-the capture that made the recording had nowhere on disk to put the body (plugin
-commands recorded with the global `--observe=full` option work that way); a new
-recording of that flow, made the way `references/commands.md` records one,
-keeps the body. For `body not captured`, the recording holds no copy of the
+the capture that made the recording had nowhere on disk to put the body, which
+gp's own recorders never lack; a new recording of that flow, made the way
+`references/commands.md` records one, keeps the body. For `body not captured`, the recording holds no copy of the
 body at all.
 Build the proposal from that projection, which is shaped for it;
 `references/har.md` says where to look for what it leaves out.
