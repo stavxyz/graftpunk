@@ -1095,7 +1095,7 @@ def _target_for(command: PlannedCommand, base_url: str | None) -> RequestTarget:
 
 
 def _render_command_stub(
-    command: PlannedCommand, run_label: str, target: RequestTarget
+    command: PlannedCommand, run_label: str, target: RequestTarget, bodies_where: str
 ) -> list[str]:
     endpoint = command.endpoint
     method = command.method
@@ -1179,7 +1179,7 @@ def _render_command_stub(
         lines.append("")
         lines.extend(wrapped_docstring_lines(shape_line))
     lines.append(f'{L2}"""')
-    for note in [*_recording_gap_notes(endpoint, run_label), *flag_notes]:
+    for note in [*_recording_gap_notes(endpoint, bodies_where), *flag_notes]:
         lines.extend(wrapped_comment_lines(note, indent=len(L2)))
     for field_name, reason in sorted(undeclared.items()):
         lines.extend(
@@ -1210,11 +1210,16 @@ def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
     return sorted(kept, key=lambda e: (not _is_json_endpoint(e), -e.count, e.template))
 
 
-_SUPPLIED_HAR = "the supplied HAR"
-
-
 def _run_label(d: RunDigest) -> str:
-    return f"{d.source.session}/{d.source.run_id}" if d.source.session else _SUPPLIED_HAR
+    return f"{d.source.session}/{d.source.run_id}" if d.source.session else "the supplied HAR"
+
+
+def _bodies_location(d: RunDigest) -> str:
+    """Where a stub says a body file in bodies/ is: in the named run, or beside the
+    HAR the digest was given. The stub outlives the session that read the recording."""
+    if d.source.session:
+        return f"in run {d.source.session}/{d.source.run_id}"
+    return "beside the supplied HAR"
 
 
 @dataclass(frozen=True)
@@ -1259,7 +1264,7 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
     ``None`` when it has none to read; ``_target_for`` is evaluated once, and both
     the stub's request and ``other_host`` read that one result."""
     target = _target_for(command, base_url)
-    lines = _render_command_stub(command, _run_label(d), target)
+    lines = _render_command_stub(command, _run_label(d), target, _bodies_location(d))
     imports = [(_PLUGINS_MODULE, "CommandContext"), (_PLUGINS_MODULE, "command")]
     if _needs_param_specs(command.endpoint):
         imports.append((_PLUGINS_MODULE, "PluginParamSpec"))
@@ -1283,7 +1288,7 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
     )
 
 
-def _recording_gap_notes(endpoint: Endpoint, run_label: str) -> list[str]:
+def _recording_gap_notes(endpoint: Endpoint, bodies_where: str) -> list[str]:
     """The GP-FILL notes for what the recording holds and the stub cannot use: names
     the digest dropped, one note per cause, and a request body the recorder could
     not capture. A stub never loses a recorded field without saying so and why."""
@@ -1342,11 +1347,8 @@ def _recording_gap_notes(endpoint: Endpoint, run_label: str) -> list[str]:
                 "directory, or add the body by hand."
             )
     if endpoint.body_binary:
-        # The stub outlives the session that read the recording, so it names the run
-        # whose directory holds bodies/ (or the HAR the digest was given).
-        where = "beside the supplied HAR" if run_label == _SUPPLIED_HAR else f"in run {run_label}"
         size = "" if endpoint.body_binary_size is None else f" ({endpoint.body_binary_size} bytes)"
-        stored = f"{where} as `{endpoint.body_binary_file}`{size}"
+        stored = f"{bodies_where} as `{endpoint.body_binary_file}`{size}"
         recorded = f"{endpoint.body_binary} of {endpoint.count} recording(s)"
         if endpoint.body_params:
             notes.append(
@@ -1374,7 +1376,11 @@ def _render_command_stubs(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> 
     lines: list[str] = []
     for command in planned:
         target = _target_for(command, spec.base_url)
-        lines.extend(_render_command_stub(command, _run_label(spec.digest), target))
+        lines.extend(
+            _render_command_stub(
+                command, _run_label(spec.digest), target, _bodies_location(spec.digest)
+            )
+        )
     return lines
 
 

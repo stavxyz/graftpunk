@@ -2215,6 +2215,37 @@ class TestPluginModuleCommandStubs:
             "come from the others; read that file and add what this command needs by hand."
         ) in self._comments(endpoint)
 
+    def test_a_binary_body_from_a_supplied_har_with_no_size_says_so(self) -> None:
+        """A digest of a bare HAR names no run, and a HAR from another tool may carry
+        no _postDataSize: the note says where the file is and prints no size."""
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/upload", "POST"),
+            count=1,
+            body_binary=1,
+            body_binary_file="bodies/9.1.request.bin",
+            body_binary_size=None,
+        )
+        digest_of_a_har = dataclasses.replace(
+            _digest(endpoints=(endpoint,)), source=DigestSource(har_path=Path("network.har"))
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=digest_of_a_har,
+        )
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in render(spec)["src/graftpunk_myshop/plugin.py"].splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: the request body is not text (1 of 1 recording(s) sent a binary body, "
+            "kept beside the supplied HAR as `bodies/9.1.request.bin`), so this stub sends no "
+            "body;"
+        ) in comments
+
     @pytest.mark.parametrize(
         ("query", "body", "argv", "expected_query", "expected_body"),
         [
