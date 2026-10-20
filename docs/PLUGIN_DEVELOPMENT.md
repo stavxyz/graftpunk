@@ -250,10 +250,14 @@ default), and `--output PATH` writes to a file.
 Each endpoint in `--endpoints-json` carries the `host` it was recorded on,
 beside the run's one `primary_host`, so a program can see a site whose pages
 and JSON come from different hosts. Its `body_not_captured` is true when a
-recording of the endpoint sent a request body the recorder could not get (the
-HAR entry's `request._postDataNotCaptured`); the markdown digest prints a
-`body not captured` line for it, and `gp plugin new` leaves a `GP-FILL` saying
-so in the endpoint's stub.
+recording of the endpoint sent a request body the HAR does not hold (the HAR
+entry's `request._postDataNotCaptured`). The markdown digest says which case it
+was: a `body not captured` line for a body the recorder could not get, and a
+`body left out` line for one larger than `--max-body-size`, or not text, that
+the recorder had no `bodies/` directory to write to (`gp observe` always has
+one, so there such a body goes to `bodies/` instead, referenced by
+`request._postDataFile`). `gp plugin new` leaves a `GP-FILL` in the endpoint's
+stub for either.
 
 The digest is redacted by construction. It records header names, cookie names,
 form field names, query parameter names and observed types, and response shapes.

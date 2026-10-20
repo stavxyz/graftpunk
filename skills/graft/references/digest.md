@@ -6,9 +6,12 @@ projection the `--endpoints-json` line of the Understand block of
 per endpoint with `method`, `template`, `host`, `login_flow`, `content_type`,
 `shape`, `query_params`, `body_params`, `body_not_captured`, and
 `custom_headers`, plus a `login` summary and the recording's `primary_host`.
-A row with `body_not_captured` set has a request body gp could not record, so
-its `body_params` are empty or partial: say so in the row rather than proposing
-a command with no inputs.
+A row with `body_not_captured` set has a request body that is not in the HAR,
+so its `body_params` are empty or partial: say so in the row rather than
+proposing a command with no inputs. The markdown digest tells the two causes
+apart: `body not captured` is a body gp could not record, and `body left out`
+is one over `--max-body-size`, or binary, that gp chose not to keep; for the
+second, suggest recording that flow again with a larger `--max-body-size`.
 Build the proposal from that projection, which is shaped for it;
 `references/har.md` says where to look for what it leaves out.
 
