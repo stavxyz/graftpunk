@@ -1126,9 +1126,13 @@ def _request_body_outcome(request: dict[str, Any], headers: list[Any], har_path:
     body_file = request.get("_postDataFile")
     if isinstance(body_file, str) and body_file:
         text, reason = _bodies_file_text(body_file, har_path)
-        if text is None:
+        if text is None and reason == _NOT_TEXT:
             size = _byte_class(request.get("_postDataSize"))
             return [f"  body: stored in the recording's bodies/ directory, {reason}, {size}"]
+        if text is None and reason == _OUTSIDE:
+            return ["  body: not read (its file is outside the recording)"]
+        if text is None:
+            return ["  body: not captured (its file under bodies/ is missing or cannot be read)"]
         mime = _mime(_header(headers, "content-type"))
         size = _byte_class(len(text.encode("utf-8")))
         lines = [
@@ -1168,23 +1172,27 @@ def describe_request(entry: dict[str, Any], har_path: Path) -> list[str]:
     return lines
 
 
+_NOT_TEXT = "a body that is not text"
+_OUTSIDE = "a body file outside the recording, not read"
+
+
 def _bodies_file_text(body_file: str, har_path: Path) -> tuple[str | None, str]:
     """The text of a file the HAR names under the recording's bodies/, or None with
     the reason. A file outside bodies/, or a symlinked bodies/, is not read."""
     unlinked = har_path.parent / "bodies"
     try:
         if unlinked.is_symlink():
-            return None, "a body file outside the recording, not read"
+            return None, _OUTSIDE
         bodies = unlinked.resolve()
         target = (har_path.parent / body_file).resolve()
     except (OSError, ValueError):
         return None, "a body file that cannot be read"
     if bodies not in target.parents:
-        return None, "a body file outside the recording, not read"
+        return None, _OUTSIDE
     try:
         return target.read_text(encoding="utf-8"), ""
     except UnicodeDecodeError:
-        return None, "a body that is not text"
+        return None, _NOT_TEXT
     except (OSError, ValueError):
         return None, "a body file that cannot be read"
 
