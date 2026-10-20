@@ -6798,8 +6798,8 @@ class TestNoDriverBackendAbandonedLockHolder:
         """The give-up stop_async()'s loop has shut its default executor down
         (as an ``asyncio.run()`` teardown or an interpreter at exit does), and
         possibly no new thread can start either. The end runs on a thread of
-        its own, or else on the loop itself, so Chrome is ended and the lock
-        is not left held for good."""
+        its own, off the loop, or, with no thread to be had, on the loop
+        itself, so Chrome is ended and the lock is not left held for good."""
         from graftpunk.backends import nodriver as nodriver_module
 
         if without == "any_new_thread":
@@ -6821,7 +6821,16 @@ class TestNoDriverBackendAbandonedLockHolder:
             await _until(gate)
             await real_stop()
 
+        loop_threads: list[threading.Thread] = []
+        end_threads: list[threading.Thread] = []
+        real_end = backend._end_for_given_up_hold
+
+        def recorded_end(running: Any, abandonment: Any) -> None:
+            end_threads.append(threading.current_thread())
+            real_end(running, abandonment)
+
         async def stop_without_an_executor() -> None:
+            loop_threads.append(threading.current_thread())
             await asyncio.get_running_loop().shutdown_default_executor()
             await backend.stop_async()
 
@@ -6829,6 +6838,7 @@ class TestNoDriverBackendAbandonedLockHolder:
             assert backend._browser is not None
             self._give_chrome(backend._browser, child, profile)
             monkeypatch.setattr(backend, "_stop_async", gated_stop)
+            monkeypatch.setattr(backend, "_end_for_given_up_hold", recorded_end)
             stranded = _Stranded(backend, backend.stop_async, "stop_async", entered.is_set)
             try:
                 _within(10, lambda: asyncio.run(stop_without_an_executor()))
@@ -6847,6 +6857,12 @@ class TestNoDriverBackendAbandonedLockHolder:
 
         assert exited
         assert ended is True
+        assert len(end_threads) == 1
+        if without == "the_loops_executor":
+            assert end_threads[0] is not loop_threads[0]
+            assert end_threads[0].name == "graftpunk-nodriver-end"
+        else:
+            assert end_threads == loop_threads
         assert lock_free_after_the_holder is True
         assert running is True
         _within(10, backend.stop)
@@ -7022,3 +7038,74 @@ class TestNoDriverBackendAbandonedLockHolder:
         assert backend._lock.locked() is False
         _within(10, backend.stop)
         assert backend._lock.locked() is False
+
+
+class TestNoDriverWorkOffTheLoop:
+    """The hand-off of a blocking end of Chrome from a coroutine to a thread."""
+
+    def test_the_own_thread_reports_the_works_exception(self) -> None:
+        """Without the loop's executor, an end that fails on its own thread
+        fails the coroutine awaiting it, rather than pass for done."""
+        from graftpunk.backends.nodriver import _start_on_own_thread
+
+        def fails() -> None:
+            raise ValueError("the end failed")
+
+        async def await_it() -> None:
+            await _start_on_own_thread(asyncio.get_running_loop(), fails)
+
+        with pytest.raises(ValueError, match="the end failed"):
+            _within(10, lambda: asyncio.run(await_it()))
+
+    def test_the_own_thread_finishing_after_its_loop_closed_reports_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The loop that would hear the outcome is closed by the time the work
+        finishes; the thread ends quietly rather than raise into the thread
+        exception hook."""
+        from graftpunk.backends import nodriver as nodriver_module
+
+        threads: list[threading.Thread] = []
+
+        def start_recorded(target: Callable[[], None]) -> None:
+            thread = threading.Thread(target=target, daemon=True)
+            threads.append(thread)
+            thread.start()
+
+        monkeypatch.setattr(nodriver_module, "_start_daemon_thread", start_recorded)
+        hooked: list[BaseException | None] = []
+        monkeypatch.setattr(threading, "excepthook", lambda args: hooked.append(args.exc_value))
+        may_finish = threading.Event()
+
+        def work() -> None:
+            may_finish.wait(10)
+
+        loop = asyncio.new_event_loop()
+        try:
+            nodriver_module._start_on_own_thread(loop, work)
+        finally:
+            loop.close()
+        may_finish.set()
+        [thread] = threads
+        thread.join(10)
+
+        assert not thread.is_alive()
+        assert hooked == []
+
+    def test_the_work_sees_the_callers_context(self) -> None:
+        """Context variables the caller set (structlog's bound fields, say) are
+        visible to the work, as ``asyncio.to_thread()`` made them."""
+        import contextvars
+
+        from graftpunk.backends.nodriver import _finish_on_worker_thread
+
+        var: contextvars.ContextVar[str] = contextvars.ContextVar("var", default="unset")
+        seen: list[str] = []
+
+        async def run_it() -> None:
+            var.set("the caller's")
+            await _finish_on_worker_thread(lambda: seen.append(var.get()))
+
+        _within(10, lambda: asyncio.run(run_it()))
+
+        assert seen == ["the caller's"]
