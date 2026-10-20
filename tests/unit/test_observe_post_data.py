@@ -482,7 +482,7 @@ class TestRequestTimeFetchesAtStop:
         request = _only_entry(backend)["request"]
         assert "postData" not in request
         assert request["_postDataNotCaptured"] is True
-        assert [e["count"] for e in logs if e["event"].endswith("_fetch_cancelled")] == [1]
+        assert [e["count"] for e in logs if e["event"].endswith("_fetch_timed_out")] == [1]
 
 
 BINARY = bytes(range(0x80, 0x89))  # 9 bytes, none of them valid UTF-8 alone
@@ -678,23 +678,27 @@ class TestRequestBodyFileReference:
         )
 
 
-def _selenium_backend(execute: Callable[[str, dict[str, Any]], dict[str, Any]], **kwargs: Any):
+def _selenium_backend(
+    execute: Callable[[str, dict[str, Any]], dict[str, Any]],
+    *,
+    inline: str | None = None,
+    **kwargs: Any,
+):
     def perf(method: str, params: dict[str, Any]) -> dict[str, str]:
         return {"message": json.dumps({"message": {"method": method, "params": params}})}
 
+    request: dict[str, Any] = {
+        "url": SEARCH,
+        "method": "POST",
+        "headers": {"Content-Type": "application/json"},
+        "hasPostData": True,
+    }
+    if inline is not None:
+        request["postData"] = inline
     log = [
         perf(
             "Network.requestWillBeSent",
-            {
-                "requestId": "9.1",
-                "request": {
-                    "url": SEARCH,
-                    "method": "POST",
-                    "headers": {"Content-Type": "application/json"},
-                    "hasPostData": True,
-                },
-                "wallTime": 1_700_000_000.0,
-            },
+            {"requestId": "9.1", "request": request, "wallTime": 1_700_000_000.0},
         ),
         perf(
             "Network.responseReceived",
@@ -832,3 +836,353 @@ class TestCaptureSession:
 
         assert _only_entry(backend)["request"]["_postDataNotCaptured"] is True
         assert _events(logs, "post_data_unavailable") == ["9.2"]
+
+
+def _refuse_post_data(method: str, _params: dict[str, Any]) -> dict[str, Any]:
+    if method == "Network.getRequestPostData":
+        raise RuntimeError("No resource with given id was found")
+    return {"body": "{}", "base64Encoded": False}
+
+
+def _answer_post_data(method: str, _params: dict[str, Any]) -> dict[str, Any]:
+    if method == "Network.getRequestPostData":
+        return {"postData": BODY, "base64Encoded": False}
+    return {"body": "{}", "base64Encoded": False}
+
+
+async def _over_cap_entry(path: str, bodies: Any) -> dict[str, Any]:
+    """The HAR request for one over-cap body, recorded through *path*."""
+    if path == "nodriver inline":
+        backend = await _record(
+            FakeTab({}, _never),
+            _fetch_post("9.6", inline=BODY),
+            max_body_size=10,
+            bodies_dir=bodies,
+        )
+    elif path == "nodriver stop-time fetch":
+        backend = await _record(
+            FakeTab({"9.6": BODY}, _at_stop),
+            _fetch_post("9.6"),
+            max_body_size=10,
+            bodies_dir=bodies,
+        )
+    elif path == "nodriver request-time fetch":
+        backend = await _record(
+            FakeTab({"9.6": BODY}, _in_flight),
+            _fetch_post("9.6"),
+            max_body_size=10,
+            bodies_dir=bodies,
+        )
+    elif path == "selenium inline":
+        backend = _selenium_backend(
+            _refuse_post_data, inline=BODY, max_body_size=10, bodies_dir=bodies
+        )
+        backend.stop_capture()
+    else:
+        backend = _selenium_backend(_answer_post_data, max_body_size=10, bodies_dir=bodies)
+        backend.stop_capture()
+    return _only_entry(backend)["request"]
+
+
+class TestEveryRecordingPathKeepsBodiesInTheDirectory:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "nodriver inline",
+            "nodriver stop-time fetch",
+            "nodriver request-time fetch",
+            "selenium inline",
+            "selenium fetched",
+        ],
+    )
+    async def test_an_over_cap_body_goes_to_bodies(self, tmp_path: Any, path: str) -> None:
+        request = await _over_cap_entry(path, tmp_path / "bodies")
+
+        assert "_postDataNotCaptured" not in request
+        assert (tmp_path / request["_postDataFile"]).read_text() == BODY
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_leaves_the_body_out_and_says_so(self, tmp_path: Any) -> None:
+        blocker = tmp_path / "not-a-directory"
+        blocker.write_text("")
+
+        with capture_logs() as logs:
+            request = await _over_cap_entry("nodriver inline", blocker / "bodies")
+
+        assert "_postDataFile" not in request
+        assert request["_postDataNotCaptured"] is True
+        assert request["_postDataOmitted"] == {"size": len(BODY), "reason": "over_max_body_size"}
+        assert [e["event"] for e in logs if e["event"].startswith("post_data_")] == [
+            "post_data_file_write_failed",
+            "post_data_omitted",
+        ]
+
+
+class TestRedirectHopBodies:
+    @pytest.mark.asyncio
+    async def test_a_307_hop_and_its_successor_each_keep_their_own_file(
+        self, tmp_path: Any
+    ) -> None:
+        """CDP keeps one request id across the chain; each entry's file is its own."""
+        first, second = '{"a": "' + "x" * 40 + '"}', '{"b": "' + "y" * 40 + '"}'
+        events = [
+            _will_be_sent("9.3", url=LOGIN, inline=first),
+            _will_be_sent("9.3", url=SEARCH, inline=second, redirect_from=LOGIN),
+            _response_received("9.3"),
+        ]
+
+        backend = await _record(
+            FakeTab({}, _never), events, max_body_size=10, bodies_dir=tmp_path / "bodies"
+        )
+
+        files = [e["request"]["_postDataFile"] for e in backend.get_har_entries()]
+        assert files == ["bodies/9.3.request.json", "bodies/9.3.request-2.json"]
+        assert [(tmp_path / f).read_text() for f in files] == [first, second]
+
+
+class LateRequestTab(FakeTab):
+    """A new POST with an uninlined body starts while stop fetches a response body."""
+
+    fired = False
+
+    async def send(self, cmd: Any, **kwargs: Any) -> Any:
+        if self.stopping and getattr(cmd, "__name__", "") == "get_response_body" and not self.fired:
+            self.fired = True
+            event = _will_be_sent("9.5")
+            for callback in self.handlers[type(event)]:
+                if inspect.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(event))  # noqa: RUF006 - nodriver does the same
+                else:
+                    callback(event)
+        return self._answer(cmd, kwargs.get("sessionId", self.session_id))
+
+
+class TestARequestStartingAsStopEnds:
+    @pytest.mark.asyncio
+    async def test_its_body_is_marked_and_never_written_afterwards(self) -> None:
+        tab = LateRequestTab({"9.5": BODY}, _always, response_available=_at_stop)
+        backend = await _start(tab)
+        for event in _fetch_post("9.4", inline=BODY):
+            await tab.dispatch(event)
+
+        with capture_logs() as logs:
+            await _stop(backend, tab)
+            await asyncio.sleep(0.05)
+
+        late = [e["request"] for e in backend.get_har_entries() if e["request"]["url"] == SEARCH]
+        assert [("postData" in r, r.get("_postDataNotCaptured")) for r in late] == [
+            (True, None),
+            (False, True),
+        ]
+        assert _events(logs, "post_data_unavailable") == ["9.5"]
+
+
+class TestHeaderOnlyCapture:
+    """A capture whose HAR is never written (the login engine's header capture)
+    fetches no request body and logs nothing about one."""
+
+    @pytest.mark.asyncio
+    async def test_nodriver_fetches_and_logs_nothing(self) -> None:
+        tab = FakeTab({"9.7": BODY}, _always)
+        events = [*_fetch_post("9.7"), *_fetch_post("9.8", inline=BODY), *_redirected_login("9.9")]
+
+        with capture_logs() as logs:
+            backend = await _record(tab, events, max_body_size=10, record_request_bodies=False)
+
+        assert tab.post_data_requests == []
+        assert [e["event"] for e in logs if "post_data" in e["event"]] == []
+        assert all(
+            not any(key.startswith("_postData") for key in e["request"])
+            for e in backend.get_har_entries()
+        )
+
+    def test_selenium_fetches_and_logs_nothing(self) -> None:
+        asked: list[str] = []
+
+        def execute(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            asked.append(method)
+            return _refuse_post_data(method, params)
+
+        backend = _selenium_backend(execute, record_request_bodies=False)
+        with capture_logs() as logs:
+            backend.stop_capture()
+
+        assert "Network.getRequestPostData" not in asked
+        assert [e["event"] for e in logs if "post_data" in e["event"]] == []
+        assert "_postDataNotCaptured" not in _only_entry(backend)["request"]
+
+    @pytest.mark.asyncio
+    async def test_the_login_engines_header_capture_is_one(self) -> None:
+        from graftpunk.plugins.login_engine import _start_login_capture
+        from tests.unit.test_login_headless_observe import _make_plugin
+
+        tab = FakeTab({"9.7": BODY}, _always)
+        capture_backend, storage = _start_login_capture(
+            _make_plugin("nodriver"), "nodriver", object(), "off", get_tab=lambda: tab
+        )
+        await capture_backend.start_capture_async()
+        for event in _fetch_post("9.7"):
+            await tab.dispatch(event)
+
+        assert storage is None
+        assert tab.post_data_requests == []
+
+
+def _run_dir_har(run: Any, entries: list[dict[str, Any]]) -> None:
+    (run / "network.har").write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
+
+
+class TestBodiesThroughTheDigest:
+    """A recording through the real backend, its HAR written to a run directory and
+    read back by the digest and the stub renderer, as ``gp plugin new`` does."""
+
+    async def _digest_of(self, run: Any, tab: FakeTab, events: list[Any], **kwargs: Any):
+        from graftpunk.har.digest import DigestSource, digest
+
+        backend = await _record(tab, events, bodies_dir=run / "bodies", **kwargs)
+        _run_dir_har(run, backend.get_har_entries())
+        return digest(DigestSource.from_run_dir(run, session="myshop", run_id="r1"))
+
+    @staticmethod
+    def _stub_comments(result: Any) -> str:
+        from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
+
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example",
+            digest=result,
+        )
+        return " ".join(
+            line.strip().lstrip("#").strip()
+            for line in render(spec)["src/graftpunk_myshop/plugin.py"].splitlines()
+            if line.strip().startswith("#")
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_binary_blob_body_is_named_with_its_file(self, tmp_path: Any) -> None:
+        from graftpunk.har.report import endpoints_projection, render_markdown
+
+        result = await self._digest_of(
+            tmp_path, FakeTab({"9.1": _b64(BINARY)}, _always), _fetch_post("9.1")
+        )
+
+        (endpoint,) = result.endpoints
+        assert (endpoint.body_binary, endpoint.body_binary_file, endpoint.body_binary_size) == (
+            1,
+            "bodies/9.1.request.json",
+            len(BINARY),
+        )
+        assert (endpoint.body_not_captured, endpoint.body_omitted) == (0, 0)
+        assert (
+            "- body not text: 1 of 1 recording(s) sent a binary body, kept as "
+            f"`bodies/9.1.request.json` ({len(BINARY)} bytes)"
+        ) in render_markdown(result)
+        assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
+        assert (
+            "GP-FILL: the request body is not text (1 of 1 recording(s) sent a binary body, "
+            f"kept in the run directory as `bodies/9.1.request.json` ({len(BINARY)} bytes))"
+        ) in self._stub_comments(result)
+
+    @pytest.mark.asyncio
+    async def test_a_body_whose_file_is_gone_counts_as_not_captured(self, tmp_path: Any) -> None:
+        from graftpunk.har.report import endpoints_projection, render_markdown
+
+        tab = FakeTab({"9.2": BODY}, _always)
+        backend = await _record(
+            tab, _fetch_post("9.2"), max_body_size=10, bodies_dir=tmp_path / "bodies"
+        )
+        _run_dir_har(tmp_path, backend.get_har_entries())
+        (tmp_path / "bodies" / "9.2.request.json").unlink()
+
+        from graftpunk.har.digest import DigestSource, digest
+
+        result = digest(DigestSource.from_run_dir(tmp_path, session="myshop", run_id="r1"))
+
+        (endpoint,) = result.endpoints
+        assert (endpoint.body_not_captured, endpoint.body_binary) == (1, 0)
+        assert "- body not captured: 1 of 1 recording(s)" in render_markdown(result)
+        assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
+        assert "GP-FILL: the request body was not captured" in self._stub_comments(result)
+
+    @pytest.mark.asyncio
+    async def test_a_text_body_in_bodies_gives_its_fields(self, tmp_path: Any) -> None:
+        result = await self._digest_of(
+            tmp_path, FakeTab({"9.3": BODY}, _always), _fetch_post("9.3"), max_body_size=10
+        )
+
+        (endpoint,) = result.endpoints
+        assert endpoint.body_params == {"page": "int", "query": "str"}
+        assert (endpoint.body_not_captured, endpoint.body_omitted, endpoint.body_binary) == (
+            0,
+            0,
+            0,
+        )
+
+
+class TestInlineBodyEdgeCases:
+    @pytest.mark.asyncio
+    async def test_a_lone_surrogate_in_an_inline_body_is_kept(self) -> None:
+        """CDP's JSON can carry an unpaired \\ud800 escape; measuring the body must not
+        raise and lose it."""
+        body = '{"q": "a\ud800b"}'
+
+        backend = await _record(FakeTab({}, _never), _fetch_post("9.11", inline=body))
+
+        assert _only_entry(backend)["request"]["postData"]["text"] == body
+
+    def test_an_inline_body_wins_over_a_file_reference(self, tmp_path: Any) -> None:
+        from graftpunk.har.parser import parse_har_file
+
+        (tmp_path / "bodies").mkdir()
+        (tmp_path / "bodies" / "x.json").write_text('{"from": "file"}')
+        entry = {
+            "startedDateTime": "2026-10-19T10:00:00.000Z",
+            "time": 0,
+            "request": {
+                "method": "POST",
+                "url": SEARCH,
+                "headers": [],
+                "cookies": [],
+                "queryString": [],
+                "postData": {"mimeType": "application/json", "text": BODY},
+                "_postDataFile": "bodies/x.json",
+            },
+            "response": {"status": 200, "statusText": "OK", "headers": [], "cookies": []},
+        }
+        _run_dir_har(tmp_path, [entry])
+
+        (parsed,) = parse_har_file(tmp_path / "network.har").entries
+
+        assert parsed.request.post_data == BODY
+
+
+class TestRequestBodyFileSymlink:
+    def test_a_symlink_inside_bodies_that_leaves_the_run_is_not_read(self, tmp_path: Any) -> None:
+        from graftpunk.har.parser import parse_har_file
+
+        run = tmp_path / "run"
+        (run / "bodies").mkdir(parents=True)
+        (tmp_path / "secret.json").write_text(BODY)
+        (run / "bodies" / "link.json").symlink_to(tmp_path / "secret.json")
+        entry = {
+            "startedDateTime": "2026-10-19T10:00:00.000Z",
+            "time": 0,
+            "request": {
+                "method": "POST",
+                "url": SEARCH,
+                "headers": [],
+                "cookies": [],
+                "queryString": [],
+                "_postDataFile": "bodies/link.json",
+            },
+            "response": {"status": 200, "statusText": "OK", "headers": [], "cookies": []},
+        }
+        _run_dir_har(run, [entry])
+
+        (parsed,) = parse_har_file(run / "network.har").entries
+
+        assert parsed.request.post_data is None
+        assert parsed.request.post_data_not_captured is True

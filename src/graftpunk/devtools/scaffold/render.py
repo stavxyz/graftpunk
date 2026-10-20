@@ -1324,16 +1324,35 @@ def _recording_gap_notes(endpoint: Endpoint) -> list[str]:
         recorded = f"{endpoint.body_omitted} of {endpoint.count} recording(s)"
         if endpoint.body_params:
             notes.append(
-                f"{GP_FILL_MARKER}: the request body was left out of {recorded} as larger "
-                "than --max-body-size or not text, so the body fields below come from the "
-                "others and may be incomplete; add any this command needs by hand."
+                f"{GP_FILL_MARKER}: the request body was left out of {recorded} (over the "
+                "capture's max body size, or not text, with no bodies/ directory to keep "
+                "it), so the body fields below come from the others and may be incomplete; "
+                "add any this command needs by hand."
             )
         else:
             notes.append(
-                f"{GP_FILL_MARKER}: the request body was left out of the recording ({recorded} "
-                "sent one larger than --max-body-size, or not text, with no bodies/ directory "
-                "to hold it), so this stub sends no body; record again with a larger "
-                "--max-body-size, or add the body this command needs by hand."
+                f"{GP_FILL_MARKER}: the request body was left out of the recording "
+                f"({recorded} sent one over the capture's max body size, or not text, and "
+                "the capture had no bodies/ directory to keep it in, as on `gp --observe=full` "
+                "runs of plugin commands), so this stub sends no body; record the "
+                "flow with `gp observe go` or `gp observe interactive`, which keep such a "
+                "body in the run's bodies/ directory, or add the body by hand."
+            )
+    if endpoint.body_binary:
+        stored = f"`{endpoint.body_binary_file}` ({endpoint.body_binary_size} bytes)"
+        recorded = f"{endpoint.body_binary} of {endpoint.count} recording(s)"
+        if endpoint.body_params:
+            notes.append(
+                f"{GP_FILL_MARKER}: {recorded} sent a request body that is not text, kept "
+                f"in the run directory as {stored}, so the body fields below come from the "
+                "others; read that file and add what this command needs by hand."
+            )
+        else:
+            notes.append(
+                f"{GP_FILL_MARKER}: the request body is not text ({recorded} sent a binary "
+                f"body, kept in the run directory as {stored}), so this stub sends no "
+                "body; read that file to see what the site sends, and build the body "
+                "this command needs by hand."
             )
     return notes
 

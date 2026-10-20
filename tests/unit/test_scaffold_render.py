@@ -2154,17 +2154,23 @@ class TestPluginModuleCommandStubs:
         endpoint = self._endpoint("/api/search", "POST", body={"query": "str"}, body_kind="json")
         assert "was not captured" not in self._comments(endpoint)
 
-    def test_a_body_left_out_for_size_names_max_body_size(self) -> None:
+    def test_a_body_left_out_points_at_a_recorder_that_keeps_it(self) -> None:
+        """A larger --max-body-size cannot help here: the commands that take it always
+        keep such a body in bodies/. The note says where it is left out instead."""
         endpoint = dataclasses.replace(
             self._endpoint("/api/upload", "POST"), count=1, body_omitted=1
         )
+        comments = self._comments(endpoint)
         assert (
             "GP-FILL: the request body was left out of the recording (1 of 1 recording(s) "
-            "sent one larger than --max-body-size, or not text, with no bodies/ directory to "
-            "hold it), so this stub sends no body; record again with a larger "
-            "--max-body-size, or add the body this command needs by hand."
-        ) in self._comments(endpoint)
-        assert "was not captured" not in self._comments(endpoint)
+            "sent one over the capture's max body size, or not text, and the capture had no "
+            "bodies/ directory to keep it in, as on `gp --observe=full` runs of plugin "
+            "commands), so this stub sends no body; record the flow with `gp observe go` or "
+            "`gp observe interactive`, which keep such a body in the run's bodies/ "
+            "directory, or add the body by hand."
+        ) in comments
+        assert "larger --max-body-size" not in comments
+        assert "was not captured" not in comments
 
     def test_a_body_partly_left_out_says_its_fields_may_be_incomplete(self) -> None:
         endpoint = dataclasses.replace(
@@ -2173,9 +2179,41 @@ class TestPluginModuleCommandStubs:
             body_omitted=1,
         )
         assert (
-            "GP-FILL: the request body was left out of 1 of 2 recording(s) as larger than "
-            "--max-body-size or not text, so the body fields below come from the others and "
-            "may be incomplete; add any this command needs by hand."
+            "GP-FILL: the request body was left out of 1 of 2 recording(s) (over the "
+            "capture's max body size, or not text, with no bodies/ directory to keep it), so "
+            "the body fields below come from the others and may be incomplete; add any this "
+            "command needs by hand."
+        ) in self._comments(endpoint)
+
+    def test_a_binary_body_points_at_its_stored_file(self) -> None:
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/upload", "POST"),
+            count=1,
+            body_binary=1,
+            body_binary_file="bodies/9.1.request.bin",
+            body_binary_size=9,
+        )
+        comments = self._comments(endpoint)
+        assert (
+            "GP-FILL: the request body is not text (1 of 1 recording(s) sent a binary body, "
+            "kept in the run directory as `bodies/9.1.request.bin` (9 bytes)), so this stub "
+            "sends no body; read that file to see what the site sends, and build the body "
+            "this command needs by hand."
+        ) in comments
+        assert "max-body-size" not in comments
+
+    def test_a_binary_body_beside_captured_ones_says_where_it_is(self) -> None:
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/upload", "POST", body={"name": "str"}, body_kind="json"),
+            count=2,
+            body_binary=1,
+            body_binary_file="bodies/9.1.request.bin",
+            body_binary_size=9,
+        )
+        assert (
+            "GP-FILL: 1 of 2 recording(s) sent a request body that is not text, kept in the "
+            "run directory as `bodies/9.1.request.bin` (9 bytes), so the body fields below "
+            "come from the others; read that file and add what this command needs by hand."
         ) in self._comments(endpoint)
 
     @pytest.mark.parametrize(

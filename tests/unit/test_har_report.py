@@ -808,8 +808,8 @@ class TestBodyNotCaptured:
     def test_a_body_left_out_on_purpose_is_named_apart_from_a_lost_one(
         self, tmp_path: Path, reason: str
     ) -> None:
-        """A body over --max-body-size is not one the recorder could not get: the
-        digest says which, and names the option."""
+        """A body the recorder chose not to keep is not one it could not get: the
+        digest says which, and where a body is left out."""
         entries = [
             _search_post(body=None, omitted=reason),
             _search_post(body=None, not_captured=True),
@@ -820,8 +820,9 @@ class TestBodyNotCaptured:
         assert (endpoint.body_omitted, endpoint.body_not_captured) == (1, 1)
         text = render_markdown(result)
         assert (
-            "- body left out: 1 of 2 recording(s) sent a body over the capture's "
-            "--max-body-size, or not text, with no bodies/ directory to write it to"
+            "- body left out: 1 of 2 recording(s) sent a body over the capture's max body "
+            "size, or not text, and the capture had no bodies/ directory to keep it in (as "
+            "on `gp --observe=full` runs of plugin commands)"
         ) in text
         assert "- body not captured: 1 of 2 recording(s)" in text
         assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
@@ -868,6 +869,32 @@ class TestBodyNotCaptured:
         if omitted:
             entry["request"]["_postDataOmitted"] = {"size": 6_000_000, "reason": "binary"}
         return entry
+
+    def test_a_collapsed_family_counts_every_member_with_a_binary_body(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "bodies").mkdir()
+        entries = []
+        for index, word in enumerate(self._FAMILY):
+            entry = self._family_post(word, captured=index == 0)
+            if index:
+                del entry["request"]["_postDataNotCaptured"]
+                name = f"bodies/{index}.request.bin"
+                (tmp_path / name).write_bytes(b"\xff\xfe" * 4)
+                entry["request"].update({"_postDataFile": name, "_postDataSize": 8})
+            entries.append(entry)
+        result = self._digest(tmp_path, entries)
+
+        (endpoint,) = result.endpoints
+        assert (endpoint.count, endpoint.body_binary, endpoint.body_binary_file) == (
+            12,
+            11,
+            "bodies/1.request.bin",
+        )
+        assert (
+            "- body not text: 11 of 12 recording(s) sent a binary body, kept as "
+            "`bodies/1.request.bin` (8 bytes)"
+        ) in render_markdown(result)
 
     def test_a_collapsed_family_counts_every_member_whose_body_was_left_out(
         self, tmp_path: Path

@@ -85,8 +85,15 @@ def _endpoint_block(endpoint: Endpoint) -> list[str]:
     if endpoint.body_omitted:
         lines.append(
             f"- body left out: {endpoint.body_omitted} of {endpoint.count} recording(s) sent "
-            "a body over the capture's --max-body-size, or not text, with no bodies/ "
-            "directory to write it to"
+            "a body over the capture's max body size, or not text, and the capture had no "
+            "bodies/ directory to keep it in (as on `gp --observe=full` runs of plugin "
+            "commands)"
+        )
+    if endpoint.body_binary:
+        lines.append(
+            f"- body not text: {endpoint.body_binary} of {endpoint.count} recording(s) sent "
+            f"a binary body, kept as `{endpoint.body_binary_file}` "
+            f"({endpoint.body_binary_size} bytes)"
         )
     if endpoint.custom_headers:
         lines.append(f"- custom headers: {', '.join(endpoint.custom_headers)}")
@@ -265,8 +272,12 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
                 "shape": summarize_shape(endpoint.shape),
                 "query_params": dict(sorted(endpoint.query_params.items())),
                 "body_params": dict(sorted(endpoint.body_params.items())),
-                # Lost or left out: either way the HAR does not hold the body.
-                "body_not_captured": endpoint.body_not_captured + endpoint.body_omitted > 0,
+                # Lost, left out, or kept only as a binary file: the HAR holds no
+                # body text the projection could read fields from.
+                "body_not_captured": endpoint.body_not_captured
+                + endpoint.body_omitted
+                + endpoint.body_binary
+                > 0,
                 "custom_headers": list(endpoint.custom_headers),
             }
             for endpoint in sorted(d.endpoints, key=_endpoint_sort_key)

@@ -47,8 +47,13 @@ class HARRequest:
     post_data_omitted: str | None = None
     # A body the recorder wrote to bodies/ instead of the HAR
     # (request._postDataFile), relative to the HAR's directory. post_data holds
-    # its text when the file is UTF-8 and was found under that directory.
+    # its text when the file is UTF-8 and was found under that directory; a file
+    # that is not UTF-8 sets post_data_binary; a file that is missing, unreadable
+    # or outside that directory sets post_data_not_captured.
     post_data_file: str | None = None
+    post_data_binary: bool = False
+    # The body's size in bytes as the recorder wrote it (request._postDataSize).
+    post_data_size: int | None = None
 
 
 @dataclass
@@ -220,19 +225,28 @@ def _is_text_content(mime: str) -> bool:
     return any(kw in mime_lower for kw in _TEXT_CONTENT_KEYWORDS)
 
 
-def _request_body_file(ref: Any, base_dir: Path | None) -> str | None:
-    """The text of the request body file *ref* names, when it is UTF-8 and inside
-    *base_dir*. A reference that leaves the HAR's directory is not followed."""
-    if not isinstance(ref, str) or base_dir is None:
-        return None
+def _request_body_file(ref: str, base_dir: Path | None) -> tuple[str | None, bool]:
+    """``(text, readable)`` for the request body file *ref* names.
+
+    *text* is the file's text when it is UTF-8. *readable* is False when the
+    file is missing, cannot be read, or resolves outside *base_dir* (a
+    reference or a symlink that leaves the HAR's directory is not followed), so
+    the body counts as not captured; ``(None, True)`` is a body that is not text.
+    """
+    if base_dir is None:
+        return None, False
     root = base_dir.resolve()
     path = (root / ref).resolve()
     if not path.is_relative_to(root) or not path.is_file():
-        return None
+        return None, False
     try:
-        return path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
+        raw = path.read_bytes()
+    except OSError:
+        return None, False
+    try:
+        return raw.decode("utf-8"), True
+    except UnicodeDecodeError:
+        return None, True
 
 
 def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -> HARRequest:
@@ -256,10 +270,15 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         elif isinstance(post_data_obj, str):
             post_data = post_data_obj
     post_data_file = request_data.get("_postDataFile")
+    post_data_binary = False
+    file_unreadable = False
     if not isinstance(post_data_file, str):
         post_data_file = None
     elif post_data is None:
-        post_data = _request_body_file(post_data_file, base_dir)
+        post_data, readable = _request_body_file(post_data_file, base_dir)
+        post_data_binary = readable and post_data is None
+        file_unreadable = not readable
+    size = request_data.get("_postDataSize")
     omitted = request_data.get("_postDataOmitted")
     omitted_reason = omitted.get("reason") if isinstance(omitted, dict) else None
 
@@ -271,9 +290,11 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         post_data=post_data,
         query_string=request_data.get("queryString", []),
         post_data_mime_type=post_data_mime_type,
-        post_data_not_captured=request_data.get("_postDataNotCaptured") is True,
+        post_data_not_captured=request_data.get("_postDataNotCaptured") is True or file_unreadable,
         post_data_omitted=omitted_reason if isinstance(omitted_reason, str) else None,
         post_data_file=post_data_file,
+        post_data_binary=post_data_binary,
+        post_data_size=size if isinstance(size, int) and not isinstance(size, bool) else None,
     )
 
 
