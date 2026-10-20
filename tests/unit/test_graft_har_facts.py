@@ -941,3 +941,58 @@ def test_a_formset_prefix_that_reads_as_a_value_is_withheld(tmp_path: Path) -> N
     assert "      (name not shown) text, control 5 of the form" in page
     orders = _lines("response", har, "/api/orders")
     assert "      (5 keys that read as values, not shown)" in orders
+
+
+def _request_outcomes_har(tmp_path: Path) -> Path:
+    """One POST per body outcome gp's recorder writes when postData is absent."""
+    run = tmp_path / "run"
+    (run / "bodies").mkdir(parents=True)
+    (run / "bodies" / "1.1.request.json").write_text(json.dumps({"query": "BODY_SECRET"}))
+    (run / "bodies" / "1.2.request.json").write_bytes(b"\xff\xfeBODY_SECRET")
+    content_type = [_h("Content-Type", "application/json")]
+    entries = [
+        _entry("POST", "https://myshop.example/api/text", request_headers=content_type),
+        _entry("POST", "https://myshop.example/api/binary", request_headers=content_type),
+        _entry("POST", "https://myshop.example/api/lost"),
+        _entry("POST", "https://myshop.example/api/omitted"),
+        _entry("POST", "https://myshop.example/api/plain"),
+    ]
+    entries[0]["request"].update({"_postDataFile": "bodies/1.1.request.json", "_postDataSize": 26})
+    entries[1]["request"].update({"_postDataFile": "bodies/1.2.request.json", "_postDataSize": 13})
+    entries[2]["request"]["_postDataNotCaptured"] = True
+    entries[3]["request"].update(
+        {"_postDataNotCaptured": True, "_postDataOmitted": {"size": 6_000_000, "reason": "binary"}}
+    )
+    har = run / "network.har"
+    har.write_text(json.dumps({"log": {"entries": entries}}))
+    return har
+
+
+@pytest.mark.parametrize(
+    ("part", "says"),
+    [
+        (
+            "/api/text",
+            "  body: stored in the recording's bodies/ directory, text, under 1 KB, "
+            "application/json",
+        ),
+        ("/api/text", "      query: string (short)"),
+        (
+            "/api/binary",
+            "  body: stored in the recording's bodies/ directory, a body that is not text, "
+            "under 1 KB",
+        ),
+        ("/api/lost", "  body: not captured (the request sent one the recorder could not get)"),
+        ("/api/omitted", "  body: left out by the recorder, not text, 1 MB or more"),
+        ("/api/plain", "  body: none recorded"),
+    ],
+)
+def test_a_request_body_outcome_is_named(tmp_path: Path, part: str, says: str) -> None:
+    """A body gp kept in bodies/, could not get, or left out is not 'none recorded'."""
+    assert says in _lines("request", str(_request_outcomes_har(tmp_path)), part)
+
+
+def test_a_request_body_in_bodies_prints_no_value(tmp_path: Path) -> None:
+    out = _run("request", str(_request_outcomes_har(tmp_path)), "/api/")
+    assert out.returncode == 0, out.stderr
+    assert "BODY_SECRET" not in out.stdout

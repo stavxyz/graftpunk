@@ -1100,7 +1100,55 @@ def _matches(
     return found
 
 
-def describe_request(entry: dict[str, Any]) -> list[str]:
+def _byte_class(size: Any) -> str:
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        return "of unrecorded size"
+    if size == 0:
+        return "empty"
+    if size < 1024:
+        return "under 1 KB"
+    return "under 1 MB" if size < 1024 * 1024 else "1 MB or more"
+
+
+_LEFT_OUT_REASONS = {
+    "over_max_body_size": "over the capture's max body size",
+    "binary": "not text",
+}
+
+
+def _request_body_outcome(
+    request: dict[str, Any], headers: list[Any], har_path: Path
+) -> list[str]:
+    """What happened to a request body the HAR's postData does not hold.
+
+    gp's recorder writes a body over its max body size, or one that is not
+    text, to bodies/ (request._postDataFile), and marks one it could not get
+    (request._postDataNotCaptured) or chose not to keep (request._postDataOmitted).
+    """
+    body_file = request.get("_postDataFile")
+    if isinstance(body_file, str) and body_file:
+        text, reason = _bodies_file_text(body_file, har_path)
+        if text is None:
+            size = _byte_class(request.get("_postDataSize"))
+            return [f"  body: stored in the recording's bodies/ directory, {reason}, {size}"]
+        mime = _mime(_header(headers, "content-type"))
+        size = _byte_class(len(text.encode("utf-8")))
+        lines = [
+            f"  body: stored in the recording's bodies/ directory, text, {size}, "
+            f"{mime or 'no content type'}"
+        ]
+        lines.extend(_body_lines(mime, text, "    "))
+        return lines
+    omitted = request.get("_postDataOmitted")
+    if isinstance(omitted, dict):
+        why = _LEFT_OUT_REASONS.get(str(omitted.get("reason")), "for a reason not recorded")
+        return [f"  body: left out by the recorder, {why}, {_byte_class(omitted.get('size'))}"]
+    if request.get("_postDataNotCaptured") is True:
+        return ["  body: not captured (the request sent one the recorder could not get)"]
+    return ["  body: none recorded"]
+
+
+def describe_request(entry: dict[str, Any], har_path: Path) -> list[str]:
     request = _part(entry, "request")
     url = str(request.get("url", ""))
     lines = [f"{_method(request)} {templated_url(url)}{query_keys(url)}"]
@@ -1109,7 +1157,7 @@ def describe_request(entry: dict[str, Any]) -> list[str]:
     lines.append(f"  request cookies: {_names(_request_cookie_names(request))}")
     post = request.get("postData")
     if not isinstance(post, dict):
-        lines.append("  body: none recorded")
+        lines.extend(_request_body_outcome(request, headers, har_path))
         return lines
     mime = _mime(str(post.get("mimeType") or _header(headers, "content-type")))
     lines.append(f"  body: {mime or 'no content type'}")
@@ -1122,27 +1170,33 @@ def describe_request(entry: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _bodies_file_text(body_file: str, har_path: Path) -> tuple[str | None, str]:
+    """The text of a file the HAR names under the recording's bodies/, or None with
+    the reason. A file outside bodies/, or a symlinked bodies/, is not read."""
+    unlinked = har_path.parent / "bodies"
+    try:
+        if unlinked.is_symlink():
+            return None, "a body file outside the recording, not read"
+        bodies = unlinked.resolve()
+        target = (har_path.parent / body_file).resolve()
+    except (OSError, ValueError):
+        return None, "a body file that cannot be read"
+    if bodies not in target.parents:
+        return None, "a body file outside the recording, not read"
+    try:
+        return target.read_text(encoding="utf-8"), ""
+    except UnicodeDecodeError:
+        return None, "a body that is not text"
+    except (OSError, ValueError):
+        return None, "a body file that cannot be read"
+
+
 def _response_text(entry: dict[str, Any], har_path: Path) -> tuple[str | None, str]:
     """The response body's text, or None with the reason."""
     content = _part(_part(entry, "response"), "content")
     body_file = content.get("_bodyFile")
     if isinstance(body_file, str) and body_file:
-        unlinked = har_path.parent / "bodies"
-        try:
-            if unlinked.is_symlink():
-                return None, "a body file outside the recording, not read"
-            bodies = unlinked.resolve()
-            target = (har_path.parent / body_file).resolve()
-        except (OSError, ValueError):
-            return None, "a body file that cannot be read"
-        if bodies not in target.parents:
-            return None, "a body file outside the recording, not read"
-        try:
-            return target.read_text(encoding="utf-8"), ""
-        except UnicodeDecodeError:
-            return None, "a body that is not text"
-        except (OSError, ValueError):
-            return None, "a body file that cannot be read"
+        return _bodies_file_text(body_file, har_path)
     text = content.get("text")
     if not isinstance(text, str):
         return None, "no body text recorded"
@@ -1232,7 +1286,7 @@ def _run(args: argparse.Namespace, entries: list[dict[str, Any]]) -> int:
     blocks = []
     for entry in found[:_MAX_ENTRIES]:
         if args.command == "request":
-            blocks.append("\n".join(describe_request(entry)))
+            blocks.append("\n".join(describe_request(entry, Path(args.har))))
         else:
             blocks.append("\n".join(describe_response(entry, Path(args.har))))
     print("\n\n".join(blocks))
