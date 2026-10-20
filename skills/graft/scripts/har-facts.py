@@ -1116,9 +1116,7 @@ _LEFT_OUT_REASONS = {
 }
 
 
-def _request_body_outcome(
-    request: dict[str, Any], headers: list[Any], har_path: Path
-) -> list[str]:
+def _request_body_outcome(request: dict[str, Any], headers: list[Any], har_path: Path) -> list[str]:
     """What happened to a request body the HAR's postData does not hold.
 
     gp's recorder writes a body over its max body size, or one that is not
