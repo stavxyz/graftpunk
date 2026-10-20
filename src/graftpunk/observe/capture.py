@@ -1077,6 +1077,32 @@ def _eager_send_kwargs(tab: Any) -> dict[str, Any]:
     return {}
 
 
+def _capture_session_kwargs(tab: Any, session_id: Any) -> dict[str, Any]:
+    """Send kwargs that address a body fetch to the CDP session capture enabled.
+
+    nodriver's ``Browser.get(url)``, which ``tab.get(url)`` calls and ``gp
+    observe`` uses for its first navigation, navigates and then calls
+    ``attach()`` again, which opens a second CDP session on the same target
+    without detaching the first. Network events keep arriving from the first
+    session (``Connection.process_event`` does not filter by session), but
+    ``tab.send`` now addresses the second, whose Network agent was never
+    enabled, and Chrome answers ``Network.getRequestPostData`` there with
+    ``-32000 No resource with given id was found`` for every request (#269,
+    measured on nodriver 0.50.6). nodriver 0.50 merges send kwargs into the
+    CDP message, so ``sessionId`` sends the command to the session that saw the
+    request. nodriver 0.48's ``send`` takes no kwargs, so nothing is passed there.
+    """
+    if not isinstance(session_id, str) or getattr(tab, "session_id", None) == session_id:
+        return {}
+    try:
+        params = inspect.signature(tab.send).parameters.values()
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return {"sessionId": session_id}
+    return {}
+
+
 class NodriverCaptureBackend:
     """Capture backend for nodriver (async Chrome DevTools Protocol).
 
@@ -1102,6 +1128,8 @@ class NodriverCaptureBackend:
         self._bodies_fetched: set[str] = set()  # request IDs with eagerly-fetched bodies
         self._eager_fetch_attempts: int = 0
         self._eager_fetch_failures: int = 0
+        # The CDP session Network.enable went to; see _capture_session_kwargs.
+        self._capture_session_id: str | None = None
 
     @property
     def _tab(self) -> Any | None:
@@ -1215,6 +1243,7 @@ class NodriverCaptureBackend:
                 enable_durable_messages=True,
             )
         )
+        self._capture_session_id = getattr(tab, "session_id", None)
         tab.add_handler(network.RequestWillBeSent, self._on_request)
         # After _on_request: nodriver calls sync handlers inline and runs async
         # ones as tasks, so the entry this fills in already exists.
@@ -1286,7 +1315,8 @@ class NodriverCaptureBackend:
             if _post_data_missing(data):
                 try:
                     result = await tab.send(
-                        cdp_net.get_request_post_data(cdp_net.RequestId(request_id))
+                        cdp_net.get_request_post_data(cdp_net.RequestId(request_id)),
+                        **_capture_session_kwargs(tab, self._capture_session_id),
                     )
                     data["post_data"] = _post_data_text(result)
                     data.pop("_post_data_error", None)
@@ -1312,7 +1342,8 @@ class NodriverCaptureBackend:
             if _is_text_mime(mime) or _is_binary_mime(mime):
                 try:
                     body, base64_encoded = await tab.send(
-                        cdp_net.get_response_body(cdp_net.RequestId(request_id))
+                        cdp_net.get_response_body(cdp_net.RequestId(request_id)),
+                        **_capture_session_kwargs(tab, self._capture_session_id),
                     )
                     _process_response_body(
                         response=response,
@@ -1403,6 +1434,7 @@ class NodriverCaptureBackend:
             result = await tab.send(
                 cdp_net.get_request_post_data(cdp_net.RequestId(rid)),
                 **_eager_send_kwargs(tab),
+                **_capture_session_kwargs(tab, self._capture_session_id),
             )
             data["post_data"] = _post_data_text(result)
         except Exception as exc:  # noqa: BLE001 - best-effort; stop_capture_async retries
@@ -1493,6 +1525,7 @@ class NodriverCaptureBackend:
             body, base64_encoded = await tab.send(
                 cdp_net.get_response_body(cdp_net.RequestId(rid)),
                 **_eager_send_kwargs(tab),
+                **_capture_session_kwargs(tab, self._capture_session_id),
             )
             _process_response_body(
                 response=response,

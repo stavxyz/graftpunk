@@ -98,7 +98,11 @@ class FakeTab:
 
     ``post_data_available(request_id, tab)`` says whether Chrome still answers
     ``getRequestPostData`` for that request; when it does not, the command fails
-    with the ``-32000`` error Chrome sends.
+    with the ``-32000`` error Chrome sends. As in Chrome, it also fails when the
+    command goes to a CDP session other than the one ``Network.enable`` went to:
+    ``reattach()`` does what nodriver's ``Browser.get(url)`` does, a new session
+    on the same target, after which ``send`` addresses the new one unless the
+    caller passes ``sessionId``.
     """
 
     def __init__(
@@ -110,16 +114,30 @@ class FakeTab:
         self.post_data_available = post_data_available
         self.handlers: dict[type, list[Callable[..., Any]]] = {}
         self.finished: set[str] = set()
+        self.session_id = "session-1"
+        self.network_sessions: set[str] = set()
+
+    def reattach(self) -> None:
+        self.session_id = f"session-{int(self.session_id.rsplit('-', 1)[1]) + 1}"
 
     def add_handler(self, event_type: type, callback: Callable[..., Any]) -> None:
         self.handlers.setdefault(event_type, []).append(callback)
 
-    async def send(self, cmd: Any, **_kwargs: Any) -> Any:
+    async def send(self, cmd: Any, **kwargs: Any) -> Any:
+        return self._answer(cmd, kwargs.get("sessionId", self.session_id))
+
+    def _answer(self, cmd: Any, session: str) -> Any:
         message = next(cmd)
         method = message["method"]
         rid = message.get("params", {}).get("requestId")
+        if method == "Network.enable":
+            self.network_sessions.add(session)
         if method == "Network.getRequestPostData":
-            if rid not in self.bodies or not self.post_data_available(rid, self):
+            if (
+                session not in self.network_sessions
+                or rid not in self.bodies
+                or not self.post_data_available(rid, self)
+            ):
                 raise ProtocolException(
                     {"code": -32000, "message": "No resource with given id was found"}
                 )
@@ -204,8 +222,7 @@ class TestNodriverPostDataFetch:
 
     @pytest.mark.asyncio
     async def test_a_body_chrome_never_answers_for_is_marked_and_logged(self) -> None:
-        """Measured live: after the first navigation away from about:blank,
-        Chrome answers -32000 for every request. The loss is said, not silent."""
+        """A body Chrome will not return is said to be lost, not dropped silently."""
         tab = FakeTab({"7.5": BODY}, lambda _rid, _t: False)
 
         with capture_logs() as logs:
@@ -298,3 +315,46 @@ class TestSeleniumPostDataFailure:
         request = _only_entry(backend)["request"]
         assert request["_postDataNotCaptured"] is True
         assert [e["request_id"] for e in logs if e["event"] == "post_data_unavailable"] == ["9.1"]
+
+
+class FakeTab048(FakeTab):
+    """nodriver 0.48's ``send(cdp_obj, _is_update=False)``: no session can be named."""
+
+    async def send(self, cmd: Any, _is_update: bool = False) -> Any:  # type: ignore[override]
+        return self._answer(cmd, self.session_id)
+
+
+class TestCaptureSession:
+    """#269's cause, measured live on nodriver 0.50.6: ``gp observe`` navigates with
+    ``browser.get(url)``, which attaches a second CDP session to the tab, and Chrome
+    answers ``getRequestPostData`` only on the session that enabled Network."""
+
+    async def _record_across_reattach(self, tab: FakeTab) -> NodriverCaptureBackend:
+        backend = NodriverCaptureBackend(object(), get_tab=lambda: tab)
+        await backend.start_capture_async()
+        tab.reattach()
+        for event in _fetch_post("9.2"):
+            await tab.dispatch(event)
+        tab.reattach()
+        await backend.stop_capture_async()
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_bodies_are_fetched_from_the_session_capture_enabled(self) -> None:
+        tab = FakeTab({"9.2": BODY}, lambda _rid, _t: True)
+
+        backend = await self._record_across_reattach(tab)
+
+        request = _only_entry(backend)["request"]
+        assert request["postData"]["text"] == BODY
+        assert "_postDataNotCaptured" not in request
+
+    @pytest.mark.asyncio
+    async def test_a_nodriver_that_cannot_name_a_session_marks_the_body(self) -> None:
+        tab = FakeTab048({"9.2": BODY}, lambda _rid, _t: True)
+
+        with capture_logs() as logs:
+            backend = await self._record_across_reattach(tab)
+
+        assert _only_entry(backend)["request"]["_postDataNotCaptured"] is True
+        assert [e["request_id"] for e in logs if e["event"] == "post_data_unavailable"] == ["9.2"]
