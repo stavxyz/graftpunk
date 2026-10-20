@@ -1179,7 +1179,7 @@ def _render_command_stub(
         lines.append("")
         lines.extend(wrapped_docstring_lines(shape_line))
     lines.append(f'{L2}"""')
-    for note in [*_dropped_name_notes(endpoint), *flag_notes]:
+    for note in [*_recording_gap_notes(endpoint), *flag_notes]:
         lines.extend(wrapped_comment_lines(note, indent=len(L2)))
     for field_name, reason in sorted(undeclared.items()):
         lines.extend(
@@ -1280,9 +1280,10 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
     )
 
 
-def _dropped_name_notes(endpoint: Endpoint) -> list[str]:
-    """The GP-FILL notes for names the digest dropped, one per cause, so a stub never
-    loses a recorded field without saying so and why."""
+def _recording_gap_notes(endpoint: Endpoint) -> list[str]:
+    """The GP-FILL notes for what the recording holds and the stub cannot use: names
+    the digest dropped, one note per cause, and a request body the recorder could
+    not capture. A stub never loses a recorded field without saying so and why."""
     notes: list[str] = []
     ids = (endpoint.query_keys_dropped_as_ids, endpoint.body_keys_dropped_as_ids)
     if any(ids):
