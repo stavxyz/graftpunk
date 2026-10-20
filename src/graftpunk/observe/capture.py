@@ -1405,7 +1405,7 @@ class NodriverCaptureBackend:
                 **_eager_send_kwargs(tab),
             )
             data["post_data"] = _post_data_text(result)
-        except Exception as exc:  # noqa: BLE001 — best-effort; stop_capture_async retries
+        except Exception as exc:  # noqa: BLE001 - best-effort; stop_capture_async retries
             data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
             LOG.debug(
                 "nodriver_request_time_post_data_fetch_failed",
