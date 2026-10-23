@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 
 class TestSessionName:
@@ -2170,9 +2171,13 @@ class TestObserveStartHardening:
         )
         session._capture.get_console_logs = MagicMock(return_value=[])
 
-        session._write_observe_data()
+        with capture_logs() as logs:
+            session._write_observe_data()
 
         assert (tmp_path / "bank" / "run1" / "network.har").exists()
+        failures = [e for e in logs if e["event"] == "observe_request_body_redaction_failed"]
+        assert [(e["error"], e["exc_type"]) for e in failures] == [("scrub failed", "RuntimeError")]
+        assert [e for e in logs if e["event"] == "observe_har_write_failed"] == []
 
     def test_public_accessors(self) -> None:
         session = self._make_session()

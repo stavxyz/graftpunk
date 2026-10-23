@@ -15,7 +15,9 @@ import base64
 import inspect
 import json
 import os
+import stat
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1753,16 +1755,24 @@ class TestRequestBodyFileRedactionEdges:
             (e["file"], e["reason"]) for e in logs if e["event"] == "request_body_file_not_scrubbed"
         ] == [("bodies/1.request.json", "error")]
 
+    @pytest.mark.parametrize("content", ["text", "binary"])
     def test_a_failed_rewrite_leaves_the_file_whole(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, content: str
     ) -> None:
+        """The rewrite is a temporary file beside the body file, renamed over it; a
+        failed rename leaves the original as it was and no temporary file behind."""
         from graftpunk.observe import run as run_module
 
         (tmp_path / "bodies").mkdir()
         body = tmp_path / "bodies" / "1.request.json"
-        body.write_text(f"pw={self.SECRET}")
+        recorded = f"pw={self.SECRET}".encode()
+        if content == "binary":
+            recorded = b"\xff" + recorded
+        body.write_bytes(recorded)
+        renamed_from: list[Path] = []
 
         def no_space(src: Any, dst: Any) -> None:
+            renamed_from.append(Path(src))
             raise OSError(28, "No space left on device")
 
         monkeypatch.setattr(run_module.os, "replace", no_space)
@@ -1770,7 +1780,8 @@ class TestRequestBodyFileRedactionEdges:
             self._entries("bodies/1.request.json"), [self.SECRET], tmp_path
         )
 
-        assert body.read_text() == f"pw={self.SECRET}"
+        assert body.read_bytes() == recorded
+        assert [src.parent for src in renamed_from] == [body.parent]
         assert sorted(p.name for p in (tmp_path / "bodies").iterdir()) == ["1.request.json"]
 
     def test_a_file_with_nothing_to_scrub_is_not_rewritten(self, tmp_path: Any) -> None:
@@ -1784,3 +1795,53 @@ class TestRequestBodyFileRedactionEdges:
         redact_request_body_files(self._entries("bodies/1.request.json"), [self.SECRET], tmp_path)
 
         assert body.stat().st_ino == inode
+
+    @pytest.mark.parametrize("mode", [0o644, 0o640, 0o444])
+    @pytest.mark.parametrize("content", ["text", "binary"])
+    def test_a_scrubbed_file_keeps_its_mode(self, tmp_path: Any, mode: int, content: str) -> None:
+        """The rewrite goes through a temporary file, which mkstemp creates as 0600."""
+        from graftpunk.observe.run import redact_request_body_files
+
+        (tmp_path / "bodies").mkdir()
+        body = tmp_path / "bodies" / "1.request.json"
+        payload = f"pw={self.SECRET}".encode()
+        body.write_bytes(payload if content == "text" else b"\xff" + payload)
+        body.chmod(mode)
+
+        redact_request_body_files(self._entries("bodies/1.request.json"), [self.SECRET], tmp_path)
+
+        assert self.SECRET.encode() not in body.read_bytes()
+        assert stat.S_IMODE(body.stat().st_mode) == mode
+
+    def test_a_secret_inside_a_longer_form_is_masked_whole(self) -> None:
+        """Longest form first: masking a short form that sits inside a longer one
+        first would leave the longer form's other bytes behind."""
+        from graftpunk.observe.run import _scrub_bytes
+
+        assert _scrub_bytes(b"\xff[abcdefgh]", ["abc", "abcdefgh"]) == b"\xff[********]"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+    def test_the_scrub_logs_carry_no_secret(self, tmp_path: Any) -> None:
+        """The scrubbed-file and not-scrubbed lines name the file and why, nothing else."""
+        from graftpunk.observe.run import redact_request_body_files
+
+        (tmp_path / "bodies").mkdir()
+        binary = tmp_path / "bodies" / "1.request.bin"
+        binary.write_bytes(b"\xff" + f"pw={self.SECRET}".encode())
+        locked = tmp_path / "bodies" / "2.request.json"
+        locked.write_text(f"pw={self.SECRET}")
+        locked.chmod(0)
+
+        try:
+            with capture_logs() as logs:
+                redact_request_body_files(
+                    self._entries("bodies/1.request.bin", "bodies/2.request.json"),
+                    [self.SECRET],
+                    tmp_path,
+                )
+        finally:
+            locked.chmod(0o600)
+
+        events = {e["event"] for e in logs}
+        assert {"request_body_file_scrubbed", "request_body_file_not_scrubbed"} <= events
+        assert all(self.SECRET not in repr(e) for e in logs)

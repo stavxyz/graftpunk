@@ -6,6 +6,7 @@ import base64
 import datetime
 import json
 import os
+import stat
 import tempfile
 import urllib.parse
 from collections.abc import Iterable
@@ -88,11 +89,14 @@ def _scrub_text(value: str, ordered: list[str]) -> str:
 
 def _replace_file(path: Path, data: bytes) -> None:
     """Write *data* over *path* atomically: a temporary file in the same directory,
-    then a rename, so a failed write leaves the original whole, never truncated."""
+    then a rename, so a failed write leaves the original whole, never truncated.
+    The file keeps its mode: mkstemp creates the temporary file as 0600."""
+    mode = stat.S_IMODE(path.stat().st_mode)
     fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
+        os.chmod(temp_name, mode)
         os.replace(temp_name, path)
     except BaseException:
         Path(temp_name).unlink(missing_ok=True)
