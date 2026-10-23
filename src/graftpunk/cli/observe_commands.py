@@ -674,7 +674,13 @@ def observe_go(
     ] = 3.0,
     max_body_size: Annotated[
         int,
-        typer.Option("--max-body-size", help="Max response body size in bytes (default 5MB)"),
+        typer.Option(
+            "--max-body-size",
+            help=(
+                "Largest request or response body in bytes kept in the HAR (default 5MB); "
+                "a larger one is written to the run's bodies/ directory"
+            ),
+        ),
     ] = 5 * 1024 * 1024,
     interactive: Annotated[
         bool,
@@ -712,7 +718,13 @@ def observe_interactive(
     ],
     max_body_size: Annotated[
         int,
-        typer.Option("--max-body-size", help="Max response body size in bytes (default 5MB)"),
+        typer.Option(
+            "--max-body-size",
+            help=(
+                "Largest request or response body in bytes kept in the HAR (default 5MB); "
+                "a larger one is written to the run's bodies/ directory"
+            ),
+        ),
     ] = 5 * 1024 * 1024,
 ) -> None:
     """Record an interactive browser session into a HAR file.

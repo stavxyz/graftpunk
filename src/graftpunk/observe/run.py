@@ -6,8 +6,11 @@ import base64
 import datetime
 import json
 import os
+import stat
+import tempfile
 import urllib.parse
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from graftpunk.logging import get_logger
@@ -52,20 +55,13 @@ def redact_har_entries(
         entries: HAR 1.2 entry dicts (not mutated).
         secrets: Values to remove; empty and very short values are skipped.
     """
-    forms: set[str] = set()
-    for secret in secrets:
-        if secret and len(secret) >= _MIN_REDACT_LEN:
-            forms |= _secret_forms(secret)
-    if not forms:
+    ordered = _redaction_forms(secrets)
+    if not ordered:
         return entries
-    ordered = sorted(forms, key=len, reverse=True)
 
     def scrub(value: Any) -> Any:
         if isinstance(value, str):
-            for form in ordered:
-                if form in value:
-                    value = value.replace(form, REDACTED)
-            return value
+            return _scrub_text(value, ordered)
         if isinstance(value, dict):
             return {k: scrub(v) for k, v in value.items()}
         if isinstance(value, list):
@@ -73,6 +69,108 @@ def redact_har_entries(
         return value
 
     return scrub(entries)
+
+
+def _redaction_forms(secrets: Iterable[str]) -> list[str]:
+    """Every wire form of each secret long enough to redact, longest first."""
+    forms: set[str] = set()
+    for secret in secrets:
+        if secret and len(secret) >= _MIN_REDACT_LEN:
+            forms |= _secret_forms(secret)
+    return sorted(forms, key=len, reverse=True)
+
+
+def _scrub_text(value: str, ordered: list[str]) -> str:
+    for form in ordered:
+        if form in value:
+            value = value.replace(form, REDACTED)
+    return value
+
+
+def _replace_file(path: Path, data: bytes) -> None:
+    """Write *data* over *path* atomically: a temporary file in the same directory,
+    then a rename, so a failed write leaves the original whole, never truncated.
+    The file keeps its mode: mkstemp creates the temporary file as 0600."""
+    mode = stat.S_IMODE(path.stat().st_mode)
+    fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.chmod(temp_name, mode)
+        os.replace(temp_name, path)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+
+
+def _scrub_bytes(raw: bytes, ordered: list[str]) -> bytes:
+    """*raw* with each form's UTF-8 bytes masked by as many ``*`` bytes.
+
+    The same forms the text scrub uses (raw, URL-encoded, JSON-escaped and
+    base64), matched as bytes, so a secret inside a binary body (a multipart
+    login with a file part, say) is not left in it. The mask keeps the length,
+    so a length-prefixed binary format keeps its offsets.
+    """
+    for form in sorted({f.encode("utf-8") for f in ordered}, key=len, reverse=True):
+        if form in raw:
+            raw = raw.replace(form, b"*" * len(form))
+    return raw
+
+
+def redact_request_body_files(
+    entries: list[dict[str, Any]], secrets: Iterable[str], run_dir: Path
+) -> None:
+    """Scrub *secrets* from the request bodies the recorder wrote to ``bodies/``.
+
+    A request body over the HAR's cap, or one that is not text, is written to
+    the run's ``bodies/`` and named by ``request._postDataFile`` instead of
+    sitting in ``postData``, where :func:`redact_har_entries` would scrub it. A
+    login POST large enough to land there carries the password just the same.
+    A file that decodes as UTF-8 is scrubbed with the same forms and the same
+    replacement as the HAR, and the entry's ``_postDataSize`` updated (*entries*
+    is mutated). A binary file has each form's bytes masked in place
+    (:func:`_scrub_bytes`), and the file that changed is logged by name. A file
+    is rewritten only when something was found, and atomically. A file that
+    cannot be read or rewritten is logged and skipped; the rest are still
+    scrubbed. A reference outside *run_dir*, or to a missing file, is skipped.
+    Response bodies in ``bodies/`` are not scanned here.
+    """
+    ordered = _redaction_forms(secrets)
+    if not ordered:
+        return
+    root = run_dir.resolve()
+    for entry in entries:
+        request = entry.get("request") if isinstance(entry, dict) else None
+        if not isinstance(request, dict):
+            continue
+        ref = request.get("_postDataFile")
+        if not isinstance(ref, str):
+            continue
+        path = (root / ref).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            continue
+        try:
+            raw = path.read_bytes()
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                masked = _scrub_bytes(raw, ordered)
+                if masked != raw:
+                    _replace_file(path, masked)
+                    LOG.info("request_body_file_scrubbed", file=ref, binary=True)
+                continue
+            scrubbed = _scrub_text(text, ordered)
+            if scrubbed != text:
+                data = scrubbed.encode("utf-8")
+                _replace_file(path, data)
+                request["_postDataSize"] = len(data)
+        except OSError as exc:
+            LOG.warning(
+                "request_body_file_not_scrubbed",
+                file=ref,
+                reason="error",
+                exc_type=type(exc).__name__,
+            )
 
 
 async def save_observe_run(
@@ -98,8 +196,9 @@ async def save_observe_run(
         screenshot_label: Label baked into the screenshot filename.
         console: Optional rich console for user-facing progress.
         redact: Secret values (e.g. the submitted credentials) to scrub from
-            the HAR before it is written. Bodies streamed to ``bodies/`` on
-            disk are not scanned.
+            the HAR before it is written, and from the request bodies written
+            to ``bodies/`` (:func:`redact_request_body_files`). Response bodies
+            on disk are not scanned. A generator is read once and kept.
     """
 
     def say(msg: str) -> None:
@@ -146,7 +245,12 @@ async def save_observe_run(
     except Exception as exc:  # noqa: BLE001 — still write what was captured
         LOG.error("observe_stop_capture_failed", error=str(exc), exc_type=type(exc).__name__)
 
+    redact = tuple(redact)
     har_entries = redact_har_entries(backend.get_har_entries(), redact)
+    step(
+        "request body redaction",
+        lambda: redact_request_body_files(har_entries, redact, storage.run_dir),
+    )
     if har_entries and step("HAR", lambda: storage.write_har(har_entries)) is not None:
         say(f"[green]HAR data saved:[/green] {len(har_entries)} entries")
 

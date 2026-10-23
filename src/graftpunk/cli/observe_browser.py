@@ -85,7 +85,8 @@ async def setup_observe_session(
     Args:
         namespace: Storage namespace for ObserveStorage (e.g., site name).
         url: URL to navigate to.
-        max_body_size: Max response body size for capture.
+        max_body_size: Largest request or response body kept in the HAR; a
+            larger one is written to the run's bodies/ directory.
         headless: Whether to run browser headless.
         session_name: Session name for cookie injection, or None to skip.
 

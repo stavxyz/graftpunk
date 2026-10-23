@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -263,6 +264,7 @@ _ENDPOINT_V1 = {
     "shape",
     "query_params",
     "body_params",
+    "body_not_captured",
     "custom_headers",
 }
 _LOGIN_V1 = {"auth_urls", "forms"}
@@ -750,3 +752,221 @@ def test_render_json_carries_no_collapsed_member_beyond_the_capped_examples(
     assert len(retained) == len(endpoint.examples) < len(words)
     for word in words:
         assert (word in text) == (word in retained), word
+
+
+def _search_post(
+    *, body: str | None, not_captured: bool = False, omitted: str | None = None
+) -> dict:
+    entry = _entry("POST", "https://myshop.example/api/search", body='{"results": []}')
+    if body is not None:
+        entry["request"]["postData"] = {"mimeType": "application/json", "text": body}
+    if not_captured or omitted:
+        entry["request"]["_postDataNotCaptured"] = True
+    if omitted:
+        entry["request"]["_postDataOmitted"] = {"size": 6_000_000, "reason": omitted}
+    return entry
+
+
+class TestBodyNotCaptured:
+    """A body the recorder could not get is reported as such (#269), never as an
+    endpoint with no parameters."""
+
+    def _digest(self, tmp_path: Path, entries: list[dict]) -> Any:
+        return digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+
+    def test_the_markdown_says_the_body_was_not_captured(self, tmp_path: Path) -> None:
+        text = render_markdown(self._digest(tmp_path, [_search_post(body=None, not_captured=True)]))
+        block = text[text.index("### POST /api/search") :]
+        expected = "- body not captured: 1 of 1 recording(s) sent a body the recorder could not get"
+        assert expected in block
+        assert "- body params" not in block
+
+    def test_partial_capture_keeps_the_params_and_counts_the_loss(self, tmp_path: Path) -> None:
+        entries = [
+            _search_post(body='{"query": "alice"}'),
+            _search_post(body=None, not_captured=True),
+        ]
+        result = self._digest(tmp_path, entries)
+        (endpoint,) = result.endpoints
+        assert endpoint.body_params == {"query": "str"}
+        assert endpoint.body_not_captured == 1
+        assert "- body not captured: 1 of 2 recording(s)" in render_markdown(result)
+
+    def test_a_request_that_sent_no_body_is_not_flagged(self, tmp_path: Path) -> None:
+        result = self._digest(tmp_path, [_search_post(body=None)])
+        (endpoint,) = result.endpoints
+        assert endpoint.body_not_captured == 0
+        assert "body not captured" not in render_markdown(result)
+        assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is False
+
+    def test_the_endpoints_projection_carries_the_flag(self, tmp_path: Path) -> None:
+        result = self._digest(tmp_path, [_search_post(body=None, not_captured=True)])
+        (row,) = endpoints_projection(result)["endpoints"]
+        assert (row["method"], row["body_params"], row["body_not_captured"]) == ("POST", {}, True)
+
+    @pytest.mark.parametrize("reason", ["over_max_body_size", "binary"])
+    def test_a_body_left_out_on_purpose_is_named_apart_from_a_lost_one(
+        self, tmp_path: Path, reason: str
+    ) -> None:
+        """A body the recorder chose not to keep is not one it could not get: the
+        digest says which, and where a body is left out."""
+        entries = [
+            _search_post(body=None, omitted=reason),
+            _search_post(body=None, not_captured=True),
+        ]
+        result = self._digest(tmp_path, entries)
+
+        (endpoint,) = result.endpoints
+        assert (endpoint.body_omitted, endpoint.body_not_captured) == (1, 1)
+        text = render_markdown(result)
+        assert (
+            "- body left out: 1 of 2 recording(s) sent a body over the capture's max body "
+            "size, or not text, and the capture had no bodies/ directory to keep it in ("
+            "gp's own recorders all have one; a capture backend built without bodies_dir "
+            "does not)"
+        ) in text
+        assert "- body not captured: 1 of 2 recording(s)" in text
+        assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
+
+    def test_a_body_left_out_alone_sets_the_projection_flag(self, tmp_path: Path) -> None:
+        result = self._digest(tmp_path, [_search_post(body=None, omitted="binary")])
+        assert "body not captured" not in render_markdown(result)
+        assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
+
+    def _binary_post(self, run: Path, name: str, size: int | None) -> dict:
+        (run / "bodies").mkdir(exist_ok=True)
+        (run / "bodies" / name).write_bytes(b"\xff\xfe" * 4)
+        entry = _search_post(body=None)
+        entry["request"]["_postDataFile"] = f"bodies/{name}"
+        if size is not None:
+            entry["request"]["_postDataSize"] = size
+        return entry
+
+    def test_the_first_binary_file_of_an_endpoint_is_the_one_named(self, tmp_path: Path) -> None:
+        entries = [
+            self._binary_post(tmp_path, "1.request.bin", 8),
+            self._binary_post(tmp_path, "2.request.bin", 8),
+        ]
+        (endpoint,) = self._digest(tmp_path, entries).endpoints
+        assert (endpoint.body_binary, endpoint.body_binary_file) == (2, "bodies/1.request.bin")
+
+    def test_a_binary_body_with_no_recorded_size_prints_none(self, tmp_path: Path) -> None:
+        """A HAR from another tool may not carry _postDataSize: no "(0 bytes)"."""
+        result = self._digest(tmp_path, [self._binary_post(tmp_path, "1.request.bin", None)])
+        text = render_markdown(result)
+        assert (
+            "- body not text: 1 of 1 recording(s) sent a binary body, kept as "
+            "`bodies/1.request.bin`\n"
+        ) in text
+        assert "bytes" not in text.split("- body not text:", 1)[1].split("\n", 1)[0]
+
+    def test_a_body_written_to_bodies_is_read_back_for_its_fields(self, tmp_path: Path) -> None:
+        (tmp_path / "bodies").mkdir()
+        (tmp_path / "bodies" / "1.2.request.json").write_text('{"query": "alice"}')
+        entry = _search_post(body=None)
+        entry["request"]["_postDataFile"] = "bodies/1.2.request.json"
+        result = self._digest(tmp_path, [entry])
+
+        (endpoint,) = result.endpoints
+        assert endpoint.body_params == {"query": "str"}
+        assert (endpoint.body_not_captured, endpoint.body_omitted) == (0, 0)
+
+    _FAMILY = [
+        "alpha",
+        "bravo",
+        "charlie",
+        "delta",
+        "echo",
+        "foxtrot",
+        "golf",
+        "hotel",
+        "india",
+        "juliet",
+        "kilo",
+        "lima",
+    ]
+
+    def _family_post(self, word: str, *, captured: bool, omitted: bool = False) -> dict:
+        entry = _entry(
+            "POST", f"https://myshop.example.com/products/{word}-widget-2", body='{"ok": 1}'
+        )
+        if captured:
+            entry["request"]["postData"] = {"mimeType": "application/json", "text": '{"q": "x"}'}
+        else:
+            entry["request"]["_postDataNotCaptured"] = True
+        if omitted:
+            entry["request"]["_postDataOmitted"] = {"size": 6_000_000, "reason": "binary"}
+        return entry
+
+    def test_a_collapsed_family_counts_every_member_with_a_binary_body(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "bodies").mkdir()
+        entries = []
+        for index, word in enumerate(self._FAMILY):
+            entry = self._family_post(word, captured=index == 0)
+            if index:
+                del entry["request"]["_postDataNotCaptured"]
+                name = f"bodies/{index}.request.bin"
+                (tmp_path / name).write_bytes(b"\xff\xfe" * 4)
+                entry["request"].update({"_postDataFile": name, "_postDataSize": 8})
+            entries.append(entry)
+        result = self._digest(tmp_path, entries)
+
+        (endpoint,) = result.endpoints
+        assert (endpoint.count, endpoint.body_binary, endpoint.body_binary_file) == (
+            12,
+            11,
+            "bodies/1.request.bin",
+        )
+        assert (
+            "- body not text: 11 of 12 recording(s) sent a binary body, kept as "
+            "`bodies/1.request.bin` (8 bytes)"
+        ) in render_markdown(result)
+
+    def test_a_collapsed_family_counts_every_member_whose_body_was_left_out(
+        self, tmp_path: Path
+    ) -> None:
+        entries = [
+            self._family_post(word, captured=index == 0, omitted=index != 0)
+            for index, word in enumerate(self._FAMILY)
+        ]
+        result = self._digest(tmp_path, entries)
+
+        (endpoint,) = result.endpoints
+        assert (endpoint.count, endpoint.body_omitted, endpoint.body_not_captured) == (12, 11, 0)
+        assert "- body left out: 11 of 12 recording(s)" in render_markdown(result)
+
+    def test_a_collapsed_family_counts_every_member_that_lost_its_body(
+        self, tmp_path: Path
+    ) -> None:
+        """Twelve URLs that collapse to one template: the merge sums the loss across
+        members, so the digest line and the stub's GP-FILL say 11 of 12."""
+        from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
+
+        entries = [
+            self._family_post(word, captured=index == 0) for index, word in enumerate(self._FAMILY)
+        ]
+        result = self._digest(tmp_path, entries)
+
+        (endpoint,) = result.endpoints
+        assert (endpoint.template, endpoint.count, endpoint.body_not_captured) == (
+            "/products/{product_id}",
+            12,
+            11,
+        )
+        assert "- body not captured: 11 of 12 recording(s)" in render_markdown(result)
+        assert endpoints_projection(result)["endpoints"][0]["body_not_captured"] is True
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=result,
+        )
+        stub = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in render(spec)["src/graftpunk_myshop/plugin.py"].splitlines()
+            if line.strip().startswith("#")
+        )
+        assert "GP-FILL: the request body was not captured in 11 of 12 recording(s)" in stub

@@ -1095,7 +1095,7 @@ def _target_for(command: PlannedCommand, base_url: str | None) -> RequestTarget:
 
 
 def _render_command_stub(
-    command: PlannedCommand, run_label: str, target: RequestTarget
+    command: PlannedCommand, run_label: str, target: RequestTarget, bodies_where: str
 ) -> list[str]:
     endpoint = command.endpoint
     method = command.method
@@ -1179,7 +1179,7 @@ def _render_command_stub(
         lines.append("")
         lines.extend(wrapped_docstring_lines(shape_line))
     lines.append(f'{L2}"""')
-    for note in [*_dropped_name_notes(endpoint), *flag_notes]:
+    for note in [*_recording_gap_notes(endpoint, bodies_where), *flag_notes]:
         lines.extend(wrapped_comment_lines(note, indent=len(L2)))
     for field_name, reason in sorted(undeclared.items()):
         lines.extend(
@@ -1212,6 +1212,14 @@ def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
 
 def _run_label(d: RunDigest) -> str:
     return f"{d.source.session}/{d.source.run_id}" if d.source.session else "the supplied HAR"
+
+
+def _bodies_location(d: RunDigest) -> str:
+    """Where a stub says a body file in bodies/ is: in the named run, or beside the
+    HAR the digest was given. The stub outlives the session that read the recording."""
+    if d.source.session:
+        return f"in run {d.source.session}/{d.source.run_id}"
+    return "beside the supplied HAR"
 
 
 @dataclass(frozen=True)
@@ -1256,7 +1264,7 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
     ``None`` when it has none to read; ``_target_for`` is evaluated once, and both
     the stub's request and ``other_host`` read that one result."""
     target = _target_for(command, base_url)
-    lines = _render_command_stub(command, _run_label(d), target)
+    lines = _render_command_stub(command, _run_label(d), target, _bodies_location(d))
     imports = [(_PLUGINS_MODULE, "CommandContext"), (_PLUGINS_MODULE, "command")]
     if _needs_param_specs(command.endpoint):
         imports.append((_PLUGINS_MODULE, "PluginParamSpec"))
@@ -1280,9 +1288,10 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
     )
 
 
-def _dropped_name_notes(endpoint: Endpoint) -> list[str]:
-    """The GP-FILL notes for names the digest dropped, one per cause, so a stub never
-    loses a recorded field without saying so and why."""
+def _recording_gap_notes(endpoint: Endpoint, bodies_where: str) -> list[str]:
+    """The GP-FILL notes for what the recording holds and the stub cannot use: names
+    the digest dropped, one note per cause, and a request body the recorder could
+    not capture. A stub never loses a recorded field without saying so and why."""
     notes: list[str] = []
     ids = (endpoint.query_keys_dropped_as_ids, endpoint.body_keys_dropped_as_ids)
     if any(ids):
@@ -1305,6 +1314,54 @@ def _dropped_name_notes(endpoint: Endpoint) -> list[str]:
             "were left out because they held an account value; add any this command needs "
             "by hand."
         )
+    if endpoint.body_not_captured:
+        recorded = f"{endpoint.body_not_captured} of {endpoint.count} recording(s)"
+        if endpoint.body_params:
+            notes.append(
+                f"{GP_FILL_MARKER}: the request body was not captured in {recorded}, so the "
+                "body fields below come from the others and may be incomplete; add any this "
+                "command needs by hand."
+            )
+        else:
+            notes.append(
+                f"{GP_FILL_MARKER}: the request body was not captured ({recorded} sent one "
+                "the recorder could not get), so this stub sends no body; add the body this "
+                "command needs by hand."
+            )
+    if endpoint.body_omitted:
+        recorded = f"{endpoint.body_omitted} of {endpoint.count} recording(s)"
+        if endpoint.body_params:
+            notes.append(
+                f"{GP_FILL_MARKER}: the request body was left out of {recorded} (over the "
+                "capture's max body size, or not text, with no bodies/ directory to keep "
+                "it), so the body fields below come from the others and may be incomplete; "
+                "add any this command needs by hand."
+            )
+        else:
+            notes.append(
+                f"{GP_FILL_MARKER}: the request body was left out of the recording "
+                f"({recorded} sent one over the capture's max body size, or not text, and "
+                "the capture that recorded it had no bodies/ directory to keep it in), so "
+                "this stub sends no body; record the flow again with `gp observe go` or "
+                "`gp observe interactive`, which keep such a body in the run's bodies/ "
+                "directory, or add the body by hand."
+            )
+    if endpoint.body_binary:
+        size = "" if endpoint.body_binary_size is None else f" ({endpoint.body_binary_size} bytes)"
+        stored = f"{bodies_where} as `{endpoint.body_binary_file}`{size}"
+        recorded = f"{endpoint.body_binary} of {endpoint.count} recording(s)"
+        if endpoint.body_params:
+            notes.append(
+                f"{GP_FILL_MARKER}: {recorded} sent a request body that is not text, kept "
+                f"{stored}, so the body fields below come from the others; read that file "
+                "and add what this command needs by hand."
+            )
+        else:
+            notes.append(
+                f"{GP_FILL_MARKER}: the request body is not text ({recorded} sent a binary "
+                f"body, kept {stored}), so this stub sends no body; read that file to see "
+                "what the site sends, and build the body this command needs by hand."
+            )
     return notes
 
 
@@ -1319,7 +1376,11 @@ def _render_command_stubs(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> 
     lines: list[str] = []
     for command in planned:
         target = _target_for(command, spec.base_url)
-        lines.extend(_render_command_stub(command, _run_label(spec.digest), target))
+        lines.extend(
+            _render_command_stub(
+                command, _run_label(spec.digest), target, _bodies_location(spec.digest)
+            )
+        )
     return lines
 
 

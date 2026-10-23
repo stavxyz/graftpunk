@@ -2479,6 +2479,54 @@ class TestLoginEngineHeaderCapture:
         mock_capture.stop_capture.assert_called_once()
         mock_capture.get_header_roles.assert_called_once()
 
+    def test_selenium_login_header_capture_asks_for_no_request_body(self) -> None:
+        """The header-only capture's HAR is never written, so a login POST whose body
+        Chrome did not inline is neither fetched nor logged about (#269)."""
+        import json
+
+        from structlog.testing import capture_logs
+
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        login_method = generate_login_method(DeclarativeQuotes())
+        post = {
+            "message": json.dumps(
+                {
+                    "message": {
+                        "method": "Network.requestWillBeSent",
+                        "params": {
+                            "requestId": "7.2",
+                            "request": {
+                                "url": "https://myshop.example.com/login",
+                                "method": "POST",
+                                "headers": {},
+                                "hasPostData": True,
+                            },
+                        },
+                    }
+                }
+            )
+        }
+        asked: list[str] = []
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.find_element = MagicMock(return_value=MagicMock())
+        instance.driver.get_log = lambda kind: [post] if kind == "performance" else []
+        instance.driver.execute_cdp_cmd = lambda method, params: asked.append(method) or {}
+        instance.transfer_driver_cookies_to_session = MagicMock()
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
+            capture_logs() as logs,
+        ):
+            result = login_method({"username": "user", "password": "test"})  # noqa: S106
+
+        assert result is True
+        assert "Network.getRequestPostData" not in asked
+        assert [e["event"] for e in logs if "post_data" in e["event"]] == []
+
 
 class TestSeleniumLoginValidationPaths:
     """Tests for selenium login validation paths."""

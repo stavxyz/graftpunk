@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import contextlib
@@ -15,7 +16,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
 from graftpunk.logging import get_logger
@@ -35,6 +36,8 @@ LOG = get_logger(__name__)
 
 # Body size cap
 MAX_RESPONSE_BODY_SIZE = 5 * 1024 * 1024  # 5MB
+# How long stop waits for request-time body fetches still in flight.
+_POST_DATA_SETTLE_TIMEOUT_S = 5.0
 
 # MIME type constants for body handling
 BINARY_MIME_PREFIXES = (
@@ -187,27 +190,85 @@ def _har_entries_in_order(request_map: dict[str, dict[str, Any]]) -> list[dict[s
     return [_build_har_entry(data) for _rid, data in _ordered_request_items(request_map)]
 
 
-def _post_data_text(result: Any) -> str:
-    """The request body text from ``Network.getRequestPostData``'s result.
+class _PostBody(NamedTuple):
+    """A request body as received: its bytes, and its text when they are UTF-8."""
+
+    raw: bytes
+    text: str | None
+
+
+def _post_body(result: Any) -> _PostBody | None:
+    """The request body from an inline ``postData`` or ``getRequestPostData``'s result.
 
     nodriver 0.48 returns the ``postData`` string alone; nodriver 0.50 returns the
     pair ``(postData, base64Encoded)``, as the raw CDP reply Selenium gets carries
-    both fields. A base64 body is decoded, whitespace inside it ignored, so the HAR
-    holds the text the browser sent. HAR's ``postData`` has no encoding field, so a
-    body that is not UTF-8 keeps U+FFFD in place of each byte it cannot decode, and
-    a body that is not valid base64 is kept as the text Chrome sent.
+    both fields. A base64 body is decoded, whitespace inside it ignored. Its text
+    is ``None`` when the bytes are not UTF-8: HAR's ``postData`` has no encoding
+    field, and decoding with replacement would turn each such byte into U+FFFD,
+    written as six characters in the HAR. A body flagged base64 that is not valid
+    base64 is kept as the text Chrome sent.
     """
+    if result is None:
+        return None
     if not isinstance(result, tuple):
-        return result
+        return _PostBody(result.encode("utf-8", errors="surrogatepass"), result)
     text, base64_encoded = result
-    if not base64_encoded or text is None:
-        return text
+    if text is None:
+        return None
+    if not base64_encoded:
+        return _PostBody(text.encode("utf-8", errors="surrogatepass"), text)
     try:
         raw = base64.b64decode("".join(text.split()), validate=True)
     except (binascii.Error, ValueError):
-        LOG.warning("post_data_not_base64", length=len(text or ""))
-        return text
-    return raw.decode("utf-8", errors="replace")
+        LOG.warning("post_data_not_base64", length=len(text))
+        return _PostBody(text.encode("utf-8", errors="surrogatepass"), text)
+    try:
+        return _PostBody(raw, raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        return _PostBody(raw, None)
+
+
+def _inline_post_body(post_data: Any, entries: Any) -> _PostBody | None:
+    """The request body Chrome inlined on ``Network.requestWillBeSent``.
+
+    ``postDataEntries`` (a list of base64 ``bytes``) is the body's bytes, and is
+    used whenever every entry carries them: measured on 2026-10-19, Chrome sends
+    it beside every inline ``postData``, and the entries joined equal the bytes
+    the server received for a string, ``URLSearchParams``, ``Uint8Array`` and
+    text-only multipart body. ``postData`` alone is not the bytes: Chrome
+    decodes UTF-8 bytes as UTF-8, but maps each byte of a body that is not
+    UTF-8 to the code point of the same value (``b"\\x00\\xff"`` arrives as
+    ``"\\x00\\xff"``), so storing it as text turned a binary body into text
+    of another length that the digest reads as an endpoint with no parameters.
+
+    Without entries, or with an entry that carries no ``bytes`` or bytes that
+    are not base64, the body is stored as the ``postData`` text Chrome gave, as
+    before ``postDataEntries`` was read. Whether any Chrome sends a binary body
+    inline without entries is unverified.
+    """
+    if isinstance(entries, list) and entries and all(isinstance(b, str) for b in entries):
+        try:
+            raw = b"".join(base64.b64decode(b, validate=True) for b in entries)
+        except (binascii.Error, ValueError):
+            LOG.warning("post_data_entries_not_base64", entries=len(entries))
+        else:
+            try:
+                return _PostBody(raw, raw.decode("utf-8"))
+            except UnicodeDecodeError:
+                return _PostBody(raw, None)
+    if not isinstance(post_data, str):
+        return None
+    return _post_body(post_data)
+
+
+def _cdp_entries(entries: Any) -> list[Any] | None:
+    """The base64 strings of CDP ``postDataEntries``, from a raw dict or nodriver objects."""
+    if not entries:
+        return None
+    return [
+        entry.get("bytes") if isinstance(entry, dict) else getattr(entry, "bytes_", None)
+        for entry in entries
+    ]
 
 
 def _is_redirect_hop(data: dict[str, Any]) -> bool:
@@ -226,13 +287,120 @@ def _note_lost_hop_body(request_id: str, data: dict[str, Any]) -> None:
     than drop it silently. One-shot per entry, so a second drain of the same
     map cannot repeat it.
     """
-    if data.get("has_post_data") and not data.get("post_data") and not data.get("_hop_warned"):
+    if _post_data_missing(data) and not data.get("_hop_warned"):
         data["_hop_warned"] = True
+        data["_post_data_unavailable"] = True
         LOG.warning(
             "redirect_hop_post_data_unavailable",
             request_id=request_id,
             url=data.get("url"),
             hint="Request body was not inlined by CDP and is lost across the redirect",
+        )
+
+
+def _post_data_missing(data: dict[str, Any]) -> bool:
+    """True if the request announced a body (``hasPostData``) the recorder neither
+    holds nor deliberately left out.
+
+    An empty string is a body Chrome returned, so it counts as captured: only
+    ``None`` is missing.
+    """
+    return (
+        bool(data.get("has_post_data"))
+        and data.get("post_data") is None
+        and not data.get("_post_data_file")
+        and not data.get("_post_data_omitted")
+    )
+
+
+def _request_content_type(data: dict[str, Any]) -> str:
+    headers = data.get("headers") or {}
+    return next((v for k, v in headers.items() if k.lower() == "content-type"), "")
+
+
+def _keep_post_data(
+    data: dict[str, Any],
+    body: _PostBody | None,
+    *,
+    max_body_size: int,
+    bodies_dir: Path | None,
+    request_id: str,
+) -> None:
+    """Store *body* as the request's body, as a response body would be stored.
+
+    A UTF-8 body within ``max_body_size`` (measured on its bytes) goes into the
+    HAR's ``postData``. A larger one, or one that is not UTF-8, is written to
+    ``bodies_dir`` as ``<request id>.request<ext>`` (``-2``, ``-3`` and so on when
+    that name exists, as for the request a 307 or 308 redirects to, which keeps
+    the hop's CDP request id) and referenced from the HAR
+    as ``request._postDataFile``, the way an oversized or binary response body
+    is written there and referenced as ``_bodyFile``. With no ``bodies_dir`` (or
+    when the write fails) it is left out: the entry is marked as not captured,
+    with ``_postDataOmitted`` giving its size and why, and logged once as
+    ``post_data_omitted``.
+    """
+    if body is None:
+        return
+    size = len(body.raw)
+    if body.text is not None and size <= max_body_size:
+        data["post_data"] = body.text
+        return
+    reason = "binary" if body.text is None else "over_max_body_size"
+    if bodies_dir is not None:
+        # CDP keeps one request id across a redirect chain, and a 307 or 308 hop
+        # resends its body, so the hop and its successor each get their own file.
+        stem, ext = f"{request_id}.request", _mime_to_extension(_request_content_type(data))
+        name, copy = f"{stem}{ext}", 2
+        try:
+            bodies_dir.mkdir(parents=True, exist_ok=True)
+            while (bodies_dir / name).exists():
+                name, copy = f"{stem}-{copy}{ext}", copy + 1
+            (bodies_dir / name).write_bytes(body.raw)
+        except OSError as exc:
+            LOG.warning("post_data_file_write_failed", request_id=request_id, error=str(exc))
+        else:
+            data["post_data"] = None
+            data["_post_data_file"] = f"bodies/{name}"
+            data["_post_data_size"] = size
+            return
+    data["post_data"] = None
+    data["_post_data_omitted"] = {"size": size, "reason": reason}
+    data["_post_data_unavailable"] = True
+    LOG.warning(
+        "post_data_omitted",
+        request_id=request_id,
+        method=data.get("method"),
+        url=data.get("url"),
+        size=size,
+        reason=reason,
+        max_body_size=max_body_size,
+    )
+
+
+def _flag_uncaptured_post_data(request_map: dict[str, dict[str, Any]]) -> None:
+    """Mark and log, once each, the requests whose body is still missing after every fetch.
+
+    The mark becomes the HAR entry's ``request._postDataNotCaptured``, so the
+    digest and ``gp plugin new`` can say the body was not captured instead of
+    reporting a request with no parameters. A redirect hop goes to
+    ``_note_lost_hop_body``, which marks and logs it under its own event; the
+    stop-time loop does that too, but this sweep also runs when that loop never
+    reached the hop (no tab, or the browser died first).
+    """
+    for request_id, data in request_map.items():
+        if _is_redirect_hop(data):
+            _note_lost_hop_body(request_id, data)
+            continue
+        if not _post_data_missing(data) or data.get("_post_data_unavailable"):
+            continue
+        data["_post_data_unavailable"] = True
+        LOG.warning(
+            "post_data_unavailable",
+            request_id=request_id,
+            method=data.get("method"),
+            url=data.get("url"),
+            error=data.get("_post_data_error", "not fetched"),
+            hint="The request sent a body that CDP did not inline and would not return",
         )
 
 
@@ -680,12 +848,21 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
     }
     # Add POST data if present
     post_data = request_data.get("post_data")
-    if post_data:
+    if post_data is not None:
         content_type = request_data.get("headers", {}).get("Content-Type", "")
         entry["request"]["postData"] = {
             "mimeType": content_type,
             "text": post_data,
         }
+    elif request_data.get("_post_data_file"):
+        # HAR 1.2 allows custom fields that start with an underscore, as _bodyFile does.
+        entry["request"]["_postDataFile"] = request_data["_post_data_file"]
+        entry["request"]["_postDataSize"] = request_data.get("_post_data_size", 0)
+    elif request_data.get("_post_data_unavailable"):
+        entry["request"]["_postDataNotCaptured"] = True
+        omitted = request_data.get("_post_data_omitted")
+        if omitted:
+            entry["request"]["_postDataOmitted"] = dict(omitted)
     return entry
 
 
@@ -758,10 +935,14 @@ class SeleniumCaptureBackend:
         driver: Any,
         max_body_size: int = MAX_RESPONSE_BODY_SIZE,
         bodies_dir: Path | None = None,
+        record_request_bodies: bool = True,
     ) -> None:
         self._driver = driver
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
+        # False for a capture whose HAR is never written (the login engine's
+        # header-only capture): no request body is kept, fetched or logged about.
+        self._record_request_bodies = record_request_bodies
         self._request_map: dict[str, dict[str, Any]] = {}
         self._console_logs: list[dict[str, Any]] = []
         self._extra_info = _ExtraInfoCorrelator()
@@ -839,10 +1020,20 @@ class SeleniumCaptureBackend:
                     "url": request.get("url", ""),
                     "method": request.get("method", "GET"),
                     "headers": request.get("headers", {}),
-                    "post_data": request.get("postData"),
+                    "post_data": None,
                     "has_post_data": request.get("hasPostData", False),
                     "timestamp": params.get("wallTime"),
                 }
+                if self._record_request_bodies:
+                    _keep_post_data(
+                        self._request_map[rid],
+                        _inline_post_body(
+                            request.get("postData"), _cdp_entries(request.get("postDataEntries"))
+                        ),
+                        max_body_size=self._max_body_size,
+                        bodies_dir=self._bodies_dir,
+                        request_id=rid,
+                    )
                 self._extra_info.entry_created(self._request_map, rid)
                 if redirect is not None:
                     self._extra_info.status_known(self._request_map, rid)
@@ -895,23 +1086,25 @@ class SeleniumCaptureBackend:
         # Fetch bodies for all captured requests
         for request_id, data in list(self._request_map.items()):
             if _is_redirect_hop(data):
-                _note_lost_hop_body(request_id, data)
+                if self._record_request_bodies:
+                    _note_lost_hop_body(request_id, data)
                 continue
-            # Fetch POST body if hasPostData but no inline postData
-            if data.get("has_post_data") and not data.get("post_data"):
+            # Fetch POST body if hasPostData but no inline postData. Selenium reads
+            # the performance log only now, so this is the one chance to ask.
+            if self._record_request_bodies and _post_data_missing(data):
                 try:
                     result = self._driver.execute_cdp_cmd(
                         "Network.getRequestPostData", {"requestId": request_id}
                     )
-                    data["post_data"] = _post_data_text(
-                        (result.get("postData"), result.get("base64Encoded", False))
-                    )
-                except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
-                    LOG.warning(
-                        "selenium_post_data_fetch_failed",
+                    _keep_post_data(
+                        data,
+                        _post_body((result.get("postData"), result.get("base64Encoded", False))),
+                        max_body_size=self._max_body_size,
+                        bodies_dir=self._bodies_dir,
                         request_id=request_id,
-                        error=str(exc),
                     )
+                except Exception as exc:  # noqa: BLE001 - CDP body fetch is best-effort
+                    data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
 
             # Fetch response body
             response = data.get("response", {})
@@ -938,6 +1131,8 @@ class SeleniumCaptureBackend:
                         request_id=request_id,
                         error=str(exc),
                     )
+        if self._record_request_bodies:
+            _flag_uncaptured_post_data(self._request_map)
 
         # Also collect "browser" log for backward compat. CDP consoleAPICalled
         # events above cover JS console output; browser logs may contain additional
@@ -1046,6 +1241,35 @@ def _eager_send_kwargs(tab: Any) -> dict[str, Any]:
     return {}
 
 
+def _capture_session_kwargs(tab: Any, session_id: Any) -> dict[str, Any]:
+    """Send kwargs that address a body fetch to the CDP session capture enabled.
+
+    On nodriver 0.50.6, ``Browser.get(url)`` (which ``gp observe`` uses for its
+    first navigation) and ``Tab.get(url)`` each navigate and then call
+    ``attach()`` again, which opens a second CDP session on the same target
+    without detaching the first. Network events keep arriving from the first
+    session (``Connection.process_event`` does not filter by session), but
+    ``tab.send`` now addresses the second, whose Network agent was never
+    enabled, and Chrome answers ``Network.getRequestPostData`` there with
+    ``-32000 No resource with given id was found`` for every request (#269,
+    measured on nodriver 0.50.6). nodriver 0.50 merges send kwargs into the
+    CDP message, so ``sessionId`` sends the command to the session that saw the
+    request. nodriver 0.48.1 has no session ids (each target has its own
+    websocket) and its ``Browser.get`` does not re-attach (read from its source),
+    so nothing is passed there and nothing needs to be; a live recording on
+    0.48.1 on 2026-10-19 kept every body with no session named.
+    """
+    if not isinstance(session_id, str) or getattr(tab, "session_id", None) == session_id:
+        return {}
+    try:
+        params = inspect.signature(tab.send).parameters.values()
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return {"sessionId": session_id}
+    return {}
+
+
 class NodriverCaptureBackend:
     """Capture backend for nodriver (async Chrome DevTools Protocol).
 
@@ -1059,11 +1283,18 @@ class NodriverCaptureBackend:
         get_tab: Callable[[], Any] | None = None,
         max_body_size: int = MAX_RESPONSE_BODY_SIZE,
         bodies_dir: Path | None = None,
+        record_request_bodies: bool = True,
     ) -> None:
         self._browser = browser
         self._get_tab = get_tab
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
+        # False for a capture whose HAR is never written (the login engine's
+        # header-only capture): no request body is kept, fetched or logged about.
+        self._record_request_bodies = record_request_bodies
+        # Set when stop has judged every request body; a request-time fetch that
+        # has not started by then marks its entry instead of writing into it.
+        self._post_data_closed = False
         self._request_map: dict[str, dict[str, Any]] = {}
         self._console_logs: list[dict[str, Any]] = []
         self._extra_info = _ExtraInfoCorrelator()
@@ -1071,6 +1302,10 @@ class NodriverCaptureBackend:
         self._bodies_fetched: set[str] = set()  # request IDs with eagerly-fetched bodies
         self._eager_fetch_attempts: int = 0
         self._eager_fetch_failures: int = 0
+        # The CDP session Network.enable went to; see _capture_session_kwargs.
+        self._capture_session_id: str | None = None
+        # Request-time body fetches still running; stop_capture_async settles them.
+        self._post_data_tasks: set[asyncio.Task[Any]] = set()
 
     @property
     def _tab(self) -> Any | None:
@@ -1080,6 +1315,7 @@ class NodriverCaptureBackend:
     def start_capture(self) -> None:
         """Begin capturing browser data."""
         self._extra_info = _ExtraInfoCorrelator()  # never carry slots across captures
+        self._post_data_closed = False
         LOG.debug("nodriver_capture_started")
 
     def stop_capture(self) -> None:
@@ -1184,7 +1420,12 @@ class NodriverCaptureBackend:
                 enable_durable_messages=True,
             )
         )
+        self._capture_session_id = getattr(tab, "session_id", None)
         tab.add_handler(network.RequestWillBeSent, self._on_request)
+        # After _on_request: nodriver calls sync handlers inline and runs async ones
+        # as tasks, so the entry this fills in already exists. It fetches only for
+        # an entry _on_request marked pending, which a header-only capture never does.
+        tab.add_handler(network.RequestWillBeSent, self._on_request_post_data)
         tab.add_handler(network.ResponseReceived, self._on_response)
         tab.add_handler(network.LoadingFinished, self._on_loading_finished)
         # Raw wire headers (Cookie / Set-Cookie) only arrive on the ExtraInfo
@@ -1211,9 +1452,10 @@ class NodriverCaptureBackend:
         """Stop capturing and fetch request/response bodies asynchronously."""
         tab = self._tab
         if tab is None:
+            self._post_data_closed = True
+            if self._record_request_bodies:
+                _flag_uncaptured_post_data(self._request_map)
             return
-
-        import nodriver.cdp.network as cdp_net
 
         self._extra_info.log_unmatched(self._request_map)
 
@@ -1232,17 +1474,69 @@ class NodriverCaptureBackend:
                 ),
             )
 
+        try:
+            await self._settle_request_time_fetches()
+            await self._fetch_bodies_at_stop(tab)
+        finally:
+            # Whatever ended stop, no request-time fetch writes after the marks: a
+            # running one is cancelled, and one not yet started sees the flag.
+            self._post_data_closed = True
+            for task in self._post_data_tasks:
+                task.cancel()
+            if self._record_request_bodies:
+                _flag_uncaptured_post_data(self._request_map)
+
+    async def _settle_request_time_fetches(self) -> None:
+        """Let the request-time body fetches still running finish first.
+
+        Otherwise a body still arriving is retried, flagged and logged as
+        ``post_data_unavailable`` at stop, and then written anyway. A fetch still
+        running after the wait is cancelled here, before the stop-time pass, so it
+        cannot answer beside that pass's own retry and store the body twice;
+        ``stop_capture_async``'s ``finally`` cancels again for a stop that ends
+        early.
+        """
+        # nodriver creates a fetch task for each event and does not keep it; a task
+        # joins _post_data_tasks on its first step. One pass of the loop lets every
+        # task already scheduled take that step before the snapshot.
+        await asyncio.sleep(0)
+        pending = {task for task in self._post_data_tasks if not task.done()}
+        if not pending:
+            return
+        _done, still_running = await asyncio.wait(pending, timeout=_POST_DATA_SETTLE_TIMEOUT_S)
+        for task in still_running:
+            task.cancel()
+        if still_running:
+            LOG.warning("nodriver_request_time_post_data_fetch_cancelled", count=len(still_running))
+
+    async def _fetch_bodies_at_stop(self, tab: Any) -> None:
+        """Fetch what the event handlers did not: request bodies the request-time
+        fetch missed, and response bodies the eager fetch missed.
+
+        Returns early, leaving the rest unfetched, once the browser is gone.
+        """
+        import nodriver.cdp.network as cdp_net
+
         for request_id, data in list(self._request_map.items()):
             if _is_redirect_hop(data):
-                _note_lost_hop_body(request_id, data)
+                if self._record_request_bodies:
+                    _note_lost_hop_body(request_id, data)
                 continue
-            # Fetch POST body if has_post_data but no inline post_data
-            if data.get("has_post_data") and not data.get("post_data"):
+            # Retry a request body the request-time fetch did not get.
+            if self._record_request_bodies and _post_data_missing(data):
                 try:
                     result = await tab.send(
-                        cdp_net.get_request_post_data(cdp_net.RequestId(request_id))
+                        cdp_net.get_request_post_data(cdp_net.RequestId(request_id)),
+                        **_capture_session_kwargs(tab, self._capture_session_id),
                     )
-                    data["post_data"] = _post_data_text(result)
+                    _keep_post_data(
+                        data,
+                        _post_body(result),
+                        max_body_size=self._max_body_size,
+                        bodies_dir=self._bodies_dir,
+                        request_id=request_id,
+                    )
+                    data.pop("_post_data_error", None)
                 except ConnectionError as exc:
                     LOG.warning(
                         "nodriver_browser_disconnected_during_stop",
@@ -1253,11 +1547,7 @@ class NodriverCaptureBackend:
                     )
                     return
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
-                    LOG.warning(
-                        "nodriver_post_data_fetch_failed",
-                        request_id=request_id,
-                        error=str(exc),
-                    )
+                    data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
 
             # Skip response body if already eagerly fetched by _on_loading_finished
             if request_id in self._bodies_fetched:
@@ -1269,7 +1559,8 @@ class NodriverCaptureBackend:
             if _is_text_mime(mime) or _is_binary_mime(mime):
                 try:
                     body, base64_encoded = await tab.send(
-                        cdp_net.get_response_body(cdp_net.RequestId(request_id))
+                        cdp_net.get_response_body(cdp_net.RequestId(request_id)),
+                        **_capture_session_kwargs(tab, self._capture_session_id),
                     )
                     _process_response_body(
                         response=response,
@@ -1321,15 +1612,85 @@ class NodriverCaptureBackend:
                 "url": event.request.url,
                 "method": event.request.method,
                 "headers": (dict(event.request.headers) if event.request.headers else {}),
-                "post_data": getattr(event.request, "post_data", None),
+                "post_data": None,
                 "has_post_data": getattr(event.request, "has_post_data", False),
                 "timestamp": getattr(event, "wall_time", None),
             }
+            if self._record_request_bodies:
+                _keep_post_data(
+                    self._request_map[rid],
+                    _inline_post_body(
+                        getattr(event.request, "post_data", None),
+                        _cdp_entries(getattr(event.request, "post_data_entries", None)),
+                    ),
+                    max_body_size=self._max_body_size,
+                    bodies_dir=self._bodies_dir,
+                    request_id=rid,
+                )
+                if _post_data_missing(self._request_map[rid]):
+                    self._request_map[rid]["_post_data_pending"] = True
             self._extra_info.entry_created(self._request_map, rid)
             if redirect is not None:
                 self._extra_info.status_known(self._request_map, rid)
         except Exception:
             LOG.exception("nodriver_on_request_failed")
+
+    async def _on_request_post_data(self, event: Any) -> None:
+        """Fetch a request body CDP did not inline, while the request is in flight.
+
+        ``Network.requestWillBeSent`` carries ``hasPostData`` without
+        ``postData`` for a body Chrome does not inline (a Blob body, for one).
+        Asking now rather than at stop time keeps a body Chrome no longer holds
+        once the request finished or its page went away. A failure here is
+        retried by ``stop_capture_async``; only a body both attempts miss is
+        marked and logged as ``post_data_unavailable``.
+
+        The task looks the entry up under the request id when it starts, and
+        writes the body through that dict. A redirect that re-keys the entry as
+        a hop after the fetch is sent still gets the hop's own body. A redirect
+        processed before the task starts leaves the lookup on the successor,
+        which carries no pending flag unless it too has a body CDP did not
+        inline; the hop's body is then reported by ``_note_lost_hop_body``.
+        """
+        rid = str(getattr(event, "request_id", ""))
+        data = self._request_map.get(rid)
+        if data is None or not data.pop("_post_data_pending", False):
+            return
+        if self._post_data_closed:
+            data["_post_data_error"] = "recording stopped before the body was fetched"
+            _flag_uncaptured_post_data({rid: data})
+            return
+        tab = self._tab
+        if tab is None:
+            return
+        task = asyncio.current_task()
+        if task is not None:
+            self._post_data_tasks.add(task)
+        try:
+            import nodriver.cdp.network as cdp_net
+
+            result = await tab.send(
+                cdp_net.get_request_post_data(cdp_net.RequestId(rid)),
+                **_eager_send_kwargs(tab),
+                **_capture_session_kwargs(tab, self._capture_session_id),
+            )
+            _keep_post_data(
+                data,
+                _post_body(result),
+                max_body_size=self._max_body_size,
+                bodies_dir=self._bodies_dir,
+                request_id=rid,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort; stop_capture_async retries
+            data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
+            LOG.debug(
+                "nodriver_request_time_post_data_fetch_failed",
+                request_id=rid,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+        finally:
+            self._post_data_tasks.discard(task)  # type: ignore[arg-type]
 
     def _on_request_extra_info(self, event: Any) -> None:
         """Handle a CDP RequestWillBeSentExtraInfo event (raw request headers)."""
@@ -1410,6 +1771,7 @@ class NodriverCaptureBackend:
             body, base64_encoded = await tab.send(
                 cdp_net.get_response_body(cdp_net.RequestId(rid)),
                 **_eager_send_kwargs(tab),
+                **_capture_session_kwargs(tab, self._capture_session_id),
             )
             _process_response_body(
                 response=response,
@@ -1454,6 +1816,7 @@ def create_capture_backend(
     get_tab: Callable[[], Any] | None = None,
     max_body_size: int = MAX_RESPONSE_BODY_SIZE,
     bodies_dir: Path | None = None,
+    record_request_bodies: bool = True,
 ) -> CaptureBackend:
     """Factory to create the appropriate capture backend.
 
@@ -1461,8 +1824,12 @@ def create_capture_backend(
         backend_type: Either "nodriver" or "selenium".
         driver: The browser driver/browser instance.
         get_tab: Optional callable that returns the current nodriver tab.
-        max_body_size: Maximum response body size to keep in memory (bytes).
-        bodies_dir: Directory to stream large/binary bodies to disk.
+        max_body_size: Largest request or response body kept in the HAR itself
+            (bytes); a larger or binary body goes to ``bodies_dir``.
+        bodies_dir: Directory to stream large/binary request and response bodies to
+            disk. Without one, such a request body is left out and marked.
+        record_request_bodies: False for a capture whose HAR is never written:
+            request bodies are then neither kept, fetched nor logged about.
 
     Returns:
         A CaptureBackend implementation.
@@ -1473,6 +1840,7 @@ def create_capture_backend(
             get_tab=get_tab,
             max_body_size=max_body_size,
             bodies_dir=bodies_dir,
+            record_request_bodies=record_request_bodies,
         )
     if backend_type == "selenium":
         if not _HAS_SELENIUM:
@@ -1482,6 +1850,7 @@ def create_capture_backend(
             driver,
             max_body_size=max_body_size,
             bodies_dir=bodies_dir,
+            record_request_bodies=record_request_bodies,
         )
     msg = f"Unknown capture backend type: {backend_type!r}. Must be 'selenium' or 'nodriver'."
     raise ValueError(msg)

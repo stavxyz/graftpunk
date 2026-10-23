@@ -2117,6 +2117,135 @@ class TestPluginModuleCommandStubs:
             "this command needs by hand."
         ) in comments
 
+    def _comments(self, endpoint: Endpoint) -> str:
+        return " ".join(
+            line.strip().lstrip("#").strip()
+            for line in self._plugin_code(endpoint).splitlines()
+            if line.strip().startswith("#")
+        )
+
+    def test_a_body_not_captured_leaves_a_gp_fill_instead_of_a_complete_looking_stub(
+        self,
+    ) -> None:
+        """#269: a POST whose body the recorder could not get has no body fields, and
+        the stub says why rather than reading as an endpoint that takes none."""
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/search", "POST"), count=2, body_not_captured=2
+        )
+        assert (
+            "GP-FILL: the request body was not captured (2 of 2 recording(s) sent one the "
+            "recorder could not get), so this stub sends no body; add the body this command "
+            "needs by hand."
+        ) in self._comments(endpoint)
+
+    def test_a_partly_captured_body_says_its_fields_may_be_incomplete(self) -> None:
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/search", "POST", body={"query": "str"}, body_kind="json"),
+            count=3,
+            body_not_captured=1,
+        )
+        assert (
+            "GP-FILL: the request body was not captured in 1 of 3 recording(s), so the body "
+            "fields below come from the others and may be incomplete; add any this command "
+            "needs by hand."
+        ) in self._comments(endpoint)
+
+    def test_a_captured_body_carries_no_such_note(self) -> None:
+        endpoint = self._endpoint("/api/search", "POST", body={"query": "str"}, body_kind="json")
+        assert "was not captured" not in self._comments(endpoint)
+
+    def test_a_body_left_out_points_at_a_recorder_that_keeps_it(self) -> None:
+        """A larger --max-body-size cannot help here: the commands that take it always
+        keep such a body in bodies/. The note says where it is left out instead."""
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/upload", "POST"), count=1, body_omitted=1
+        )
+        comments = self._comments(endpoint)
+        assert (
+            "GP-FILL: the request body was left out of the recording (1 of 1 recording(s) "
+            "sent one over the capture's max body size, or not text, and the capture that "
+            "recorded it had no bodies/ directory to keep it in), so this stub sends no body; "
+            "record the flow again with `gp observe go` or `gp observe interactive`, which "
+            "keep such a body in the run's bodies/ directory, or add the body by hand."
+        ) in comments
+        assert "larger --max-body-size" not in comments
+        assert "was not captured" not in comments
+
+    def test_a_body_partly_left_out_says_its_fields_may_be_incomplete(self) -> None:
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/upload", "POST", body={"name": "str"}, body_kind="json"),
+            count=2,
+            body_omitted=1,
+        )
+        assert (
+            "GP-FILL: the request body was left out of 1 of 2 recording(s) (over the "
+            "capture's max body size, or not text, with no bodies/ directory to keep it), so "
+            "the body fields below come from the others and may be incomplete; add any this "
+            "command needs by hand."
+        ) in self._comments(endpoint)
+
+    def test_a_binary_body_points_at_its_stored_file(self) -> None:
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/upload", "POST"),
+            count=1,
+            body_binary=1,
+            body_binary_file="bodies/9.1.request.bin",
+            body_binary_size=9,
+        )
+        comments = self._comments(endpoint)
+        assert (
+            "GP-FILL: the request body is not text (1 of 1 recording(s) sent a binary body, "
+            "kept in run myshop/run-1 as `bodies/9.1.request.bin` (9 bytes)), so this stub "
+            "sends no body; read that file to see what the site sends, and build the body "
+            "this command needs by hand."
+        ) in comments
+        assert "max-body-size" not in comments
+
+    def test_a_binary_body_beside_captured_ones_says_where_it_is(self) -> None:
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/upload", "POST", body={"name": "str"}, body_kind="json"),
+            count=2,
+            body_binary=1,
+            body_binary_file="bodies/9.1.request.bin",
+            body_binary_size=9,
+        )
+        assert (
+            "GP-FILL: 1 of 2 recording(s) sent a request body that is not text, kept in run "
+            "myshop/run-1 as `bodies/9.1.request.bin` (9 bytes), so the body fields below "
+            "come from the others; read that file and add what this command needs by hand."
+        ) in self._comments(endpoint)
+
+    def test_a_binary_body_from_a_supplied_har_with_no_size_says_so(self) -> None:
+        """A digest of a bare HAR names no run, and a HAR from another tool may carry
+        no _postDataSize: the note says where the file is and prints no size."""
+        endpoint = dataclasses.replace(
+            self._endpoint("/api/upload", "POST"),
+            count=1,
+            body_binary=1,
+            body_binary_file="bodies/9.1.request.bin",
+            body_binary_size=None,
+        )
+        digest_of_a_har = dataclasses.replace(
+            _digest(endpoints=(endpoint,)), source=DigestSource(har_path=Path("network.har"))
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=digest_of_a_har,
+        )
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in render(spec)["src/graftpunk_myshop/plugin.py"].splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: the request body is not text (1 of 1 recording(s) sent a binary body, "
+            "kept beside the supplied HAR as `bodies/9.1.request.bin`), so this stub sends no "
+            "body;"
+        ) in comments
+
     @pytest.mark.parametrize(
         ("query", "body", "argv", "expected_query", "expected_body"),
         [

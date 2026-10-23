@@ -366,6 +366,16 @@ async def _fill_field(
     )
 
 
+def _header_only_capture(backend_type: str, driver: Any, get_tab: Any) -> Any:
+    """A capture used only for header roles: its HAR is never written, so it keeps,
+    fetches and logs about no request body."""
+    from graftpunk.observe.capture import create_capture_backend
+
+    return create_capture_backend(
+        backend_type, driver, get_tab=get_tab, record_request_bodies=False
+    )
+
+
 def _start_login_capture(
     plugin: SitePlugin,
     backend_type: str,
@@ -387,7 +397,7 @@ def _start_login_capture(
     from graftpunk.observe.capture import create_capture_backend
 
     if observe_mode == "off":
-        return create_capture_backend(backend_type, driver, get_tab=get_tab), None
+        return _header_only_capture(backend_type, driver, get_tab), None
 
     # Why the login engine owns this for nodriver instead of handing
     # observe_mode to BrowserSession like the selenium path: the nodriver
@@ -412,7 +422,7 @@ def _start_login_capture(
             exc_type=type(exc).__name__,
         )
         gp_console.warn(f"Observability capture unavailable for this login: {exc}")
-        return create_capture_backend(backend_type, driver, get_tab=get_tab), None
+        return _header_only_capture(backend_type, driver, get_tab), None
     capture = create_capture_backend(
         backend_type,
         driver,
@@ -851,7 +861,9 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             if _header_capture is None:
                 from graftpunk.observe.capture import create_capture_backend
 
-                _header_capture = create_capture_backend("selenium", session.driver)
+                _header_capture = create_capture_backend(
+                    "selenium", session.driver, record_request_bodies=False
+                )
                 _header_capture.start_capture()
 
             session.driver.get(login_target)

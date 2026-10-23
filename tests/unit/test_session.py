@@ -6,11 +6,13 @@ don't require actual browser instantiation.
 """
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 
 class TestSessionName:
@@ -2038,6 +2040,144 @@ class TestObserveStartHardening:
         har = (tmp_path / "bank" / "run1" / "network.har").read_text()
         assert "hunter2" not in har
         assert REDACTED in har
+
+    def test_an_oversized_request_body_is_kept_in_the_runs_bodies_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """A `gp --observe=full` run keeps a request body over the HAR's cap in
+        bodies/, as 1.22.0 kept it in the HAR, rather than leaving it out (#269)."""
+        import json
+
+        from graftpunk.observe.capture import MAX_RESPONSE_BODY_SIZE
+
+        body = json.dumps({"rows": "x" * MAX_RESPONSE_BODY_SIZE})
+        sent = {
+            "message": json.dumps(
+                {
+                    "message": {
+                        "method": "Network.requestWillBeSent",
+                        "params": {
+                            "requestId": "7.1",
+                            "request": {
+                                "url": "https://myshop.example.com/api/import",
+                                "method": "POST",
+                                "headers": {"Content-Type": "application/json"},
+                                "hasPostData": True,
+                                "postData": body,
+                            },
+                        },
+                    }
+                }
+            )
+        }
+        session = self._make_session(session_name="bank")
+        session._webdriver.get_log = lambda kind: [sent] if kind == "performance" else []
+        with patch("graftpunk.session.OBSERVE_BASE_DIR", tmp_path):
+            session._start_observe()
+        session._capture.stop_capture()
+        session._write_observe_data()
+
+        run = tmp_path / "bank" / session._observe_storage.run_dir.name
+        (entry,) = json.loads((run / "network.har").read_text())["log"]["entries"]
+        assert entry["request"]["_postDataFile"] == "bodies/7.1.request.json"
+        assert "_postDataNotCaptured" not in entry["request"]
+        assert (run / "bodies" / "7.1.request.json").read_text() == body
+
+    def _stopped_oversized_login(self, tmp_path: Path) -> Any:
+        """A `gp --observe=full` session that recorded a login POST over the HAR's
+        cap, stopped and ready to write its run."""
+        import json
+
+        from graftpunk.observe.capture import MAX_RESPONSE_BODY_SIZE
+
+        body = json.dumps(
+            {"password": "hunter2-correct-horse", "pad": "x" * MAX_RESPONSE_BODY_SIZE}
+        )
+        sent = {
+            "message": json.dumps(
+                {
+                    "message": {
+                        "method": "Network.requestWillBeSent",
+                        "params": {
+                            "requestId": "7.3",
+                            "request": {
+                                "url": "https://myshop.example.com/login",
+                                "method": "POST",
+                                "headers": {"Content-Type": "application/json"},
+                                "hasPostData": True,
+                                "postData": body,
+                            },
+                        },
+                    }
+                }
+            )
+        }
+        session = self._make_session(session_name="bank")
+        session.observe_redact = ["hunter2-correct-horse"]
+        session._webdriver.get_log = lambda kind: [sent] if kind == "performance" else []
+        with patch("graftpunk.session.OBSERVE_BASE_DIR", tmp_path):
+            session._start_observe()
+        session._capture.stop_capture()
+        return session
+
+    def test_an_oversized_login_body_in_bodies_is_scrubbed(self, tmp_path: Path) -> None:
+        """observe_redact reaches a request body written to bodies/, as it reaches
+        an inline postData, and the HAR carries the scrubbed file's size."""
+        import json
+
+        from graftpunk.observe.run import REDACTED
+
+        session = self._stopped_oversized_login(tmp_path)
+        session._write_observe_data()
+
+        run = session._observe_storage.run_dir
+        stored = (run / "bodies" / "7.3.request.json").read_text()
+        assert "hunter2-correct-horse" not in stored
+        assert REDACTED in stored
+        (entry,) = json.loads((run / "network.har").read_text())["log"]["entries"]
+        assert entry["request"]["_postDataSize"] == len(stored.encode())
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+    def test_an_unreadable_body_file_still_lets_the_har_be_written(self, tmp_path: Path) -> None:
+        """The reviewers' reproduction: chmod 0 on the body file before the write."""
+        session = self._stopped_oversized_login(tmp_path)
+        body = session._observe_storage.run_dir / "bodies" / "7.3.request.json"
+        body.chmod(0)
+        try:
+            session._write_observe_data()
+        finally:
+            body.chmod(0o600)
+
+        assert (session._observe_storage.run_dir / "network.har").exists()
+
+    def test_a_body_file_scrub_failure_still_writes_the_har(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure while scrubbing bodies/ is logged; the HAR is still written."""
+        import graftpunk.observe.run as run_module
+
+        def boom(*_args: object) -> None:
+            raise RuntimeError("scrub failed")
+
+        monkeypatch.setattr(run_module, "redact_request_body_files", boom)
+        session = self._make_session(session_name="bank")
+        session.observe_redact = ["hunter2"]
+        from graftpunk.observe.storage import ObserveStorage
+
+        session._observe_storage = ObserveStorage(tmp_path, "bank", "run1")
+        session._capture = MagicMock()
+        session._capture.get_har_entries = MagicMock(
+            return_value=[{"request": {"postData": {"text": "p=hunter2"}}, "response": {}}]
+        )
+        session._capture.get_console_logs = MagicMock(return_value=[])
+
+        with capture_logs() as logs:
+            session._write_observe_data()
+
+        assert (tmp_path / "bank" / "run1" / "network.har").exists()
+        failures = [e for e in logs if e["event"] == "observe_request_body_redaction_failed"]
+        assert [(e["error"], e["exc_type"]) for e in failures] == [("scrub failed", "RuntimeError")]
+        assert [e for e in logs if e["event"] == "observe_har_write_failed"] == []
 
     def test_public_accessors(self) -> None:
         session = self._make_session()

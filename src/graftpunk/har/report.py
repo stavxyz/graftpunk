@@ -66,6 +66,11 @@ def summarize_shape(shape: ShapeNode | None, *, depth: int = _DEFAULT_SUMMARY_DE
     return f"object{{{keys}{suffix}}}"
 
 
+def _size_note(size: int | None) -> str:
+    """`` (N bytes)`` for a size the HAR recorded, and nothing for one it did not."""
+    return "" if size is None else f" ({size} bytes)"
+
+
 def _endpoint_block(endpoint: Endpoint) -> list[str]:
     lines = [f"### {'/'.join(endpoint.methods)} {endpoint.template}", ""]
     statuses = list(endpoint.statuses)
@@ -77,6 +82,24 @@ def _endpoint_block(endpoint: Endpoint) -> list[str]:
     if endpoint.body_params:
         params = ", ".join(f"{k}: {v}" for k, v in sorted(endpoint.body_params.items()))
         lines.append(f"- body params ({endpoint.body_kind}): {params}")
+    if endpoint.body_not_captured:
+        lines.append(
+            f"- body not captured: {endpoint.body_not_captured} of {endpoint.count} "
+            "recording(s) sent a body the recorder could not get"
+        )
+    if endpoint.body_omitted:
+        lines.append(
+            f"- body left out: {endpoint.body_omitted} of {endpoint.count} recording(s) sent "
+            "a body over the capture's max body size, or not text, and the capture had no "
+            "bodies/ directory to keep it in (gp's own recorders all have one; a capture "
+            "backend built without bodies_dir does not)"
+        )
+    if endpoint.body_binary:
+        lines.append(
+            f"- body not text: {endpoint.body_binary} of {endpoint.count} recording(s) sent "
+            f"a binary body, kept as `{endpoint.body_binary_file}`"
+            f"{_size_note(endpoint.body_binary_size)}"
+        )
     if endpoint.custom_headers:
         lines.append(f"- custom headers: {', '.join(endpoint.custom_headers)}")
     lines.append(f"- shape: {summarize_shape(endpoint.shape)}")
@@ -254,6 +277,12 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
                 "shape": summarize_shape(endpoint.shape),
                 "query_params": dict(sorted(endpoint.query_params.items())),
                 "body_params": dict(sorted(endpoint.body_params.items())),
+                # Lost, left out, or kept only as a binary file: the HAR holds no
+                # body text the projection could read fields from.
+                "body_not_captured": endpoint.body_not_captured
+                + endpoint.body_omitted
+                + endpoint.body_binary
+                > 0,
                 "custom_headers": list(endpoint.custom_headers),
             }
             for endpoint in sorted(d.endpoints, key=_endpoint_sort_key)

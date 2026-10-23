@@ -470,7 +470,10 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             gp_console.warn(f"Observability capture unavailable: {exc}")
             self._observe_storage = None
             return
-        self._capture = create_capture_backend(self._backend_type, driver)
+        # Bodies too large for the HAR, or binary, go beside it, as gp observe's do.
+        self._capture = create_capture_backend(
+            self._backend_type, driver, bodies_dir=self._observe_storage.run_dir / "bodies"
+        )
         self._capture.start_capture()
         LOG.info("observe_capture_started", mode=self._observe_mode, run_id=run_id)
 
@@ -491,16 +494,24 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         """Write HAR and console logs to storage."""
         if self._observe_storage is None or self._capture is None:
             return
-        from graftpunk.observe.run import redact_har_entries
+        from graftpunk.observe.run import redact_har_entries, redact_request_body_files
 
         try:
             # getattr: sessions restored via __setstate__ or built without
             # __init__ (tests) may predate the attribute.
-            self._observe_storage.write_har(
-                redact_har_entries(
-                    self._capture.get_har_entries(), getattr(self, "_observe_redact", ())
+            secrets = getattr(self, "_observe_redact", ())
+            entries = redact_har_entries(self._capture.get_har_entries(), secrets)
+            # Scrub the body files first, since that can update an entry's
+            # _postDataSize; a failure there must not cost the HAR.
+            try:
+                redact_request_body_files(entries, secrets, self._observe_storage.run_dir)
+            except Exception as exc:
+                LOG.error(
+                    "observe_request_body_redaction_failed",
+                    error=str(exc),
+                    exc_type=type(exc).__name__,
                 )
-            )
+            self._observe_storage.write_har(entries)
         except Exception as exc:
             LOG.error("observe_har_write_failed", error=str(exc), exc_type=type(exc).__name__)
         try:
