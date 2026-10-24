@@ -233,6 +233,22 @@ class TestUnchanged:
         assert get_session_metadata("myshop@alice")["account_identifier"] == "alice"
         assert "earlier session" not in output
 
+    def test_an_identifier_field_plugin_sees_no_rename(self) -> None:
+        cache_session(cacheable_browser_session("alice@example.com"), "myshop@alice-example-com")
+
+        result = invoke_plugin_app(
+            _plugin({"identifier": "#id", "password": "#p"}),
+            ["fmtsite", "login"],
+            **{"FMTSITE_IDENTIFIER": "alice@example.com", "FMTSITE_PASSWORD": "pw-x"},
+        )
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 0, output
+        assert list_sessions() == ["myshop@alice-example-com"]
+        stored = get_session_metadata("myshop@alice-example-com")
+        assert stored["account_identifier"] == "alice@example.com"
+        assert "earlier session" not in output
+
     def test_an_explicit_label_leaves_a_bare_slot_alone(self) -> None:
         """``account`` was never derived from, so 1.24.0 named that login bare."""
         cache_session(cacheable_browser_session(), "myshop")

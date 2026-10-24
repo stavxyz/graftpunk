@@ -1481,8 +1481,8 @@ slugified: `alice@example.com` gives `myshop@alice-example-com`. graftpunk never
 asks the site which account is actually signed in.
 
 Only a login field with an identifier name gives a label: `username`, `email`,
-`email_address`, `login`, `login_id`, `login_name`, `user`, `user_id`,
-`account` or `account_id`, in any case and with `_`, `-`, `.` or spaces
+`email_address`, `user_email`, `login_email`, `login`, `login_id`, `login_name`,
+`identifier`, `user`, `user_id`, `account` or `account_id`, in any case and with `_`, `-`, `.` or spaces
 anywhere (`userName` and `Email-Address` count). A field named anything else,
 such as `memberNumber` or `userPin`, never names a session, and a login with no
 identifier field caches the bare plugin name. Name the identifier field one of

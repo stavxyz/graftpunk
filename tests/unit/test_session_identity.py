@@ -129,6 +129,14 @@ class TestDerivation:
             "account",
             "accountId",
             "account_id",
+            "identifier",
+            "Identifier",
+            "user_email",
+            "userEmail",
+            "user-email",
+            "login_email",
+            "loginEmail",
+            "LOGIN_EMAIL",
         ],
     )
     def test_allowlisted_names_give_a_label(self, field_name: str) -> None:
@@ -156,10 +164,9 @@ class TestDerivation:
             "login_code",
             "account_no",
             "login_token",
-            "identifier",
             "shipping_email",
             "pinnacle_user",
-            "user_email",
+            "j_username",
             "member_number",
         ],
     )
@@ -178,12 +185,29 @@ class TestDerivation:
             ({"account": "acct1", "user": "u1"}, "u1"),
             ({"accountId": "acct1", "account": "acct2"}, "acct2"),
             ({"emailAddress": "b@example.com", "email": "a@example.com"}, "a@example.com"),
+            ({"identifier": "i1", "user_email": "a@example.com"}, "a@example.com"),
+            ({"user": "u1", "identifier": "i1"}, "i1"),
+            ({"login_email": "b@example.com", "user_email": "a@example.com"}, "a@example.com"),
         ],
     )
     def test_several_identifiers_pick_by_allowlist_order(
         self, fields: dict[str, str], expected: str
     ) -> None:
         assert derive_account_identity(fields)[0] == expected
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"identifier": "alice@example.com", "password": "pw-x"},
+            {"user_email": "alice@example.com", "password": "pw-x"},
+            {"loginEmail": "alice@example.com", "password": "pw-x"},
+            {"identifier": "alice@example.com", "user": "bob"},
+            {"login_email": "alice@example.com", "identifier": "carol"},
+        ],
+    )
+    def test_names_the_old_rule_accepted_keep_their_label(self, fields: dict[str, str]) -> None:
+        """No rename at the next login for these: both rules pick the same identifier."""
+        assert derive_account_identity(fields) == _legacy_derive_account_identity(fields, SECRETS)
 
     def test_same_normalized_name_picks_the_first_declared(self) -> None:
         fields = {"user_name": "first", "UserName": "second"}

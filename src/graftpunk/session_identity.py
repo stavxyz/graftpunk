@@ -41,16 +41,20 @@ _PART_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 #: for an identifier becomes a session name or is left unredacted in an observe
 #: run (#293). The tuple order is the label preference: when several fields
 #: qualify, the one whose name comes first here is the account label. It keeps
-#: the keyword order the earlier rule used (username, email, login, user), so a
-#: plugin with several identifier fields keeps the label it had; ``account``
-#: names come last because the earlier rule never derived from them.
+#: the keyword order the earlier rule used (username, email, login, identifier,
+#: user; ``useremail`` and ``loginemail`` matched it as email), so a plugin with
+#: several identifier fields keeps the label it had; ``account`` names come last
+#: because the earlier rule never derived from them.
 IDENTIFIER_FIELD_NAMES: tuple[str, ...] = (
     "username",
     "email",
     "emailaddress",
+    "useremail",
+    "loginemail",
     "login",
     "loginid",
     "loginname",
+    "identifier",
     "user",
     "userid",
     "account",
