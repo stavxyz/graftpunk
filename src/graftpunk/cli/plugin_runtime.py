@@ -10,7 +10,7 @@ with the CommandError/PluginError/generic error->exit funnel.
 from __future__ import annotations
 
 import sys
-from typing import Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import requests
 import typer
@@ -37,6 +37,9 @@ from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandContext, Comm
 from graftpunk.plugins.formatters import format_output
 from graftpunk.session_context import get_active_session
 from graftpunk.session_identity import compute_operating_session_name, split_session_name
+
+if TYPE_CHECKING:
+    from graftpunk.observe.run import Redaction
 
 LOG = get_logger(__name__)
 _format_console = Console()
@@ -224,7 +227,7 @@ def run_plugin_command(
         observe_ctx.finish(redact=secrets)
 
 
-def _observe_secrets(plugin: CLIPluginProtocol, observe_mode: str) -> Any:
+def _observe_secrets(plugin: CLIPluginProtocol, observe_mode: str) -> Redaction:
     """What a plugin command's run is scrubbed of: every login credential gp can
     read (:func:`graftpunk.cli.login_commands.known_credentials`), split as a
     login run's are (:meth:`graftpunk.observe.run.Redaction.from_credentials`)."""

@@ -154,6 +154,47 @@ class TestNodriverSessionRecordsTheNetwork:
         ]
         assert reasons == ["browser_disconnected", "browser_disconnected"]
 
+    @pytest.mark.asyncio
+    async def test_a_disconnect_in_the_post_data_phase_marks_bodies_but_not_fetched_ones(
+        self,
+    ) -> None:
+        from tests.unit.test_observe_post_data import _never, _record
+
+        class GoneAtStop(FakeTab):
+            async def send(self, cmd: Any, **kwargs: Any) -> Any:
+                if self.stopping:
+                    raise ConnectionError("browser went away")
+                return await super().send(cmd, **kwargs)
+
+        # 1.1's body is fetched eagerly; 1.2's is not, and neither request body
+        # was inlined, so stop starts with a request-body fetch, which fails.
+        tab = GoneAtStop(
+            {}, _never, response_available=lambda rid, t: rid == "1.1" and not t.stopping
+        )
+        backend = await _record(tab, [*_fetch_post("1.1"), *_fetch_post("1.2")])
+
+        first, second = (e["response"]["content"] for e in backend.get_har_entries())
+        assert first["text"] == RESPONSE
+        assert "_bodyNotCaptured" not in first
+        assert second["_bodyNotCapturedReason"] == "browser_disconnected"
+
+    @pytest.mark.asyncio
+    async def test_bodies_left_when_stop_has_no_tab_are_marked(self) -> None:
+        from graftpunk.observe.capture import NodriverCaptureBackend
+        from tests.unit.test_observe_post_data import _never
+
+        tab: Any = FakeTab({}, _always, response_available=_never)
+        current = {"tab": tab}
+        backend = NodriverCaptureBackend(object(), get_tab=lambda: current["tab"])
+        await backend.start_capture_async()
+        for event in _fetch_post("1.1", inline=BODY):
+            await tab.dispatch(event)
+        current["tab"] = None
+        await backend.stop_capture_async()
+
+        (entry,) = backend.get_har_entries()
+        assert entry["response"]["content"]["_bodyNotCapturedReason"] == "no_tab"
+
     def test_the_sync_start_says_it_records_no_network(self, tmp_path: Path) -> None:
         session = _nodriver_session(MagicMock())
         with (
@@ -652,7 +693,13 @@ class TestPluginCommandRun:
             result = _invoke_search("http://127.0.0.1:9", "full")
 
         assert result.exit_code == 1
-        assert _har_entries(_only_run(tmp_path)) == []
+        # The request that got no response is recorded with its error.
+        (entry,) = _har_entries(_only_run(tmp_path))
+        assert entry["request"]["url"] == "http://127.0.0.1:9/api/search"
+        assert json.loads(entry["request"]["postData"]["text"]) == {"query": "widget"}
+        assert entry["response"]["status"] == 0
+        assert entry["response"]["_error"].startswith("ConnectionError: ")
+        assert entry["response"]["content"]["_bodyNotCapturedReason"] == "no_response"
 
     def test_a_response_before_the_failure_is_kept(self, site: str, tmp_path: Path) -> None:
         with patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path):

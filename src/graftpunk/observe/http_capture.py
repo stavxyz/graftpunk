@@ -22,9 +22,9 @@ import json
 import threading
 import time
 import urllib.parse
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import requests
 import requests.adapters
@@ -38,6 +38,9 @@ from graftpunk.observe.capture import (
     _process_response_body,
     _response_summary,
 )
+
+if TYPE_CHECKING:
+    from graftpunk.observe.run import Redaction
 
 LOG = get_logger(__name__)
 
@@ -175,14 +178,57 @@ def har_entry_for_response(
     return entry
 
 
+def har_entry_for_failed_request(
+    request: requests.PreparedRequest,
+    request_id: str,
+    *,
+    started: float,
+    elapsed: float,
+    error: BaseException,
+    max_body_size: int = MAX_RESPONSE_BODY_SIZE,
+    bodies_dir: Path | None = None,
+) -> dict[str, Any]:
+    """One HAR 1.2 entry for a request that got no response (a refused connection).
+
+    The request is kept as :func:`har_entry_for_response` keeps it; the
+    response has status 0, as a browser HAR gives a failed request, and
+    ``response._error`` holds the error's type and message.
+    """
+    response = requests.Response()
+    response.request = request
+    response.url = request.url or ""
+    response.status_code = 0
+    entry = har_entry_for_response(
+        response,
+        request_id,
+        started=started,
+        elapsed=elapsed,
+        max_body_size=max_body_size,
+        bodies_dir=bodies_dir,
+        body_unread="no_response",
+    )
+    entry["response"]["_error"] = f"{type(error).__name__}: {error}"
+    return entry
+
+
+class _Noted(NamedTuple):
+    """One response an adapter returned, or one request that got none."""
+
+    started: float
+    duration: float | None
+    response: requests.Response | None = None
+    request: requests.PreparedRequest | None = None
+    error: BaseException | None = None
+
+
 class _RecordingAdapterSend:
     """Stands in for one adapter's ``send`` while a capture runs.
 
     It notes each response the adapter returns, with when its request was
-    sent, and reads nothing: the body is read where requests reads it, so a
-    request does exactly what it does with observe off. It is an instance
-    attribute of the adapter, never pickled with it: ``HTTPAdapter.__getstate__``
-    keeps only the adapter's settings.
+    sent and how long the adapter took, and reads nothing: the body is read
+    where requests reads it, so a request does exactly what it does with
+    observe off. It is an instance attribute of the adapter, never pickled
+    with it: ``HTTPAdapter.__getstate__`` keeps only the adapter's settings.
     """
 
     def __init__(self, capture: HttpCaptureBackend, original: Any) -> None:
@@ -191,8 +237,12 @@ class _RecordingAdapterSend:
 
     def __call__(self, request: requests.PreparedRequest, *args: Any, **kwargs: Any) -> Any:
         started = time.time()
-        response = self.original(request, *args, **kwargs)
-        self.capture._seen(response, started)
+        try:
+            response = self.original(request, *args, **kwargs)
+        except BaseException as exc:
+            self.capture._seen(_Noted(started, time.time() - started, None, request, exc))
+            raise
+        self.capture._seen(_Noted(started, time.time() - started, response))
         return response
 
 
@@ -217,6 +267,7 @@ class _RecordingSessionSend:
         outer = getattr(local, "depth", 0) == 0
         if outer:
             local.seen = []
+            local.started = time.time()
         local.depth = getattr(local, "depth", 0) + 1
         result: requests.Response | None = None
         error: BaseException | None = None
@@ -230,23 +281,23 @@ class _RecordingSessionSend:
             local.depth -= 1
             if outer:
                 seen, local.seen = local.seen, None
-                self.capture._finish_call(seen, result, error, bool(kwargs.get("stream")))
+                # Session.send streams by the session's default when not told.
+                stream = bool(kwargs.get("stream", self.capture._session.stream))
+                self.capture._finish_call(seen, local.started, result, error, stream)
 
 
-def _unread_reason(
-    response: requests.Response, *, stream: bool, error: BaseException | None, last: bool
-) -> str | None:
-    """Why requests left *response*'s body unread, or None when it read it."""
-    content = response.__dict__.get("_content", False)
-    if content is not False:
-        return None
-    if error is not None and last:
-        return f"read_failed: {type(error).__name__}"
-    if stream:
-        return "streamed"
-    # requests reads every non-streamed body; a hop whose read failed is one it
-    # tolerated in resolve_redirects and drained raw.
-    return "read_failed"
+# What reading a body raises (Response.iter_content turns urllib3's read errors
+# into these); any other error a call raises came from somewhere else.
+_READ_ERRORS: tuple[type[BaseException], ...] = (
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.ContentDecodingError,
+    requests.exceptions.StreamConsumedError,
+)
+
+
+def _read_by_requests(response: requests.Response) -> bool:
+    """Whether requests read *response*'s body (``Response.content`` succeeded)."""
+    return response.__dict__.get("_content", False) is not False
 
 
 class HttpCaptureBackend:
@@ -257,13 +308,14 @@ class HttpCaptureBackend:
     :class:`_RecordingAdapterSend`); ``stop_capture`` puts them back. Each
     response is recorded once requests is done with the call that produced it,
     so recording reads no body requests would not read and changes no outcome,
-    hook or cookie. An adapter whose pickled state is not ``HTTPAdapter``'s is
-    not wrapped (its wrapper could be pickled with the session), and neither is
-    one mounted after the capture starts: a request through either is still
-    recorded from the response the session returns, timed from its
-    ``elapsed``, but one that raises is not, and a warning says so. Recording
-    never raises into the request: a response it cannot record is logged and
-    skipped. A response that arrives after ``stop_capture`` is dropped.
+    hook or cookie. A session or adapter whose pickled state is not
+    ``requests``' own is not wrapped, since its wrapper could be pickled with
+    it; neither is an adapter mounted after the capture starts. A request
+    through such an adapter is still recorded from the response the session
+    returns, timed from the call's start in chain order, but one that raises
+    is not, and a warning says so. Recording never raises into the request: a
+    response it cannot record is logged and skipped. A response that arrives
+    after ``stop_capture`` is dropped.
 
     With *spool_path*, each entry is appended to that file as JSON when it is
     recorded, scrubbed of *redact* first, and :meth:`iter_har_entries` reads
@@ -277,14 +329,14 @@ class HttpCaptureBackend:
         max_body_size: int = MAX_RESPONSE_BODY_SIZE,
         bodies_dir: Path | None = None,
         spool_path: Path | None = None,
-        redact: Any = (),
+        redact: Redaction | Iterable[str] = (),
     ) -> None:
+        from graftpunk.observe.run import as_redaction
+
         self._session = session
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
         self._spool_path = spool_path
-        from graftpunk.observe.run import as_redaction
-
         self._redact = as_redaction(redact)
         self._entries: list[dict[str, Any]] = []
         self._count = 0
@@ -299,40 +351,125 @@ class HttpCaptureBackend:
             self._count += 1
             return f"http-{self._count}"
 
-    def _seen(self, response: requests.Response, started: float) -> None:
-        """Note a response an adapter returned, for its session call to record."""
+    def _seen(self, noted: _Noted) -> None:
+        """Note what an adapter returned (or raised), for its session call to record."""
         seen = getattr(self._local, "seen", None)
         if seen is not None:
-            seen.append((response, started))
+            seen.append(noted)
             return
         # An adapter used without the session's send: nothing will read the
         # body on requests' behalf here, and the recorder reads none itself.
-        self.record(response, started, 0.0, body_unread="not_read")
+        if noted.response is not None:
+            self.record(
+                noted.response, noted.started, noted.duration or 0.0, body_unread="not_read"
+            )
+        elif noted.request is not None and noted.error is not None:
+            self.record_failure(noted.request, noted.started, noted.duration or 0.0, noted.error)
 
     def _finish_call(
         self,
-        seen: list[tuple[requests.Response, float]],
+        seen: list[_Noted],
+        call_started: float,
         result: requests.Response | None,
         error: BaseException | None,
         stream: bool,
     ) -> None:
-        """Record every response of one session call, as requests left it."""
+        """Record every request of one session call, as requests left it."""
         try:
-            noted = {id(response) for response, _started in seen}
-            if result is not None:
-                for response in [*result.history, result]:
-                    if id(response) not in noted:
-                        self._warn_unwrapped()
-                        elapsed = response.elapsed.total_seconds()
-                        seen.append((response, time.time() - elapsed))
-            seen.sort(key=lambda pair: pair[1])
-            for index, (response, started) in enumerate(seen):
-                reason = _unread_reason(
-                    response, stream=stream, error=error, last=index == len(seen) - 1
-                )
-                self.record(response, started, response.elapsed.total_seconds(), body_unread=reason)
+            self._record_call(seen, call_started, result, error, stream)
         except Exception as exc:  # noqa: BLE001 - recording must never break the request
             LOG.error("http_capture_record_failed", error=str(exc), exc_type=type(exc).__name__)
+
+    def _record_call(
+        self,
+        seen: list[_Noted],
+        call_started: float,
+        result: requests.Response | None,
+        error: BaseException | None,
+        stream: bool,
+    ) -> None:
+        noted = {id(n.response) for n in seen if n.response is not None}
+        if result is not None:
+            # Responses no wrapped adapter noted (a late-mounted adapter): timed
+            # in chain order from the call's start, each after the one before.
+            next_start = call_started
+            for response in [*result.history, result]:
+                elapsed = response.elapsed.total_seconds()
+                if id(response) in noted:
+                    match = next(n for n in seen if n.response is response)
+                    next_start = match.started + (match.duration or elapsed)
+                    continue
+                self._warn_unwrapped()
+                seen.append(_Noted(next_start, elapsed, response))
+                next_start += elapsed
+        seen.sort(key=lambda n: n.started)
+        responses = [n for n in seen if n.response is not None]
+        last = responses[-1].response if responses else None
+        failed_send = any(n.response is None for n in seen)
+        for item in seen:
+            if item.response is None:
+                if item.request is not None and item.error is not None:
+                    self.record_failure(
+                        item.request, item.started, item.duration or 0.0, item.error
+                    )
+                continue
+            response = item.response
+            reason = self._unread_reason(
+                response,
+                stream=stream,
+                error=error,
+                last=response is last and not failed_send,
+                followed=response is not last or failed_send,
+            )
+            self.record(
+                response,
+                item.started,
+                item.duration if item.duration is not None else response.elapsed.total_seconds(),
+                body_unread=reason,
+            )
+
+    @staticmethod
+    def _unread_reason(
+        response: requests.Response,
+        *,
+        stream: bool,
+        error: BaseException | None,
+        last: bool,
+        followed: bool,
+    ) -> str | None:
+        """Why *response*'s body is not in hand, or None when it is.
+
+        *last* is the call's final response, the one whose read the call's own
+        error can come from; *followed* is a response requests moved past to
+        send another request.
+
+        Only a read that raised is a ``read_failed``. A call's error that a
+        body read did not raise (a hook's ``raise_for_status``, a refused
+        connection on the next hop) is not blamed on any body: the last
+        response's body, if untouched and not streamed, is read here, after
+        requests has raised, and requests keeps it for the caller.
+        """
+        if _read_by_requests(response):
+            return None
+        if stream:
+            return "streamed"
+        if last and isinstance(error, _READ_ERRORS):
+            # requests raised reading this body.
+            return f"read_failed: {type(error).__name__}"
+        if response.is_redirect and followed:
+            # resolve_redirects reads a hop's body before following it; an
+            # unread hop is one whose read failed and was tolerated.
+            return "read_failed"
+        if last and error is not None:
+            # The call failed after the response arrived, before requests read
+            # the body (a hook raised): read it now, as requests would have.
+            try:
+                response.content  # noqa: B018
+            except Exception as exc:  # noqa: BLE001 - the call's own error stands
+                return f"read_failed: {type(exc).__name__}"
+            return None
+        # Nothing read it: a 401 a hook replaced, a hop a hook discarded.
+        return "not_read"
 
     def _warn_unwrapped(self) -> None:
         if self._warned_unwrapped:
@@ -346,6 +483,39 @@ class HttpCaptureBackend:
                 "the response, and a request through it that raises is not recorded"
             ),
         )
+
+    def record_failure(
+        self,
+        request: requests.PreparedRequest,
+        started: float,
+        elapsed: float,
+        error: BaseException,
+    ) -> None:
+        """Add one entry for a request that got no response; log and skip on failure."""
+        if self._stopped:
+            LOG.debug("http_capture_response_after_stop", url=request.url)
+            return
+        request_id = self._next_id()
+        try:
+            self._keep(
+                har_entry_for_failed_request(
+                    request,
+                    request_id,
+                    started=started,
+                    elapsed=elapsed,
+                    error=error,
+                    max_body_size=self._max_body_size,
+                    bodies_dir=self._bodies_dir,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - recording must never break the request
+            LOG.error(
+                "http_capture_record_failed",
+                request_id=request_id,
+                url=request.url,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
 
     def record(
         self,
@@ -405,7 +575,17 @@ class HttpCaptureBackend:
         with self._lock:
             self._stopped = False
         session_send = self._session.__dict__.get("send")
-        if not isinstance(session_send, _RecordingSessionSend):
+        if isinstance(session_send, _RecordingSessionSend):
+            pass
+        elif type(self._session).__getstate__ is not requests.Session.__getstate__:
+            # Its pickled state may hold its instance dict, and with it the
+            # wrapper and this capture's thread-local state.
+            LOG.warning(
+                "http_capture_session_not_recorded",
+                session=type(self._session).__name__,
+                hint="Its pickled state is not requests.Session's, so its send is not wrapped",
+            )
+        else:
             self._session.__dict__["send"] = _RecordingSessionSend(self, self._session.send)
             self._wrapped.append(self._session)
         for prefix, adapter in self._session.adapters.items():

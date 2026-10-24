@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     import requests
 
     from graftpunk.observe.capture import CaptureBackend
+    from graftpunk.observe.run import Redaction
     from graftpunk.observe.storage import ObserveStorage
 
 LOG = get_logger(__name__)
@@ -110,7 +112,7 @@ class ObservabilityContext:
             if self._storage is not None and self._storage.remove_if_empty():
                 self._storage = None
 
-    def finish(self, redact: Any = ()) -> None:
+    def finish(self, redact: Redaction | Iterable[str] = ()) -> None:
         """Stop the capture and write its HAR, bodies and console logs to the run.
 
         Safe to call when observe is off or nothing was captured. Nothing here
@@ -150,7 +152,7 @@ def build_observe_context(
     driver: Any,
     mode: Literal["off", "full"],
     http_session: requests.Session | None = None,
-    redact: Any = (),
+    redact: Redaction | Iterable[str] = (),
 ) -> ObservabilityContext:
     """Build an observability context for a plugin command or session.
 

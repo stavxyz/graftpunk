@@ -22,9 +22,10 @@ Example:
 
 import asyncio
 import copy
+from collections.abc import Iterable
 from http import cookiejar
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 import requestium
@@ -50,6 +51,9 @@ from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.capture import create_capture_backend
 from graftpunk.observe.storage import ObserveStorage, session_dirname
 from graftpunk.tokens import PICKLED_SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
+
+if TYPE_CHECKING:
+    from graftpunk.observe.run import Redaction
 
 LOG = get_logger(__name__)
 
@@ -166,7 +170,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         self._observe_mode = observe_mode
         self._capture: Any = None
         self._observe_storage: ObserveStorage | None = None
-        self._observe_redact: Any = ()
+        self._observe_redact: Redaction | tuple[str, ...] = ()
 
         if backend == "nodriver":
             # Use nodriver backend directly (CDP-based, no ChromeDriver)
@@ -301,7 +305,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         return as_redaction(self._observe_redact).everything
 
     @observe_redact.setter
-    def observe_redact(self, values: Any) -> None:
+    def observe_redact(self, values: "Redaction | Iterable[str]") -> None:
         """Plain values are all secrets; a :class:`graftpunk.observe.run.Redaction`
         also names identifiers, which are left in URLs."""
         from graftpunk.observe.run import Redaction

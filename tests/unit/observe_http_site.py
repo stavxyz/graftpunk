@@ -17,6 +17,10 @@ Routes:
     GET  /badgz-redirect   302 to /home, ``Content-Encoding: gzip``, a body that is not gzip
     GET  /trunc-redirect   302 to /home, ``Content-Length: 500`` but 10 bytes, then closes
     GET  /trunc-cookie     200 setting ``sid``, ``Content-Length: 1000`` but 10 bytes, then closes
+    GET  /bad400       400 with a JSON error body
+    GET  /badgz-to-closed  302 with a body that is not gzip, to a port nothing listens on
+    GET  /needauth     401 unless ``Authorization: ok``, then 200
+    GET  /fastredir    302 to /slow
     HEAD (any path)    200 with no body
     POST /api/search   echoes the JSON body back
     POST /login        302 to /home, setting two cookies
@@ -70,6 +74,27 @@ class _Site(BaseHTTPRequestHandler):
         }
         if self.path in ("/truncated", "/trunc-cookie", "/trunc-redirect"):
             self._cut_short()
+            return
+        if self.path == "/bad400":
+            self._send(400, b'{"error": "bad thing"}', "application/json")
+            return
+        if self.path == "/badgz-to-closed":
+            self._send(
+                302,
+                b"not gzip at all",
+                "text/html",
+                Location="http://127.0.0.1:9/gone",
+                Content_Encoding="gzip",
+            )
+            return
+        if self.path == "/needauth":
+            if self.headers.get("Authorization") == "ok":
+                self._send(200, b'{"ok": 1}', "application/json")
+            else:
+                self._send(401, b'{"error": "who are you"}', "application/json")
+            return
+        if self.path == "/fastredir":
+            self._send(302, b"", "text/html", Location="/slow")
             return
         if self.path == "/badgz-redirect":
             self._send(
