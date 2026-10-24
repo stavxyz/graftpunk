@@ -27,9 +27,15 @@ from typer.testing import CliRunner
 
 from graftpunk.exceptions import PluginError
 from graftpunk.plugins.cli_plugin import PluginParamSpec, SitePlugin, command
+from tests.unit.cli_harness import strip_ansi
 
 # Characters that change under URL-encoding and JSON-escaping, so each wire form differs.
 API_KEY = 'k3y/with+odd=chars&"quote'
+
+
+def _runner() -> CliRunner:
+    """A runner wide enough that typer>=0.26's rich panels neither wrap nor cut a line."""
+    return CliRunner(env={"COLUMNS": "200"})
 
 
 def _forms(secret: str) -> dict[str, str]:
@@ -110,10 +116,10 @@ def _observed_run(
         patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path),
         patch("graftpunk.cli.plugin_runtime.format_output"),
     ):
-        result = CliRunner().invoke(
+        result = _runner().invoke(
             _app(plugin, name), [name, *args], obj={"observe_mode": "full"}, **invoke
         )
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, strip_ansi(result.output)
     (run,) = [p for p in tmp_path.glob("[!.]*/*") if p.is_dir()]
     bodies = [p.read_bytes() for p in sorted((run / "bodies").glob("*.request*"))]
     return (run / "network.har").read_text(), bodies
@@ -225,11 +231,11 @@ class TestTheRunHoldsNoSecret:
 class TestNoEcho:
     def test_help_shows_no_default(self, site: str) -> None:
         spec = PluginParamSpec.option("api_key", default="default-key-value", secret=True)
-        result = CliRunner().invoke(_app(_plugin(site, spec)), ["search", "--help"])
+        result = _runner().invoke(_app(_plugin(site, spec)), ["search", "--help"])
 
-        assert result.exit_code == 0, result.output
-        assert "--api-key" in result.output
-        assert "default-key-value" not in result.output
+        assert result.exit_code == 0, strip_ansi(result.output)
+        assert "--api-key" in strip_ansi(result.output)
+        assert "default-key-value" not in strip_ansi(result.output)
 
     def test_help_shows_the_variable_name_and_not_its_value(
         self, site: str, monkeypatch: pytest.MonkeyPatch
@@ -238,11 +244,11 @@ class TestNoEcho:
         spec = PluginParamSpec.option(
             "api_key", secret=True, click_kwargs={"envvar": "KEYSHOP_API_KEY"}
         )
-        result = CliRunner().invoke(_app(_plugin(site, spec)), ["search", "--help"])
+        result = _runner().invoke(_app(_plugin(site, spec)), ["search", "--help"])
 
-        assert result.exit_code == 0, result.output
-        assert "KEYSHOP_API_KEY" in result.output
-        assert API_KEY not in result.output
+        assert result.exit_code == 0, strip_ansi(result.output)
+        assert "KEYSHOP_API_KEY" in strip_ansi(result.output)
+        assert API_KEY not in strip_ansi(result.output)
 
     def test_show_default_is_refused(self, site: str) -> None:
         spec = PluginParamSpec.option(
@@ -260,16 +266,16 @@ class TestNoEcho:
             patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path),
             capture_logs() as logs,
         ):
-            result = CliRunner().invoke(
+            result = _runner().invoke(
                 _app(_plugin(site, spec), "fail"),
                 ["fail", "--api-key", API_KEY],
                 obj={"observe_mode": observe_mode},
             )
 
         assert result.exit_code == 1
-        assert "Command failed: 404 Client Error" in result.output
+        assert "Command failed: 404 Client Error" in strip_ansi(result.output)
         for form in _forms(API_KEY).values():
-            assert form not in result.output
+            assert form not in strip_ansi(result.output)
             assert form not in json.dumps(logs, default=str)
         (failed,) = [e for e in logs if e["event"] == "plugin_command_failed"]
         assert failed["log_level"] == "error"
@@ -280,7 +286,7 @@ class TestNoEcho:
     ) -> None:
         spec = PluginParamSpec.option("api_key")
         with capture_logs() as logs:
-            result = CliRunner().invoke(
+            result = _runner().invoke(
                 _app(_plugin(site, spec), "fail"), ["fail", "--api-key", API_KEY]
             )
 
@@ -298,11 +304,11 @@ class TestPrompt:
         app = _app(plugin, "echo")
 
         with patch("graftpunk.cli.plugin_runtime.format_output"):
-            result = CliRunner().invoke(app, ["echo"], input=f"{API_KEY}\n")
+            result = _runner().invoke(app, ["echo"], input=f"{API_KEY}\n")
 
-        assert result.exit_code == 0, result.output
-        assert "Api key:" in result.output
-        assert API_KEY not in result.output
+        assert result.exit_code == 0, strip_ansi(result.output)
+        assert "Api key:" in strip_ansi(result.output)
+        assert API_KEY not in strip_ansi(result.output)
         assert plugin.received == [API_KEY]  # ty: ignore[unresolved-attribute]
 
     def test_a_given_secret_is_not_prompted_for(self, site: str, tty_stdin: None) -> None:
@@ -310,10 +316,10 @@ class TestPrompt:
         plugin = _plugin(site, spec)
 
         with patch("graftpunk.cli.plugin_runtime.format_output"):
-            result = CliRunner().invoke(_app(plugin, "echo"), ["echo", "--api-key", API_KEY])
+            result = _runner().invoke(_app(plugin, "echo"), ["echo", "--api-key", API_KEY])
 
-        assert result.exit_code == 0, result.output
-        assert "Api key:" not in result.output
+        assert result.exit_code == 0, strip_ansi(result.output)
+        assert "Api key:" not in strip_ansi(result.output)
         assert plugin.received == [API_KEY]  # ty: ignore[unresolved-attribute]
 
     def test_a_missing_required_secret_is_an_error_without_a_tty(
@@ -323,23 +329,21 @@ class TestPrompt:
         spec = PluginParamSpec.option("api_key", required=True, secret=True)
         plugin = _plugin(site, spec)
 
-        result = CliRunner().invoke(_app(plugin, "echo"), ["echo"], input=f"{API_KEY}\n")
+        result = _runner().invoke(_app(plugin, "echo"), ["echo"], input=f"{API_KEY}\n")
 
         assert result.exit_code == 2
-        assert "Missing option '--api-key'" in result.output
-        assert "Api key:" not in result.output
+        assert "Missing option '--api-key'" in strip_ansi(result.output)
+        assert "Api key:" not in strip_ansi(result.output)
         assert plugin.received == []  # ty: ignore[unresolved-attribute]
 
     def test_a_plain_required_option_is_not_prompted_for_on_a_tty(
         self, site: str, tty_stdin: None
     ) -> None:
         spec = PluginParamSpec.option("api_key", required=True)
-        result = CliRunner().invoke(
-            _app(_plugin(site, spec), "echo"), ["echo"], input=f"{API_KEY}\n"
-        )
+        result = _runner().invoke(_app(_plugin(site, spec), "echo"), ["echo"], input=f"{API_KEY}\n")
 
         assert result.exit_code == 2
-        assert "Missing option '--api-key'" in result.output
+        assert "Missing option '--api-key'" in strip_ansi(result.output)
 
 
 class TestWhatASecretCannotBe:
@@ -436,11 +440,11 @@ class TestYaml:
         (spec,) = plugin.get_commands()[0].params
         assert spec.secret
         with patch("graftpunk.cli.plugin_runtime.format_output"):
-            result = CliRunner().invoke(_app(plugin), ["search"], input=f"{API_KEY}\n")
+            result = _runner().invoke(_app(plugin), ["search"], input=f"{API_KEY}\n")
 
-        assert result.exit_code == 0, result.output
-        assert "Api key:" in result.output
-        assert API_KEY not in result.output
+        assert result.exit_code == 0, strip_ansi(result.output)
+        assert "Api key:" in strip_ansi(result.output)
+        assert API_KEY not in strip_ansi(result.output)
 
     @pytest.mark.parametrize(
         ("param", "message"),
