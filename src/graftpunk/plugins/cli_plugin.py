@@ -486,9 +486,14 @@ class CommandResult:
     Attributes:
         data: The command response data.
         metadata: Optional metadata dict (pagination, status info, etc.).
-        format_hint: Preferred output format (e.g. ``"json"``, ``"table"``).
-            Only applies when the user has not explicitly passed ``--format``
-            on the command line; an explicit ``--format`` always wins.
+        format_hint: Preferred output format: a built-in formatter name
+            (``"json"``, ``"table"``, ``"raw"``, ``"csv"``, ``"xlsx"``,
+            ``"pdf"``), a name the plugin registered in ``format_overrides``,
+            or an entry-point formatter's name. An explicit ``--format``
+            always wins. A built-in name the plugin did not override applies
+            only to a terminal, never to a pipe or an ``--output`` file. Any
+            other name applies everywhere, and its formatter decides from
+            ``output_path`` and the console it is handed (#284).
         output_config: Configuration for column filtering and view extraction.
         format_overrides: Per-command formatter overrides. Keys are format
             names, values are OutputFormatter instances. These take highest
@@ -501,7 +506,7 @@ class CommandResult:
 
     data: Any
     metadata: dict[str, Any] = field(default_factory=dict)
-    format_hint: Literal["json", "table", "raw", "csv", "xlsx", "pdf"] | None = None
+    format_hint: str | None = None
     output_config: OutputConfig | None = None
     format_overrides: dict[str, OutputFormatter] | None = None
     _plugin_formatters: dict[str, OutputFormatter] | None = field(

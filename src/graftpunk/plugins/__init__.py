@@ -50,6 +50,7 @@ from graftpunk.plugins.export import (
 from graftpunk.plugins.formatters import (
     OutputFormatter,
     discover_formatters,
+    write_rendered_to_file,
 )
 from graftpunk.plugins.output_config import (
     ColumnDisplayConfig,
@@ -93,6 +94,7 @@ __all__ = [
     # Formatters
     "OutputFormatter",
     "discover_formatters",
+    "write_rendered_to_file",
     # Output configuration
     "ColumnDisplayConfig",
     "ColumnFilter",

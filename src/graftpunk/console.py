@@ -20,8 +20,13 @@ err_console = Console(stderr=True)
 out_console = Console()
 
 
-def _stream_is_tty(console: Console) -> bool:
+def stream_is_tty(console: Console) -> bool:
     """Whether the console's stream is an interactive terminal.
+
+    Safe on any stream: a closed stream, a ``None`` ``sys.stdout`` (which
+    Rich replaces with a null file) or an object with no ``isatty`` all
+    answer ``False`` instead of raising, which ``sys.stdout.isatty()`` does
+    not guarantee.
 
     Deliberately not ``console.is_terminal``: Rich reports a terminal whenever
     FORCE_COLOR is set, including for a pipe — the environment #144 came from.
@@ -33,6 +38,10 @@ def _stream_is_tty(console: Console) -> bool:
         return bool(isatty())
     except ValueError:  # closed stream (e.g. at interpreter/pytest teardown)
         return False
+
+
+# Plugins imported the private name before stream_is_tty was public (#284).
+_stream_is_tty = stream_is_tty
 
 
 def write_raw(text: str, console: Console, output_path: str = "") -> None:
