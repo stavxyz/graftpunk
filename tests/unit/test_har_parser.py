@@ -486,6 +486,78 @@ class TestHeaderParsing:
         assert "" not in result.entries[0].request.headers
         assert "Valid" in result.entries[0].request.headers
 
+    @staticmethod
+    def _request_with_headers(headers: list[dict], cookies: list | None = None) -> HARRequest:
+        request: dict = {"method": "GET", "url": "https://x.com", "headers": headers}
+        if cookies is not None:
+            request["cookies"] = cookies
+        entry = {
+            "startedDateTime": "2024-01-01T00:00:00Z",
+            "request": request,
+            "response": {"status": 200, "statusText": "OK", "headers": [], "cookies": []},
+        }
+        result = parse_har_string(json.dumps({"log": {"entries": [entry]}}))
+        assert not result.errors
+        return result.entries[0].request
+
+    def test_cookie_headers_fill_a_missing_cookies_array(self) -> None:
+        """Each line of a joined value and each ; pair is a cookie; a pair with no
+        = or no name is skipped; names and values are stripped."""
+        request = self._request_with_headers(
+            [{"name": "Cookie", "value": "a=1\nb= two ; flag; c=3;=orphan"}]
+        )
+        assert request.cookies == [
+            {"name": "a", "value": "1"},
+            {"name": "b", "value": "two"},
+            {"name": "c", "value": "3"},
+        ]
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            {"name": "Cookie", "value": None},
+            {"name": "Cookie", "value": 7},
+            {"name": None, "value": "a=1"},
+            {"value": "a=1"},
+        ],
+        ids=["null-value", "number-value", "null-name", "no-name"],
+    )
+    def test_a_malformed_cookie_header_is_skipped_not_fatal(self, header: dict) -> None:
+        """The fallback must never fail an entry that parses without it."""
+        request = self._request_with_headers([header, {"name": "cookie", "value": "b=2"}])
+        assert request.cookies == [{"name": "b", "value": "2"}]
+
+    @pytest.mark.parametrize("array", ["absent", "empty"])
+    def test_every_cookie_header_counts_when_the_array_has_none(self, array: str) -> None:
+        """HTTP/2 can split one Cookie header into several, in any case."""
+        headers = [
+            {"name": "cookie", "value": "sessionid=s1; lot=12"},
+            {"name": "Cookie", "value": "visit=v1"},
+        ]
+        request = self._request_with_headers(headers, None if array == "absent" else [])
+        assert request.cookies == [
+            {"name": "sessionid", "value": "s1"},
+            {"name": "lot", "value": "12"},
+            {"name": "visit", "value": "v1"},
+        ]
+
+    def test_the_cookie_header_is_not_read_when_the_array_has_cookies(self) -> None:
+        """The array is the recorder's own parse of the same header; reading both
+        would count one cookie twice."""
+        request = self._request_with_headers(
+            [{"name": "Cookie", "value": "lot=12; extra=1"}], [{"name": "lot", "value": "12"}]
+        )
+        assert request.cookies == [{"name": "lot", "value": "12"}]
+
+    def test_the_recorder_and_the_parser_read_a_cookie_header_alike(self) -> None:
+        """The recorder writes request.cookies from the same helper the parser
+        falls back to, so a HAR with or without the array gives one answer."""
+        from graftpunk.observe.capture import _request_cookies
+
+        value = "a=1\r\nb= two ; flag; c=3;=orphan"
+        parsed = self._request_with_headers([{"name": "Cookie", "value": value}])
+        assert _request_cookies({"Cookie": value}) == parsed.cookies
+
 
 class TestHARParseResult:
     """Tests for HARParseResult and error handling."""

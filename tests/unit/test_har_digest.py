@@ -4591,22 +4591,17 @@ class TestFlaggedNamesOf:
         if array == "absent":
             del entry["request"]["cookies"]
         har = _write_har(tmp_path, [entry])
-        parsed = parse_har_file(har).entries
-        assert parsed[0].request.cookies == [
-            {"name": "sessionid", "value": "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"},
-            {"name": "lot", "value": "12"},
-            {"name": "visit", "value": "Hn8Ks3JdZq9XkLmPwR4t7Bv2"},
-        ]
         result = digest(DigestSource.from_har(har))
-        assert flagged_names_of(result, parsed) == ("sessionid", "visit")
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("sessionid", "visit")
 
-    def test_the_cookie_header_is_not_read_when_the_array_has_cookies(self, tmp_path: Path) -> None:
-        """The array is the recorder's own parse of the same header; reading both
-        would count one cookie twice."""
-        entry = self._with_cookies([], (("lot", "12"),))
-        entry["request"]["headers"] = [{"name": "Cookie", "value": "lot=12"}]
+    def test_a_cookie_only_ever_sent_empty_is_left_out(self, tmp_path: Path) -> None:
+        """An empty value a request sends is what the browser sent, so the cookie
+        held nothing; a response that only ever sets a cookie empty may be a
+        recorder that dropped the value, so that cookie stays flagged."""
+        entry = self._with_cookies([("visit", "")], (("cart", ""),))
         har = _write_har(tmp_path, [entry])
-        assert parse_har_file(har).entries[0].request.cookies == [{"name": "lot", "value": "12"}]
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
 
     def test_a_sent_id_cookie_name_is_left_out_and_counted(self, tmp_path: Path) -> None:
         entry = self._with_cookies(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -200,23 +201,37 @@ def _set_cookie_lines(headers_list: list[dict[str, str]]) -> list[tuple[str, boo
     return cookies
 
 
-def _cookie_header_pairs(headers_list: list[dict[str, str]]) -> list[dict[str, Any]]:
-    """``{"name", "value"}`` for every cookie a ``Cookie`` request header in
-    *headers_list* sends, in order: every header of that name in any case (HTTP/2
-    can split one into several), every line of a newline-joined value, and every
-    ``;``-separated ``name=value`` pair. A pair with no ``=`` or no name is
-    skipped. Reads the raw headers list, since the ``_parse_headers`` dict keeps
-    only the last header of a name."""
-    cookies: list[dict[str, Any]] = []
-    for header in headers_list:
-        if header.get("name", "").lower() != "cookie":
-            continue
-        for line in _LINE_BREAK_RE.split(header.get("value", "")):
+def cookie_header_pairs(values: Iterable[str]) -> list[dict[str, str]]:
+    """``{"name", "value"}`` for every cookie the ``Cookie`` header *values* send,
+    in order: every line of a value (Chromium joins several headers with line
+    breaks, and HTTP/2 can split one into several), and every ``;``-separated
+    ``name=value`` pair, name and value stripped. A pair with no ``=`` or no name
+    is skipped (RFC 6265 lets a server send a nameless ``=value``; HAR has no
+    representation for it). The recorder writes ``request.cookies`` with this
+    and the parser falls back to it, so the two cannot drift."""
+    cookies: list[dict[str, str]] = []
+    for value in values:
+        for line in _LINE_BREAK_RE.split(value):
             for pair in line.split(";"):
-                name, sep, value = pair.partition("=")
+                name, sep, cookie_value = pair.partition("=")
                 if sep and name.strip():
-                    cookies.append({"name": name.strip(), "value": value.strip()})
+                    cookies.append({"name": name.strip(), "value": cookie_value.strip()})
     return cookies
+
+
+def _cookie_header_values(headers_list: list[Any]) -> list[str]:
+    """The value of every ``Cookie`` header in *headers_list*, the raw HAR list (the
+    ``_parse_headers`` dict keeps only the last header of a name), in any case.
+    A header whose name or value is not a string is skipped, since the fallback
+    that reads these must never fail an entry that parses without it."""
+    values: list[str] = []
+    for header in headers_list:
+        if not isinstance(header, dict):
+            continue
+        name, value = header.get("name"), header.get("value")
+        if isinstance(name, str) and name.lower() == "cookie" and isinstance(value, str):
+            values.append(value)
+    return values
 
 
 def _parse_set_cookie_names(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
@@ -308,7 +323,7 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         # A recorder that leaves the array out (or empty) still kept the header,
         # and a cookie the request sends must still be seen (#274).
         cookies=_parse_cookies(request_data.get("cookies") or [])
-        or _cookie_header_pairs(request_data.get("headers", [])),
+        or cookie_header_pairs(_cookie_header_values(request_data.get("headers", []))),
         post_data=post_data,
         query_string=request_data.get("queryString", []),
         post_data_mime_type=post_data_mime_type,
