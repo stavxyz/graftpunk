@@ -1436,9 +1436,9 @@ The Python template at `~/.config/graftpunk/plugins/` provides a starting point 
 The output format for command results follows this precedence (highest to lowest):
 
 1. **`--format` CLI flag** — Explicit user choice always wins. Detection uses Click's `get_parameter_source()` to distinguish "user passed `-f json`" from "json is the default."
-2. **`CommandResult.format_hint` naming a plugin-registered formatter** (a name in `SitePlugin.format_overrides` or `CommandResult.format_overrides` that is not a core formatter). It is the plugin's own default and applies to the terminal, a pipe and an `--output` file; the formatter receives `output_path` and the console and decides from them.
-3. **`CommandResult.format_hint` naming a core formatter** (`json`, `table`, `raw`, `csv`, `xlsx`, `pdf`). It applies only when there is no `--output` and stdout is a terminal (`graftpunk.console.stream_is_tty`), so a plugin can set it unconditionally (#284).
-4. **`--output` suffix**: `.json`, `.csv`, `.xlsx` or `.pdf` (any case) picks that format.
+2. **`CommandResult.format_hint` naming a formatter the plugin registered or an entry point added** (any name in `SitePlugin.format_overrides` or `CommandResult.format_overrides`, a built-in name included, or a `graftpunk.formatters` entry point under a name that is not built in). It applies to the terminal, a pipe and an `--output` file, as through 1.23.0; the formatter receives `output_path` and the console and decides from them.
+3. **`CommandResult.format_hint` naming a built-in formatter the plugin did not override** (`json`, `table`, `raw`, `csv`, `xlsx`, `pdf`). It applies only when there is no `--output` and stdout is a terminal (`graftpunk.console.stream_is_tty`), so a plugin can set it unconditionally (#284).
+4. **`--output` suffix**: `.json`, `.csv`, `.xlsx` or `.pdf` (any case, a bare `.csv` name included) picks that format. With an empty result, `.csv` writes an empty file, or the header row when the default view lists its columns.
 5. **Default (`json`)**: pretty-printed JSON on a terminal, plain JSON otherwise.
 
 The `--view` option applies after format selection. It filters `OutputConfig.views` by name and optionally overrides columns per view. If the command has no `output_config`, `--view` is ignored with a warning.

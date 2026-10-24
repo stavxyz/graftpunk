@@ -123,6 +123,32 @@ _write_to_file = write_rendered_to_file
 _stream_is_tty = stream_is_tty
 
 
+def _warn_fallback(output_path: str, wanted: str, wrote: str) -> None:
+    """Say when a file named for one format is about to hold another."""
+    if output_path:
+        gp_console.warn(f"{output_path}: the data cannot be written as {wanted}; wrote {wrote}.")
+
+
+def _write_empty_csv(
+    output_config: OutputConfig | None, console: Console, output_path: str
+) -> None:
+    """Truncate *output_path* for an empty result, so yesterday's file never survives.
+
+    Writes the header row when the default view lists its columns, else an
+    empty file. The console gets nothing, as before.
+    """
+    if not output_path:
+        return
+    view = output_config.get_default_view() if output_config else None
+    text = ""
+    if view and view.columns and view.columns.mode == "include":
+        buf = io.StringIO()
+        csv.writer(buf, lineterminator="\n").writerow(view.columns.columns)
+        text = buf.getvalue()
+    write_raw(text, console, output_path)
+    gp_console.info(f"Saved: {output_path}")
+
+
 def _resolve_output_filepath(output_path: str, extension: str) -> Path:
     """Resolve the output file path for file-based formatters.
 
@@ -318,10 +344,12 @@ class CsvFormatter:
                 data_type=type(data).__name__,
                 fallback="raw",
             )
+            _warn_fallback(output_path, "CSV", "raw text")
             RawFormatter().format(data, console, output_path=output_path)
             return
         if not data:
             LOG.debug("csv_format_empty_list")
+            _write_empty_csv(output_config, console, output_path)
             return
         if not all(isinstance(item, dict) for item in data):
             LOG.warning(
@@ -329,6 +357,7 @@ class CsvFormatter:
                 data_type="list[mixed]",
                 fallback="raw",
             )
+            _warn_fallback(output_path, "CSV", "raw text")
             RawFormatter().format(data, console, output_path=output_path)
             return
 
@@ -340,6 +369,7 @@ class CsvFormatter:
 
         if not data:
             LOG.debug("csv_format_empty_after_config")
+            _write_empty_csv(output_config, console, output_path)
             return
 
         headers = ordered_keys(data)
@@ -504,6 +534,7 @@ class PdfFormatter:
             data = [data]
         if not isinstance(data, list):
             # Can't render as PDF table -- fall back to JSON
+            _warn_fallback(output_path, "a PDF table", "JSON")
             JsonFormatter().format(data, console, output_path=output_path)
             return
 
@@ -566,6 +597,16 @@ _SUFFIX_FORMATS: dict[str, str] = {
 }
 
 
+def _output_suffix(output_path: str) -> str:
+    """The lower-cased suffix of *output_path*, counting a dotfile name such as ``.csv``.
+
+    ``Path(".csv").suffix`` is empty, so the name is split by hand.
+    """
+    name = Path(output_path).name.lower()
+    _, dot, ext = name.rpartition(".")
+    return f".{ext}" if dot else ""
+
+
 def format_output(
     data: Any,
     format_type: str,
@@ -581,17 +622,20 @@ def format_output(
     The format is chosen in this order (#284):
 
     1. An explicit ``--format``/``-f`` (*user_explicit*) always wins.
-    2. A ``format_hint`` naming a formatter the plugin registered itself
-       (in ``SitePlugin.format_overrides`` or
-       ``CommandResult.format_overrides``, under a name that is not a core
-       formatter) is the plugin's own default, so it applies everywhere: the
-       terminal, a pipe and *output_path*. The formatter receives
+    2. A ``format_hint`` naming a formatter the plugin registered (in
+       ``SitePlugin.format_overrides`` or ``CommandResult.format_overrides``,
+       under any name, a built-in one included) or one installed through
+       the ``graftpunk.formatters`` entry-point group under a name that is
+       not built in applies everywhere: the terminal, a pipe and
+       *output_path*, as through 1.23.0. The formatter receives
        *output_path* and *console* and decides from them.
-    3. A ``format_hint`` naming a core formatter (``table``, ``json`` and so
-       on) applies only when there is no *output_path* and the console's
-       stream is a terminal (:func:`graftpunk.console.stream_is_tty`).
+    3. A ``format_hint`` naming one of the six built-in formatters
+       (``json``, ``table``, ``raw``, ``csv``, ``xlsx`` or ``pdf``) that the
+       plugin did not override applies only when there is no *output_path*
+       and the console's stream is a terminal
+       (:func:`graftpunk.console.stream_is_tty`).
     4. With *output_path*, a ``.json``, ``.csv``, ``.xlsx`` or ``.pdf``
-       suffix (any case) picks that formatter.
+       suffix (any case, and a bare ``.csv`` name too) picks that formatter.
     5. Otherwise *format_type*, the CLI default.
 
     Formatter resolution follows a three-level override hierarchy:
@@ -623,7 +667,6 @@ def format_output(
     """
     # Level 3: core formatters (built-in + entry points)
     formatters = discover_formatters()
-    core_names = frozenset(formatters)
 
     # Level 2: plugin-wide overrides
     if plugin_formatters:
@@ -643,15 +686,21 @@ def format_output(
 
         hint = data.format_hint
         if not user_explicit and hint:
+            # Decided by registration, so installing a package whose entry
+            # point shares a plugin's formatter name cannot reroute it.
+            plugin_owned = hint in (plugin_formatters or {}) or hint in (
+                data.format_overrides or {}
+            )
             if hint not in formatters:
                 LOG.warning(
                     "unknown_format_hint",
                     hint=hint,
                     available=sorted(formatters.keys()),
                 )
-            elif hint not in core_names:
-                # The plugin's own formatter: it sees output_path and the
-                # console, so it decides for files and pipes itself.
+            elif plugin_owned or hint not in BUILTIN_FORMATTERS:
+                # The plugin's or a package's own formatter: it sees
+                # output_path and the console, so it decides for files and
+                # pipes itself.
                 hint_applied = True
                 effective_format = hint
             elif not output_path and stream_is_tty(console):
@@ -660,7 +709,7 @@ def format_output(
         data = data.data
 
     if not user_explicit and output_path and not hint_applied:
-        suffix_format = _SUFFIX_FORMATS.get(Path(output_path).suffix.lower())
+        suffix_format = _SUFFIX_FORMATS.get(_output_suffix(output_path))
         if suffix_format in formatters:
             effective_format = suffix_format
 

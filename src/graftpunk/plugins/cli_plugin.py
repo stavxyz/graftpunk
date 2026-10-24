@@ -486,14 +486,14 @@ class CommandResult:
     Attributes:
         data: The command response data.
         metadata: Optional metadata dict (pagination, status info, etc.).
-        format_hint: Preferred output format: a core formatter name
+        format_hint: Preferred output format: a built-in formatter name
             (``"json"``, ``"table"``, ``"raw"``, ``"csv"``, ``"xlsx"``,
-            ``"pdf"``) or a name the plugin registered in
-            ``format_overrides``. An explicit ``--format`` always wins. A
-            core name applies only to a terminal, never to a pipe or an
-            ``--output`` file, so a plugin can set it unconditionally. A
-            plugin-registered name applies everywhere, and its formatter
-            decides from ``output_path`` and the console it is handed (#284).
+            ``"pdf"``), a name the plugin registered in ``format_overrides``,
+            or an entry-point formatter's name. An explicit ``--format``
+            always wins. A built-in name the plugin did not override applies
+            only to a terminal, never to a pipe or an ``--output`` file. Any
+            other name applies everywhere, and its formatter decides from
+            ``output_path`` and the console it is handed (#284).
         output_config: Configuration for column filtering and view extraction.
         format_overrides: Per-command formatter overrides. Keys are format
             names, values are OutputFormatter instances. These take highest

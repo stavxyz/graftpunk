@@ -72,10 +72,8 @@ class _DefaultFormatter:
     ) -> None:
         from graftpunk.console import stream_is_tty, write_raw
 
-        if output_path.endswith(".csv"):
-            write_raw("id,total\n1,9.50\n", console, output_path)
-        elif output_path:
-            write_raw(json.dumps(data), console, output_path)
+        if output_path:
+            write_raw(f"plugin-default file {Path(output_path).name}\n", console, output_path)
         elif stream_is_tty(console):
             write_raw("default-table\n", console)
         else:
@@ -149,7 +147,7 @@ class TestFormatHintAndOutputFile:
         out = tmp_path / "rows.csv"
         result, _ = _invoke("mine", ["-o", str(out)])
         assert result.exit_code == 0, result.output
-        assert out.read_text(encoding="utf-8") == "id,total\n1,9.50\n"
+        assert out.read_text(encoding="utf-8") == "plugin-default file rows.csv\n"
 
     def test_plugin_hint_reaches_the_terminal(self) -> None:
         result, terminal = _invoke("mine", [])
