@@ -846,14 +846,8 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         # BrowserSession owns observe for selenium (its capture drains Chrome's
         # performance log, which is single-consumer), so hand it the mode and
         # the session name the run should be filed under.
-        # The header-role capture below reads the same performance log, so
-        # Chrome keeps it with observe off too: a login learns the same roles
-        # whatever --observe says.
         browser_session = BrowserSession(
-            backend="selenium",
-            headless=run_headless,
-            observe_mode=observe_mode,
-            performance_log=True,
+            backend="selenium", headless=run_headless, observe_mode=observe_mode
         )
         # The operating name the CLI computed, so the write-back and any
         # observe run land under this account's session (#151).

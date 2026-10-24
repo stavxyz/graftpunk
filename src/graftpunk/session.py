@@ -121,7 +121,6 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         observe_mode: str = "off",
         call_timeout: float | None = DEFAULT_CALL_TIMEOUT_S,
         navigate_timeout: float | None = DEFAULT_NAVIGATE_TIMEOUT_S,
-        performance_log: bool | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize browser session.
@@ -144,11 +143,6 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 the URL and raises ``BrowserError``; the tab stays on the
                 page it showed before. None waits without a limit. Default
                 120.
-            performance_log: Stealth Selenium driver only. Have ChromeDriver
-                keep Chrome's performance log, which every Selenium capture
-                (observe, and the login's header-role capture) reads. None,
-                the default, keeps it exactly when ``observe_mode`` is not
-                "off".
             **kwargs: Additional keyword arguments passed to requestium.Session.
 
         Raises:
@@ -214,10 +208,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 # The observe capture reads Chrome's performance log, which
                 # ChromeDriver keeps only when asked at launch; off mode pays nothing.
                 self._stealth_driver = create_stealth_driver(
-                    headless=headless,
-                    performance_log=(
-                        observe_mode != "off" if performance_log is None else performance_log
-                    ),
+                    headless=headless, performance_log=observe_mode != "off"
                 )
 
                 # Initialize requestium Session without creating a new driver

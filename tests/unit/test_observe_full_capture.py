@@ -258,34 +258,6 @@ class TestSeleniumSessionRecordsTheNetwork:
         if performance_log:
             assert capabilities["goog:loggingPrefs"] == {"performance": "ALL"}
 
-    def test_a_selenium_login_asks_for_the_performance_log_with_observe_off(self) -> None:
-        """The login's header-role capture reads the performance log, so a login
-        learns its header roles whatever --observe says."""
-        from graftpunk.plugins.login_engine import generate_login_method
-        from tests.unit.test_login_headless_observe import _make_plugin, _selenium_session_mock
-
-        mock_bs, _ = _selenium_session_mock()
-        login = generate_login_method(_make_plugin("selenium"))
-        with (
-            patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time.sleep"),
-        ):
-            login({"username": "u", "password": "p"})
-
-        assert mock_bs.call_args.kwargs["observe_mode"] == "off"
-        assert mock_bs.call_args.kwargs["performance_log"] is True
-
-    def test_an_explicit_performance_log_reaches_the_stealth_driver(self) -> None:
-        from graftpunk.session import BrowserSession
-
-        with (
-            patch("graftpunk.stealth.create_stealth_driver") as create,
-            patch("requestium.Session.__init__"),
-        ):
-            BrowserSession(backend="selenium", observe_mode="off", performance_log=True)
-
-        assert create.call_args.kwargs["performance_log"] is True
-
     @pytest.mark.parametrize(
         ("mime", "kept"),
         [
@@ -428,16 +400,19 @@ class TestHttpCapture:
         (entry,) = capture.get_har_entries()
         assert entry["response"]["content"]["text"] == text
 
-    def test_undeclared_text_that_is_not_utf8_uses_the_detected_charset(self, site: str) -> None:
-        session, capture = _recording()
-        response = session.get(f"{site}/latin1-bare", timeout=5)
+    def test_undeclared_text_that_is_not_utf8_is_kept_as_its_bytes(
+        self, site: str, tmp_path: Path
+    ) -> None:
+        session, capture = _recording(bodies_dir=tmp_path / "bodies")
+        session.get(f"{site}/latin1-bare", timeout=5)
         capture.stop_capture()
 
         (entry,) = capture.get_har_entries()
-        # requests' guess (apparent_encoding), whatever it is for these bytes;
-        # a guess on a short body can be wrong, and the HAR shows what it was.
-        expected = response.content.decode(response.apparent_encoding)
-        assert entry["response"]["content"]["text"] == expected
+        content = entry["response"]["content"]
+        # No charset is guessed: the HAR holds no text, and the bytes are kept.
+        assert content["text"] is None
+        assert content["_bodyFileReason"] == "not_decodable"
+        assert (tmp_path / content["_bodyFile"]).read_bytes() == LATIN1_TEXT.encode("latin-1")
 
     def test_a_body_with_no_type_is_kept_as_raw_bytes(self, site: str, tmp_path: Path) -> None:
         session, capture = _recording(bodies_dir=tmp_path / "bodies")
