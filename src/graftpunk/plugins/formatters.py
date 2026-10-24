@@ -369,7 +369,6 @@ class CsvFormatter:
 
         if not data:
             LOG.debug("csv_format_empty_after_config")
-            _write_empty_csv(output_config, console, output_path)
             return
 
         headers = ordered_keys(data)

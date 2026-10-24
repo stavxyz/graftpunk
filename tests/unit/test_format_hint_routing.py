@@ -259,11 +259,32 @@ class TestBuiltinHintWithOutputFile:
 class TestEmptyAndUnrenderableFiles:
     """-o never leaves an old file behind, and says when a file holds another format."""
 
-    def test_empty_result_truncates_an_existing_csv(self, tmp_path: Path) -> None:
+    def test_empty_result_truncates_an_existing_csv(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         out = tmp_path / "rows.csv"
         out.write_text("STALE FROM YESTERDAY\n", encoding="utf-8")
         console, _ = _tty_console()
         format_output(CommandResult(data=[]), "json", console, output_path=str(out))
+        assert out.read_text(encoding="utf-8") == ""
+        err = "".join(capsys.readouterr().err.split())
+        assert f"Saved:{out}" in err
+
+    def test_empty_result_with_exclude_filter_writes_no_header(self, tmp_path: Path) -> None:
+        out = tmp_path / "rows.csv"
+        out.write_text("STALE FROM YESTERDAY\n", encoding="utf-8")
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(
+                    name="orders",
+                    path="orders",
+                    columns=ColumnFilter(mode="exclude", columns=("secret",)),
+                )
+            ]
+        )
+        result = CommandResult(data={"orders": []}, output_config=cfg)
+        console, _ = _tty_console()
+        format_output(result, "json", console, output_path=str(out))
         assert out.read_text(encoding="utf-8") == ""
 
     def test_empty_result_with_explicit_csv_truncates(self, tmp_path: Path) -> None:
@@ -312,6 +333,16 @@ class TestEmptyAndUnrenderableFiles:
         console, _ = _tty_console()
         format_output(CommandResult(data=[1, 2]), "json", console, output_path=str(out))
         assert "1" in out.read_text(encoding="utf-8")
+        err = " ".join(capsys.readouterr().err.split())
+        assert "cannot be written as CSV; wrote raw text" in err
+
+    def test_csv_suffix_with_scalar_warns_and_writes_raw(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        out = tmp_path / "rows.csv"
+        console, _ = _tty_console()
+        format_output(CommandResult(data=42), "json", console, output_path=str(out))
+        assert out.read_text(encoding="utf-8").strip() == "42"
         err = " ".join(capsys.readouterr().err.split())
         assert "cannot be written as CSV; wrote raw text" in err
 
