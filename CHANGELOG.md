@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading
+
+Every item takes effect at a declarative login's next run, `gp <plugin> login` or a call to a login the engine generated from `LoginConfig`. A hand-written `login()` is unaffected, except that item 4 changes what the CLI prints after it.
+
+1. **A selector that matches several elements now acts on the first visible one, and a step whose matches are all hidden fails** (#275). Through 1.25.0 a field or submit selector acted on the first match in document order, visible or not. Now, with several matches, the step acts on the first visible match and logs `login_selector_ambiguous` with the count; when none of them is visible it waits up to 30 seconds and then fails with `Step N: ... selector '...' matches K elements and none of them is visible`. A selector that matches one element behaves as before, hidden or not. To keep a login that relied on acting on a hidden first match, narrow the selector to that element so it matches once.
+2. **A step whose element is disabled now fails instead of clicking or typing into it** (#275). The step waits up to 30 seconds for the element to become enabled, then fails with a message saying the match is disabled. Through 1.25.0 the click went ahead and did nothing, and the login failed later at the success signal.
+3. **Each step without a `wait_for` now waits for the page to be ready before it acts** (#275): the document loaded, and no DOM change, script or data request for half a second. This adds about half a second to a step on a static page (0.51 s measured on a static form on 2026-10-24) and at most 5 seconds, or the login's `timeout` when that is smaller, on a page that never goes quiet. A step with its own `wait_for`, and the first step when `LoginConfig.wait_for` is set, skips the wait; that is how a plugin opts out of it.
+4. **`gp <plugin> login` prints a different last line when a login fails** (#275). Where it said "See the warning above for what was detected", it now names what was detected (the success signal that did not appear, the failure text, the rate-limit page, or the page that could not be read) and adds a `Page:` line with the URL the login ended on; a failed step's error gets the `Page:` line too. A script that matched the old text needs the new one. A hand-written `login()` that returns `False` keeps the old message, since it records no reason.
+5. **The per-request `nodriver_eager_body_fetch_failed` and `nodriver_response_body_fetch_failed` warnings are now debug lines** (#275). Each capture pass that loses bodies logs one warning with the count instead (`nodriver_eager_body_fetch_summary`, and the new `nodriver_response_body_fetch_summary`). Run with debug logging to see each request.
+
+### Fixed
+
+- **A declarative login no longer clicks before the page's script can handle the click, acts on a hidden copy of an element, or buries its verdict under per-asset warnings** (#275). A click-only first step on a client-rendered page clicked the server-rendered sign-in link before the script that opens the sign-in form had loaded, and the login exited 1. The engine now waits, before each step without a `wait_for`, until the page has loaded and gone quiet, counting script and data requests still in flight; a `wait_for` naming an element only the page's script renders remains the sure way for a page whose script attaches its handlers without any request or DOM change the engine can see. A selector whose first match was a hidden mobile-menu copy acted on that copy; the engine now picks the first visible match. A login run printed one warning per asset whose body could not be fetched, hundreds on a real site, and the CLI's last line said only to look above; the warnings are now one summary per pass, and the last lines name the signal that was missed and the URL the page ended on. See Upgrading, items 1 to 5. Closes #275.
+
 ## [1.25.0] - 2026-10-24
 
 This is a minor release. Several changes reach a program on the first run after the upgrade:
