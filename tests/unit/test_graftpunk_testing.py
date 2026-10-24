@@ -8,6 +8,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -21,7 +22,13 @@ from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.plugins.cli_plugin import CommandContext
 from graftpunk.testing import FixtureSession, fixture_context, make_context
 from graftpunk.testing.plugin import check_fixtures_tree
-from graftpunk.testing.sidecar import FIXTURES_PLACEHOLDER, Sidecar, SidecarError, sidecar_text
+from graftpunk.testing.sidecar import (
+    FIXTURES_PLACEHOLDER,
+    Sidecar,
+    SidecarError,
+    load_sidecar,
+    sidecar_text,
+)
 
 
 class TestMakeContext:
@@ -316,6 +323,18 @@ class TestCheckFixturesTree:
         assert "'myshop_session'" in problem
         assert "(flagged by: session_name)" in problem
         assert problem.endswith("rename it in the fixture.")
+
+    def test_the_missing_sidecar_hint_describes_a_sidecar_that_loads(self, tmp_path: Path) -> None:
+        """Every key the hint names, with its value, makes a sidecar the loader
+        accepts, so an author following it is not refused."""
+        _fixture(tmp_path, "get_orders.json", b"{}", None)
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        keys = dict(re.findall(r'"(\w+)": (\[\]|\{\}|null|\d+)', problem))
+        payload = {key: json.loads(value) for key, value in keys.items()}
+        payload |= {"status": 200, "content_type": "application/json"}
+        path = tmp_path / "x.json.meta.json"
+        path.write_text(json.dumps(payload))
+        assert load_sidecar(path).flagged_reasons == {}
 
     def test_a_schema_1_sidecar_names_no_reasons(self, tmp_path: Path) -> None:
         """A sidecar committed under schema 1 recorded no reasons, so the problem

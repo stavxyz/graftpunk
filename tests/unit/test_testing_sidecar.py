@@ -144,6 +144,16 @@ class TestLoad:
         with pytest.raises(SidecarError, match="build the Sidecar with flagged_reasons"):
             sidecar_text(Sidecar(status=200, content_type="text/plain", flagged_names=("a",)))
 
+    def test_the_reasons_cannot_be_changed_after_the_checks(self) -> None:
+        """A Sidecar is what its checks passed, so it never writes a file the
+        loader refuses."""
+        reasons = {"a": ["session_name"]}
+        sidecar = Sidecar(status=200, content_type="text/plain", flagged_reasons=reasons)
+        reasons["a"].append("made_up")
+        assert sidecar.flagged_reasons == {"a": ("session_name",)}
+        with pytest.raises(TypeError):
+            sidecar.flagged_reasons["b"] = ("token_name",)  # type: ignore[index]
+
     def test_the_vocabulary_is_the_digests(self) -> None:
         """The sidecar imports nothing from the digest, so the two spellings of the
         reasons are held equal here."""

@@ -51,8 +51,9 @@ that is printed, since it may hold other captured values. Only the first 50
 values are placed; the next 450 are named with ``(not placed)``, so a value kept on
 purpose cannot hide the ones behind it, and past 500 only a count prints, with the
 fixture not done while it does.
-With SIDECAR, it also prints the names the sidecar lists, since a sidecar is
-committed and the guide asks for both lists to be read, and compares SIDECAR, as
+With SIDECAR, it also prints the names the sidecar lists, and for a schema 2
+sidecar the reasons each flagged name is flagged, since a sidecar is committed
+and the guide asks for both lists to be read, and compares SIDECAR, as
 parsed JSON, with the sidecar gp wrote beside CAPTURE (``CAPTURE.meta.json``),
 naming each key that differs: the skill writes that text with the Write tool, and
 a slip in it would quietly weaken the suite's checks.

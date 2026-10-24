@@ -2031,7 +2031,8 @@ def flagged_reasons_of(
     d: RunDigest, entries: Iterable[HAREntry] = ()
 ) -> dict[str, tuple[FlaggedReason, ...]]:
     """Each name :func:`flagged_names_of` returns, with the reasons it is flagged,
-    sorted. The rule is :func:`flagged_names_of`'s; this spells it as reasons:
+    names and reasons sorted (the order the sidecar writes them in). The rule is
+    :func:`flagged_names_of`'s; this spells it as reasons:
 
     - ``token_candidate``: the digest recorded the name as a token candidate;
     - ``token_name``: a cookie whose name reads as a token name;
@@ -2070,14 +2071,13 @@ def flagged_reasons_of(
         if not values and not sent_empty:
             why.add("no_value_seen")
         if why:
-            if entries and name not in seen.set_by_response and name not in d.cookies:
+            # d.cookies stands in for responses a partial *entries* leaves out.
+            if name not in seen.set_by_response and name not in d.cookies:
                 why.add("sent_only")
             reasons[name] = why
     for token in d.tokens:
         reasons.setdefault(token.name, set()).add("token_candidate")
-    return {
-        name: tuple(r for r in FLAGGED_REASONS if r in why) for name, why in sorted(reasons.items())
-    }
+    return {name: tuple(sorted(why)) for name, why in sorted(reasons.items())}
 
 
 # The parts of a cookie name that say it holds a session or a credential, so the

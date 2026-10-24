@@ -25,10 +25,10 @@ keep the markup and the classes and attributes a parser selects on, and invent
 the text and the attribute values that carry data. Then run the fixture-leaks
 line of the Harden block on the capture, the fixture, and its sidecar. It prints
 each captured value or piece of one still in the fixture, with its line and the
-match marked `»` `«` (`found decoded:` for an escaped or encoded copy), and the
-names the sidecar lists; past fifty values, names only (`not placed`); past 500,
-a `more values not shown` count. It exits 1, naming keys, when the sidecar
-differs from gp's: write gp's text again. Read the fixture for what it cannot
+match marked `»` `«` (`found decoded:` for an escaped or encoded copy), the sidecar's names
+and each flagged name's `flagged_reasons` (see the guide); past fifty values, names only
+(`not placed`); past 500, a `more values not shown` count. It exits 1, naming
+keys, when the sidecar differs from gp's: write gp's text again. Read the fixture for what it cannot
 see: a word in lower case on its own, a number written another way (`12345` as
 `12,345`), digits split across fields, and a copy re-encoded (base64). Exit 2
 names what it could not read: rewrite a file you wrote, check a missing path.

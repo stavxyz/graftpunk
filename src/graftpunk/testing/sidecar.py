@@ -40,6 +40,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 from graftpunk.contracts import UnknownSchemaError, current_schema, refuse_unknown_schema
 from graftpunk.exceptions import GraftpunkError
@@ -180,7 +181,7 @@ class Sidecar:
         return self.capture_sha256 is None
 
 
-def _checked_reasons(sidecar: Sidecar) -> dict[str, tuple[str, ...]]:
+def _checked_reasons(sidecar: Sidecar) -> Mapping[str, tuple[str, ...]]:
     """*sidecar*'s ``flagged_reasons`` with each list sorted and deduplicated, after
     refusing a mapping that is not keyed by exactly its flagged names (an empty
     one is a schema 1 sidecar's) or that holds a reason outside
@@ -189,7 +190,7 @@ def _checked_reasons(sidecar: Sidecar) -> dict[str, tuple[str, ...]]:
     if not isinstance(reasons, Mapping):
         raise SidecarError(f"flagged_reasons must be a mapping, got {reasons!r}")
     if not reasons:
-        return {}
+        return MappingProxyType({})
     if set(reasons) != set(sidecar.flagged_names):
         raise SidecarError(
             "flagged_reasons must be keyed by exactly the flagged names, got "
@@ -210,7 +211,9 @@ def _checked_reasons(sidecar: Sidecar) -> dict[str, tuple[str, ...]]:
                 f"flagged_reasons[{name!r}] must name a reason that flags it, got {list(why)!r}"
             )
         checked[name] = tuple(sorted(set(why)))
-    return checked
+    # Read-only, so the Sidecar stays what its checks passed: a dict changed
+    # after construction would write a file the loader refuses.
+    return MappingProxyType(checked)
 
 
 def sidecar_path(fixture: Path) -> Path:

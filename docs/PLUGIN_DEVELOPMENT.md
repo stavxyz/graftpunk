@@ -1955,7 +1955,7 @@ problem line repeats it, so you can tell a form-state cookie from a session
 value without the recording: `token_candidate` (the digest found the name as a
 token), `token_name` or `session_name` (the name alone), `http_only` (a
 response set it with `HttpOnly`), `value_not_form_state` (a recorded value is
-not form state), `value_not_kept` (the recording kept no value for it),
+not form state), `value_not_kept` (an entry in the recording holds the cookie without a value),
 `no_value_seen` (the recording shows no non-empty value), and `sent_only`,
 which is never the only reason and says no response in the recording set the
 cookie. A name flagged only by `value_not_form_state` with values you know to

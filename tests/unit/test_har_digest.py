@@ -4688,13 +4688,29 @@ class TestFlaggedNamesOf:
         assert reasons == {
             "X-Csrf-Token": ("token_candidate",),
             "blank": ("no_value_seen",),
-            "cached": ("value_not_form_state", "sent_only"),
+            "cached": ("sent_only", "value_not_form_state"),
             "guard": ("http_only",),
-            "kept_name_only": ("value_not_kept", "no_value_seen"),
-            "sessionid": ("session_name", "sent_only"),
+            "kept_name_only": ("no_value_seen", "value_not_kept"),
+            "sessionid": ("sent_only", "session_name"),
             "visit": ("value_not_form_state",),
         }
         assert tuple(reasons) == flagged_names_of(result, entries)
+
+    def test_a_cookie_the_digest_saw_set_is_not_sent_only_with_partial_entries(
+        self, tmp_path: Path
+    ) -> None:
+        """gp observe fixtures passes every entry, but a caller passing only some
+        must not have a cookie a left-out response set called sent_only."""
+        setting = _entry(
+            "GET",
+            "https://myshop.example.com/api/a",
+            set_cookies=["visit=Zq9XkLmPwR4t7Bv2Hn8Ks3Jd; Path=/"],
+        )
+        sending = self._with_cookies([], (("visit", "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"),))
+        har = _write_har(tmp_path, [setting, sending])
+        result = digest(DigestSource.from_har(har))
+        later = parse_har_file(har).entries[1:]
+        assert flagged_reasons_of(result, later) == {"visit": ("value_not_form_state",)}
 
     def test_without_entries_every_digest_cookie_is_flagged_for_no_value_seen(
         self, tmp_path: Path
