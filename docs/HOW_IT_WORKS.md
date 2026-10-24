@@ -717,12 +717,14 @@ data in a cookie's name. A value is form state when, with one pair of
 surrounding double quotes taken off, it reads as words
 (`graftpunk.har.paths.reads_as_words`: a search term, a short number, a date),
 or as cased words (`graftpunk.har.paths.reads_as_cased_words`: one word in
-capitals such as `LANDOWNER`, a lower camelCase name such as `currentTab` or
-`tabLISTresults`, or a name such as `SMITH, JOHN`), or when it is ASCII and
+capitals such as `LANDOWNER`, a camelCase name such as `currentTab` or
+`tabLISTresults`, or one of 12 letters or more that starts with a capital such
+as `LISTviewResults`, or a name such as `SMITH, JOHN`), or when it is ASCII and
 holds no letter or digit (a field cleared to `""`). The cased-words rule is
 told from a random id only by spelling, so it leaves out some random ids that
 `reads_as_words` alone flagged: measured on 100,000 values per shape
-(2026-10-24), 0.79% of 8 mixed-case letters, 42% of 4 capitals and 5.2% of 12,
+(2026-10-24), 0.79% of 8 mixed-case letters and 0.23% of 12, 42% of 4
+capitals and 5.2% of 12,
 and 1.1% of 8 capitals and digits. `FixtureSession` reads the sidecar through
 `graftpunk.testing.sidecar` for status and content type, so a fixture copied
 from a capture keeps its recorded status.

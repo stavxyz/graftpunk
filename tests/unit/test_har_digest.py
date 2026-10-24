@@ -4401,6 +4401,7 @@ class TestFlaggedNamesOf:
             {"name": "name1", "value": '"BRL Grantees"'},
             {"name": "name_type1", "value": "BRAL"},
             {"name": "currentTab", "value": "panelGRIDview"},
+            {"name": "currentTab", "value": "GRIDviewPanels"},
         ]
         har = _write_har(tmp_path, [page, search])
         result = digest(DigestSource.from_har(har))
@@ -4419,12 +4420,16 @@ class TestFlaggedNamesOf:
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ()
 
-    @pytest.mark.parametrize("value", ["kqzpwmxtrvbnhgfd", "xQzKwPmRtVbNhGfL", "Zq9XkLmP"])
+    @pytest.mark.parametrize(
+        "value", ["kqzpwmxtrvbnhgfd", "xQzKwPmRtVbNhGfL", "Zq9XkLmP", "LISTview", "HTMLParser"]
+    )
     def test_a_random_value_with_no_id_shape_still_flags_a_plain_named_cookie(
         self, tmp_path: Path, value: str
     ) -> None:
         """holds_an_id reads none of these as an id; they are flagged because
-        they read neither as words nor as cased words."""
+        they read neither as words nor as cased words. camelCase that starts with
+        a capital reads as cased words only at 12 letters or more, so the
+        8-letter LISTview and the 10-letter HTMLParser stay flagged."""
         har = _write_har(tmp_path, [self._with_cookies([("visit", value)])])
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
