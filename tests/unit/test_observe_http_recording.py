@@ -326,7 +326,10 @@ def _login_har_entry() -> dict[str, Any]:
             "headers": [{"name": "X-Login", "value": USER}],
             "postData": {"text": f"user={USER}&pin={PIN}&otp={OTP}"},
         },
-        "response": {"content": {"text": f"welcome {USER}"}, "redirectURL": ""},
+        "response": {
+            "content": {"text": f"welcome {USER}"},
+            "redirectURL": f"https://myshop.example/home?user={USER}",
+        },
     }
 
 
@@ -344,6 +347,7 @@ def _assert_scrubbed(entry: dict[str, Any]) -> None:
     assert request["postData"]["text"] == f"user={REDACTED}&pin={REDACTED}&otp={REDACTED}"
     assert request["headers"] == [{"name": "X-Login", "value": REDACTED}]
     assert entry["response"]["content"]["text"] == f"welcome {REDACTED}"
+    assert entry["response"]["redirectURL"] == f"https://myshop.example/home?user={USER}"
 
 
 class TestCredentialScrub:
@@ -446,3 +450,97 @@ class TestCredentialScrub:
         post = json.loads(text)["log"]["entries"][0]["request"]
         assert post["url"] == f"{site}/login?user=bob%40example.com"
         assert post["postData"]["text"] == f"user={REDACTED}&pin={REDACTED}&otp={REDACTED}"
+
+
+class TestCredentialScrubElsewhere:
+    def test_a_request_body_file_is_scrubbed_of_the_identifier_too(self, tmp_path: Path) -> None:
+        from graftpunk.observe.run import REDACTED, Redaction, redact_request_body_files
+
+        (tmp_path / "bodies").mkdir()
+        (tmp_path / "bodies" / "r1.request.txt").write_text(f"user={USER}&pin={PIN}")
+        entries = [{"request": {"_postDataFile": "bodies/r1.request.txt"}}]
+
+        redact_request_body_files(
+            entries, Redaction.from_credentials({"username": USER, "pin": PIN}), tmp_path
+        )
+
+        assert (tmp_path / "bodies" / "r1.request.txt").read_text() == (
+            f"user={REDACTED}&pin={REDACTED}"
+        )
+
+    def test_a_browser_session_keeps_the_identifier_split(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from graftpunk.observe.run import Redaction
+        from graftpunk.session import BrowserSession
+
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+        session._observe_storage = ObserveStorage(tmp_path, "myshop", "run-1")
+        session._capture = MagicMock()
+        session._capture.get_har_entries = MagicMock(return_value=[_login_har_entry()])
+        session._capture.get_console_logs = MagicMock(return_value=[])
+        session.observe_redact = Redaction.from_credentials(
+            {"username": USER, "pin": PIN, "otp": OTP}
+        )
+
+        session._write_observe_data()
+
+        (entry,) = json.loads((session._observe_storage.run_dir / "network.har").read_text())[
+            "log"
+        ]["entries"]
+        _assert_scrubbed(entry)
+
+    def test_a_plugin_command_with_a_browser_capture_is_scrubbed_at_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A capture that does not scrub as it records (a browser's) is scrubbed
+        when the run is written."""
+        from unittest.mock import MagicMock
+
+        import typer
+
+        from graftpunk.cli.command_factory import synthesize_command_fn
+        from graftpunk.cli.plugin_runtime import run_plugin_command
+        from graftpunk.plugins.cli_plugin import SitePlugin, command
+
+        monkeypatch.setenv("MYSHOP_PASSWORD", PIN)
+        browser_capture = MagicMock()
+        browser_capture.get_har_entries = MagicMock(
+            return_value=[
+                {"request": {"url": "https://myshop.example/", "postData": {"text": PIN}}}
+            ]
+        )
+        browser_capture.get_console_logs = MagicMock(return_value=[])
+
+        class Shop(SitePlugin):
+            site_name = "myshop"
+            session_name = "myshop"
+            help_text = "t"
+            requires_session = False
+
+            @command(help="Do nothing")
+            def noop(self, ctx: Any) -> dict[str, Any]:
+                return {}
+
+        plugin = Shop()
+        spec = next(s for s in plugin.get_commands() if s.name == "noop")
+        app = typer.Typer()
+        app.command(name="noop")(
+            synthesize_command_fn(
+                name="noop",
+                param_specs=list(spec.params),
+                body=lambda ctx, **kw: run_plugin_command(plugin, spec, ctx, **kw),
+            )
+        )
+        with (
+            patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.cli.plugin_runtime.format_output"),
+            patch("graftpunk.cli.plugin_runtime._driver_of", return_value=object()),
+            patch("graftpunk.observe.capture.create_capture_backend", return_value=browser_capture),
+        ):
+            result = CliRunner().invoke(app, [], obj={"observe_mode": "full"})
+
+        assert result.exit_code == 0, result.output
+        (run,) = [p for p in tmp_path.glob("[!.]*/*") if p.is_dir()]
+        assert PIN not in (run / "network.har").read_text()
