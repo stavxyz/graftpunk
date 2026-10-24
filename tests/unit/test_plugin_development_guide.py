@@ -201,7 +201,14 @@ def test_every_gp_invocation_names_a_real_command_and_options(
     line_no: int, invocation: str
 ) -> None:
     tokens = shlex.split(invocation)[1:]
-    if tokens and tokens[0] in _PLUGIN_COMMAND_PREFIXES:
+    # `gp --observe=full myshop login` puts gp's own options before the plugin;
+    # those are still checked, as an invocation of `gp` alone.
+    leading = 0
+    while leading < len(tokens) and tokens[leading].startswith("-"):
+        leading += 1
+    if leading < len(tokens) and tokens[leading] in _PLUGIN_COMMAND_PREFIXES:
+        if leading:
+            check_invocation(" ".join(["gp", *tokens[:leading]]), f"{GUIDE.name}:{line_no}")
         pytest.skip(f"{invocation} addresses an installed plugin's own command group")
     check_invocation(invocation, f"{GUIDE.name}:{line_no}")
 
