@@ -488,7 +488,11 @@ class TestHeaderParsing:
 
     @staticmethod
     def _request_with_headers(headers: list[dict], cookies: list | None = None) -> HARRequest:
-        request: dict = {"method": "GET", "url": "https://x.com", "headers": headers}
+        request: dict = {
+            "method": "GET",
+            "url": "https://myshop.example.com/",
+            "headers": headers,
+        }
         if cookies is not None:
             request["cookies"] = cookies
         entry = {
@@ -518,9 +522,10 @@ class TestHeaderParsing:
             {"name": "Cookie", "value": None},
             {"name": "Cookie", "value": 7},
             {"name": None, "value": "a=1"},
+            {"name": 5, "value": "a=1"},
             {"value": "a=1"},
         ],
-        ids=["null-value", "number-value", "null-name", "no-name"],
+        ids=["null-value", "number-value", "null-name", "number-name", "no-name"],
     )
     def test_a_malformed_cookie_header_is_skipped_not_fatal(self, header: dict) -> None:
         """The fallback must never fail an entry that parses without it."""
@@ -554,7 +559,7 @@ class TestHeaderParsing:
         falls back to, so a HAR with or without the array gives one answer."""
         from graftpunk.observe.capture import _request_cookies
 
-        value = "a=1\r\nb= two ; flag; c=3;=orphan"
+        value = "a=1\rb= two ; flag\r\nc=3;=orphan\nd=4"
         parsed = self._request_with_headers([{"name": "Cookie", "value": value}])
         assert _request_cookies({"Cookie": value}) == parsed.cookies
 

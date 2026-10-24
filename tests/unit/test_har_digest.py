@@ -4603,6 +4603,42 @@ class TestFlaggedNamesOf:
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
 
+    def test_a_sent_cookie_with_no_value_field_stays_flagged(self, tmp_path: Path) -> None:
+        """A missing value is a value the recorder did not keep, not an empty one."""
+        entry = _entry("GET", "https://myshop.example.com/api/search")
+        entry["request"]["cookies"] = [{"name": "cart"}]
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("cart",)
+
+    def test_sending_empty_does_not_clear_a_cookie_a_response_sets(self, tmp_path: Path) -> None:
+        """The Set-Cookie header holds a value the response.cookies array lost; a
+        later request sending the cookie empty is no evidence about that value."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            set_cookies=["visit=Zq9XkLmPwR4t7Bv2Hn8Ks3Jd; Path=/"],
+        )
+        entry["response"]["cookies"] = [{"name": "visit", "value": ""}]
+        later = self._with_cookies([], (("visit", ""),))
+        har = _write_har(tmp_path, [entry, later])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    def test_a_token_named_cookie_read_from_a_cookie_header_is_a_token_candidate(
+        self, tmp_path: Path
+    ) -> None:
+        """For a HAR with no request.cookies array, the Cookie header's cookies
+        reach the digest's token candidates like the array's would."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            request_headers={"Cookie": "csrftoken=Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"},
+        )
+        del entry["request"]["cookies"]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [entry])))
+        assert [token.name for token in result.tokens] == ["csrftoken"]
+
     def test_a_sent_id_cookie_name_is_left_out_and_counted(self, tmp_path: Path) -> None:
         entry = self._with_cookies(
             [], (("sess_40912873", "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"), ("sessionid", "x"))

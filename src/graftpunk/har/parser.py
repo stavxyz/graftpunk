@@ -155,7 +155,9 @@ def _parse_cookies(cookies_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for cookie in cookies_list:
         parsed = {
             "name": cookie.get("name", ""),
-            "value": cookie.get("value", ""),
+            # A missing value is not an empty one: None marks a value the
+            # recorder did not keep (graftpunk.har.digest reads it so).
+            "value": cookie.get("value"),
         }
         # Include optional attributes if present
         for attr in ["path", "domain", "expires", "httpOnly", "secure"]:
@@ -226,8 +228,6 @@ def _cookie_header_values(headers_list: list[Any]) -> list[str]:
     that reads these must never fail an entry that parses without it."""
     values: list[str] = []
     for header in headers_list:
-        if not isinstance(header, dict):
-            continue
         name, value = header.get("name"), header.get("value")
         if isinstance(name, str) and name.lower() == "cookie" and isinstance(value, str):
             values.append(value)

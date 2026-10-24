@@ -1982,20 +1982,21 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     - one with any value that is not form state: a value holding an id
       (graftpunk.har.paths.holds_an_id) or any other value neither rule reads
       as words (a session id);
-    - one with no non-empty value *entries* show and that no request sent
-      empty, which covers a ``Set-Cookie`` the recorder kept only as a name, a
+    - one with no non-empty value *entries* show, unless no response sets it and
+      a request sent it empty, which covers a ``Set-Cookie`` the recorder kept only as a name, a
       cookie a response only ever set empty, and a call without *entries*,
       where every cookie stays. (``gp observe digest`` does not call this; its
       cookie list, ``d.cookies``, names every cookie.)
 
     An empty value beside a non-empty one is a cleared field or an expired
     cookie, and holds nothing. A cookie a response only ever set empty stays
-    flagged because a HAR cookie with no ``value`` field reads as empty too, so
-    an empty value there is no evidence the recorder saw what the cookie held. A
-    request sending the cookie empty is that evidence: it is what the browser
-    sent. A value of punctuation alone (``""``) is a value the server did send.
-    Values are read from every
-    entry's request and response cookies, whatever its host. ``Secure`` is not a
+    flagged, since a recorder can write a ``Set-Cookie`` it did not fully parse
+    as an empty ``response.cookies`` entry (the header can hold the value the
+    array lost). A request sending a cookie no response sets empty is evidence
+    it held nothing: it is what the browser sent. A cookie with no ``value``
+    field is parsed as ``None``, a value not seen, never as empty. A value of
+    punctuation alone (``""``) is a value the server did send. Values are read
+    from every entry's request and response cookies, whatever its host. ``Secure`` is not a
     guard: a site served only over HTTPS can mark every cookie Secure.
 
     A name that holds an account value (graftpunk.har.paths.holds_an_id) is not
@@ -2008,7 +2009,7 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
 
     def holds_only_words(name: str) -> bool:
         return (
-            (name in seen.values or name in seen.sent_empty)
+            (name in seen.values or (name in seen.sent_empty and name not in seen.set_by_response))
             and name not in seen.unseen
             and name not in seen.http_only
             and not looks_like_token_name(name)
@@ -2066,11 +2067,13 @@ def _names_a_session(name: str) -> bool:
 @dataclass
 class _CookiesSeen:
     """What a recording shows of each cookie name: its non-empty values, the names
-    a request sent empty, the names a response set without a value the recorder
-    kept, and the names a response set with ``HttpOnly``."""
+    a request sent empty, the names any response set, the names a response set
+    without a value the recorder kept, and the names a response set with
+    ``HttpOnly``."""
 
     values: dict[str, set[str]] = field(default_factory=dict)
     sent_empty: set[str] = field(default_factory=set)
+    set_by_response: set[str] = field(default_factory=set)
     unseen: set[str] = field(default_factory=set)
     http_only: set[str] = field(default_factory=set)
 
@@ -2128,11 +2131,14 @@ def _cookies_seen(entries: Iterable[HAREntry]) -> _CookiesSeen:
                 seen.values.setdefault(name, set()).add(value)
         # A request's empty value is what the browser sent, so it is evidence the
         # cookie held nothing; a response's may be a value the recorder dropped.
+        # A missing value field parses as None, never as "", so it is not this.
         seen.sent_empty.update(
             cookie.get("name", "")
             for cookie in entry.request.cookies
             if cookie.get("name") and cookie.get("value") == ""
         )
+        seen.set_by_response.update(cookie.get("name", "") for cookie in entry.response.cookies)
+        seen.set_by_response.update(entry.response.set_cookie_names)
         # Either source is enough: the response.cookies array often leaves
         # httpOnly out when the Set-Cookie header carries it, so an absent
         # flag there is unknown, not false.
