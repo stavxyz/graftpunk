@@ -9,6 +9,7 @@ HAR entry, so this module knows nothing about HAR (plugin tooling spec,
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Literal
@@ -108,6 +109,11 @@ class LoginForm:
     # opened there. The last such GET of the chain that is not a logout (opening one
     # would log out); empty when none. Set by the digest. Internal.
     opened_from: str = field(default="", metadata={"internal": True})
+    # Built from the page's controls outside every <form> (a script-driven login
+    # modal whose inputs sit in a <div>), not from a <form>: no browser submits it,
+    # so its action and method are empty, its action_target is ("", ""), and the
+    # digest counts it as sent by script. Internal.
+    formless: bool = field(default=False, metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -662,14 +668,58 @@ def form_action_targets(html: str, base: str) -> dict[tuple[str, str], frozenset
     return targets
 
 
+def _formless_selectors(
+    raw: _RawInput, page_inputs: list[_RawInput]
+) -> tuple[str | None, str | None]:
+    """The selector of a control outside every form, recorded and unscoped alike:
+    its id selector, else its tag and ``name`` selector when no other input on the
+    page (*page_inputs*) has that tag and name, else none. No form scope can pick it,
+    and a selector by type would pick the first input of that type on the page."""
+    by_id = _id_selector(raw)
+    if by_id is not None:
+        return by_id, by_id
+    by_name = _name_selector(raw)
+    if by_name is not None and (
+        sum(1 for other in page_inputs if other.tag == raw.tag and other.name == raw.name) == 1
+    ):
+        return by_name, by_name
+    return None, None
+
+
+def _formless_login_group(parsed: _DocumentParser) -> list[_RawInput] | None:
+    """The page's controls outside every ``<form>``, in document order, when they
+    hold a login: a password input, and neither a change-password nor a
+    registration form's shape (:func:`_is_change_password`, :func:`_is_registration`).
+    A control is outside every form when it sits in none and its ``form`` attribute,
+    if any, names no form on the page. One inside ``<noscript>`` is left out: with
+    script on it is never in the page, and only script sends a formless group.
+    None when there is no such login."""
+    owners = {form.element_id for form in parsed.forms if form.element_id}
+    controls = [
+        raw
+        for raw in parsed.inputs
+        if raw.container is None
+        and not raw.in_noscript
+        and not (raw.form_owner and raw.form_owner in owners)
+    ]
+    if (
+        _password_index(controls) is None
+        or _is_change_password(controls)
+        or _is_registration(controls)
+    ):
+        return None
+    return controls
+
+
 def extract_login_forms(
     html: str, source: str, *, base: str | None = None
 ) -> tuple[LoginForm, ...]:
     """Every login ``<form>`` in *html*: one with a password input that is neither a
     change-password form (:func:`_is_change_password`, never kept) nor a
-    registration form (:func:`_is_registration`). When the page has no such form, a
-    form with exactly one password input is kept (``new-password`` misused on a
-    login form); a registration form with a confirmation password never is.
+    registration form (:func:`_is_registration`). When the page has no such form
+    and no formless login (below), a form with exactly one password input is kept
+    (``new-password`` misused on a login form); a registration form with a
+    confirmation password never is.
 
     Each yields a :class:`LoginForm` with the form's action stripped of its query
     string, fragment, and ``;params`` (:func:`graftpunk.har.paths.bare_url`), and
@@ -686,6 +736,13 @@ def extract_login_forms(
     Hidden input names are kept as token candidates. *base*, when given, is the
     unmasked URL of the page the form came from (*source* is the masked one the
     digest prints), and the form's ``action_target`` resolves against it.
+
+    The page's controls outside every form yield one more, after the forms, when
+    they hold a login (:func:`_formless_login_group`): a script-driven login whose
+    inputs sit in a ``<div>``. The same role rules run over them; its selectors are
+    unscoped (:func:`_formless_selectors`), its ``action`` and ``method`` are empty
+    (no browser submits it, a script sends it with a method of its own), its
+    ``action_target`` is ``("", "")``, and ``formless`` is set.
     """
     parsed = _parse(html)
     candidates = [
@@ -693,19 +750,16 @@ def extract_login_forms(
         for raw in parsed.forms
         if _password_index(raw.inputs) is not None and not _is_change_password(raw.inputs)
     ]
+    formless = _formless_login_group(parsed)
     # A registration form is left out only beside a login form: a lone form marked
     # new-password is still the page's login form.
     logins = [raw for raw in candidates if not _is_registration(raw.inputs)]
-    if not logins:
+    if not logins and formless is None:
         # A lone form with one password is kept (new-password misused on a login
         # form); a lone form with a confirmation password is a registration form.
         logins = [raw for raw in candidates if len(_password_inputs(raw.inputs)) == 1]
     forms: list[LoginForm] = []
     for raw in logins:
-        inputs = raw.inputs
-        password_index = _password_index(inputs)
-        if password_index is None:
-            continue
         try:
             action = bare_url(raw.action)
             # bare_url masked an email segment as a placeholder: no live form's
@@ -724,61 +778,6 @@ def extract_login_forms(
             LOG.warning("login_form_action_unparseable", source=source)
             action = ""
             scopes = ()
-
-        hidden: list[str] = []
-        dropped_hidden = 0
-        for raw_input in inputs:
-            if raw_input.input_type != "hidden" or not raw_input.name:
-                continue
-            if holds_an_id(raw_input.name):
-                dropped_hidden += 1
-            else:
-                hidden.append(raw_input.name)
-
-        username_index = _username_index(inputs, password_index)
-        submit_index = next(
-            (i for i in range(password_index + 1, len(inputs)) if _is_submit(inputs[i])), None
-        )
-        block_start = (username_index if username_index is not None else password_index) + 1
-        block_end = submit_index if submit_index is not None else len(inputs)
-        roles: list[tuple[str, _RawInput]] = []
-        if username_index is not None:
-            roles.append(("username", inputs[username_index]))
-        roles.append(("password", inputs[password_index]))
-        taken = {i.name for i in inputs if i.name} | {"username", "password"}
-        neutral: list[str] = []
-        nameless: list[str] = []
-        for index in range(block_start, block_end):
-            raw_input = inputs[index]
-            if index in (username_index, password_index) or not _is_text_like(raw_input):
-                continue
-            if (
-                raw_input.name
-                and not holds_an_id(raw_input.name)
-                and raw_input.name
-                not in (
-                    "username",
-                    "password",
-                )
-            ):
-                roles.append((raw_input.name, raw_input))
-                continue
-            # A name that holds an account value, or none, gets a neutral key in
-            # document order, never one a real input of the form is named.
-            number = len(neutral) + 1
-            while f"field_{number}" in taken:
-                number += 1
-            key = f"field_{number}"
-            taken.add(key)
-            neutral.append(key)
-            if not raw_input.name:
-                nameless.append(key)
-            roles.append((key, raw_input))
-
-        fields: dict[str, str] = {}
-        unscoped_fields: dict[str, str] = {}
-        absent: list[str] = [] if username_index is not None else ["username"]
-        unresolved: list[str] = list(absent)
         # A scoped selector matches every form with this action (a header mini-login
         # and the main form can share one), so uniqueness is counted across the
         # controls inside all of them.
@@ -790,48 +789,147 @@ def extract_login_forms(
             for control in parsed.inputs
             if control.container is not None and id(control.container) in same_scope
         ]
-        for role, raw_input in roles:
-            if role in fields or role in unresolved:
-                continue
-            selector, unscoped = _selectors_for(raw_input, scopes, contained, parsed.inputs)
-            if selector is None:
-                unresolved.append(role)
-                continue
-            fields[role] = selector
-            if unscoped is not None:
-                unscoped_fields[role] = unscoped
-        submit: str | None = None
-        unscoped_submit: str | None = None
-        if submit_index is not None:
-            submit, unscoped_submit = _selectors_for(
-                inputs[submit_index], scopes, contained, parsed.inputs
-            )
-            if submit is None:
-                unresolved.append("submit")
-        forms.append(
-            LoginForm(
-                action=action,
-                method=raw.method,
-                fields=fields,
-                submit=submit,
-                hidden=tuple(hidden),
-                source=source,
-                hidden_names_dropped_as_ids=dropped_hidden,
-                neutral_roles=tuple(neutral),
-                unresolved_roles=tuple(unresolved),
-                unscoped_fields=unscoped_fields,
-                unscoped_submit=unscoped_submit,
-                nameless_roles=tuple(nameless),
-                absent_roles=tuple(absent),
-                action_target=_action_target(raw.action, base or source),
-                input_names=tuple(i.name for i in inputs if i.name),
-                signature=(
-                    raw.element_id,
-                    tuple((i.tag, i.input_type, i.name, i.element_id) for i in inputs),
-                ),
-            )
+        form = _login_form(
+            raw.inputs,
+            lambda control, scopes=scopes, contained=contained: _selectors_for(
+                control, scopes, contained, parsed.inputs
+            ),
+            action=action,
+            method=raw.method,
+            source=source,
+            action_target=_action_target(raw.action, base or source),
+            element_id=raw.element_id,
         )
+        if form is not None:
+            forms.append(form)
+    if formless is not None:
+        form = _login_form(
+            formless,
+            lambda control: _formless_selectors(control, parsed.inputs),
+            action="",
+            method="",
+            source=source,
+            action_target=("", ""),
+            # A real form's element id is a string, so None keeps the two
+            # signatures apart even when the controls are the same.
+            element_id=None,
+            formless=True,
+        )
+        if form is not None:
+            forms.append(form)
     return tuple(forms)
+
+
+def _login_form(
+    inputs: list[_RawInput],
+    selectors_for: Callable[[_RawInput], tuple[str | None, str | None]],
+    *,
+    action: str,
+    method: str,
+    source: str,
+    action_target: tuple[str, str],
+    element_id: str | None,
+    formless: bool = False,
+) -> LoginForm | None:
+    """The :class:`LoginForm` the controls *inputs* make, by the role rules
+    :func:`extract_login_forms` states, each selector from *selectors_for* (the
+    recorded one and the one safe to print unscoped). None when *inputs* hold no
+    password input."""
+    password_index = _password_index(inputs)
+    if password_index is None:
+        return None
+    hidden: list[str] = []
+    dropped_hidden = 0
+    for raw_input in inputs:
+        if raw_input.input_type != "hidden" or not raw_input.name:
+            continue
+        if holds_an_id(raw_input.name):
+            dropped_hidden += 1
+        else:
+            hidden.append(raw_input.name)
+
+    username_index = _username_index(inputs, password_index)
+    submit_index = next(
+        (i for i in range(password_index + 1, len(inputs)) if _is_submit(inputs[i])), None
+    )
+    block_start = (username_index if username_index is not None else password_index) + 1
+    block_end = submit_index if submit_index is not None else len(inputs)
+    roles: list[tuple[str, _RawInput]] = []
+    if username_index is not None:
+        roles.append(("username", inputs[username_index]))
+    roles.append(("password", inputs[password_index]))
+    taken = {i.name for i in inputs if i.name} | {"username", "password"}
+    neutral: list[str] = []
+    nameless: list[str] = []
+    for index in range(block_start, block_end):
+        raw_input = inputs[index]
+        if index in (username_index, password_index) or not _is_text_like(raw_input):
+            continue
+        if (
+            raw_input.name
+            and not holds_an_id(raw_input.name)
+            and raw_input.name
+            not in (
+                "username",
+                "password",
+            )
+        ):
+            roles.append((raw_input.name, raw_input))
+            continue
+        # A name that holds an account value, or none, gets a neutral key in
+        # document order, never one a real input of the form is named.
+        number = len(neutral) + 1
+        while f"field_{number}" in taken:
+            number += 1
+        key = f"field_{number}"
+        taken.add(key)
+        neutral.append(key)
+        if not raw_input.name:
+            nameless.append(key)
+        roles.append((key, raw_input))
+
+    fields: dict[str, str] = {}
+    unscoped_fields: dict[str, str] = {}
+    absent: list[str] = [] if username_index is not None else ["username"]
+    unresolved: list[str] = list(absent)
+    for role, raw_input in roles:
+        if role in fields or role in unresolved:
+            continue
+        selector, unscoped = selectors_for(raw_input)
+        if selector is None:
+            unresolved.append(role)
+            continue
+        fields[role] = selector
+        if unscoped is not None:
+            unscoped_fields[role] = unscoped
+    submit: str | None = None
+    unscoped_submit: str | None = None
+    if submit_index is not None:
+        submit, unscoped_submit = selectors_for(inputs[submit_index])
+        if submit is None:
+            unresolved.append("submit")
+    return LoginForm(
+        action=action,
+        method=method,
+        fields=fields,
+        submit=submit,
+        hidden=tuple(hidden),
+        source=source,
+        hidden_names_dropped_as_ids=dropped_hidden,
+        neutral_roles=tuple(neutral),
+        unresolved_roles=tuple(unresolved),
+        unscoped_fields=unscoped_fields,
+        unscoped_submit=unscoped_submit,
+        nameless_roles=tuple(nameless),
+        absent_roles=tuple(absent),
+        action_target=action_target,
+        input_names=tuple(i.name for i in inputs if i.name),
+        signature=(
+            element_id,
+            tuple((i.tag, i.input_type, i.name, i.element_id) for i in inputs),
+        ),
+        formless=formless,
+    )
 
 
 def extract_token_candidates(html: str, source: str) -> tuple[TokenCandidate, ...]:

@@ -157,7 +157,10 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     if d.login_forms:
         lines.append("")
         for form in d.login_forms:
-            lines.append(f"- form at `{form.action}` ({form.method}), source: {form.source}")
+            if form.formless:
+                lines.append(f"- inputs outside a form (sent by script), source: {form.source}")
+            else:
+                lines.append(f"- form at `{form.action}` ({form.method}), source: {form.source}")
             for role, selector in sorted(form.fields.items()):
                 lines.append(f"    - {role}: `{selector}`")
     lines.append("")

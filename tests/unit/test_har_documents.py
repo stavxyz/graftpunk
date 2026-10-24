@@ -1047,3 +1047,196 @@ class TestFormActionTargets:
     )
     def test_a_form_that_is_not_form_post_shaped_is_left_out(self, html: str) -> None:
         assert form_action_targets(html, self._BASE) == {}
+
+
+class TestLoginFieldsOutsideAnyForm:
+    """A password input outside every ``<form>`` (a script-driven login modal whose
+    inputs sit in a ``<div>``) yields a login form built from the page's formless
+    controls (#267)."""
+
+    _MODAL = (
+        '<header><a href="#" id="signin-link">Sign in</a></header>'
+        '<div class="modal" id="login-modal" hidden><div class="login-form">'
+        '<input type="text" id="login-username" autocomplete="username">'
+        '<input type="password" id="login-password" autocomplete="current-password">'
+        '<button type="submit" class="btn">Sign in</button></div></div>'
+    )
+
+    def test_roles_and_id_selectors(self) -> None:
+        (form,) = extract_login_forms(self._MODAL, source="https://myshop.example/")
+        assert form.fields == {"username": "#login-username", "password": "#login-password"}
+        assert form.action == ""
+        assert form.method == ""
+        assert form.formless
+        # The submit button has neither an id nor a name, and with no form scope
+        # nothing else picks it.
+        assert form.submit is None
+        assert form.unresolved_roles == ("submit",)
+        # No target of its own: a script sends it, so the digest never matches a
+        # POST to it by where it posts.
+        assert form.action_target == ("", "")
+
+    def test_unique_names_are_selected_by_name_and_a_shared_one_is_unresolved(self) -> None:
+        html = (
+            '<div><input type="email" name="email">'
+            '<input type="password" name="password">'
+            '<button type="button" name="go">Sign in</button></div>'
+            '<div><input type="email" name="email" placeholder="Newsletter"></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"password": 'input[name="password"]'}
+        assert "username" in form.unresolved_roles
+        assert form.absent_roles == ()
+        # A type="button" never submits.
+        assert form.submit is None
+        assert "submit" not in form.unresolved_roles
+        fields, _submit = printable_selectors(form)
+        assert fields == {"password": 'input[name="password"]'}
+
+    def test_a_submit_with_no_id_or_unique_name_is_unresolved(self) -> None:
+        html = (
+            '<div><input name="user" id="u"><input type="password" name="pw">'
+            "<button>Sign in</button>"
+            '<button name="go" id="go-btn">Go</button></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"username": "#u", "password": 'input[name="pw"]'}
+        assert form.submit is None
+        assert "submit" in form.unresolved_roles
+
+    def test_a_selector_never_carries_a_form_scope(self) -> None:
+        html = (
+            '<div><input name="username"><input type="password" name="password">'
+            '<button name="signin">Sign in</button></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {
+            "username": 'input[name="username"]',
+            "password": 'input[name="password"]',
+        }
+        assert form.submit == 'button[name="signin"]'
+        assert not any("form" in s for s in [*form.fields.values(), form.submit])
+        assert printable_selectors(form) == (form.fields, form.submit)
+        _assert_first_match(html, form.fields["username"], name="username")
+        _assert_first_match(html, form.submit, name="signin")
+
+    def test_beside_a_real_login_form_both_are_kept_the_real_one_first(self) -> None:
+        html = (
+            '<form action="/login" method="post"><input name="email" id="email">'
+            '<input type="password" name="password" id="pw"><button id="go">Go</button></form>'
+            f"{self._MODAL}"
+        )
+        real, formless = extract_login_forms(html, source="s")
+        assert real.action == "/login"
+        assert real.method == "POST"
+        assert not real.formless
+        assert real.fields == {"username": "#email", "password": "#pw"}
+        assert formless.formless
+        assert formless.fields == {
+            "username": "#login-username",
+            "password": "#login-password",
+        }
+        assert real.signature != formless.signature
+
+    def test_a_real_form_s_controls_are_never_part_of_the_formless_group(self) -> None:
+        """A formless password with no username before it does not borrow a real
+        form's text input."""
+        html = (
+            '<form action="/search"><input type="text" name="q" id="q"></form>'
+            '<div><input type="password" id="pin"><button id="unlock">Unlock</button></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"password": "#pin"}
+        assert form.absent_roles == ("username",)
+        assert form.submit == "#unlock"
+
+    def test_a_control_owned_by_a_form_through_its_form_attribute_is_not_formless(self) -> None:
+        html = (
+            '<form id="signin" action="/login"><input name="username" id="u"></form>'
+            '<input type="password" name="password" id="p" form="signin">'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert not form.formless
+        assert form.action == "/login"
+
+    def test_a_form_attribute_naming_no_form_leaves_the_control_formless(self) -> None:
+        html = (
+            '<div><input name="username" id="u" form="gone">'
+            '<input type="password" name="password" id="p" form="gone"></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.formless
+        assert form.fields == {"username": "#u", "password": "#p"}
+
+    def test_a_formless_password_with_no_submit_control(self) -> None:
+        html = '<div><input type="email" id="e"><input type="password" id="p"></div>'
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"username": "#e", "password": "#p"}
+        assert form.submit is None
+        assert "submit" not in form.unresolved_roles
+
+    @pytest.mark.parametrize(
+        "html",
+        [
+            '<div><input type="email" id="e">'
+            '<input type="password" id="p" autocomplete="new-password"></div>',
+            '<div><input type="email" id="e"><input type="password" id="p" name="password">'
+            '<input type="password" id="c" name="password_confirm"></div>',
+            '<div><input type="password" id="cur" autocomplete="current-password">'
+            '<input type="password" id="new" name="new_password"></div>',
+        ],
+        ids=["new-password", "confirmation", "change-password"],
+    )
+    def test_a_sign_up_or_password_change_group_yields_nothing(self, html: str) -> None:
+        assert extract_login_forms(html, source="s") == ()
+
+    def test_a_formless_login_drops_a_lone_sign_up_form_beside_it(self) -> None:
+        """A sign-up form is kept only when the page has no login at all."""
+        html = (
+            '<form action="/register"><input type="email" name="email" id="reg-email">'
+            '<input type="password" name="password" id="reg-pw" autocomplete="new-password">'
+            f"</form>{self._MODAL}"
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.formless
+
+    def test_controls_inside_noscript_are_left_out(self) -> None:
+        """With script on, a ``<noscript>`` body is never in the page, and a formless
+        group is sent only by script."""
+        only_noscript = (
+            '<noscript><input type="text" id="u"><input type="password" id="p"></noscript>'
+        )
+        assert extract_login_forms(only_noscript, source="s") == ()
+        mixed = (
+            '<div><input type="text" id="u"><input type="password" id="p">'
+            '<noscript><button id="fallback">Sign in</button></noscript>'
+            '<button id="go">Sign in</button></div>'
+        )
+        (form,) = extract_login_forms(mixed, source="s")
+        assert form.submit == "#go"
+
+    def test_hidden_inputs_outside_a_form_are_token_candidates_of_the_group(self) -> None:
+        html = (
+            '<div><input type="hidden" name="csrf_token" value="x">'
+            '<input id="u"><input type="password" id="p"></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.hidden == ("csrf_token",)
+
+    def test_the_same_group_on_two_pages_has_one_signature(self) -> None:
+        (one,) = extract_login_forms(self._MODAL, source="https://myshop.example/")
+        (two,) = extract_login_forms(self._MODAL, source="https://myshop.example/cart")
+        assert one.signature == two.signature
+
+    def test_a_formless_signature_never_equals_a_form_s(self) -> None:
+        """A ``<form>`` with no id holding the same controls is a different form."""
+        controls = '<input id="u"><input type="password" id="p">'
+        (formless,) = extract_login_forms(f"<div>{controls}</div>", source="s")
+        (real,) = extract_login_forms(f"<form>{controls}</form>", source="s")
+        assert formless.signature != real.signature
+
+    def test_a_page_with_no_formless_password_is_unchanged(self) -> None:
+        html = f'{_LOGIN_PAGE}<div><input type="text" name="q" id="search"></div>'
+        (form,) = extract_login_forms(html, source="s")
+        assert not form.formless
+        assert extract_login_forms(_LOGIN_PAGE, source="s") == (form,)

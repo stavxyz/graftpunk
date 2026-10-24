@@ -998,14 +998,16 @@ class _CredentialPost:
 
 def _script_driven_forms(entry: HAREntry, forms: tuple[LoginForm, ...]) -> list[LoginForm]:
     """Those of *forms*, served by *entry*, with no target of their own: an empty,
-    ``#``, or ``javascript:`` action, or one resolving to the page itself. Script
-    decides where such a form is sent, so a credential post found by its field names
-    alone may be its post."""
+    ``#``, or ``javascript:`` action, one resolving to the page itself, or inputs
+    outside any form (``LoginForm.formless``). Script decides where such a form is
+    sent, so a credential post found by its field names alone may be its post."""
     page = _request_target(entry.request.url)
     return [
         form
         for form in forms
-        if form.action_target == page or form.action.lower().startswith("javascript:")
+        if form.formless
+        or form.action_target == page
+        or form.action.lower().startswith("javascript:")
     ]
 
 

@@ -679,7 +679,9 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
             )
         else:
             reason = (
-                "none picks one input of the recorded form"
+                "it sits outside any form and has no id and no name unique on the recorded page"
+                if role in form.unresolved_roles and form.formless
+                else "none picks one input of the recorded form"
                 if role in form.unresolved_roles
                 else "the form's action holds an id, and without it none picks one input "
                 "of the recorded page"

@@ -622,7 +622,18 @@ one password marked `new-password` is kept (the attribute misused on a login
 form), and a password-plus-PIN form is a login form; a change-password form (a
 `current-password` input, a new password, and no username-like input) is not a
 login form at all; a stale-session check still counts any form with a password
-input as a login page. Each input is selected by its id, else its name (when no
+input as a login page (a `<form>`; inputs outside one do not count there). The
+controls outside every `<form>` (in none, and with no `form` attribute naming a
+form on the page) are one more login form when the same rules find a login in
+them: a login modal whose inputs sit in a `<div>` and that a script sends. It is
+listed after the page's forms, beside a real login form and never in its place.
+Its `action` and `method` are empty, since no browser submits it; each of its
+inputs is selected by its id, else by a name no other input on the page shares,
+else it is unresolved; a control inside `<noscript>` is left out; and the digest
+treats it as a form with no target of its own (below). A login modal that a
+script renders only after a click is in no recorded HTML response, and is in
+the page source saved when the recording stops only if it is still open then, so
+its inputs are usually still not found. In a `<form>`, each input is selected by its id, else its name (when no
 other control inside any form with the same action shares it: a header
 mini-login and the main form can post to one action), else its type (the same
 way) (`input:not([type])` for a typeless input), and an id or a name that holds
@@ -656,10 +667,10 @@ then the one whose form covers more of the post's body names, then the nearest,
 however many assets lie between; a post found by its field names alone (no
 recorded form, a saved page source's included, posts where it went) promotes
 only the nearest page whose form does not post where the credential post went
-(an empty, `#`, or `javascript:` action, or one naming the page itself), and no
-page when every earlier form posts somewhere real. A POST whose body asks for a
-new password (`new_password`, `password_confirm`) is never a credential post by
-its field names. Every other page carrying a login form is an ordinary page and
+(an empty, `#`, or `javascript:` action, one naming the page itself, or inputs
+outside any form), and no page when every earlier form posts somewhere real. A
+POST whose body asks for a new password (`new_password`, `password_confirm`) is
+never a credential post by its field names. Every other page carrying a login form is an ordinary page and
 keeps its stub. The same form on several pages is one form, told by its
 structure (its element id and each control's tag, type, name, and id), and is
 kept as the copy whose selectors resolve best. Among the forms, one a credential

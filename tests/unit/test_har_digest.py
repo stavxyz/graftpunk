@@ -4912,3 +4912,125 @@ class TestDollarNames:
         assert endpoint.body_kind == "form"
         assert endpoint.body_params == {"name": "str"}
         assert endpoint.body_keys_dropped_as_non_names == 1
+
+
+class TestLoginFieldsOutsideAnyForm:
+    """A script-driven login modal whose inputs sit in a ``<div>`` (#267): in the
+    page's HTML (case B) or in the saved page source (case E)."""
+
+    _HOST = "https://myshop.example.com"
+    _HEADER = '<header><a href="#" class="js-signin" id="signin-link">Sign in</a></header>'
+    _DIV_MODAL = (
+        '<div class="modal" id="login-modal" hidden><div class="login-form">'
+        '<input type="text" id="login-username" autocomplete="username">'
+        '<input type="password" id="login-password" autocomplete="current-password">'
+        '<button type="submit" class="btn" id="login-submit">Sign in</button></div></div>'
+    )
+    _SPA_SHELL = '<div id="app"></div><script src="/static/app.js"></script>'
+
+    def _entries(self, home: str, *pages: str) -> list[dict]:
+        return [
+            _entry("GET", f"{self._HOST}/", content_type="text/html", body=home),
+            *(
+                _entry("GET", f"{self._HOST}{path}", content_type="text/html", body=home)
+                for path in pages
+            ),
+            _entry(
+                "GET",
+                f"{self._HOST}/static/app.js",
+                content_type="application/javascript",
+                body="/*x*/",
+            ),
+            _entry(
+                "POST",
+                f"{self._HOST}/api/auth/login/",
+                body='{"ok": true}',
+                post_data=json.dumps({"username": "alice", "password": "hunter2hunter2"}),
+            ),
+            _entry("GET", f"{self._HOST}/api/account/", body='{"name": "x"}'),
+        ]
+
+    @staticmethod
+    def _plugin(result) -> str:  # noqa: ANN001
+        return render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://myshop.example.com",
+                digest=result,
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+
+    def test_inputs_in_a_div_of_the_page_html_give_one_login_form(self, tmp_path: Path) -> None:
+        entries = self._entries(self._HEADER + self._DIV_MODAL)
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (form,) = result.login_forms
+        assert form.formless
+        assert form.source == f"{self._HOST}/"
+        assert form.fields == {"username": "#login-username", "password": "#login-password"}
+        assert form.submit == "#login-submit"
+        kinds = [(o.method, o.kind) for o in result.login if o.login_flow]
+        assert kinds == [("GET", "form_page"), ("POST", "credential_post")]
+        # The credential post, found by its field names alone, is credited to the
+        # page the modal is on.
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/")] is True
+        assert flags[("POST", "/api/auth/login/")] is True
+        projected = json.loads(render_endpoints_json(result))["login"]["forms"]
+        assert projected == [
+            {
+                "action": "",
+                "fields": {"password": "#login-password", "username": "#login-username"},
+                "neutral_roles": [],
+                "submit": "#login-submit",
+                "unresolved_roles": [],
+            }
+        ]
+        code = self._plugin(result)
+        assert "login_config = LoginConfig(" in code
+        assert 'url="/",' in code
+        assert '"username": "#login-username"' in code
+        assert 'submit="#login-submit"' in code
+
+    def test_inputs_in_a_div_of_the_page_source_give_one_login_form(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        (run_dir / "page-source.html").write_text(self._HEADER + self._DIV_MODAL)
+        _write_har(run_dir, self._entries(self._HEADER + self._SPA_SHELL))
+        result = digest(DigestSource.from_run_dir(run_dir, session="myshop", run_id="run"))
+        (form,) = result.login_forms
+        assert form.formless
+        assert form.fields == {"username": "#login-username", "password": "#login-password"}
+        assert [o.kind for o in result.login if o.method == "POST"] == ["credential_post"]
+        code = self._plugin(result)
+        assert "login_config = LoginConfig(" in code
+        assert '"password": "#login-password"' in code
+
+    def test_the_same_group_on_several_pages_is_listed_once(self, tmp_path: Path) -> None:
+        entries = self._entries(self._HEADER + self._DIV_MODAL, "/products", "/cart")
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert len(result.login_forms) == 1
+        assert result.login_forms[0].formless
+
+    def test_a_post_to_the_page_itself_is_not_matched_by_target(self, tmp_path: Path) -> None:
+        """A formless group has no target: a POST to its page without a password
+        field is not a credential post, unlike an actionless form's."""
+        entries = [
+            _entry(
+                "GET",
+                f"{self._HOST}/products",
+                content_type="text/html",
+                body=self._HEADER + self._DIV_MODAL,
+            ),
+            _entry("POST", f"{self._HOST}/products", post_data=json.dumps({"q": "tea"})),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert not any(o.kind == "credential_post" for o in result.login)
+
+    def test_markdown_names_the_group_as_inputs_outside_a_form(self, tmp_path: Path) -> None:
+        entries = self._entries(self._HEADER + self._DIV_MODAL)
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        markdown = render_markdown(result)
+        assert f"- inputs outside a form (sent by script), source: {self._HOST}/" in markdown
+        assert "form at ``" not in markdown

@@ -61,6 +61,7 @@ from graftpunk.har.digest import (
     TokenCandidate,
     digest,
 )
+from graftpunk.har.documents import extract_login_forms
 from tests.unit.cli_harness import strip_ansi
 
 
@@ -981,6 +982,53 @@ class TestPluginModuleWithLoginForm:
         assert "from graftpunk.plugins import" in plugin_code
         assert "LoginConfig" in plugin_code
         assert "LoginStep" in plugin_code
+
+    def test_login_fields_outside_a_form_give_a_step_with_unscoped_selectors(self) -> None:
+        """A login modal whose inputs sit in a ``<div>`` (#267): the step's selectors
+        are an id and a page-unique name, and none names a form."""
+        html = (
+            '<div class="modal"><input type="email" name="email">'
+            '<input type="password" id="login-password">'
+            '<button type="submit" id="login-submit">Sign in</button></div>'
+        )
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/")
+        assert form.formless
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        step = plugin_code[plugin_code.index("LoginStep(") : plugin_code.index("submit=")]
+        assert '"username": \'input[name="email"]\'' in step
+        assert '"password": "#login-password"' in step
+        assert 'submit="#login-submit"' in plugin_code
+        assert "form" not in step.lower()
+        assert 'url="/",' in plugin_code
+
+    def test_an_unresolved_formless_submit_says_why(self) -> None:
+        html = '<div><input id="u"><input type="password" id="p"><button>Go</button></div>'
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/")
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: submit has no selector: it sits outside any form and has no id and no "
+            "name unique on the recorded page; write one by hand."
+        ) in comment
+        assert 'submit="GP-FILL: submit selector"' in plugin_code
 
     @staticmethod
     def _login_spec(*observations: LoginObservation) -> ScaffoldSpec:

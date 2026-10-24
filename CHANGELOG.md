@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading
+
+1. **A digest or scaffold made again from a run whose login inputs sit outside any `<form>` now lists that login form, and `gp plugin new` writes a `login_config` for it where it wrote only an observations comment** (#267). A run already digested, and a plugin already generated, do not change until you run `gp observe digest` or `gp plugin new` again. The new form's `action` is empty in `gp observe digest --endpoints-json`'s `login.forms`, and a `--from-run` scaffold's `LoginStep` selects each input by its id or by a name no other input on the page shares, with a `GP-FILL` for a role that has neither. Nothing changes for a run whose pages hold no password input outside a form.
+
+### Added
+
+- **The digest finds a login whose inputs sit outside any `<form>`** (#267). When a recorded HTML response or `page-source.html` has a password input that no form holds or names through `form="id"` (a script-driven login modal built from `<div>`s), `graftpunk.har.documents.extract_login_forms` returns one more `LoginForm` built from the page's controls outside every form, by the same role rules, after the page's real forms. Its `action` and `method` are empty, since no browser submits it; its selectors carry no form scope (an id, or a name unique on the page); controls inside `<noscript>` are left out; a sign-up or password-change shape among those controls gives none; and `LoginForm.formless` (internal, left out of `render_json`) marks it. The digest counts it as a form a script sends, so a credential post found by its field names alone promotes its page, and the same group on several pages is listed once. A login modal a script renders only after a click is still not found when it is neither in an HTML response nor open in the saved page source.
+
 ## [1.27.0] - 2026-10-24
 
 This is a minor release. Three changes reach a program on the first run after the upgrade; the first two only after `gp observe fixtures` writes a sidecar again:
