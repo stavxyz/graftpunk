@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import json
+import numbers
 import os
 from pathlib import Path
 from typing import cast
@@ -20,6 +21,27 @@ from graftpunk.logging import get_logger
 LOG = get_logger(__name__)
 
 _DEFAULT_DOWNLOADS_DIR = "gp-downloads"
+
+# A spreadsheet runs a CSV cell that starts with one of these as a formula. The
+# list is OWASP's (https://owasp.org/www-community/attacks/CSV_Injection),
+# full-width forms included.
+_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r", "\n", "＝", "＋", "－", "＠")
+
+
+def _neutralize_formula(text: str) -> str:
+    """Prefix *text* with ``'`` when a spreadsheet would read it as a formula (#288)."""
+    return "'" + text if text.startswith(_FORMULA_LEADS) else text
+
+
+def _csv_cell(value: object) -> object:
+    """A ``csv.writer`` cell for *value*: a number or ``None`` as is, anything else neutralised.
+
+    A number is left alone, so ``-5`` stays a number to a spreadsheet; the
+    same characters held as a string are site text and get the prefix.
+    """
+    if value is None or isinstance(value, numbers.Number):
+        return value
+    return _neutralize_formula(value if isinstance(value, str) else str(value))
 
 
 def get_downloads_dir() -> Path:
@@ -89,6 +111,9 @@ def json_to_csv(
 ) -> tuple[str, int]:
     """Convert a list of dicts to a CSV file.
 
+    A header or a value that is not a number and would start a spreadsheet
+    formula gets a leading ``'`` (#288); numbers and ``None`` are written as before.
+
     Args:
         data: List of dictionaries to write as CSV rows.
         output_path: Destination file path (string or Path).
@@ -107,10 +132,10 @@ def json_to_csv(
     columns = ordered_keys(rows)
 
     with open(output, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
+        writer = csv.writer(f)
+        writer.writerow([_neutralize_formula(c) for c in columns])
         for row in rows:
-            writer.writerow(row)
+            writer.writerow([_csv_cell(row.get(c)) for c in columns])
 
     return str(output), len(rows)
 

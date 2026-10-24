@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading
+
+1. **A CSV cell that starts with `=`, `+`, `-`, `@`, a tab, a carriage return or a line feed now gains a leading `'`** (#288), from the first run after the upgrade. This covers `-f csv`, `-o <file>.csv` and `graftpunk.plugins.json_to_csv`, header cells included, and the full-width `＝`, `＋`, `－` and `＠` too. A value that is a number (an `int`, `float`, `Decimal` or `bool`) is written as before, so `-5` stays `-5`; the same characters held as a string become `'-5`. A program that reads graftpunk's CSV back and needs the exact text must strip one leading `'` from a cell that starts with `'` followed by one of those characters. There is no switch to turn this off; use `-f json` for exact values. xlsx output is unchanged for ordinary data: strings that looked like formulas or URLs are now text cells instead of formulas or hyperlinks, with no prefix added.
+
+### Fixed
+
+- **The csv and xlsx formatters no longer write a value from a site as a formula** (#288). xlsxwriter stored a string starting with `=` (or `{=`) as a formula cell and one starting with `http://`, `https://` or `mailto:` as a hyperlink; every string is now written as a text cell, and numbers stay numbers. A CSV cell starting with a character a spreadsheet reads as the start of a formula is prefixed with `'` (see Upgrading, item 1). Closes #288.
+
 ## [1.25.0] - 2026-10-24
 
 This is a minor release. Several changes reach a program on the first run after the upgrade:

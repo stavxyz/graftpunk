@@ -10,6 +10,7 @@ import datetime
 import importlib.metadata
 import io
 import json
+import numbers
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -24,7 +25,7 @@ from graftpunk import console as gp_console
 from graftpunk.console import stream_is_tty, write_raw
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
-from graftpunk.plugins.export import get_downloads_dir, ordered_keys
+from graftpunk.plugins.export import _neutralize_formula, get_downloads_dir, ordered_keys
 from graftpunk.plugins.output_config import (
     OutputConfig,
     ViewConfig,
@@ -143,7 +144,9 @@ def _write_empty_csv(
     text = ""
     if view and view.columns and view.columns.mode == "include":
         buf = io.StringIO()
-        csv.writer(buf, lineterminator="\n").writerow(view.columns.columns)
+        csv.writer(buf, lineterminator="\n").writerow(
+            [_neutralize_formula(c) for c in view.columns.columns]
+        )
         text = buf.getvalue()
     write_raw(text, console, output_path)
     gp_console.info(f"Saved: {output_path}")
@@ -300,8 +303,21 @@ class RawFormatter:
         write_raw(text, console, output_path)
 
 
+def _csv_text(value: Any) -> str:
+    """One CSV cell: a number as written, anything else neutralised (#288)."""
+    if isinstance(value, numbers.Number):
+        return str(value)
+    if isinstance(value, (dict, list)):
+        return _neutralize_formula(json.dumps(value, default=str))
+    return _neutralize_formula(str(value))
+
+
 class CsvFormatter:
-    """Output as CSV (comma-separated values)."""
+    """Output as CSV (comma-separated values).
+
+    A cell that is not a number and would start a spreadsheet formula gets a
+    leading ``'`` (#288).
+    """
 
     name = "csv"
     binary = False
@@ -374,14 +390,9 @@ class CsvFormatter:
         headers = ordered_keys(data)
         buf = io.StringIO()
         writer = csv.writer(buf, lineterminator="\n")
-        writer.writerow(headers)
+        writer.writerow([_neutralize_formula(str(h)) for h in headers])
         for row in data:
-            writer.writerow(
-                [
-                    json.dumps(v, default=str) if isinstance(v, (dict, list)) else str(v)
-                    for v in (row.get(h, "") for h in headers)
-                ]
-            )
+            writer.writerow([_csv_text(row.get(h, "")) for h in headers])
         if output_path:
             write_raw(buf.getvalue(), console, output_path)
             gp_console.info(f"Saved: {output_path}")
@@ -420,7 +431,11 @@ class XlsxFormatter:
 
         filepath = _resolve_output_filepath(output_path, "xlsx")
 
-        workbook = xlsxwriter.Workbook(str(filepath))
+        # Strings go through _write_xlsx_cell; these options also keep any
+        # plain write() from storing "=..." as a formula or a URL as a link (#288).
+        workbook = xlsxwriter.Workbook(
+            str(filepath), {"strings_to_formulas": False, "strings_to_urls": False}
+        )
         try:
             bold = workbook.add_format({"bold": True})
 
@@ -459,13 +474,13 @@ class XlsxFormatter:
         if isinstance(data, list) and data and isinstance(data[0], dict):
             headers = list(data[0].keys())
             for col, header in enumerate(headers):
-                worksheet.write(0, col, header, bold)
+                _write_xlsx_cell(worksheet, 0, col, header, bold)
             for row_idx, row in enumerate(data, start=1):
                 for col_idx, header in enumerate(headers):
                     value = row.get(header, "")  # type: ignore[union-attr]
                     if isinstance(value, (dict, list)):
                         value = json.dumps(value, default=str)
-                    worksheet.write(row_idx, col_idx, value)
+                    _write_xlsx_cell(worksheet, row_idx, col_idx, value)
             # Auto-size columns: sample first 100 rows for performance,
             # cap cell width at 50 chars to prevent very wide columns.
             for col_idx, header in enumerate(headers):
@@ -478,16 +493,28 @@ class XlsxFormatter:
             worksheet.write(0, 0, "Key", bold)
             worksheet.write(0, 1, "Value", bold)
             for row_idx, (key, value) in enumerate(data.items(), start=1):
-                worksheet.write(row_idx, 0, str(key))
+                _write_xlsx_cell(worksheet, row_idx, 0, str(key))
                 if isinstance(value, (dict, list)):
                     value = json.dumps(value, default=str)
-                worksheet.write(row_idx, 1, value)
+                _write_xlsx_cell(worksheet, row_idx, 1, value)
             worksheet.set_column(0, 0, 20)
             worksheet.set_column(1, 1, 40)
         elif isinstance(data, list):
             pass  # Empty list — just create the sheet
         else:
-            worksheet.write(0, 0, str(data))
+            _write_xlsx_cell(worksheet, 0, 0, str(data))
+
+
+def _write_xlsx_cell(worksheet: Any, row: int, col: int, value: Any, fmt: Any = None) -> None:
+    """Write *value*, a string always as a string cell (#288).
+
+    ``strings_to_formulas=False`` alone still lets ``write()`` store
+    ``{=...}`` as an array formula, so strings take ``write_string``.
+    """
+    if isinstance(value, str):
+        worksheet.write_string(row, col, value, fmt)
+    else:
+        worksheet.write(row, col, value, fmt)
 
 
 class PdfFormatter:
