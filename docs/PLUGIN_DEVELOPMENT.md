@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.25.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.26.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -1361,6 +1361,18 @@ orders.csv` gets CSV. There is no need to call `sys.stdout.isatty()` in the
 command, and a plugin should not: it raises on a closed stream and fails when
 `sys.stdout` is `None` under an embedded interpreter.
 
+CSV and xlsx output treat every string as data, never as a formula. The `csv`
+formatter and `json_to_csv` put a leading `'` on a cell that is not a number
+and starts with `=`, `+`, `-`, `@`, a tab, a carriage return, a line feed, or a
+full-width `＝`, `＋`, `－` or `＠`, header cells included, so a spreadsheet
+shows `=HYPERLINK(...)` from a site as text. A number keeps its form: `-5` from
+an `int` is written `-5`, while the string `"-5"` is written `'-5`. Return
+amounts as numbers if a spreadsheet should add them up. The `xlsx` formatter
+writes every non-empty string as a text cell, never a formula or a hyperlink,
+and every number as a number; an empty or missing value is a blank cell. A
+plugin that renders site text through these formatters does not need to
+neutralise cells itself; one that writes its own CSV or xlsx file does.
+
 `format_hint` is typed `str | None`, so a name the plugin registered type-checks. A
 plugin that wants its own rule for files and pipes registers a formatter and
 names it in the hint. The formatter is handed the console and `output_path`
@@ -1487,7 +1499,11 @@ login_config = LoginConfig(
   turns into environment variable names.
 - `submit` is the CSS selector of the button to click after filling the fields.
 - `wait_for` is a CSS selector to wait for before the step runs. Use it on a
-  second step whose page appears only after the first step submits.
+  second step whose page appears only after the first step submits, and on any
+  step whose element works only once the page's script has loaded (see
+  [When a step acts](#when-a-step-acts)). A step with `wait_for` skips the
+  engine's own readiness wait. nodriver only: a Selenium plugin that sets it
+  fails at login.
 - `delay` is a pause in seconds after the submit click.
 
 A step needs at least one of `fields` or `submit`, so a click-only step (a
@@ -1502,10 +1518,13 @@ A step needs at least one of `fields` or `submit`, so a click-only step (a
 - `success`: a CSS selector for an element that proves the login worked.
 - `success_url`: a glob matched against the whole browser URL after the last
   step.
-- `wait_for`: a CSS selector to wait for before any step runs.
+- `wait_for`: a CSS selector to wait for before any step runs. The first step
+  then skips the engine's own readiness wait. nodriver only.
 - `headless`: run the login browser with no window. Defaults to `False`.
 - `timeout`: seconds to wait after the last step for a success or failure
-  signal. Defaults to `30.0`. Unused when no success signal is configured.
+  signal. Defaults to `30.0`. It also caps each step's readiness wait when it
+  is under 5 seconds (see [When a step acts](#when-a-step-acts)). The wait
+  after the last step does not use it when no success signal is configured.
 - `settle`: seconds to wait after the success signal and after the document
   finishes loading, before cookies are captured. Defaults to `1.0`. Unused when
   no success signal is configured.
@@ -1531,7 +1550,7 @@ A URL signal counts only once the URL differs from the one the last submit was
 clicked from, which is a second guard against the same mistake. Set both
 `success` and `success_url` and both have to hold.
 
-**`timeout` is the whole post-submit budget.** After the last step, the engine
+**After the last step, `timeout` is the whole post-submit budget.** After the last step, the engine
 checks the page every half second until the timeout: the failure text ends the
 wait as a failure, the configured success signal ends it as a success. A page
 reading `Too Many Requests` ends the wait as a failure on any pass that read the
@@ -1548,9 +1567,67 @@ Lower it to `3.0` if you want a login to give up quickly.
 rather than a poll.** There is no signal to wait for, so the engine watches for
 the `failure` text for three seconds and then takes the login at its word. That
 catches an error the site renders a moment after the submit, and it is much
-weaker than a real success signal. Configure one. On that path `timeout` and
-`settle` are not used at all: setting either changes nothing until a success
-signal exists.
+weaker than a real success signal. Configure one. On that path `settle` is
+not used at all, and `timeout` only caps each step's readiness wait: setting
+either changes nothing after the last step until a success signal exists.
+
+### When a step acts
+
+**A step waits for the page to be ready before it fills or clicks.** Many sites
+render the login link in the page's HTML before the script that handles it has
+loaded. A click that lands first does nothing: no sign-in form opens, and the
+next step times out waiting for a field that never appears. So before each step
+the engine waits until the document has loaded and the page has gone quiet for
+half a second, counted from the start of that step's wait: no change to the
+page and no script finishing loading, and on nodriver also no script or data
+request starting, finishing or still downloading. On a static page this costs
+about half a second per step. The wait never runs past 5 seconds, or past
+`timeout` when that is smaller; a page that is never quiet (a ticking clock, a
+request that stays open) is acted on at that point.
+
+**When the wait is not enough, name the moment yourself (nodriver).** Some
+pages attach their handlers with nothing the engine can see, and the click
+still lands too early. Give the step a `wait_for` naming something only the
+page's script renders: compare the page's HTML as the server sent it (in the
+HAR from `gp observe`) with the live page after it loads, and pick an element
+or class that is only in the second. On a click-only first step, the page-level
+`LoginConfig(wait_for=...)` works the same way.
+
+```python
+from graftpunk.plugins import LoginConfig, LoginStep
+
+login_config = LoginConfig(
+    steps=[
+        LoginStep(submit="a.sign-in"),
+        LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#go"),
+    ],
+    wait_for="body.app-ready",  # a class only the site's script adds
+    success="#account-menu",
+)
+```
+
+On nodriver, a step with its own `wait_for` skips the readiness wait, so
+`wait_for` is also how a step opts out of it on a page that is never quiet.
+Selenium does not accept `wait_for`, so a Selenium login always runs the wait
+and cannot turn it off; on a page that never goes quiet, each step costs up to
+5 seconds or `timeout`.
+
+**A selector should match one element.** When a field or submit selector matches
+several elements, the step acts on the first visible one and logs
+`login_selector_ambiguous` with the count. A responsive page often carries a
+hidden mobile-menu copy of a link, or of the whole form, ahead of the visible
+one. An element counts as hidden when it is not laid out, is `visibility:
+hidden` or `opacity: 0`, or sits off the side of the page in an off-canvas
+drawer. When several match and none of them is visible, the step fails and says how many
+it found; when the element it would act on is disabled, the step fails and says
+so. Either way, narrow the selector until it matches the one element a user
+would click or type into.
+
+**A failed login says why on its last lines.** For a login generated from
+`LoginConfig`, `gp myshop login` ends with the verdict: the signal that did not appear (or the failure text, or the rate-limit
+page) and the URL the page ended on, or the failed step and that URL. Read the
+bottom of the output first. `gp --observe=full myshop login` adds a screenshot
+and the page source.
 
 ### Headless, MFA, and CAPTCHA
 
