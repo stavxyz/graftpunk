@@ -482,7 +482,7 @@ Discovery errors are accumulated as `PluginDiscoveryError` / `YAMLDiscoveryError
 - `requires_session` — Whether commands need a cached session (default `True`)
 - `api_version` — Plugin interface version (currently `1`)
 
-`PluginParamSpec` is also a frozen dataclass defining CLI parameter specifications (name, type, required, default, help text, is_option flag).
+`PluginParamSpec` is also a frozen dataclass defining CLI parameter specifications (name, type, required, default, help text, is_option flag). An option marked `secret=True` (`secret: true` in YAML) has its value scrubbed from an observe run, kept out of `--help`, graftpunk's error messages and every line logged through `graftpunk.logging.get_logger` while the command runs (from any thread, every value of the line), and prompted for with hidden input on stderr when it is required, missing, and stdin is a terminal. A YAML option can read its value from `envvar: NAME`, or from a `default` of `${NAME}` or `${NAME:fallback}`, resolved when the command runs (never for `--help` or shell completion) through the process environment and then the workstation env file, as headers are.
 
 ### Building a plugin from a recording
 

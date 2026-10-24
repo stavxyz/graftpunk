@@ -31,8 +31,9 @@ from graftpunk.exceptions import (
     SessionNotFoundError,
     TokenPatternMismatchError,
 )
-from graftpunk.logging import get_logger
+from graftpunk.logging import get_logger, log_secrets
 from graftpunk.observe import ObservabilityContext, build_observe_context
+from graftpunk.observe.run import redact_text
 from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandContext, CommandSpec
 from graftpunk.plugins.formatters import format_output
 from graftpunk.session_context import get_active_session
@@ -198,39 +199,48 @@ def run_plugin_command(
         )
     # A command runs on a requests session, not a browser: with no driver the
     # run records that session's HTTP traffic instead, scrubbed of the
-    # plugin's secret credentials as each entry is recorded.
-    secrets = _observe_secrets(plugin, observe_mode)
-    observe_ctx = build_observe_context(
-        plugin.site_name,
-        backend_type,
-        driver,
-        observe_mode,
-        http_session=session if driver is None else None,
-        redact=secrets,
-    )
-    observe_ctx.start()
-    try:
-        _inject_tokens_and_run(
-            plugin,
-            cmd_spec,
-            session,
-            needs_session=needs_session,
-            operating_name=operating_name,
-            observe_ctx=observe_ctx,
-            output_format=output_format,
-            format_is_explicit=format_is_explicit,
-            view_args=view_args,
-            output_path=output_path,
-            kwargs=kwargs,
+    # plugin's secret credentials and the command's secret options as each
+    # entry is recorded.
+    option_secrets = cmd_spec.secret_values(kwargs)
+    secrets = _observe_secrets(plugin, observe_mode, option_secrets)
+    # Every log line from here on, the handler's and the recorder's included,
+    # is scrubbed of the secret options.
+    with log_secrets(option_secrets):
+        observe_ctx = build_observe_context(
+            plugin.site_name,
+            backend_type,
+            driver,
+            observe_mode,
+            http_session=session if driver is None else None,
+            redact=secrets,
         )
-    finally:
-        observe_ctx.finish(redact=secrets)
+        observe_ctx.start()
+        try:
+            _inject_tokens_and_run(
+                plugin,
+                cmd_spec,
+                session,
+                needs_session=needs_session,
+                operating_name=operating_name,
+                observe_ctx=observe_ctx,
+                output_format=output_format,
+                format_is_explicit=format_is_explicit,
+                view_args=view_args,
+                output_path=output_path,
+                kwargs=kwargs,
+                option_secrets=option_secrets,
+            )
+        finally:
+            observe_ctx.finish(redact=secrets)
 
 
-def _observe_secrets(plugin: CLIPluginProtocol, observe_mode: str) -> Redaction:
+def _observe_secrets(
+    plugin: CLIPluginProtocol, observe_mode: str, option_secrets: tuple[str, ...] = ()
+) -> Redaction:
     """What a plugin command's run is scrubbed of: every login credential gp can
     read (:func:`graftpunk.cli.login_commands.known_credentials`), split as a
-    login run's are (:meth:`graftpunk.observe.run.Redaction.from_credentials`)."""
+    login run's are (:meth:`graftpunk.observe.run.Redaction.from_credentials`),
+    and the values of the command's secret options, as secrets."""
     from graftpunk.observe.run import Redaction
 
     if observe_mode == "off":
@@ -238,10 +248,11 @@ def _observe_secrets(plugin: CLIPluginProtocol, observe_mode: str) -> Redaction:
     from graftpunk.cli.login_commands import known_credentials
 
     try:
-        return Redaction.from_credentials(known_credentials(plugin))
-    except Exception as exc:  # noqa: BLE001 - the run is still written, unscrubbed
+        credentials = Redaction.from_credentials(known_credentials(plugin))
+    except Exception as exc:  # noqa: BLE001 - the run is still written, unscrubbed of these
         LOG.error("observe_secrets_unavailable", error=str(exc), exc_type=type(exc).__name__)
-        return Redaction()
+        credentials = Redaction()
+    return Redaction(credentials.secrets + option_secrets, credentials.identifiers)
 
 
 def _inject_tokens_and_run(
@@ -257,8 +268,12 @@ def _inject_tokens_and_run(
     view_args: tuple[str, ...],
     output_path: str,
     kwargs: dict[str, Any],
+    option_secrets: tuple[str, ...] = (),
 ) -> None:
-    """Token injection, execution, the 403 retry, write-back and output."""
+    """Token injection, execution, the 403 retry, write-back and output.
+
+    An error message or log line that can carry what the handler sent (a URL,
+    an exception's text) is scrubbed of *option_secrets* first."""
     from graftpunk.client import execute_plugin_command
 
     # --- Token injection (CLI-specific ValueError handling) ---
@@ -280,6 +295,13 @@ def _inject_tokens_and_run(
         except TokenPatternMismatchError as exc:
             gp_console.error(f"Token extraction failed: {exc}")
             gp_console.info("The site's response no longer matches the Token config; update it.")
+            raise SystemExit(1) from exc
+        except requests.RequestException as exc:
+            # An http extraction re-raises the request's failure (tokens.extract_token).
+            # It runs before the handler, on the token config's URL, so it holds
+            # no option value.
+            gp_console.error(f"Token extraction failed: {exc}")
+            gp_console.info("The token page could not be fetched; check the network and retry.")
             raise SystemExit(1) from exc
         except ValueError as exc:
             gp_console.error(f"Token extraction failed: {exc}")
@@ -319,7 +341,7 @@ def _inject_tokens_and_run(
                 LOG.info(
                     "token_403_retry",
                     command=cmd_spec.name,
-                    url=(exc.response.url if exc.response else "unknown"),
+                    url=exc.response.url,
                 )
                 clear_cached_tokens(session)
                 _prep(
@@ -355,18 +377,21 @@ def _inject_tokens_and_run(
     except (SystemExit, KeyboardInterrupt):
         raise
     except CommandError as exc:
-        gp_console.error(exc.user_message)
+        gp_console.error(redact_text(exc.user_message, option_secrets))
         raise SystemExit(1) from exc
     except PluginError as exc:
-        gp_console.error(f"Plugin error: {exc}")
+        gp_console.error(redact_text(f"Plugin error: {exc}", option_secrets))
         raise SystemExit(1) from exc
     except Exception as exc:  # noqa: BLE001 — CLI boundary
+        error = redact_text(str(exc), option_secrets)
+        # The traceback is kept: under log_secrets the logger formats it into
+        # ``exception`` and scrubs it (graftpunk.logging.log_secrets).
         LOG.exception(
             "plugin_command_failed",
             plugin=plugin.site_name,
             command=cmd_spec.name,
-            error=str(exc),
+            error=error,
             exc_type=type(exc).__name__,
         )
-        gp_console.error(f"Command failed: {exc}")
+        gp_console.error(f"Command failed: {error}")
         raise SystemExit(1) from exc

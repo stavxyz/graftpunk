@@ -496,7 +496,8 @@ gp config list
 
 Static values load at startup; `$(…)` values run only when a command
 actually needs them (login, first access of an allowlisted setting, or a
-YAML plugin's `${VAR}` header expansion) — `gp --help` never triggers your
+YAML plugin's `${VAR}` header or param default; shell completion leaves a
+param default unresolved), and `gp --help` never triggers your
 secret manager. Real environment variables always win over the file — a
 variable set to the empty string counts as unset, so an accidental
 `export FOO=` doesn't shadow a workstation-file value. Single-quote command

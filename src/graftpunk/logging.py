@@ -12,12 +12,15 @@ import logging as stdlib_logging
 import os
 import sys
 import threading
-from collections.abc import Iterator
+import traceback
+from collections import Counter
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, TextIO
 
 import structlog
+import structlog._native as _structlog_native
 from structlog.typing import EventDict, WrappedLogger
 
 
@@ -62,6 +65,208 @@ def configured_by_consumer() -> bool:
     if not structlog.is_configured():
         return False
     return structlog.get_config().get("logger_factory") is not _owned_factory
+
+
+# Values no log line may show while a command that holds them runs: the
+# command's secret options (see :func:`log_secrets`). Process-wide rather than
+# per context, so a line logged from any thread (a worker pool, the nodriver
+# loop thread, an asyncio task created before the scope) is scrubbed too. A
+# count per value, so nested and concurrent scopes each release only their own.
+_active_secrets: Counter[str] = Counter()
+_active_secrets_lock = threading.Lock()
+
+
+def _reset_lock_in_child() -> None:
+    """A forked child gets a fresh lock: another thread may have held the
+    parent's at the fork, and nothing in the child would ever release it."""
+    global _active_secrets_lock
+    _active_secrets_lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):  # POSIX only
+    os.register_at_fork(after_in_child=_reset_lock_in_child)
+
+# What structlog's filtering bound logger hands out for a level it drops.
+# Looked up, not imported: should structlog rename them, every line is scrubbed.
+_DROPPED_LINE_METHODS = tuple(
+    method
+    for method in (
+        getattr(_structlog_native, "_nop", None),
+        getattr(_structlog_native, "_anop", None),
+    )
+    if method is not None
+)
+
+
+@contextmanager
+def log_secrets(secrets: Iterable[str]) -> Iterator[None]:
+    """Scrub *secrets* from every line a :class:`GraftpunkLogger` writes while
+    the block runs, from any thread, whatever structlog configuration renders
+    it: every value of the line, in the forms the observe run's scrub covers,
+    its traceback included. A value leaves the scrub when the last block holding
+    it closes. Values shorter than the observe scrub's floor (three characters)
+    are left alone, as there."""
+    added = [s for s in secrets if s]
+    with _active_secrets_lock:
+        _active_secrets.update(added)
+    try:
+        yield
+    finally:
+        with _active_secrets_lock:
+            _active_secrets.subtract(added)
+            for value in added:
+                if _active_secrets[value] <= 0:
+                    del _active_secrets[value]
+
+
+def _current_secrets() -> tuple[str, ...]:
+    if not _active_secrets:  # the common case, read without the lock
+        return ()
+    with _active_secrets_lock:
+        return tuple(_active_secrets)
+
+
+# The logging methods of a structlog bound logger, and their async forms ("a" + name).
+_LOG_METHODS = frozenset(
+    {"debug", "info", "warning", "warn", "error", "critical", "fatal", "exception", "msg", "log"}
+)
+
+
+# How deep the scrub walks nested containers before it scrubs the rest as text.
+_MAX_SCRUB_DEPTH = 64
+
+
+def _unprintable(value: Any) -> str:
+    """The fixed stand-in for a value that has no text at all: never the value
+    itself, which a renderer could neither print nor be trusted to scrub."""
+    return f"<unprintable {type(value).__name__}>"
+
+
+def _texts(value: Any) -> list[str]:
+    """``str(value)`` and ``repr(value)``, leaving out either one that raises."""
+    texts = []
+    for render in (str, repr):
+        try:
+            texts.append(render(value))
+        except Exception:  # noqa: BLE001, S112 - inside the logger: logging it would recurse
+            continue
+    return texts
+
+
+def _scrubbed_text(value: Any, redact: Callable[[str], str]) -> str:
+    """*value*'s ``repr``, scrubbed, for a container the walk does not enter: one
+    it is already inside (a cycle) or one past the depth limit."""
+    try:
+        return redact(repr(value))
+    except Exception:  # noqa: BLE001 - too deep for repr too
+        return _unprintable(value)
+
+
+def _scrubbed_dict(
+    value: dict[Any, Any], redact: Callable[[str], str], ancestors: frozenset[int], depth: int
+) -> dict[Any, Any]:
+    result: dict[Any, Any] = {}
+    for key, item in value.items():
+        scrubbed_key = _scrubbed(key, redact, ancestors, depth)
+        # Two keys that scrub to the same text both stay, the later one numbered.
+        candidate, number = scrubbed_key, 1
+        while candidate in result:
+            number += 1
+            candidate = f"{scrubbed_key} ({number})"
+        result[candidate] = _scrubbed(item, redact, ancestors, depth)
+    return result
+
+
+def _scrubbed(
+    value: Any,
+    redact: Callable[[str], str],
+    ancestors: frozenset[int] = frozenset(),
+    depth: int = 0,
+) -> Any:
+    """*value* with every secret replaced, whatever its type; it never raises.
+
+    Strings are scrubbed; dicts (keys too, two that collide both kept), lists,
+    tuples and namedtuples are rebuilt with scrubbed members. A container that
+    holds itself, or one nested past ``_MAX_SCRUB_DEPTH``, is logged as its
+    scrubbed ``repr``. Any other value (an exception, a ``Path``, ``bytes``
+    decoded with replacement, a set, an object) is kept as it is unless its text
+    holds a secret, in which case the line carries that text scrubbed. A value
+    whose ``str`` and ``repr`` both raise is logged as a fixed placeholder.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return redact(value)
+    is_container = isinstance(value, dict) or type(value) in (list, tuple)
+    is_namedtuple = isinstance(value, tuple) and hasattr(value, "_fields")
+    if is_container or is_namedtuple:
+        if id(value) in ancestors or depth >= _MAX_SCRUB_DEPTH:
+            return _scrubbed_text(value, redact)
+        inner = ancestors | {id(value)}
+        if isinstance(value, dict):
+            return _scrubbed_dict(value, redact, inner, depth + 1)
+        members = [_scrubbed(v, redact, inner, depth + 1) for v in value]
+        if is_container:
+            return type(value)(members)
+        try:
+            return type(value)(*members)
+        except Exception:  # noqa: BLE001, S110 - a namedtuple subclass with its own constructor
+            pass
+    if isinstance(value, bytes | bytearray):
+        texts = [bytes(value).decode("utf-8", errors="replace")]
+    else:
+        texts = _texts(value)
+        if not texts:
+            return _unprintable(value)
+        if len(texts) == 1:
+            # One of str and repr raises; the renderer would hit it (it prints a
+            # repr), so the line carries the text that works.
+            return redact(texts[0])
+    for text in texts:
+        scrubbed = redact(text)
+        if scrubbed != text:
+            return scrubbed
+    return value
+
+
+def _scrubbing_call(logger: GraftpunkLogger, name: str, secrets: tuple[str, ...]) -> Any:
+    """*logger*'s log method *name*, scrubbing its bound values and every
+    argument of *secrets*.
+
+    A traceback (``exception()``, or ``exc_info``) is formatted here into the
+    ``exception`` value, as structlog's ``format_exc_info`` would, so it is
+    scrubbed before any renderer sees it; the line goes out at error level.
+    """
+    from graftpunk.observe.run import text_redactor
+
+    is_async = name.startswith("a") and name[1:] in _LOG_METHODS
+    base = name[1:] if is_async else name
+
+    def call(*args: Any, **kwargs: Any) -> Any:
+        target = ("aerror" if is_async else "error") if base == "exception" else name
+        plain = logger._resolve()
+        method = getattr(plain, target)
+        if getattr(method, "__func__", method) in _DROPPED_LINE_METHODS:
+            # structlog's level filter drops this line: nothing is rendered, so
+            # nothing needs scrubbing.
+            return getattr(plain, name)(*args, **kwargs)
+        redact = text_redactor(secrets)
+        # A fresh logger with scrubbed bound values: a module's LOG is shared.
+        bound = logger._with(_scrubbed(logger._initial_values, redact))._resolve()
+        exc_info = kwargs.pop("exc_info", base == "exception" or None)
+        target = name
+        if exc_info:
+            if isinstance(exc_info, BaseException):
+                exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
+            elif not isinstance(exc_info, tuple):
+                exc_info = sys.exc_info()
+            if exc_info[0] is not None:
+                kwargs["exception"] = "".join(traceback.format_exception(*exc_info)).rstrip("\n")
+            if base == "exception":
+                target = "aerror" if is_async else "error"
+        return getattr(bound, target)(*_scrubbed(args, redact), **_scrubbed(kwargs, redact))
+
+    return call
 
 
 def _processors(json_output: bool, colors: bool) -> list[Any]:
@@ -250,10 +455,17 @@ class GraftpunkLogger:
         # has no attributes yet: answering must not build a logger.
         if name.startswith("__") or name in ("_factory_args", "_initial_values"):
             raise AttributeError(name)
-        attr = getattr(self._resolve(), name)
-        if _redactions.get() and name in _LOG_METHODS:
-            return _redacting_call(attr)
-        return attr
+        is_log_method = name in _LOG_METHODS or name[1:] in _LOG_METHODS
+        secrets = _current_secrets()
+        if secrets and is_log_method:
+            method = _scrubbing_call(self, name, secrets)
+        else:
+            method = getattr(self._resolve(), name)
+        # redacted_values() rewrites its pairs first; log_secrets() then
+        # scrubs its values from what is left. Either may be active alone.
+        if _redactions.get() and is_log_method:
+            return _redacting_call(method)
+        return method
 
 
 # Values that must not reach a log line, each with what to write instead. Set
@@ -261,22 +473,6 @@ class GraftpunkLogger:
 # lines are untouched.
 _redactions: ContextVar[tuple[tuple[str, str], ...]] = ContextVar(
     "graftpunk_log_redactions", default=()
-)
-_LOG_METHODS = frozenset(
-    {
-        "debug",
-        "info",
-        "msg",
-        "warn",
-        "warning",
-        "error",
-        "err",
-        "exception",
-        "critical",
-        "fatal",
-        "failure",
-        "log",
-    }
 )
 
 
