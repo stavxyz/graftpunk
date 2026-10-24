@@ -238,14 +238,15 @@ class TestTheRunIsWrittenSafely:
         self, site: str, tmp_path: Path
     ) -> None:
         spool = tmp_path / "network.har.spool"
-        session, capture = _recording(spool_path=spool)
+        session, capture = _recording(spool_path=spool, bodies_dir=tmp_path / "bodies")
         in_flight = session.send  # what a request already inside send holds
         capture.stop_capture()
         capture.discard_spool()
 
-        in_flight(requests.Request("GET", f"{site}/home").prepare(), timeout=5)
+        in_flight(requests.Request("GET", f"{site}/logo.png").prepare(), timeout=5)
 
         assert not spool.exists()
+        assert not (tmp_path / "bodies").exists()
         assert capture.get_har_entries() == []
 
     def test_entries_are_scrubbed_before_they_reach_the_spool(
