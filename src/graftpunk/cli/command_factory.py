@@ -62,13 +62,35 @@ def _reject_unsupported(
         )
 
 
+def _click_exceptions() -> Any:
+    """The exceptions module of the Click that Typer runs: external Click before
+    typer 0.26, its vendored copy from then on. Typer turns only its own Click's
+    ``UsageError`` into a usage message and exit code 2."""
+    return sys.modules[typer.BadParameter.__module__]
+
+
 def _stdin_is_terminal() -> bool:
-    """Whether stdin is a terminal, read when the option is built: a secret
-    option's hidden prompt is offered only to someone who can answer it."""
+    """Whether stdin is a terminal: a secret option's hidden prompt is offered
+    only to someone who can answer it."""
     try:
         return sys.stdin is not None and sys.stdin.isatty()
     except (AttributeError, ValueError):  # replaced or closed stdin
         return False
+
+
+def _prompt_for_missing_secret(ctx: Any, param: Any, value: Any) -> Any:
+    """A required secret option's callback: the value given, else a hidden prompt
+    on stderr when stdin is a terminal, else Click's missing-option error.
+
+    Click's own ``prompt=`` writes its label to stdout, where it would land in a
+    command's piped or redirected result.
+    """
+    if value is not None or ctx.resilient_parsing:
+        return value
+    if not _stdin_is_terminal():
+        raise _click_exceptions().MissingParameter(ctx=ctx, param=param)
+    label = (param.name or "value").replace("_", " ").capitalize()
+    return typer.prompt(label, hide_input=True, err=True)
 
 
 def _secret_option_kwargs(
@@ -88,7 +110,68 @@ def _secret_option_kwargs(
         raise PluginError(f"{where}: a secret option cannot be a flag or multiple.")
     if kw.get("show_default"):
         raise PluginError(f"{where}: a secret option cannot show its default in --help.")
-    return {"hide_input": True, "prompt": required and _stdin_is_terminal()}
+    return {"callback": _prompt_for_missing_secret} if required else {}
+
+
+def _default_factory(default: Callable[[], Any]) -> Callable[[], Any]:
+    """*default* as a Typer ``default_factory`` whose ``PluginError`` (an unset
+    variable) is a usage error, exit code 2, rather than a traceback."""
+
+    def factory() -> Any:
+        try:
+            return default()
+        except PluginError as exc:
+            raise _click_exceptions().UsageError(str(exc)) from None
+
+    return factory
+
+
+def _option_flag(spec: PluginParamSpec) -> str:
+    return spec.click_kwargs.get("flag") or f"--{spec.name.replace('_', '-')}"
+
+
+def _secret_tokens(args: Sequence[str], flags: Sequence[str]) -> list[str]:
+    """The values *args* gives the secret options *flags*: ``--flag VALUE`` and
+    ``--flag=VALUE``."""
+    tokens: list[str] = []
+    for index, arg in enumerate(args):
+        for flag in flags:
+            if arg == flag and index + 1 < len(args):
+                tokens.append(args[index + 1])
+            elif arg.startswith(f"{flag}="):
+                tokens.append(arg[len(flag) + 1 :])
+    return tokens
+
+
+def command_class(param_specs: Sequence[PluginParamSpec]) -> type | None:
+    """The Typer command class for a command with secret options, or None.
+
+    When another option is left without its value, Click takes the next token
+    as that value and can quote it in its usage error (``Invalid value for
+    '--count': '--api-key=...' is not a valid integer``), or report the token
+    after it as an extra argument. This class scrubs a usage error's message
+    of every value the command line gives a secret option.
+    """
+    flags = [_option_flag(spec) for spec in param_specs if spec.is_option and spec.secret]
+    if not flags:
+        return None
+    from typer.core import TyperCommand
+
+    usage_error = _click_exceptions().UsageError
+
+    class SecretArgsCommand(TyperCommand):
+        def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+            tokens = _secret_tokens(list(args), flags)
+            try:
+                return super().parse_args(ctx, args)
+            except usage_error as exc:
+                if tokens:
+                    from graftpunk.observe.run import redact_text
+
+                    exc.message = redact_text(exc.message, tokens)
+                raise
+
+    return SecretArgsCommand
 
 
 def map_param_spec(
@@ -137,18 +220,24 @@ def map_param_spec(
         # flag names. "flag" overrides it: for a name a Python parameter cannot spell
         # (login's --as: "as" is a reserved keyword), or to declare a bool's
         # --x/--no-x pair.
-        flag = kw.get("flag") or f"--{spec.name.replace('_', '-')}"
+        flag = _option_flag(spec)
         secret_kw = (
             _secret_option_kwargs(plugin_name, command_name, spec, required=required)
             if spec.secret
             else {}
         )
+        # A callable default is called when the command runs and the option is
+        # not given (a YAML default of "${VAR}" resolves this way).
+        default_kw = {"default_factory": _default_factory(default)} if callable(default) else {}
+        # A required secret is optional to Click: its callback asks for a missing
+        # value, which Click's own required check would refuse first.
         info = typer.Option(
-            ... if required else default,
+            ... if (required and not spec.secret) or default_kw else default,
             flag,
             help=kw.get("help") or None,
             show_default=kw.get("show_default", False),
             envvar=kw.get("envvar") or None,
+            **default_kw,
             **secret_kw,
         )
         # "multiple": repeatable, collected into a list of base_type; None when

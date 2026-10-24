@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from requests.utils import requote_uri
+
 from graftpunk.logging import get_logger
 from graftpunk.observe.storage import ObserveStorage, write_private_file
 
@@ -125,6 +127,10 @@ def _secret_forms(secret: str) -> set[str]:
         urllib.parse.quote(urllib.parse.quote(secret, safe=""), safe=""),
         json.dumps(secret)[1:-1],
         base64.b64encode(secret.encode()).decode(),
+        # What requests makes of a value put into the URL string itself (a
+        # path segment, or a query written into the URL): "/", "@", "!" and
+        # the like stay raw, a space or "|" is percent-encoded.
+        requote_uri(secret),
     }
 
 

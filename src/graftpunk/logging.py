@@ -12,7 +12,10 @@ import logging as stdlib_logging
 import os
 import sys
 import threading
+import traceback
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, TextIO
 
 import structlog
@@ -60,6 +63,68 @@ def configured_by_consumer() -> bool:
     if not structlog.is_configured():
         return False
     return structlog.get_config().get("logger_factory") is not _owned_factory
+
+
+# Values no log line may show while a command that holds them runs: the
+# command's secret options (see :func:`log_secrets`).
+_log_secrets: ContextVar[tuple[str, ...]] = ContextVar("graftpunk_log_secrets", default=())
+
+
+@contextmanager
+def log_secrets(secrets: Iterable[str]) -> Iterator[None]:
+    """Scrub *secrets* from every line a :class:`GraftpunkLogger` writes inside
+    the block, whatever structlog configuration renders it: every value of the
+    line, in the forms the observe run's scrub covers, its traceback included."""
+    token = _log_secrets.set(_log_secrets.get() + tuple(s for s in secrets if s))
+    try:
+        yield
+    finally:
+        _log_secrets.reset(token)
+
+
+# The logging methods of a structlog bound logger, and their async forms ("a" + name).
+_LOG_METHODS = frozenset(
+    {"debug", "info", "warning", "warn", "error", "critical", "fatal", "exception", "msg", "log"}
+)
+
+
+def _scrubbed(value: Any, secrets: tuple[str, ...]) -> Any:
+    from graftpunk.observe.run import redact_text
+
+    if isinstance(value, str):
+        return redact_text(value, secrets)
+    if isinstance(value, dict):
+        return {k: _scrubbed(v, secrets) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return type(value)(_scrubbed(v, secrets) for v in value)
+    return value
+
+
+def _scrubbing_call(bound: Any, name: str, secrets: tuple[str, ...]) -> Any:
+    """*bound*'s log method *name*, scrubbing every argument of *secrets*.
+
+    A traceback (``exception()``, or ``exc_info``) is formatted here into the
+    ``exception`` value, as structlog's ``format_exc_info`` would, so it is
+    scrubbed before any renderer sees it; the line goes out at error level.
+    """
+    is_async = name.startswith("a") and name[1:] in _LOG_METHODS
+    base = name[1:] if is_async else name
+
+    def call(*args: Any, **kwargs: Any) -> Any:
+        exc_info = kwargs.pop("exc_info", base == "exception" or None)
+        target = name
+        if exc_info:
+            if isinstance(exc_info, BaseException):
+                exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
+            elif not isinstance(exc_info, tuple):
+                exc_info = sys.exc_info()
+            if exc_info[0] is not None:
+                kwargs["exception"] = "".join(traceback.format_exception(*exc_info)).rstrip("\n")
+            if base == "exception":
+                target = "aerror" if is_async else "error"
+        return getattr(bound, target)(*_scrubbed(args, secrets), **_scrubbed(kwargs, secrets))
+
+    return call
 
 
 def _processors(json_output: bool, colors: bool) -> list[Any]:
@@ -247,6 +312,11 @@ class GraftpunkLogger:
         # has no attributes yet: answering must not build a logger.
         if name.startswith("__") or name in ("_factory_args", "_initial_values"):
             raise AttributeError(name)
+        secrets = _log_secrets.get()
+        if secrets and (name in _LOG_METHODS or name[1:] in _LOG_METHODS):
+            # A fresh logger: a module's LOG is shared across threads.
+            scrubbed = self._with(_scrubbed(self._initial_values, secrets))
+            return _scrubbing_call(scrubbed._resolve(), name, secrets)
         return getattr(self._resolve(), name)
 
 

@@ -42,7 +42,7 @@ import numbers
 import sys
 import types
 import typing
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -241,9 +241,11 @@ class PluginParamSpec:
     and passes a list of ``type``, or ``None`` when it is not given; a flag cannot
     be multiple. ``secret`` marks a ``str`` option whose value is a secret (an API
     key, a PIN): an observe run is scrubbed of it, ``--help`` never shows its
-    default, graftpunk's error messages and logs do not print it, and a required
-    one that is missing is prompted for with hidden input when stdin is a
-    terminal. A secret option cannot be a flag, multiple, or ``show_default``.
+    default, graftpunk's error messages and log lines do not print it, and a
+    required one that is missing is prompted for with hidden input, on stderr,
+    when stdin is a terminal. A secret option cannot be a flag, multiple, or
+    ``show_default``. An option's ``default`` may be a zero-argument callable,
+    called when the command runs and the option is not given.
     For arguments, supported keys are: ``type``, ``required``, ``default``, ``nargs``.
     Unsupported keys raise ``PluginError`` at registration.
 
@@ -297,7 +299,8 @@ class PluginParamSpec:
             name: Parameter name.
             type: Click type for the parameter (e.g. ``str``, ``int``, ``bool``).
             required: Whether the option is required.
-            default: Default value when not provided.
+            default: Default value when not provided, or a zero-argument callable
+                called for it when the command runs.
             help: Help text for ``--help`` output.
             secret: The value is a secret: scrubbed from an observe run, never
                 shown or logged by graftpunk, and prompted for with hidden input
@@ -668,6 +671,15 @@ class CommandSpec:
     def help_text(self) -> str:
         """Convenience accessor for ``click_kwargs["help"]``."""
         return self.click_kwargs.get("help") or ""
+
+    def secret_values(self, kwargs: Mapping[str, Any]) -> tuple[str, ...]:
+        """The values *kwargs* gives this command's ``secret`` options, from the
+        command line, an environment variable, a prompt or a default."""
+        return tuple(
+            str(kwargs[spec.name])
+            for spec in self.params
+            if spec.secret and kwargs.get(spec.name) not in (None, "")
+        )
 
 
 @dataclass(frozen=True)

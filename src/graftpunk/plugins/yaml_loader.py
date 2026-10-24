@@ -27,8 +27,9 @@ from graftpunk.tokens import Token, TokenConfig
 
 LOG = get_logger(__name__)
 
-# Environment variable pattern: ${VAR_NAME}
-ENV_VAR_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
+# Environment variable pattern: ${VAR_NAME}, or ${VAR_NAME:default} with a
+# default used when VAR_NAME is not set.
+ENV_VAR_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::([^}]*))?\}")
 
 # Valid HTTP methods for YAML commands
 VALID_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
@@ -45,6 +46,7 @@ class YAMLParamDef:
     help: str = ""
     is_option: bool = True
     secret: bool = False
+    envvar: str = ""
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -122,10 +124,12 @@ class YAMLDiscoveryResult:
 
 
 def expand_env_vars(value: str) -> str:
-    """Expand ${VAR} patterns in a string with environment variables.
+    """Expand ``${VAR}`` and ``${VAR:default}`` patterns in a string.
 
     Resolves variables through workstation env lookup, which checks the
-    environment first, then the workstation env file.
+    environment first, then the workstation env file. ``${VAR:default}``
+    gives *default* (which may be empty) when ``VAR`` is not set, as
+    pyaml_env's syntax does.
 
     Args:
         value: String potentially containing ${VAR} patterns.
@@ -134,20 +138,22 @@ def expand_env_vars(value: str) -> str:
         String with environment variables expanded.
 
     Raises:
-        PluginError: if the variable is neither in the environment nor
-            resolvable from the workstation env file.
+        PluginError: if a variable with no default is neither in the
+            environment nor resolvable from the workstation env file.
     """
 
     def replacer(match: re.Match[str]) -> str:
         from graftpunk import workstation_env
 
-        var_name = match.group(1)
+        var_name, fallback = match.group(1), match.group(2)
         var_value = workstation_env.load().lookup(var_name)
-        if var_value is None:
-            raise PluginError(
-                f"Environment variable ${var_name} is not set. Set it before using this plugin."
-            )
-        return var_value
+        if var_value is not None:
+            return var_value
+        if fallback is not None:
+            return fallback
+        raise PluginError(
+            f"Environment variable ${var_name} is not set. Set it before using this plugin."
+        )
 
     return ENV_VAR_PATTERN.sub(replacer, value)
 
@@ -283,6 +289,15 @@ def validate_yaml_schema(data: dict[str, Any], filepath: Path) -> None:
                     f"Plugin '{filepath}': command '{cmd_name}' param "
                     f"'{param['name']}': a secret param must be a str option."
                 )
+            envvar = param.get("envvar")
+            if envvar is not None and (
+                not isinstance(envvar, str) or not envvar or not param.get("is_option", True)
+            ):
+                raise PluginError(
+                    f"Plugin '{filepath}': command '{cmd_name}' param "
+                    f"'{param['name']}': 'envvar' must name an environment variable, "
+                    f"on an option, got {envvar!r}."
+                )
 
 
 def _check_login_step_types(step_dict: dict[str, Any], *, filepath: Path, number: int) -> None:
@@ -369,6 +384,7 @@ def parse_yaml_plugin(
                     help=param.get("help", ""),
                     is_option=param.get("is_option", True),
                     secret=param.get("secret", False),
+                    envvar=param.get("envvar") or "",
                 )
             )
 

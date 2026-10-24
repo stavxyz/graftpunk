@@ -82,6 +82,15 @@ def _response_headers(response: requests.Response) -> dict[str, str]:
     return headers
 
 
+def _loggable_url(url: str | None, redact: Redaction | Iterable[str]) -> str | None:
+    """*url* scrubbed of *redact*, for a log line."""
+    if not url:
+        return url
+    from graftpunk.observe.run import redact_text
+
+    return redact_text(url, redact, in_url=True)
+
+
 def _has_empty_body(response: requests.Response) -> bool:
     """True when the response says it has no body (``Content-Length: 0``)."""
     return response.headers.get("Content-Length", "").strip() == "0"
@@ -96,6 +105,7 @@ def har_entry_for_response(
     max_body_size: int = MAX_RESPONSE_BODY_SIZE,
     bodies_dir: Path | None = None,
     body_unread: str | None = None,
+    redact: Redaction | Iterable[str] = (),
 ) -> dict[str, Any]:
     """One HAR 1.2 entry for *response* and the request that produced it.
 
@@ -115,7 +125,8 @@ def har_entry_for_response(
     this never reads a body. With *body_unread* set, requests left the body
     unread, and the entry says why with ``_bodyNotCaptured`` and
     ``_bodyNotCapturedReason``, except a streamed response with no body to
-    miss (a redirect hop or ``Content-Length: 0``).
+    miss (a redirect hop or ``Content-Length: 0``). A URL this logs is scrubbed
+    of *redact*.
     """
     request = response.request
     request_headers: Mapping[str, str] = request.headers if request is not None else {}
@@ -133,7 +144,7 @@ def har_entry_for_response(
                 "post_data_unavailable",
                 request_id=request_id,
                 method=data["method"],
-                url=data["url"],
+                url=_loggable_url(data["url"], redact),
                 error="streamed request body",
                 hint="A request body sent from a file or generator is not recorded",
             )
@@ -187,6 +198,7 @@ def har_entry_for_failed_request(
     error: BaseException,
     max_body_size: int = MAX_RESPONSE_BODY_SIZE,
     bodies_dir: Path | None = None,
+    redact: Redaction | Iterable[str] = (),
 ) -> dict[str, Any]:
     """One HAR 1.2 entry for a request that got no response (a refused connection).
 
@@ -206,6 +218,7 @@ def har_entry_for_failed_request(
         max_body_size=max_body_size,
         bodies_dir=bodies_dir,
         body_unread="no_response",
+        redact=redact,
     )
     entry["response"]["_error"] = f"{type(error).__name__}: {error}"
     return entry
@@ -364,11 +377,7 @@ class HttpCaptureBackend:
 
     def _loggable(self, url: str | None) -> str | None:
         """*url* scrubbed of the run's secrets, for a log line."""
-        if not url or not self._redact:
-            return url
-        from graftpunk.observe.run import redact_text
-
-        return redact_text(url, self._redact, in_url=True)
+        return _loggable_url(url, self._redact)
 
     def _next_id(self) -> str:
         with self._lock:
@@ -525,6 +534,7 @@ class HttpCaptureBackend:
                     error=error,
                     max_body_size=self._max_body_size,
                     bodies_dir=self._bodies_dir,
+                    redact=self._redact,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - recording must never break the request
@@ -561,6 +571,7 @@ class HttpCaptureBackend:
                 max_body_size=self._max_body_size,
                 bodies_dir=self._bodies_dir,
                 body_unread=body_unread,
+                redact=self._redact,
             )
             self._keep(entry)
         except Exception as exc:  # noqa: BLE001 - recording must never break the request
