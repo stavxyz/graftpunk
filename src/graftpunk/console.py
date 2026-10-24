@@ -99,6 +99,7 @@ def render_ambiguous_session(
     candidates: Sequence[tuple[str, str | None]],
     *,
     console: Console | None = None,
+    notes: Sequence[str] = (),
 ) -> None:
     """Render the pick-one message for an ambiguous session.
 
@@ -114,6 +115,8 @@ def render_ambiguous_session(
     for name, identifier in candidates:
         line = f"  - {name} — {identifier}" if identifier else f"  - {name}"
         c.print(line, markup=False, highlight=False)
+    for note in notes:
+        info(note, console=c)
     info(
         "Pick one with --session <name>, the GRAFTPUNK_SESSION env var, or: gp session use <name>",
         console=c,

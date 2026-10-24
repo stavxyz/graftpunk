@@ -1474,11 +1474,12 @@ def cache_login_session(
     The identifier rides the session object so ``_extract_session_metadata``
     records it. Returns the session name used.
     """
-    from graftpunk.session_identity import GP_ACCOUNT_ATTR
+    from graftpunk.session_identity import ACCOUNT_RULE, GP_ACCOUNT_ATTR
 
     scope = operating_session_for(plugin.session_name) if name is None else None
     session_name = name if name is not None else (scope.name if scope else plugin.session_name)
     account = identifier if identifier is not None else (scope.identifier if scope else None)
+    account_rule: int | None = ACCOUNT_RULE
     if account is None:
         # The one read in the funnel; cache_session itself stays read-free. A
         # storage failure here costs the carried-forward account, never the
@@ -1495,9 +1496,13 @@ def cache_login_session(
             )
             stored = None
         account = stored.get("account_identifier") if stored else None
+        # The carried-forward account keeps the rule that recorded it, so a
+        # refresh never makes a slot graftpunk 1.24.0 named look current (#293).
+        if account is not None:
+            account_rule = stored.get("account_rule") if stored else None
     if account is not None:
         setattr(session, GP_ACCOUNT_ATTR, account)
-    cache_session(session, session_name)
+    cache_session(session, session_name, account_rule=account_rule)
     return session_name
 
 

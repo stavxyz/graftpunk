@@ -8,7 +8,11 @@ from graftpunk.exceptions import AmbiguousSessionError, GraftpunkError
 from graftpunk.session_identity import (
     GP_ACCOUNT_ATTR,
     IDENTIFIER_FIELD_NAMES,
+    _legacy_account_field,
+    _legacy_derivable,
     _legacy_derive_account_identity,
+    _legacy_secret_field,
+    account_field,
     derive_account_identity,
     is_identifier_field,
     join_session_name,
@@ -84,6 +88,52 @@ ISSUE_293_ROWS = [
 ]
 
 
+#: Field names from the issue, both reviews of #300, the docs, the YAML template
+#: and the scaffold, mixed into every ordered pair and triple below.
+FIELD_NAME_POOL = [
+    "username",
+    "user_name",
+    "User Name",
+    "email",
+    "email_address",
+    "user_email",
+    "login_email",
+    "login",
+    "login_name",
+    "login_id",
+    "identifier",
+    "user",
+    "userid",
+    "user_id",
+    "account",
+    "account_id",
+    "loginCode",
+    "userPin",
+    "userPINCode",
+    "user2FA",
+    "user_pass",
+    "password",
+    "otp",
+    "shipping_email",
+    "j_username",
+    "secret_key",
+]
+
+
+def _field_sets() -> list[dict[str, str]]:
+    sets = []
+    for first in FIELD_NAME_POOL:
+        sets.append({first: "v-" + first})
+        for second in FIELD_NAME_POOL:
+            if second == first:
+                continue
+            sets.append({first: "v-" + first, second: "v-" + second})
+            for third in ("password", "user_id", "email", "loginCode"):
+                if third not in (first, second):
+                    sets.append({first: "v-" + first, second: "v-" + second, third: "v-" + third})
+    return sets
+
+
 class TestDerivation:
     @pytest.mark.parametrize(("fields", "secret"), ISSUE_293_ROWS)
     def test_a_secret_is_never_the_label(self, fields: dict[str, str], secret: str) -> None:
@@ -101,6 +151,49 @@ class TestDerivation:
     def test_a_login_code_beside_user_id_gives_the_user_id(self) -> None:
         assert derive_account_identity({"loginCode": "829341", "user_id": "bob"}) == ("bob", "bob")
 
+    def test_the_label_is_the_1_24_label_whenever_1_24_picked_an_identifier(self) -> None:
+        """Ruling for #300: a label that did not come from a secret never changes."""
+        checked = 0
+        for fields in _field_sets():
+            legacy_field = _legacy_account_field(fields, SECRETS)
+            if legacy_field is not None and is_identifier_field(legacy_field):
+                assert derive_account_identity(fields) == _legacy_derive_account_identity(
+                    fields, SECRETS
+                ), fields
+                checked += 1
+            picked = account_field(fields)
+            assert picked is None or is_identifier_field(picked), fields
+        assert checked > 1000
+
+    @pytest.mark.parametrize(
+        ("fields", "label"),
+        [
+            ({"user_name": "alice", "email": "alice@x.com", "password": "p"}, "alice-x-com"),
+            ({"user_name": "alice", "login": "alice@x.com", "password": "p"}, "alice-x-com"),
+            ({"user_email": "a@x.com", "email": "b@x.com"}, "a-x-com"),
+            ({"login_email": "a@x.com", "email": "b@x.com"}, "a-x-com"),
+            ({"userid": "a", "user": "b"}, "a"),
+            ({"login_name": "a", "login": "b"}, "a"),
+            ({"email_address": "a@x", "email": "b@x"}, "a-x"),
+            ({"login_id": "a", "login": "b"}, "a"),
+            ({"user_id": "a", "user": "b"}, "a"),
+            ({"identifier": "alice@example.com", "user": "bob"}, "alice-example-com"),
+            ({"username": "alice", "password": "p"}, "alice"),
+            ({"password": "p", "username": "alice"}, "alice"),
+            ({"email": "alice@example.com", "secret_key": "k"}, "alice-example-com"),
+        ],
+    )
+    def test_the_reviewers_and_docs_field_sets_keep_their_label(
+        self, fields: dict[str, str], label: str
+    ) -> None:
+        assert derive_account_identity(fields)[1] == label
+        assert _legacy_derive_account_identity(fields, SECRETS)[1] == label
+
+    @pytest.mark.parametrize("field_name", sorted(IDENTIFIER_FIELD_NAMES))
+    def test_every_allowlisted_name_passes_the_old_deny_list(self, field_name: str) -> None:
+        """Why the current rule equals the old one on identifier fields."""
+        assert _legacy_derivable(field_name, SECRETS)
+
     @pytest.mark.parametrize(
         "field_name",
         [
@@ -112,7 +205,6 @@ class TestDerivation:
             "user name",
             "email",
             "Email",
-            "e_mail",
             "emailAddress",
             "email_address",
             "Email-Address",
@@ -126,9 +218,6 @@ class TestDerivation:
             "userId",
             "user_id",
             "USER_ID",
-            "account",
-            "accountId",
-            "account_id",
             "identifier",
             "Identifier",
             "user_email",
@@ -143,7 +232,7 @@ class TestDerivation:
         fields = {field_name: "Alice@Example.com", "password": "pw-x"}
         assert derive_account_identity(fields) == ("Alice@Example.com", "alice-example-com")
 
-    @pytest.mark.parametrize("field_name", list(IDENTIFIER_FIELD_NAMES))
+    @pytest.mark.parametrize("field_name", sorted(IDENTIFIER_FIELD_NAMES))
     def test_every_allowlisted_name_is_an_identifier(self, field_name: str) -> None:
         assert is_identifier_field(field_name)
 
@@ -168,6 +257,13 @@ class TestDerivation:
             "pinnacle_user",
             "j_username",
             "member_number",
+            # Allowlisted for observe redaction, but holding no label keyword as a
+            # substring: 1.24.0
+            # never named a session after them, and neither does this release.
+            "account",
+            "accountId",
+            "account_id",
+            "e_mail",
         ],
     )
     def test_any_other_name_gives_no_label(self, field_name: str) -> None:
@@ -176,46 +272,28 @@ class TestDerivation:
             None,
         )
 
-    @pytest.mark.parametrize(
-        ("fields", "expected"),
-        [
-            ({"email": "a@example.com", "username": "alice"}, "alice"),
-            ({"user_id": "u1", "email": "a@example.com"}, "a@example.com"),
-            ({"user": "u1", "login": "l1"}, "l1"),
-            ({"account": "acct1", "user": "u1"}, "u1"),
-            ({"accountId": "acct1", "account": "acct2"}, "acct2"),
-            ({"emailAddress": "b@example.com", "email": "a@example.com"}, "a@example.com"),
-            ({"identifier": "i1", "user_email": "a@example.com"}, "a@example.com"),
-            ({"user": "u1", "identifier": "i1"}, "i1"),
-            ({"login_email": "b@example.com", "user_email": "a@example.com"}, "a@example.com"),
-        ],
-    )
-    def test_several_identifiers_pick_by_allowlist_order(
-        self, fields: dict[str, str], expected: str
-    ) -> None:
-        assert derive_account_identity(fields)[0] == expected
-
-    @pytest.mark.parametrize(
-        "fields",
-        [
-            {"identifier": "alice@example.com", "password": "pw-x"},
-            {"user_email": "alice@example.com", "password": "pw-x"},
-            {"loginEmail": "alice@example.com", "password": "pw-x"},
-            {"identifier": "alice@example.com", "user": "bob"},
-            {"login_email": "alice@example.com", "identifier": "carol"},
-        ],
-    )
-    def test_names_the_old_rule_accepted_keep_their_label(self, fields: dict[str, str]) -> None:
-        """No rename at the next login for these: both rules pick the same identifier."""
-        assert derive_account_identity(fields) == _legacy_derive_account_identity(fields, SECRETS)
-
-    def test_same_normalized_name_picks_the_first_declared(self) -> None:
-        fields = {"user_name": "first", "UserName": "second"}
-        assert derive_account_identity(fields)[0] == "first"
-
     def test_an_empty_identifier_falls_through_to_the_next(self) -> None:
         fields = {"username": "", "email": "a@example.com"}
         assert derive_account_identity(fields)[0] == "a@example.com"
+
+    @pytest.mark.parametrize(
+        ("field_names", "secret_field"),
+        [
+            (["userPin", "password"], "userPin"),
+            (["loginCode", "user_id"], "loginCode"),
+            (["user2FA"], "user2FA"),
+            (["user_pass", "password"], "user_pass"),
+            (["username", "password"], None),
+            (["user_name", "email"], None),
+            (["identifier", "password"], None),
+            (["account", "password"], None),
+            (["otp", "password"], None),
+        ],
+    )
+    def test_the_plugins_1_24_secret_field(
+        self, field_names: list[str], secret_field: str | None
+    ) -> None:
+        assert _legacy_secret_field(field_names, SECRETS) == secret_field
 
     def test_unlabelable_identifier_falls_back_to_bare_name(
         self, monkeypatch: pytest.MonkeyPatch

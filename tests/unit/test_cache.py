@@ -1044,10 +1044,11 @@ class TestUpdateSessionCookies:
             patch("graftpunk.cache._load_session_with_metadata") as mock_load,
             patch("graftpunk.cache.cache_session") as mock_cache,
         ):
-            mock_load.return_value = (cached_session, MagicMock())
+            mock_load.return_value = (cached_session, MagicMock(account_rule=None))
             update_session_cookies(api_session, "testsession")
             mock_load.assert_called_once_with("testsession")
-            mock_cache.assert_called_once_with(cached_session, "testsession")
+            # The slot's recorded account rule is carried, so a 1.24.0 slot stays one (#293).
+            mock_cache.assert_called_once_with(cached_session, "testsession", account_rule=None)
 
     def test_load_failure_logs_warning_and_returns(self) -> None:
         """If loading the cached session fails, log a warning and return."""
@@ -1092,14 +1093,14 @@ class TestUpdateSessionCookies:
         with (
             patch(
                 "graftpunk.cache._load_session_with_metadata",
-                return_value=(cached_session, MagicMock()),
+                return_value=(cached_session, MagicMock(account_rule=2)),
             ) as mock_load,
             patch("graftpunk.cache.cache_session") as mock_cache,
         ):
             update_session_cookies(api_session, "testsession")
 
         mock_load.assert_called_once_with("testsession")
-        mock_cache.assert_called_once_with(cached_session, "testsession")
+        mock_cache.assert_called_once_with(cached_session, "testsession", account_rule=2)
         # Verify token cache was transferred to the original session
         assert getattr(cached_session, _CACHE_ATTR) == token_cache
 

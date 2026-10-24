@@ -12,7 +12,9 @@ import logging as stdlib_logging
 import os
 import sys
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, TextIO
 
 import structlog
@@ -215,10 +217,11 @@ class GraftpunkLogger:
         )
 
     def _resolve(self) -> Any:
+        values = _redact(self._initial_values) if _redactions.get() else self._initial_values
         if structlog.is_configured():
             # As in _quiet_logger: get_logger's keyword parameters are not context.
-            return structlog.get_logger(*self._factory_args).bind(**self._initial_values)
-        return _quiet_logger(self._initial_values)
+            return structlog.get_logger(*self._factory_args).bind(**values)
+        return _quiet_logger(values)
 
     def _with(self, values: dict[str, Any]) -> GraftpunkLogger:
         return GraftpunkLogger(self._factory_args, values)
@@ -247,7 +250,71 @@ class GraftpunkLogger:
         # has no attributes yet: answering must not build a logger.
         if name.startswith("__") or name in ("_factory_args", "_initial_values"):
             raise AttributeError(name)
-        return getattr(self._resolve(), name)
+        attr = getattr(self._resolve(), name)
+        if _redactions.get() and name in _LOG_METHODS:
+            return _redacting_call(attr)
+        return attr
+
+
+# Values that must not reach a log line, each with what to write instead. Set
+# only inside redacted_values(); a contextvar, so another thread's or task's
+# lines are untouched.
+_redactions: ContextVar[tuple[tuple[str, str], ...]] = ContextVar(
+    "graftpunk_log_redactions", default=()
+)
+_LOG_METHODS = frozenset(
+    {
+        "debug",
+        "info",
+        "msg",
+        "warn",
+        "warning",
+        "error",
+        "err",
+        "exception",
+        "critical",
+        "fatal",
+        "failure",
+        "log",
+    }
+)
+
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, str):
+        for secret, placeholder in _redactions.get():
+            value = value.replace(secret, placeholder)
+        return value
+    if isinstance(value, dict):
+        return {key: _redact(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_redact(item) for item in value)
+    return value
+
+
+def _redacting_call(method: Any) -> Any:
+    def call(*args: Any, **kwargs: Any) -> Any:
+        return method(*_redact(args), **_redact(kwargs))
+
+    return call
+
+
+@contextmanager
+def redacted_values(*pairs: tuple[str, str]) -> Iterator[None]:
+    """Within the block, write each pair's first string as its second in graftpunk's log lines.
+
+    Every string in a line's event, positional arguments, keyword values and
+    bound context is rewritten, including inside lists, tuples and dicts, so a
+    path or an error message that holds the value is covered too. Only
+    graftpunk's own loggers (:func:`get_logger`) are affected, and only in the
+    current thread or task. An empty value is ignored.
+    """
+    kept = tuple((secret, placeholder) for secret, placeholder in pairs if secret)
+    token = _redactions.set(_redactions.get() + kept)
+    try:
+        yield
+    finally:
+        _redactions.reset(token)
 
 
 # suppress_asyncio_noise() windows can overlap (two backends stopping at once,

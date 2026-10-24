@@ -69,6 +69,9 @@ class SessionMetadata:
         account_identifier: The unslugified login identifier recorded at login
             (what the user typed, not server-verified), or None for
             legacy/no-identity sessions.
+        account_rule: The account-label rule that recorded *account_identifier*
+            (:data:`graftpunk.session_identity.ACCOUNT_RULE`), or None for a
+            slot written by graftpunk 1.24.0 or earlier.
     """
 
     name: str
@@ -84,6 +87,7 @@ class SessionMetadata:
     storage_backend: str = ""
     storage_location: str = ""
     account_identifier: str | None = None
+    account_rule: int | None = None
 
 
 def metadata_to_dict(metadata: SessionMetadata) -> dict[str, "Any"]:
@@ -109,6 +113,7 @@ def metadata_to_dict(metadata: SessionMetadata) -> dict[str, "Any"]:
         "storage_backend": metadata.storage_backend,
         "storage_location": metadata.storage_location,
         "account_identifier": metadata.account_identifier,
+        "account_rule": metadata.account_rule,
     }
 
 
@@ -135,6 +140,7 @@ def dict_to_metadata(data: dict[str, "Any"]) -> SessionMetadata:
         storage_backend=data.get("storage_backend", ""),
         storage_location=data.get("storage_location", ""),
         account_identifier=data.get("account_identifier"),
+        account_rule=data.get("account_rule"),
     )
 
 

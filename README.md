@@ -363,9 +363,9 @@ accounts caches `myshop@alice` and `myshop@bob` side by side, and `gp session
 list` shows which account each one belongs to. Commands pick one with
 `--session myshop@alice` (or `GRAFTPUNK_SESSION` / `gp session use`), and
 refuse — listing the candidates — when several are cached and none is picked.
-The label is derived from the login's identifier field (`username`, `email`, `identifier`,
-`login`, `user` or `account`, in their usual spellings); `gp <site> login --as work`
-names it yourself.
+The label is derived from the login's account identifier field; the exact
+names are in [How it works](docs/HOW_IT_WORKS.md#multi-account-sessions).
+`gp <site> login --as work` names it yourself.
 
 ### Ad-hoc HTTP Requests
 
