@@ -295,20 +295,20 @@ def _response_whose_read_raised(error: BaseException | None) -> requests.Respons
     requests reads a body in ``Response.iter_content``'s inner ``generate``,
     so the response is that frame's ``self`` in the error's traceback. A
     hook's own error (a ``ValueError``, a ``ConnectionError`` from a side call
-    on another session) has no such frame, and blames no body.
+    on another session) has no such frame, and blames no body. A read starts
+    no other request, so a traceback holds at most one such frame.
     """
     if not isinstance(error, Exception):
         return None
-    found: requests.Response | None = None
     tb = error.__traceback__
     while tb is not None:
         code = tb.tb_frame.f_code
         if code.co_name == "generate" and code.co_filename == requests.models.__file__:
             candidate = tb.tb_frame.f_locals.get("self")
             if isinstance(candidate, requests.Response):
-                found = candidate
+                return candidate
         tb = tb.tb_next
-    return found
+    return None
 
 
 def _read_by_requests(response: requests.Response) -> bool:
