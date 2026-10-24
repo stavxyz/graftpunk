@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading
+
+1. **`BrowserSession(use_stealth=False)` on the Selenium backend now raises `ValueError`** (#287). The message names the alternatives: the default `use_stealth=True`, `backend="nodriver"`, or `graftpunk.backends.get_backend("selenium", use_stealth=False)` for a plain Selenium driver without a requests session. Through 1.24.0 the call failed in one of two ways, depending on the installed requestium. With requestium 0.5.1 (the version `uv.lock` pins) or 0.6.0 (what a fresh install resolves) it raised `TypeError: Session.__init__() got an unexpected keyword argument 'browser'`, after downloading a ChromeDriver. With requestium 0.3.0 or 0.4.0 it returned a session whose `driver` raised `BrowserError("Selenium WebDriver not available...")`, so no Chrome was ever started. `use_stealth=False` with `backend="nodriver"` is unchanged, as is unpickling a cached session saved with `use_stealth=False`. Nothing in graftpunk, its CLI or its plugin scaffolding passes `use_stealth=False` to `BrowserSession`.
+
+### Removed
+
+- **The non-stealth Selenium path of `BrowserSession`** (#287). It never had a working driver on any requestium version graftpunk allows, so `BrowserSession(backend="selenium", use_stealth=False)` and `backend="legacy"` with `use_stealth=False` now raise `ValueError` before any download or launch. See Upgrading, item 1. Closes #287.
+
 ## [1.24.0] - 2026-10-24
 
 This is a minor release. Several changes reach a program on the first run after the upgrade:
