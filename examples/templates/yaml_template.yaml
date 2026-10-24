@@ -98,6 +98,8 @@ commands:
   # line: envvar reads the process environment, and a ${NAME} default is
   # resolved when the command runs, from the environment and then the
   # workstation env file (${NAME:fallback} gives fallback when NAME is unset).
+  # A ${NAME} default makes `required` unnecessary, and a required param with
+  # a default is refused.
   #     - name: api_key
   #       secret: true
   #       envvar: MYSITE_API_KEY

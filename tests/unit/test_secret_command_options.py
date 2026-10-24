@@ -689,6 +689,20 @@ class TestPrompt:
         assert _stdin_is_terminal() is False
 
 
+class TestCompletionOnATerminal:
+    def test_completion_on_a_terminal_asks_for_nothing(
+        self, site: str, tmp_path: Path, child: tuple[Path, dict[str, str]]
+    ) -> None:
+        script, env = child
+        env = {**env, "_GP_COMPLETE": "complete_zsh", "_TYPER_COMPLETE_ARGS": "gp keyshop echo --"}
+        out = tmp_path / "out.txt"
+        code, shown = _pty_run([sys.executable, str(script), "secret", site], env, out, None)
+
+        assert code == 0, shown
+        assert "Api key:" not in shown
+        assert "--api-key" in out.read_text()
+
+
 class TestNothingEscapesTheRealApp:
     def test_a_token_page_that_cannot_be_fetched_is_an_error_without_the_secret(
         self, site: str, child: tuple[Path, dict[str, str]]
@@ -1155,6 +1169,369 @@ class TestExpandEnvVars:
         monkeypatch.setenv(ENV_NAME, "real")
         assert expand_env_vars(f"${{{ENV_NAME}:anon}}") == "real"
         assert expand_env_vars(f"${{{ENV_NAME}}}") == "real"
+
+    def test_each_fallback_ends_at_its_own_brace(self, config_dir: Path) -> None:
+        from graftpunk.plugins.yaml_loader import expand_env_vars
+
+        assert expand_env_vars(f"${{{ENV_NAME}:a}}/${{{ENV_NAME}_TWO:b}}") == "a/b"
+
+
+class TestYamlDefaults:
+    def test_a_default_without_a_placeholder_stays_a_literal(
+        self, site: str, tmp_path: Path
+    ) -> None:
+        plugin = _yaml_plugin(tmp_path, site, "      - name: note\n        default: 'cost $5'\n")
+        (spec,) = plugin.get_commands()[0].params
+        assert spec.click_kwargs["default"] == "cost $5"
+
+    def test_a_required_param_with_a_default_is_refused_in_yaml_terms(
+        self, site: str, tmp_path: Path
+    ) -> None:
+        param = _env_default_param(f"${{{ENV_NAME}}}") + "        required: true\n"
+        with pytest.raises(PluginError, match="a required param cannot have a default"):
+            _yaml_plugin(tmp_path, site, param)
+
+    def test_completion_resolves_no_placeholder_default(
+        self, site: str, tmp_path: Path, config_dir: Path
+    ) -> None:
+        marker = tmp_path / "ran"
+        (config_dir / "env").write_text(f"{ENV_NAME}=$(touch {marker} && echo from-command)\n")
+        plugin = _yaml_plugin(tmp_path, site, _env_default_param(f"${{{ENV_NAME}}}"))
+        result = _complete(plugin, "gp keyshop search --")
+
+        assert result.exit_code == 0, strip_ansi(result.output)
+        assert "--api-key" in result.output
+        assert not marker.exists()
+
+    def test_completion_with_the_variable_unset_still_completes(
+        self, site: str, tmp_path: Path, config_dir: Path
+    ) -> None:
+        plugin = _yaml_plugin(tmp_path, site, _env_default_param(f"${{{ENV_NAME}}}"))
+        result = _complete(plugin, "gp keyshop search --")
+
+        assert result.exit_code == 0, strip_ansi(result.output)
+        assert "--api-key" in result.output
+        assert "not set" not in result.output
+
+    def test_completion_never_prompts_for_a_required_secret(self, site: str) -> None:
+        spec = PluginParamSpec.option("api_key", required=True, secret=True)
+        result = _complete(_plugin(site, spec), "gp keyshop echo --")
+
+        assert result.exit_code == 0, strip_ansi(result.output)
+        assert "--api-key" in result.output
+        assert "Missing option" not in result.output
+
+
+def _complete(plugin: SitePlugin, line: str) -> Any:
+    """Ask the app for zsh completions of *line*, as the shell does on Tab."""
+    return CliRunner().invoke(
+        _app(plugin),
+        [],
+        prog_name="gp",
+        env={"_GP_COMPLETE": "complete_zsh", "_TYPER_COMPLETE_ARGS": line, "COLUMNS": "200"},
+    )
+
+
+# A secret long enough for the scrub, and text to log around it.
+SCOPE_KEY = "scope-secret-value"
+
+
+def _json_lines(capsys: pytest.CaptureFixture[str]) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in capsys.readouterr().err.splitlines() if line]
+
+
+def _json_logging() -> None:
+    """Log as ``gp --log-format json -vv`` does. Call it in the test body:
+    configure_logging binds the stderr of that moment."""
+    from graftpunk.logging import configure_logging
+
+    configure_logging(level="DEBUG", json_output=True)
+
+
+class TestTheScopeReachesEveryThread:
+    def _run(self, capsys: pytest.CaptureFixture[str], log_from: Callable[[], None]) -> dict:
+        from graftpunk.logging import configure_logging, log_secrets
+
+        configure_logging(level="DEBUG", json_output=True)
+        with log_secrets([SCOPE_KEY]):
+            log_from()
+        (line,) = _json_lines(capsys)
+        return line
+
+    @staticmethod
+    def _log() -> None:
+        from graftpunk.logging import get_logger
+
+        get_logger("worker").warning("worker_line", url=f"https://x.test/?key={SCOPE_KEY}")
+
+    def test_a_plain_thread(self, capsys: pytest.CaptureFixture[str]) -> None:
+        import threading
+
+        def start() -> None:
+            thread = threading.Thread(target=self._log)
+            thread.start()
+            thread.join()
+
+        assert self._run(capsys, start)["url"] == f"https://x.test/?key={REDACTED}"
+
+    def test_a_thread_pool_worker(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(lambda: None).result()  # the worker exists before the scope
+
+            line = self._run(capsys, lambda: pool.submit(self._log).result())
+
+        assert line["url"] == f"https://x.test/?key={REDACTED}"
+
+    def test_an_asyncio_task_created_before_the_scope_on_a_loop_thread(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """nodriver's loop thread: its CDP listener task predates the command's
+        scope, and the capture handlers it runs log from that task."""
+        import asyncio
+        import threading
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        events: asyncio.Queue[str] | None = None
+        done = threading.Event()
+
+        async def listener() -> None:
+            nonlocal events
+            events = asyncio.Queue()
+            ready.set()
+            await events.get()
+            self._log()
+            done.set()
+
+        ready = threading.Event()
+        asyncio.run_coroutine_threadsafe(listener(), loop)
+        ready.wait(5)
+        try:
+
+            def fire() -> None:
+                assert events is not None
+                loop.call_soon_threadsafe(events.put_nowait, "event")
+                assert done.wait(5)
+
+            line = self._run(capsys, fire)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(5)
+            loop.close()
+
+        assert line["url"] == f"https://x.test/?key={REDACTED}"
+
+
+class TestScopesStackAndRelease:
+    def test_nested_scopes_keep_the_outer_secret_after_the_inner_closes(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+        from graftpunk.logging import get_logger, log_secrets
+
+        log = get_logger("t")
+        with log_secrets(["outer-secret"]):
+            with log_secrets(["inner-secret"]):
+                log.warning("both", a="outer-secret", b="inner-secret")
+            log.warning("outer_only", a="outer-secret", b="inner-secret")
+        log.warning("none", a="outer-secret", b="inner-secret")
+        both, outer_only, none = _json_lines(capsys)
+        assert (both["a"], both["b"]) == (REDACTED, REDACTED)
+        assert (outer_only["a"], outer_only["b"]) == (REDACTED, "inner-secret")
+        assert (none["a"], none["b"]) == ("outer-secret", "inner-secret")
+
+    def test_two_commands_release_their_own_secrets(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+        import threading
+
+        from graftpunk.logging import get_logger, log_secrets
+
+        log = get_logger("t")
+        first_open, second_open, first_closed = (threading.Event() for _ in range(3))
+
+        def first() -> None:
+            with log_secrets(["first-secret", "shared-secret"]):
+                first_open.set()
+                second_open.wait(5)
+            first_closed.set()
+
+        thread = threading.Thread(target=first)
+        thread.start()
+        first_open.wait(5)
+        with log_secrets(["second-secret", "shared-secret"]):
+            second_open.set()
+            first_closed.wait(5)
+            log.warning("second_running", a="first-secret", b="second-secret", c="shared-secret")
+        thread.join(5)
+        log.warning("both_closed", a="first-secret", b="second-secret", c="shared-secret")
+        running, closed = _json_lines(capsys)
+        # The first command's own secret left with it; the one both held stayed.
+        assert (running["a"], running["b"], running["c"]) == ("first-secret", REDACTED, REDACTED)
+        assert (closed["a"], closed["b"], closed["c"]) == (
+            "first-secret",
+            "second-secret",
+            "shared-secret",
+        )
+
+    def test_the_scope_closes_after_an_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        _json_logging()
+        from graftpunk.logging import get_logger, log_secrets
+
+        with pytest.raises(RuntimeError), log_secrets([SCOPE_KEY]):
+            raise RuntimeError("boom")
+        get_logger("t").warning("after", value=SCOPE_KEY)
+        (after,) = _json_lines(capsys)
+        assert after["value"] == SCOPE_KEY
+
+    def test_the_floor_is_the_observe_scrubs(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A value shorter than three characters is scrubbed nowhere: not in a HAR,
+        not in a log line."""
+        _json_logging()
+        from graftpunk.logging import get_logger, log_secrets
+        from graftpunk.observe.run import redact_har_entries
+
+        entry = {"request": {"url": "https://x.test/?a=ab&b=abc"}}
+        (har,) = redact_har_entries([entry], ["ab", "abc"])
+        assert har["request"]["url"] == f"https://x.test/?a=ab&b={REDACTED}"
+        with log_secrets(["ab", "abc"]):
+            get_logger("t").warning("floor", two="ab", three="abc")
+        (line,) = _json_lines(capsys)
+        assert (line["two"], line["three"]) == ("ab", REDACTED)
+
+
+class TestEveryValueType:
+    def _log(self, capsys: pytest.CaptureFixture[str], *args: Any, **values: Any) -> dict:
+        from graftpunk.logging import get_logger, log_secrets
+
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning(*args, **values)
+        (line,) = _json_lines(capsys)
+        assert SCOPE_KEY not in json.dumps(line)
+        return line
+
+    def test_an_exception_object_from_a_plugin_line(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+        exc = requests.HTTPError(f"403 Client Error for url: https://x.test/?key={SCOPE_KEY}")
+        line = self._log(capsys, "lookup_failed", error=exc)
+        assert line["error"] == f"403 Client Error for url: https://x.test/?key={REDACTED}"
+
+    def test_a_namedtuple_is_rebuilt_with_its_own_type(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+        parts = urllib.parse.urlsplit(f"https://x.test/k?key={SCOPE_KEY}")
+        line = self._log(capsys, "fetch", parts=parts)
+        assert line["parts"] == ["https", "x.test", "/k", f"key={REDACTED}", ""]
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (Path(f"/data/{SCOPE_KEY}/x"), f"/data/{REDACTED}/x"),
+            (f"b={SCOPE_KEY}".encode(), f"b={REDACTED}"),
+            (b"\xff" + SCOPE_KEY.encode(), chr(0xFFFD) + REDACTED),
+            ({SCOPE_KEY}, f"{{'{REDACTED}'}}"),
+        ],
+        ids=["path", "bytes", "undecodable-bytes", "set"],
+    )
+    def test_other_types_are_logged_as_their_scrubbed_text(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        value: Any,
+        expected: str,
+    ) -> None:
+        _json_logging()
+        assert self._log(capsys, "typed", value=value)["value"] == expected
+
+    def test_an_object_whose_repr_holds_the_secret(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+
+        class Holder:
+            def __str__(self) -> str:
+                return "holder"
+
+            def __repr__(self) -> str:
+                return f"Holder(key={SCOPE_KEY!r})"
+
+        assert self._log(capsys, "obj", value=Holder())["value"] == f"Holder(key='{REDACTED}')"
+
+    def test_dict_keys_nested_values_and_the_event_itself(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+        line = self._log(capsys, f"sent {SCOPE_KEY}", data={SCOPE_KEY: [1, {"k": SCOPE_KEY}]})
+        assert line["event"] == f"sent {REDACTED}"
+        assert line["data"] == {REDACTED: [1, {"k": REDACTED}]}
+
+    def test_values_without_a_secret_keep_their_type(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+        line = self._log(capsys, "plain", count=3, ratio=0.5, flag=True, none=None, items=[1])
+        assert (line["count"], line["ratio"], line["flag"], line["none"], line["items"]) == (
+            3,
+            0.5,
+            True,
+            None,
+            [1],
+        )
+
+    def test_exc_info_given_an_exception_after_its_except_block(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+        try:
+            raise RuntimeError(f"bad key {SCOPE_KEY}")
+        except RuntimeError as caught:
+            error = caught
+        line = self._log(capsys, "later", exc_info=error)
+        assert line["exception"].startswith("Traceback (most recent call last):")
+        assert line["exception"].endswith(f"RuntimeError: bad key {REDACTED}")
+
+    def test_async_methods_scrub_and_aexception_awaits(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+        import asyncio
+
+        from graftpunk.logging import get_logger, log_secrets
+
+        log = get_logger("t")
+
+        async def log_both() -> None:
+            await log.ainfo("async_info", value=SCOPE_KEY)
+            try:
+                raise RuntimeError(f"bad key {SCOPE_KEY}")
+            except RuntimeError:
+                await log.aexception("async_failed")
+
+        with log_secrets([SCOPE_KEY]):
+            asyncio.run(log_both())
+        info, failed = _json_lines(capsys)
+        assert info["value"] == REDACTED
+        assert failed["level"] == "error"
+        assert failed["exception"].endswith(f"RuntimeError: bad key {REDACTED}")
+        assert SCOPE_KEY not in json.dumps([info, failed])
+
+
+class TestShortFlag:
+    def test_an_attached_short_flag_is_scrubbed_from_a_usage_error(self, site: str) -> None:
+        spec = PluginParamSpec.option("api_key", secret=True, click_kwargs={"flag": "-k"})
+        result = _invoke(_plugin(site, spec), ["tally", "--count", f"-k{API_KEY}"])
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 2
+        assert "Invalid value for '--count'" in output
+        assert REDACTED in output
+        _assert_no_form(output)
 
 
 class TestRecorderLogs:

@@ -15,6 +15,7 @@ Typer's runtime, which is the root fix for the vendored-Click breakage.
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import sys
 import types
@@ -69,6 +70,12 @@ def _click_exceptions() -> Any:
     return sys.modules[typer.BadParameter.__module__]
 
 
+def _click_globals() -> Any:
+    """The ``globals`` module (the current context) of the Click that Typer runs."""
+    package = typer.BadParameter.__module__.rpartition(".")[0]
+    return importlib.import_module(f"{package}.globals")
+
+
 def _stdin_is_terminal() -> bool:
     """Whether stdin is a terminal: a secret option's hidden prompt is offered
     only to someone who can answer it."""
@@ -115,9 +122,17 @@ def _secret_option_kwargs(
 
 def _default_factory(default: Callable[[], Any]) -> Callable[[], Any]:
     """*default* as a Typer ``default_factory`` whose ``PluginError`` (an unset
-    variable) is a usage error, exit code 2, rather than a traceback."""
+    variable) is a usage error, exit code 2, rather than a traceback.
+
+    Shell completion parses resiliently and still computes defaults; there the
+    factory gives None without calling *default*, so pressing Tab never runs a
+    workstation env ``$(...)`` command nor fails on an unset variable.
+    """
 
     def factory() -> Any:
+        ctx = _click_globals().get_current_context(silent=True)
+        if ctx is not None and ctx.resilient_parsing:
+            return None
         try:
             return default()
         except PluginError as exc:
@@ -131,8 +146,8 @@ def _option_flag(spec: PluginParamSpec) -> str:
 
 
 def _secret_tokens(args: Sequence[str], flags: Sequence[str]) -> list[str]:
-    """The values *args* gives the secret options *flags*: ``--flag VALUE`` and
-    ``--flag=VALUE``."""
+    """The values *args* gives the secret options *flags*: ``--flag VALUE``,
+    ``--flag=VALUE``, and for a short flag ``-k`` the attached ``-kVALUE``."""
     tokens: list[str] = []
     for index, arg in enumerate(args):
         for flag in flags:
@@ -140,6 +155,8 @@ def _secret_tokens(args: Sequence[str], flags: Sequence[str]) -> list[str]:
                 tokens.append(args[index + 1])
             elif arg.startswith(f"{flag}="):
                 tokens.append(arg[len(flag) + 1 :])
+            elif not flag.startswith("--") and arg.startswith(flag) and arg != flag:
+                tokens.append(arg[len(flag) :])
     return tokens
 
 

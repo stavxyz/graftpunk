@@ -11,7 +11,7 @@ import re
 import stat
 import tempfile
 import urllib.parse
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -175,8 +175,17 @@ def redact_har_entries(
 def redact_text(text: str, secrets: Redaction | Iterable[str], *, in_url: bool = False) -> str:
     """*text* with *secrets* replaced as :func:`redact_har_entries` replaces them
     in one HAR string; *in_url* keeps identifiers, as in the HAR's URL fields."""
+    return text_redactor(secrets, in_url=in_url)(text)
+
+
+def text_redactor(
+    secrets: Redaction | Iterable[str], *, in_url: bool = False
+) -> Callable[[str], str]:
+    """:func:`redact_text` for *secrets*, compiled once for many strings."""
     scrubber = _Scrubber.of(secrets)
-    return scrubber.scrub_text(text, in_url=in_url) if scrubber else text
+    if not scrubber:
+        return lambda text: text
+    return lambda text: scrubber.scrub_text(text, in_url=in_url)
 
 
 def _kept_secrets(secrets: Iterable[str]) -> tuple[str, ...]:

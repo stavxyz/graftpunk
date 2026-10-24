@@ -298,7 +298,9 @@ def _inject_tokens_and_run(
             raise SystemExit(1) from exc
         except requests.RequestException as exc:
             # An http extraction re-raises the request's failure (tokens.extract_token).
-            gp_console.error(f"Token extraction failed: {redact_text(str(exc), option_secrets)}")
+            # It runs before the handler, on the token config's URL, so it holds
+            # no option value.
+            gp_console.error(f"Token extraction failed: {exc}")
             gp_console.info("The token page could not be fetched; check the network and retry.")
             raise SystemExit(1) from exc
         except ValueError as exc:

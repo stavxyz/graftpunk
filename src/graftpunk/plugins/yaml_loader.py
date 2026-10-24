@@ -289,6 +289,12 @@ def validate_yaml_schema(data: dict[str, Any], filepath: Path) -> None:
                     f"Plugin '{filepath}': command '{cmd_name}' param "
                     f"'{param['name']}': a secret param must be a str option."
                 )
+            if param.get("required") and param.get("default") is not None:
+                raise PluginError(
+                    f"Plugin '{filepath}': command '{cmd_name}' param "
+                    f"'{param['name']}': a required param cannot have a default. "
+                    "A ${NAME} default already supplies the value; drop 'required'."
+                )
             envvar = param.get("envvar")
             if envvar is not None and (
                 not isinstance(envvar, str) or not envvar or not param.get("is_option", True)

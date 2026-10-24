@@ -13,9 +13,9 @@ import os
 import sys
 import threading
 import traceback
-from collections.abc import Iterable, Iterator
+from collections import Counter
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from contextvars import ContextVar
 from typing import Any, TextIO
 
 import structlog
@@ -66,20 +66,40 @@ def configured_by_consumer() -> bool:
 
 
 # Values no log line may show while a command that holds them runs: the
-# command's secret options (see :func:`log_secrets`).
-_log_secrets: ContextVar[tuple[str, ...]] = ContextVar("graftpunk_log_secrets", default=())
+# command's secret options (see :func:`log_secrets`). Process-wide rather than
+# per context, so a line logged from any thread (a worker pool, the nodriver
+# loop thread, an asyncio task created before the scope) is scrubbed too. A
+# count per value, so nested and concurrent scopes each release only their own.
+_active_secrets: Counter[str] = Counter()
+_active_secrets_lock = threading.Lock()
 
 
 @contextmanager
 def log_secrets(secrets: Iterable[str]) -> Iterator[None]:
-    """Scrub *secrets* from every line a :class:`GraftpunkLogger` writes inside
-    the block, whatever structlog configuration renders it: every value of the
-    line, in the forms the observe run's scrub covers, its traceback included."""
-    token = _log_secrets.set(_log_secrets.get() + tuple(s for s in secrets if s))
+    """Scrub *secrets* from every line a :class:`GraftpunkLogger` writes while
+    the block runs, from any thread, whatever structlog configuration renders
+    it: every value of the line, in the forms the observe run's scrub covers,
+    its traceback included. A value leaves the scrub when the last block holding
+    it closes. Values shorter than the observe scrub's floor (three characters)
+    are left alone, as there."""
+    added = [s for s in secrets if s]
+    with _active_secrets_lock:
+        _active_secrets.update(added)
     try:
         yield
     finally:
-        _log_secrets.reset(token)
+        with _active_secrets_lock:
+            _active_secrets.subtract(added)
+            for value in added:
+                if _active_secrets[value] <= 0:
+                    del _active_secrets[value]
+
+
+def _current_secrets() -> tuple[str, ...]:
+    if not _active_secrets:  # the common case, read without the lock
+        return ()
+    with _active_secrets_lock:
+        return tuple(_active_secrets)
 
 
 # The logging methods of a structlog bound logger, and their async forms ("a" + name).
@@ -88,27 +108,54 @@ _LOG_METHODS = frozenset(
 )
 
 
-def _scrubbed(value: Any, secrets: tuple[str, ...]) -> Any:
-    from graftpunk.observe.run import redact_text
+def _scrubbed(value: Any, redact: Callable[[str], str]) -> Any:
+    """*value* with every secret replaced, whatever its type.
 
+    Strings are scrubbed; dicts (keys too), lists, tuples and namedtuples are
+    rebuilt with scrubbed members. Any other value (an exception, a ``Path``,
+    ``bytes`` decoded with replacement, a set, an object) is kept as it is
+    unless its text holds a secret, in which case the line carries that text
+    scrubbed.
+    """
+    if value is None or isinstance(value, bool):
+        return value
     if isinstance(value, str):
-        return redact_text(value, secrets)
+        return redact(value)
     if isinstance(value, dict):
-        return {k: _scrubbed(v, secrets) for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return type(value)(_scrubbed(v, secrets) for v in value)
+        return {_scrubbed(k, redact): _scrubbed(v, redact) for k, v in value.items()}
+    if type(value) in (list, tuple):
+        return type(value)(_scrubbed(v, redact) for v in value)
+    if isinstance(value, tuple) and hasattr(value, "_fields"):
+        try:
+            return type(value)(*(_scrubbed(v, redact) for v in value))
+        except TypeError:  # a namedtuple subclass with its own constructor
+            pass
+    if isinstance(value, bytes | bytearray):
+        texts = [bytes(value).decode("utf-8", errors="replace")]
+    else:
+        texts = [str(value), repr(value)]
+    for text in texts:
+        scrubbed = redact(text)
+        if scrubbed != text:
+            return scrubbed
     return value
 
 
-def _scrubbing_call(bound: Any, name: str, secrets: tuple[str, ...]) -> Any:
-    """*bound*'s log method *name*, scrubbing every argument of *secrets*.
+def _scrubbing_call(logger: GraftpunkLogger, name: str, secrets: tuple[str, ...]) -> Any:
+    """*logger*'s log method *name*, scrubbing its bound values and every
+    argument of *secrets*.
 
     A traceback (``exception()``, or ``exc_info``) is formatted here into the
     ``exception`` value, as structlog's ``format_exc_info`` would, so it is
     scrubbed before any renderer sees it; the line goes out at error level.
     """
+    from graftpunk.observe.run import text_redactor
+
     is_async = name.startswith("a") and name[1:] in _LOG_METHODS
     base = name[1:] if is_async else name
+    redact = text_redactor(secrets)
+    # A fresh logger with scrubbed bound values: a module's LOG is shared.
+    bound = logger._with(_scrubbed(logger._initial_values, redact))._resolve()
 
     def call(*args: Any, **kwargs: Any) -> Any:
         exc_info = kwargs.pop("exc_info", base == "exception" or None)
@@ -122,7 +169,7 @@ def _scrubbing_call(bound: Any, name: str, secrets: tuple[str, ...]) -> Any:
                 kwargs["exception"] = "".join(traceback.format_exception(*exc_info)).rstrip("\n")
             if base == "exception":
                 target = "aerror" if is_async else "error"
-        return getattr(bound, target)(*_scrubbed(args, secrets), **_scrubbed(kwargs, secrets))
+        return getattr(bound, target)(*_scrubbed(args, redact), **_scrubbed(kwargs, redact))
 
     return call
 
@@ -312,11 +359,9 @@ class GraftpunkLogger:
         # has no attributes yet: answering must not build a logger.
         if name.startswith("__") or name in ("_factory_args", "_initial_values"):
             raise AttributeError(name)
-        secrets = _log_secrets.get()
+        secrets = _current_secrets()
         if secrets and (name in _LOG_METHODS or name[1:] in _LOG_METHODS):
-            # A fresh logger: a module's LOG is shared across threads.
-            scrubbed = self._with(_scrubbed(self._initial_values, secrets))
-            return _scrubbing_call(scrubbed._resolve(), name, secrets)
+            return _scrubbing_call(self, name, secrets)
         return getattr(self._resolve(), name)
 
 
