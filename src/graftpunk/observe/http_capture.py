@@ -362,6 +362,14 @@ class HttpCaptureBackend:
         self._warned_unwrapped = False
         self._wrapped: list[Any] = []
 
+    def _loggable(self, url: str | None) -> str | None:
+        """*url* scrubbed of the run's secrets, for a log line."""
+        if not url or not self._redact:
+            return url
+        from graftpunk.observe.run import redact_text
+
+        return redact_text(url, self._redact, in_url=True)
+
     def _next_id(self) -> str:
         with self._lock:
             self._count += 1
@@ -504,7 +512,7 @@ class HttpCaptureBackend:
     ) -> None:
         """Add one entry for a request that got no response; log and skip on failure."""
         if self._stopped:
-            LOG.debug("http_capture_response_after_stop", url=request.url)
+            LOG.debug("http_capture_response_after_stop", url=self._loggable(request.url))
             return
         request_id = self._next_id()
         try:
@@ -523,7 +531,7 @@ class HttpCaptureBackend:
             LOG.error(
                 "http_capture_record_failed",
                 request_id=request_id,
-                url=request.url,
+                url=self._loggable(request.url),
                 error=str(exc),
                 exc_type=type(exc).__name__,
             )
@@ -538,7 +546,10 @@ class HttpCaptureBackend:
     ) -> None:
         """Add one entry for *response*; log and skip it if it cannot be built."""
         if self._stopped:
-            LOG.debug("http_capture_response_after_stop", url=getattr(response, "url", None))
+            LOG.debug(
+                "http_capture_response_after_stop",
+                url=self._loggable(getattr(response, "url", None)),
+            )
             return
         request_id = self._next_id()
         try:
@@ -556,7 +567,7 @@ class HttpCaptureBackend:
             LOG.error(
                 "http_capture_record_failed",
                 request_id=request_id,
-                url=getattr(response, "url", None),
+                url=self._loggable(getattr(response, "url", None)),
                 error=str(exc),
                 exc_type=type(exc).__name__,
             )

@@ -16,6 +16,7 @@ Typer's runtime, which is the root fix for the vendored-Click breakage.
 from __future__ import annotations
 
 import inspect
+import sys
 import types
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -38,6 +39,7 @@ OPTION_KEYS = frozenset(
         "envvar",
         "flag",
         "multiple",
+        "secret",
     }
 )
 ARGUMENT_KEYS = frozenset({"type", "required", "default", "nargs"})
@@ -58,6 +60,35 @@ def _reject_unsupported(
             f"Supported: {', '.join(sorted(allowed))}. "
             "Extend graftpunk.cli.command_factory if a real plugin needs more."
         )
+
+
+def _stdin_is_terminal() -> bool:
+    """Whether stdin is a terminal, read when the option is built: a secret
+    option's hidden prompt is offered only to someone who can answer it."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError):  # replaced or closed stdin
+        return False
+
+
+def _secret_option_kwargs(
+    plugin_name: str, command_name: str, spec: PluginParamSpec, *, required: bool
+) -> dict[str, Any]:
+    """The Typer settings a ``secret`` option adds, after refusing what would show
+    its value: a type other than ``str`` (Click quotes a value it cannot convert in
+    its error), a flag, ``multiple``, or ``show_default``."""
+    kw = spec.click_kwargs
+    where = f"plugin '{plugin_name}', command '{command_name}', param '{spec.name}'"
+    if kw.get("type", str) is not str:
+        raise PluginError(
+            f"{where}: a secret option must be type str; Click quotes a value it "
+            "cannot convert in its error message."
+        )
+    if kw.get("is_flag") or kw.get("multiple"):
+        raise PluginError(f"{where}: a secret option cannot be a flag or multiple.")
+    if kw.get("show_default"):
+        raise PluginError(f"{where}: a secret option cannot show its default in --help.")
+    return {"hide_input": True, "prompt": required and _stdin_is_terminal()}
 
 
 def map_param_spec(
@@ -107,12 +138,18 @@ def map_param_spec(
         # (login's --as: "as" is a reserved keyword), or to declare a bool's
         # --x/--no-x pair.
         flag = kw.get("flag") or f"--{spec.name.replace('_', '-')}"
+        secret_kw = (
+            _secret_option_kwargs(plugin_name, command_name, spec, required=required)
+            if spec.secret
+            else {}
+        )
         info = typer.Option(
             ... if required else default,
             flag,
             help=kw.get("help") or None,
             show_default=kw.get("show_default", False),
             envvar=kw.get("envvar") or None,
+            **secret_kw,
         )
         # "multiple": repeatable, collected into a list of base_type; None when
         # the option is not given at all.

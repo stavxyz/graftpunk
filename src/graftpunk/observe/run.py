@@ -166,6 +166,13 @@ def redact_har_entries(
     return scrub(entries)
 
 
+def redact_text(text: str, secrets: Redaction | Iterable[str], *, in_url: bool = False) -> str:
+    """*text* with *secrets* replaced as :func:`redact_har_entries` replaces them
+    in one HAR string; *in_url* keeps identifiers, as in the HAR's URL fields."""
+    scrubber = _Scrubber.of(secrets)
+    return scrubber.scrub_text(text, in_url=in_url) if scrubber else text
+
+
 def _kept_secrets(secrets: Iterable[str]) -> tuple[str, ...]:
     """The secrets long enough to redact."""
     return tuple(s for s in secrets if s and len(s) >= _MIN_REDACT_LEN)

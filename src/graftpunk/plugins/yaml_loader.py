@@ -44,6 +44,7 @@ class YAMLParamDef:
     default: Any = None
     help: str = ""
     is_option: bool = True
+    secret: bool = False
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -271,6 +272,18 @@ def validate_yaml_schema(data: dict[str, Any], filepath: Path) -> None:
                     f"Valid types: str, int, float, bool"
                 )
 
+            secret = param.get("secret", False)
+            if not isinstance(secret, bool):
+                raise PluginError(
+                    f"Plugin '{filepath}': command '{cmd_name}' param "
+                    f"'{param['name']}': 'secret' must be true or false, got {secret!r}."
+                )
+            if secret and (not param.get("is_option", True) or param_type not in ("str", "string")):
+                raise PluginError(
+                    f"Plugin '{filepath}': command '{cmd_name}' param "
+                    f"'{param['name']}': a secret param must be a str option."
+                )
+
 
 def _check_login_step_types(step_dict: dict[str, Any], *, filepath: Path, number: int) -> None:
     """Settle one login step's key types here, where the file and the step are known.
@@ -355,6 +368,7 @@ def parse_yaml_plugin(
                     default=param.get("default"),
                     help=param.get("help", ""),
                     is_option=param.get("is_option", True),
+                    secret=param.get("secret", False),
                 )
             )
 

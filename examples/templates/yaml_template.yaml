@@ -79,6 +79,19 @@ commands:
   #       default: 1
   #       help: "Page number"
 
+  # Command with a secret option: scrubbed from an observe run, never shown
+  # in --help, and prompted for with hidden input when required and missing
+  # on a terminal. A secret param must be a str option.
+  # lookup:
+  #   help: "Look up an item with an API key"
+  #   method: GET
+  #   url: "/api/lookup"
+  #   params:
+  #     - name: api_key
+  #       required: true
+  #       secret: true
+  #       help: "API key"
+
   # Command with jmespath extraction
   # users:
   #   help: "Get user names only"

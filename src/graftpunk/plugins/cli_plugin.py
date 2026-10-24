@@ -234,12 +234,16 @@ class PluginParamSpec:
     into Typer-native parameters.
 
     For options, supported keys are: ``type``, ``required``, ``default``, ``help``,
-    ``is_flag``, ``show_default``, ``envvar``, ``flag``, ``multiple``. ``flag``
-    replaces the option's declared name, e.g. ``"--archived/--no-archived"`` for a
-    bool flag with a negative, which passes ``True``, ``False``, or ``None`` when
-    neither is given. ``multiple`` makes the option repeatable (``--id 1 --id 2``)
+    ``is_flag``, ``show_default``, ``envvar``, ``flag``, ``multiple``, ``secret``.
+    ``flag`` replaces the option's declared name, e.g. ``"--archived/--no-archived"``
+    for a bool flag with a negative, which passes ``True``, ``False``, or ``None``
+    when neither is given. ``multiple`` makes the option repeatable (``--id 1 --id 2``)
     and passes a list of ``type``, or ``None`` when it is not given; a flag cannot
-    be multiple.
+    be multiple. ``secret`` marks a ``str`` option whose value is a secret (an API
+    key, a PIN): an observe run is scrubbed of it, ``--help`` never shows its
+    default, graftpunk's error messages and logs do not print it, and a required
+    one that is missing is prompted for with hidden input when stdin is a
+    terminal. A secret option cannot be a flag, multiple, or ``show_default``.
     For arguments, supported keys are: ``type``, ``required``, ``default``, ``nargs``.
     Unsupported keys raise ``PluginError`` at registration.
 
@@ -257,6 +261,11 @@ class PluginParamSpec:
         # Defensive copy to prevent external mutation of the kwargs dict
         object.__setattr__(self, "click_kwargs", dict(self.click_kwargs))
 
+    @property
+    def secret(self) -> bool:
+        """Whether this option's value is a secret (``click_kwargs["secret"]``)."""
+        return bool(self.click_kwargs.get("secret"))
+
     @staticmethod
     def option(
         name: str,
@@ -265,6 +274,7 @@ class PluginParamSpec:
         required: bool = False,
         default: Any = None,
         help: str = "",  # noqa: A002
+        secret: bool = False,
         click_kwargs: dict[str, Any] | None = None,
     ) -> PluginParamSpec:
         """Create an option (``--flag``) parameter spec with sensible defaults.
@@ -275,8 +285,8 @@ class PluginParamSpec:
         ``graftpunk.cli.command_factory`` into Typer-native parameters.
 
         Supported ``click_kwargs`` keys: ``type``, ``required``, ``default``, ``help``,
-        ``is_flag``, ``show_default``, ``envvar``, ``flag``, ``multiple`` (see the
-        class docstring).
+        ``is_flag``, ``show_default``, ``envvar``, ``flag``, ``multiple``, ``secret``
+        (see the class docstring).
         Unsupported keys raise ``PluginError`` at registration.
 
         When *type* is ``bool`` and *default* is ``False``, ``is_flag``
@@ -289,6 +299,10 @@ class PluginParamSpec:
             required: Whether the option is required.
             default: Default value when not provided.
             help: Help text for ``--help`` output.
+            secret: The value is a secret: scrubbed from an observe run, never
+                shown or logged by graftpunk, and prompted for with hidden input
+                when required and missing on a terminal. Sets
+                ``click_kwargs["secret"]``.
             click_kwargs: Extra kwargs merged into the dict passed to
                 Typer's parameter layer.  These override the explicit parameters.
 
@@ -312,6 +326,8 @@ class PluginParamSpec:
         # Smart default: bool with default=False -> is_flag=True
         if type is bool and default is False:
             kw["is_flag"] = True
+        if secret:
+            kw["secret"] = True
         if click_kwargs:
             kw.update(click_kwargs)
         return PluginParamSpec(name=name, is_option=True, click_kwargs=kw)

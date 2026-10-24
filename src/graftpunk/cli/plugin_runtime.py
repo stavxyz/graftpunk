@@ -198,8 +198,10 @@ def run_plugin_command(
         )
     # A command runs on a requests session, not a browser: with no driver the
     # run records that session's HTTP traffic instead, scrubbed of the
-    # plugin's secret credentials as each entry is recorded.
-    secrets = _observe_secrets(plugin, observe_mode)
+    # plugin's secret credentials and the command's secret options as each
+    # entry is recorded.
+    option_secrets = _secret_option_values(cmd_spec, kwargs)
+    secrets = _observe_secrets(plugin, observe_mode, option_secrets)
     observe_ctx = build_observe_context(
         plugin.site_name,
         backend_type,
@@ -222,15 +224,38 @@ def run_plugin_command(
             view_args=view_args,
             output_path=output_path,
             kwargs=kwargs,
+            option_secrets=option_secrets,
         )
     finally:
         observe_ctx.finish(redact=secrets)
 
 
-def _observe_secrets(plugin: CLIPluginProtocol, observe_mode: str) -> Redaction:
+def _secret_option_values(cmd_spec: CommandSpec, kwargs: dict[str, Any]) -> tuple[str, ...]:
+    """The values given to *cmd_spec*'s ``secret`` options, from the command line,
+    an environment variable, a prompt or a default."""
+    return tuple(
+        str(kwargs[spec.name])
+        for spec in cmd_spec.params
+        if spec.secret and kwargs.get(spec.name) not in (None, "")
+    )
+
+
+def _without_secrets(text: str, option_secrets: tuple[str, ...]) -> str:
+    """*text* with every wire form of each secret option value replaced."""
+    if not option_secrets:
+        return text
+    from graftpunk.observe.run import redact_text
+
+    return redact_text(text, option_secrets)
+
+
+def _observe_secrets(
+    plugin: CLIPluginProtocol, observe_mode: str, option_secrets: tuple[str, ...] = ()
+) -> Redaction:
     """What a plugin command's run is scrubbed of: every login credential gp can
     read (:func:`graftpunk.cli.login_commands.known_credentials`), split as a
-    login run's are (:meth:`graftpunk.observe.run.Redaction.from_credentials`)."""
+    login run's are (:meth:`graftpunk.observe.run.Redaction.from_credentials`),
+    and the values of the command's secret options, as secrets."""
     from graftpunk.observe.run import Redaction
 
     if observe_mode == "off":
@@ -238,10 +263,11 @@ def _observe_secrets(plugin: CLIPluginProtocol, observe_mode: str) -> Redaction:
     from graftpunk.cli.login_commands import known_credentials
 
     try:
-        return Redaction.from_credentials(known_credentials(plugin))
-    except Exception as exc:  # noqa: BLE001 - the run is still written, unscrubbed
+        credentials = Redaction.from_credentials(known_credentials(plugin))
+    except Exception as exc:  # noqa: BLE001 - the run is still written, unscrubbed of these
         LOG.error("observe_secrets_unavailable", error=str(exc), exc_type=type(exc).__name__)
-        return Redaction()
+        credentials = Redaction()
+    return Redaction(credentials.secrets + option_secrets, credentials.identifiers)
 
 
 def _inject_tokens_and_run(
@@ -257,8 +283,12 @@ def _inject_tokens_and_run(
     view_args: tuple[str, ...],
     output_path: str,
     kwargs: dict[str, Any],
+    option_secrets: tuple[str, ...] = (),
 ) -> None:
-    """Token injection, execution, the 403 retry, write-back and output."""
+    """Token injection, execution, the 403 retry, write-back and output.
+
+    An error message or log line that can carry what the handler sent (a URL,
+    an exception's text) is scrubbed of *option_secrets* first."""
     from graftpunk.client import execute_plugin_command
 
     # --- Token injection (CLI-specific ValueError handling) ---
@@ -319,7 +349,9 @@ def _inject_tokens_and_run(
                 LOG.info(
                     "token_403_retry",
                     command=cmd_spec.name,
-                    url=(exc.response.url if exc.response else "unknown"),
+                    url=_without_secrets(
+                        exc.response.url if exc.response else "unknown", option_secrets
+                    ),
                 )
                 clear_cached_tokens(session)
                 _prep(
@@ -355,18 +387,22 @@ def _inject_tokens_and_run(
     except (SystemExit, KeyboardInterrupt):
         raise
     except CommandError as exc:
-        gp_console.error(exc.user_message)
+        gp_console.error(_without_secrets(exc.user_message, option_secrets))
         raise SystemExit(1) from exc
     except PluginError as exc:
-        gp_console.error(f"Plugin error: {exc}")
+        gp_console.error(_without_secrets(f"Plugin error: {exc}", option_secrets))
         raise SystemExit(1) from exc
     except Exception as exc:  # noqa: BLE001 — CLI boundary
-        LOG.exception(
+        error = _without_secrets(str(exc), option_secrets)
+        # A traceback repeats the exception's unscrubbed text; with a secret
+        # option in play the log line carries the scrubbed text alone.
+        log = LOG.error if option_secrets else LOG.exception
+        log(
             "plugin_command_failed",
             plugin=plugin.site_name,
             command=cmd_spec.name,
-            error=str(exc),
+            error=error,
             exc_type=type(exc).__name__,
         )
-        gp_console.error(f"Command failed: {exc}")
+        gp_console.error(f"Command failed: {error}")
         raise SystemExit(1) from exc
