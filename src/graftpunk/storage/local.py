@@ -43,6 +43,23 @@ def _write_private_temp(target: Path, data: bytes) -> Path:
     return path
 
 
+def _link_backup(path: Path) -> Path | None:
+    """Hard-link *path* to a new name beside it, or None when there is no file to keep.
+
+    The link costs no copy and keeps the old file's bytes reachable after
+    :func:`os.replace` puts a new file at *path*. A filesystem that refuses
+    hard links gives None, and a failed save then cannot restore the old file.
+    """
+    if not path.exists():
+        return None
+    backup = path.with_name(f".{path.name}.{os.getpid()}.{id(path):x}.bak")
+    try:
+        os.link(path, backup)
+    except OSError:
+        return None
+    return backup
+
+
 class LocalSessionStorage:
     """Local filesystem session storage (backward compatible).
 
@@ -123,27 +140,41 @@ class LocalSessionStorage:
 
         # Both files are written in full to temporary files beside them and
         # only then renamed into place, so a write that fails (a full disk)
-        # leaves the slot as it was, or no slot at all, never a pickle without
-        # its metadata or one whose checksum the metadata does not match. The
+        # leaves the slot as it was, or no slot at all. Before the pickle is
+        # replaced, the old one is hard-linked to a backup; if anything is
+        # raised between the two renames, the old pickle is put back (or a
+        # slot this save created is removed), so the pickle and the metadata
+        # never disagree after a failed save. What remains is a crash, or a
+        # reader, between the two renames: such a slot fails its integrity
+        # check until it is saved again, as the next login does. The
         # temporary files are 0o600 from creation, like the files they
         # replace: the metadata carries the account identifier, the domain
         # and the URL last visited, not secrets, but not other users'
         # business either (#178, #293).
         written: list[Path] = []
+        backup: Path | None = None
+        pickle_replaced = False
         try:
             pickle_tmp = _write_private_temp(pickle_path, encrypted_data)
             written.append(pickle_tmp)
             metadata_tmp = _write_private_temp(metadata_path, metadata_bytes)
             written.append(metadata_tmp)
+            backup = _link_backup(pickle_path)
             os.replace(pickle_tmp, pickle_path)
+            pickle_replaced = True
             os.replace(metadata_tmp, metadata_path)
         except BaseException:
             for tmp in written:
                 tmp.unlink(missing_ok=True)
             if created_dir:
+                shutil.rmtree(session_dir, ignore_errors=True)
+            elif pickle_replaced and backup is not None:
                 with contextlib.suppress(OSError):
-                    session_dir.rmdir()
+                    os.replace(backup, pickle_path)
             raise
+        finally:
+            if backup is not None:
+                backup.unlink(missing_ok=True)
 
         LOG.info("session_save_completed", name=name, path=str(session_dir))
         return str(session_dir)
@@ -312,7 +343,13 @@ class LocalSessionStorage:
         names = []
         try:
             for item in self.base_dir.iterdir():
-                if item.is_dir() and (item / "session.pickle").exists():
+                # A slot is listed only with both files: a directory a crashed
+                # save left with a pickle and no metadata is not a session.
+                if (
+                    item.is_dir()
+                    and (item / "session.pickle").exists()
+                    and (item / "metadata.json").exists()
+                ):
                     names.append(item.name)
                 elif item.is_file() and item.suffix == ".pickle":
                     # Legacy flat file structure

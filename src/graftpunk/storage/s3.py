@@ -444,7 +444,7 @@ class S3SessionStorage:
         account_identifier: Any = UNCHANGED,
         account_rule: Any = UNCHANGED,
     ) -> bool:
-        """Update session metadata (currently only status field).
+        """Update session metadata fields, without reading or rewriting the session.
 
         Args:
             name: Session identifier

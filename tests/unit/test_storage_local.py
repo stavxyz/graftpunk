@@ -236,11 +236,20 @@ class TestLegacyFlatFile:
         modern_dir = tmp_path / "modern-provider"
         modern_dir.mkdir()
         (modern_dir / "session.pickle").write_bytes(b"data")
+        (modern_dir / "metadata.json").write_text("{}")
 
         sessions = storage.list_sessions()
         assert "legacy-provider" in sessions
         assert "modern-provider" in sessions
         assert sessions == sorted(sessions)
+
+    def test_a_directory_with_only_a_pickle_is_not_listed(self, storage, tmp_path):
+        """What a save interrupted before its metadata landed leaves is not a session (#293)."""
+        half = tmp_path / "half-provider"
+        half.mkdir()
+        (half / "session.pickle").write_bytes(b"data")
+
+        assert storage.list_sessions() == []
 
     def test_delete_legacy_session(self, storage, tmp_path):
         """Test deleting a legacy flat file session."""
