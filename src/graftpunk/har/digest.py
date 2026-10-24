@@ -1947,12 +1947,12 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     whose value sits next to its name. A cookie whose every recorded value is
     form state holds no credential, and its name is often an ordinary word that
     an invented fixture keeps as a key or in prose (``text``, ``lot``), so it is
-    left out. A value is form state when it reads as words
-    (graftpunk.har.paths.reads_as_words: a search term, a lot number, a date),
-    when it is one word in capitals or a camelCase run of words
-    (graftpunk.har.paths.reads_as_cased_words: ``MERRIVALE``, ``currentTab``),
-    or when it holds no letter or digit (``""``, a field cleared to a quoted
-    empty string). Every other cookie stays:
+    left out. A value is form state when, with one pair of surrounding double
+    quotes taken off, it reads as words (graftpunk.har.paths.reads_as_words: a
+    search term, a lot number, a date) or as cased words
+    (graftpunk.har.paths.reads_as_cased_words: ``LANDOWNER``, ``currentTab``,
+    ``SMITH, JOHN``), or when it is ASCII and holds no letter or digit (``""``,
+    a field cleared to a quoted empty string). Every other cookie stays:
 
     - one whose name reads as a token name (``csrftoken``) or names a session
       (:func:`_names_a_session`: ``sessionid``, ``PHPSESSID``, ``connect.sid``),
@@ -2057,13 +2057,31 @@ class _CookiesSeen:
 
 def _form_state(value: str) -> bool:
     """True when *value*, a non-empty cookie value, holds no credential by
-    :func:`flagged_names_of`'s rule: it holds no letter or digit once decoded,
-    or it reads as words or as cased words."""
-    return (
-        not any(ch.isalnum() for ch in unquote_plus(value))
-        or reads_as_words(value)
-        or reads_as_cased_words(value)
-    )
+    :func:`flagged_names_of`'s rule: once decoded it is ASCII and holds no letter
+    or digit, or, with one pair of surrounding double quotes taken off (RFC 6265
+    lets a server quote a value, and a browser keeps the quotes), it reads as
+    words or as cased words.
+
+    The ASCII test keeps percent-encoded bytes from reading as punctuation:
+    invalid UTF-8 decodes to U+FFFD, which is not a letter or digit. A value
+    masked with punctuation alone (``****``) also holds no letter or digit, so a
+    recorder that masked every cookie value so would leave its plain-named
+    cookies out; graftpunk's own redaction writes ``***REDACTED***``, which
+    holds letters."""
+    text = unquote_plus(value)
+    if text.isascii() and not any(ch.isalnum() for ch in text):
+        return True
+    unquoted = _without_quotes(value)
+    return reads_as_words(unquoted) or reads_as_cased_words(unquoted)
+
+
+def _without_quotes(value: str) -> str:
+    """*value* without one pair of surrounding double quotes, written as ``"`` or
+    percent-encoded as ``%22``."""
+    for quote in ('"', "%22"):
+        if len(value) > 2 * len(quote) and value.startswith(quote) and value.endswith(quote):
+            return value[len(quote) : -len(quote)]
+    return value
 
 
 def _cookies_seen(entries: Iterable[HAREntry]) -> _CookiesSeen:

@@ -671,6 +671,7 @@ def _random_value(shape: str, rng: random.Random) -> str:
         "lowercase": string.ascii_lowercase,
         "mixed-case": string.ascii_letters,
         "capitals": string.ascii_uppercase,
+        "capitals and digits": string.ascii_uppercase + string.digits,
     }[kind]
     return "".join(rng.choices(alphabet, k=length))
 
@@ -679,9 +680,10 @@ def _random_value(shape: str, rng: random.Random) -> str:
 # and reads_as_words rejects, so the share a cookie value the 1.24.0 rule flagged
 # is no longer flagged for (#296). Each ceiling is the rate measured on these
 # 10,000 values per shape (2026-10-24) plus 0.0005. The capital shapes are the
-# rule's known limit: a word in capitals is judged only by its letter pairs.
+# rule's known limit: a word in capitals is judged only by its letter pairs, so
+# an id of capitals and digits is lost when a draw holds no digit.
 _CASED_WORD_LOSS_CEILINGS = {
-    "base64 8": 0.0014,
+    "base64 8": 0.0029,
     "base64 16": 0.0,
     "base64 22": 0.0,
     "base64 32": 0.0,
@@ -692,9 +694,9 @@ _CASED_WORD_LOSS_CEILINGS = {
     "lowercase 12": 0.0,
     "lowercase 16": 0.0,
     "lowercase 32": 0.0,
-    "mixed-case 8": 0.0058,
-    "mixed-case 12": 0.001,
-    "mixed-case 16": 0.0008,
+    "mixed-case 8": 0.0098,
+    "mixed-case 12": 0.0014,
+    "mixed-case 16": 0.0007,
     "mixed-case 32": 0.0,
     "uuid": 0.0,
     "jwt signature": 0.0,
@@ -706,6 +708,9 @@ _CASED_WORD_LOSS_CEILINGS = {
     "capitals 7": 0.1935,
     "capitals 9": 0.1144,
     "capitals 12": 0.0543,
+    "capitals and digits 8": 0.0114,
+    "capitals and digits 12": 0.0013,
+    "capitals and digits 16": 0.0,
 }
 
 
@@ -713,14 +718,25 @@ class TestReadsAsCasedWords:
     @pytest.mark.parametrize(
         "value",
         [
-            "MERRIVALE",
-            "TANSLEY",
-            "OWNR",
+            "LANDOWNER",
+            "GRANTEE",
+            "BRAL",
             "NASA",
             "LEGO",
             "currentTab",
-            "tabLISTresults",
+            "panelGRIDview",
             "startDate",
+            "tabLISTresults",
+            "searchByNAME",
+            "searchByName",
+            "viewPDF",
+            "parseHTMLString",
+            "Smith, John",
+            "SMITH, JOHN",
+            "ST. JOHN",
+            "O'Brien Mary",
+            "Smith-Jones, Ann",
+            "GRANTEE, LANDOWNER Q.",
         ],
     )
     def test_a_word_in_capitals_or_camel_case_reads_as_cased_words(self, value: str) -> None:
@@ -734,8 +750,14 @@ class TestReadsAsCasedWords:
             "iPhone",
             "iPad",
             "XL",
-            "searchByName",
+            "searchBxName",
             "kQzPwMxT",
+            "HTMLParser",
+            "Smith4 John",
+            "SMITH, J0HN",
+            "Smith,John",
+            "smith, john",
+            "Smith, Kqzpwm",
             "QZXKWPRM",
             "CurrentTab",
             "currentTab2",

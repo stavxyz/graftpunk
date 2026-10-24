@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import random
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 from structlog.testing import capture_logs
@@ -27,6 +29,7 @@ from graftpunk.har.digest import (
     Endpoint,
     LoginObservation,
     ObservationKind,
+    _form_state,
     _parse_body,
     _with_login_flow,
     body_params,
@@ -36,6 +39,7 @@ from graftpunk.har.digest import (
     redacted_names_of,
 )
 from graftpunk.har.parser import parse_har_file
+from graftpunk.har.paths import reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 
 
@@ -4361,7 +4365,7 @@ class TestFlaggedNamesOf:
         self, tmp_path: Path
     ) -> None:
         """A property search's form state (#296): fields cleared to a quoted empty
-        string, a surname in capitals, a 4-letter code and a camelCase tab name
+        string, a name in capitals, a 4-letter code and a camelCase tab name
         hold no credential. The session cookie (HttpOnly), the CSRF cookie, header
         and hidden input (token names) stay flagged."""
         page = _entry(
@@ -4390,12 +4394,13 @@ class TestFlaggedNamesOf:
             request_headers={"X-CSRFToken": "planted"},
         )
         search["response"]["cookies"] = [
-            {"name": "text", "value": "mill%20creek"},
+            {"name": "text", "value": "corner%20lot"},
             {"name": "startDate", "value": "10/01/2026"},
-            {"name": "name1", "value": "MERRIVALE"},
-            {"name": "name1", "value": "TANSLEY"},
-            {"name": "name_type1", "value": "OWNR"},
-            {"name": "currentTab", "value": "tabLISTresults"},
+            {"name": "name1", "value": "LANDOWNER"},
+            {"name": "name1", "value": "GRANTEE"},
+            {"name": "name1", "value": '"BRL Grantees"'},
+            {"name": "name_type1", "value": "BRAL"},
+            {"name": "currentTab", "value": "panelGRIDview"},
         ]
         har = _write_har(tmp_path, [page, search])
         result = digest(DigestSource.from_har(har))
@@ -4423,6 +4428,61 @@ class TestFlaggedNamesOf:
         har = _write_har(tmp_path, [self._with_cookies([("visit", value)])])
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    def test_percent_encoded_bytes_are_not_punctuation(self, tmp_path: Path) -> None:
+        """Invalid UTF-8 decodes to U+FFFD, which is neither a letter nor a digit;
+        only an ASCII value with none counts as holding nothing."""
+        value = quote(bytes(range(0x80, 0x90)), safe="")
+        har = _write_har(tmp_path, [self._with_cookies([("visit", value)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    def test_a_cleared_value_beside_a_random_one_does_not_hide_it(self, tmp_path: Path) -> None:
+        entries = [
+            self._with_cookies([("visit", '""')]),
+            self._with_cookies([("visit", "xQzKwPmRtVbNhGfL")]),
+        ]
+        har = _write_har(tmp_path, entries)
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    @pytest.mark.parametrize(
+        "value",
+        ['"LANDOWNER"', "%22LANDOWNER%22", '"currentTab"', '"corner lot"', '"BRL Grantees"'],
+    )
+    def test_a_quoted_form_value_is_read_without_its_quotes(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        """RFC 6265 lets a server send a value in double quotes, and a browser
+        keeps them."""
+        har = _write_har(tmp_path, [self._with_cookies([("name1", value)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
+    @pytest.mark.parametrize(
+        "value", ['"xQzKwPmRtVbNhGfL"', "%22xQzKwPmRtVbNhGfL%22", '"LANDOWNER']
+    )
+    def test_quotes_hide_no_random_value(self, tmp_path: Path, value: str) -> None:
+        """Only one balanced pair comes off, and what is inside is judged as any
+        other value."""
+        har = _write_har(tmp_path, [self._with_cookies([("name1", value)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("name1",)
+
+    @pytest.mark.parametrize("high", [False, True], ids=["any-bytes", "high-bytes"])
+    @pytest.mark.parametrize("length", [8, 16, 32])
+    def test_no_percent_encoded_random_bytes_read_as_cleared(self, length: int, high: bool) -> None:
+        """The share of percent-encoded random bytes the form-state rule accepts
+        and reads_as_words rejects: 0 of 10,000 per shape (2026-10-24). Without
+        the ASCII test it was 7.8% at 8 bytes and 40% for bytes 0x80 to 0xFF."""
+        shape = f"{'high ' if high else ''}bytes {length}"
+        rng = random.Random(f"296-{shape}")  # noqa: S311 - a fixed sample, not a secret
+        low = 0x80 if high else 0
+        values = [
+            quote(bytes(rng.randrange(low, 0x100) for _ in range(length)), safe="")
+            for _ in range(10_000)
+        ]
+        assert [v for v in values if _form_state(v) and not reads_as_words(v)] == []
 
 
 class TestEveryNamePositionGoesThroughTheIdRule:

@@ -8,7 +8,7 @@ by the digest's endpoint modelling and the fixtures/naming rule below it
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from urllib.parse import unquote, unquote_plus, urlsplit, urlunsplit
 
 # The name rule's length thresholds (see holds_an_id): mixed hex, a prefixed id's
@@ -465,52 +465,144 @@ def _typed_word(word: str) -> bool:
     )
 
 
-# The parts of a camelCase value: a run of 2 or more capitals not followed by a
-# lowercase letter (LIST in tabLISTresults), or an optional capital and lowercase
-# letters (tab, Tab).
-_CAMEL_PART_RE = re.compile(r"[A-Z]{2,}(?![a-z])|[A-Z]?[a-z]+")
-_MIN_CAMEL_PART_LEN = 3
-_MAX_CAMEL_PARTS = 4
+# A camelCase value's case runs: a run of capitals or a run of lower case.
+_CASE_RUN_RE = re.compile(r"[A-Z]+|[a-z]+")
+_MIN_CAMEL_WORD_LEN = 3
+_MIN_CAMEL_TITLE_LEN = 3
+# The capitalised 2-letter parts accepted below that length: joining words a
+# field name is built with (searchByNAME, sortOnDate). Accepting any capitalised
+# 2-letter part read more random mixed-case values as words (measured below).
+_CAMEL_JOINING_WORDS = frozenset(("At", "By", "In", "Is", "Of", "On", "Or", "To", "Up"))
+_MIN_CAMEL_CAPS_LEN = 2
+# A run of capitals this short in a camelCase value is an acronym or a short word
+# (PDF, NAME, LIST), accepted however it is spelled; a longer run must be spelled.
+_MAX_UNSPELLED_CAPS = 4
+# 4 parts read 0.37% of random 12-letter mixed-case values as words; 3 read 0.13%.
+_MAX_CAMEL_PARTS = 3
+# A name in a records search: 2 to 4 words of letters, joined by spaces and the
+# punctuation names carry (Smith, John; O'Brien Mary; ST. JOHN; Smith-Jones Ann).
+_NAME_RE = re.compile(r"[A-Za-z]+(?:(?:, |\. |[ ,.'-])[A-Za-z]+){1,3}\.?")
+_NAME_WORD_RE = re.compile(r"[A-Za-z]+")
+
+
+def _camel_part(part: str) -> bool:
+    """One part of a camelCase reading: lower case or capitalised (at least 3
+    letters), spelled and holding a vowel, a capitalised joining word (By, Of),
+    or capitals (at least 2, spelled when longer than 4)."""
+    if len(part) > _MAX_VALUE_WORD_LEN:
+        return False
+    if part.islower():
+        return len(part) >= _MIN_CAMEL_WORD_LEN and _a_word(part)
+    if part.isupper():
+        return len(part) >= _MIN_CAMEL_CAPS_LEN and (
+            len(part) <= _MAX_UNSPELLED_CAPS or _spelled(part.lower())
+        )
+    if part in _CAMEL_JOINING_WORDS:
+        return True
+    return part[1:].islower() and len(part) >= _MIN_CAMEL_TITLE_LEN and _a_word(part.lower())
+
+
+def _a_word(letters: str) -> bool:
+    """Lower-case *letters* spelled with the consonant pairs English uses and
+    holding a vowel (y counts): a camelCase word part, where a random run of
+    consonants (mdhsr) would otherwise pass."""
+    return _spelled(letters) and any(ch in _VOWELS for ch in letters)
+
+
+def _camel_readings(runs: list[str]) -> Iterator[list[str]]:
+    """Every split of *runs* (alternating case runs) into parts. A run of
+    capitals followed by lower case is either its own part (tab, LIST, results)
+    or gives its last capital to the next part (parse, HTML, String; HTML,
+    Parser)."""
+    if not runs:
+        yield []
+        return
+    head, rest = runs[0], runs[1:]
+    if head.isupper() and rest:
+        lower, tail = rest[0], rest[1:]
+        for reading in _camel_readings(tail):
+            yield [head, lower, *reading]
+            yield [*([head[:-1]] if head[:-1] else []), head[-1] + lower, *reading]
+        return
+    for reading in _camel_readings(rest):
+        yield [head, *reading]
+
+
+def _reads_as_camel_case(text: str) -> bool:
+    # Lower camelCase only. Letting a value start with a capital (HTMLParser,
+    # CurrentTab) raised the share of random 8-letter mixed-case values read as
+    # words from 1.1% to 5.0% (50,000 values, 2026-10-24).
+    runs = _CASE_RUN_RE.findall(text)
+    return text[0].islower() and any(
+        len(parts) <= _MAX_CAMEL_PARTS and all(_camel_part(part) for part in parts)
+        for parts in _camel_readings(runs)
+    )
+
+
+def _reads_as_name(text: str) -> bool:
+    """2 to 4 words joined by a space or a ``, ' . -`` (at least one space), each
+    a capital initial or a word of at most 15 letters, capitalised or in
+    capitals, spelled with the consonant pairs English uses."""
+    if " " not in text or not _NAME_RE.fullmatch(text):
+        return False
+    return all(_name_word(word) for word in _NAME_WORD_RE.findall(text))
+
+
+def _name_word(word: str) -> bool:
+    if len(word) == 1:
+        return word.isupper()
+    return (
+        len(word) <= _MAX_VALUE_WORD_LEN
+        and (word.isupper() or word.istitle())
+        and _spelled(word.lower())
+    )
 
 
 def reads_as_cased_words(value: str) -> bool:
-    """True when *value*, a cookie value, is one ASCII word in capitals or a
-    camelCase run of words: a surname or a code a form keeps in capitals
-    (``MERRIVALE``, ``OWNR``) or a tab or field name (``currentTab``,
-    ``tabLISTresults``). :func:`reads_as_words` rejects both shapes (a run of 4 or
-    more capitals, a word in brand casing); this test is for a caller that
-    accepts them as form state.
+    """True when *value*, a cookie value, is one ASCII word in capitals, a
+    camelCase run of words, or a name of a few words: a party or a code a form
+    keeps in capitals (``LANDOWNER``, ``GRANTEE``, ``BRAL``), a tab or field name
+    (``currentTab``, ``panelGRIDview``, ``viewPDF``), or a name as a records
+    search keeps it (``Smith, John``, ``ST. JOHN``, ``O'Brien Mary``).
+    :func:`reads_as_words` rejects some of each (a run of 4 or more capitals, a
+    word in brand casing); this test is for a caller that accepts them as form
+    state.
 
-    *value* is plus- and percent-decoded, and must be letters only. In capitals it
-    is at most 15 letters spelled with the consonant pairs English uses. In
-    camelCase it starts lower case and splits into at most 4 parts of 3 to 15
-    letters, each spelled so, where a part is lower case, capitalised, or a run of
-    capitals. ``iPhone`` (a part of 1 letter), ``searchByName`` (a part of 2) and
-    ``kQzPwMxT`` do not read so.
+    *value* is plus- and percent-decoded and ASCII. In capitals alone it is at
+    most 15 letters spelled with the consonant pairs English uses. In camelCase
+    it is letters alone, starts lower case, and splits into at most 3 parts of at
+    most 15 letters: lower-case or capitalised words of at least 3 letters,
+    spelled so and holding a vowel (y counts), a capitalised joining word (``By``,
+    ``Of``, ``To`` and a few more), or a run of at least 2 capitals, spelled so
+    when longer than 4. A run of capitals before lower case is read both as its
+    own part (``tab``, ``LIST``, ``results``) and as giving its last capital to
+    the next part (``parse``, ``HTML``, ``String``). A name is 2 to 4 words with
+    a space among the joins, joined by a space, a comma, an apostrophe, a full
+    stop or a hyphen, each word a capital initial or a word of at most 15 letters
+    capitalised or in capitals and spelled so (``Smith, JOHN Q.``). ``iPhone``
+    (a first part of 1 letter), ``CurrentTab`` and ``HTMLParser`` (a capital
+    first), ``currentTab2`` (a digit) and ``kQzPwMxT`` do not read so.
 
     Measured on 100,000 random values per shape (seed 273, 2026-10-24), the
-    share it accepts and :func:`reads_as_words` rejects is 0.46% of 8 mixed-case
-    letters, 0.09% of 12 and 0.02% of 16, 0.10% of 8 standard-base64
-    characters, and none of hex, lowercase letters, UUIDs, JWT signatures or
-    numbers. Random capitals are its known limit, since only their letter pairs
-    tell them from a word: it accepts 42% of 4 capitals, 19% of 7, 11% of 9 and
-    5.2% of 12.
+    share of random values a cookie rule using it (``flagged_names_of``) no
+    longer flags, against :func:`reads_as_words` alone, is 0.79% of 8
+    mixed-case letters, 0.11% of 12 and 0.008% of 16, 0.15% of 8
+    standard-base64 characters, and none of hex, lowercase letters, UUIDs, JWTs
+    or numbers. Random capitals are its known limit, since only their letter
+    pairs tell them from a word: it accepts 42% of 4 capitals, 19% of 7, 11% of
+    9 and 5.2% of 12, the rates :func:`reads_as_words` has accepted for
+    lowercase letters of those lengths since 1.23.0. An id of capitals and digits
+    is accepted only when a draw holds no digit: 1.1% at 8 characters, 0.09% at
+    12 and none at 16.
     """
     text = unquote_plus(value)
-    if not (text.isascii() and text.isalpha()):
+    if not text.isascii() or not text:
         return False
+    if not text.isalpha():
+        return _reads_as_name(text)
     if text.isupper():
         return len(text) <= _MAX_VALUE_WORD_LEN and _spelled(text.lower())
-    parts = _CAMEL_PART_RE.findall(text)
-    return (
-        text[0].islower()
-        and "".join(parts) == text
-        and len(parts) <= _MAX_CAMEL_PARTS
-        and all(
-            _MIN_CAMEL_PART_LEN <= len(part) <= _MAX_VALUE_WORD_LEN and _spelled(part.lower())
-            for part in parts
-        )
-    )
+    return _reads_as_camel_case(text)
 
 
 def is_placeholder(segment: str) -> bool:

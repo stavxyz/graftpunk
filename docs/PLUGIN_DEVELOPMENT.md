@@ -1633,19 +1633,14 @@ content type. `gp observe fixtures` writes one for every capture to commit
 beside the fixture. It holds no URL, no time, and no header, cookie, or query
 value: only the status, the content type, the hash of the captured body, the
 request's body parameter names, every cookie name the recording set except a
-cookie that only ever held form state, and the token names the digest found.
+cookie that only ever held words, and the token names the digest found.
 
 A cookie whose every non-empty value in the recording (in any request or
-response) is form state holds no credential, so its name is left out of
+response) reads as words holds no credential, so its name is left out of
 `flagged_names`: an invented fixture keeps such a name as a key or in prose.
-Form state is words, one word in capitals or camelCase, or punctuation alone.
 Words are a search term such as `running shoes`, `iPhone 15`, `café`,
 `salt & pepper` or `512gb ssd`, a number
-of at most 5 digits such as `lot=12`, or a date. A word in capitals or
-camelCase is a surname or a code a form keeps in capitals (`MERRIVALE`,
-`OWNR`) or a tab or field name (`currentTab`, `tabLISTresults`). A value of
-punctuation alone, such as a field cleared to a quoted empty string (`""`),
-holds nothing. An empty value beside another
+of at most 5 digits such as `lot=12`, or a date. An empty value beside another
 value is a cleared field and is ignored. A cookie stays flagged, whatever its
 values, when its name reads as a token name (`csrftoken`) or has a session part
 (`sessionid`, `PHPSESSID`, `JSESSIONID`, `connect.sid`, `myshop_session`,
@@ -1653,10 +1648,8 @@ values, when its name reads as a token name (`csrftoken`) or has a session part
 `HttpOnly`, either by its `Set-Cookie` header carrying the attribute or by the
 HAR's `response.cookies` entry saying `httpOnly` is true (a HAR often leaves
 `httpOnly` out of that array when the header has it). It also stays flagged
-when any value it held is not form state (a session id), or when the
-recording shows no non-empty value for it. A cookie only ever literally empty
-stays flagged, since a HAR cookie with no value reads as empty too; a cookie
-only ever set to `""` does not.
+when any value it held does not read as words (a session id), or when the
+recording shows no non-empty value for it.
 
 Check that your session cookie is in `flagged_names` before you commit a
 sidecar. A cookie the recording only sends, which no response in it sets, is
@@ -1666,33 +1659,21 @@ before the recording starts. Record a fresh login, so that the server's
 `Set-Cookie` for the session is in the HAR, then run `gp observe fixtures`
 again. A session cookie a response does set can still be left out when its
 name has no session part, the response did not set it with `HttpOnly`, and
-every value it held is form state. A numeric id of 5 digits or fewer always
-is. So is a value made of space- or `+`-separated pieces of 3 or fewer
-letters and digits with a letter among them (`aB3+xY7+qW2`), and so are groups
+every value it held reads as words. A numeric id of 5 digits or fewer always
+does. So does a value made of space- or `+`-separated pieces of 3 or fewer
+letters and digits with a letter among them (`aB3+xY7+qW2`), and so do groups
 of digits separated by spaces or `+` (`4111 1111 1111 1111`, `555 123 4567`):
 a cookie holding only such values is not flagged. A short random id sometimes
-is (14.8% of random 8-letter lowercase ids, 0.85% of random 8-character
-standard-base64 ids and 0.58% of 8 random mixed-case letters, measured on
-100,000 each). An id of capitals alone often is, since only its letter pairs
-tell it from a word in capitals: 42% of 4 random capitals, 19% of 7 and 5.2% of
-12. The graft skill's
+does (14.8% of random 8-letter lowercase ids and 0.77% of random 8-character
+standard-base64 ids, measured on 100,000 each). The graft skill's
 `fixture-leaks.py`, which compares a fixture with the capture it was derived
 from, still reports any value from the captured response body left in the
 fixture, each run of 3 or more digits included. It reads the capture's body,
 not its cookie headers, and runs when the skill derives a fixture, not in the
 suite.
 
-A form-state cookie can stay flagged the other way, when one of its values is
-not form state. A value is form state when it holds no letter or digit, or when
-either of these rules reads it as words. The rule
-`graftpunk.har.paths.reads_as_cased_words` applies is that a value of ASCII
-letters alone is in capitals, at most 15 letters spelled with letter pairs
-English words use (`MERRIVALE`, `NASA`, `LEGO`), or is camelCase: it starts
-lower case and splits into at most 4 parts of 3 to 15 letters, each lower case,
-capitalised or in capitals and spelled so (`currentTab`, `tabLISTresults`). So
-`iPad` (a part of 1 letter), `searchByName` (a part of 2), `CurrentTab` (a
-capital first), `currentTab2` (a digit) and `XL` (the pair `xl`) do not. The
-rule `graftpunk.har.paths.reads_as_words` applies is:
+A form-state cookie can stay flagged the other way, when one of its values does
+not read as words. The rule `graftpunk.har.paths.reads_as_words` applies is:
 
 - A value of one word reads as words when no run of 6 or more digits or other
   id shape is in it and each of its runs of letters and digits, split at `-`,
@@ -1717,7 +1698,7 @@ rule `graftpunk.har.paths.reads_as_words` applies is:
   `mcdonalds` the pairs `mc` and `cd`).
 
 A cookie the server set with `HttpOnly` stays flagged whatever its values. When
-a form-state cookie you expected to be left out is in
+a plain-word cookie you expected to be left out is in
 `flagged_names` and an honest fixture fails on its name, record again searching
 only plain words and regenerate the sidecar, or rename the name in the fixture
 where its structure allows.
