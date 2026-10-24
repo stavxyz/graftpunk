@@ -134,6 +134,42 @@ class TestStreamedAndTimed:
         (entry,) = capture.get_har_entries()
         assert entry["response"]["content"]["text"] == LATIN1_TEXT
 
+    @pytest.mark.parametrize(
+        ("content_type", "charset"),
+        [
+            ('text/html; charset="iso-8859-1"', "iso-8859-1"),
+            ("text/html; charset='utf-8'", "utf-8"),
+            ('text/html; charset=""', None),
+            ("text/html", None),
+        ],
+    )
+    def test_the_declared_charset_is_read_without_its_quotes(
+        self, content_type: str, charset: str | None
+    ) -> None:
+        # Python's codec lookup happens to ignore the quotes, so the parser is
+        # pinned directly.
+        from graftpunk.observe.capture import _declared_charset
+
+        assert _declared_charset(content_type) == charset
+
+    def test_one_response_that_cannot_be_recorded_does_not_cost_the_others(self, site: str) -> None:
+        from graftpunk.observe import http_capture
+
+        real = http_capture.har_entry_for_response
+
+        def fail_for_the_hop(response: Any, *args: Any, **kwargs: Any) -> Any:
+            if response.status_code == 302:
+                raise ValueError("cannot build this one")
+            return real(response, *args, **kwargs)
+
+        session, capture = _recording()
+        with patch.object(http_capture, "har_entry_for_response", side_effect=fail_for_the_hop):
+            session.post(f"{site}/login", data={"user": "alice"}, timeout=5)
+        capture.stop_capture()
+
+        (entry,) = capture.get_har_entries()
+        assert entry["response"]["status"] == 200
+
 
 class _OwnStateAdapter(requests.adapters.HTTPAdapter):
     """An adapter that pickles its whole instance dict, as some custom ones do."""

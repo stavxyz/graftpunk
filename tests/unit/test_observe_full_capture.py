@@ -747,6 +747,43 @@ class TestPluginCommandRun:
         assert values == []
         assert not ran.exists()
 
+    def test_the_spool_never_holds_the_password_while_the_command_runs(
+        self, site: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        value = "hunter2-correct-horse"
+        monkeypatch.setenv("MYSHOP_PASSWORD", value)
+        seen: list[str] = []
+
+        class _Peek(_ShopPlugin):
+            @command(help="Search, then look at the run's spool")
+            def peek(self, ctx: Any) -> dict[str, Any]:
+                ctx.session.post(f"{self.base_url}/api/search", json={"query": value})
+                (spool,) = tmp_path.glob("*/*/network.har.spool")
+                seen.append(spool.read_text())
+                return {}
+
+        plugin = _Peek()
+        plugin.base_url = site
+        spec = next(s for s in plugin.get_commands() if s.name == "peek")
+        app = typer.Typer()
+        app.command(name="peek")(
+            synthesize_command_fn(
+                name="peek",
+                param_specs=list(spec.params),
+                body=lambda ctx, **kw: run_plugin_command(plugin, spec, ctx, **kw),
+            )
+        )
+        with (
+            patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.cli.plugin_runtime.format_output"),
+        ):
+            result = CliRunner().invoke(app, [], obj={"observe_mode": "full"})
+
+        assert result.exit_code == 0, result.output
+        (spooled,) = seen
+        assert "/api/search" in spooled
+        assert value not in spooled
+
     def test_basic_auth_built_from_the_login_is_scrubbed_whole(
         self, site: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
