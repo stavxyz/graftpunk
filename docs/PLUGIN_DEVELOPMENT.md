@@ -1550,7 +1550,7 @@ A URL signal counts only once the URL differs from the one the last submit was
 clicked from, which is a second guard against the same mistake. Set both
 `success` and `success_url` and both have to hold.
 
-**`timeout` is the whole post-submit budget.** After the last step, the engine
+**After the last step, `timeout` is the whole post-submit budget.** After the last step, the engine
 checks the page every half second until the timeout: the failure text ends the
 wait as a failure, the configured success signal ends it as a success. A page
 reading `Too Many Requests` ends the wait as a failure on any pass that read the
@@ -1618,13 +1618,13 @@ several elements, the step acts on the first visible one and logs
 hidden mobile-menu copy of a link, or of the whole form, ahead of the visible
 one. An element counts as hidden when it is not laid out, is `visibility:
 hidden` or `opacity: 0`, or sits off the side of the page in an off-canvas
-drawer. When none of the matches is visible, the step fails and says how many
+drawer. When several match and none of them is visible, the step fails and says how many
 it found; when the element it would act on is disabled, the step fails and says
 so. Either way, narrow the selector until it matches the one element a user
 would click or type into.
 
-**A failed login says why on its last lines.** `gp myshop login` ends with the
-verdict: the signal that did not appear (or the failure text, or the rate-limit
+**A failed login says why on its last lines.** For a login generated from
+`LoginConfig`, `gp myshop login` ends with the verdict: the signal that did not appear (or the failure text, or the rate-limit
 page) and the URL the page ended on, or the failed step and that URL. Read the
 bottom of the output first. `gp --observe=full myshop login` adds a screenshot
 and the page source.

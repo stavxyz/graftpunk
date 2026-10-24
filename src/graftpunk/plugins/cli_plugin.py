@@ -760,7 +760,8 @@ class LoginConfig:
             budget for the whole post-submit wait, not for the poll alone: the
             wait for the document to finish loading spends what the poll left,
             so a signal that arrives at the deadline is followed by no readiness
-            wait at all.
+            wait at all. It also caps each step's readiness wait before the step
+            acts, at whichever is smaller of it and 5 seconds.
         settle: Seconds to wait after the success signal, once the document has
             finished loading, before cookies are captured. Defaults to 1.0.
     """

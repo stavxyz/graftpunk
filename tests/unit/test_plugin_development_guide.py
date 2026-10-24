@@ -200,17 +200,32 @@ def test_the_gate_paragraph_names_every_phrase_check_can_emit() -> None:
 def test_every_gp_invocation_names_a_real_command_and_options(
     line_no: int, invocation: str
 ) -> None:
+    if not _check_gp_invocation(invocation, f"{GUIDE.name}:{line_no}"):
+        pytest.skip(f"{invocation} addresses an installed plugin's own command group")
+
+
+def _check_gp_invocation(invocation: str, where: str) -> bool:
+    """Check *invocation* against gp's CLI; False when it addresses a plugin.
+
+    `gp --observe=full myshop login` puts gp's own options before the plugin;
+    those are still checked, as an invocation of `gp` alone.
+    """
     tokens = shlex.split(invocation)[1:]
-    # `gp --observe=full myshop login` puts gp's own options before the plugin;
-    # those are still checked, as an invocation of `gp` alone.
     leading = 0
     while leading < len(tokens) and tokens[leading].startswith("-"):
         leading += 1
     if leading < len(tokens) and tokens[leading] in _PLUGIN_COMMAND_PREFIXES:
         if leading:
-            check_invocation(" ".join(["gp", *tokens[:leading]]), f"{GUIDE.name}:{line_no}")
-        pytest.skip(f"{invocation} addresses an installed plugin's own command group")
-    check_invocation(invocation, f"{GUIDE.name}:{line_no}")
+            check_invocation(" ".join(["gp", *tokens[:leading]]), where)
+        return False
+    check_invocation(invocation, where)
+    return True
+
+
+def test_gp_options_before_a_plugin_command_are_still_checked() -> None:
+    assert _check_gp_invocation("gp --observe=full myshop login", "test") is False
+    with pytest.raises(AssertionError):
+        _check_gp_invocation("gp --observ=full myshop login", "test")
 
 
 def test_a_misspelled_subcommand_is_caught() -> None:

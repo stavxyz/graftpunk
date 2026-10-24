@@ -446,10 +446,11 @@ def _debug_rate_limit_marker(*, site_name: str, url: str, backend: str) -> None:
 
 
 def _debug_ignored_timings(*, login_config: LoginConfig, site_name: str, backend: str) -> None:
-    """Note that a login with no success signal spends neither ``timeout`` nor ``settle``.
+    """Note that a login with no success signal waits for no signal and never settles.
 
-    There is nothing to wait for on that path, so the wait is the grace window and
-    both fields go unread. An author who raised ``timeout`` and saw the login give
+    There is nothing to wait for after the last step on that path, so the wait is
+    the grace window and ``settle`` goes unread; ``timeout`` only caps each step's
+    readiness wait there. An author who raised ``timeout`` and saw the login give
     up at the same moment as before needs the trail to say why.
     """
     defaults = {f.name: f.default for f in dataclasses.fields(login_config)}
@@ -467,7 +468,8 @@ def _debug_ignored_timings(*, login_config: LoginConfig, site_name: str, backend
         grace=f"{_NO_SIGNAL_GRACE:g}s",
         hint=(
             "This login configures no success signal, so it watches for its failure "
-            "text across the grace window and uses neither timeout nor settle. Set "
+            "text across the grace window; timeout only caps each step's readiness "
+            "wait and settle is unused. Set "
             "success or success_url to have the engine wait for a signal."
         ),
         **{name: f"{value:g}s" for name, value in set_by_plugin.items()},
