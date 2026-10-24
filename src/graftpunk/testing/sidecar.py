@@ -8,7 +8,10 @@ captured body (null for an empty body, which holds nothing to sanitise), and
 ``flagged_names`` is every cookie name the recording set or sent, less a
 cookie whose every recorded value is form state
 (``graftpunk.har.digest.flagged_names_of``), and the token names the digest
-recorded, never a value. A name that holds an account value
+recorded, never a value. From schema 2, ``flagged_reasons`` says why each of
+those names is flagged, in the words of :data:`FLAGGED_REASONS`, so an author or
+a reviewer can tell a form-state cookie flagged by its name from a session
+value without the recording. A name that holds an account value
 (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``
 counts how many were left out. ``body_params`` is the request's body keys that read as
@@ -34,7 +37,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from graftpunk.contracts import UnknownSchemaError, current_schema, refuse_unknown_schema
@@ -42,6 +46,7 @@ from graftpunk.exceptions import GraftpunkError
 
 __all__ = [
     "FIXTURES_PLACEHOLDER",
+    "FLAGGED_REASONS",
     "SIDECAR_FIELDS",
     "SIDECAR_SUFFIX",
     "Sidecar",
@@ -72,8 +77,37 @@ SIDECAR_FIELDS: dict[int, frozenset[str]] = {
             "redacted_names",
         }
     ),
+    2: frozenset(
+        {
+            "status",
+            "content_type",
+            "body_params",
+            "capture_sha256",
+            "flagged_names",
+            "flagged_reasons",
+            "redacted_names",
+        }
+    ),
 }
 """The keys each schema version holds besides ``schema`` itself."""
+
+FLAGGED_REASONS: frozenset[str] = frozenset(
+    {
+        "token_candidate",
+        "token_name",
+        "session_name",
+        "http_only",
+        "value_not_form_state",
+        "value_not_kept",
+        "no_value_seen",
+        "sent_only",
+    }
+)
+"""The reasons a schema 2 sidecar may give for a flagged name, as
+``graftpunk.har.digest.flagged_reasons_of`` writes them (a test holds the two
+equal; this module imports nothing from the digest). The set is closed like the
+key set: a new reason is a new schema version, so an older graftpunk never
+reads a reason it cannot explain."""
 
 _CAPTURE_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -102,6 +136,10 @@ class Sidecar:
     # How many names were left out of flagged_names because they hold an account
     # value; the names themselves are written nowhere.
     redacted_names: int = 0
+    # Why each flagged name is flagged, keyed by every name in flagged_names; empty
+    # for a schema 1 sidecar, which did not record it. Given alone, its keys are
+    # the flagged names.
+    flagged_reasons: Mapping[str, tuple[str, ...]] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         """Hold every field to the loader's own type and sign checks, sort and dedupe
@@ -129,14 +167,50 @@ class Sidecar:
                 "capture_sha256 must be a 64-character lowercase hex sha256 digest, "
                 f"or null, got {self.capture_sha256!r}"
             )
+        if not self.flagged_names and isinstance(self.flagged_reasons, Mapping):
+            object.__setattr__(self, "flagged_names", tuple(self.flagged_reasons))
         object.__setattr__(self, "body_params", tuple(sorted(set(self.body_params))))
         object.__setattr__(self, "flagged_names", tuple(sorted(set(self.flagged_names))))
+        object.__setattr__(self, "flagged_reasons", _checked_reasons(self))
 
     @property
     def declared(self) -> bool:
         """True for a hand-made fixture's sidecar, or an empty capture's: trusted, not
         checked against a capture."""
         return self.capture_sha256 is None
+
+
+def _checked_reasons(sidecar: Sidecar) -> dict[str, tuple[str, ...]]:
+    """*sidecar*'s ``flagged_reasons`` with each list sorted and deduplicated, after
+    refusing a mapping that is not keyed by exactly its flagged names (an empty
+    one is a schema 1 sidecar's) or that holds a reason outside
+    :data:`FLAGGED_REASONS`, an empty list, or ``sent_only`` alone."""
+    reasons = sidecar.flagged_reasons
+    if not isinstance(reasons, Mapping):
+        raise SidecarError(f"flagged_reasons must be a mapping, got {reasons!r}")
+    if not reasons:
+        return {}
+    if set(reasons) != set(sidecar.flagged_names):
+        raise SidecarError(
+            "flagged_reasons must be keyed by exactly the flagged names, got "
+            f"{sorted(map(str, reasons))!r} for {list(sidecar.flagged_names)!r}"
+        )
+    checked: dict[str, tuple[str, ...]] = {}
+    for name in sidecar.flagged_names:
+        why = reasons[name]
+        if not isinstance(why, (tuple, list)) or not all(isinstance(r, str) for r in why):
+            raise SidecarError(f"flagged_reasons[{name!r}] must be a list of strings, got {why!r}")
+        unknown = sorted(set(why) - FLAGGED_REASONS)
+        if unknown:
+            raise SidecarError(
+                f"flagged_reasons[{name!r}] has unknown reasons: {', '.join(unknown)}"
+            )
+        if not set(why) - {"sent_only"}:
+            raise SidecarError(
+                f"flagged_reasons[{name!r}] must name a reason that flags it, got {list(why)!r}"
+            )
+        checked[name] = tuple(sorted(set(why)))
+    return checked
 
 
 def sidecar_path(fixture: Path) -> Path:
@@ -150,7 +224,23 @@ def is_sidecar(path: Path) -> bool:
 
 
 def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
-    """*sidecar* as the current schema's JSON object."""
+    """*sidecar* as the current schema's JSON object.
+
+    Raises:
+        SidecarError: *sidecar* has flagged names and no reasons for them (a
+            schema 1 sidecar's facts), which the current schema cannot hold, or
+            its reasons were changed after construction into a shape the loader
+            would refuse.
+    """
+    if sidecar.flagged_names and not sidecar.flagged_reasons:
+        raise SidecarError(
+            "the current sidecar schema records why each flagged name is flagged; "
+            "build the Sidecar with flagged_reasons"
+        )
+    # Checked again: the mapping is a plain dict (so a Sidecar still pickles and
+    # copies), and one changed after construction must not reach a file the
+    # loader would refuse.
+    reasons = _checked_reasons(sidecar)
     return {
         "schema": current_schema("sidecar"),
         "status": sidecar.status,
@@ -158,6 +248,7 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
         "body_params": list(sidecar.body_params),
         "capture_sha256": sidecar.capture_sha256,
         "flagged_names": list(sidecar.flagged_names),
+        "flagged_reasons": {name: list(why) for name, why in reasons.items()},
         "redacted_names": sidecar.redacted_names,
     }
 
@@ -207,6 +298,11 @@ def load_sidecar(path: Path) -> Sidecar:
     capture_sha256 = _optional_text(data, "capture_sha256", path)
     flagged_names = _names(data, "flagged_names", path)
     redacted_names = _integer(data, "redacted_names", path)
+    flagged_reasons = _reasons(data, path) if "flagged_reasons" in fields else {}
+    if "flagged_reasons" in fields and set(flagged_reasons) != set(flagged_names):
+        # Sidecar reads an empty mapping as a schema 1 sidecar's; from schema 2
+        # every flagged name carries its reasons.
+        raise SidecarError(f"{path}: flagged_reasons must be keyed by exactly the flagged names")
     try:
         # Sidecar's construction-time checks (a negative count, the
         # capture_sha256 format) do not know *path*, so it is added here.
@@ -217,6 +313,7 @@ def load_sidecar(path: Path) -> Sidecar:
             capture_sha256=capture_sha256,
             flagged_names=flagged_names,
             redacted_names=redacted_names,
+            flagged_reasons=flagged_reasons,
         )
     except SidecarError as exc:
         raise SidecarError(f"{path}: {exc}") from exc
@@ -241,6 +338,17 @@ def _optional_text(data: dict[str, object], key: str, path: Path) -> str | None:
     if value is not None and not isinstance(value, str):
         raise SidecarError(f"{path}: {key} must be a string or null, got {value!r}")
     return value
+
+
+def _reasons(data: dict[str, object], path: Path) -> dict[str, tuple[str, ...]]:
+    value = data["flagged_reasons"]
+    if not isinstance(value, dict) or not all(
+        isinstance(why, list) and all(isinstance(r, str) for r in why) for why in value.values()
+    ):
+        raise SidecarError(
+            f"{path}: flagged_reasons must be an object of lists of strings, got {value!r}"
+        )
+    return {name: tuple(why) for name, why in value.items()}
 
 
 def _names(data: dict[str, object], key: str, path: Path) -> tuple[str, ...]:

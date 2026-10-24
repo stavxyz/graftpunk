@@ -8,6 +8,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -21,7 +22,13 @@ from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.plugins.cli_plugin import CommandContext
 from graftpunk.testing import FixtureSession, fixture_context, make_context
 from graftpunk.testing.plugin import check_fixtures_tree
-from graftpunk.testing.sidecar import FIXTURES_PLACEHOLDER, Sidecar, SidecarError, sidecar_text
+from graftpunk.testing.sidecar import (
+    FIXTURES_PLACEHOLDER,
+    Sidecar,
+    SidecarError,
+    load_sidecar,
+    sidecar_text,
+)
 
 
 class TestMakeContext:
@@ -255,7 +262,7 @@ def _captured(body: bytes, *flagged: str) -> Sidecar:
         status=200,
         content_type="application/json",
         capture_sha256=hashlib.sha256(body).hexdigest(),
-        flagged_names=flagged,
+        flagged_reasons=dict.fromkeys(flagged, ("session_name",)),
     )
 
 
@@ -314,7 +321,38 @@ class TestCheckFixturesTree:
         )
         (problem,) = check_fixtures_tree(tmp_path).problems
         assert "'myshop_session'" in problem
+        assert "(flagged by: session_name)" in problem
         assert problem.endswith("rename it in the fixture.")
+
+    def test_the_missing_sidecar_hint_describes_a_sidecar_that_loads(self, tmp_path: Path) -> None:
+        """Every key the hint names, with its value, makes a sidecar the loader
+        accepts, so an author following it is not refused."""
+        _fixture(tmp_path, "get_orders.json", b"{}", None)
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        keys = dict(re.findall(r'"(\w+)": (\[\]|\{\}|null|\d+)', problem))
+        payload = {key: json.loads(value) for key, value in keys.items()}
+        payload |= {"status": 200, "content_type": "application/json"}
+        path = tmp_path / "x.json.meta.json"
+        path.write_text(json.dumps(payload))
+        assert load_sidecar(path).flagged_reasons == {}
+
+    def test_a_schema_1_sidecar_names_no_reasons(self, tmp_path: Path) -> None:
+        """A sidecar committed under schema 1 recorded no reasons, so the problem
+        line says nothing it cannot back."""
+        path = _fixture(tmp_path, "get_orders.json", b'{"myshop_session": "x"}', None)
+        payload = {
+            "schema": 1,
+            "status": 200,
+            "content_type": "application/json",
+            "body_params": [],
+            "capture_sha256": hashlib.sha256(b"captured").hexdigest(),
+            "flagged_names": ["myshop_session"],
+            "redacted_names": 0,
+        }
+        path.with_name(path.name + ".meta.json").write_text(json.dumps(payload))
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert "'myshop_session'" in problem
+        assert "flagged by" not in problem
 
     def test_a_flagged_name_in_the_content_type_passes(self, tmp_path: Path) -> None:
         """gp writes content_type from the response; a media type holds no cookie
@@ -324,7 +362,9 @@ class TestCheckFixturesTree:
             status=200,
             content_type="text/html; charset=utf-8",
             capture_sha256=hashlib.sha256(b"captured").hexdigest(),
-            flagged_names=("text", "html", "charset", "utf-8"),
+            flagged_reasons=dict.fromkeys(
+                ("text", "html", "charset", "utf-8"), ("value_not_form_state",)
+            ),
         )
         _fixture(tmp_path, "get_search.html", b"<p>Results</p>", sidecar)
         assert check_fixtures_tree(tmp_path).problems == ()
@@ -338,7 +378,7 @@ class TestCheckFixturesTree:
             content_type="application/json",
             body_params=("authenticity_token",),
             capture_sha256=hashlib.sha256(b"captured").hexdigest(),
-            flagged_names=("authenticity_token",),
+            flagged_reasons={"authenticity_token": ("token_name",)},
         )
         _fixture(tmp_path, "post_session.json", b'{"ok": true}', sidecar)
         assert check_fixtures_tree(tmp_path).problems == ()

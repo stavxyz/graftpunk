@@ -39,7 +39,7 @@ from graftpunk.har.digest import (
     body_params,
     digest,
     endpoint_template,
-    flagged_names_of,
+    flagged_reasons_of,
     redacted_names_of,
 )
 from graftpunk.har.naming import (
@@ -287,7 +287,7 @@ def fixtures_cmd(
     # must not leave an edited .gitignore or an empty target behind.
     entries = parse_har_file(har_path).entries
     run_digest = digest(DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name))
-    flagged = flagged_names_of(run_digest, entries)
+    flagged = flagged_reasons_of(run_digest, entries)
     redacted = redacted_names_of(run_digest, entries)
 
     if not allow_tracked and target_dir.exists():
@@ -439,7 +439,7 @@ def fixtures_cmd(
                 status=entry.response.status,
                 content_type=content_type,
                 body_params=body_params(entry),
-                flagged_names=flagged,
+                flagged_reasons=flagged,
                 redacted_names=redacted,
             )
         except OSError as exc:

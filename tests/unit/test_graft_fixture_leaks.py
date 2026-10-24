@@ -469,6 +469,19 @@ def test_the_sidecar_lists_are_printed_for_review(tmp_path: Path) -> None:
     result = _run(tmp_path, json.dumps({"a": "Alice Example"}), json.dumps({"a": "x"}), sidecar)
     assert "sidecar body_params: page" in result.stdout
     assert "sidecar flagged_names: sessionId" in result.stdout
+    assert "sidecar flagged " not in result.stdout
+
+
+def test_a_schema_2_sidecars_reasons_are_printed_per_name(tmp_path: Path) -> None:
+    sidecar = {
+        "body_params": [],
+        "flagged_names": ["lot", "sessionId"],
+        "flagged_reasons": {"sessionId": ["session_name"], "lot": ["value_not_form_state"]},
+    }
+    result = _run(tmp_path, json.dumps({"a": "Alice Example"}), json.dumps({"a": "x"}), sidecar)
+    assert "sidecar flagged lot: value_not_form_state\nsidecar flagged sessionId: session_name" in (
+        result.stdout
+    )
 
 
 @pytest.mark.parametrize("argc", [0, 1, 4])

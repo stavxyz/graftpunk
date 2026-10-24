@@ -13,7 +13,7 @@ import errno
 import hashlib
 import os
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from graftpunk.devtools.captures_rule import with_ignored
@@ -139,7 +139,7 @@ def write_sidecar(
     status: int,
     content_type: str,
     body_params: Iterable[str],
-    flagged_names: Iterable[str],
+    flagged_reasons: Mapping[str, Iterable[str]],
     redacted_names: int = 0,
 ) -> Path:
     """Write *fixture*'s committable sidecar beside it and return its path.
@@ -147,8 +147,9 @@ def write_sidecar(
     *fixture* must already be on disk: ``capture_sha256`` is the hash of its bytes
     as written, which is what the in-suite check compares a derived fixture to, or
     null when it is empty, since an empty body holds nothing to sanitise.
-    The sort and dedupe of ``body_params`` and ``flagged_names`` is
-    ``Sidecar``'s own job, not this writer's.
+    *flagged_reasons* maps each flagged name to why it is flagged
+    (``graftpunk.har.digest.flagged_reasons_of``); its keys are the flagged
+    names. The sort and dedupe is ``Sidecar``'s own job, not this writer's.
     """
     body = fixture.read_bytes()
     sidecar = Sidecar(
@@ -159,7 +160,8 @@ def write_sidecar(
         # its fixture is empty too, so a recorded hash would fail the suite's
         # unchanged-copy check on a fixture that holds no captured value.
         capture_sha256=hashlib.sha256(body).hexdigest() if body else None,
-        flagged_names=tuple(flagged_names),
+        flagged_names=tuple(flagged_reasons),
+        flagged_reasons={name: tuple(why) for name, why in flagged_reasons.items()},
         redacted_names=redacted_names,
     )
     path = sidecar_path(fixture)

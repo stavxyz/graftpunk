@@ -38,6 +38,7 @@ from graftpunk.har.digest import (
     digest,
     endpoint_template,
     flagged_names_of,
+    flagged_reasons_of,
     redacted_names_of,
 )
 from graftpunk.har.parser import parse_har_file
@@ -4660,6 +4661,65 @@ class TestFlaggedNamesOf:
         del entry["request"]["cookies"]
         result = digest(DigestSource.from_har(_write_har(tmp_path, [entry])))
         assert [token.name for token in result.tokens] == ["csrftoken"]
+
+    def test_each_flagged_name_carries_the_reasons_it_is_flagged(self, tmp_path: Path) -> None:
+        """One recording exercising every reason (#276)."""
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            set_cookies=["guard=lanterns; Path=/; HttpOnly", "kept_name_only=x"],
+            request_headers={"X-Csrf-Token": "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"},
+        )
+        page["response"]["cookies"] = [
+            {"name": "guard", "value": "lanterns"},
+            {"name": "visit", "value": "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"},
+            {"name": "lot", "value": "12"},
+            {"name": "blank", "value": ""},
+        ]
+        page["request"]["cookies"] = [
+            {"name": "sessionid", "value": "lanterns"},
+            {"name": "cached", "value": "Hn8Ks3JdZq9XkLmPwR4t7Bv2"},
+            {"name": "text", "value": "running+shoes"},
+        ]
+        har = _write_har(tmp_path, [page])
+        result = digest(DigestSource.from_har(har))
+        entries = parse_har_file(har).entries
+        reasons = flagged_reasons_of(result, entries)
+        assert reasons == {
+            "X-Csrf-Token": ("token_candidate",),
+            "blank": ("no_value_seen",),
+            "cached": ("sent_only", "value_not_form_state"),
+            "guard": ("http_only",),
+            "kept_name_only": ("no_value_seen", "value_not_kept"),
+            "sessionid": ("sent_only", "session_name"),
+            "visit": ("value_not_form_state",),
+        }
+        assert tuple(reasons) == flagged_names_of(result, entries)
+
+    def test_a_cookie_the_digest_saw_set_is_not_sent_only_with_partial_entries(
+        self, tmp_path: Path
+    ) -> None:
+        """gp observe fixtures passes every entry, but a caller passing only some
+        must not have a cookie a left-out response set called sent_only."""
+        setting = _entry(
+            "GET",
+            "https://myshop.example.com/api/a",
+            set_cookies=["visit=Zq9XkLmPwR4t7Bv2Hn8Ks3Jd; Path=/"],
+        )
+        sending = self._with_cookies([], (("visit", "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"),))
+        har = _write_har(tmp_path, [setting, sending])
+        result = digest(DigestSource.from_har(har))
+        later = parse_har_file(har).entries[1:]
+        assert flagged_reasons_of(result, later) == {"visit": ("value_not_form_state",)}
+
+    def test_without_entries_every_digest_cookie_is_flagged_for_no_value_seen(
+        self, tmp_path: Path
+    ) -> None:
+        """Called without the run's entries nothing is known of the values, and no
+        cookie is called sent_only."""
+        har = _write_har(tmp_path, [self._with_cookies([("lot", "12")])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_reasons_of(result) == {"lot": ("no_value_seen",)}
 
     def test_a_sent_id_cookie_name_is_left_out_and_counted(self, tmp_path: Path) -> None:
         entry = self._with_cookies(
