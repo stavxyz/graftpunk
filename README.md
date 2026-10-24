@@ -406,7 +406,7 @@ gp observe clean mybank
 
 Interactive mode opens an authenticated browser and records all network traffic (including response bodies) while you click around. Press Ctrl+C to stop — HAR files, screenshots, page source, and console logs are saved automatically.
 
-Pass `--observe full` to any command to capture screenshots, HAR files, and console logs.
+Pass `--observe full` to any command to capture what it does: a plugin command's run holds a HAR of its HTTP traffic, with request and response bodies; a browser login's also holds screenshots and console logs.
 
 ### From recording to plugin
 
