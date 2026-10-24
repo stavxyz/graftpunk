@@ -14,6 +14,7 @@ Thread Safety:
     synchronization is required when calling cache functions.
 """
 
+import contextlib
 import hashlib
 import io
 from dataclasses import replace
@@ -445,6 +446,14 @@ def _load_session_with_metadata(
         # The slot this object came out of, for any write-back that follows
         # (#174). Set here rather than in the pickle so it can never be stale.
         _stamp_session_slot(session, name)
+        # Metadata recorded under the current rule is the authority on the
+        # account: a login may have replaced a 1.24.0 record there without
+        # touching the pickle (set_session_account). Taking it here means any
+        # save of this copy writes the replaced value, and the pickle loses the
+        # old one (#293).
+        if metadata.account_rule == ACCOUNT_RULE:
+            with contextlib.suppress(Exception):
+                setattr(session, GP_ACCOUNT_ATTR, metadata.account_identifier)
 
         LOG.info("successfully_loaded_session", name=name, backend=settings.storage_backend)
         return session, metadata
@@ -931,15 +940,9 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         # identifier already returned by this load's metadata (stored_metadata,
         # from the same backend read — no extra backend call) so identity
         # survives this refresh either way.
-        if stored_metadata.account_rule == ACCOUNT_RULE:
-            # Metadata recorded under the current rule is the authority: a
-            # login may have replaced a 1.24.0 record there without touching
-            # the pickle (set_session_account), and the pickle's copy must not
-            # write the old one back (#293).
-            setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
-        elif (
-            getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier
-        ):
+        # A slot under the current account rule already took its account from
+        # the metadata at load (#293).
+        if getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier:
             setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
         cache_session(original, target, account_rule=stored_metadata.account_rule)
         LOG.info("session_cookies_updated", session_name=target)

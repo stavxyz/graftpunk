@@ -687,6 +687,39 @@ class TestNothingBrokenIsLeft:
         assert list_sessions() == ["myshop@work"]
         leftovers = [p.name for p in _metadata_path("myshop@work").parent.iterdir()]
         assert sorted(leftovers) == ["metadata.json", "session.pickle"]
+        assert not _metadata_path("myshop@new").parent.exists()
+
+    @pytest.mark.parametrize("error", [OSError(13, "Permission denied"), KeyboardInterrupt()])
+    def test_a_failure_between_the_two_renames_leaves_the_slot_as_it_was(
+        self, monkeypatch: pytest.MonkeyPatch, error: BaseException
+    ) -> None:
+        import os
+
+        from graftpunk.storage import local
+
+        _cache_legacy("myshop@work", None, cookie="before")
+        real_replace = os.replace
+
+        def failing_metadata_rename(src, dst):  # noqa: ANN001, ANN202
+            if str(dst).endswith("metadata.json"):
+                raise error
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(local.os, "replace", failing_metadata_rename)
+        replacement = cacheable_browser_session()
+        replacement.cookies.set("after", "1")
+        for name in ("myshop@work", "myshop@new"):
+            with pytest.raises(type(error)):
+                cache_session(replacement, name)
+        monkeypatch.setattr(local.os, "replace", real_replace)
+
+        assert list_sessions() == ["myshop@work"]
+        assert _cookies("myshop@work") == {"before"}
+        assert sorted(p.name for p in _metadata_path("myshop@work").parent.iterdir()) == [
+            "metadata.json",
+            "session.pickle",
+        ]
+        assert not _metadata_path("myshop@new").parent.exists()
 
 
 class TestTwoAccountsOfAPinPlugin:
@@ -1125,3 +1158,137 @@ class TestLeftoverReads:
         assert result.exit_code == 0, output
         assert "829341" not in output
         assert "myshop@<earlier label>" in output
+
+
+class TestRound3:
+    def test_a_failed_metadata_write_is_reported_not_claimed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from structlog.testing import capture_logs
+
+        from graftpunk import cache as cache_mod
+
+        _cache_legacy("myshop@work", "829341")
+        backend = cache_mod._get_session_storage_backend()
+        monkeypatch.setattr(backend, "update_session_metadata", lambda *a, **k: False)
+
+        with capture_logs() as logs:
+            result = invoke_plugin_app(
+                _plugin(CODE_FIELDS, write=False),
+                ["fmtsite", "login", "--as", "work"],
+                **CODE_CREDS,
+            )
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 0, output
+        assert "Could not replace the account recorded on 'myshop@work'" in output
+        assert "Replaced the account" not in output
+        assert "829341" not in output
+        events = [entry["event"] for entry in logs]
+        assert "legacy_account_record_replaced" not in events
+        assert "legacy_account_record_not_replaced" in events
+        assert "829341" not in repr(logs)
+        assert get_session_metadata("myshop@work")["account_identifier"] == "829341"
+
+    def test_a_library_refresh_after_a_metadata_only_replacement_keeps_it(self) -> None:
+        _cache_legacy("myshop@work", "829341")
+        login = invoke_plugin_app(
+            _plugin(CODE_FIELDS, write=False), ["fmtsite", "login", "--as", "work"], **CODE_CREDS
+        )
+        assert login.exit_code == 0, login.output
+
+        loaded = load_session("myshop@work")
+        assert getattr(loaded, GP_ACCOUNT_ATTR) == "bob"
+        meta = get_session_metadata("myshop@work")
+        cache_session(loaded, "myshop@work", account_rule=meta["account_rule"])
+
+        stored = get_session_metadata("myshop@work")
+        assert (stored["account_identifier"], stored["account_rule"]) == ("bob", 2)
+        assert getattr(load_session("myshop@work"), GP_ACCOUNT_ATTR) == "bob"
+
+    def test_a_slot_named_after_its_record_is_not_named_in_a_warning(self) -> None:
+        _cache_legacy("myshop@829341", "829341")
+
+        result = invoke_plugin_app(
+            _plugin(CODE_FIELDS, write=False),
+            ["fmtsite", "login", "--as", "829341"],
+            **CODE_CREDS,
+        )
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 0, output
+        assert "was recorded for" not in output
+        assert "Could not replace" not in output
+        assert "Replaced the account" not in output
+
+    def test_a_failed_check_withholds_the_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from graftpunk.cli import login_commands
+
+        _cache_legacy("myshop@work", "829341")
+
+        def broken(_plugin_obj: object) -> None:
+            raise RuntimeError("field lookup failed")
+
+        monkeypatch.setattr(login_commands, "legacy_secret_field_of", broken)
+        result = invoke_plugin_app(
+            _plugin(CODE_FIELDS, write=False), ["fmtsite", "login", "--as", "work"], **CODE_CREDS
+        )
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 0, output
+        assert "829341" not in output
+        assert "was recorded for" not in output
+
+    def test_the_source_field_is_the_one_the_old_rule_picked(self) -> None:
+        """An identifier field holding the same value must not stop the migration."""
+        fields = {"account": "#a", "loginPin": "#p", "user_id": "#u"}
+        creds = {"FMTSITE_ACCOUNT": "4417", "FMTSITE_LOGINPIN": "4417", "FMTSITE_USER_ID": "bob"}
+        _cache_stale()
+
+        result = invoke_plugin_app(_plugin(fields), ["fmtsite", "login"], **creds)
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 0, output
+        assert list_sessions() == ["myshop@bob"]
+        assert "loginPin field" in output
+
+
+def _raw_pickled_account(name: str) -> object:
+    """The account a slot's pickle holds, read without gp's loader."""
+    import dill
+
+    from graftpunk import cache as cache_mod
+    from graftpunk.encryption import decrypt_data
+
+    data, _meta = cache_mod._get_session_storage_backend().load_session(name)
+    restored = dill.loads(decrypt_data(data))  # noqa: S301 (written by this test)
+    return getattr(restored, GP_ACCOUNT_ATTR, None)
+
+
+class TestThePickleLosesTheSecret:
+    def test_a_login_that_writes_the_slot_pickles_no_secret(self) -> None:
+        _cache_legacy("myshop@work", "829341")
+        assert _raw_pickled_account("myshop@work") == "829341"
+
+        result = invoke_plugin_app(
+            _plugin({"loginCode": "#c", "password": "#p"}),
+            ["fmtsite", "login", "--as", "work"],
+            **{"FMTSITE_LOGINCODE": "111222", "FMTSITE_PASSWORD": "pw-x"},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert _raw_pickled_account("myshop@work") is None
+
+    def test_a_refresh_after_a_metadata_only_replacement_rewrites_the_pickle(self) -> None:
+        from graftpunk.cache import update_session_cookies
+
+        _cache_legacy("myshop@work", "829341")
+        login = invoke_plugin_app(
+            _plugin(CODE_FIELDS, write=False), ["fmtsite", "login", "--as", "work"], **CODE_CREDS
+        )
+        assert login.exit_code == 0, login.output
+        assert _raw_pickled_account("myshop@work") == "829341"
+
+        update_session_cookies(load_session("myshop@work"), "myshop@work")
+
+        assert _raw_pickled_account("myshop@work") == "bob"

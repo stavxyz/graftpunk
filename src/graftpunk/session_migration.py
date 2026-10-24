@@ -39,7 +39,7 @@ from graftpunk.cache import (
     get_session_metadata,
     set_session_account,
 )
-from graftpunk.exceptions import SessionNotFoundError
+from graftpunk.exceptions import SessionNotFoundError, StorageError
 from graftpunk.logging import get_logger, redacted_values
 from graftpunk.observe.storage import make_private_dir, session_dirname
 from graftpunk.session_context import SESSION_FILE_NAME
@@ -256,13 +256,17 @@ def replace_legacy_record(
     handled too. A slot whose own name is that secret (:func:`is_legacy_secret_slot`)
     keeps its record, which is how it is recognised and masked. Returns
     whether the record was replaced.
+
+    Raises:
+        StorageError: The backend did not write the new record.
     """
     if secret_field is None:
         return False
     metadata = get_session_metadata(target_name)
     if not records_legacy_secret(metadata) or is_legacy_secret_slot(target_name, metadata):
         return False
-    set_session_account(target_name, identifier)
+    if not set_session_account(target_name, identifier):
+        raise StorageError(f"The account recorded on '{target_name}' was not rewritten.")
     LOG.info("legacy_account_record_replaced", session=target_name, field=secret_field)
     return True
 

@@ -553,16 +553,13 @@ def _holds_legacy_record(
 ) -> bool:
     """Whether *target_name* records a secret 1.24.0 took for the account (#293).
 
-    A check that fails answers True: it only withholds a warning that would
-    otherwise print the recorded value, and the replacement after the login
-    checks again.
+    That includes a slot whose own name is the recorded value: its record is
+    kept, but it is still a secret, so it is not printed either. A check that
+    fails answers True: it only withholds a warning that would otherwise print
+    the recorded value, and the replacement after the login checks again.
     """
     try:
-        return (
-            legacy_secret_field_of(plugin) is not None
-            and records_legacy_secret(stored)
-            and not is_legacy_secret_slot(target_name, stored)
-        )
+        return legacy_secret_field_of(plugin) is not None and records_legacy_secret(stored)
     except Exception as exc:  # noqa: BLE001 (advisory: never blocks a login)
         LOG.warning("legacy_record_check_failed", exc_type=type(exc).__name__)
         return True
@@ -588,6 +585,7 @@ def _replace_legacy_record(
         )
         return
     if records_legacy_secret(metadata):
+        # Only a slot named after its own record gets here: it keeps the record.
         return
     gp_console.info(
         f"Replaced the account recorded on '{target_name}': it came from the "
