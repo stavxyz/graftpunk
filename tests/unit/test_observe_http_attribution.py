@@ -207,6 +207,53 @@ class TestBlameOnlyWhatFailed:
             "read_failed: ChunkedEncodingError"
         )
 
+    def test_a_hooks_own_connection_error_blames_no_body(self, site: str) -> None:
+        """A hook's side call on another session is refused: nothing read the body."""
+        session, capture = _recording()
+
+        def refresh(_response: requests.Response, *_a: Any, **_k: Any) -> None:
+            requests.get("http://127.0.0.1:9/x", timeout=5)
+
+        session.hooks["response"].append(refresh)
+        with pytest.raises(requests.ConnectionError):
+            session.get(f"{site}/home", timeout=5)
+        capture.stop_capture()
+
+        (entry,) = capture.get_har_entries()
+        assert entry["response"]["content"]["_bodyNotCapturedReason"] == (
+            "not_read: ConnectionError"
+        )
+
+    @pytest.mark.parametrize(
+        ("path", "error", "timeout"),
+        [
+            ("/truncated", "ChunkedEncodingError", 5),
+            ("/stall", "ConnectionError", (3, 0.4)),
+        ],
+    )
+    def test_a_replaced_401_is_not_blamed_for_its_replacements_read(
+        self, site: str, path: str, error: str, timeout: Any
+    ) -> None:
+        session, capture = _recording()
+
+        def resend(response: requests.Response, *_a: Any, **_k: Any) -> Any:
+            if response.status_code != 401:
+                return response
+            request = requests.Request("GET", f"{site}{path}").prepare()
+            return response.connection.send(request, timeout=timeout)
+
+        session.hooks["response"].append(resend)
+        with pytest.raises(requests.RequestException):
+            session.get(f"{site}/needauth", timeout=timeout)
+        capture.stop_capture()
+
+        replaced, replacement = capture.get_har_entries()
+        assert replaced["response"]["status"] == 401
+        assert replaced["response"]["content"]["_bodyNotCapturedReason"] == f"not_read: {error}"
+        assert replacement["response"]["content"]["_bodyNotCapturedReason"] == (
+            f"read_failed: {error}"
+        )
+
     def test_a_401_a_hook_replaced_is_not_read(self, site: str) -> None:
         session, capture = _recording()
 

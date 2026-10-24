@@ -289,16 +289,26 @@ class _RecordingSessionSend:
                 self.capture._finish_call(seen, local.started, result, error, stream)
 
 
-# What reading a body raises (Response.iter_content turns urllib3's read errors
-# into these); any other error a call raises came from somewhere else.
-_READ_ERRORS: tuple[type[BaseException], ...] = (
-    requests.exceptions.ChunkedEncodingError,
-    requests.exceptions.ContentDecodingError,
-    requests.exceptions.StreamConsumedError,
-    # A read timeout or SSL error while reading. A ConnectionError from a
-    # send is noted by the adapter wrapper as a request with no response.
-    requests.exceptions.ConnectionError,
-)
+def _response_whose_read_raised(error: BaseException | None) -> requests.Response | None:
+    """The response whose body read raised *error*, or None when no read did.
+
+    requests reads a body in ``Response.iter_content``'s inner ``generate``,
+    so the response is that frame's ``self`` in the error's traceback. A
+    hook's own error (a ``ValueError``, a ``ConnectionError`` from a side call
+    on another session) has no such frame, and blames no body.
+    """
+    if not isinstance(error, Exception):
+        return None
+    found: requests.Response | None = None
+    tb = error.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if code.co_name == "generate" and code.co_filename == requests.models.__file__:
+            candidate = tb.tb_frame.f_locals.get("self")
+            if isinstance(candidate, requests.Response):
+                found = candidate
+        tb = tb.tb_next
+    return found
 
 
 def _read_by_requests(response: requests.Response) -> bool:
@@ -409,9 +419,7 @@ class HttpCaptureBackend:
                 seen.append(_Noted(next_start, elapsed, response))
                 next_start += elapsed
         seen.sort(key=lambda n: n.started)
-        # A ConnectionError the adapter raised on a send is that request's,
-        # not a body read's.
-        read_error = isinstance(error, _READ_ERRORS) and not any(n.error is error for n in seen)
+        failed_read = _response_whose_read_raised(error)
         for index, item in enumerate(seen):
             if item.response is None:
                 if item.request is not None and item.error is not None:
@@ -424,7 +432,7 @@ class HttpCaptureBackend:
                 response,
                 stream=stream,
                 error=error,
-                read_error=read_error,
+                read_raised=response is failed_read,
                 followed=index < len(seen) - 1,
             )
             self.record(
@@ -440,25 +448,26 @@ class HttpCaptureBackend:
         *,
         stream: bool,
         error: BaseException | None,
-        read_error: bool,
+        read_raised: bool,
         followed: bool,
     ) -> str | None:
         """Why *response*'s body is not in hand, or None when requests read it.
 
         The recorder reads no body: it records what requests read and says why
         the rest is missing. *followed* is true when the call sent something
-        after this response; *read_error* is true when the call's *error* was
-        raised by a body read.
+        after this response; *read_raised* is true when reading this body
+        raised the call's *error* (:func:`_response_whose_read_raised`).
 
         - ``streamed``: the caller asked for a stream, so the body is the
           caller's to read.
         - ``read_failed``: a redirect hop requests moved past, so it tried to
           read the hop's body, failed, and tolerated it.
-        - ``read_failed: <error>``: the call raised a read error (a broken,
-          undecodable or timed-out body) and this body is unread.
-        - ``not_read: <error>``: the call raised something else (a response
-          hook raised) before requests read this body; the caller still has it
-          on the exception's response.
+        - ``read_failed: <error>``: reading this body raised the call's error
+          (a broken, undecodable or timed-out body).
+        - ``not_read: <error>``: the call raised something else before requests
+          read this body (a response hook raised, or another body's read). The
+          caller can still read it from the response, which a
+          ``raise_for_status`` error carries as ``exc.response``.
         - ``not_read``: nothing read it (a 401 a hook replaced).
         """
         if _read_by_requests(response):
@@ -467,7 +476,7 @@ class HttpCaptureBackend:
             return "streamed"
         if response.is_redirect and followed:
             return "read_failed"
-        if read_error and error is not None:
+        if read_raised and error is not None:
             return f"read_failed: {type(error).__name__}"
         if error is not None:
             return f"not_read: {type(error).__name__}"
