@@ -19,8 +19,19 @@ from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe.run import Redaction
 from graftpunk.plugins.cli_plugin import cache_login_session
+from graftpunk.plugins.login_ready import (
+    NetworkActivity,
+    TargetProbe,
+    await_page_ready_nodriver,
+    await_page_ready_selenium,
+    choose_target,
+    parse_target_probe,
+    target_js,
+    warn_ambiguous_selector,
+)
 from graftpunk.plugins.login_settle import (
     driver_url,
+    note_login_url,
     tab_url,
     wait_for_login_outcome_nodriver,
     wait_for_login_outcome_selenium,
@@ -192,6 +203,71 @@ async def _wait_for_element(
         raise PluginError(error_msg)
 
 
+async def _probe_target_nodriver(tab: Any, selector: str) -> TargetProbe | None:
+    """The page's account of *selector*'s matches, or None when it cannot be read."""
+    try:
+        raw = await tab.evaluate(target_js(selector), return_by_value=True)
+    except Exception as exc:  # broad by design: the probe is best-effort, see _select_target
+        LOG.debug("login_target_probe_failed", selector=selector, error=str(exc))
+        return None
+    return parse_target_probe(raw)
+
+
+async def _select_target(
+    tab: Any,  # nodriver.Tab
+    selector: str,
+    *,
+    context: str,
+    site_name: str = "",
+) -> Any:  # nodriver.Element | None
+    """The element a fill or a click acts on, or None when *selector* never matched.
+
+    ``_select_with_retry`` waits for the selector to match at all, and returns
+    the first match in document order. The target probe then asks the page which
+    match a user could act on (see ``login_ready.choose_target``): with several
+    matches it is the first visible one, and the choice is logged with the
+    count. A probe that cannot be read leaves the first match, as before.
+
+    Raises:
+        PluginError: Every match stayed hidden, or the chosen one stayed disabled,
+            for ``_ELEMENT_WAIT_TIMEOUT`` seconds.
+    """
+    element = await _select_with_retry(tab, selector)
+    if element is None:
+        return None
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _ELEMENT_WAIT_TIMEOUT
+    warned = False
+    while True:
+        probe = await _probe_target_nodriver(tab, selector)
+        if probe is None:
+            return element
+        choice = choose_target(probe)
+        if choice.index is not None:
+            if probe.count > 1 and not warned:
+                warn_ambiguous_selector(
+                    selector=selector,
+                    probe=probe,
+                    chosen=choice.index,
+                    context=context,
+                    site_name=site_name,
+                )
+                warned = True
+            if choice.index == 0:
+                return element
+            matches = await tab.query_selector_all(selector)
+            if choice.index < len(matches):
+                return matches[choice.index]
+            # The page changed between the probe and the query: ask again.
+        if loop.time() >= deadline:
+            raise PluginError(
+                f"{context}: selector '{selector}' {choice.problem or 'changed while it was read'} "
+                f"after {_ELEMENT_WAIT_TIMEOUT:g}s. Narrow the selector to the one element a "
+                "user would act on, or give the step a wait_for naming the state that shows it."
+            )
+        await asyncio.sleep(_ELEMENT_RETRY_INTERVAL)
+
+
 async def _read_field_value(tab: Any, selector: str) -> str | None:
     """Read an input's current value from the live DOM, by selector.
 
@@ -262,6 +338,7 @@ async def _fill_field(
     *,
     field_name: str,
     step_idx: int,
+    site_name: str = "",
 ) -> None:
     """Type ``value`` into the field at ``selector``, verifying it landed.
 
@@ -292,7 +369,12 @@ async def _fill_field(
     """
     last_actual: str | None = None
     for attempt in range(1, _FIELD_FILL_ATTEMPTS + 1):
-        element = await _select_with_retry(tab, selector)
+        element = await _select_target(
+            tab,
+            selector,
+            context=f"Step {step_idx}: login field '{field_name}'",
+            site_name=site_name,
+        )
         if element is None:
             raise PluginError(
                 f"Step {step_idx}: Login field '{field_name}' not found "
@@ -643,6 +725,8 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                 session_name=session_name,
             )
             await _header_capture.start_capture_async()
+            # After the capture: its start enables the Network domain these events need.
+            network = NetworkActivity()
             try:
                 return await _run_nodriver_steps(
                     plugin=plugin,
@@ -655,8 +739,10 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                     header_capture=_header_capture,
                     session_name=session_name,
                     account_identifier=account_identifier,
+                    network=network if network.attach(tab) else None,
                 )
             finally:
+                note_login_url(lambda: tab_url(tab))
                 if observe_storage is not None:
                     from graftpunk.observe.run import save_observe_run
 
@@ -694,12 +780,14 @@ async def _run_nodriver_steps(
     header_capture: Any,
     session_name: str | None = None,
     account_identifier: str | None = None,
+    network: NetworkActivity | None = None,
 ) -> bool:
     """Execute the configured login steps on an open tab and cache on success.
 
     *session_name* and *account_identifier* are the operating identity the CLI
     computed; both default to None, which caches under ``plugin.session_name``
-    with no recorded identifier.
+    with no recorded identifier. *network* feeds the readiness wait the page's
+    requests in flight; None leaves it the DOM probe alone.
     """
     assert plugin.login_config is not None  # noqa: S101 (checked by caller)
     # Top-level wait_for: wait for a specific element before any steps
@@ -720,12 +808,29 @@ async def _run_nodriver_steps(
         # Step-level wait_for: wait for element before this step
         if step.wait_for:
             await _wait_for_element(tab, step.wait_for, f"Step {step_idx}")
+        elif not (step_idx == 1 and plugin.login_config.wait_for):
+            # No marker named for this step: wait for the page to load and go quiet,
+            # so a click does not land before the script that handles it (#275).
+            await await_page_ready_nodriver(
+                tab,
+                budget=plugin.login_config.timeout,
+                step=step_idx,
+                site_name=plugin.site_name,
+                network=network,
+            )
 
         # Fill fields, verifying each value landed (see _fill_field)
         for field_name, selector in step.fields.items():
             value = credentials.get(field_name, "")
             try:
-                await _fill_field(tab, selector, value, field_name=field_name, step_idx=step_idx)
+                await _fill_field(
+                    tab,
+                    selector,
+                    value,
+                    field_name=field_name,
+                    step_idx=step_idx,
+                    site_name=plugin.site_name,
+                )
             except PluginError:
                 raise
             except Exception as exc:
@@ -737,7 +842,9 @@ async def _run_nodriver_steps(
         # Click submit if specified for this step
         if step.submit:
             try:
-                submit = await _select_with_retry(tab, step.submit)
+                submit = await _select_target(
+                    tab, step.submit, context=f"Step {step_idx}: submit", site_name=plugin.site_name
+                )
                 if submit is None:
                     raise PluginError(
                         f"Step {step_idx}: Submit button not found "
@@ -838,10 +945,6 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         failure_text = plugin.login_config.failure
         run_headless = plugin.login_config.headless if headless is None else headless
 
-        # Imported per call, not when the login is generated: generation runs
-        # as the plugin registers, and graftpunk-lite has no selenium.
-        import selenium.common.exceptions
-
         from graftpunk import BrowserSession  # lazy: graftpunk-lite may lack it
 
         # BrowserSession owns observe for selenium (its capture drains Chrome's
@@ -876,92 +979,186 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                     "the nodriver backend. Set backend='nodriver' or remove wait_for."
                 )
 
-            # The URL the last submit was clicked from, and whether one was clicked
-            # at all: the nodriver path above carries the same pair, for the same
-            # reason (see the comment there).
-            pre_submit_url = ""
-            submit_clicked = False
-            # Execute each step in sequence
-            for step_idx, step in enumerate(plugin.login_config.steps, start=1):
-                # Step-level wait_for is not supported for selenium
-                if step.wait_for:
-                    raise PluginError(
-                        f"Step {step_idx}: step.wait_for is not supported for selenium. "
-                        "Use nodriver for per-step wait_for."
-                    )
-
-                # Fill fields (click before send_keys to prevent keystroke loss)
-                for field_name, selector in step.fields.items():
-                    value = credentials.get(field_name, "")
-                    try:
-                        element = session.driver.find_element("css selector", selector)
-                        element.click()
-                        element.send_keys(value)
-                    except (
-                        selenium.common.exceptions.WebDriverException,
-                        PluginError,
-                    ) as exc:
-                        raise PluginError(
-                            f"Step {step_idx}: Failed to fill login field '{field_name}' "
-                            f"(selector: '{selector}'): {exc}"
-                        ) from exc
-
-                # Click submit if specified for this step
-                if step.submit:
-                    try:
-                        submit_el = session.driver.find_element("css selector", step.submit)
-                        pre_submit_url = driver_url(session.driver)
-                        submit_clicked = True
-                        submit_el.click()
-                    except (
-                        selenium.common.exceptions.WebDriverException,
-                        PluginError,
-                    ) as exc:
-                        raise PluginError(
-                            f"Step {step_idx}: Failed to click submit button "
-                            f"(selector: '{step.submit}'): {exc}"
-                        ) from exc
-
-                # Step-level delay after submit
-                if step.delay > 0:
-                    time.sleep(step.delay)
-
-            # The page settles on its own schedule after the last step: login_settle
-            # owns the wait, whichever signals this plugin configured.
-            if not wait_for_login_outcome_selenium(
-                driver=session.driver,
-                login_config=plugin.login_config,
-                failure_text=failure_text,
-                site_name=plugin.site_name,
-                pre_submit_url=pre_submit_url if submit_clicked else driver_url(session.driver),
-            ):
-                return False
-
-            # Capture current URL before caching (used for domain display)
             try:
-                session.current_url = session.driver.current_url
-            except Exception as exc:  # broad by design: the URL is display metadata, not the login
-                LOG.debug("login_url_capture_failed", error=str(exc), backend="selenium")
-                session.current_url = login_target
-
-            # Stop capture to parse perf log, then extract roles
-            _header_capture.stop_capture()
-            session._gp_header_roles = _header_capture.get_header_roles()
-
-            # Cache session
-            session.transfer_driver_cookies_to_session()
-
-            # Extract tokens using the already-open browser (avoids separate launch)
-            try:
-                _extract_and_cache_tokens_selenium(plugin, session, base_url)
-            except Exception as exc:  # broad by design: best-effort, login already succeeded
-                LOG.warning(
-                    "login_token_extraction_failed",
-                    plugin=plugin.site_name,
-                    error=str(exc),
+                return _run_selenium_steps(
+                    plugin=plugin,
+                    session=session,
+                    credentials=credentials,
+                    login_target=login_target,
+                    failure_text=failure_text,
+                    base_url=base_url,
+                    header_capture=_header_capture,
+                    session_name=session_name,
+                    account_identifier=account_identifier,
                 )
-
-            cache_login_session(plugin, session, name=session_name, identifier=account_identifier)
-            return True
+            finally:
+                note_login_url(lambda: driver_url(session.driver))
 
     return login
+
+
+def _find_target_selenium(driver: Any, selector: str, *, context: str, site_name: str) -> Any:
+    """The selenium twin of :func:`_select_target`.
+
+    ``find_element`` raises when nothing matches, as it always did here; the
+    probe then picks among the matches the same way.
+    """
+    element = driver.find_element("css selector", selector)
+    deadline = time.monotonic() + _ELEMENT_WAIT_TIMEOUT
+    warned = False
+    while True:
+        try:
+            raw = driver.execute_script("return " + target_js(selector))
+        except Exception as exc:  # broad by design: the probe is best-effort
+            LOG.debug("login_target_probe_failed", selector=selector, error=str(exc))
+            return element
+        probe = parse_target_probe(raw)
+        if probe is None:
+            return element
+        choice = choose_target(probe)
+        if choice.index is not None:
+            if probe.count > 1 and not warned:
+                warn_ambiguous_selector(
+                    selector=selector,
+                    probe=probe,
+                    chosen=choice.index,
+                    context=context,
+                    site_name=site_name,
+                )
+                warned = True
+            if choice.index == 0:
+                return element
+            matches = driver.find_elements("css selector", selector)
+            if choice.index < len(matches):
+                return matches[choice.index]
+        if time.monotonic() >= deadline:
+            raise PluginError(
+                f"{context}: selector '{selector}' {choice.problem or 'changed while it was read'} "
+                f"after {_ELEMENT_WAIT_TIMEOUT:g}s. Narrow the selector to the one element a "
+                "user would act on."
+            )
+        time.sleep(_ELEMENT_RETRY_INTERVAL)
+
+
+def _run_selenium_steps(
+    *,
+    plugin: SitePlugin,
+    session: Any,
+    credentials: dict[str, str],
+    login_target: str,
+    failure_text: str,
+    base_url: str,
+    header_capture: Any,
+    session_name: str | None,
+    account_identifier: str | None,
+) -> bool:
+    """The selenium twin of :func:`_run_nodriver_steps`."""
+    assert plugin.login_config is not None  # noqa: S101 (checked by caller)
+    # Imported per call, not when the login is generated: generation runs as the
+    # plugin registers, and graftpunk-lite has no selenium.
+    import selenium.common.exceptions
+
+    # The URL the last submit was clicked from, and whether one was clicked
+    # at all: the nodriver path above carries the same pair, for the same
+    # reason (see the comment there).
+    pre_submit_url = ""
+    submit_clicked = False
+    # Execute each step in sequence
+    for step_idx, step in enumerate(plugin.login_config.steps, start=1):
+        # Step-level wait_for is not supported for selenium
+        if step.wait_for:
+            raise PluginError(
+                f"Step {step_idx}: step.wait_for is not supported for selenium. "
+                "Use nodriver for per-step wait_for."
+            )
+        # The page loaded and quiet before the step acts on it (#275).
+        await_page_ready_selenium(
+            session.driver,
+            budget=plugin.login_config.timeout,
+            step=step_idx,
+            site_name=plugin.site_name,
+        )
+
+        # Fill fields (click before send_keys to prevent keystroke loss)
+        for field_name, selector in step.fields.items():
+            value = credentials.get(field_name, "")
+            try:
+                element = _find_target_selenium(
+                    session.driver,
+                    selector,
+                    context=f"Step {step_idx}: login field '{field_name}'",
+                    site_name=plugin.site_name,
+                )
+                element.click()
+                element.send_keys(value)
+            except (
+                selenium.common.exceptions.WebDriverException,
+                PluginError,
+            ) as exc:
+                raise PluginError(
+                    f"Step {step_idx}: Failed to fill login field '{field_name}' "
+                    f"(selector: '{selector}'): {exc}"
+                ) from exc
+
+        # Click submit if specified for this step
+        if step.submit:
+            try:
+                submit_el = _find_target_selenium(
+                    session.driver,
+                    step.submit,
+                    context=f"Step {step_idx}: submit",
+                    site_name=plugin.site_name,
+                )
+                pre_submit_url = driver_url(session.driver)
+                submit_clicked = True
+                submit_el.click()
+            except (
+                selenium.common.exceptions.WebDriverException,
+                PluginError,
+            ) as exc:
+                raise PluginError(
+                    f"Step {step_idx}: Failed to click submit button "
+                    f"(selector: '{step.submit}'): {exc}"
+                ) from exc
+
+        # Step-level delay after submit
+        if step.delay > 0:
+            time.sleep(step.delay)
+
+    # The page settles on its own schedule after the last step: login_settle
+    # owns the wait, whichever signals this plugin configured.
+    if not wait_for_login_outcome_selenium(
+        driver=session.driver,
+        login_config=plugin.login_config,
+        failure_text=failure_text,
+        site_name=plugin.site_name,
+        pre_submit_url=pre_submit_url if submit_clicked else driver_url(session.driver),
+    ):
+        return False
+
+    # Capture current URL before caching (used for domain display)
+    try:
+        session.current_url = session.driver.current_url
+    except Exception as exc:  # broad by design: the URL is display metadata, not the login
+        LOG.debug("login_url_capture_failed", error=str(exc), backend="selenium")
+        session.current_url = login_target
+
+    # Stop capture to parse perf log, then extract roles
+    header_capture.stop_capture()
+    session._gp_header_roles = header_capture.get_header_roles()
+
+    # Cache session
+    session.transfer_driver_cookies_to_session()
+
+    # Extract tokens using the already-open browser (avoids separate launch)
+    try:
+        _extract_and_cache_tokens_selenium(plugin, session, base_url)
+    except Exception as exc:  # broad by design: best-effort, login already succeeded
+        LOG.warning(
+            "login_token_extraction_failed",
+            plugin=plugin.site_name,
+            error=str(exc),
+        )
+
+    cache_login_session(plugin, session, name=session_name, identifier=account_identifier)
+    return True

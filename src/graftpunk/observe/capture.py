@@ -1633,6 +1633,7 @@ class NodriverCaptureBackend:
         """
         import nodriver.cdp.network as cdp_net
 
+        stop_failures = 0
         for request_id, data in list(self._request_map.items()):
             if _is_redirect_hop(data):
                 if self._record_request_bodies:
@@ -1700,11 +1701,23 @@ class NodriverCaptureBackend:
                     return
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
                     response["_bodyNotCaptured"] = f"fetch_failed: {type(exc).__name__}"
-                    LOG.warning(
+                    stop_failures += 1
+                    # Per request, so debug; the count is one warning below (#275).
+                    LOG.debug(
                         "nodriver_response_body_fetch_failed",
                         request_id=request_id,
+                        url=data.get("url", "unknown"),
                         error=str(exc),
                     )
+        if stop_failures:
+            LOG.warning(
+                "nodriver_response_body_fetch_summary",
+                failed=stop_failures,
+                hint=(
+                    "These bodies are marked fetch_failed in the HAR. Run with debug "
+                    "logging to see each request and its error."
+                ),
+            )
 
     def _on_request(self, event: Any) -> None:
         """Handle a CDP RequestWillBeSent event."""
@@ -1905,7 +1918,10 @@ class NodriverCaptureBackend:
         except Exception as exc:  # noqa: BLE001 — best-effort; stop_capture_async retries non-connection errors
             self._eager_fetch_failures += 1
             url = data.get("url", "unknown") if data is not None else "unknown"
-            LOG.warning(
+            # Debug, not warning: it fires per request (every script, style and
+            # image), and hundreds of these buried a login's verdict (#275). The
+            # count goes out as one warning when the capture stops.
+            LOG.debug(
                 "nodriver_eager_body_fetch_failed",
                 request_id=str(getattr(event, "request_id", "unknown")),
                 url=url,

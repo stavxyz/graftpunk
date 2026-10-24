@@ -128,6 +128,10 @@ def _fast_login_timings(monkeypatch: pytest.MonkeyPatch) -> None:
     _NO_SIGNAL_GRACE (3s) is how long a login with no success signal watches
     for its failure signal, in real seconds.
 
+    The readiness wait before each step (login_ready) polls in real seconds up
+    to its own cap, and needs a quiet window that the scripted pages only
+    report after a real interval.
+
     The post-submit poll's own budget is LoginConfig.timeout, which is per
     plugin rather than a module constant: a test whose login never shows its
     success signal sets a small timeout on its own LoginConfig.
@@ -138,6 +142,9 @@ def _fast_login_timings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("graftpunk.plugins.login_engine._ELEMENT_RETRY_INTERVAL", 0.001)
     monkeypatch.setattr("graftpunk.plugins.login_engine._LOGIN_NAV_TIMEOUT", 0.05)
     monkeypatch.setattr("graftpunk.plugins.login_engine._FIELD_SETTLE_DELAY", 0.001)
+    monkeypatch.setattr("graftpunk.plugins.login_ready._READY_MAX_WAIT", 0.05)
+    monkeypatch.setattr("graftpunk.plugins.login_ready._READY_QUIET_WINDOW", 0.001)
+    monkeypatch.setattr("graftpunk.plugins.login_ready._READY_POLL_INTERVAL", 0.001)
 
 
 class FakeCdpTab:

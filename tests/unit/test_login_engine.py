@@ -2658,7 +2658,11 @@ class _ScriptedSeleniumDriver:
                 raise NoSuchElementException(value)
         return MagicMock()
 
-    def execute_script(self, script: str) -> str:
+    def execute_script(self, script: str) -> str | None:
+        """The document-readiness read; any other script (the steps' readiness and
+        target probes) gets no answer, which the engine reads as "cannot tell"."""
+        if script != "return document.readyState":
+            return None
         self._wait_over = True
         self.events.append("document_ready_read")
         state = self._at(self._ready_states, self._ready_reads)
