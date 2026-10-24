@@ -11,7 +11,7 @@ import re
 import stat
 import tempfile
 import urllib.parse
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -179,7 +179,9 @@ def _redaction_forms(secrets: Iterable[str]) -> list[str]:
     return sorted(forms, key=len, reverse=True)
 
 
-# A whole value: one not inside a longer word. Its neighbours are read decoded:
+# A whole value: one not inside a longer word. A word is ASCII letters and
+# digits: next to anything else (punctuation, or text in another script, such
+# as "用户bob" or "bobé"), the value stands alone. Neighbours are read decoded:
 # an escape ("%XX", "%25XX" for a double-encoded URL, the JSON escapes "\n",
 # "\r", "\t", "\b", "\f" and "\uXXXX") is the character it stands for, so
 # "%3Dbob" and "\nbob" are delimited and "%41bob" ("Abob") is not.
@@ -190,61 +192,72 @@ _PERCENT_AFTER = re.compile(r"%(?:25)?([0-9A-Fa-f]{2})")
 
 
 def _is_word_char(char: str) -> bool:
-    """A letter or digit, in any script."""
-    return char.isalnum()
-
-
-def _is_ascii_word_char(char: str) -> bool:
-    """A letter or digit in ASCII: bytes read as latin-1, where a byte over
-    0x7F is part of a multi-byte character, not a letter of its own."""
+    """An ASCII letter or digit. The same rule for text and for bytes read as
+    latin-1, where a byte over 0x7F is part of a multi-byte character."""
     return char.isascii() and char.isalnum()
 
 
-def _delimited_before(text: str, start: int, word: Callable[[str], bool]) -> bool:
-    """Whether the text before *start* ends a word: nothing, a non-alphanumeric
-    character, or an escape that decodes to one."""
-    if start == 0 or not word(text[start - 1]):
+def _delimited_before(text: str, start: int) -> bool:
+    """Whether the text before *start* ends a word: nothing, a character that
+    is not an ASCII letter or digit, or an escape that decodes to one."""
+    if start == 0 or not _is_word_char(text[start - 1]):
         return True
     head = text[max(0, start - 16) : start]
     percent = _PERCENT_BEFORE.search(head)
     if percent:
-        return not word(chr(int(percent.group(1), 16)))
+        return not _is_word_char(chr(int(percent.group(1), 16)))
     unicode = _UNICODE_BEFORE.search(head)
     if unicode and len(unicode.group(1)) % 2 == 1:
-        return not word(chr(int(unicode.group(2), 16)))
+        return not _is_word_char(chr(int(unicode.group(2), 16)))
     control = _CONTROL_BEFORE.search(head)
     # An odd run of backslashes is an escape; an even one is escaped backslashes.
     return bool(control and len(control.group(1)) % 2 == 1)
 
 
-def _delimited_after(text: str, end: int, word: Callable[[str], bool]) -> bool:
-    """Whether the text from *end* starts a new word: nothing, a non-alphanumeric
-    character other than an escape of a letter or digit."""
+def _delimited_after(text: str, end: int) -> bool:
+    """Whether the text from *end* starts a new word: nothing, or a character
+    that is not an ASCII letter or digit nor an escape of one."""
     if end == len(text):
         return True
-    if word(text[end]):
+    if _is_word_char(text[end]):
         return False
     percent = _PERCENT_AFTER.match(text, end)
-    return not (percent and word(chr(int(percent.group(1), 16))))
+    return not (percent and _is_word_char(chr(int(percent.group(1), 16))))
 
 
 def _replace_whole(
-    text: str,
-    pattern: re.Pattern[str],
-    replacement: Any,
-    word: Callable[[str], bool] = _is_word_char,
+    text: str, forms: tuple[str, ...], pattern: re.Pattern[str], replacement: Any
 ) -> str:
-    """*text* with each whole-value match of *pattern* replaced by *replacement*
-    (a string, or a function of the matched text)."""
+    """*text* with each whole-value occurrence of *forms* replaced by
+    *replacement* (a string, or a function of the matched text).
 
-    def replace(match: re.Match[str]) -> str:
-        if _delimited_before(text, match.start(), word) and _delimited_after(
-            text, match.end(), word
-        ):
-            return replacement(match.group(0)) if callable(replacement) else replacement
-        return match.group(0)
-
-    return pattern.sub(replace, text)
+    *pattern* finds where a form starts; at each such place every form that
+    occurs there is tried, longest first, so when ``bob@example.com`` is
+    inside a longer word, ``bob`` before its ``@`` is still replaced.
+    """
+    out: list[str] = []
+    pos = 0
+    while True:
+        match = pattern.search(text, pos)
+        if match is None:
+            break
+        start = match.start()
+        for form in forms:  # longest first
+            end = start + len(form)
+            if (
+                text.startswith(form, start)
+                and _delimited_before(text, start)
+                and _delimited_after(text, end)
+            ):
+                out.append(text[pos:start])
+                out.append(replacement(form) if callable(replacement) else replacement)
+                pos = end
+                break
+        else:
+            out.append(text[pos : start + 1])
+            pos = start + 1
+    out.append(text[pos:])
+    return "".join(out)
 
 
 @dataclass(frozen=True)
@@ -252,6 +265,8 @@ class _Scrubber:
     """A :class:`Redaction` compiled for scrubbing text and bytes."""
 
     secret_forms: tuple[str, ...]
+    identifier_forms: tuple[str, ...]
+    identifier_byte_forms: tuple[str, ...]
     identifier_re: re.Pattern[str] | None
     identifier_bytes_re: re.Pattern[str] | None
     basic_values: tuple[str, ...]
@@ -259,11 +274,13 @@ class _Scrubber:
     @classmethod
     def of(cls, redact: Redaction | Iterable[str]) -> _Scrubber:
         redaction = as_redaction(redact)
-        forms = _redaction_forms(redaction.identifiers)
+        forms = tuple(_redaction_forms(redaction.identifiers))
         # Bytes are matched as latin-1 text, one character per byte.
-        byte_forms = [f.encode("utf-8").decode("latin-1") for f in forms]
+        byte_forms = tuple(f.encode("utf-8").decode("latin-1") for f in forms)
         return cls(
             secret_forms=tuple(_redaction_forms(redaction.secrets)),
+            identifier_forms=forms,
+            identifier_byte_forms=byte_forms,
             identifier_re=re.compile("|".join(re.escape(f) for f in forms)) if forms else None,
             identifier_bytes_re=(
                 re.compile("|".join(re.escape(f) for f in byte_forms)) if forms else None
@@ -280,7 +297,7 @@ class _Scrubber:
             if form in value:
                 value = value.replace(form, REDACTED)
         if self.identifier_re is not None and not in_url:
-            value = _replace_whole(value, self.identifier_re, REDACTED)
+            value = _replace_whole(value, self.identifier_forms, self.identifier_re, REDACTED)
         return value
 
     def scrub_bytes(self, raw: bytes) -> bytes:
@@ -288,9 +305,9 @@ class _Scrubber:
         if self.identifier_bytes_re is not None:
             text = _replace_whole(
                 raw.decode("latin-1"),
+                self.identifier_byte_forms,
                 self.identifier_bytes_re,
                 lambda m: "*" * len(m),
-                _is_ascii_word_char,
             )
             raw = text.encode("latin-1")
         return raw

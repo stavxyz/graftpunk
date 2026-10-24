@@ -265,7 +265,7 @@ class TestIdentifiersMatchWholeValues:
             "Abob",
             "bob%41",  # "bobA"
             "\\\\nbob",  # an escaped backslash, then "nbob"
-            '{"m": "\\u00e9bob"}',  # "ébob"
+            '{"m": "\\\\u0020bob"}',  # an escaped backslash, then "u0020bob"
             '{"m": "\\u0041bob"}',  # "Abob"
         ],
     )
@@ -275,6 +275,33 @@ class TestIdentifiersMatchWholeValues:
         (clean,) = redact_har_entries([entry], Redaction(identifiers=("bob",)))
 
         assert clean["request"]["postData"]["text"] == text
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("欢迎bob", f"欢迎{REDACTED}"),
+            ("用户bob", f"用户{REDACTED}"),
+            ("こんにちはbob様", f"こんにちは{REDACTED}様"),
+            ("ébob", f"é{REDACTED}"),
+            ("bobé", f"{REDACTED}é"),
+            ('{"m": "\\u00e9bob"}', f'{{"m": "\\u00e9{REDACTED}"}}'),
+            ("%E2%82%AAbob", f"%E2%82%AA{REDACTED}"),
+        ],
+    )
+    def test_text_in_another_script_does_not_hide_a_value(self, text: str, expected: str) -> None:
+        """A word is ASCII letters and digits, in text as in bytes."""
+        entry = {"response": {"content": {"text": text}}}
+
+        (clean,) = redact_har_entries([entry], Redaction(identifiers=("bob",)))
+
+        assert clean["response"]["content"]["text"] == expected
+
+    def test_a_shorter_form_is_tried_where_a_longer_one_is_inside_a_word(self) -> None:
+        entry = {"request": {"postData": {"text": "bob@example.comx"}}}
+
+        (clean,) = redact_har_entries([entry], Redaction(identifiers=("bob", USER)))
+
+        assert clean["request"]["postData"]["text"] == f"{REDACTED}@example.comx"
 
     def test_a_secret_is_still_replaced_inside_other_text(self) -> None:
         entry = {"request": {"postData": {"text": f"x{HIDDEN}y"}}}
