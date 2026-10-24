@@ -490,7 +490,7 @@ def _pty_run(
     )
     assert done.returncode == 0, done.stderr[-2000:]
     reply = json.loads(done.stdout)
-    return reply["code"], reply["shown"]
+    return reply["code"], strip_ansi(reply["shown"])
 
 
 # Types the answer only once the terminal's echo is off: getpass switches it off
@@ -621,6 +621,7 @@ def child(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "HOME": str(home),
         "GRAFTPUNK_CONFIG_DIR": str(home / "config"),
         "NO_COLOR": "1",
+        "TERM": "dumb",
         "COLUMNS": "200",
         "PYTHONPATH": os.pathsep.join(sys.path),
     }
@@ -702,10 +703,11 @@ class TestNothingEscapesTheRealApp:
             check=False,
         )
 
-        assert result.returncode == 1, result.stderr
-        assert "Token extraction failed:" in result.stderr
-        assert "Traceback" not in result.stderr
-        _assert_no_form(result.stdout + result.stderr)
+        stderr = strip_ansi(result.stderr)
+        assert result.returncode == 1, stderr
+        assert "Token extraction failed:" in stderr
+        assert "Traceback" not in stderr
+        _assert_no_form(strip_ansi(result.stdout) + stderr)
 
     def test_an_uncaught_exception_prints_no_frame_locals(
         self, site: str, child: tuple[Path, dict[str, str]]
@@ -720,9 +722,14 @@ class TestNothingEscapesTheRealApp:
             check=False,
         )
 
-        assert result.returncode == 1
-        assert "RuntimeError: observe broke" in result.stderr
-        _assert_no_form(result.stdout + result.stderr)
+        stderr = strip_ansi(result.stderr)
+        assert result.returncode == 1, stderr
+        assert "RuntimeError: observe broke" in stderr
+        # Typer's locals panel prints each local as "name = value"; the
+        # run_plugin_command frame holds both of these.
+        assert "kwargs = " not in stderr
+        assert "option_secrets = " not in stderr
+        _assert_no_form(strip_ansi(result.stdout) + stderr)
 
 
 class TestLogLines:
@@ -744,7 +751,7 @@ class TestLogLines:
                     raise RuntimeError(f"bad key {API_KEY}")
                 except RuntimeError:
                     log.exception("failed_inside")
-            text = capsys.readouterr().err
+            text = strip_ansi(capsys.readouterr().err)
             _assert_no_form(text)
             assert REDACTED in text
             assert "Traceback (most recent call last):" in text
@@ -790,7 +797,7 @@ class TestLogLines:
 
         with log_secrets([API_KEY]):
             get_logger("t").warning("inside", value=API_KEY)
-        text = capsys.readouterr().err
+        text = strip_ansi(capsys.readouterr().err)
         assert "inside" in text
         _assert_no_form(text)
 
