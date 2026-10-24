@@ -26,6 +26,7 @@ PIN_CREDS = {"FMTSITE_USERPIN": "4417", "FMTSITE_PASSWORD": "pw-x"}
 # 1.24.0 picked loginPin (a static secret); the label now comes from user_id.
 LABELLED_FIELDS = {"loginPin": "#pin", "user_id": "#u", "password": "#p"}
 LABELLED_CREDS = {"FMTSITE_LOGINPIN": "4417", "FMTSITE_USER_ID": "bob", "FMTSITE_PASSWORD": "pw-x"}
+CODE_FIELD = "loginCode"
 CODE_FIELDS = {"loginCode": "#c", "user_id": "#u", "password": "#p"}
 CODE_CREDS = {"FMTSITE_LOGINCODE": "111222", "FMTSITE_USER_ID": "bob", "FMTSITE_PASSWORD": "pw-x"}
 
@@ -454,20 +455,153 @@ class TestTheMarkSurvivesWriteBacks:
         assert get_session_metadata("myshop@bob")["account_rule"] == 2
 
 
-class TestAsLabel:
-    def test_a_1_24_as_slot_recording_the_secret_is_cleared_before_the_login(self) -> None:
-        _cache_legacy("myshop@work", "4417")
+def _session_list() -> str:
+    import typer
+    from typer.testing import CliRunner
+
+    from graftpunk.cli.session_commands import session_app
+
+    app = typer.Typer()
+    app.add_typer(session_app, name="session")
+    result = CliRunner().invoke(app, ["session", "list"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    return strip_ansi(result.output)
+
+
+def _expire(name: str) -> None:
+    path = _metadata_path(name)
+    data = json.loads(path.read_text())
+    data["expires_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    path.write_text(json.dumps(data))
+
+
+class TestTheRecordOfAnAsSlot:
+    """A 1.24.0 ``--as`` slot recorded the secret field's value as its account.
+
+    It is replaced on a successful login, never before, whatever value it
+    holds: a code from an earlier login, or a PIN that has changed since.
+    """
+
+    @pytest.mark.parametrize(
+        ("fields", "creds", "recorded", "expired", "account"),
+        [
+            pytest.param(PIN_FIELDS, PIN_CREDS, "4417", False, None, id="same-pin"),
+            pytest.param(PIN_FIELDS, PIN_CREDS, "1111", False, None, id="changed-pin"),
+            pytest.param(PIN_FIELDS, PIN_CREDS, "4417", True, None, id="expired"),
+            pytest.param(CODE_FIELDS, CODE_CREDS, "829341", False, "bob", id="code"),
+            pytest.param(
+                {"loginCode": "#c", "password": "#p"},
+                {"FMTSITE_LOGINCODE": "111222", "FMTSITE_PASSWORD": "pw-x"},
+                "829341",
+                False,
+                None,
+                id="code-no-identifier",
+            ),
+            pytest.param(
+                {"loginCode": "#c", "password": "#p"},
+                {"FMTSITE_LOGINCODE": "111222", "FMTSITE_PASSWORD": "pw-x"},
+                "829341",
+                True,
+                None,
+                id="code-expired",
+            ),
+        ],
+    )
+    def test_a_successful_login_replaces_it(
+        self,
+        fields: dict[str, str],
+        creds: dict[str, str],
+        recorded: str,
+        expired: bool,
+        account: str | None,
+    ) -> None:
+        _cache_legacy("myshop@work", recorded)
+        if expired:
+            _expire("myshop@work")
+
+        result = invoke_plugin_app(_plugin(fields), ["fmtsite", "login", "--as", "work"], **creds)
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 0, output
+        stored = get_session_metadata("myshop@work")
+        assert stored["account_identifier"] == account
+        assert stored["account_rule"] == 2
+        assert getattr(load_session("myshop@work"), GP_ACCOUNT_ATTR) == account
+        assert recorded not in output
+        assert "was recorded for" not in output
+        assert "Replaced the account recorded on 'myshop@work'" in output
+        assert recorded not in _session_list()
+
+    def test_a_login_that_writes_nothing_still_replaces_it(self) -> None:
+        _cache_legacy("myshop@work", "829341")
+        _expire("myshop@work")
+
+        result = invoke_plugin_app(
+            _plugin(CODE_FIELDS, write=False), ["fmtsite", "login", "--as", "work"], **CODE_CREDS
+        )
+
+        assert result.exit_code == 0, result.output
+        stored = get_session_metadata("myshop@work")
+        assert stored["account_identifier"] == "bob"
+        assert stored["account_rule"] == 2
+        assert "829341" not in strip_ansi(result.output)
+
+    def test_a_refresh_after_a_metadata_only_replacement_keeps_it(self) -> None:
+        """The pickle still holds the old value; metadata under the current rule wins."""
+        from graftpunk.cache import update_session_cookies
+
+        _cache_legacy("myshop@work", "829341")
+        result = invoke_plugin_app(
+            _plugin(CODE_FIELDS, write=False), ["fmtsite", "login", "--as", "work"], **CODE_CREDS
+        )
+        assert result.exit_code == 0, result.output
+        session = load_session("myshop@work")
+        session.cookies.set("refreshed", "1")
+
+        update_session_cookies(session, "myshop@work")
+
+        assert get_session_metadata("myshop@work")["account_identifier"] == "bob"
+
+    @pytest.mark.parametrize("recorded", ["4417", "1111"])
+    def test_a_failed_login_changes_nothing(self, recorded: str) -> None:
+        _cache_legacy("myshop@work", recorded)
+        before = _metadata_path("myshop@work").read_bytes()
 
         result = invoke_plugin_app(
             _plugin(PIN_FIELDS, succeed=False), ["fmtsite", "login", "--as", "work"], **PIN_CREDS
         )
 
-        output = strip_ansi(result.output)
         assert result.exit_code != 0
-        assert get_session_metadata("myshop@work")["account_identifier"] is None
-        assert getattr(load_session("myshop@work"), GP_ACCOUNT_ATTR) is None
-        assert "Cleared the account recorded on 'myshop@work'" in output
-        assert "4417" not in output
+        assert _metadata_path("myshop@work").read_bytes() == before
+        assert recorded not in strip_ansi(result.output)
+
+    def test_an_identifier_plugins_record_is_not_touched(self) -> None:
+        """The condition: only a plugin 1.24.0 labelled from a secret field."""
+        _cache_legacy("myshop@work", "alice")
+
+        result = invoke_plugin_app(
+            _plugin({"username": "#u", "password": "#p"}, write=False),
+            ["fmtsite", "login", "--as", "work"],
+            **{"FMTSITE_USERNAME": "bob", "FMTSITE_PASSWORD": "pw-x"},
+        )
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 0, output
+        assert get_session_metadata("myshop@work")["account_identifier"] == "alice"
+        assert "was recorded for alice; this login replaces it as bob" in output
+
+    def test_a_current_record_is_not_touched(self) -> None:
+        """The condition: only a slot with no account rule."""
+        cache_session(cacheable_browser_session("carol"), "myshop@work")
+
+        result = invoke_plugin_app(
+            _plugin(CODE_FIELDS, write=False), ["fmtsite", "login", "--as", "work"], **CODE_CREDS
+        )
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 0, output
+        assert get_session_metadata("myshop@work")["account_identifier"] == "carol"
+        assert "was recorded for carol; this login replaces it as bob" in output
 
     def test_the_stale_slot_waits_for_an_as_login(self) -> None:
         _cache_stale()
@@ -483,6 +617,94 @@ class TestAsLabel:
         )
         assert ok.exit_code == 0, ok.output
         assert list_sessions() == ["myshop@work"]
+
+
+class TestNothingBrokenIsLeft:
+    def test_a_half_written_copy_is_removed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from graftpunk import cache as cache_mod
+
+        _cache_stale()
+        backend = cache_mod._get_session_storage_backend()
+        real_save = backend.save_session
+
+        def half_save(name, data, meta):  # noqa: ANN001, ANN202
+            if name == "myshop":
+                slot = backend.base_dir / name
+                slot.mkdir(parents=True, exist_ok=True)
+                (slot / "session.pickle").write_bytes(data)
+                raise OSError("disk full writing metadata")
+            return real_save(name, data, meta)
+
+        monkeypatch.setattr(backend, "save_session", half_save)
+        result = _login(_plugin(PIN_FIELDS, succeed=False))
+        monkeypatch.setattr(backend, "save_session", real_save)
+
+        assert result.exit_code != 0
+        assert list_sessions() == ["myshop@4417"]
+        command = invoke_plugin_app(_plugin(PIN_FIELDS), ["fmtsite", "items", "--format", "json"])
+        assert command.exit_code == 0, command.output
+        assert "stale" in command.output
+
+    def test_a_copy_that_reads_back_wrong_is_removed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from graftpunk import cache as cache_mod
+
+        _cache_stale()
+        backend = cache_mod._get_session_storage_backend()
+        real_save = backend.save_session
+
+        def corrupting_save(name, data, meta):  # noqa: ANN001, ANN202
+            return real_save(name, data[:-4] + b"xxxx" if name == "myshop" else data, meta)
+
+        monkeypatch.setattr(backend, "save_session", corrupting_save)
+        result = _login(_plugin(PIN_FIELDS, succeed=False))
+
+        assert result.exit_code != 0
+        assert list_sessions() == ["myshop@4417"]
+
+    def test_a_local_save_that_fails_leaves_the_slot_as_it_was(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.storage import local
+
+        _cache_legacy("myshop@work", None, cookie="before")
+        real_write = local._write_private_temp
+
+        def full_disk(target, data):  # noqa: ANN001, ANN202
+            if target.name == "metadata.json":
+                raise OSError(28, "No space left on device")
+            return real_write(target, data)
+
+        monkeypatch.setattr(local, "_write_private_temp", full_disk)
+        replacement = cacheable_browser_session()
+        replacement.cookies.set("after", "1")
+        with pytest.raises(OSError):
+            cache_session(replacement, "myshop@work")
+        with pytest.raises(OSError):
+            cache_session(replacement, "myshop@new")
+        monkeypatch.setattr(local, "_write_private_temp", real_write)
+
+        assert _cookies("myshop@work") == {"before"}
+        assert list_sessions() == ["myshop@work"]
+        leftovers = [p.name for p in _metadata_path("myshop@work").parent.iterdir()]
+        assert sorted(leftovers) == ["metadata.json", "session.pickle"]
+
+
+class TestTwoAccountsOfAPinPlugin:
+    def test_a_failed_login_does_not_put_one_account_where_the_other_lands(self) -> None:
+        _cache_legacy("myshop@1111", "1111", cookie="acct_a")
+        _cache_legacy("myshop@2222", "2222", cookie="acct_b")
+
+        a = _login(_plugin(PIN_FIELDS, succeed=False), FMTSITE_USERPIN="1111")
+        assert a.exit_code != 0
+        assert list_sessions() == ["myshop@1111", "myshop@2222"]
+
+        b = _login(_plugin(PIN_FIELDS), FMTSITE_USERPIN="2222")
+        output = strip_ansi(b.output)
+        assert b.exit_code == 0, output
+        assert list_sessions() == ["myshop", "myshop@1111"]
+        assert _cookies("myshop@1111") == {"acct_a"}
+        assert "1111" not in output
+        assert "2222" not in output
 
 
 class TestUnchanged:
@@ -516,20 +738,20 @@ class TestUnchanged:
         assert "earlier session" not in output
 
     def test_a_user_name_and_email_plugin_keeps_its_email_label(self) -> None:
-        _cache_legacy("myshop@alice-x-com", "alice@x.com")
+        _cache_legacy("myshop@alice-example-com", "alice@example.com")
 
         result = invoke_plugin_app(
             _plugin({"user_name": "#u", "email": "#e", "password": "#p"}),
             ["fmtsite", "login"],
             **{
                 "FMTSITE_USER_NAME": "alice",
-                "FMTSITE_EMAIL": "alice@x.com",
+                "FMTSITE_EMAIL": "alice@example.com",
                 "FMTSITE_PASSWORD": "pw-x",
             },
         )
 
         assert result.exit_code == 0, result.output
-        assert list_sessions() == ["myshop@alice-x-com"]
+        assert list_sessions() == ["myshop@alice-example-com"]
 
     @pytest.mark.parametrize("succeed", [False, True])
     def test_a_bare_slot_of_an_account_plugin_is_never_moved(self, succeed: bool) -> None:
@@ -707,3 +929,199 @@ class TestLogsAtTheDefaultLevel:
         assert logs[0]["name"] == "myshop@<earlier label>"
         assert logs[0]["path"] == "/x/myshop-<earlier label>/y"
         assert logs[1]["name"] == "myshop@4417"
+
+
+class TestElsewhere:
+    def test_gp_http_masks_a_code_slot(self) -> None:
+        from graftpunk.plugins.cli_plugin import SitePlugin
+
+        class OtherBase(SitePlugin):
+            site_name = "fmtsite"
+            base_url = "https://fmt.example.com"
+            session_name = "shopbase"
+            login_config = _plugin(CODE_FIELDS).login_config
+
+        _cache_legacy("shopbase@829341", "829341")
+        cache_session(cacheable_browser_session("bob"), "shopbase@bob")
+        from unittest.mock import patch
+
+        import typer
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.http_commands import http_app
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+
+        app = typer.Typer()
+        with patch(
+            "graftpunk.cli.plugin_commands.discover_all_plugins", return_value=(OtherBase(),)
+        ):
+            register_plugin_commands(app, notify_errors=False)
+        app.add_typer(http_app, name="http")
+        result = CliRunner().invoke(
+            app,
+            ["http", "get", "--session", "shopbase", "https://fmt.example.com/x"],
+            env={"COLUMNS": "200"},
+        )
+
+        output = strip_ansi(result.output)
+        assert result.exit_code != 0
+        assert "829341" not in output
+        assert "shopbase@<earlier label>" in output
+
+    def test_an_unreadable_code_slot_is_masked_and_its_read_logged_masked(self) -> None:
+        _cache_legacy("myshop@829341", "829341")
+        cache_session(cacheable_browser_session("bob"), "myshop@bob")
+        _metadata_path("myshop@829341").write_text("{not json")
+
+        result = invoke_plugin_app(_plugin(CODE_FIELDS), ["fmtsite", "items"])
+
+        output = strip_ansi(result.output)
+        assert result.exit_code != 0
+        assert "829341" not in output
+        assert "myshop@<earlier label>" in output
+        assert "myshop@bob" in output
+
+    def test_another_plugins_slots_are_not_counted(self) -> None:
+        _cache_legacy("othershop@829341", "829341")
+
+        result = invoke_plugin_app(_plugin(CODE_FIELDS), ["fmtsite", "login"], **CODE_CREDS)
+
+        assert result.exit_code == 0, result.output
+        assert "Another session" not in strip_ansi(result.output)
+
+    def test_a_login_the_migration_cannot_affect_lists_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.cli import login_commands
+
+        calls = []
+        real = login_commands.list_sessions
+        monkeypatch.setattr(
+            login_commands, "list_sessions", lambda *a, **k: calls.append(1) or real(*a, **k)
+        )
+        result = invoke_plugin_app(
+            _plugin({"username": "#u", "password": "#p"}),
+            ["fmtsite", "login"],
+            **{"FMTSITE_USERNAME": "alice", "FMTSITE_PASSWORD": "pw-x"},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert calls == []
+
+
+class _DictPickled:
+    """A session class that pickles its whole ``__dict__``, slot stamp included."""
+
+    def __init__(self) -> None:
+        import requests
+
+        self.cookies = requests.cookies.RequestsCookieJar()
+        self.headers: dict[str, str] = {}
+
+
+class TestCopyStamps:
+    def test_a_dict_pickled_session_carries_the_new_slot_name(self) -> None:
+        from graftpunk.cache import copy_session
+        from graftpunk.session_identity import GP_SESSION_NAME_ATTR
+
+        cache_session(_DictPickled(), "myshop@4417", account_rule=None)
+        copy_session("myshop@4417", "myshop", account_identifier=None)
+
+        import dill
+
+        from graftpunk import cache as cache_mod
+        from graftpunk.encryption import decrypt_data
+
+        data, _meta = cache_mod._get_session_storage_backend().load_session("myshop")
+        restored = dill.loads(decrypt_data(data))  # noqa: S301 (written by this test)
+        assert restored.__dict__[GP_SESSION_NAME_ATTR] == "myshop"
+
+
+class TestRedaction:
+    def _capture(self, emit):  # noqa: ANN001, ANN202
+        from structlog.testing import capture_logs
+
+        from graftpunk.logging import get_logger
+        from graftpunk.session_migration import hidden_name
+
+        log = get_logger("probe")
+        with capture_logs() as logs, hidden_name("myshop@4417"):
+            emit(log)
+        return logs
+
+    def test_bound_context(self) -> None:
+        logs = self._capture(lambda log: log.bind(name="myshop@4417").warning("x"))
+        assert logs[0]["name"] == "myshop@<earlier label>"
+
+    def test_positional_arguments(self) -> None:
+        from structlog.testing import capture_logs
+
+        from graftpunk.logging import _redacting_call, redacted_values
+
+        seen = []
+        with capture_logs(), redacted_values(("myshop@4417", "P")):
+            _redacting_call(lambda *a, **k: seen.append(a))("event %s", "at myshop@4417")
+        assert seen == [("event %s", "at P")]
+
+    def test_lists_tuples_and_dict_keys(self) -> None:
+        logs = self._capture(
+            lambda log: log.warning(
+                "x",
+                names=["myshop@4417"],
+                pair=("a", "myshop@4417"),
+                by_name={"myshop@4417": 1},
+            )
+        )
+        assert logs[0]["names"] == ["myshop@<earlier label>"]
+        assert logs[0]["pair"] == ("a", "myshop@<earlier label>")
+        assert logs[0]["by_name"] == {"myshop@<earlier label>": 1}
+
+
+class TestReplaceLegacyRecordDirectly:
+    """``replace_legacy_record`` checks its own conditions, whoever calls it."""
+
+    def test_no_secret_field_means_no_change(self) -> None:
+        from graftpunk.session_migration import replace_legacy_record
+
+        _cache_legacy("myshop@work", "alice")
+
+        assert not replace_legacy_record("myshop@work", "bob", secret_field=None)
+        assert get_session_metadata("myshop@work")["account_identifier"] == "alice"
+
+    def test_a_current_record_is_left(self) -> None:
+        from graftpunk.session_migration import replace_legacy_record
+
+        cache_session(cacheable_browser_session("carol"), "myshop@work")
+
+        assert not replace_legacy_record("myshop@work", "bob", secret_field=CODE_FIELD)
+        assert get_session_metadata("myshop@work")["account_identifier"] == "carol"
+
+    def test_a_slot_named_after_its_secret_keeps_its_record(self) -> None:
+        from graftpunk.session_migration import replace_legacy_record
+
+        _cache_legacy("myshop@829341", "829341")
+
+        assert not replace_legacy_record("myshop@829341", "bob", secret_field=CODE_FIELD)
+        assert get_session_metadata("myshop@829341")["account_identifier"] == "829341"
+
+    def test_a_1_24_record_is_replaced(self) -> None:
+        from graftpunk.session_migration import replace_legacy_record
+
+        _cache_legacy("myshop@work", "829341")
+
+        assert replace_legacy_record("myshop@work", "bob", secret_field=CODE_FIELD)
+        stored = get_session_metadata("myshop@work")
+        assert (stored["account_identifier"], stored["account_rule"]) == ("bob", 2)
+
+
+class TestLeftoverReads:
+    def test_a_leftover_whose_metadata_fails_to_read_is_logged_masked(self) -> None:
+        _cache_legacy("myshop@829341", "829341")
+        _metadata_path("myshop@829341").write_text("{not json")
+
+        result = invoke_plugin_app(_plugin(CODE_FIELDS), ["fmtsite", "login"], **CODE_CREDS)
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 0, output
+        assert "829341" not in output
+        assert "myshop@<earlier label>" in output

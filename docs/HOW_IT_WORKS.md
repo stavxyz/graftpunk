@@ -134,27 +134,36 @@ an account identifier field. A field is one when its name, lower-cased with
 `emailaddress`, `useremail`, `loginemail`, `login`, `loginid`, `loginname`,
 `identifier`, `user` or `userid` (`graftpunk.session_identity.is_identifier_field`,
 the allowlist observe redaction uses, which also holds `account` and
-`accountid`). Among those fields, the label comes from the first whose
-lower-cased name contains `username`, then `email`, `login`, `identifier` and
-`user`, and within one of those words the first declared: the order 1.24.0
-used, so a label that came from an identifier field is unchanged. Any other
-field is never derived from, so a PIN, a one-time code or a password cannot
-name a session. When no field qualifies the session keeps its bare name; use
-`--as` to name it.
+`accountid`). Among those fields, the label comes from the first whose name,
+lower-cased with its separators kept, contains `username`, then `email`,
+`login`, `identifier` and `user`, and within one of those words the first
+declared: the order 1.24.0 used, so a label that came from an identifier field
+is unchanged (`{user_name, email}` labels from `email`, since `user_name` does
+not contain `username` as written). A field that contains none of those words
+as written (`account`, `account_id`, `e_mail`) gives no label, as before. Any
+other field is never derived from, so a PIN, a one-time code or a password
+cannot name a session. When no field qualifies the session keeps its bare
+name; use `--as` to name it.
 graftpunk 1.24.0 and earlier took any field holding one of those words that
 passed a deny-list, and could label a session with a secret (`userPin` gave
-`myshop@4417`, #293). Slots written from #293 on record `account_rule: 2` in
-their metadata, so a slot without it is one that rule may have named. At the
-next login of the same credentials, gp finds a slot named after a static secret
-(a PIN, a password): it copies it to the bare name before the login when that
-name is free, reading the copy back before removing the old slot, and otherwise
-removes it once the login has written the new name. Its observe runs follow,
-and a `.gp-session` in the working directory that pinned it is rewritten. A
-slot named after a one-time code cannot be found that way and is left; the
-login counts such slots, and the "Several sessions cached" error shows them as
-`<plugin>@<earlier label>`. gp never prints the old name, and the storage calls
-that touch it run under `graftpunk.logging.redacted_values`, so their log lines
-show the placeholder.
+`myshop@4417`, #293). Slots written by the release that fixed #293 and later
+record `account_rule: 2` in their metadata, so a slot without it is one that
+rule may have named. At the next login of the same credentials, gp finds a
+slot named after a static secret (a PIN, a password). When the bare name is
+free and no other slot of the plugin was named that way, it copies the slot
+there before the login, reading the copy back before removing the old slot,
+and removing a copy that fails; otherwise it removes the old slot once the
+login has written the new name. Its observe runs follow, and a `.gp-session`
+in the working directory that pinned it is rewritten. A slot named after a
+one-time code cannot be found that way and is left; the login counts such
+slots, and the "Several sessions cached" error (and `gp http`) shows them as
+`<plugin>@<earlier label>`. A 1.24.0 slot under a `--as` label recorded the
+secret as its account; a successful login with that label replaces the record
+in the metadata alone, so an expired slot is handled too, and a later refresh
+takes the account from that metadata. The login never prints the old name or
+the recorded secret, and the storage calls that read or remove such a slot run
+under `graftpunk.logging.redacted_values`, so their log lines show the
+placeholder.
 `gp myshop login --as work` pins a label. Metadata records the
 identifier (what was typed at login, not server-verified), shown in
 `gp session list`'s Account column.

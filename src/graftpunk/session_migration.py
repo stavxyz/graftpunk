@@ -26,7 +26,7 @@ Delete this module, its calls, and the ``_legacy_*`` functions of
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -37,12 +37,14 @@ from graftpunk.cache import (
     clear_session_cache,
     copy_session,
     get_session_metadata,
+    set_session_account,
 )
 from graftpunk.exceptions import SessionNotFoundError
 from graftpunk.logging import get_logger, redacted_values
 from graftpunk.observe.storage import make_private_dir, session_dirname
 from graftpunk.session_context import SESSION_FILE_NAME
 from graftpunk.session_identity import (
+    _legacy_account_field,
     _legacy_derive_account_identity,
     _legacy_secret_field,
     is_identifier_field,
@@ -66,7 +68,12 @@ def earlier_name(base_name: str) -> str:
 def hidden_name(name: str) -> Iterator[None]:
     """Within the block, graftpunk's log lines show *name* as :func:`earlier_name`.
 
-    Its observe directory name (``myshop-4417``) is hidden the same way.
+    Its observe directory name (``myshop-4417``) is hidden the same way, and
+    the match is by substring (:func:`graftpunk.logging.redacted_values`).
+    Callers wrap every labelled slot of a plugin 1.24.0 labelled from a secret
+    field while reading it, since only the read shows whether its name is a
+    secret; a failed read of such a plugin's legitimate slot is therefore
+    logged under the placeholder too.
     """
     base, _label = split_session_name(name)
     with redacted_values(
@@ -133,8 +140,6 @@ class LegacySlotMigration:
             place; *problem* says why). None when there is no old slot.
         problem: A one-line account of something left undone, naming the
             field and never the old name.
-        cleared_target: Whether *new_name* recorded the secret as its account
-            (a 1.24.0 ``--as`` slot) and now records this login's identifier.
         leftovers: How many other slots of this plugin look named after the
             field by 1.24.0 (:func:`is_legacy_secret_slot`). They are only
             counted: nothing shows which account each belongs to.
@@ -149,7 +154,6 @@ class LegacySlotMigration:
     stale_name: str | None = field(default=None, repr=False)
     action: str | None = None
     problem: str | None = None
-    cleared_target: bool = False
     leftovers: int = 0
     env_pinned: bool = False
     pin_updated: bool = False
@@ -165,58 +169,58 @@ def migrate_legacy_account_slot(
     observe_base_dir: Path,
     environ: Mapping[str, str],
     cwd: Path,
-    existing_names: Iterable[str],
+    existing_names: Callable[[], Iterable[str]],
 ) -> LegacySlotMigration | None:
-    """Before the login attempt: deal with what 1.24.0's rule left for these credentials.
+    """Before the login attempt: deal with the slot 1.24.0's rule named for these credentials.
 
     The old rule runs on the same credentials. When it picks an identifier
     field, or the identifier the current rule picks, nothing is done and None
-    is returned. Otherwise the field it picked holds a secret, and:
+    is returned, and *existing_names* is never called. Otherwise the field it
+    picked holds a secret, and:
 
-    - When *target_name* is cached, was written by 1.24.0, and records the
-      secret as its account (a ``--as`` slot), that record is replaced with
-      *identifier* now, so a failed login does not leave it.
+    - Other slots of this plugin that look named by 1.24.0 from that field
+      (:func:`is_legacy_secret_slot`; a one-time code changes every login, so
+      its slot is never the stale slot) are counted for a notice and left
+      alone. *existing_names* lists the cached sessions for that count.
     - The slot the old rule names from these credentials (the stale slot) is
-      handled when it is cached and records the same secret. A slot past its
-      expiry is deleted now: it could not be used. When *target_name* is the
-      bare base and not cached, the stale slot is copied to it, read back, and
-      only then deleted, so the session survives a failed login. Otherwise it
-      is ``"superseded"``: it is deleted after the login succeeds, since a
-      labelled *target_name* claims an account this login has not proved yet.
-      A copy that fails leaves the stale slot in place, superseded.
-    - Other slots that look named by 1.24.0 from the same field (a one-time
-      code changes every login, so its slot is never the stale slot) are
-      counted for a notice and left alone.
+      handled when it is cached, records no account rule, and records the
+      same secret. A slot past its stored expiry is deleted now, without
+      loading it: it could not be used. When *target_name* is the bare base,
+      not cached, and no other such slot exists, the stale slot is copied to
+      it, read back, and only then deleted, so the session survives a failed
+      login. Otherwise it is ``"superseded"``: it is deleted after the login
+      succeeds and has written *target_name*, since a labelled name claims an
+      account this login has not proved yet, and with several such slots the
+      bare name is shared between accounts. A copy that fails leaves the stale
+      slot in place, removes whatever part of *target_name* it wrote, and
+      falls back to superseded.
 
-    *existing_names* are the cached session names, for that count.
+    Nothing is rewritten before the login except that copy. The account
+    *target_name* records is replaced after a successful login, by
+    :func:`replace_legacy_record`.
     """
     old_identifier, old_label = _legacy_derive_account_identity(credentials, secret_keywords)
     if old_identifier is None or old_identifier == identifier:
         return None
-    source_field = next(name for name, value in credentials.items() if value == old_identifier)
-    if is_identifier_field(source_field):
+    source_field = _legacy_account_field(credentials, secret_keywords)
+    if source_field is None or is_identifier_field(source_field):
         return None
-    result = LegacySlotMigration(source_field, target_name)
-
-    target_meta = get_session_metadata(target_name)
-    if (
-        target_meta is not None
-        and records_legacy_secret(target_meta)
-        and target_meta.get("account_identifier") == old_identifier
-    ):
-        try:
-            copy_session(target_name, target_name, account_identifier=identifier)
-            result = replace(result, cleared_target=True)
-            LOG.info("legacy_account_identifier_cleared", session=target_name, field=source_field)
-        except Exception as exc:  # noqa: BLE001 (left as it is; a successful login rewrites it)
-            LOG.warning(
-                "legacy_account_identifier_not_cleared",
-                session=target_name,
-                field=source_field,
-                exc_type=type(exc).__name__,
-            )
-
     stale_name = join_session_name(base_name, old_label) if old_label else None
+
+    leftovers = 0
+    for name in existing_names():
+        base, label = split_session_name(name)
+        if label is None or base != base_name or name in (stale_name, target_name):
+            continue
+        with hidden_name(name):
+            try:
+                metadata = get_session_metadata(name)
+            except Exception:  # noqa: BLE001, S112 (a count for a notice; a failed read is not counted)
+                continue
+        if is_legacy_secret_slot(name, metadata):
+            leftovers += 1
+    result = LegacySlotMigration(source_field, target_name, leftovers=leftovers)
+
     if stale_name is not None and stale_name != target_name:
         result = _handle_stale(
             result,
@@ -229,23 +233,38 @@ def migrate_legacy_account_slot(
             cwd=cwd,
         )
 
-    leftovers = 0
-    for name in existing_names:
-        base, label = split_session_name(name)
-        if label is None or base != base_name or name in (result.stale_name, target_name):
-            continue
-        with hidden_name(name):
-            try:
-                metadata = get_session_metadata(name)
-            except Exception:  # noqa: BLE001, S112 (a count for a notice; a failed read is not counted)
-                continue
-        if is_legacy_secret_slot(name, metadata):
-            leftovers += 1
-    result = replace(result, leftovers=leftovers)
-
     if result == LegacySlotMigration(source_field, target_name):
         return None
     return result
+
+
+def replace_legacy_record(
+    target_name: str,
+    identifier: str | None,
+    *,
+    secret_field: str | None,
+) -> bool:
+    """After a successful login: replace a secret 1.24.0 recorded as *target_name*'s account.
+
+    *secret_field* is the field 1.24.0 labelled this plugin's sessions from
+    when it is not an identifier (:func:`plugin_secret_field`). For such a
+    plugin, every account 1.24.0 recorded came from that field, so a slot with
+    no account rule that records one holds a secret, whatever its value: a
+    one-time code from an earlier login, or a PIN that has changed since. Its
+    record becomes *identifier* (None for no account) under the current rule.
+    Only the metadata is rewritten, so an expired or unreadable slot is
+    handled too. A slot whose own name is that secret (:func:`is_legacy_secret_slot`)
+    keeps its record, which is how it is recognised and masked. Returns
+    whether the record was replaced.
+    """
+    if secret_field is None:
+        return False
+    metadata = get_session_metadata(target_name)
+    if not records_legacy_secret(metadata) or is_legacy_secret_slot(target_name, metadata):
+        return False
+    set_session_account(target_name, identifier)
+    LOG.info("legacy_account_record_replaced", session=target_name, field=secret_field)
+    return True
 
 
 def _handle_stale(
@@ -277,7 +296,11 @@ def _handle_stale(
             expires_at = expires_at.replace(tzinfo=UTC)
         if expires_at is not None and expires_at < datetime.now(UTC):
             return _delete_stale(result, observe_base_dir=observe_base_dir, cwd=cwd)
-        if split_session_name(target_name)[1] is not None or get_session_metadata(target_name):
+        if (
+            split_session_name(target_name)[1] is not None
+            or result.leftovers
+            or get_session_metadata(target_name)
+        ):
             return replace(result, action="superseded")
         try:
             copy_session(stale_name, target_name, account_identifier=identifier)
@@ -291,6 +314,18 @@ def _handle_stale(
                 field=result.source_field,
                 exc_type=type(exc).__name__,
             )
+            # target_name was not cached a moment ago, so whatever is there
+            # now is this copy's partial or unverified write. Left in place,
+            # it would make every command ambiguous and point --session at a
+            # broken slot.
+            try:
+                clear_session_cache(target_name)
+            except Exception as cleanup:  # noqa: BLE001 (reported below; the login goes on)
+                LOG.warning(
+                    "legacy_partial_copy_not_removed",
+                    new_session=target_name,
+                    exc_type=type(cleanup).__name__,
+                )
             return replace(
                 result,
                 action="superseded",

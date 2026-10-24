@@ -286,7 +286,7 @@ def _redact(value: Any) -> Any:
             value = value.replace(secret, placeholder)
         return value
     if isinstance(value, dict):
-        return {key: _redact(item) for key, item in value.items()}
+        return {_redact(key): _redact(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return type(value)(_redact(item) for item in value)
     return value
@@ -304,8 +304,10 @@ def redacted_values(*pairs: tuple[str, str]) -> Iterator[None]:
     """Within the block, write each pair's first string as its second in graftpunk's log lines.
 
     Every string in a line's event, positional arguments, keyword values and
-    bound context is rewritten, including inside lists, tuples and dicts, so a
-    path or an error message that holds the value is covered too. Only
+    bound context is rewritten, including inside lists, tuples and dicts (keys
+    and values), so a path or an error message that holds the value is
+    covered too. Matching is by substring: a longer string that contains the
+    value has that part replaced. Only
     graftpunk's own loggers (:func:`get_logger`) are affected, and only in the
     current thread or task. An empty value is ignored.
     """

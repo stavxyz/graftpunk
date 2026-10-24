@@ -1,5 +1,6 @@
 """CLI error-boundary helpers: enrich, render, exit."""
 
+import contextlib
 import functools
 from collections.abc import Callable
 from typing import NoReturn, ParamSpec, TypeVar
@@ -41,31 +42,32 @@ def exit_ambiguous_session(
     candidates: list[tuple[str, str | None]] = []
     masked = 0
     for name in exc.candidates:
+        labelled = split_session_name(name)[1] is not None
+        # Only a plugin 1.24.0 labelled from a secret field can have a slot
+        # whose name is a secret; only then are its reads logged masked.
+        suspect = secret_field is not None and labelled
         identifier: str | None = None
         meta = None
         try:
-            if split_session_name(name)[1] is None:
+            with hidden_name(name) if suspect else contextlib.nullcontext():
                 meta = get_session_metadata(name, backend_override=backend_override)
-            else:
-                with hidden_name(name):
-                    meta = get_session_metadata(name, backend_override=backend_override)
             identifier = meta.get("account_identifier") if meta else None
-        except Exception:  # noqa: BLE001 — display is best-effort
+        except Exception:  # noqa: BLE001 (display is best-effort)
+            meta = None
+        if suspect and (meta is None or is_legacy_secret_slot(name, meta)):
+            # A listed slot whose metadata cannot be read cannot be shown to be safe.
+            masked += 1
+            candidates.append((earlier_name(exc.base_name), None))
+            continue
+        if secret_field is not None and records_legacy_secret(meta):
             identifier = None
-        if secret_field is not None:
-            if is_legacy_secret_slot(name, meta):
-                masked += 1
-                candidates.append((earlier_name(exc.base_name), None))
-                continue
-            if records_legacy_secret(meta):
-                identifier = None
         candidates.append((name, identifier))
     notes = []
     if masked:
         notes.append(
-            f"{earlier_name(exc.base_name)} was named after the {secret_field} field by "
-            "graftpunk 1.24.0 or earlier. Find its name with: gp session list, then "
-            "remove it with: gp session clear <name>"
+            f"{earlier_name(exc.base_name)} may be named after the {secret_field} field, "
+            "as graftpunk 1.24.0 or earlier named it. Find its name with: gp session "
+            "list, then remove it with: gp session clear <name>"
         )
     gp_console.render_ambiguous_session(exc.base_name, candidates, notes=notes)
     raise SystemExit(1)

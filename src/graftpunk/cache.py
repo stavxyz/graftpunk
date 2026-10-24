@@ -931,7 +931,15 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         # identifier already returned by this load's metadata (stored_metadata,
         # from the same backend read — no extra backend call) so identity
         # survives this refresh either way.
-        if getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier:
+        if stored_metadata.account_rule == ACCOUNT_RULE:
+            # Metadata recorded under the current rule is the authority: a
+            # login may have replaced a 1.24.0 record there without touching
+            # the pickle (set_session_account), and the pickle's copy must not
+            # write the old one back (#293).
+            setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
+        elif (
+            getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier
+        ):
             setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
         cache_session(original, target, account_rule=stored_metadata.account_rule)
         LOG.info("session_cookies_updated", session_name=target)
@@ -1057,6 +1065,21 @@ def copy_session(source: str, dest: str, *, account_identifier: str | None) -> N
         or hashlib.sha256(decrypt_data(stored_data)).hexdigest() != checksum
     ):
         raise SessionExpiredError(f"Session '{dest}' did not read back as written.")
+
+
+def set_session_account(name: str, account_identifier: str | None) -> bool:
+    """Record *account_identifier* on *name* under the current account rule.
+
+    Only the metadata is rewritten: the session is neither loaded nor saved,
+    so an expired or unreadable slot is updated too. A later write-back takes
+    the identifier from this metadata rather than from the pickle
+    (:func:`update_session_cookies`). Returns False when nothing is cached
+    under *name*.
+    """
+    backend = _get_session_storage_backend()
+    return backend.update_session_metadata(
+        name, account_identifier=account_identifier, account_rule=ACCOUNT_RULE
+    )
 
 
 def update_session_status(name: str, status: str) -> None:

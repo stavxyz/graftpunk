@@ -168,10 +168,16 @@ class TestDerivation:
     @pytest.mark.parametrize(
         ("fields", "label"),
         [
-            ({"user_name": "alice", "email": "alice@x.com", "password": "p"}, "alice-x-com"),
-            ({"user_name": "alice", "login": "alice@x.com", "password": "p"}, "alice-x-com"),
-            ({"user_email": "a@x.com", "email": "b@x.com"}, "a-x-com"),
-            ({"login_email": "a@x.com", "email": "b@x.com"}, "a-x-com"),
+            (
+                {"user_name": "alice", "email": "alice@example.com", "password": "p"},
+                "alice-example-com",
+            ),
+            (
+                {"user_name": "alice", "login": "alice@example.com", "password": "p"},
+                "alice-example-com",
+            ),
+            ({"user_email": "a@example.com", "email": "b@example.com"}, "a-example-com"),
+            ({"login_email": "a@example.com", "email": "b@example.com"}, "a-example-com"),
             ({"userid": "a", "user": "b"}, "a"),
             ({"login_name": "a", "login": "b"}, "a"),
             ({"email_address": "a@x", "email": "b@x"}, "a-x"),
