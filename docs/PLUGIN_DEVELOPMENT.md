@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.26.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.27.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -1827,8 +1827,9 @@ A `<filename>.meta.json` sidecar beside a fixture supplies its status and
 content type. `gp observe fixtures` writes one for every capture to commit
 beside the fixture. It holds no URL, no time, and no header, cookie, or query
 value: only the status, the content type, the hash of the captured body, the
-request's body parameter names, every cookie name the recording set except a
-cookie that only ever held form state, and the token names the digest found.
+request's body parameter names, every cookie name the recording set or sent
+except a cookie that only ever held form state, the reasons each of those names
+is flagged, and the token names the digest found.
 
 A cookie whose every non-empty value in the recording (in any request or
 response) is form state holds no credential, so its name is left out of
@@ -1852,20 +1853,28 @@ a response in the recording set it with `HttpOnly`, either by its `Set-Cookie`
 header carrying the attribute or by the HAR's `response.cookies` entry saying
 `httpOnly` is true (a HAR often leaves `httpOnly` out of that array when the
 header has it). It also stays flagged when any value it held is not form state
-(a session id), or when the recording shows no non-empty value for it. A cookie
-only ever literally empty stays flagged, since a HAR cookie with no value reads
-as empty too; a cookie only ever set to `""` does not.
+(a session id), or when the recording shows no non-empty value for it. A
+cookie no response sets that requests only ever sent empty holds nothing, since
+that is what the browser sent. A cookie a response only ever set literally empty
+stays flagged, since a recorder can lose a value the `Set-Cookie` header held,
+and a cookie with any HAR entry that has no value field stays flagged whatever
+its other values; a cookie only ever set to `""` does not.
 
 Check that your session cookie is in `flagged_names` before you commit a
 sidecar. A cookie the recording only sends, which no response in it sets, is
-never flagged, whatever its name or value. That is the state of the session
+judged by the same rule as one a response sets. That is the state of every
 cookie in a recording made with a cached session, which reaches the browser
-before the recording starts. Record a fresh login, so that the server's
-`Set-Cookie` for the session is in the HAR, then run `gp observe fixtures`
-again. A session cookie a response does set can still be left out when its
-name has no session part, the response did not set it with `HttpOnly`, and
-every value it held is form state. A numeric id of 5 digits or fewer always
-is. So is a value made of space- or `+`-separated pieces of 3 or fewer letters
+before the recording starts, so analytics cookies and plain names such as `id`
+can be flagged too; when an honest fixture cannot rename such a key, record
+again with `gp observe --no-session interactive https://myshop.example/` and
+log in during the recording, so the HAR holds only the cookies the site sets
+then. The sent cookies are read from the HAR's `request.cookies`, or from its
+`Cookie` headers when that array is missing or empty; a recording that kept
+neither (nodriver 0.48.1 delivered no request `Cookie` header on a measured
+login) never flags a cached session, so record with a current nodriver or
+record a fresh login. A session cookie can still be left out when its name has
+no session part, no response set it with `HttpOnly`, and every value it held is
+form state. A numeric id of 5 digits or fewer is always form state. So is a value made of space- or `+`-separated pieces of 3 or fewer letters
 and digits with a letter among them (`aB3+xY7+qW2`), and so are groups of
 digits separated by spaces or `+` (`4111 1111 1111 1111`, `555 123 4567`): a
 cookie holding only such values is not flagged. A short random id sometimes is.
@@ -1941,6 +1950,19 @@ honest fixture fails on its name, record again searching only plain words and
 regenerate the sidecar, or rename the name in the fixture where its structure
 allows.
 
+`flagged_reasons` says why each flagged name is flagged, and the suite's
+problem line repeats it, so you can tell a form-state cookie from a session
+value without the recording: `token_candidate` (the digest found the name as a
+token), `token_name` or `session_name` (the name alone), `http_only` (a
+response set it with `HttpOnly`), `value_not_form_state` (a recorded value is
+not form state), `value_not_kept` (the recording kept no value for it),
+`no_value_seen` (the recording shows no non-empty value), and `sent_only`,
+which is never the only reason and says no response in the recording set the
+cookie. A name flagged only by `value_not_form_state` with values you know to
+be form state is the false positive the paragraph above describes; a name with
+`http_only`, `session_name` or `token_name` is a credential until you have
+checked otherwise.
+
 A body key that does not read as a field name, or that holds an id by the
 digest's rule, is dropped from `body_params`, and a cookie or token name that
 holds an id is left out of `flagged_names`, in any form; `redacted_names`
@@ -1957,8 +1979,17 @@ is kept: read both lists before you commit a sidecar.
     "X-Csrf-Token",
     "myshop_session"
   ],
+  "flagged_reasons": {
+    "X-Csrf-Token": [
+      "token_candidate"
+    ],
+    "myshop_session": [
+      "http_only",
+      "session_name"
+    ]
+  },
   "redacted_names": 0,
-  "schema": 1,
+  "schema": 2,
   "status": 200
 }
 ```
@@ -1967,10 +1998,10 @@ Without a sidecar, `FixtureSession` answers with status 200 and guesses the
 content type from the extension, but the generated suite's fixtures check fails
 on any fixture that has none (see
 [Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture)). A
-fixture you make by hand gets a sidecar of its own with all seven keys shown
+fixture you make by hand gets a sidecar of its own with all eight keys shown
 above (the key set is closed, so a sidecar missing one is refused), its own
 `status` and `content_type`, and `"body_params": []`, `"capture_sha256": null`,
-`"flagged_names": []`, and `"redacted_names": 0`. A sidecar is how you test an
+`"flagged_names": []`, `"flagged_reasons": {}`, and `"redacted_names": 0`. A sidecar is how you test an
 error path: copy a fixture together with its sidecar, set the copied sidecar's
 `status` to 403, and assert that the command raises `SessionRejectedError`.
 
@@ -2045,9 +2076,9 @@ sidecar's own fields are not scanned: gp writes `status` and `content_type` from
 the response, and a media type such as `text/html` is not a cookie value. When a
 flagged name turns up, rename it in the fixture. It cannot tell
 whether invented content was invented well; that part stays yours. A fixture
-you wrote from nothing needs a sidecar too, with all seven keys: its own
-`status` and `content_type`, `"schema": 1`, `"body_params": []`,
-`"capture_sha256": null`, `"flagged_names": []`, and `"redacted_names": 0`. The
+you wrote from nothing needs a sidecar too, with all eight keys: its own
+`status` and `content_type`, `"schema": 2`, `"body_params": []`,
+`"capture_sha256": null`, `"flagged_names": []`, `"flagged_reasons": {}`, and `"redacted_names": 0`. The
 null hash declares the file came off no account. The check trusts that
 declaration rather than verifying it, and prints on every run how many
 fixtures it accepted that way, so the number shows up in review.

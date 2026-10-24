@@ -5,11 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.27.0] - 2026-10-24
+
+This is a minor release. Two changes reach a program on the first run after the upgrade, and both only after `gp observe fixtures` writes a sidecar again:
+
+- **Fixture checks:** a cookie the recording only sends, such as a session loaded from a cache, is now in a regenerated sidecar's `flagged_names`, so a committed fixture that holds its name fails `fixtures_are_sanitised` (Upgrading, item 1).
+- **Sidecars:** `gp observe fixtures` writes sidecar schema 2, which says why each name is flagged; a graftpunk older than 1.27.0 refuses it (item 2).
+
+Item 3 is about upgrading itself.
 
 ### Upgrading
 
+Items 1 and 2 take effect when `gp observe fixtures` writes a sidecar again. A sidecar already committed is read as before, and a schema 1 sidecar still loads.
+
 1. **A cookie the recording only sends is now in `flagged_names`, so a committed fixture can fail `fixtures_are_sanitised` on the first run after you regenerate its sidecar** (#274). `gp observe fixtures` used to read only the cookies a response sets. A recording made with a cached session never sees its session set, because the browser holds the cookie before the recording starts and only requests send it, so a session cookie copied into a fixture passed the check. A cookie a request sends is now judged by the same rule as one a response sets: it is flagged when its name reads as a token or session name, when a response set it with `HttpOnly`, or when any value it held is not form state, and otherwise left out when every value it held is form state or no response sets it and requests only ever sent it empty. A cookie whose HAR entry has no value field, in a request or a response, is now read as a value the recorder did not keep, so it stays flagged whatever its other values; 1.26.0 read the missing field as empty and could leave such a cookie out. That reaches every cookie the cached session carries, not only its session: an analytics cookie such as `_ga`, or a cookie named `id` or `user` holding an opaque value, is now flagged too, and the check matches a flagged name anywhere in a fixture, a JSON key included. The cookies a request sends are read from the HAR's `request.cookies`, or from its `Cookie` headers when that array is missing or empty, so a recording that kept neither still never flags a cached session: on a measured login nodriver 0.48.1 delivered no request `Cookie` header and 0.50.3 did (HOW_IT_WORKS, "Diagnosing a failed login"), so record with a current nodriver or record a fresh login. A sidecar already committed does not change until `gp observe fixtures` writes it again. When the check then names a cookie in a fixture, rename it there where the fixture's structure allows; where the plugin reads that key, record again with `gp observe --no-session interactive <url>` and log in during the recording, so the HAR holds only the cookies the site sets then.
+2. **`gp observe fixtures` now writes sidecar schema 2, which a graftpunk older than 1.27.0 refuses** (#276). Schema 2 adds one key, `flagged_reasons`, which maps each flagged name to why it is flagged: `token_candidate`, `token_name`, `session_name`, `http_only`, `value_not_form_state`, `value_not_kept`, `no_value_seen`, and `sent_only`, which says no response in the recording set the cookie and always comes with another reason. Schema 1 sidecars, committed before this release, still load, with no reasons. A suite pinned below 1.27.0 that loads a schema 2 sidecar fails with `sidecar: schema 2 is not one this graftpunk reads (it reads 1 to 1)`; run the suite on 1.27.0 or later. A sidecar you write by hand under schema 2 needs `"flagged_reasons": {}` beside `"flagged_names": []`, and the problem line for a fixture with no sidecar says so.
+3. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Added
+
+- **A sidecar says why each name is flagged** (#276). `gp observe fixtures` writes `flagged_reasons` beside `flagged_names`, and `fixtures_are_sanitised` names the reasons in its problem line (`contains the flagged name 'lot', a cookie or token name the capture's digest recorded (flagged by: value_not_form_state); rename it in the fixture.`), so an author or a reviewer can tell a form-state cookie from a session value without the recording. `graftpunk.har.digest.flagged_reasons_of` returns the reasons, and `flagged_names_of` is its keys.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.14 and needs graftpunk 1.27.0 or later** (#274, #276). Its guide says that a cookie the recording only sends is judged like one a response sets, documents `flagged_reasons` and schema 2's eight sidecar keys, and its `fixture-leaks.py` prints each flagged name's reasons from a schema 2 sidecar.
 
 ### Fixed
 
