@@ -178,19 +178,13 @@ def _redaction_forms(secrets: Iterable[str]) -> list[str]:
 
 
 # A whole value: not preceded or followed by a letter or digit, where an
-# escape sequence ("%XX", a JSON escape, an HTML entity) also counts as a
-# delimiter, since its last character is often a letter or digit.
+# escape sequence that ends in a letter or digit ("%XX", the JSON escapes
+# "\n", "\r", "\t", "\b", "\f" and "\uXXXX") also counts as a delimiter.
+# An HTML entity, "\"", "\/" and "\\" end in a character that is already one.
 _ESCAPE_BEFORE = (
     r"(?<=%[0-9A-Fa-f]{2})",
-    r"(?<=\\[nrtbf\"/\\])",
+    r"(?<=\\[nrtbf])",
     r"(?<=\\u[0-9A-Fa-f]{4})",
-    r"(?<=&quot;)",
-    r"(?<=&amp;)",
-    r"(?<=&apos;)",
-    r"(?<=&lt;)",
-    r"(?<=&gt;)",
-    r"(?<=&#\d\d;)",
-    r"(?<=&#x[0-9A-Fa-f]{2};)",
 )
 _WHOLE = "(?:(?<![A-Za-z0-9])|" + "|".join(_ESCAPE_BEFORE) + ")(?:{value})(?![A-Za-z0-9])"
 

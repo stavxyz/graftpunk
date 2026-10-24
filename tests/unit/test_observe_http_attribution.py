@@ -98,6 +98,24 @@ class TestBlameOnlyWhatFailed:
         assert not spool.exists()
         assert not (tmp_path / "bodies").exists()
 
+    def test_a_keyboard_interrupt_in_a_direct_adapter_send_writes_nothing(
+        self, site: str, tmp_path: Any
+    ) -> None:
+        class Interrupted(requests.adapters.HTTPAdapter):
+            def send(self, *_a: Any, **_k: Any) -> Any:
+                raise KeyboardInterrupt
+
+        spool = tmp_path / "network.har.spool"
+        session = requests.Session()
+        session.mount("http://", Interrupted())
+        capture = HttpCaptureBackend(session, spool_path=spool)
+        capture.start_capture()
+        adapter = session.get_adapter(site)
+        with pytest.raises(KeyboardInterrupt):
+            adapter.send(requests.Request("GET", f"{site}/home").prepare())
+
+        assert not spool.exists()
+
     def test_a_read_timeout_is_a_read_failure_not_an_empty_body(self, site: str) -> None:
         session, capture = _recording()
         with pytest.raises(requests.ConnectionError):
