@@ -1436,8 +1436,10 @@ The Python template at `~/.config/graftpunk/plugins/` provides a starting point 
 The output format for command results follows this precedence (highest to lowest):
 
 1. **`--format` CLI flag** — Explicit user choice always wins. Detection uses Click's `get_parameter_source()` to distinguish "user passed `-f json`" from "json is the default."
-2. **`CommandResult.format_hint`** — Plugin author's suggested format (only applies when the user has not explicitly passed `--format`/`-f` on the command line).
-3. **Default (`json`)** — Pretty-printed JSON.
+2. **`CommandResult.format_hint` naming a plugin-registered formatter** (a name in `SitePlugin.format_overrides` or `CommandResult.format_overrides` that is not a core formatter). It is the plugin's own default and applies to the terminal, a pipe and an `--output` file; the formatter receives `output_path` and the console and decides from them.
+3. **`CommandResult.format_hint` naming a core formatter** (`json`, `table`, `raw`, `csv`, `xlsx`, `pdf`). It applies only when there is no `--output` and stdout is a terminal (`graftpunk.console.stream_is_tty`), so a plugin can set it unconditionally (#284).
+4. **`--output` suffix**: `.json`, `.csv`, `.xlsx` or `.pdf` (any case) picks that format.
+5. **Default (`json`)**: pretty-printed JSON on a terminal, plain JSON otherwise.
 
 The `--view` option applies after format selection. It filters `OutputConfig.views` by name and optionally overrides columns per view. If the command has no `output_config`, `--view` is ignored with a warning.
 
@@ -1448,7 +1450,7 @@ Example:
 def users(self, ctx: CommandContext):
     data = ctx.session.get(f"{self.base_url}/api/users").json()
     return CommandResult(data=data, format_hint="table")
-    # Displays as table by default, but --format json overrides
+    # A table in a terminal; JSON in a pipe or in -o out.json; --format wins
 ```
 
 ---
@@ -1629,6 +1631,8 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 | `get_plugin()` | `plugins` | Look up a single plugin by `site_name`. Raises `PluginError` if unknown. |
 | `format_output()` | `plugins.formatters` | Format and print data. Resolves formatter, unwraps `CommandResult`, applies `--view` filtering. |
 | `discover_formatters()` | `plugins.formatters` | Discover built-in + entry-point formatters. Returns dict of name → formatter. |
+| `write_rendered_to_file()` | `plugins.formatters` | Render with a colour-less 200-column Rich console and write the result to a file (UTF-8). |
+| `stream_is_tty()` | `console` | Whether a console's stream is an interactive terminal; `False` for a closed stream, a `None` stdout or no `isatty`. |
 | `cookie_from_browser()` | `cookies` | A jar cookie for one cookie a browser reported (a WebDriver dict or a CDP `Network.Cookie`), with its domain, path, `Secure` flag, expiry, HttpOnly flag, host-only scope and, for a host-only cookie, the host that set it. |
 | `use_browser_cookie_policy()` | `cookies` | Give a jar graftpunk did not create a `BrowserCookiePolicy`, keeping its settings, unless a program chose its policy. Returns the jar. |
 | `importing_httpie()` | `cookies` | Context manager: import HTTPie modules inside it and leave `http.cookiejar.DefaultCookiePolicy` as it was. |

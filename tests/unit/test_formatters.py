@@ -522,7 +522,7 @@ class TestFormatPrecedence:
     def test_unknown_hint_falls_through_safely(self) -> None:
         """An unrecognized format_hint does not crash — falls through to default."""
         console = MagicMock(spec=Console)
-        result = CommandResult(data={"key": "value"}, format_hint="nonexistent")  # type: ignore[arg-type]
+        result = CommandResult(data={"key": "value"}, format_hint="nonexistent")
         format_output(result, "json", console, user_explicit=False)
         console.print.assert_called_once()
         arg = console.print.call_args[0][0]

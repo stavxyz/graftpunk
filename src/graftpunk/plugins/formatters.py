@@ -21,7 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 from graftpunk import console as gp_console
-from graftpunk.console import _stream_is_tty, write_raw
+from graftpunk.console import stream_is_tty, write_raw
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
 from graftpunk.plugins.export import get_downloads_dir, ordered_keys
@@ -99,21 +99,28 @@ def _resolve_view_data(data: Any, view: ViewConfig) -> Any | None:
     return view_data
 
 
-def _write_to_file(
+def write_rendered_to_file(
     output_path: str,
     render_fn: Callable[[Console], None],
 ) -> None:
     """Redirect Rich rendering (tables) to a file.
 
-    Renders into a StringIO-backed, colour-less Console so the file never
-    carries ANSI escapes even under FORCE_COLOR (#144). Only for output that
-    is *meant* to be rendered; data payloads go through :func:`write_raw`.
+    Calls *render_fn* with a StringIO-backed, colour-less Console, 200 columns
+    wide, and writes what it printed to *output_path* as UTF-8, creating
+    parent directories. The file never carries ANSI escapes, even under
+    FORCE_COLOR (#144). Only for output that is *meant* to be rendered; data
+    payloads go through :func:`graftpunk.console.write_raw`.
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     buf = io.StringIO()
     file_console = Console(file=buf, width=200, color_system=None, force_terminal=False)
     render_fn(file_console)
     Path(output_path).write_text(buf.getvalue(), encoding="utf-8")
+
+
+# Plugins imported these private names before the public ones existed (#284).
+_write_to_file = write_rendered_to_file
+_stream_is_tty = stream_is_tty
 
 
 def _resolve_output_filepath(output_path: str, extension: str) -> Path:
@@ -150,7 +157,7 @@ class JsonFormatter:
         output_path: str = "",
     ) -> None:
         json_str = json.dumps(data, indent=2, default=str)
-        if output_path or not _stream_is_tty(console):
+        if output_path or not stream_is_tty(console):
             # A file or a pipe wants parseable JSON, not a wrapped, highlighted render.
             write_raw(json_str + "\n", console, output_path)
             return
@@ -183,7 +190,7 @@ class TableFormatter:
                 self._render_data(data, c)
 
         if output_path:
-            _write_to_file(output_path, render)
+            write_rendered_to_file(output_path, render)
             return
         render(console)
 
@@ -549,6 +556,16 @@ def discover_formatters() -> dict[str, OutputFormatter]:
     return formatters
 
 
+# The -o suffixes that pick a formatter when neither -f nor a plugin's own
+# format_hint chose one (#284). Any other suffix keeps the CLI default.
+_SUFFIX_FORMATS: dict[str, str] = {
+    ".json": "json",
+    ".csv": "csv",
+    ".xlsx": "xlsx",
+    ".pdf": "pdf",
+}
+
+
 def format_output(
     data: Any,
     format_type: str,
@@ -560,6 +577,22 @@ def format_output(
     plugin_formatters: dict[str, OutputFormatter] | None = None,
 ) -> None:
     """Format and print command output.
+
+    The format is chosen in this order (#284):
+
+    1. An explicit ``--format``/``-f`` (*user_explicit*) always wins.
+    2. A ``format_hint`` naming a formatter the plugin registered itself
+       (in ``SitePlugin.format_overrides`` or
+       ``CommandResult.format_overrides``, under a name that is not a core
+       formatter) is the plugin's own default, so it applies everywhere: the
+       terminal, a pipe and *output_path*. The formatter receives
+       *output_path* and *console* and decides from them.
+    3. A ``format_hint`` naming a core formatter (``table``, ``json`` and so
+       on) applies only when there is no *output_path* and the console's
+       stream is a terminal (:func:`graftpunk.console.stream_is_tty`).
+    4. With *output_path*, a ``.json``, ``.csv``, ``.xlsx`` or ``.pdf``
+       suffix (any case) picks that formatter.
+    5. Otherwise *format_type*, the CLI default.
 
     Formatter resolution follows a three-level override hierarchy:
 
@@ -575,8 +608,9 @@ def format_output(
         format_type: Formatter name (e.g. ``"json"``, ``"table"``, ``"raw"``).
         console: Rich console for output.
         user_explicit: True when the user explicitly passed ``--format``/``-f``
-            on the command line. When True, ``format_hint`` on a
-            ``CommandResult`` is ignored so the user's choice wins.
+            on the command line. When True, neither ``format_hint`` on a
+            ``CommandResult`` nor the *output_path* suffix is consulted, so
+            the user's choice wins.
         view_args: Tuple of ``--view`` CLI values. Each element is either
             a view name (``"items"``) or ``"name:col1,col2,..."`` to
             restrict columns. Empty tuple means show all views.
@@ -589,6 +623,7 @@ def format_output(
     """
     # Level 3: core formatters (built-in + entry points)
     formatters = discover_formatters()
+    core_names = frozenset(formatters)
 
     # Level 2: plugin-wide overrides
     if plugin_formatters:
@@ -596,6 +631,7 @@ def format_output(
 
     output_config = None
     effective_format = format_type
+    hint_applied = False
 
     # Unwrap CommandResult
     if isinstance(data, CommandResult):
@@ -605,16 +641,28 @@ def format_output(
         if data.format_overrides:
             formatters.update(data.format_overrides)
 
-        if not user_explicit and data.format_hint:
-            if data.format_hint in formatters:
-                effective_format = data.format_hint
-            else:
+        hint = data.format_hint
+        if not user_explicit and hint:
+            if hint not in formatters:
                 LOG.warning(
                     "unknown_format_hint",
-                    hint=data.format_hint,
+                    hint=hint,
                     available=sorted(formatters.keys()),
                 )
+            elif hint not in core_names:
+                # The plugin's own formatter: it sees output_path and the
+                # console, so it decides for files and pipes itself.
+                hint_applied = True
+                effective_format = hint
+            elif not output_path and stream_is_tty(console):
+                hint_applied = True
+                effective_format = hint
         data = data.data
+
+    if not user_explicit and output_path and not hint_applied:
+        suffix_format = _SUFFIX_FORMATS.get(Path(output_path).suffix.lower())
+        if suffix_format in formatters:
+            effective_format = suffix_format
 
     # Resolve the formatter for the effective format
     formatter = formatters.get(effective_format)
