@@ -1188,8 +1188,14 @@ class TestYamlDefaults:
         self, site: str, tmp_path: Path
     ) -> None:
         param = _env_default_param(f"${{{ENV_NAME}}}") + "        required: true\n"
-        with pytest.raises(PluginError, match="a required param cannot have a default"):
+        with pytest.raises(PluginError, match="a required param cannot have a default") as env:
             _yaml_plugin(tmp_path, site, param)
+        assert "A ${NAME} default already supplies the value; drop 'required'." in str(env.value)
+        literal = "      - name: page\n        required: true\n        default: 5\n"
+        with pytest.raises(PluginError, match="a required param cannot have a default") as plain:
+            _yaml_plugin(tmp_path, site, literal)
+        assert str(plain.value).endswith("Drop 'required' or the default.")
+        assert "${NAME}" not in str(plain.value)
 
     def test_completion_resolves_no_placeholder_default(
         self, site: str, tmp_path: Path, config_dir: Path
@@ -1520,6 +1526,192 @@ class TestEveryValueType:
         assert failed["level"] == "error"
         assert failed["exception"].endswith(f"RuntimeError: bad key {REDACTED}")
         assert SCOPE_KEY not in json.dumps([info, failed])
+
+
+class _Broken:
+    """An object neither of whose texts can be had."""
+
+    def __str__(self) -> str:
+        raise RuntimeError("no str")
+
+    def __repr__(self) -> str:
+        raise RuntimeError("no repr")
+
+
+class _BadStr:
+    def __str__(self) -> str:
+        raise RuntimeError("no str")
+
+    def __repr__(self) -> str:
+        return f"_BadStr(key={SCOPE_KEY!r})"
+
+
+class _BadRepr:
+    def __str__(self) -> str:
+        return f"bad repr, key {SCOPE_KEY}"
+
+    def __repr__(self) -> str:
+        raise RuntimeError("no repr")
+
+
+class _PlainBadRepr:
+    def __str__(self) -> str:
+        return "plain text"
+
+    def __repr__(self) -> str:
+        raise RuntimeError("no repr")
+
+
+class TestTheScrubNeverRaises:
+    """A value that would make the scrub recurse forever or raise is logged all
+    the same, in gp's console format (its default) and as JSON, and leaks no secret."""
+
+    def _log_in_both_formats(self, capsys: pytest.CaptureFixture[str], **values: Any) -> list[str]:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        texts = []
+        for json_output in (False, True):
+            configure_logging(level="DEBUG", json_output=json_output)
+            with log_secrets([SCOPE_KEY]):
+                get_logger("t").warning("hard_value", **values)
+            text = strip_ansi(capsys.readouterr().err)
+            assert "hard_value" in text
+            _assert_no_form(text, SCOPE_KEY)
+            texts.append(text)
+        return texts
+
+    def test_a_self_referencing_container(self, capsys: pytest.CaptureFixture[str]) -> None:
+        node: dict[str, Any] = {"key": SCOPE_KEY}
+        node["self"] = node
+        loop: list[Any] = [SCOPE_KEY]
+        loop.append(loop)
+        console, as_json = self._log_in_both_formats(capsys, node=node, loop=loop)
+        assert REDACTED in console
+        line = json.loads(as_json)
+        # The cycle is cut where it closes: the inner reference is the scrubbed repr.
+        assert line["node"] == {
+            "key": REDACTED,
+            "self": f"{{'key': '{REDACTED}', 'self': {{...}}}}",
+        }
+        assert line["loop"] == [REDACTED, f"['{REDACTED}', [...]]"]
+
+    def test_nesting_two_thousand_levels_deep(self, capsys: pytest.CaptureFixture[str]) -> None:
+        deep: Any = [SCOPE_KEY]
+        for _ in range(2000):
+            deep = [deep]
+        self._log_in_both_formats(capsys, deep=deep)
+
+    def test_past_the_depth_limit_an_unprintable_member_gives_a_placeholder(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        deep: Any = [_Broken(), SCOPE_KEY]
+        for _ in range(100):
+            deep = [deep]
+        for text in self._log_in_both_formats(capsys, deep=deep):
+            assert "<unprintable list>" in text
+
+    def test_an_object_whose_str_and_repr_both_raise(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        for text in self._log_in_both_formats(capsys, value=_Broken()):
+            assert "<unprintable _Broken>" in text
+
+    def test_an_object_with_one_text_that_raises_logs_the_other_scrubbed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        for text in self._log_in_both_formats(capsys, a=_BadStr(), b=_BadRepr(), c=_PlainBadRepr()):
+            assert f"_BadStr(key='{REDACTED}')" in text
+            assert f"bad repr, key {REDACTED}" in text
+            # Holding no secret, it is still logged as its text: the renderer
+            # would call the repr that raises.
+            assert "plain text" in text
+
+    def test_keys_that_scrub_to_the_same_text_both_stay(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=True)
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("keys", d={f"a{SCOPE_KEY}": 1, f"a{REDACTED}": 2})
+        (line,) = _json_lines(capsys)
+        assert line["d"] == {f"a{REDACTED}": 1, f"a{REDACTED} (2)": 2}
+
+
+class _CountsItsTexts:
+    calls = 0
+
+    def __str__(self) -> str:
+        type(self).calls += 1
+        return SCOPE_KEY
+
+    __repr__ = __str__
+
+
+class TestADroppedLineIsNotScrubbed:
+    def test_a_filtered_line_never_renders_its_values(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import asyncio
+
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="INFO", json_output=True)
+        _CountsItsTexts.calls = 0
+        log = get_logger("t")
+        with log_secrets([SCOPE_KEY]):
+            log.debug("dropped", value=_CountsItsTexts(), payload=b"x" * 5_000_000)
+            asyncio.run(log.adebug("dropped_async", value=_CountsItsTexts()))
+            assert _CountsItsTexts.calls == 0
+            log.info("kept", value=_CountsItsTexts())
+        assert _CountsItsTexts.calls > 0
+        (kept,) = _json_lines(capsys)
+        assert kept["value"] == REDACTED
+
+
+_FORK_CHILD = textwrap.dedent(
+    """
+    import os
+    import signal
+    import sys
+
+    import graftpunk.logging as gl
+
+    gl.configure_logging(level="DEBUG", json_output=True)
+    with gl.log_secrets(["fork-secret-value"]):
+        # Another thread holding the lock at the moment of the fork, as close as
+        # one process can come: the parent holds it while it forks.
+        gl._active_secrets_lock.acquire()
+        pid = os.fork()
+        if pid == 0:
+            signal.alarm(10)  # a child that deadlocks is killed, not left hanging
+            gl.get_logger("child").warning("from_child", value="fork-secret-value")
+            os._exit(0)
+        gl._active_secrets_lock.release()
+        _, status = os.waitpid(pid, 0)
+    print("child exit", os.waitstatus_to_exitcode(status), file=sys.stdout)
+    """
+)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+def test_a_forked_child_logs_although_the_parent_held_the_registry_lock(tmp_path: Path) -> None:
+    script = tmp_path / "fork_child.py"
+    script.write_text(_FORK_CHILD)
+    done = subprocess.run(  # noqa: S603 - argv is this test's own interpreter and script
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env={**os.environ, "NO_COLOR": "1", "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+
+    assert "child exit 0" in done.stdout, done.stdout + done.stderr[-2000:]
+    (line,) = [json.loads(x) for x in done.stderr.splitlines() if x.startswith("{")]
+    assert line == {"value": REDACTED, "event": "from_child", "level": "warning"} | {
+        "timestamp": line["timestamp"]
+    }
 
 
 class TestShortFlag:
