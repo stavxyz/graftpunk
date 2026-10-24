@@ -10,6 +10,14 @@ Routes:
     GET  /latin1-bare  ``text/plain`` with no charset (``café`` in latin-1)
     GET  /truncated    ``Content-Length: 1000`` but only 10 bytes, then closes
     GET  /error        500 with a JSON body
+    GET  /latin1-quoted ``text/html; charset="iso-8859-1"`` (the charset quoted)
+    GET  /empty        200 with ``Content-Length: 0``
+    GET  /slow         answers after 0.3 s; ``X-Received`` is when the request arrived
+    GET  /whoami       echoes the request's ``Authorization`` header in a JSON body
+    GET  /badgz-redirect   302 to /home, ``Content-Encoding: gzip``, a body that is not gzip
+    GET  /trunc-redirect   302 to /home, ``Content-Length: 500`` but 10 bytes, then closes
+    GET  /trunc-cookie     200 setting ``sid``, ``Content-Length: 1000`` but 10 bytes, then closes
+    HEAD (any path)    200 with no body
     POST /api/search   echoes the JSON body back
     POST /login        302 to /home, setting two cookies
 """
@@ -18,6 +26,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -52,18 +61,53 @@ class _Site(BaseHTTPRequestHandler):
             "/latin1": (200, LATIN1_TEXT.encode("latin-1"), "text/html; charset=iso-8859-1"),
             "/latin1-bare": (200, LATIN1_TEXT.encode("latin-1"), "text/plain"),
             "/error": (500, b'{"error": "boom"}', "application/json"),
+            "/latin1-quoted": (
+                200,
+                LATIN1_TEXT.encode("latin-1"),
+                'text/html; charset="iso-8859-1"',
+            ),
+            "/empty": (200, b"", "application/json"),
         }
-        if self.path == "/truncated":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", "1000")
-            self.end_headers()
-            self.wfile.write(b'{"rows": [')
-            self.wfile.flush()
-            self.close_connection = True
+        if self.path in ("/truncated", "/trunc-cookie", "/trunc-redirect"):
+            self._cut_short()
+            return
+        if self.path == "/badgz-redirect":
+            self._send(
+                302, b"not gzip at all", "text/html", Location="/home", Content_Encoding="gzip"
+            )
+            return
+        if self.path == "/slow":
+            received = time.time()
+            time.sleep(0.3)
+            self._send(200, b"{}", "application/json", X_Received=repr(received))
+            return
+        if self.path.split("?")[0] == "/whoami":
+            body = json.dumps({"authorization": self.headers.get("Authorization")}).encode()
+            self._send(200, body, "application/json")
             return
         status, body, content_type = routes.get(self.path, (404, b"not found", "text/plain"))
         self._send(status, body, content_type)
+
+    def _cut_short(self) -> None:
+        """Announce a longer body than is sent, then close the connection."""
+        redirect = self.path == "/trunc-redirect"
+        self.send_response(302 if redirect else 200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", "500" if redirect else "1000")
+        if redirect:
+            self.send_header("Location", "/home")
+        if self.path == "/trunc-cookie":
+            self.send_header("Set-Cookie", "sid=abc123; Path=/")
+        self.end_headers()
+        self.wfile.write(b'{"rows": [')
+        self.wfile.flush()
+        self.close_connection = True
+
+    def do_HEAD(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self) -> None:
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))

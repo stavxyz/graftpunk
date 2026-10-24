@@ -122,6 +122,38 @@ class TestNodriverSessionRecordsTheNetwork:
         # The run directory it opened is removed, not left empty.
         assert _run_dirs(tmp_path) == []
 
+    @pytest.mark.asyncio
+    async def test_a_body_whose_fetch_fails_at_stop_is_marked(self) -> None:
+        from tests.unit.test_observe_post_data import _never, _record
+
+        tab = FakeTab({}, _always, response_available=_never)
+        backend = await _record(tab, _fetch_post("1.1", inline=BODY))
+
+        (entry,) = backend.get_har_entries()
+        content = entry["response"]["content"]
+        assert content["_bodyNotCaptured"] is True
+        assert content["_bodyNotCapturedReason"] == "fetch_failed: ProtocolException"
+
+    @pytest.mark.asyncio
+    async def test_bodies_left_when_the_browser_goes_away_are_marked(self) -> None:
+        from tests.unit.test_observe_post_data import _never, _record
+
+        class GoneAtStop(FakeTab):
+            async def send(self, cmd: Any, **kwargs: Any) -> Any:
+                if self.stopping:
+                    raise ConnectionError("browser went away")
+                return await super().send(cmd, **kwargs)
+
+        tab = GoneAtStop({}, _always, response_available=_never)
+        events = [*_fetch_post("1.1", inline=BODY), *_fetch_post("1.2", inline=BODY)]
+        backend = await _record(tab, events)
+
+        reasons = [
+            e["response"]["content"].get("_bodyNotCapturedReason")
+            for e in backend.get_har_entries()
+        ]
+        assert reasons == ["browser_disconnected", "browser_disconnected"]
+
     def test_the_sync_start_says_it_records_no_network(self, tmp_path: Path) -> None:
         session = _nodriver_session(MagicMock())
         with (
@@ -297,24 +329,50 @@ class TestSeleniumSessionRecordsTheNetwork:
         else:
             assert (tmp_path / content["_bodyFile"]).read_bytes() == b"a,b\n1,2"
 
-    def test_a_response_with_no_body_is_not_fetched(self) -> None:
+    @staticmethod
+    def _one_response(method: str, status: int, execute: Any) -> dict[str, Any]:
         from graftpunk.observe.capture import SeleniumCaptureBackend
 
         log = [
             _perf(
                 "Network.requestWillBeSent",
-                {"requestId": "6.2", "request": {"url": SEARCH, "method": "GET", "headers": {}}},
+                {"requestId": "6.2", "request": {"url": SEARCH, "method": method, "headers": {}}},
             ),
             _perf(
                 "Network.responseReceived",
-                {"requestId": "6.2", "response": {"status": 204, "headers": {}, "mimeType": ""}},
+                {
+                    "requestId": "6.2",
+                    "response": {"status": status, "headers": {}, "mimeType": "text/html"},
+                },
             ),
         ]
         driver = MagicMock()
         driver.get_log = lambda kind: log if kind == "performance" else []
-        SeleniumCaptureBackend(driver).stop_capture()
+        driver.execute_cdp_cmd = execute
+        capture = SeleniumCaptureBackend(driver)
+        capture.stop_capture()
+        (entry,) = capture.get_har_entries()
+        return entry["response"]["content"]
 
-        driver.execute_cdp_cmd.assert_not_called()
+    @pytest.mark.parametrize(("method", "status"), [("GET", 204), ("HEAD", 200)])
+    def test_a_response_with_no_body_is_not_fetched(self, method: str, status: int) -> None:
+        def execute(cdp_method: str, _params: dict[str, Any]) -> dict[str, Any]:
+            return {"body": "<p>fetched</p>", "base64Encoded": False}
+
+        content = self._one_response(method, status, execute)
+
+        assert content["text"] is None
+        assert content["_bodyFile"] is None
+        assert "_bodyNotCaptured" not in content
+
+    def test_a_body_whose_fetch_fails_is_marked(self) -> None:
+        def execute(cdp_method: str, _params: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("No resource with given id was found")
+
+        content = self._one_response("GET", 200, execute)
+
+        assert content["_bodyNotCaptured"] is True
+        assert content["_bodyNotCapturedReason"] == "fetch_failed: RuntimeError"
 
 
 # ---------------------------------------------------------------------------
@@ -645,32 +703,101 @@ class TestPluginCommandRun:
         assert "hunter2-correct-horse" not in har
         assert REDACTED in har
 
-    def test_a_credential_kept_as_a_command_is_not_run(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    @staticmethod
+    def _env(password: Any) -> Any:
         from graftpunk import workstation_env
-        from graftpunk.cli.login_commands import known_credential_values
 
-        monkeypatch.delenv("MYSHOP_PASSWORD", raising=False)
-        monkeypatch.delenv("MYSHOP_USERNAME", raising=False)
-        env = workstation_env.WorkstationEnv(
+        return workstation_env.WorkstationEnv(
             {
                 "MYSHOP_USERNAME": workstation_env.Entry(
                     "MYSHOP_USERNAME", "alice@example.com", "static", 1
                 ),
-                "MYSHOP_PASSWORD": workstation_env.Entry(
-                    "MYSHOP_PASSWORD", "$(false)", "command", 2, command="false"
-                ),
+                "MYSHOP_PASSWORD": password,
             }
         )
-        with (
-            patch.object(workstation_env, "load", return_value=env),
-            patch("graftpunk.workstation_env.subprocess.run") as run,
-        ):
-            values = known_credential_values(_ShopPlugin())
 
-        assert values == ["alice@example.com"]
-        run.assert_not_called()
+    def test_a_static_password_is_known_and_the_username_is_not(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk import workstation_env
+        from graftpunk.cli.login_commands import known_secret_credentials
+
+        monkeypatch.delenv("MYSHOP_PASSWORD", raising=False)
+        monkeypatch.delenv("MYSHOP_USERNAME", raising=False)
+        env = self._env(workstation_env.Entry("MYSHOP_PASSWORD", "s3cret-static", "static", 2))
+        with patch.object(workstation_env, "load", return_value=env):
+            assert known_secret_credentials(_ShopPlugin()) == ["s3cret-static"]
+
+    def test_a_credential_kept_as_a_command_is_not_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk import workstation_env
+        from graftpunk.cli.login_commands import known_secret_credentials
+
+        monkeypatch.delenv("MYSHOP_PASSWORD", raising=False)
+        monkeypatch.delenv("MYSHOP_USERNAME", raising=False)
+        ran = tmp_path / "ran"
+        command = f"touch {ran} && echo command-secret"
+        env = self._env(
+            workstation_env.Entry("MYSHOP_PASSWORD", f"$({command})", "command", 2, command=command)
+        )
+        with patch.object(workstation_env, "load", return_value=env):
+            values = known_secret_credentials(_ShopPlugin())
+
+        assert values == []
+        assert not ran.exists()
+
+    def test_basic_auth_built_from_the_login_is_scrubbed_whole(
+        self, site: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import base64
+
+        from graftpunk.observe.run import REDACTED
+
+        # len("bob@example.com") + 1 is not a multiple of 3, so the password's
+        # own base64 is not a substring of the token.
+        user, password = "bob@example.com", "hunter2-correct-horse"
+        token = base64.b64encode(f"{user}:{password}".encode()).decode()
+        assert base64.b64encode(password.encode()).decode() not in token
+        monkeypatch.setenv("MYSHOP_USERNAME", user)
+        monkeypatch.setenv("MYSHOP_PASSWORD", password)
+
+        class _AuthPlugin(_ShopPlugin):
+            @command(help="Who am I")
+            def whoami(self, ctx: Any) -> dict[str, Any]:
+                ctx.session.auth = (user, password)
+                return ctx.session.get(f"{self.base_url}/whoami", params={"u": user}).json()
+
+        plugin = _AuthPlugin()
+        plugin.base_url = site
+        spec = next(s for s in plugin.get_commands() if s.name == "whoami")
+        app = typer.Typer()
+        app.command(name="whoami")(
+            synthesize_command_fn(
+                name="whoami",
+                param_specs=list(spec.params),
+                body=lambda ctx, **kw: run_plugin_command(plugin, spec, ctx, **kw),
+            )
+        )
+        with (
+            patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.cli.plugin_runtime.format_output"),
+        ):
+            result = CliRunner().invoke(app, [], obj={"observe_mode": "full"})
+
+        assert result.exit_code == 0, result.output
+        har = (_only_run(tmp_path) / "network.har").read_text()
+        assert token not in har
+        assert password not in har
+        (entry,) = _har_entries(_only_run(tmp_path))
+        headers = {h["name"]: h["value"] for h in entry["request"]["headers"]}
+        assert headers["Authorization"] == f"Basic {REDACTED}"
+        # The echo in the response body is replaced whole too.
+        assert json.loads(entry["response"]["content"]["text"]) == {
+            "authorization": f"Basic {REDACTED}"
+        }
+        # A username is not a secret: the URL keeps it.
+        assert "u=bob%40example.com" in entry["request"]["url"]
 
 
 class TestRunFilesAreOwnerOnly:

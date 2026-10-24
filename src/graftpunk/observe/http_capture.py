@@ -1,16 +1,19 @@
 """Observe capture for HTTP made with ``requests``: plugin commands and ``gp http``.
 
 A plugin command runs on a ``requests`` session, with no browser to record
-from, so ``gp --observe=full`` records its traffic at the session's transport
-adapters: while the capture runs, each mounted adapter's ``send`` is wrapped,
-so every request the session sends is seen, each redirect hop included,
-whether it went through ``Session.request``, ``Session.send`` or carried its
-own ``hooks=``. The entries are built by the browser captures' own builder and
-bodies follow their rules (:func:`graftpunk.observe.capture._process_response_body`).
+from, so ``gp --observe=full`` records that session's traffic. While the
+capture runs, the session's ``send`` and each mounted adapter's ``send`` are
+wrapped: the adapters note each response, each redirect hop included, with
+when its request was sent, whether it went through ``Session.request``,
+``Session.send`` or carried its own ``hooks=``; the session call records them
+once requests is done with them. Nothing here reads a response body, so a
+request does what it does with observe off. The entries are built by the
+browser captures' own builder and bodies follow their rules
+(:func:`graftpunk.observe.capture._process_response_body`).
 
-Entries are spooled to a file in the run directory as they arrive, so a long
-command holds at most one response body in memory for the recorder; bodies
-too large or not text for the HAR are written to ``bodies/`` at once.
+Entries are spooled to a file in the run directory as they are recorded, so a
+long command holds at most one call's responses in memory for the recorder;
+bodies too large or not text for the HAR are written to ``bodies/`` at once.
 """
 
 from __future__ import annotations
@@ -105,11 +108,11 @@ def har_entry_for_response(
     *max_body_size* goes into the HAR, decoded with its declared charset, else
     as UTF-8 (no charset is guessed); any other body, one that does not
     decode included, goes to *bodies_dir* as raw bytes; without one it is left
-    out and marked. With *body_unread* set,
-    the response body is not read at all (a streamed response, or one whose
-    read failed) and the entry says why with ``_bodyNotCaptured`` and
-    ``_bodyNotCapturedReason``, unless the response has no body to read (a
-    redirect hop or ``Content-Length: 0``).
+    out and marked. The body is the one requests read (``Response._content``);
+    this never reads a body. With *body_unread* set, requests left the body
+    unread, and the entry says why with ``_bodyNotCaptured`` and
+    ``_bodyNotCapturedReason``, except a streamed response with no body to
+    miss (a redirect hop or ``Content-Length: 0``).
     """
     request = response.request
     request_headers: Mapping[str, str] = request.headers if request is not None else {}
@@ -151,16 +154,19 @@ def har_entry_for_response(
     if response.is_redirect and location:
         summary["redirectURL"] = urllib.parse.urljoin(response.url or "", location)
     if body_unread is None:
+        # The body as requests read it; this never reads it itself.
+        content = response.__dict__.get("_content")
         _process_response_body(
             summary,
-            response.content or b"",
+            content if isinstance(content, bytes) else b"",
             False,
             request_id,
             content_type,
             max_body_size,
             bodies_dir,
         )
-    elif not (response.is_redirect or _has_empty_body(response)):
+    elif body_unread != "streamed" or not (response.is_redirect or _has_empty_body(response)):
+        # A streamed redirect hop or empty response has no body to have missed.
         summary["_bodyNotCaptured"] = body_unread
     data["response"] = summary
 
@@ -169,13 +175,14 @@ def har_entry_for_response(
     return entry
 
 
-class _RecordingSend:
+class _RecordingAdapterSend:
     """Stands in for one adapter's ``send`` while a capture runs.
 
-    It is an instance attribute of the adapter, never pickled with it:
-    ``HTTPAdapter.__getstate__`` keeps only the adapter's settings, so a session
-    pickled mid-command (``cache_session(ctx.session)``) and loaded later does
-    not record, and carries none of the entries.
+    It notes each response the adapter returns, with when its request was
+    sent, and reads nothing: the body is read where requests reads it, so a
+    request does exactly what it does with observe off. It is an instance
+    attribute of the adapter, never pickled with it: ``HTTPAdapter.__getstate__``
+    keeps only the adapter's settings.
     """
 
     def __init__(self, capture: HttpCaptureBackend, original: Any) -> None:
@@ -183,42 +190,85 @@ class _RecordingSend:
         self.original = original
 
     def __call__(self, request: requests.PreparedRequest, *args: Any, **kwargs: Any) -> Any:
-        stream = bool(kwargs.get("stream", args[0] if args else False))
         started = time.time()
         response = self.original(request, *args, **kwargs)
-        if stream:
-            self.capture.record(response, started, time.time() - started, body_unread="streamed")
-            return response
-        try:
-            # requests reads it right after send returns; reading it here
-            # first changes nothing for the caller.
-            response.content  # noqa: B018
-        except Exception as exc:
-            self.capture.record(
-                response,
-                started,
-                time.time() - started,
-                body_unread=f"read_failed: {type(exc).__name__}",
-            )
-            raise
-        self.capture.record(response, started, time.time() - started)
+        self.capture._seen(response, started)
         return response
 
 
+class _RecordingSessionSend:
+    """Stands in for the session's ``send`` while a capture runs.
+
+    requests follows redirects by calling ``self.send`` again, so one outer
+    call holds every hop of a request. When the outer call ends, requests has
+    read every body it reads (each hop's in ``resolve_redirects``, the last one
+    unless streamed), and the hops the adapters noted are recorded then, with
+    the bodies as requests left them. Whether the call returned or raised, what
+    it returns or raises is the original's. It is an instance attribute,
+    outside ``requests.Session.__attrs__``, so it is never pickled.
+    """
+
+    def __init__(self, capture: HttpCaptureBackend, original: Any) -> None:
+        self.capture = capture
+        self.original = original
+
+    def __call__(self, request: requests.PreparedRequest, **kwargs: Any) -> Any:
+        local = self.capture._local
+        outer = getattr(local, "depth", 0) == 0
+        if outer:
+            local.seen = []
+        local.depth = getattr(local, "depth", 0) + 1
+        result: requests.Response | None = None
+        error: BaseException | None = None
+        try:
+            result = self.original(request, **kwargs)
+            return result
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            local.depth -= 1
+            if outer:
+                seen, local.seen = local.seen, None
+                self.capture._finish_call(seen, result, error, bool(kwargs.get("stream")))
+
+
+def _unread_reason(
+    response: requests.Response, *, stream: bool, error: BaseException | None, last: bool
+) -> str | None:
+    """Why requests left *response*'s body unread, or None when it read it."""
+    content = response.__dict__.get("_content", False)
+    if content is not False:
+        return None
+    if error is not None and last:
+        return f"read_failed: {type(error).__name__}"
+    if stream:
+        return "streamed"
+    # requests reads every non-streamed body; a hop whose read failed is one it
+    # tolerated in resolve_redirects and drained raw.
+    return "read_failed"
+
+
 class HttpCaptureBackend:
-    """Capture backend recording a ``requests`` session at its transport adapters.
+    """Capture backend recording a ``requests`` session's traffic.
 
-    ``start_capture`` wraps the ``send`` of every adapter mounted on the
-    session (see :class:`_RecordingSend`) and ``stop_capture`` puts it back. An
-    adapter whose pickled state is not ``HTTPAdapter``'s is left unwrapped and
-    logged, since its wrapper could be pickled with the session; an adapter
-    mounted after the capture starts is not recorded. Recording never raises
-    into the request: a response it cannot record is logged and skipped.
+    ``start_capture`` wraps the session's ``send`` and the ``send`` of every
+    adapter mounted on it (see :class:`_RecordingSessionSend` and
+    :class:`_RecordingAdapterSend`); ``stop_capture`` puts them back. Each
+    response is recorded once requests is done with the call that produced it,
+    so recording reads no body requests would not read and changes no outcome,
+    hook or cookie. An adapter whose pickled state is not ``HTTPAdapter``'s is
+    not wrapped (its wrapper could be pickled with the session), and neither is
+    one mounted after the capture starts: a request through either is still
+    recorded from the response the session returns, timed from its
+    ``elapsed``, but one that raises is not, and a warning says so. Recording
+    never raises into the request: a response it cannot record is logged and
+    skipped. A response that arrives after ``stop_capture`` is dropped.
 
-    With *spool_path*, each entry is appended to that file as JSON as it
-    arrives, and :meth:`iter_har_entries` reads them back one at a time;
-    without it they are kept in memory. There is no browser, so screenshots,
-    page source and console logs are always empty.
+    With *spool_path*, each entry is appended to that file as JSON when it is
+    recorded, scrubbed of *redact* first, and :meth:`iter_har_entries` reads
+    them back one at a time; without it they are kept in memory. There is no
+    browser, so screenshots, page source and console logs are always empty.
     """
 
     def __init__(
@@ -227,20 +277,73 @@ class HttpCaptureBackend:
         max_body_size: int = MAX_RESPONSE_BODY_SIZE,
         bodies_dir: Path | None = None,
         spool_path: Path | None = None,
+        redact: tuple[str, ...] = (),
     ) -> None:
         self._session = session
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
         self._spool_path = spool_path
+        self._redact = tuple(redact)
         self._entries: list[dict[str, Any]] = []
         self._count = 0
         self._lock = threading.Lock()
-        self._wrapped: list[requests.adapters.BaseAdapter] = []
+        self._local = threading.local()
+        self._stopped = False
+        self._warned_unwrapped = False
+        self._wrapped: list[Any] = []
 
     def _next_id(self) -> str:
         with self._lock:
             self._count += 1
             return f"http-{self._count}"
+
+    def _seen(self, response: requests.Response, started: float) -> None:
+        """Note a response an adapter returned, for its session call to record."""
+        seen = getattr(self._local, "seen", None)
+        if seen is not None:
+            seen.append((response, started))
+            return
+        # An adapter used without the session's send: nothing will read the
+        # body on requests' behalf here, and the recorder reads none itself.
+        self.record(response, started, 0.0, body_unread="not_read")
+
+    def _finish_call(
+        self,
+        seen: list[tuple[requests.Response, float]],
+        result: requests.Response | None,
+        error: BaseException | None,
+        stream: bool,
+    ) -> None:
+        """Record every response of one session call, as requests left it."""
+        try:
+            noted = {id(response) for response, _started in seen}
+            if result is not None:
+                for response in [*result.history, result]:
+                    if id(response) not in noted:
+                        self._warn_unwrapped()
+                        elapsed = response.elapsed.total_seconds()
+                        seen.append((response, time.time() - elapsed))
+            seen.sort(key=lambda pair: pair[1])
+            for index, (response, started) in enumerate(seen):
+                reason = _unread_reason(
+                    response, stream=stream, error=error, last=index == len(seen) - 1
+                )
+                self.record(response, started, response.elapsed.total_seconds(), body_unread=reason)
+        except Exception as exc:  # noqa: BLE001 - recording must never break the request
+            LOG.error("http_capture_record_failed", error=str(exc), exc_type=type(exc).__name__)
+
+    def _warn_unwrapped(self) -> None:
+        if self._warned_unwrapped:
+            return
+        self._warned_unwrapped = True
+        LOG.warning(
+            "http_capture_adapter_not_recorded",
+            hint=(
+                "A request went through an adapter the capture did not wrap (mounted "
+                "after it started, or with its own pickled state); it is recorded from "
+                "the response, and a request through it that raises is not recorded"
+            ),
+        )
 
     def record(
         self,
@@ -251,6 +354,9 @@ class HttpCaptureBackend:
         body_unread: str | None = None,
     ) -> None:
         """Add one entry for *response*; log and skip it if it cannot be built."""
+        if self._stopped:
+            LOG.debug("http_capture_response_after_stop", url=getattr(response, "url", None))
+            return
         request_id = self._next_id()
         try:
             entry = har_entry_for_response(
@@ -273,20 +379,35 @@ class HttpCaptureBackend:
             )
 
     def _keep(self, entry: dict[str, Any]) -> None:
-        if self._spool_path is None:
-            with self._lock:
-                self._entries.append(entry)
-            return
-        from graftpunk.observe.storage import write_private_file
+        if self._redact:
+            from graftpunk.observe.run import redact_har_entries, redact_request_body_files
 
-        line = json.dumps(entry) + "\n"
+            (entry,) = redact_har_entries([entry], self._redact)
+            if self._bodies_dir is not None:
+                redact_request_body_files([entry], self._redact, self._bodies_dir.parent)
         with self._lock:
-            write_private_file(self._spool_path, line, append=True)
+            # Checked under the lock stop_capture takes: once the run is being
+            # written, a late response must not recreate the spool.
+            if self._stopped:
+                LOG.debug("http_capture_response_after_stop", url=entry["request"]["url"])
+                return
+            if self._spool_path is None:
+                self._entries.append(entry)
+                return
+            from graftpunk.observe.storage import write_private_file
+
+            write_private_file(self._spool_path, json.dumps(entry) + "\n", append=True)
 
     def start_capture(self) -> None:
-        """Begin recording every request the session's mounted adapters send."""
+        """Begin recording every request the session sends."""
+        with self._lock:
+            self._stopped = False
+        session_send = self._session.__dict__.get("send")
+        if not isinstance(session_send, _RecordingSessionSend):
+            self._session.__dict__["send"] = _RecordingSessionSend(self, self._session.send)
+            self._wrapped.append(self._session)
         for prefix, adapter in self._session.adapters.items():
-            if isinstance(adapter.__dict__.get("send"), _RecordingSend):
+            if isinstance(adapter.__dict__.get("send"), _RecordingAdapterSend):
                 continue
             if type(adapter).__getstate__ is not requests.adapters.HTTPAdapter.__getstate__:
                 LOG.warning(
@@ -296,22 +417,27 @@ class HttpCaptureBackend:
                     hint="Its pickled state is not HTTPAdapter's, so it is not wrapped",
                 )
                 continue
-            adapter.send = _RecordingSend(self, adapter.send)
+            adapter.send = _RecordingAdapterSend(self, adapter.send)
             self._wrapped.append(adapter)
-        LOG.debug("http_capture_started", adapters=len(self._wrapped))
+        LOG.debug("http_capture_started", wrapped=len(self._wrapped))
 
     def stop_capture(self) -> None:
-        """Stop recording and put each adapter's ``send`` back. Safe to call twice."""
-        for adapter in self._wrapped:
-            wrapper = adapter.__dict__.get("send")
-            if isinstance(wrapper, _RecordingSend) and wrapper.capture is self:
-                original = wrapper.original
-                if getattr(original, "__self__", None) is adapter and (
-                    getattr(original, "__func__", None) is getattr(type(adapter), "send", None)
-                ):
-                    del adapter.__dict__["send"]
-                else:
-                    adapter.send = original
+        """Stop recording and put each ``send`` back. Safe to call twice."""
+        with self._lock:
+            self._stopped = True
+        for owner in self._wrapped:
+            wrapper = owner.__dict__.get("send")
+            if not isinstance(wrapper, _RecordingAdapterSend | _RecordingSessionSend):
+                continue
+            if wrapper.capture is not self:
+                continue
+            original = wrapper.original
+            if getattr(original, "__self__", None) is owner and (
+                getattr(original, "__func__", None) is getattr(type(owner), "send", None)
+            ):
+                del owner.__dict__["send"]
+            else:
+                owner.send = original
         self._wrapped = []
         LOG.debug("http_capture_stopped")
 
@@ -336,7 +462,7 @@ class HttpCaptureBackend:
         return None
 
     def iter_har_entries(self) -> Iterator[dict[str, Any]]:
-        """The HAR entries recorded so far, one at a time, in the order sent."""
+        """The HAR entries recorded so far, one at a time, in the order recorded."""
         if self._spool_path is None:
             yield from list(self._entries)
             return
@@ -348,11 +474,11 @@ class HttpCaptureBackend:
                     yield json.loads(line)
 
     def get_har_entries(self) -> list[dict[str, Any]]:
-        """The HAR entries recorded so far, in the order the responses arrived."""
+        """The HAR entries recorded so far, in the order recorded."""
         return list(self.iter_har_entries())
 
     def discard_spool(self) -> None:
-        """Remove the spool file, once its entries are in the HAR."""
+        """Remove the spool file."""
         if self._spool_path is not None:
             self._spool_path.unlink(missing_ok=True)
 

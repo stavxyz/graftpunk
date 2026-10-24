@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import datetime
 import json
 import os
+import re
 import stat
 import tempfile
 import urllib.parse
@@ -22,6 +24,8 @@ REDACTED = "***REDACTED***"
 # Secrets shorter than this are not redacted: replacing every "ab" in a HAR
 # would mangle it beyond use, and such values are not meaningfully secret.
 _MIN_REDACT_LEN = 3
+# An HTTP Basic credential: the scheme, then base64 of "user:password".
+_BASIC_RE = re.compile(r"(\bBasic\s+)([A-Za-z0-9+/]+={0,2})", re.IGNORECASE)
 
 
 def make_run_id() -> str:
@@ -49,19 +53,24 @@ def redact_har_entries(
     possibly in a query string, in ``Authorization`` headers, and echoed by
     some sites into response bodies. Replace each secret -- raw, URL-encoded,
     JSON-escaped and base64 -- in every string of every entry, longest forms
-    first so a partial encoding does not leave a fragment behind.
+    first so a partial encoding does not leave a fragment behind. Before that,
+    an HTTP Basic credential (``Basic <base64 of user:password>``) whose
+    decoded text contains a secret is replaced whole, wherever it appears: the
+    secret's own base64 is found inside ``user:password`` only for some
+    username lengths.
 
     Args:
         entries: HAR 1.2 entry dicts (not mutated).
         secrets: Values to remove; empty and very short values are skipped.
     """
-    ordered = _redaction_forms(secrets)
+    kept = _kept_secrets(secrets)
+    ordered = _redaction_forms(kept)
     if not ordered:
         return entries
 
     def scrub(value: Any) -> Any:
         if isinstance(value, str):
-            return _scrub_text(value, ordered)
+            return _scrub_text(value, ordered, kept)
         if isinstance(value, dict):
             return {k: scrub(v) for k, v in value.items()}
         if isinstance(value, list):
@@ -71,16 +80,37 @@ def redact_har_entries(
     return scrub(entries)
 
 
+def _kept_secrets(secrets: Iterable[str]) -> tuple[str, ...]:
+    """The secrets long enough to redact."""
+    return tuple(s for s in secrets if s and len(s) >= _MIN_REDACT_LEN)
+
+
 def _redaction_forms(secrets: Iterable[str]) -> list[str]:
     """Every wire form of each secret long enough to redact, longest first."""
     forms: set[str] = set()
-    for secret in secrets:
-        if secret and len(secret) >= _MIN_REDACT_LEN:
-            forms |= _secret_forms(secret)
+    for secret in _kept_secrets(secrets):
+        forms |= _secret_forms(secret)
     return sorted(forms, key=len, reverse=True)
 
 
-def _scrub_text(value: str, ordered: list[str]) -> str:
+def _scrub_basic(value: str, secrets: tuple[str, ...]) -> str:
+    """*value* with each Basic credential whose decoded text holds a secret replaced."""
+
+    def replace(match: re.Match[str]) -> str:
+        try:
+            decoded = base64.b64decode(match.group(2), validate=True)
+        except (binascii.Error, ValueError):
+            return match.group(0)
+        text = decoded.decode("utf-8", errors="replace")
+        if any(secret in text for secret in secrets):
+            return match.group(1) + REDACTED
+        return match.group(0)
+
+    return _BASIC_RE.sub(replace, value)
+
+
+def _scrub_text(value: str, ordered: list[str], secrets: tuple[str, ...] = ()) -> str:
+    value = _scrub_basic(value, secrets)
     for form in ordered:
         if form in value:
             value = value.replace(form, REDACTED)
@@ -135,7 +165,8 @@ def redact_request_body_files(
     scrubbed. A reference outside *run_dir*, or to a missing file, is skipped.
     Response bodies in ``bodies/`` are not scanned here.
     """
-    ordered = _redaction_forms(secrets)
+    kept = _kept_secrets(secrets)
+    ordered = _redaction_forms(kept)
     if not ordered:
         return
     root = run_dir.resolve()
@@ -159,7 +190,7 @@ def redact_request_body_files(
                     _replace_file(path, masked)
                     LOG.info("request_body_file_scrubbed", file=ref, binary=True)
                 continue
-            scrubbed = _scrub_text(text, ordered)
+            scrubbed = _scrub_text(text, ordered, kept)
             if scrubbed != text:
                 data = scrubbed.encode("utf-8")
                 _replace_file(path, data)
@@ -213,8 +244,13 @@ def write_capture_data(storage: ObserveStorage, capture: Any, redact: Iterable[s
 
     try:
         if isinstance(capture, HttpCaptureBackend):
-            written = storage.write_har(one_at_a_time(capture.iter_har_entries()))
-            capture.discard_spool()
+            try:
+                written = storage.write_har(one_at_a_time(capture.iter_har_entries()))
+            finally:
+                # On every exit, success or not: the spool holds the traffic
+                # before the scrub, and the capture is stopped, so nothing
+                # recreates it (HttpCaptureBackend drops a late response).
+                capture.discard_spool()
         else:
             entries = scrubbed(capture.get_har_entries())
             storage.write_har(entries)

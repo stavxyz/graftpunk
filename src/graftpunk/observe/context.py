@@ -150,6 +150,7 @@ def build_observe_context(
     driver: Any,
     mode: Literal["off", "full"],
     http_session: requests.Session | None = None,
+    redact: Iterable[str] = (),
 ) -> ObservabilityContext:
     """Build an observability context for a plugin command or session.
 
@@ -166,6 +167,8 @@ def build_observe_context(
         mode: Observe mode ("off" or "full").
         http_session: With no driver, the ``requests`` session whose traffic
             the run records (:class:`graftpunk.observe.http_capture.HttpCaptureBackend`).
+        redact: Secret values the HTTP capture scrubs from each entry as it
+            records it; ``finish()`` should be given the same values.
 
     Returns:
         Configured ObservabilityContext, or NoOpObservabilityContext if mode is
@@ -208,6 +211,7 @@ def build_observe_context(
                 http_session,
                 bodies_dir=bodies_dir,
                 spool_path=storage.run_dir / SPOOL_NAME,
+                redact=tuple(redact),
             ),
             storage=storage,
             mode=mode,

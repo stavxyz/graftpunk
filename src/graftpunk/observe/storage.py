@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -193,7 +194,11 @@ class ObserveStorage:
         """Write HAR (HTTP Archive) data to the network.har file.
 
         Entries are serialized one at a time, so an iterator that reads them
-        from disk is never held in memory whole.
+        from disk is never held in memory whole. They go to a temporary file in
+        the run directory, renamed onto ``network.har`` only once the HAR is
+        complete: a failure part way (an entry that cannot be read or
+        serialized, a full disk, an interrupt) leaves any earlier
+        ``network.har`` as it was and no partial one.
 
         Args:
             entries: HAR entry dicts.
@@ -202,19 +207,24 @@ class ObserveStorage:
             The number of entries written.
         """
         count = 0
-        fd = os.open(self._har_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, PRIVATE_FILE_MODE)
-        os.fchmod(fd, PRIVATE_FILE_MODE)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(
-                '{\n  "log": {\n    "version": "1.2",\n'
-                '    "creator": {"name": "graftpunk", "version": "0.1.0"},\n'
-                '    "entries": ['
-            )
-            for entry in entries:
-                handle.write(",\n" if count else "\n")
-                handle.write(json.dumps(entry, indent=2))
-                count += 1
-            handle.write("\n    ]\n  }\n}\n")
+        fd, temp_name = tempfile.mkstemp(dir=self._run_dir, prefix=".network.har.")
+        try:
+            os.fchmod(fd, PRIVATE_FILE_MODE)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{\n  "log": {\n    "version": "1.2",\n'
+                    '    "creator": {"name": "graftpunk", "version": "0.1.0"},\n'
+                    '    "entries": ['
+                )
+                for entry in entries:
+                    handle.write(",\n" if count else "\n")
+                    handle.write(json.dumps(entry, indent=2))
+                    count += 1
+                handle.write("\n    ]\n  }\n}\n")
+            os.replace(temp_name, self._har_path)
+        except BaseException:
+            Path(temp_name).unlink(missing_ok=True)
+            raise
         return count
 
     def write_metadata(self, metadata: dict[str, Any]) -> None:

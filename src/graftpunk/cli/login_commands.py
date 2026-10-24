@@ -197,19 +197,23 @@ def credential_envvar(plugin: CLIPluginProtocol, field_name: str) -> str:
     return f"{site_prefix}_{field_name.upper()}"
 
 
-def known_credential_values(plugin: CLIPluginProtocol) -> list[str]:
-    """The plugin's login credential values gp can read without running anything.
+def known_secret_credentials(plugin: CLIPluginProtocol) -> list[str]:
+    """The plugin's secret login credentials gp can read without running anything.
 
-    For each login field (:func:`resolve_login_fields`), the value its
+    A field is secret when its name holds one of :data:`SECRET_KEYWORDS`
+    (``password``, ``secret``, ``token``, ``key``), the rule the login prompt
+    masks input by; a username is not, so it is left in URLs and bodies. For
+    each such login field (:func:`resolve_login_fields`), the value its
     environment variable holds, else the workstation env file's static value
     for that name. A ``$(...)`` command value is not run: outside a login it
     could ask for a password or a biometric approval, so a credential kept
-    that way is not known here. Used to scrub a plugin command's observe run
-    the way a login's run is scrubbed of the credentials it submitted.
+    that way is not known here. Used to scrub a plugin command's observe run.
     """
     env_file = workstation_env.load()
     values: list[str] = []
     for field_name in resolve_login_fields(plugin):
+        if not any(keyword in field_name.lower() for keyword in SECRET_KEYWORDS):
+            continue
         name = credential_envvar(plugin, field_name)
         value = os.environ.get(name)
         if not value:

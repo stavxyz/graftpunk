@@ -191,8 +191,13 @@ def _process_response_body(
         response["body"] = ""
         return
 
-    if not _is_text_mime(mime):
-        reason = "binary" if _is_binary_mime(mime) else "not_text"
+    # Binary first, on the bare type: an Office type names "xml", and a
+    # parameter can hold any word ("name=context.bin" holds "text").
+    bare = mime.split(";")[0].strip()
+    if _is_binary_mime(bare):
+        reason = "binary"
+    elif not _is_text_mime(bare):
+        reason = "not_text"
     elif body_size > max_body_size:
         reason = "over_max_body_size"
     else:
@@ -1216,6 +1221,7 @@ class SeleniumCaptureBackend:
                         bodies_dir=self._bodies_dir,
                     )
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
+                    response["_bodyNotCaptured"] = f"fetch_failed: {type(exc).__name__}"
                     LOG.warning(
                         "selenium_response_body_fetch_failed",
                         request_id=request_id,
@@ -1545,6 +1551,7 @@ class NodriverCaptureBackend:
             self._post_data_closed = True
             if self._record_request_bodies:
                 _flag_uncaptured_post_data(self._request_map)
+            self._mark_unfetched_response_bodies("no_tab")
             return
 
         self._extra_info.log_unmatched(self._request_map)
@@ -1599,6 +1606,25 @@ class NodriverCaptureBackend:
         if still_running:
             LOG.warning("nodriver_request_time_post_data_fetch_cancelled", count=len(still_running))
 
+    def _mark_unfetched_response_bodies(self, reason: str) -> None:
+        """Mark each response body stop will not fetch now, so none is left out unsaid.
+
+        A body already in the HAR or ``bodies/``, or already marked, is left as is.
+        """
+        for request_id, data in self._request_map.items():
+            response = data.get("response")
+            if (
+                response is None
+                or _is_redirect_hop(data)
+                or request_id in self._bodies_fetched
+                or not _body_expected(data, response)
+                or "body" in response
+                or response.get("_bodyFile")
+                or response.get("_bodyNotCaptured")
+            ):
+                continue
+            response["_bodyNotCaptured"] = reason
+
     async def _fetch_bodies_at_stop(self, tab: Any) -> None:
         """Fetch what the event handlers did not: request bodies the request-time
         fetch missed, and response bodies the eager fetch missed.
@@ -1635,6 +1661,7 @@ class NodriverCaptureBackend:
                         error=str(exc),
                         exc_type=type(exc).__name__,
                     )
+                    self._mark_unfetched_response_bodies("browser_disconnected")
                     return
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
                     data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
@@ -1669,8 +1696,10 @@ class NodriverCaptureBackend:
                         error=str(exc),
                         exc_type=type(exc).__name__,
                     )
+                    self._mark_unfetched_response_bodies("browser_disconnected")
                     return
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
+                    response["_bodyNotCaptured"] = f"fetch_failed: {type(exc).__name__}"
                     LOG.warning(
                         "nodriver_response_body_fetch_failed",
                         request_id=request_id,

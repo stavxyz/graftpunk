@@ -194,13 +194,16 @@ def run_plugin_command(
             plugin=plugin.site_name,
         )
     # A command runs on a requests session, not a browser: with no driver the
-    # run records that session's HTTP traffic instead.
+    # run records that session's HTTP traffic instead, scrubbed of the
+    # plugin's secret credentials as each entry is recorded.
+    secrets = _observe_secrets(plugin, observe_mode)
     observe_ctx = build_observe_context(
         plugin.site_name,
         backend_type,
         driver,
         observe_mode,
         http_session=session if driver is None else None,
+        redact=secrets,
     )
     observe_ctx.start()
     try:
@@ -218,18 +221,18 @@ def run_plugin_command(
             kwargs=kwargs,
         )
     finally:
-        observe_ctx.finish(redact=_observe_secrets(plugin, observe_mode))
+        observe_ctx.finish(redact=secrets)
 
 
 def _observe_secrets(plugin: CLIPluginProtocol, observe_mode: str) -> list[str]:
-    """What a plugin command's run is scrubbed of: the plugin's login credentials
-    gp can read (:func:`graftpunk.cli.login_commands.known_credential_values`)."""
+    """What a plugin command's run is scrubbed of: the plugin's secret login
+    credentials gp can read (:func:`graftpunk.cli.login_commands.known_secret_credentials`)."""
     if observe_mode == "off":
         return []
-    from graftpunk.cli.login_commands import known_credential_values
+    from graftpunk.cli.login_commands import known_secret_credentials
 
     try:
-        return known_credential_values(plugin)
+        return known_secret_credentials(plugin)
     except Exception as exc:  # noqa: BLE001 - the run is still written, unscrubbed
         LOG.error("observe_secrets_unavailable", error=str(exc), exc_type=type(exc).__name__)
         return []

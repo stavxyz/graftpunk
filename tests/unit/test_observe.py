@@ -1413,6 +1413,25 @@ class TestSharedHARHelpers:
         assert response["_bodyNotCaptured"] == "binary"
         assert "body" not in response
 
+    @pytest.mark.parametrize(
+        "mime",
+        [
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            'application/octet-stream; name="context.bin"',
+        ],
+    )
+    def test_a_binary_type_is_binary_even_when_it_names_a_text_word(
+        self, tmp_path: Path, mime: str
+    ) -> None:
+        response = self._stored(mime, b"plain ascii bytes", tmp_path)
+        assert response["_bodyFileReason"] == "binary"
+        assert "body" not in response
+
+    def test_an_empty_body_is_empty_text(self, tmp_path: Path) -> None:
+        response = self._stored("", b"", tmp_path)
+        assert response["body"] == ""
+        assert not (tmp_path / "bodies").exists()
+
     def test_mime_to_extension_known(self) -> None:
         assert _mime_to_extension("application/json") == ".json"
         assert _mime_to_extension("text/html") == ".html"
