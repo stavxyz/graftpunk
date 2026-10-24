@@ -10,6 +10,7 @@ import asyncio
 import inspect
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -20,17 +21,23 @@ from graftpunk import console as gp_console
 from graftpunk.cache import get_session_metadata
 from graftpunk.cli.errors import exit_missing_browser_stack
 from graftpunk.logging import get_logger
+from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
     LoginConfig,
     has_declarative_login,
 )
 from graftpunk.plugins.login_engine import generate_login_method
-from graftpunk.session_context import get_active_session
+from graftpunk.session_context import SESSION_FILE_NAME, get_active_session
 from graftpunk.session_identity import (
     derive_account_identity,
     join_session_name,
     validate_account_label,
+)
+from graftpunk.session_migration import (
+    LegacySlotMigration,
+    finish_superseded_slot,
+    migrate_legacy_account_slot,
 )
 from graftpunk.session_scope import operating_session
 
@@ -288,10 +295,13 @@ def make_login_body(
 
         # The operating identity: derived from the RESOLVED credentials, so
         # the kwarg filter runs here rather than before the loop.
-        identifier, derived_label = derive_account_identity(credentials, secret_keywords)
+        identifier, derived_label = derive_account_identity(credentials)
         label = as_label or derived_label
         target_name = (
             join_session_name(plugin.session_name, label) if label else plugin.session_name
+        )
+        migration = _migrate_legacy_slot(
+            plugin, credentials, target_name, identifier, bool(as_label)
         )
         login_kwargs = _accepted_login_kwargs(
             login_method,
@@ -368,6 +378,9 @@ def make_login_body(
             gp_console.error(f"Login failed: {exc}")
             raise SystemExit(1) from exc
 
+        if migration is not None and migration.action == "superseded":
+            migration = _finish_superseded(plugin, migration)
+
         # Advisory only, and only after a SUCCESSFUL login: the verdict above is
         # already sealed (a failure exited), so nothing here can turn a cached
         # login into "Login failed". Each advisory gets its own try, so a
@@ -414,7 +427,9 @@ def make_login_body(
         # raise on a removed cwd or an unreadable file.
         try:
             current = get_active_session()
-            if current and current != target_name:
+            # A GRAFTPUNK_SESSION pin on a migrated slot was reported above; repeating
+            # it here would print the old name, which may hold a secret.
+            if current and current != target_name and not (migration and migration.env_pinned):
                 gp_console.info(
                     f"This shell is pinned to {current} — "
                     f"run: gp session use {target_name} to switch"
@@ -430,6 +445,87 @@ def make_login_body(
             )
 
     return body
+
+
+def _migrate_legacy_slot(
+    plugin: CLIPluginProtocol,
+    credentials: dict[str, str],
+    target_name: str,
+    identifier: str | None,
+    explicit_label: bool,
+) -> LegacySlotMigration | None:
+    """Move the slot graftpunk 1.24.0 named for these credentials onto *target_name* (#293).
+
+    Runs before the login attempt, so a renamed session survives a failed
+    login; a stale slot beside an already cached *target_name* is left for
+    :func:`_finish_superseded` after the login succeeds. Advisory: a failure is
+    logged and the login goes on. The old name is never printed or logged,
+    since it may hold a PIN or a code.
+    """
+    try:
+        migration = migrate_legacy_account_slot(
+            plugin.session_name,
+            credentials,
+            SECRET_KEYWORDS,
+            target_name=target_name,
+            identifier=identifier,
+            explicit_label=explicit_label,
+            observe_base_dir=OBSERVE_BASE_DIR,
+            environ=os.environ,
+            cwd=Path.cwd(),
+        )
+    except Exception as exc:  # noqa: BLE001 (a migration hiccup must not block a login)
+        LOG.warning(
+            "legacy_account_slot_migration_failed",
+            plugin=plugin.site_name,
+            session=target_name,
+            exc_type=type(exc).__name__,
+        )
+        return None
+    if migration is not None and migration.action != "superseded":
+        _report_migration(migration)
+    return migration
+
+
+def _finish_superseded(
+    plugin: CLIPluginProtocol, migration: LegacySlotMigration
+) -> LegacySlotMigration:
+    """Delete a superseded stale slot once the login has succeeded (#293). Advisory."""
+    try:
+        finished = finish_superseded_slot(
+            migration, observe_base_dir=OBSERVE_BASE_DIR, environ=os.environ, cwd=Path.cwd()
+        )
+    except Exception as exc:  # noqa: BLE001 (advisory: the login already succeeded)
+        LOG.warning(
+            "legacy_account_slot_migration_failed",
+            plugin=plugin.site_name,
+            session=migration.new_name,
+            exc_type=type(exc).__name__,
+        )
+        return migration
+    _report_migration(finished)
+    return finished
+
+
+def _report_migration(migration: LegacySlotMigration) -> None:
+    """Tell the user what the migration did, naming the field and never the old name."""
+    target_name = migration.new_name
+    source = f"came from the {migration.source_field} field, which is not an account identifier"
+    if migration.action == "cleared":
+        gp_console.info(f"Cleared the account recorded on '{target_name}': it {source}.")
+        return
+    why = f"its name {source}" if migration.source_field else "it had no account label"
+    if migration.action == "renamed":
+        gp_console.info(f"Renamed this account's earlier session to '{target_name}': {why}.")
+    else:
+        gp_console.info(f"Removed this account's earlier session: {why}.")
+    if migration.pin_updated:
+        gp_console.info(f"Updated {SESSION_FILE_NAME} here to {target_name}.")
+    if migration.env_pinned:
+        gp_console.warn(f"GRAFTPUNK_SESSION names the old session; set it to {target_name}.")
+    gp_console.info(
+        f"If another directory pins the old session, run there: gp session use {target_name}"
+    )
 
 
 async def _awaited(awaitable: Any) -> Any:

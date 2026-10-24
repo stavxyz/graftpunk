@@ -19,6 +19,11 @@ from typing import Any
 from graftpunk.logging import get_logger
 from graftpunk.observe.storage import ObserveStorage, write_private_file
 
+# The identifier allowlist lives with the account label, which derives from the
+# same definition (#293); it is re-exported here for existing importers.
+from graftpunk.session_identity import IDENTIFIER_FIELD_NAMES as IDENTIFIER_FIELD_NAMES
+from graftpunk.session_identity import is_identifier_field
+
 LOG = get_logger(__name__)
 
 REDACTED = "***REDACTED***"
@@ -31,37 +36,6 @@ _MIN_REDACT_LEN = 3
 _BASIC_RE = re.compile(
     r"(\bBasic(?:\s+|%20|\+))((?:[A-Za-z0-9+/=]|\\/|%2[BbFf]|%3[Dd])+)", re.IGNORECASE
 )
-
-#: A credential field is an identifier only when its name, lower-cased with
-#: "_", "-", "." and spaces removed, is exactly one of these. Every other
-#: credential field is a secret: name heuristics have each missed a secret
-#: spelling, and a secret taken for an identifier is left in URLs.
-IDENTIFIER_FIELD_NAMES = frozenset(
-    {
-        "username",
-        "user",
-        "userid",
-        "email",
-        "emailaddress",
-        "login",
-        "loginid",
-        "loginname",
-        "account",
-        "accountid",
-    }
-)
-
-
-def is_identifier_field(field_name: str) -> bool:
-    """Whether a credential field holds an account identifier rather than a secret.
-
-    By the allowlist :data:`IDENTIFIER_FIELD_NAMES` only, on the name
-    lower-cased with ``_``, ``-``, ``.`` and spaces removed: ``user_name``,
-    ``Email-Address`` and ``loginID`` are identifiers, and ``login_password``,
-    ``user_pass``, ``userPINCode`` and anything else are secrets.
-    """
-    return re.sub(r"[_\-. ]", "", field_name.lower()) in IDENTIFIER_FIELD_NAMES
-
 
 # The HAR fields that hold a URL (or its query) rather than a body or header.
 _URL_FIELDS = frozenset({"url", "queryString", "redirectURL"})

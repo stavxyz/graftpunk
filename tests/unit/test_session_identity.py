@@ -1,4 +1,4 @@
-"""The name@label grammar, derivation, and resolution policy (#151)."""
+"""The name@label grammar, derivation, and resolution policy (#151, #293)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,10 @@ import pytest
 from graftpunk.exceptions import AmbiguousSessionError, GraftpunkError
 from graftpunk.session_identity import (
     GP_ACCOUNT_ATTR,
+    IDENTIFIER_FIELD_NAMES,
+    _legacy_derive_account_identity,
     derive_account_identity,
+    is_identifier_field,
     join_session_name,
     resolve_account_session,
     split_session_name,
@@ -70,42 +73,125 @@ class TestResolution:
         assert "AmbiguousSessionError" in graftpunk.__all__
 
 
+#: The issue's table (#293): fields whose secret value graftpunk 1.24.0 made the
+#: account label. Each row is (fields, the secret 1.24.0 derived).
+ISSUE_293_ROWS = [
+    pytest.param({"userPin": "4417", "password": "pw-x"}, "4417", id="userPin"),
+    pytest.param({"userPINCode": "4417"}, "4417", id="userPINCode"),
+    pytest.param({"user2FA": "123456"}, "123456", id="user2FA"),
+    pytest.param({"loginCode": "829341", "user_id": "bob"}, "829341", id="loginCode-beats-user_id"),
+    pytest.param({"user_pass": "hunter2x", "password": "pw-x"}, "hunter2x", id="user_pass"),
+]
+
+
 class TestDerivation:
-    def test_keyword_major_order(self) -> None:
-        fields = {"login_token": "t", "email": "a@example.com", "username": "alice"}
-        identifier, label = derive_account_identity(fields, SECRETS)
-        assert identifier == "alice"  # username keyword checked before email
-        assert label == "alice"
+    @pytest.mark.parametrize(("fields", "secret"), ISSUE_293_ROWS)
+    def test_a_secret_is_never_the_label(self, fields: dict[str, str], secret: str) -> None:
+        identifier, label = derive_account_identity(fields)
+        assert identifier != secret
+        assert label is None or secret not in label
 
-    def test_user_substring_overlap_is_harmless(self) -> None:
-        identifier, _ = derive_account_identity({"user": "bob", "password": "x"}, SECRETS)
-        assert identifier == "bob"
+    @pytest.mark.parametrize(("fields", "secret"), ISSUE_293_ROWS)
+    def test_the_legacy_rule_still_finds_the_secret(
+        self, fields: dict[str, str], secret: str
+    ) -> None:
+        """The migration depends on the old rule reproducing the 1.24.0 label."""
+        assert _legacy_derive_account_identity(fields, SECRETS) == (secret, secret)
 
-    def test_no_identifier_shaped_field_yields_none(self) -> None:
-        # No identifier keyword matches: the session keeps its bare name
-        # rather than persisting an arbitrary field value (#151).
-        assert derive_account_identity({"account_no": "42", "password": "x"}, SECRETS) == (
+    def test_a_login_code_beside_user_id_gives_the_user_id(self) -> None:
+        assert derive_account_identity({"loginCode": "829341", "user_id": "bob"}) == ("bob", "bob")
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "username",
+            "user_name",
+            "UserName",
+            "user-name",
+            "user.name",
+            "user name",
+            "email",
+            "Email",
+            "e_mail",
+            "emailAddress",
+            "email_address",
+            "Email-Address",
+            "login",
+            "LOGIN",
+            "loginId",
+            "login_id",
+            "loginName",
+            "login-name",
+            "user",
+            "userId",
+            "user_id",
+            "USER_ID",
+            "account",
+            "accountId",
+            "account_id",
+        ],
+    )
+    def test_allowlisted_names_give_a_label(self, field_name: str) -> None:
+        fields = {field_name: "Alice@Example.com", "password": "pw-x"}
+        assert derive_account_identity(fields) == ("Alice@Example.com", "alice-example-com")
+
+    @pytest.mark.parametrize("field_name", list(IDENTIFIER_FIELD_NAMES))
+    def test_every_allowlisted_name_is_an_identifier(self, field_name: str) -> None:
+        assert is_identifier_field(field_name)
+
+    def test_observe_redaction_uses_the_same_classifier(self) -> None:
+        from graftpunk.observe import run
+
+        assert run.is_identifier_field is is_identifier_field
+        assert run.IDENTIFIER_FIELD_NAMES is IDENTIFIER_FIELD_NAMES
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "passphrase",
+            "otp",
+            "pin",
+            "login_pin",
+            "security_answer",
+            "login_code",
+            "account_no",
+            "login_token",
+            "identifier",
+            "shipping_email",
+            "pinnacle_user",
+            "user_email",
+            "member_number",
+        ],
+    )
+    def test_any_other_name_gives_no_label(self, field_name: str) -> None:
+        assert derive_account_identity({field_name: "someone", "password": "pw-x"}) == (
             None,
             None,
         )
 
     @pytest.mark.parametrize(
-        "fields",
+        ("fields", "expected"),
         [
-            {"passphrase": "hunter2"},
-            {"otp": "123456", "password": "x"},
-            {"pin": "9999", "password": "x"},
-            {"security_answer": "fluffy", "password": "x"},
-            {"login_code": "abc123", "password": "x"},
-            {"account_no": "42", "password": "x"},
+            ({"email": "a@example.com", "username": "alice"}, "alice"),
+            ({"user_id": "u1", "email": "a@example.com"}, "a@example.com"),
+            ({"user": "u1", "login": "l1"}, "l1"),
+            ({"account": "acct1", "user": "u1"}, "u1"),
+            ({"accountId": "acct1", "account": "acct2"}, "acct2"),
+            ({"emailAddress": "b@example.com", "email": "a@example.com"}, "a@example.com"),
         ],
     )
-    def test_non_identifier_fields_are_never_derived(self, fields: dict[str, str]) -> None:
-        assert derive_account_identity(fields, SECRETS) == (None, None)
+    def test_several_identifiers_pick_by_allowlist_order(
+        self, fields: dict[str, str], expected: str
+    ) -> None:
+        assert derive_account_identity(fields)[0] == expected
 
-    def test_identifier_shaped_field_still_derives(self) -> None:
-        fields = {"login_code": "abc123", "username": "alice", "password": "x"}
-        assert derive_account_identity(fields, SECRETS) == ("alice", "alice")
+    def test_same_normalized_name_picks_the_first_declared(self) -> None:
+        fields = {"user_name": "first", "UserName": "second"}
+        assert derive_account_identity(fields)[0] == "first"
+
+    def test_an_empty_identifier_falls_through_to_the_next(self) -> None:
+        fields = {"username": "", "email": "a@example.com"}
+        assert derive_account_identity(fields)[0] == "a@example.com"
 
     def test_unlabelable_identifier_falls_back_to_bare_name(
         self, monkeypatch: pytest.MonkeyPatch
@@ -117,53 +203,21 @@ class TestDerivation:
         import graftpunk.session_identity as si
 
         monkeypatch.setattr(si, "slugify", lambda value: "-nope-")
-        identifier, label = si.derive_account_identity({"username": "alice"}, SECRETS)
+        identifier, label = si.derive_account_identity({"username": "alice"})
         assert identifier == "alice"
         assert label is None
 
     def test_all_secret_or_empty_yields_none(self) -> None:
-        assert derive_account_identity({"password": "x"}, SECRETS) == (None, None)
-        assert derive_account_identity({"username": ""}, SECRETS) == (None, None)
+        assert derive_account_identity({"password": "x"}) == (None, None)
+        assert derive_account_identity({"username": ""}) == (None, None)
 
     def test_label_is_slugified(self) -> None:
-        identifier, label = derive_account_identity({"email": "Alice.B@Example.com"}, SECRETS)
+        identifier, label = derive_account_identity({"email": "Alice.B@Example.com"})
         assert identifier == "Alice.B@Example.com"
         assert label == "alice-b-example-com"
 
     def test_attr_name_constant(self) -> None:
         assert GP_ACCOUNT_ATTR == "_gp_account_identifier"
-
-    def test_secret_field_skipped_even_when_identifier_keyword_matches(self) -> None:
-        fields = {"login_token": "tok-abc", "username": "alice@example.com", "password": "x"}
-        identifier, label = derive_account_identity(fields, SECRETS)
-        assert identifier == "alice@example.com"
-        assert label == "alice-example-com"
-
-    def test_all_fields_secret_yields_none(self) -> None:
-        assert derive_account_identity({"api_token": "t", "password": "x"}, SECRETS) == (
-            None,
-            None,
-        )
-
-    @pytest.mark.parametrize(
-        "field_name",
-        ["shipping_email", "pinnacle_user"],
-    )
-    def test_hint_as_substring_no_longer_blocks_derivation(self, field_name: str) -> None:
-        # "pin" is a substring of "shipping" and "pinnacle" but neither field
-        # name has "pin" as a whole token, so token-boundary matching must
-        # still derive from them (#151).
-        fields = {field_name: "someone@example.com", "password": "x"}
-        identifier, _ = derive_account_identity(fields, SECRETS)
-        assert identifier == "someone@example.com"
-
-    @pytest.mark.parametrize(
-        "field_name",
-        ["pin", "otp_code", "login_code", "security_answer"],
-    )
-    def test_hint_as_whole_token_still_blocks_derivation(self, field_name: str) -> None:
-        fields = {field_name: "123456", "password": "x"}
-        assert derive_account_identity(fields, SECRETS) == (None, None)
 
 
 class TestOperatingName:

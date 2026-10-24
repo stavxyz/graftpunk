@@ -16,6 +16,7 @@ Thread Safety:
 
 import hashlib
 import io
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from http import cookiejar
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
@@ -1004,6 +1005,37 @@ def clear_session_cache(
             removed.append(name)
 
     return removed
+
+
+def move_session(source: str, dest: str, *, account_identifier: str | None) -> None:
+    """Move the session cached under *source* to *dest*, recording *account_identifier*.
+
+    The session is unpickled and pickled again, so the identifier a
+    ``BrowserSession`` carries inside its pickle is replaced along with the
+    metadata's. Created, modified and expiry times and status are kept: the
+    session is the same one, under another name. *source* equal to *dest*
+    rewrites the slot in place. *source* is deleted only after *dest* is saved.
+
+    Raises:
+        ValueError: *dest* is not a legal session name.
+        SessionNotFoundError: Nothing is cached under *source*.
+        SessionExpiredError: *source* is expired or cannot be read.
+        ImportError: *source* needs the browser stack, which is not installed.
+    """
+    validate_session_name(dest)
+    backend = _get_session_storage_backend()
+    session, metadata = _load_session_with_metadata(source)
+    setattr(session, GP_ACCOUNT_ATTR, account_identifier)
+    pickled_data = pickle.dumps(session)
+    moved = replace(
+        metadata,
+        name=dest,
+        checksum=hashlib.sha256(pickled_data).hexdigest(),
+        account_identifier=account_identifier,
+    )
+    backend.save_session(dest, encrypt_data(pickled_data), moved)
+    if source != dest:
+        backend.delete_session(source)
 
 
 def update_session_status(name: str, status: str) -> None:
