@@ -723,7 +723,8 @@ as `LISTviewResults`, or a name such as `SMITH, JOHN`), or when it is ASCII and
 holds no letter or digit (a field cleared to `""`). The cased-words rule is
 told from a random id only by spelling, so it leaves out some random ids that
 `reads_as_words` alone flagged: measured on 100,000 values per shape
-(2026-10-24), 0.79% of 8 mixed-case letters and 0.23% of 12, 42% of 4
+(2026-10-24, `scripts/cookie_value_rates.py`), 0.67% of 8 mixed-case
+letters and 0.20% of 12, 42% of 4
 capitals and 5.2% of 12,
 and 1.1% of 8 capitals and digits. `FixtureSession` reads the sidecar through
 `graftpunk.testing.sidecar` for status and content type, so a fixture copied

@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import random
 import string
+import time
 import uuid
 from types import ModuleType
 
@@ -683,7 +684,7 @@ def _random_value(shape: str, rng: random.Random) -> str:
 # rule's known limit: a word in capitals is judged only by its letter pairs, so
 # an id of capitals and digits is lost when a draw holds no digit.
 _CASED_WORD_LOSS_CEILINGS = {
-    "base64 8": 0.0029,
+    "base64 8": 0.0026,
     "base64 12": 0.0,
     "base64 16": 0.0,
     "base64 22": 0.0,
@@ -695,8 +696,8 @@ _CASED_WORD_LOSS_CEILINGS = {
     "lowercase 12": 0.0,
     "lowercase 16": 0.0,
     "lowercase 32": 0.0,
-    "mixed-case 8": 0.0098,
-    "mixed-case 12": 0.0024,
+    "mixed-case 8": 0.0088,
+    "mixed-case 12": 0.0021,
     "mixed-case 16": 0.0008,
     "mixed-case 32": 0.0,
     "uuid": 0.0,
@@ -782,6 +783,25 @@ class TestReadsAsCasedWords:
         values = [_random_value(shape, rng) for _ in range(10_000)]
         lost = [v for v in values if reads_as_cased_words(v) and not reads_as_words(v)]
         assert len(lost) / len(values) <= _CASED_WORD_LOSS_CEILINGS[shape]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "".join(random.Random(296).choices(string.ascii_letters, k=200)),  # noqa: S311
+            "aB" * 64,
+            "".join(random.Random(297).choices(string.ascii_letters, k=1000)),  # noqa: S311
+            "aB" * 22,
+            "".join(random.Random(298).choices(string.ascii_letters + " ,.'-", k=1000)),  # noqa: S311
+        ],
+        ids=["random-200", "aB-64", "random-1000", "aB-22", "name-alphabet-1000"],
+    )
+    def test_a_long_value_is_judged_in_bounded_time(self, value: str) -> None:
+        """The camelCase search once tried every split of every run of capitals,
+        2 to the power of their number; a long value of letters must still
+        return at once."""
+        started = time.perf_counter()
+        assert not reads_as_cased_words(value)
+        assert time.perf_counter() - started < 0.25
 
 
 # The graft skill's HAR reader runs on the standard library alone, so it carries

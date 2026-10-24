@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import json
 import random
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -41,6 +43,7 @@ from graftpunk.har.digest import (
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.paths import reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
+from tests.unit.guide_harness import REPO_ROOT
 
 
 def _entry(
@@ -4088,6 +4091,41 @@ class TestLoginFlowFlag:
         assert _flow_endpoint("/anything").login_flow is False
 
 
+# The rate script's shapes, loaded by path: scripts/ is not a package.
+_RATES_SCRIPT = REPO_ROOT / "scripts" / "cookie_value_rates.py"
+
+
+def _rate_shapes(seed: str) -> dict[str, Callable[[], str]]:
+    spec = importlib.util.spec_from_file_location("cookie_value_rates", _RATES_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.shapes(random.Random(seed))  # noqa: S311 - a fixed sample
+
+
+# shape (scripts/cookie_value_rates.py): the share of 10,000 random values the
+# form-state rule accepts and reads_as_words rejects, measured 2026-10-24, plus
+# 0.0005. Words in capitals, alone or as a name, are told from random capitals
+# only by spelling, which is why the capital shapes lose most.
+_FORM_STATE_LOSS_CEILINGS = {
+    "mixed-case 6": 0.0169,
+    "mixed-case 10": 0.0029,
+    "capitals and spaces 8": 0.147,
+    "capitals and name punctuation 8": 0.0537,
+    "letters and name punctuation 8": 0.0042,
+    "three words of 3 capitals": 0.0,
+    "two capitalised words of 4": 0.0,
+    "two words of 4 capitals": 0.1736,
+    "3 capitals, capitalised 8": 0.0,
+    '"3 capitals, capitalised 8"': 0.0672,
+    "4 lower, 3 capitals, 5 lower": 0.0638,
+    "5 lower, 5 capitals": 0.0928,
+    "4 lower, 2 to 4 capitals, 4 lower": 0.0728,
+    "three capitalised words of 3 to 5": 0.0209,
+    "4 capitals, 4 lower, capitalised 6": 0.041,
+}
+
+
 class TestFlaggedNamesOf:
     def test_flagged_names_are_exactly_the_digest_cookie_and_token_names(
         self, tmp_path: Path
@@ -4478,8 +4516,8 @@ class TestFlaggedNamesOf:
     @pytest.mark.parametrize("length", [8, 16, 32])
     def test_no_percent_encoded_random_bytes_read_as_cleared(self, length: int, high: bool) -> None:
         """The share of percent-encoded random bytes the form-state rule accepts
-        and reads_as_words rejects: 0 of 10,000 per shape (2026-10-24). Without
-        the ASCII test it was 7.8% at 8 bytes and 40% for bytes 0x80 to 0xFF."""
+        and reads_as_words rejects: 0 of 10,000 per shape (2026-10-24). Bytes that
+        are not UTF-8 decode to U+FFFD, which must not read as punctuation."""
         shape = f"{'high ' if high else ''}bytes {length}"
         rng = random.Random(f"296-{shape}")  # noqa: S311 - a fixed sample, not a secret
         low = 0x80 if high else 0
@@ -4488,6 +4526,27 @@ class TestFlaggedNamesOf:
             for _ in range(10_000)
         ]
         assert [v for v in values if _form_state(v) and not reads_as_words(v)] == []
+
+    @pytest.mark.parametrize("value", ["%00", "%00%00", "%01%02", "\x01", '"%00"', "-%00-"])
+    def test_a_control_character_is_not_punctuation(self, tmp_path: Path, value: str) -> None:
+        """Only ASCII punctuation and spaces hold nothing; a control character is
+        a byte of a value, so the cookie stays flagged."""
+        assert not _form_state(value)
+        har = _write_har(tmp_path, [self._with_cookies([("visit", value)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    @pytest.mark.parametrize("shape", sorted(_FORM_STATE_LOSS_CEILINGS))
+    def test_few_random_values_of_a_biased_shape_read_as_form_state(self, shape: str) -> None:
+        """Shapes the #296 reviews measured beyond uniform alphabets: short mixed
+        case, the name rule's alphabets, and words with a run of capitals inside.
+        Each ceiling is the share of 10,000 values the form-state rule accepts and
+        reads_as_words rejects (2026-10-24), plus 0.0005; the full table is
+        printed by scripts/cookie_value_rates.py."""
+        generate = _rate_shapes(f"296-{shape}")[shape]
+        values = [generate() for _ in range(10_000)]
+        lost = [v for v in values if _form_state(v) and not reads_as_words(v)]
+        assert len(lost) / len(values) <= _FORM_STATE_LOSS_CEILINGS[shape]
 
 
 class TestEveryNamePositionGoesThroughTheIdRule:

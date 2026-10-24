@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import string
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -2055,21 +2056,24 @@ class _CookiesSeen:
     http_only: set[str] = field(default_factory=set)
 
 
+_PUNCTUATION_AND_SPACE = frozenset(string.punctuation + " ")
+
+
 def _form_state(value: str) -> bool:
     """True when *value*, a non-empty cookie value, holds no credential by
-    :func:`flagged_names_of`'s rule: once decoded it is ASCII and holds no letter
-    or digit, or, with one pair of surrounding double quotes taken off (RFC 6265
-    lets a server quote a value, and a browser keeps the quotes), it reads as
-    words or as cased words.
+    :func:`flagged_names_of`'s rule: once decoded it is ASCII punctuation and
+    spaces alone, or, with one pair of surrounding double quotes taken off (RFC
+    6265 lets a server quote a value, and a browser keeps the quotes), it reads
+    as words or as cased words.
 
-    The ASCII test keeps percent-encoded bytes from reading as punctuation:
-    invalid UTF-8 decodes to U+FFFD, which is not a letter or digit. A value
+    Only punctuation and spaces count as holding nothing: percent-encoded bytes
+    decode to U+FFFD where they are not UTF-8, and an ASCII control character
+    (``%00``) is a byte too, so a value of either stays a value. A value
     masked with punctuation alone (``****``) also holds no letter or digit, so a
     recorder that masked every cookie value so would leave its plain-named
     cookies out; graftpunk's own redaction writes ``***REDACTED***``, which
     holds letters."""
-    text = unquote_plus(value)
-    if text.isascii() and not any(ch.isalnum() for ch in text):
+    if all(ch in _PUNCTUATION_AND_SPACE for ch in unquote_plus(value)):
         return True
     unquoted = _without_quotes(value)
     return reads_as_words(unquoted) or reads_as_cased_words(unquoted)
