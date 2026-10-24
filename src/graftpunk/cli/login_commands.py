@@ -28,6 +28,7 @@ from graftpunk.plugins.cli_plugin import (
     has_declarative_login,
 )
 from graftpunk.plugins.login_engine import generate_login_method
+from graftpunk.plugins.login_settle import LoginVerdict, recording_login_verdict
 from graftpunk.session_context import SESSION_FILE_NAME, get_active_session
 from graftpunk.session_identity import (
     derive_account_identity,
@@ -338,8 +339,10 @@ def make_login_body(
             )
             stored_before = None
 
+        verdict = LoginVerdict()
         try:
             with (
+                recording_login_verdict(verdict),
                 Status("Logging in...", console=gp_console.err_console),
                 operating_session(target_name, identifier),
             ):
@@ -360,13 +363,10 @@ def make_login_body(
                         result = asyncio.run(_awaited(result))
 
             if result is False:
-                # The engine logged what it actually detected (failure text,
-                # missing success element, rate limiting, a field that never
-                # accepted input). Do not name a cause that was not measured.
                 gp_console.error(
-                    f"Login did not complete for {plugin.site_name}: the page did not "
-                    "reach the expected post-login state. See the warning above for "
-                    "what was detected. Re-run with --observe=full to capture the flow."
+                    _did_not_complete(
+                        plugin.site_name, verdict, observed=_observe_mode_from_ctx(ctx) != "off"
+                    )
                 )
                 raise SystemExit(1)
             if result is not True:
@@ -389,7 +389,7 @@ def make_login_body(
                 error=str(exc),
                 exc_type=type(exc).__name__,
             )
-            gp_console.error(f"Login failed: {exc}")
+            gp_console.error(f"Login failed: {exc}{_page_line(verdict)}")
             raise SystemExit(1) from exc
 
         # Advisory only, and only after a SUCCESSFUL login: the verdict above is
@@ -465,6 +465,31 @@ def make_login_body(
             )
 
     return body
+
+
+def _page_line(verdict: LoginVerdict) -> str:
+    """The verdict's continuation line naming the page the login ended on, if known."""
+    return f"\n    Page: {verdict.url}" if verdict.url else ""
+
+
+def _did_not_complete(site_name: str, verdict: LoginVerdict, *, observed: bool) -> str:
+    """The verdict for a login that returned False: what was detected, and where.
+
+    It is printed last, after whatever the browser and the capture logged on the
+    way, and carries its own reason so a truncated terminal still shows it (#275).
+    A hand-written login that returns False records no reason, and none is
+    invented for it. *observed* drops the --observe=full hint from a run that
+    already recorded one.
+    """
+    reason = verdict.reason or (
+        "the page did not reach the expected post-login state (see the warnings above)"
+    )
+    hint = (
+        ""
+        if observed
+        else "\n    Re-run with --observe=full to capture a screenshot and the page source."
+    )
+    return f"Login did not complete for {site_name}: {reason}.{_page_line(verdict)}{hint}"
 
 
 def _migrate_legacy_slot(

@@ -22,7 +22,21 @@ from graftpunk.exceptions import PluginError
 from graftpunk.plugins import login_engine
 from graftpunk.plugins.login_engine import _fill_field, _read_field_value
 
-pytestmark = pytest.mark.usefixtures("_fast_login_timings")
+pytestmark = pytest.mark.usefixtures("_fast_login_timings", "_no_target_probe")
+
+
+@pytest.fixture
+def _no_target_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave the page's ``evaluate`` to the read-back these tests script.
+
+    Each fill attempt also asks the page which match to type into (#275); that
+    probe has its own tests in test_login_targets.py. Answering it with "cannot
+    tell" keeps the engine on the first match, as these tests assume.
+    """
+    monkeypatch.setattr(
+        "graftpunk.plugins.login_engine._probe_target_nodriver", AsyncMock(return_value=None)
+    )
+
 
 N = login_engine._FIELD_FILL_ATTEMPTS
 

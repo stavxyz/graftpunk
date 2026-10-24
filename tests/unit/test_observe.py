@@ -1992,7 +1992,9 @@ class TestNodriverHARCapture:
             event.request_id = "req-err"
             await backend._on_loading_finished(event)
 
-        mock_log.warning.assert_called_once_with(
+        # Per request, so debug: hundreds of these buried a login's verdict (#275).
+        mock_log.warning.assert_not_called()
+        mock_log.debug.assert_any_call(
             "nodriver_eager_body_fetch_failed",
             request_id="req-err",
             url="https://example.com/api",
@@ -2123,6 +2125,64 @@ class TestNodriverHARCapture:
         assert len(summaries) == 1
         assert summaries[0].kwargs["failed"] == 3
         assert summaries[0].kwargs["attempted"] == 3
+
+    @pytest.mark.asyncio
+    async def test_failed_fetches_warn_once_each_pass_not_once_per_request(self) -> None:
+        """Hundreds of per-asset lines buried a login's verdict (#275): each pass
+        that loses bodies says so in one warning with the count, and the
+        per-request detail goes to debug."""
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.send = AsyncMock(side_effect=RuntimeError("No resource with given identifier"))
+
+        with _patch_cdp_modules(), patch("graftpunk.observe.capture.LOG") as mock_log:
+            backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+            for rid in [f"r{i}" for i in range(200)]:
+                backend._request_map[rid] = _make_request_entry()
+                event = MagicMock()
+                event.request_id = rid
+                await backend._on_loading_finished(event)
+            await backend.stop_capture_async()
+
+        warned = [c.args[0] for c in mock_log.warning.call_args_list]
+        assert sorted(warned) == [
+            "nodriver_eager_body_fetch_summary",
+            "nodriver_response_body_fetch_summary",
+        ]
+        (stop_summary,) = [
+            c
+            for c in mock_log.warning.call_args_list
+            if c.args[0] == "nodriver_response_body_fetch_summary"
+        ]
+        assert stop_summary.kwargs["failed"] == 200
+        debugged = [c.args[0] for c in mock_log.debug.call_args_list]
+        assert debugged.count("nodriver_eager_body_fetch_failed") == 200
+        assert debugged.count("nodriver_response_body_fetch_failed") == 200
+
+    @pytest.mark.asyncio
+    async def test_failures_before_a_disconnect_are_still_summarised(self) -> None:
+        """The per-request lines are debug lines, so a pass the browser's exit cuts
+        short still owes its one warning with the count."""
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.send = AsyncMock(
+            side_effect=[RuntimeError("No resource"), ConnectionError("browser closed")]
+        )
+
+        with _patch_cdp_modules(), patch("graftpunk.observe.capture.LOG") as mock_log:
+            backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+            backend._request_map["a"] = _make_request_entry()
+            backend._request_map["b"] = _make_request_entry()
+            await backend._fetch_bodies_at_stop(tab)
+
+        (summary,) = [
+            c
+            for c in mock_log.warning.call_args_list
+            if c.args[0] == "nodriver_response_body_fetch_summary"
+        ]
+        assert summary.kwargs["failed"] == 1
+        warned = [c.args[0] for c in mock_log.warning.call_args_list]
+        assert "nodriver_browser_disconnected_during_stop" in warned
 
     @pytest.mark.asyncio
     async def test_stop_capture_no_summary_when_all_eager_fetches_succeed(self) -> None:

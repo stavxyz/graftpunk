@@ -16,9 +16,12 @@ empty string rather than raising. Everything else here is internal to the wait.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import fnmatch
 import time
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
 from graftpunk.exceptions import PluginError
@@ -39,6 +42,62 @@ _NO_SIGNAL_GRACE = 3.0
 _RATE_LIMIT_MARKERS = ("too many requests",)
 
 
+@dataclasses.dataclass
+class LoginVerdict:
+    """What a login run under :func:`recording_login_verdict` ended on.
+
+    The CLI prints the verdict as its last line, after whatever the browser and
+    the capture logged on the way (#275), so the reason has to travel with it
+    rather than sit in a warning that a truncated terminal may have dropped.
+
+    Attributes:
+        reason: Why the login did not complete, phrased to follow "Login did not
+            complete for <site>: ". Empty when it completed, when it failed by
+            raising (the exception is the reason), or when a hand-written login
+            returned False without going through this module.
+        url: The page the login ended on, or empty when it could not be read.
+    """
+
+    reason: str = ""
+    url: str = ""
+
+
+_VERDICT: ContextVar[LoginVerdict | None] = ContextVar("graftpunk_login_verdict", default=None)
+
+
+@contextlib.contextmanager
+def recording_login_verdict(verdict: LoginVerdict) -> Iterator[LoginVerdict]:
+    """Collect the verdict of the login run inside the block into *verdict*.
+
+    A coroutine run with ``asyncio.run`` inside the block sees the same
+    :class:`LoginVerdict`, because its task copies the current context and the
+    copy holds a reference to this object.
+    """
+    token = _VERDICT.set(verdict)
+    try:
+        yield verdict
+    finally:
+        _VERDICT.reset(token)
+
+
+def note_login_failure(reason: str) -> None:
+    """Record why the login did not complete, when a verdict is being collected."""
+    verdict = _VERDICT.get()
+    if verdict is not None:
+        verdict.reason = reason
+
+
+def note_login_url(read_url: Callable[[], str]) -> None:
+    """Record the page the login ended on, when a verdict is being collected.
+
+    Takes the read rather than the URL so a login nobody is collecting a verdict
+    for (a direct call, a test) makes no extra request of the browser.
+    """
+    verdict = _VERDICT.get()
+    if verdict is not None:
+        verdict.url = read_url()
+
+
 def _rate_limit_marker_in(page_text: str) -> bool:
     """Whether this page reads as a response from the site's rate limiter."""
     lowered = page_text.lower()
@@ -56,6 +115,10 @@ def _warn_no_login_validation(site_name: str) -> None:
 
 def _warn_rate_limited(site_name: str) -> None:
     """Log a warning when the page came from the site's rate limiter."""
+    note_login_failure(
+        "the site answered with its rate-limit page (Too Many Requests), which is "
+        "not a credentials problem; wait before retrying"
+    )
     LOG.warning(
         "login_rate_limited",
         plugin=site_name,
@@ -68,6 +131,7 @@ def _warn_rate_limited(site_name: str) -> None:
 
 def _warn_failure_text(site_name: str, failure_text: str) -> None:
     """Log a warning when the configured failure text is on the page."""
+    note_login_failure(f"the page shows the configured failure text '{failure_text}'")
     LOG.warning(
         "login_failure_text_detected",
         plugin=site_name,
@@ -308,6 +372,17 @@ def _warn_login_signal_timeout(
             "never confirmed. Raise LoginConfig.timeout to allow more ticks, and "
             "run with --observe=full to capture what the browser was doing."
         )
+    timeout = f"{login_config.timeout:g}s"
+    if missing:
+        reason = f"{missing_text} did not appear within {timeout}"
+        if not page_read:
+            reason += f", and no page could be read during the wait ({last_error})"
+    else:
+        reason = (
+            f"the login was never confirmed within {timeout}: the tick that would have "
+            f"decided it could not be read ({last_error})"
+        )
+    note_login_failure(reason)
     if login_config.success_url and not pre_submit_url:
         hint += (
             " The URL before submit could not be read, so a URL signal cannot "
@@ -318,7 +393,7 @@ def _warn_login_signal_timeout(
         plugin=site_name,
         missing=missing_text,
         url=url,
-        timeout=f"{login_config.timeout:g}s",
+        timeout=timeout,
         hint=hint,
         **fields,
     )
@@ -671,6 +746,7 @@ def _warn_login_page_unreadable(*, site_name: str, error: str, url: str) -> None
     poll and the grace window end this way, so the reason is the same one either
     of them reports.
     """
+    note_login_failure(f"the page could not be read after the submit ({error})")
     LOG.warning(
         "login_page_unreadable",
         plugin=site_name,
