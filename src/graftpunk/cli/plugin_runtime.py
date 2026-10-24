@@ -32,7 +32,7 @@ from graftpunk.exceptions import (
     TokenPatternMismatchError,
 )
 from graftpunk.logging import get_logger
-from graftpunk.observe import build_observe_context
+from graftpunk.observe import ObservabilityContext, build_observe_context
 from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandContext, CommandSpec
 from graftpunk.plugins.formatters import format_output
 from graftpunk.session_context import get_active_session
@@ -79,8 +79,6 @@ def run_plugin_command(
     ctx: typer.Context,
     **kwargs: Any,
 ) -> None:
-    from graftpunk.client import execute_plugin_command
-
     # CHANGED: built-in pop defaults come from the shared BUILTIN_OPTIONS
     # contract (declared in command_factory) instead of inline literals.
     output_format = kwargs.pop("format", BUILTIN_OPTIONS["format"])
@@ -195,18 +193,50 @@ def run_plugin_command(
             "driver_not_available_for_observe",
             plugin=plugin.site_name,
         )
+    # A command runs on a requests session, not a browser: with no driver the
+    # run records that session's HTTP traffic instead.
     observe_ctx = build_observe_context(
         plugin.site_name,
         backend_type,
         driver,
         observe_mode,
+        http_session=session if driver is None else None,
     )
-    if observe_mode != "off" and driver is None:
-        gp_console.warn(
-            f"Observability capture unavailable for "
-            f"'{plugin.site_name}': no browser driver. "
-            f"Only event logging will work."
+    observe_ctx.start()
+    try:
+        _inject_tokens_and_run(
+            plugin,
+            cmd_spec,
+            session,
+            needs_session=needs_session,
+            operating_name=operating_name,
+            observe_ctx=observe_ctx,
+            output_format=output_format,
+            format_is_explicit=format_is_explicit,
+            view_args=view_args,
+            output_path=output_path,
+            kwargs=kwargs,
         )
+    finally:
+        observe_ctx.finish()
+
+
+def _inject_tokens_and_run(
+    plugin: CLIPluginProtocol,
+    cmd_spec: CommandSpec,
+    session: Any,
+    *,
+    needs_session: bool,
+    operating_name: str,
+    observe_ctx: ObservabilityContext,
+    output_format: Any,
+    format_is_explicit: bool,
+    view_args: tuple[str, ...],
+    output_path: str,
+    kwargs: dict[str, Any],
+) -> None:
+    """Token injection, execution, the 403 retry, write-back and output."""
+    from graftpunk.client import execute_plugin_command
 
     # --- Token injection (CLI-specific ValueError handling) ---
     token_config = getattr(plugin, "token_config", None)

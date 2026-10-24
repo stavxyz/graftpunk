@@ -326,64 +326,31 @@ def _make_request(
 
 def _save_observe_data(
     session_name: str,
-    method: str,
-    url: str,
     response: requests.Response,
-    request_body: str | None = None,
 ) -> ObserveStorage | None:
-    """Save request/response data as a HAR entry.
+    """Save the request and its response as HAR entries, one per redirect hop.
+
+    Entries and bodies follow the plugin-command and browser captures (see
+    :func:`graftpunk.observe.http_capture.har_entry_for_response`).
 
     Args:
         session_name: Session name for directory organization.
-        method: HTTP method used.
-        url: Request URL.
-        response: The HTTP response.
-        request_body: Optional request body text.
+        response: The HTTP response; ``response.history`` holds its redirect hops.
 
     Returns:
         ObserveStorage instance if saved, None on error.
     """
+    from graftpunk.observe.http_capture import har_entry_for_response
+
     try:
         run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
         storage = ObserveStorage(OBSERVE_BASE_DIR, session_dirname(session_name), run_id)
-
-        # Build minimal HAR entry. A Response built by requests always carries
-        # its PreparedRequest, but the attribute is typed Optional.
-        if response.request is None:
-            LOG.warning("observe_har_missing_request", url=url)
-        sent_headers = response.request.headers if response.request is not None else {}
-        har_entry: dict[str, object] = {
-            "startedDateTime": datetime.datetime.now(tz=datetime.UTC).isoformat(),
-            "request": {
-                "method": method.upper(),
-                "url": url,
-                "headers": [{"name": k, "value": v} for k, v in sent_headers.items()],
-                "bodySize": len(request_body) if request_body else 0,
-            },
-            "response": {
-                "status": response.status_code,
-                "statusText": response.reason or "",
-                "headers": [{"name": k, "value": v} for k, v in response.headers.items()],
-                "content": {
-                    "size": len(response.content),
-                    "mimeType": response.headers.get("Content-Type", ""),
-                    "text": response.text[:50000],  # Cap at 50KB
-                },
-                "bodySize": len(response.content),
-            },
-            "time": response.elapsed.total_seconds() * 1000,
-        }
-
-        if request_body:
-            har_entry["request"] = {
-                **har_entry["request"],
-                "postData": {
-                    "mimeType": sent_headers.get("Content-Type", ""),
-                    "text": request_body,
-                },
-            }
-
-        storage.write_har([har_entry])
+        bodies_dir = storage.run_dir / "bodies"
+        entries = [
+            har_entry_for_response(hop, f"http-{index}", bodies_dir=bodies_dir)
+            for index, hop in enumerate([*response.history, response], start=1)
+        ]
+        storage.write_har(entries)
         return storage
     except Exception as exc:  # noqa: BLE001 — observability is best-effort
         LOG.warning("observe_save_failed", error=str(exc))
@@ -534,8 +501,7 @@ def _http_command(method: str) -> Callable[..., None]:
                 if not resolved_namespace:
                     LOG.warning("namespace_inference_failed", url=url, fallback="unknown")
                     resolved_namespace = "unknown"
-            request_body = resolved_json or data
-            _save_observe_data(resolved_namespace, method, url, response, request_body)
+            _save_observe_data(resolved_namespace, response)
 
         _print_response(response, body_only=body_only, verbose=verbose)
 

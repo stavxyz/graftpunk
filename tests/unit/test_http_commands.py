@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import datetime
 import io
+import json
+from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -417,57 +421,97 @@ class TestMakeRequestErrorPaths:
 class TestSaveObserveData:
     """Tests for _save_observe_data."""
 
-    def test_saves_har_entry(self, tmp_path: pytest.TempPathFactory) -> None:
-        mock_response = MagicMock(spec=requests.Response)
-        mock_response.status_code = 200
-        mock_response.reason = "OK"
-        mock_response.headers = {"Content-Type": "application/json"}
-        mock_response.content = b'{"ok": true}'
-        mock_response.text = '{"ok": true}'
-        mock_response.elapsed = MagicMock()
-        mock_response.elapsed.total_seconds.return_value = 0.5
-        mock_response.request = MagicMock()
-        mock_response.request.headers = {"User-Agent": "test"}
+    @staticmethod
+    def _response(
+        method: str,
+        url: str,
+        status: int,
+        body: bytes,
+        *,
+        content_type: str = "application/json",
+        request_body: str | None = None,
+        location: str | None = None,
+    ) -> requests.Response:
+        response = requests.Response()
+        response.status_code = status
+        response.reason = "OK" if status == 200 else "Found"
+        response.headers["Content-Type"] = content_type
+        if location is not None:
+            response.headers["Location"] = location
+        response._content = body
+        response.url = url
+        response.elapsed = datetime.timedelta(seconds=0.3)
+        response.request = requests.Request(
+            method,
+            url,
+            data=request_body,
+            headers={"User-Agent": "test", "Content-Type": "application/json"},
+        ).prepare()
+        return response
+
+    @staticmethod
+    def _entries(storage: Any) -> list[dict[str, Any]]:
+        return json.loads((storage.run_dir / "network.har").read_text())["log"]["entries"]
+
+    def test_records_the_request_and_response_bodies(self, tmp_path: Path) -> None:
+        response = self._response(
+            "POST",
+            "https://example.com/api",
+            200,
+            b'{"created": true}',
+            request_body='{"name": "test"}',
+        )
 
         with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            result = _save_observe_data("test-session", "GET", "https://example.com", mock_response)
+            storage = _save_observe_data("test-session", response)
 
-        assert result is not None
-        assert result.run_dir.exists()
-
-    def test_includes_request_body(self, tmp_path: pytest.TempPathFactory) -> None:
-        mock_response = MagicMock(spec=requests.Response)
-        mock_response.status_code = 200
-        mock_response.reason = "OK"
-        mock_response.headers = {"Content-Type": "application/json"}
-        mock_response.content = b'{"created": true}'
-        mock_response.text = '{"created": true}'
-        mock_response.elapsed = MagicMock()
-        mock_response.elapsed.total_seconds.return_value = 0.3
-        mock_response.request = MagicMock()
-        mock_response.request.headers = {
-            "User-Agent": "test",
-            "Content-Type": "application/json",
-        }
-
-        with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            result = _save_observe_data(
-                "test-session",
-                "POST",
-                "https://example.com/api",
-                mock_response,
-                request_body='{"name": "test"}',
-            )
-
-        assert result is not None
-        # Read the HAR file and verify postData is present
-        import json
-
-        har_path = result.run_dir / "network.har"
-        har_data = json.loads(har_path.read_text())
-        entry = har_data["log"]["entries"][0]
-        assert "postData" in entry["request"]
+        assert storage is not None
+        (entry,) = self._entries(storage)
+        assert entry["request"]["method"] == "POST"
+        assert entry["request"]["url"] == "https://example.com/api"
         assert entry["request"]["postData"]["text"] == '{"name": "test"}'
+        assert entry["response"]["content"]["text"] == '{"created": true}'
+        assert entry["time"] == pytest.approx(300.0)
+        assert not (storage.run_dir / "bodies").exists()
+
+    def test_records_each_redirect_hop(self, tmp_path: Path) -> None:
+        hop = self._response(
+            "POST",
+            "https://example.com/login",
+            302,
+            b"",
+            content_type="text/html",
+            request_body="user=alice",
+            location="/home",
+        )
+        final = self._response(
+            "GET", "https://example.com/home", 200, b"<h1>home</h1>", content_type="text/html"
+        )
+        final.history = [hop]
+
+        with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
+            storage = _save_observe_data("test-session", final)
+
+        assert storage is not None
+        first, second = self._entries(storage)
+        assert first["response"]["status"] == 302
+        assert first["response"]["redirectURL"] == "https://example.com/home"
+        assert first["request"]["postData"]["text"] == "user=alice"
+        assert second["response"]["content"]["text"] == "<h1>home</h1>"
+
+    def test_a_body_over_the_cap_goes_to_bodies(self, tmp_path: Path) -> None:
+        from graftpunk.observe.capture import MAX_RESPONSE_BODY_SIZE
+
+        big = b'{"rows": "' + b"x" * MAX_RESPONSE_BODY_SIZE + b'"}'
+        response = self._response("GET", "https://example.com/export", 200, big)
+
+        with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
+            storage = _save_observe_data("test-session", response)
+
+        assert storage is not None
+        (entry,) = self._entries(storage)
+        assert entry["response"]["content"]["_bodyFile"] == "bodies/http-1.json"
+        assert (storage.run_dir / "bodies" / "http-1.json").read_bytes() == big
 
 
 class TestPrintResponse:

@@ -9,6 +9,7 @@ is written where no reader will ever look (#151).
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,17 +28,17 @@ LABELLED = "myshop@alice"
 UNDERSCORED = "my_shop"
 
 
-def _fake_response() -> MagicMock:
-    response = MagicMock(spec=requests.Response)
+def _fake_response() -> requests.Response:
+    response = requests.Response()
     response.status_code = 200
     response.reason = "OK"
-    response.headers = {"Content-Type": "application/json"}
-    response.content = b'{"ok": true}'
-    response.text = '{"ok": true}'
-    response.elapsed = MagicMock()
-    response.elapsed.total_seconds.return_value = 0.1
-    response.request = MagicMock()
-    response.request.headers = {"User-Agent": "test"}
+    response.headers["Content-Type"] = "application/json"
+    response._content = b'{"ok": true}'
+    response.url = "https://example.com/"
+    response.elapsed = datetime.timedelta(seconds=0.1)
+    response.request = requests.Request(
+        "GET", "https://example.com/", headers={"User-Agent": "test"}
+    ).prepare()
     return response
 
 
@@ -82,7 +83,7 @@ class TestHttpWriterReaderRoundTrip:
     @pytest.mark.parametrize("name", [LABELLED, UNDERSCORED])
     def test_saved_run_is_found_by_show(self, tmp_path: Path, name: str) -> None:
         with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            storage = _save_observe_data(name, "GET", "https://example.com", _fake_response())
+            storage = _save_observe_data(name, _fake_response())
 
         assert storage is not None, "labelled session names must not break the HAR save"
         assert storage.run_dir.parent.name == session_dirname(name)
@@ -99,14 +100,14 @@ class TestHttpWriterReaderRoundTrip:
             patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path),
             patch("graftpunk.cli.http_commands.LOG") as log,
         ):
-            _save_observe_data(LABELLED, "GET", "https://example.com", _fake_response())
+            _save_observe_data(LABELLED, _fake_response())
 
         assert log.warning.call_args_list == []
 
     @pytest.mark.parametrize("name", [LABELLED, UNDERSCORED])
     def test_saved_run_is_found_by_list(self, tmp_path: Path, name: str) -> None:
         with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            _save_observe_data(name, "GET", "https://example.com", _fake_response())
+            _save_observe_data(name, _fake_response())
 
         with (
             patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path),

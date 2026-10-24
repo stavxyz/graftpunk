@@ -96,7 +96,10 @@ class TestObserveStorage:
 
     def test_creates_run_directory(self, tmp_path: Path) -> None:
         storage = ObserveStorage(tmp_path, "mysession", "run-001")
-        assert storage.run_dir.exists()
+        assert storage.run_dir.is_dir()
+        # Subdirectories appear only with something in them (#283).
+        assert list(storage.run_dir.iterdir()) == []
+        storage.save_screenshot(1, "page", b"\x89PNG")
         assert (storage.run_dir / "screenshots").is_dir()
 
     def test_save_screenshot(self, tmp_path: Path) -> None:

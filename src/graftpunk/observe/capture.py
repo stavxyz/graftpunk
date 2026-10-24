@@ -95,7 +95,7 @@ def _mime_to_extension(mime: str) -> str:
 
 def _process_response_body(
     response: dict[str, Any],
-    body: str,
+    body: str | bytes,
     base64_encoded: bool,
     request_id: str,
     mime: str,

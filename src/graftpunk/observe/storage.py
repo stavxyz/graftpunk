@@ -38,10 +38,14 @@ class ObserveStorage:
     Organizes data into a run directory structure:
         base_dir/session_name/run_id/
             screenshots/
+            bodies/
             events.jsonl
             network.har
             console.jsonl
             metadata.json
+
+    The run directory is created here; ``screenshots/`` and ``bodies/`` only
+    when something is written to them.
     """
 
     def __init__(self, base_dir: Path, session_name: str, run_id: str) -> None:
@@ -50,8 +54,8 @@ class ObserveStorage:
         if not run_id or not _SAFE_NAME_RE.match(run_id):
             raise ValueError(f"Invalid run_id: {run_id!r}")
         self._run_dir = base_dir / session_name / run_id
+        self._run_dir.mkdir(parents=True, exist_ok=True)
         self._screenshots_dir = self._run_dir / "screenshots"
-        self._screenshots_dir.mkdir(parents=True, exist_ok=True)
         self._events_path = self._run_dir / "events.jsonl"
         self._har_path = self._run_dir / "network.har"
         self._console_path = self._run_dir / "console.jsonl"
@@ -77,6 +81,7 @@ class ObserveStorage:
         # Sanitize label to prevent path traversal
         safe_label = re.sub(r"[^a-zA-Z0-9._-]", "-", label)
         filename = f"{index:03d}-{safe_label}.png"
+        self._screenshots_dir.mkdir(exist_ok=True)
         path = self._screenshots_dir / filename
         path.write_bytes(png_data)
         return path

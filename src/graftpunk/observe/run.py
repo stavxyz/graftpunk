@@ -173,6 +173,44 @@ def redact_request_body_files(
             )
 
 
+def write_capture_data(storage: ObserveStorage, capture: Any, redact: Iterable[str] = ()) -> int:
+    """Write a stopped capture's HAR, and its console logs when it has any.
+
+    The HAR and the request bodies in ``bodies/`` are scrubbed of *redact* first
+    (:func:`redact_har_entries`, :func:`redact_request_body_files`). Each write
+    is guarded on its own and logged at error level when it fails, since the
+    user opted into this run: a failure here never reaches the caller.
+
+    Returns:
+        The number of HAR entries written, 0 when the HAR could not be.
+    """
+    redact = tuple(redact)
+    written = 0
+    try:
+        entries = redact_har_entries(capture.get_har_entries(), redact)
+        # Scrub the body files first, since that can update an entry's
+        # _postDataSize; a failure there must not cost the HAR.
+        try:
+            redact_request_body_files(entries, redact, storage.run_dir)
+        except Exception as exc:  # noqa: BLE001 - each write is best-effort
+            LOG.error(
+                "observe_request_body_redaction_failed",
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+        storage.write_har(entries)
+        written = len(entries)
+    except Exception as exc:  # noqa: BLE001 - each write is best-effort
+        LOG.error("observe_har_write_failed", error=str(exc), exc_type=type(exc).__name__)
+    try:
+        console_logs = capture.get_console_logs()
+        if console_logs:
+            storage.write_console_logs(console_logs)
+    except Exception as exc:  # noqa: BLE001 - each write is best-effort
+        LOG.error("observe_console_log_write_failed", error=str(exc), exc_type=type(exc).__name__)
+    return written
+
+
 async def save_observe_run(
     storage: ObserveStorage,
     backend: Any,
