@@ -432,8 +432,9 @@ def make_login_body(
         try:
             current = get_active_session()
             if current and current != target_name:
+                current = _shown_pin(plugin, current, migration)
                 gp_console.info(
-                    f"This shell is pinned to {_shown_pin(plugin, current, migration)} — "
+                    f"This shell is pinned to {current} — "
                     f"run: gp session use {target_name} to switch"
                 )
         except Exception as exc:  # noqa: BLE001 (advisory output: never blocks a login)

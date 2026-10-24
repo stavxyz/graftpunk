@@ -81,7 +81,7 @@ def _plugin_secret_field(base_name: str) -> str | None:
         if plugin is None:
             return None
         return plugin_secret_field(resolve_login_fields(plugin), SECRET_KEYWORDS)
-    except Exception:  # noqa: BLE001 — display is best-effort
+    except Exception:  # noqa: BLE001 (display is best-effort)
         return None
 
 
