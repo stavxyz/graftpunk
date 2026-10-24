@@ -67,7 +67,11 @@ def _keep_backup(path: Path) -> Path | None:
             _backup_copy_logged = True
             LOG.debug("session_backup_link_failed", error_type=type(exc).__name__)
     try:
-        shutil.copy2(path, backup)
+        # 0o600 from creation, like the pickle: copy2 would create it with
+        # the umask's mode and narrow it only afterwards.
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as dst, path.open("rb") as src:
+            shutil.copyfileobj(src, dst)
     except OSError as exc:
         backup.unlink(missing_ok=True)
         LOG.warning("session_backup_failed", error_type=type(exc).__name__)
@@ -142,6 +146,7 @@ class LocalSessionStorage:
 
         pickle_path = session_dir / "session.pickle"
         metadata_path = session_dir / "metadata.json"
+        stale_backups = list(session_dir.glob(f".{pickle_path.name}.*.bak"))
 
         LOG.info("session_save_started", name=name, path=str(pickle_path))
 
@@ -176,8 +181,11 @@ class LocalSessionStorage:
             metadata_tmp = _write_private_temp(metadata_path, metadata_bytes)
             written.append(metadata_tmp)
             backup = _keep_backup(pickle_path)
-            os.replace(pickle_tmp, pickle_path)
+            # Set before the rename: an exception landing just after it
+            # returns must still restore. Restoring when the rename never
+            # happened puts the same old bytes back, which is harmless.
             pickle_replaced = True
+            os.replace(pickle_tmp, pickle_path)
             os.replace(metadata_tmp, metadata_path)
         except BaseException:
             for tmp in written:
@@ -206,6 +214,12 @@ class LocalSessionStorage:
         finally:
             if backup is not None and not keep_backup:
                 backup.unlink(missing_ok=True)
+
+        # A backup an earlier save kept after its restore failed is stale once
+        # this save has landed both files. Only those found before this save
+        # began: a backup another save makes meanwhile is that save's to keep.
+        for stale in stale_backups:
+            stale.unlink(missing_ok=True)
 
         LOG.info("session_save_completed", name=name, path=str(session_dir))
         return str(session_dir)

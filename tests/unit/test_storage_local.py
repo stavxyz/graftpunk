@@ -16,6 +16,9 @@ from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
 from graftpunk.storage.base import SessionMetadata, dict_to_metadata, metadata_to_dict
 from graftpunk.storage.local import LocalSessionStorage
 
+# os.replace as imported, for tests that put it back after patching it.
+REAL_REPLACE = os.replace
+
 
 @pytest.fixture
 def sample_metadata():
@@ -261,6 +264,29 @@ class TestLegacyFlatFile:
         assert "modern-provider" in sessions
         assert sessions == sorted(sessions)
 
+    def test_delete_legacy_session(self, storage, tmp_path):
+        """Test deleting a legacy flat file session."""
+        legacy_path = tmp_path / "old-session.session.pickle"
+        legacy_path.write_bytes(b"data")
+
+        result = storage.delete_session("old-session")
+        assert result is True
+        assert not legacy_path.exists()
+
+    def test_delete_legacy_session_os_error(self, storage, tmp_path):
+        """Test that OSError during legacy file deletion returns False."""
+        # Session does not exist as directory or legacy file
+        result = storage.delete_session("totally-nonexistent")
+        assert result is False
+
+
+class TestFailedSaves:
+    """A local save that fails leaves the slot as it was (#293)."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        return LocalSessionStorage(base_dir=tmp_path)
+
     def _two_saves(self, storage, sample_metadata):
         storage.save_session("slot", b"old bytes", sample_metadata)
         return storage.base_dir / "slot"
@@ -337,6 +363,113 @@ class TestLegacyFlatFile:
         assert sorted(p.name for p in (storage.base_dir / "slot").iterdir()) == ["other-writer.tmp"]
         assert storage.list_sessions() == []
 
+    def test_an_exception_just_after_the_pickle_rename_still_restores(
+        self, storage, sample_metadata, monkeypatch
+    ):
+        """The flag is set before the rename, so no exception can skip the restore."""
+        slot = self._two_saves(storage, sample_metadata)
+        real_replace = os.replace
+
+        def replace(src, dst):
+            real_replace(src, dst)
+            if Path(dst).name == "session.pickle" and Path(src).suffix == ".tmp":
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr("graftpunk.storage.local.os.replace", replace)
+        with pytest.raises(KeyboardInterrupt):
+            storage.save_session("slot", b"new bytes", sample_metadata)
+        monkeypatch.setattr("graftpunk.storage.local.os.replace", REAL_REPLACE)
+
+        assert (slot / "session.pickle").read_bytes() == b"old bytes"
+        assert sorted(p.name for p in slot.iterdir()) == ["metadata.json", "session.pickle"]
+
+    @staticmethod
+    def _no_links(monkeypatch):
+        def no_links(*_args):
+            raise OSError(1, "Operation not permitted")
+
+        monkeypatch.setattr("graftpunk.storage.local.os.link", no_links)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+    def test_a_copied_backup_is_private_from_creation(self, storage, sample_metadata, monkeypatch):
+        slot = self._two_saves(storage, sample_metadata)
+        self._no_links(monkeypatch)
+        self._failing_metadata_rename(monkeypatch, restore_fails=True)
+        old_umask = os.umask(0)
+        try:
+            with pytest.raises(OSError):
+                storage.save_session("slot", b"new bytes", sample_metadata)
+        finally:
+            os.umask(old_umask)
+
+        (backup,) = slot.glob(".session.pickle.*.bak")
+        assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+        assert backup.read_bytes() == b"old bytes"
+
+    def test_a_failed_copy_leaves_no_partial_backup(self, storage, sample_metadata, monkeypatch):
+        slot = self._two_saves(storage, sample_metadata)
+        self._no_links(monkeypatch)
+
+        def broken_copy(*_args, **_kwargs):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr("graftpunk.storage.local.shutil.copyfileobj", broken_copy)
+        with capture_logs() as logs:
+            storage.save_session("slot", b"new bytes", sample_metadata)
+
+        assert sorted(p.name for p in slot.iterdir()) == ["metadata.json", "session.pickle"]
+        assert storage.load_session("slot")[0] == b"new bytes"
+        assert "session_backup_failed" in [entry["event"] for entry in logs]
+
+    def test_a_backup_copy_that_fails_leaves_nothing(self, tmp_path, monkeypatch):
+        from graftpunk.storage import local
+
+        slot = tmp_path / "slot"
+        slot.mkdir()
+        target = slot / "session.pickle"
+        target.write_bytes(b"old bytes")
+        self._no_links(monkeypatch)
+
+        def broken_copy(*_args, **_kwargs):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr("graftpunk.storage.local.shutil.copyfileobj", broken_copy)
+
+        assert local._keep_backup(target) is None
+        assert sorted(p.name for p in slot.iterdir()) == ["session.pickle"]
+
+    def test_a_save_through_the_copy_fallback_removes_its_backup(
+        self, storage, sample_metadata, monkeypatch
+    ):
+        slot = self._two_saves(storage, sample_metadata)
+        self._no_links(monkeypatch)
+
+        storage.save_session("slot", b"new bytes", sample_metadata)
+
+        assert sorted(p.name for p in slot.iterdir()) == ["metadata.json", "session.pickle"]
+        assert storage.load_session("slot")[0] == b"new bytes"
+
+    def test_the_next_save_removes_a_kept_backup(self, storage, sample_metadata, monkeypatch):
+        slot = self._two_saves(storage, sample_metadata)
+        self._failing_metadata_rename(monkeypatch, restore_fails=True)
+        with pytest.raises(OSError):
+            storage.save_session("slot", b"new bytes", sample_metadata)
+        monkeypatch.setattr("graftpunk.storage.local.os.replace", REAL_REPLACE)
+        assert list(slot.glob(".session.pickle.*.bak"))
+
+        storage.save_session("slot", b"newer bytes", sample_metadata)
+
+        assert sorted(p.name for p in slot.iterdir()) == ["metadata.json", "session.pickle"]
+        assert storage.load_session("slot")[0] == b"newer bytes"
+
+
+class TestIncompleteSlots:
+    """A slot directory with a pickle and no metadata (#293)."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        return LocalSessionStorage(base_dir=tmp_path)
+
     def test_clearing_every_session_removes_a_pickle_only_slot(self, tmp_path, monkeypatch):
         from graftpunk import cache as cache_mod
 
@@ -390,20 +523,34 @@ class TestLegacyFlatFile:
 
         assert storage.list_sessions() == []
 
-    def test_delete_legacy_session(self, storage, tmp_path):
-        """Test deleting a legacy flat file session."""
-        legacy_path = tmp_path / "old-session.session.pickle"
-        legacy_path.write_bytes(b"data")
+    def test_gp_session_clear_all_prompt_names_a_pickle_only_slot(self, tmp_path, monkeypatch):
+        import typer
+        from typer.testing import CliRunner
 
-        result = storage.delete_session("old-session")
-        assert result is True
-        assert not legacy_path.exists()
+        from graftpunk import cache as cache_mod
+        from graftpunk.cli.session_commands import session_app
 
-    def test_delete_legacy_session_os_error(self, storage, tmp_path):
-        """Test that OSError during legacy file deletion returns False."""
-        # Session does not exist as directory or legacy file
-        result = storage.delete_session("totally-nonexistent")
-        assert result is False
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        cache_mod._reset_session_storage_backend()
+        try:
+            backend = cache_mod._get_session_storage_backend()
+            half = backend.base_dir / "half-provider"
+            half.mkdir(parents=True)
+            (half / "session.pickle").write_bytes(b"data")
+            app = typer.Typer()
+            app.add_typer(session_app, name="session")
+
+            result = CliRunner().invoke(
+                app, ["session", "clear", "--all"], input="n\n", env={"COLUMNS": "200"}
+            )
+
+            assert result.exit_code == 0, result.output
+            assert "This will remove 1 session(s):" in result.output
+            assert "half-provider (incomplete, no metadata)" in result.output
+            assert "Cancelled" in result.output
+            assert half.exists()
+        finally:
+            cache_mod._reset_session_storage_backend()
 
 
 class TestLocalEdgeCases:
