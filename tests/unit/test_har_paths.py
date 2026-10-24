@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import random
 import string
+import time
 import uuid
 from types import ModuleType
 
@@ -21,6 +22,7 @@ from graftpunk.har.paths import (
     keys_are_ids,
     looks_dynamic,
     param_name_for_segment,
+    reads_as_cased_words,
     reads_as_words,
     template_path,
     templated_url,
@@ -648,6 +650,185 @@ class TestReadsAsWords:
         rng = random.Random(273)  # noqa: S311 - a fixed sample, not a secret
         ids = ["".join(rng.choices(alphabet, k=length)) for _ in range(5_000)]
         assert [value for value in ids if reads_as_words(value)] == []
+
+
+_BASE64 = string.ascii_letters + string.digits + "+/"
+_BASE64URL = string.ascii_letters + string.digits + "-_"
+_HEX = string.digits + "abcdef"
+
+
+def _random_value(shape: str, rng: random.Random) -> str:
+    kind, _, size = shape.rpartition(" ")
+    if shape == "uuid":
+        return str(uuid.UUID(int=rng.getrandbits(128), version=4))
+    if shape == "jwt signature":
+        return "".join(rng.choices(_BASE64URL, k=43))
+    length = int(size)
+    if kind == "numeric":
+        return str(rng.randrange(10 ** (length - 1), 10**length))
+    alphabet = {
+        "base64": _BASE64,
+        "hex": _HEX,
+        "lowercase": string.ascii_lowercase,
+        "mixed-case": string.ascii_letters,
+        "capitals": string.ascii_uppercase,
+        "capitals and digits": string.ascii_uppercase + string.digits,
+    }[kind]
+    return "".join(rng.choices(alphabet, k=length))
+
+
+# shape: the share of random values of that shape reads_as_cased_words accepts
+# and reads_as_words rejects, so the share a cookie value the 1.24.0 rule flagged
+# is no longer flagged for (#296). Each ceiling is the share over 100,000 other
+# values of the shape (2026-10-24) plus three standard errors of the test's
+# 10,000-value sample, sqrt(p * (1 - p) / 10,000), rounded up to 4 places; a
+# shape with no loss in 100,000 has a ceiling of 0. The capital shapes are the
+# rule's known limit: a word in capitals is judged only by its letter pairs, so
+# an id of capitals and digits is lost when a draw holds no digit.
+_CASED_WORD_LOSS_CEILINGS = {
+    "base64 8": 0.0025,
+    "base64 12": 0.0007,
+    "base64 16": 0.0002,
+    "base64 22": 0.0,
+    "base64 32": 0.0,
+    "hex 8": 0.0,
+    "hex 16": 0.0,
+    "hex 32": 0.0,
+    "lowercase 8": 0.0,
+    "lowercase 12": 0.0,
+    "lowercase 16": 0.0,
+    "lowercase 32": 0.0,
+    "mixed-case 8": 0.0089,
+    "mixed-case 12": 0.0041,
+    "mixed-case 16": 0.0005,
+    "mixed-case 32": 0.0,
+    "uuid": 0.0,
+    "jwt signature": 0.0,
+    "numeric 5": 0.0,
+    "numeric 6": 0.0,
+    "numeric 8": 0.0,
+    "numeric 10": 0.0,
+    "capitals 4": 0.4374,
+    "capitals 7": 0.204,
+    "capitals 9": 0.125,
+    "capitals 12": 0.0602,
+    "capitals and digits 8": 0.0138,
+    "capitals and digits 12": 0.0019,
+    "capitals and digits 16": 0.0,
+}
+
+
+class TestReadsAsCasedWords:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "LANDOWNER",
+            "GRANTEE",
+            "BRAL",
+            "NASA",
+            "LEGO",
+            "currentTab",
+            "panelGRIDview",
+            "startDate",
+            "tabLISTresults",
+            "searchByNAME",
+            "searchByName",
+            "viewPDF",
+            "getXQZ",
+            "parseHTMLString",
+            "LISTviewResults",
+            "HTMLParserView",
+            "GRIDviewPanels",
+            "Smith, John",
+            "SMITH, JOHN",
+            "ST. JOHN",
+            "O'Brien Mary",
+            "Smith-Jones, Ann",
+            "GRANTEE, LANDOWNER Q.",
+        ],
+    )
+    def test_a_word_in_capitals_or_camel_case_reads_as_cased_words(self, value: str) -> None:
+        assert reads_as_cased_words(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "",
+            '""',
+            "iPhone",
+            "iPad",
+            "XL",
+            "searchBxName",
+            "tabXQZresults",
+            "getXQZZ",
+            "kQzPwMxT",
+            "HTMLParser",
+            "LISTview",
+            "GRIDview",
+            "QZXKmdotRwpq",
+            "Smith4 John",
+            "SMITH, J0HN",
+            "Smith,John",
+            "smith, john",
+            "Smith, Kqzpwm",
+            "QZXKWPRM",
+            "CurrentTab",
+            "currentTab2",
+            "current tab",
+            "ABCDEFGHIJKLMNOPQRST",
+            "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd",
+        ],
+    )
+    def test_other_values_do_not(self, value: str) -> None:
+        assert not reads_as_cased_words(value)
+
+    @pytest.mark.parametrize("shape", sorted(_CASED_WORD_LOSS_CEILINGS))
+    def test_few_random_values_reads_as_words_rejects_read_as_cased_words(self, shape: str) -> None:
+        rng = random.Random(f"296-{shape}")  # noqa: S311 - a fixed sample, not a secret
+        values = [_random_value(shape, rng) for _ in range(10_000)]
+        lost = [v for v in values if reads_as_cased_words(v) and not reads_as_words(v)]
+        assert len(lost) / len(values) <= _CASED_WORD_LOSS_CEILINGS[shape]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "".join(random.Random(296).choices(string.ascii_letters, k=200)),  # noqa: S311
+            "aB" * 64,
+            "".join(random.Random(297).choices(string.ascii_letters, k=1000)),  # noqa: S311
+            "aB" * 22,
+            "".join(random.Random(298).choices(string.ascii_letters + " ,.'-", k=1000)),  # noqa: S311
+        ],
+        ids=["random-200", "aB-64", "random-1000", "aB-22", "name-alphabet-1000"],
+    )
+    def test_a_long_value_is_judged_in_bounded_time(self, value: str) -> None:
+        """The camelCase search once tried every split of every run of capitals,
+        2 to the power of their number; a long value of letters must still
+        return at once."""
+        started = time.perf_counter()
+        assert not reads_as_cased_words(value)
+        assert time.perf_counter() - started < 0.25
+
+
+class TestTheReportedFormStateShapes:
+    """#296's reporter sent case masks of their form-state values, never the
+    values. These are invented values with the same masks; the quoted and
+    cleared forms go through the digest's quote and punctuation handling, tested
+    in test_har_digest.py."""
+
+    @pytest.mark.parametrize("value", ["GRANTEE", "LANDOWNER"], ids=["AAAAAAA", "AAAAAAAAA"])
+    def test_a_word_of_7_or_9_capitals(self, value: str) -> None:
+        assert reads_as_cased_words(value)
+        assert not reads_as_words(value)
+
+    def test_a_tab_name_of_4_capitals_4_lower_and_a_capitalised_6(self) -> None:
+        """AAAAaaaaAaaaaa: camelCase that starts with a capital, 14 letters."""
+        assert reads_as_cased_words("GRIDviewPanels")
+
+    @pytest.mark.parametrize("value", ["BRL Grantees", "XQZ Grantees"])
+    def test_a_name_of_3_capitals_and_a_capitalised_8_inside_its_quotes(self, value: str) -> None:
+        """AAA Aaaaaaaa, the inside of the quoted value the digest takes the
+        quotes off: a word of 3 capitals passes as typed, spelled or not."""
+        assert reads_as_words(value)
 
 
 # The graft skill's HAR reader runs on the standard library alone, so it carries

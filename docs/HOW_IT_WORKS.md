@@ -704,8 +704,7 @@ and two plugins in one suite can share an endpoint path. `gp observe
 fixtures` writes a `<file>.meta.json` sidecar beside every capture (a `schema`
 number, the status, the content type, the body parameter names, the hash of the
 captured body, every cookie name the recording set except a cookie whose every
-non-empty recorded value reads as words (`graftpunk.har.paths.reads_as_words`: a
-search term, a short number, a date) and that has neither a token or
+non-empty recorded value is form state and that has neither a token or
 session-like name nor a `Set-Cookie` with `HttpOnly` (in the header or in the
 HAR's `response.cookies` array), and the token names the run's digest recorded, a
 name that holds an id left out and counted in
@@ -714,7 +713,21 @@ committed beside the fixture derived from it once you have read its body
 parameter names and its `flagged_names`: a body key that does not read as a
 field name or holds an id is dropped, but the rule is lexical, so an account
 value in a shape it does not read as an id is kept, and some sites put account
-data in a cookie's name. `FixtureSession` reads the sidecar through
+data in a cookie's name. A value is form state when, with one pair of
+surrounding double quotes taken off, it reads as words
+(`graftpunk.har.paths.reads_as_words`: a search term, a short number, a date),
+or as cased words (`graftpunk.har.paths.reads_as_cased_words`: one word in
+capitals such as `LANDOWNER`, a camelCase name such as `currentTab` or
+`tabLISTresults`, or one of 12 letters or more that starts with a capital such
+as `LISTviewResults`, or a name such as `SMITH, JOHN`), or when it is ASCII
+punctuation and spaces alone (a field cleared to `""`; a control character
+such as `%00` is not punctuation). The cased-words rule is
+told from a random id only by spelling, so it leaves out some random ids that
+`reads_as_words` alone flagged: measured on 100,000 values per shape
+(2026-10-24, `scripts/cookie_value_rates.py`), 0.67% of 8 mixed-case
+letters and 0.20% of 12, 42% of 4
+capitals and 5.2% of 12,
+and 1.1% of 8 capitals and digits. `FixtureSession` reads the sidecar through
 `graftpunk.testing.sidecar` for status and content type, so a fixture copied
 from a capture keeps its recorded status.
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
