@@ -17,6 +17,7 @@ import pytest
 
 from graftpunk.exceptions import PluginError
 from graftpunk.observe.capture import create_capture_backend as _real_create_capture_backend
+from graftpunk.observe.run import Redaction
 from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
 from graftpunk.plugins.login_engine import generate_login_method
 
@@ -268,7 +269,7 @@ class TestEngineObserve:
         assert storage.run_dir.parent.parent == tmp_path
         assert storage.run_dir.parent.name == "hl-session"
         # Credentials are scrubbed from the HAR, and the run dir is shown to the user.
-        assert sorted(save.await_args.kwargs["redact"]) == ["p", "u"]
+        assert save.await_args.kwargs["redact"] == Redaction(secrets=("p",), identifiers=("u",))
         assert save.await_args.kwargs["console"] is not None
         # Full capture: bodies go to the run dir, not the header-only capture.
         assert ccb.call_args.kwargs["bodies_dir"] == storage.run_dir / "bodies"
@@ -313,7 +314,7 @@ class TestEngineObserve:
         assert mock_bs.call_args.kwargs["observe_mode"] == "full"
         assert instance.session_name == "hl-session"
         # The observe HAR carries the login POST; the credentials are scrubbed.
-        assert sorted(instance.observe_redact) == ["p", "u"]
+        assert instance.observe_redact == Redaction(secrets=("p",), identifiers=("u",))
         ccb.assert_not_called()
 
     @pytest.mark.asyncio

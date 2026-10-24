@@ -716,23 +716,24 @@ class TestPluginCommandRun:
             }
         )
 
-    def test_a_static_password_is_known_and_the_username_is_not(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_static_credentials_are_known(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from graftpunk import workstation_env
-        from graftpunk.cli.login_commands import known_secret_credentials
+        from graftpunk.cli.login_commands import known_credentials
 
         monkeypatch.delenv("MYSHOP_PASSWORD", raising=False)
         monkeypatch.delenv("MYSHOP_USERNAME", raising=False)
         env = self._env(workstation_env.Entry("MYSHOP_PASSWORD", "s3cret-static", "static", 2))
         with patch.object(workstation_env, "load", return_value=env):
-            assert known_secret_credentials(_ShopPlugin()) == ["s3cret-static"]
+            assert known_credentials(_ShopPlugin()) == {
+                "username": "alice@example.com",
+                "password": "s3cret-static",
+            }
 
     def test_a_credential_kept_as_a_command_is_not_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from graftpunk import workstation_env
-        from graftpunk.cli.login_commands import known_secret_credentials
+        from graftpunk.cli.login_commands import known_credentials
 
         monkeypatch.delenv("MYSHOP_PASSWORD", raising=False)
         monkeypatch.delenv("MYSHOP_USERNAME", raising=False)
@@ -742,9 +743,9 @@ class TestPluginCommandRun:
             workstation_env.Entry("MYSHOP_PASSWORD", f"$({command})", "command", 2, command=command)
         )
         with patch.object(workstation_env, "load", return_value=env):
-            values = known_secret_credentials(_ShopPlugin())
+            values = known_credentials(_ShopPlugin())
 
-        assert values == []
+        assert values == {"username": "alice@example.com"}
         assert not ran.exists()
 
     def test_the_spool_never_holds_the_password_while_the_command_runs(

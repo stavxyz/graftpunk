@@ -197,23 +197,20 @@ def credential_envvar(plugin: CLIPluginProtocol, field_name: str) -> str:
     return f"{site_prefix}_{field_name.upper()}"
 
 
-def known_secret_credentials(plugin: CLIPluginProtocol) -> list[str]:
-    """The plugin's secret login credentials gp can read without running anything.
+def known_credentials(plugin: CLIPluginProtocol) -> dict[str, str]:
+    """The plugin's login credentials gp can read without running anything.
 
-    A field is secret when its name holds one of :data:`SECRET_KEYWORDS`
-    (``password``, ``secret``, ``token``, ``key``), the rule the login prompt
-    masks input by; a username is not, so it is left in URLs and bodies. For
-    each such login field (:func:`resolve_login_fields`), the value its
+    For each login field (:func:`resolve_login_fields`), the value its
     environment variable holds, else the workstation env file's static value
-    for that name. A ``$(...)`` command value is not run: outside a login it
-    could ask for a password or a biometric approval, so a credential kept
-    that way is not known here. Used to scrub a plugin command's observe run.
+    for that name; a field with neither is left out. A ``$(...)`` command
+    value is not run: outside a login it could ask for a password or a
+    biometric approval, so a credential kept that way is not known here. Used
+    to scrub a plugin command's observe run as a login run is scrubbed
+    (:meth:`graftpunk.observe.run.Redaction.from_credentials`).
     """
     env_file = workstation_env.load()
-    values: list[str] = []
+    values: dict[str, str] = {}
     for field_name in resolve_login_fields(plugin):
-        if not any(keyword in field_name.lower() for keyword in SECRET_KEYWORDS):
-            continue
         name = credential_envvar(plugin, field_name)
         value = os.environ.get(name)
         if not value:
@@ -221,7 +218,7 @@ def known_secret_credentials(plugin: CLIPluginProtocol) -> list[str]:
             if entry is not None and entry.kind == workstation_env.STATIC:
                 value = entry.raw_value
         if value:
-            values.append(value)
+            values[field_name] = value
     return values
 
 

@@ -13,7 +13,7 @@ import datetime
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import requests
@@ -307,3 +307,142 @@ class TestPrivateFiles:
         write_private_file(path, b"x", append=True)
 
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+# ---------------------------------------------------------------------------
+# What a run is scrubbed of: every credential; an identifier stays in URLs
+# ---------------------------------------------------------------------------
+
+USER, PIN, OTP = "bob@example.com", "48213", "771904"
+
+
+def _login_har_entry() -> dict[str, Any]:
+    """A login POST carrying all three values, from a URL that names the user."""
+    return {
+        "request": {
+            "method": "POST",
+            "url": f"https://myshop.example/login?user={USER}",
+            "queryString": [{"name": "user", "value": USER}],
+            "headers": [{"name": "X-Login", "value": USER}],
+            "postData": {"text": f"user={USER}&pin={PIN}&otp={OTP}"},
+        },
+        "response": {"content": {"text": f"welcome {USER}"}, "redirectURL": ""},
+    }
+
+
+def _assert_scrubbed(entry: dict[str, Any]) -> None:
+    from graftpunk.observe.run import REDACTED
+
+    text = json.dumps(entry)
+    assert PIN not in text
+    assert OTP not in text
+    request = entry["request"]
+    # The identifier is kept where the digest reads endpoints...
+    assert request["url"] == f"https://myshop.example/login?user={USER}"
+    assert request["queryString"] == [{"name": "user", "value": USER}]
+    # ...and scrubbed from the body and headers.
+    assert request["postData"]["text"] == f"user={REDACTED}&pin={REDACTED}&otp={REDACTED}"
+    assert request["headers"] == [{"name": "X-Login", "value": REDACTED}]
+    assert entry["response"]["content"]["text"] == f"welcome {REDACTED}"
+
+
+class TestCredentialScrub:
+    def test_a_login_run_scrubs_pin_and_otp_and_keeps_the_user_in_urls(self) -> None:
+        from graftpunk.observe.run import redact_har_entries
+        from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
+        from graftpunk.plugins.login_engine import generate_login_method
+        from tests.unit.test_login_headless_observe import (
+            _nodriver_session_mock,
+            _nodriver_tab,
+        )
+
+        class PinPlugin(SitePlugin):
+            site_name = "myshop"
+            session_name = "myshop"
+            help_text = "t"
+            base_url = "https://myshop.example"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#u", "pin": "#p", "otp": "#o"}, submit="#s")],
+                url="/login",
+                failure="Bad login.",
+                timeout=0.05,
+                settle=0.0,
+            )
+
+        mock_bs, _ = _nodriver_session_mock(_nodriver_tab())
+        capture = AsyncMock()
+        capture.get_header_roles = lambda: {}
+        login = generate_login_method(PinPlugin())
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.observe.capture.create_capture_backend", return_value=capture),
+            patch("graftpunk.observe.run.save_observe_run", new_callable=AsyncMock) as save,
+            patch("graftpunk.observe.OBSERVE_BASE_DIR", Path("/nonexistent-unused")),
+            patch("graftpunk.observe.storage.ObserveStorage"),
+        ):
+            import asyncio
+
+            asyncio.run(login({"username": USER, "pin": PIN, "otp": OTP}, observe_mode="full"))
+
+        redaction = save.await_args.kwargs["redact"]
+        (entry,) = redact_har_entries([_login_har_entry()], redaction)
+        _assert_scrubbed(entry)
+
+    def test_a_plugin_command_run_scrubs_pin_and_otp_and_keeps_the_user_in_urls(
+        self, site: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import typer
+
+        from graftpunk.cli.command_factory import synthesize_command_fn
+        from graftpunk.cli.plugin_runtime import run_plugin_command
+        from graftpunk.observe.run import REDACTED
+        from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin, command
+
+        for name, value in (("USERNAME", USER), ("PIN", PIN), ("OTP", OTP)):
+            monkeypatch.setenv(f"MYSHOP_{name}", value)
+
+        class PinPlugin(SitePlugin):
+            site_name = "myshop"
+            session_name = "myshop"
+            help_text = "t"
+            requires_session = False
+            base_url = site
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#u", "pin": "#p", "otp": "#o"}, submit="#s")],
+                url="/login",
+            )
+
+            @command(help="Sign in again")
+            def verify(self, ctx: Any) -> dict[str, Any]:
+                ctx.session.post(
+                    f"{self.base_url}/login",
+                    params={"user": USER},
+                    data={"user": USER, "pin": PIN, "otp": OTP},
+                )
+                return {}
+
+        plugin = PinPlugin()
+        spec = next(s for s in plugin.get_commands() if s.name == "verify")
+        app = typer.Typer()
+        app.command(name="verify")(
+            synthesize_command_fn(
+                name="verify",
+                param_specs=list(spec.params),
+                body=lambda ctx, **kw: run_plugin_command(plugin, spec, ctx, **kw),
+            )
+        )
+        with (
+            patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.cli.plugin_runtime.format_output"),
+        ):
+            result = CliRunner().invoke(app, [], obj={"observe_mode": "full"})
+
+        assert result.exit_code == 0, result.output
+        (run,) = [p for p in tmp_path.glob("[!.]*/*") if p.is_dir()]
+        text = (run / "network.har").read_text()
+        assert PIN not in text
+        assert OTP not in text
+        post = json.loads(text)["log"]["entries"][0]["request"]
+        assert post["url"] == f"{site}/login?user=bob%40example.com"
+        assert post["postData"]["text"] == f"user={REDACTED}&pin={REDACTED}&otp={REDACTED}"

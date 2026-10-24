@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -111,7 +110,7 @@ class ObservabilityContext:
             if self._storage is not None and self._storage.remove_if_empty():
                 self._storage = None
 
-    def finish(self, redact: Iterable[str] = ()) -> None:
+    def finish(self, redact: Any = ()) -> None:
         """Stop the capture and write its HAR, bodies and console logs to the run.
 
         Safe to call when observe is off or nothing was captured. Nothing here
@@ -119,7 +118,8 @@ class ObservabilityContext:
         :func:`graftpunk.observe.run.write_capture_data`).
 
         Args:
-            redact: Secret values to scrub from the HAR and the request bodies.
+            redact: What to scrub from the HAR and the request bodies: a
+                :class:`graftpunk.observe.run.Redaction`, or values that are all secrets.
         """
         if self._mode == "off" or self._capture is None or self._storage is None:
             return
@@ -150,7 +150,7 @@ def build_observe_context(
     driver: Any,
     mode: Literal["off", "full"],
     http_session: requests.Session | None = None,
-    redact: Iterable[str] = (),
+    redact: Any = (),
 ) -> ObservabilityContext:
     """Build an observability context for a plugin command or session.
 
@@ -211,7 +211,7 @@ def build_observe_context(
                 http_session,
                 bodies_dir=bodies_dir,
                 spool_path=storage.run_dir / SPOOL_NAME,
-                redact=tuple(redact),
+                redact=redact,
             ),
             storage=storage,
             mode=mode,

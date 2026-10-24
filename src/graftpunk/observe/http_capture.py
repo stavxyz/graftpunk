@@ -277,13 +277,15 @@ class HttpCaptureBackend:
         max_body_size: int = MAX_RESPONSE_BODY_SIZE,
         bodies_dir: Path | None = None,
         spool_path: Path | None = None,
-        redact: tuple[str, ...] = (),
+        redact: Any = (),
     ) -> None:
         self._session = session
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
         self._spool_path = spool_path
-        self._redact = tuple(redact)
+        from graftpunk.observe.run import as_redaction
+
+        self._redact = as_redaction(redact)
         self._entries: list[dict[str, Any]] = []
         self._count = 0
         self._lock = threading.Lock()

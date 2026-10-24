@@ -166,7 +166,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         self._observe_mode = observe_mode
         self._capture: Any = None
         self._observe_storage: ObserveStorage | None = None
-        self._observe_redact: tuple[str, ...] = ()
+        self._observe_redact: Any = ()
 
         if backend == "nodriver":
             # Use nodriver backend directly (CDP-based, no ChromeDriver)
@@ -295,12 +295,20 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
 
     @property
     def observe_redact(self) -> tuple[str, ...]:
-        """Secret values scrubbed from the observe HAR before it is written."""
-        return self._observe_redact
+        """Every value scrubbed from the observe HAR before it is written."""
+        from graftpunk.observe.run import as_redaction
+
+        return as_redaction(self._observe_redact).everything
 
     @observe_redact.setter
     def observe_redact(self, values: Any) -> None:
-        self._observe_redact = tuple(str(v) for v in values if v)
+        """Plain values are all secrets; a :class:`graftpunk.observe.run.Redaction`
+        also names identifiers, which are left in URLs."""
+        from graftpunk.observe.run import Redaction
+
+        self._observe_redact = (
+            values if isinstance(values, Redaction) else tuple(str(v) for v in values if v)
+        )
 
     @property
     def driver(self) -> Any:

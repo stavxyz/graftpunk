@@ -11,7 +11,8 @@ import re
 import stat
 import tempfile
 import urllib.parse
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,56 @@ REDACTED = "***REDACTED***"
 _MIN_REDACT_LEN = 3
 # An HTTP Basic credential: the scheme, then base64 of "user:password".
 _BASIC_RE = re.compile(r"(\bBasic\s+)([A-Za-z0-9+/]+={0,2})", re.IGNORECASE)
+
+
+#: A credential field whose name holds one of these is an identifier: it is
+#: scrubbed from bodies and headers, but left in URLs so they stay readable.
+IDENTIFIER_KEYWORDS = ("username", "user", "email", "login")
+# The HAR fields that hold a URL (or its query) rather than a body or header.
+_URL_FIELDS = frozenset({"url", "queryString", "redirectURL"})
+
+
+@dataclass(frozen=True)
+class Redaction:
+    """What a run is scrubbed of.
+
+    *secrets* are replaced everywhere. *identifiers* (a username, an email)
+    are replaced everywhere except the HAR's URL fields (``request.url``,
+    ``request.queryString`` and ``response.redirectURL``), so the endpoints
+    the digest reads stay readable.
+    """
+
+    secrets: tuple[str, ...] = ()
+    identifiers: tuple[str, ...] = ()
+
+    @classmethod
+    def from_credentials(cls, credentials: Mapping[str, str]) -> Redaction:
+        """Every credential value: an identifier field's as an identifier, the rest as secrets."""
+        secrets: list[str] = []
+        identifiers: list[str] = []
+        for name, value in credentials.items():
+            if not value:
+                continue
+            lowered = name.lower()
+            (identifiers if any(k in lowered for k in IDENTIFIER_KEYWORDS) else secrets).append(
+                str(value)
+            )
+        return cls(tuple(secrets), tuple(identifiers))
+
+    @property
+    def everything(self) -> tuple[str, ...]:
+        """Secrets and identifiers together."""
+        return self.secrets + self.identifiers
+
+    def __bool__(self) -> bool:
+        return bool(self.secrets or self.identifiers)
+
+
+def as_redaction(redact: Redaction | Iterable[str]) -> Redaction:
+    """*redact* as a :class:`Redaction`; plain values are all secrets."""
+    if isinstance(redact, Redaction):
+        return redact
+    return Redaction(tuple(str(v) for v in redact if v))
 
 
 def make_run_id() -> str:
@@ -45,7 +96,7 @@ def _secret_forms(secret: str) -> set[str]:
 
 
 def redact_har_entries(
-    entries: list[dict[str, Any]], secrets: Iterable[str]
+    entries: list[dict[str, Any]], secrets: Redaction | Iterable[str]
 ) -> list[dict[str, Any]]:
     """Return ``entries`` with every occurrence of ``secrets`` replaced.
 
@@ -61,20 +112,26 @@ def redact_har_entries(
 
     Args:
         entries: HAR 1.2 entry dicts (not mutated).
-        secrets: Values to remove; empty and very short values are skipped.
+        secrets: A :class:`Redaction`, or values that are all secrets. An
+            identifier is left in the URL fields; empty and very short values
+            are skipped.
     """
-    kept = _kept_secrets(secrets)
-    ordered = _redaction_forms(kept)
+    redaction = as_redaction(secrets)
+    everything = _kept_secrets(redaction.everything)
+    ordered = _redaction_forms(everything)
     if not ordered:
         return entries
+    url_ordered = _redaction_forms(redaction.secrets)
 
-    def scrub(value: Any) -> Any:
+    def scrub(value: Any, in_url: bool = False) -> Any:
         if isinstance(value, str):
-            return _scrub_text(value, ordered, kept)
+            if in_url:
+                return _scrub_text(value, url_ordered, everything)
+            return _scrub_text(value, ordered, everything)
         if isinstance(value, dict):
-            return {k: scrub(v) for k, v in value.items()}
+            return {k: scrub(v, in_url or k in _URL_FIELDS) for k, v in value.items()}
         if isinstance(value, list):
-            return [scrub(v) for v in value]
+            return [scrub(v, in_url) for v in value]
         return value
 
     return scrub(entries)
@@ -148,7 +205,7 @@ def _scrub_bytes(raw: bytes, ordered: list[str]) -> bytes:
 
 
 def redact_request_body_files(
-    entries: list[dict[str, Any]], secrets: Iterable[str], run_dir: Path
+    entries: list[dict[str, Any]], secrets: Redaction | Iterable[str], run_dir: Path
 ) -> None:
     """Scrub *secrets* from the request bodies the recorder wrote to ``bodies/``.
 
@@ -165,7 +222,7 @@ def redact_request_body_files(
     scrubbed. A reference outside *run_dir*, or to a missing file, is skipped.
     Response bodies in ``bodies/`` are not scanned here.
     """
-    kept = _kept_secrets(secrets)
+    kept = _kept_secrets(as_redaction(secrets).everything)
     ordered = _redaction_forms(kept)
     if not ordered:
         return
@@ -204,7 +261,9 @@ def redact_request_body_files(
             )
 
 
-def write_capture_data(storage: ObserveStorage, capture: Any, redact: Iterable[str] = ()) -> int:
+def write_capture_data(
+    storage: ObserveStorage, capture: Any, redact: Redaction | Iterable[str] = ()
+) -> int:
     """Write a stopped capture's HAR, and its console logs when it has any.
 
     The HAR and the request bodies in ``bodies/`` are scrubbed of *redact* first
@@ -221,7 +280,7 @@ def write_capture_data(storage: ObserveStorage, capture: Any, redact: Iterable[s
     """
     from graftpunk.observe.http_capture import HttpCaptureBackend
 
-    redact = tuple(redact)
+    redact = as_redaction(redact)
     written = 0
 
     def scrubbed(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -272,7 +331,7 @@ async def save_observe_run(
     screenshot_label: str,
     *,
     console: Any | None = None,
-    redact: Iterable[str] = (),
+    redact: Redaction | Iterable[str] = (),
 ) -> None:
     """Persist a nodriver observe run: screenshot, page source, HAR, console logs.
 
@@ -338,7 +397,7 @@ async def save_observe_run(
     except Exception as exc:  # noqa: BLE001 — still write what was captured
         LOG.error("observe_stop_capture_failed", error=str(exc), exc_type=type(exc).__name__)
 
-    redact = tuple(redact)
+    redact = as_redaction(redact)
     har_entries = redact_har_entries(backend.get_har_entries(), redact)
     step(
         "request body redaction",
