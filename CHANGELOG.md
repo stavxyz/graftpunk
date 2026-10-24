@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading
+
+1. **A cookie the recording only sends is now in `flagged_names`, so a committed fixture can fail `fixtures_are_sanitised` on the first run after you regenerate its sidecar** ([#274](https://github.com/stavxyz/graftpunk/issues/274)). `gp observe fixtures` used to read only the cookies a response sets. A recording made with a cached session never sees its session set, because the browser holds the cookie before the recording starts and only requests send it, so a session cookie copied into a fixture passed the check. A cookie a request sends is now judged by the same rule as one a response sets: it is flagged when its name reads as a token or session name, or when any value it held is not form state. A sidecar already committed does not change until `gp observe fixtures` writes it again. When the check then names a cookie in a fixture, rename it there.
+
+### Fixed
+
+- `gp observe fixtures` flags a cookie the recording only sends, such as a session injected from a cache ([#274](https://github.com/stavxyz/graftpunk/issues/274)). The HAR parser now reads a request's cookies from its `Cookie` headers when the HAR's `request.cookies` array is missing or empty, and a cookie whose name holds an id is counted in `redacted_names` whether a response set it or a request sent it.
+
 ## [1.26.0] - 2026-10-24
 
 This is a minor release. Several changes reach a program on the first run after the upgrade:

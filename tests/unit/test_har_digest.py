@@ -4558,6 +4558,66 @@ class TestFlaggedNamesOf:
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
 
+    def test_a_cookie_the_recording_only_sends_is_judged_like_one_it_sets(
+        self, tmp_path: Path
+    ) -> None:
+        """A recording made with a cached session (#274) never sees the session
+        set: its requests send it. A sent session name or an opaque sent value is
+        flagged, and sent form state is left out, as for a cookie a response sets."""
+        entry = self._with_cookies(
+            [],
+            (
+                ("sessionid", "lanterns"),
+                ("visit", "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"),
+                ("lot", "12"),
+                ("text", "running+shoes"),
+            ),
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("sessionid", "visit")
+
+    @pytest.mark.parametrize("array", ["absent", "empty"])
+    def test_a_sent_cookie_is_read_from_the_cookie_header_when_the_array_has_none(
+        self, tmp_path: Path, array: str
+    ) -> None:
+        """Every Cookie header counts, in any case, as HTTP/2 can split one into
+        several."""
+        entry = _entry("GET", "https://myshop.example.com/api/search")
+        entry["request"]["headers"] = [
+            {"name": "cookie", "value": "sessionid=Zq9XkLmPwR4t7Bv2Hn8Ks3Jd; lot=12"},
+            {"name": "Cookie", "value": "visit=Hn8Ks3JdZq9XkLmPwR4t7Bv2"},
+        ]
+        if array == "absent":
+            del entry["request"]["cookies"]
+        har = _write_har(tmp_path, [entry])
+        parsed = parse_har_file(har).entries
+        assert parsed[0].request.cookies == [
+            {"name": "sessionid", "value": "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"},
+            {"name": "lot", "value": "12"},
+            {"name": "visit", "value": "Hn8Ks3JdZq9XkLmPwR4t7Bv2"},
+        ]
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parsed) == ("sessionid", "visit")
+
+    def test_the_cookie_header_is_not_read_when_the_array_has_cookies(self, tmp_path: Path) -> None:
+        """The array is the recorder's own parse of the same header; reading both
+        would count one cookie twice."""
+        entry = self._with_cookies([], (("lot", "12"),))
+        entry["request"]["headers"] = [{"name": "Cookie", "value": "lot=12"}]
+        har = _write_har(tmp_path, [entry])
+        assert parse_har_file(har).entries[0].request.cookies == [{"name": "lot", "value": "12"}]
+
+    def test_a_sent_id_cookie_name_is_left_out_and_counted(self, tmp_path: Path) -> None:
+        entry = self._with_cookies(
+            [], (("sess_40912873", "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"), ("sessionid", "x"))
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        parsed = parse_har_file(har).entries
+        assert flagged_names_of(result, parsed) == ("sessionid",)
+        assert redacted_names_of(result, parsed) == 1
+
     @pytest.mark.parametrize("shape", sorted(_FORM_STATE_LOSS_CEILINGS))
     def test_few_random_values_of_a_biased_shape_read_as_form_state(self, shape: str) -> None:
         """Shapes the #296 reviews measured beyond uniform alphabets: short mixed

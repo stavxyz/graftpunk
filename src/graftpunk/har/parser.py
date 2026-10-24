@@ -200,6 +200,25 @@ def _set_cookie_lines(headers_list: list[dict[str, str]]) -> list[tuple[str, boo
     return cookies
 
 
+def _cookie_header_pairs(headers_list: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """``{"name", "value"}`` for every cookie a ``Cookie`` request header in
+    *headers_list* sends, in order: every header of that name in any case (HTTP/2
+    can split one into several), every line of a newline-joined value, and every
+    ``;``-separated ``name=value`` pair. A pair with no ``=`` or no name is
+    skipped. Reads the raw headers list, since the ``_parse_headers`` dict keeps
+    only the last header of a name."""
+    cookies: list[dict[str, Any]] = []
+    for header in headers_list:
+        if header.get("name", "").lower() != "cookie":
+            continue
+        for line in _LINE_BREAK_RE.split(header.get("value", "")):
+            for pair in line.split(";"):
+                name, sep, value = pair.partition("=")
+                if sep and name.strip():
+                    cookies.append({"name": name.strip(), "value": value.strip()})
+    return cookies
+
+
 def _parse_set_cookie_names(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
     """The NAME of every cookie a ``Set-Cookie`` header in *headers_list* sets,
     every line of a newline-joined value included (:func:`_set_cookie_lines`),
@@ -286,7 +305,10 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         method=request_data.get("method", "GET"),
         url=request_data.get("url", ""),
         headers=_parse_headers(request_data.get("headers", [])),
-        cookies=_parse_cookies(request_data.get("cookies", [])),
+        # A recorder that leaves the array out (or empty) still kept the header,
+        # and a cookie the request sends must still be seen (#274).
+        cookies=_parse_cookies(request_data.get("cookies") or [])
+        or _cookie_header_pairs(request_data.get("headers", [])),
         post_data=post_data,
         query_string=request_data.get("queryString", []),
         post_data_mime_type=post_data_mime_type,

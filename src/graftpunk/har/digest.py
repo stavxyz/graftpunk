@@ -839,6 +839,19 @@ def _response_cookie_names(entry: HAREntry) -> list[str]:
     return names
 
 
+def _entry_cookie_names(entry: HAREntry) -> list[str]:
+    """Cookie names this entry carries: the ones its response sets
+    (:func:`_response_cookie_names`), then the ones its request sends that the
+    response does not set. A recording made with a cached session sends its
+    session without any response setting it (#274)."""
+    names = _response_cookie_names(entry)
+    for cookie in entry.request.cookies:
+        name = cookie.get("name", "")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def _redirect_target(entry: HAREntry) -> tuple[str, str]:
     """The host and path a 3xx response sent the client to, as
     :func:`_redirect_target_path` spells the path; both empty when it names none."""
@@ -1933,9 +1946,11 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     """The names a committed fixture must never contain, sorted and deduplicated:
     every cookie name the digest recorded on any in-scope host (not the primary
     host alone: a second first-party host can set its own session cookie), every
-    token candidate's name, and every cookie name any of *entries* sets, whatever
-    its host and whether or not the digest counted it as static, except a cookie
-    that only ever holds words (below).
+    token candidate's name, and every cookie name any of *entries* sets or sends,
+    whatever its host and whether or not the digest counted it as static, except
+    a cookie that only ever holds words (below). A sent cookie counts because a
+    recording made with a cached session never sees the session set: the
+    browser holds it before the recording starts, and only requests carry it.
 
     ``d.cookies`` stays the digest's own scoped list; *entries* widens only this
     safety net. ``gp observe fixtures`` passes every entry in the HAR, since a
@@ -1985,7 +2000,7 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     entries = tuple(entries)
     seen = _cookies_seen(entries)
     entry_cookies = {
-        name for entry in entries for name in _response_cookie_names(entry) if not holds_an_id(name)
+        name for entry in entries for name in _entry_cookie_names(entry) if not holds_an_id(name)
     }
 
     def holds_only_words(name: str) -> bool:
@@ -2126,12 +2141,12 @@ def redacted_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> int:
     account value: the cookie names, plus the token candidate names the digest
     dropped (a cookie that is also a token candidate counts once as each). The
     cookie count is the larger of the distinct id cookie names any of *entries*
-    sets and the digest's own ``d.cookie_names_dropped_as_ids``, so it is never
+    sets or sends and the digest's own ``d.cookie_names_dropped_as_ids``, so it is never
     low: called without the run's entries, or with only some of them, it still
     holds every one the digest dropped. The fixture sidecar records this count,
     never the names."""
     entry_id_cookies = {
-        name for entry in entries for name in _response_cookie_names(entry) if holds_an_id(name)
+        name for entry in entries for name in _entry_cookie_names(entry) if holds_an_id(name)
     }
     cookies = max(len(entry_id_cookies), d.cookie_names_dropped_as_ids)
     return cookies + d.token_names_dropped_as_ids
