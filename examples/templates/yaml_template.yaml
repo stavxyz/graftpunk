@@ -10,7 +10,8 @@ help: "Description of your plugin"
 base_url: "https://example.com"      # Optional: prepended to command URLs
 
 # Optional: Headers applied to all requests
-# Environment variables use ${VAR} syntax
+# Environment variables use ${VAR} syntax, or ${VAR:fallback} for a value used
+# when VAR is unset
 # headers:
 #   Authorization: "Bearer ${MY_API_TOKEN}"
 #   X-Custom-Header: "value"
@@ -78,6 +79,33 @@ commands:
   #       required: false
   #       default: 1
   #       help: "Page number"
+
+  # Command with a secret option: scrubbed from an observe run, never shown
+  # in --help or graftpunk's errors and logs, and prompted for with hidden
+  # input when required and missing on a terminal. A secret param must be a
+  # str option.
+  # lookup:
+  #   help: "Look up an item with an API key"
+  #   method: GET
+  #   url: "/api/lookup"
+  #   params:
+  #     - name: api_key
+  #       required: true
+  #       secret: true
+  #       help: "API key"
+  #
+  # The same value from the environment instead, so it stays off the command
+  # line: envvar reads the process environment, and a ${NAME} default is
+  # resolved when the command runs, from the environment and then the
+  # workstation env file (${NAME:fallback} gives fallback when NAME is unset).
+  # A ${NAME} default makes `required` unnecessary, and a required param with
+  # a default is refused.
+  #     - name: api_key
+  #       secret: true
+  #       envvar: MYSITE_API_KEY
+  #     - name: api_key
+  #       secret: true
+  #       default: "${MYSITE_API_KEY}"
 
   # Command with jmespath extraction
   # users:

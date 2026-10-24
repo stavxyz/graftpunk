@@ -7,6 +7,7 @@ the factory dynamically builds a SitePlugin subclass per YAML file.
 
 from __future__ import annotations
 
+import functools
 import re
 import types
 from pathlib import Path
@@ -25,6 +26,7 @@ from graftpunk.plugins.cli_plugin import (
     SitePlugin,
 )
 from graftpunk.plugins.yaml_loader import (
+    ENV_VAR_PATTERN,
     YAMLCommandDef,
     YAMLDiscoveryError,
     discover_yaml_plugins,
@@ -75,13 +77,20 @@ def _convert_params(cmd_def: YAMLCommandDef) -> list[PluginParamSpec]:
                 fallback="str",
             )
         if param.is_option:
+            default = param.default
+            if isinstance(default, str) and ENV_VAR_PATTERN.search(default):
+                # Resolved when the command runs, as headers are, so the value
+                # (a secret, say) never sits on the command line.
+                default = functools.partial(expand_env_vars, default)
             params.append(
                 PluginParamSpec.option(
                     param.name,
                     type=param_type,
                     required=param.required,
-                    default=param.default,
+                    default=default,
                     help=param.help,
+                    secret=param.secret,
+                    click_kwargs={"envvar": param.envvar} if param.envvar else None,
                 )
             )
         else:
@@ -134,7 +143,8 @@ def _create_handler(
         url_params = set(URL_PARAM_PATTERN.findall(cmd_def.url))
         query_params = {k: v for k, v in kwargs.items() if k not in url_params and v is not None}
 
-        # Make request
+        # Make request. A secret param's value is scrubbed from these log lines
+        # by graftpunk.logging.log_secrets, which the dispatcher sets.
         LOG.debug("yaml_plugin_request", method=cmd_def.method, url=url, params=query_params)
 
         response = session.request(

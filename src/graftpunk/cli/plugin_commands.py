@@ -174,7 +174,7 @@ def _build_site_app(plugin: CLIPluginProtocol, result: PluginDiscoveryResult) ->
     are contained per-command. (Previously: a command_group_conflict warning
     that silently mangled the group.)
     """
-    from graftpunk.cli.command_factory import synthesize_command_fn
+    from graftpunk.cli.command_factory import command_class, synthesize_command_fn
     from graftpunk.cli.plugin_runtime import run_plugin_command
 
     site_app = typer.Typer(
@@ -236,6 +236,9 @@ def _build_site_app(plugin: CLIPluginProtocol, result: PluginDiscoveryResult) ->
                 help_text=help_text,
                 extra_formats=list(getattr(plugin, "format_overrides", None) or {}),
             )
+            cls = command_class(cmd_spec.params)
+            if cls is not None:
+                cmd_kw["cls"] = cls
             target.command(name=cmd_spec.name, help=help_text, **cmd_kw)(fn)
             registered_names[group_path].add(cmd_spec.name)
             LOG.debug(
