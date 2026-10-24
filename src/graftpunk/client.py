@@ -34,7 +34,7 @@ from graftpunk.cache import list_sessions, load_session_for_api_resolved, update
 from graftpunk.cookies import BrowserCookieSession
 from graftpunk.exceptions import GraftpunkError, PluginError
 from graftpunk.har.naming import to_cli_name
-from graftpunk.logging import get_logger
+from graftpunk.logging import get_logger, log_secrets
 from graftpunk.observe import NoOpObservabilityContext
 from graftpunk.plugins import get_plugin
 from graftpunk.plugins.cli_plugin import (
@@ -517,30 +517,29 @@ class GraftpunkClient:
             _operating_session_name=(operating_name if needs_session else ""),
         )
 
-        # 4. Execute with retry/rate-limit; 403 token refresh
-        try:
-            result = _run_handler_with_limits(
-                spec.handler, ctx, spec, self._last_execution, **kwargs
-            )
-        except requests.exceptions.HTTPError as exc:
-            if (
-                exc.response is not None
-                and exc.response.status_code == 403
-                and token_config is not None
-            ):
-                LOG.info(
-                    "token_403_retry",
-                    command=spec.name,
-                    url=(exc.response.url if exc.response else "unknown"),
-                )
-                clear_cached_tokens(session)
-                prepare_session(session, token_config, base_url)
-                self._session_dirty = True
+        # 4. Execute with retry/rate-limit; 403 token refresh. graftpunk's log
+        # lines are scrubbed of the secret options while the handler runs.
+        secrets = spec.secret_values(kwargs)
+        with log_secrets(secrets):
+            try:
                 result = _run_handler_with_limits(
                     spec.handler, ctx, spec, self._last_execution, **kwargs
                 )
-            else:
-                raise
+            except requests.exceptions.HTTPError as exc:
+                if (
+                    exc.response is not None
+                    and exc.response.status_code == 403
+                    and token_config is not None
+                ):
+                    LOG.info("token_403_retry", command=spec.name, url=exc.response.url)
+                    clear_cached_tokens(session)
+                    prepare_session(session, token_config, base_url)
+                    self._session_dirty = True
+                    result = _run_handler_with_limits(
+                        spec.handler, ctx, spec, self._last_execution, **kwargs
+                    )
+                else:
+                    raise
 
         # 5. Persist session if dirty
         if needs_session and (spec.saves_session or ctx._session_dirty or self._session_dirty):

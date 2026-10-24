@@ -11,10 +11,12 @@ import re
 import stat
 import tempfile
 import urllib.parse
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from requests.utils import requote_uri
 
 from graftpunk.logging import get_logger
 from graftpunk.observe.storage import ObserveStorage, write_private_file
@@ -125,6 +127,10 @@ def _secret_forms(secret: str) -> set[str]:
         urllib.parse.quote(urllib.parse.quote(secret, safe=""), safe=""),
         json.dumps(secret)[1:-1],
         base64.b64encode(secret.encode()).decode(),
+        # What requests makes of a value put into the URL string itself (a
+        # path segment, or a query written into the URL): "/", "@", "!" and
+        # the like stay raw, a space or "|" is percent-encoded.
+        requote_uri(secret),
     }
 
 
@@ -164,6 +170,22 @@ def redact_har_entries(
         return value
 
     return scrub(entries)
+
+
+def redact_text(text: str, secrets: Redaction | Iterable[str], *, in_url: bool = False) -> str:
+    """*text* with *secrets* replaced as :func:`redact_har_entries` replaces them
+    in one HAR string; *in_url* keeps identifiers, as in the HAR's URL fields."""
+    return text_redactor(secrets, in_url=in_url)(text)
+
+
+def text_redactor(
+    secrets: Redaction | Iterable[str], *, in_url: bool = False
+) -> Callable[[str], str]:
+    """:func:`redact_text` for *secrets*, compiled once for many strings."""
+    scrubber = _Scrubber.of(secrets)
+    if not scrubber:
+        return lambda text: text
+    return lambda text: scrubber.scrub_text(text, in_url=in_url)
 
 
 def _kept_secrets(secrets: Iterable[str]) -> tuple[str, ...]:

@@ -105,6 +105,9 @@ app = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},
+    # A frame's locals hold a command's options, a secret one included, and
+    # login credentials; an uncaught exception's traceback must not print them.
+    pretty_exceptions_show_locals=False,
 )
 console = Console()
 
