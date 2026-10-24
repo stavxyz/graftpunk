@@ -315,7 +315,7 @@ class TestFailedSaves:
         with capture_logs() as logs, pytest.raises(OSError):
             storage.save_session("slot", b"new bytes", sample_metadata)
 
-        backups = list(slot.glob(".session.pickle.*.bak"))
+        backups = list(slot.glob(".session.pickle.*.kept"))
         assert len(backups) == 1
         assert backups[0].read_bytes() == b"old bytes"
         failed = [entry for entry in logs if entry["event"] == "session_restore_failed"]
@@ -342,6 +342,67 @@ class TestFailedSaves:
         assert storage.load_session("slot")[0] == b"old bytes"
         linked = [entry for entry in logs if entry["event"] == "session_backup_link_failed"]
         assert [entry["log_level"] for entry in linked] == ["debug"]
+
+    def test_a_failed_pickle_rename_leaves_no_backup(self, storage, sample_metadata, monkeypatch):
+        """A rename that never happened: the restore is a no-op, and the backup still goes."""
+        slot = self._two_saves(storage, sample_metadata)
+
+        def replace(src, dst):
+            if Path(dst).name == "session.pickle" and Path(src).suffix == ".tmp":
+                raise OSError(5, "Input/output error")
+            return REAL_REPLACE(src, dst)
+
+        monkeypatch.setattr("graftpunk.storage.local.os.replace", replace)
+        with pytest.raises(OSError):
+            storage.save_session("slot", b"new bytes", sample_metadata)
+        monkeypatch.setattr("graftpunk.storage.local.os.replace", REAL_REPLACE)
+
+        assert sorted(p.name for p in slot.iterdir()) == ["metadata.json", "session.pickle"]
+        assert storage.load_session("slot")[0] == b"old bytes"
+
+    def test_a_save_leaves_another_saves_in_flight_backup(self, storage, sample_metadata):
+        """Only a backup a failed restore kept is swept, never one a running save holds."""
+        slot = self._two_saves(storage, sample_metadata)
+        in_flight = slot / ".session.pickle.999.0123abcd.bak"
+        in_flight.write_bytes(b"someone else's")
+
+        storage.save_session("slot", b"new bytes", sample_metadata)
+
+        assert in_flight.read_bytes() == b"someone else's"
+
+    def test_a_sweep_that_cannot_delete_does_not_fail_the_save(
+        self, storage, sample_metadata, monkeypatch
+    ):
+        slot = self._two_saves(storage, sample_metadata)
+        kept = slot / ".session.pickle.999.0123abcd.kept"
+        kept.write_bytes(b"old")
+        real_unlink = Path.unlink
+
+        def unlink(self, missing_ok=False):
+            if self.name.endswith(".kept"):
+                raise PermissionError(13, "Permission denied")
+            return real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        storage.save_session("slot", b"new bytes", sample_metadata)
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+
+        assert storage.load_session("slot")[0] == b"new bytes"
+        assert kept.exists()
+
+    def test_a_backup_never_takes_an_existing_name(self, tmp_path, monkeypatch):
+        from graftpunk.storage import local
+
+        slot = tmp_path / "slot"
+        slot.mkdir()
+        target = slot / "session.pickle"
+        target.write_bytes(b"old bytes")
+        self._no_links(monkeypatch)
+        first = local._keep_backup(target)
+        second = local._keep_backup(target)
+
+        assert first is not None and second is not None and first != second
+        assert first.read_bytes() == second.read_bytes() == b"old bytes"
 
     def test_a_failed_first_save_leaves_another_writers_file(
         self, storage, sample_metadata, monkeypatch
@@ -402,7 +463,7 @@ class TestFailedSaves:
         finally:
             os.umask(old_umask)
 
-        (backup,) = slot.glob(".session.pickle.*.bak")
+        (backup,) = slot.glob(".session.pickle.*.kept")
         assert stat.S_IMODE(backup.stat().st_mode) == 0o600
         assert backup.read_bytes() == b"old bytes"
 
@@ -455,7 +516,7 @@ class TestFailedSaves:
         with pytest.raises(OSError):
             storage.save_session("slot", b"new bytes", sample_metadata)
         monkeypatch.setattr("graftpunk.storage.local.os.replace", REAL_REPLACE)
-        assert list(slot.glob(".session.pickle.*.bak"))
+        assert list(slot.glob(".session.pickle.*.kept"))
 
         storage.save_session("slot", b"newer bytes", sample_metadata)
 

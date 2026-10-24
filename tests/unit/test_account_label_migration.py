@@ -1071,6 +1071,36 @@ class TestCopyStamps:
 
 
 class TestRedaction:
+    @pytest.mark.parametrize("method", ["err", "failure"])
+    def test_err_and_failure_are_redacted_and_scrubbed(self, method: str) -> None:
+        """A structlog setup whose logger has ``err``/``failure`` (``BoundLogger`` over
+        a logger that defines them) gets both the placeholder and the secret scrub."""
+        import structlog
+        from structlog.testing import CapturingLoggerFactory
+
+        from graftpunk.logging import get_logger, log_secrets
+        from graftpunk.session_migration import hidden_name
+
+        factory = CapturingLoggerFactory()
+        structlog.configure(
+            processors=[],
+            wrapper_class=structlog.BoundLogger,
+            logger_factory=factory,
+            cache_logger_on_first_use=False,
+        )
+        try:
+            log = get_logger("probe")
+            with log_secrets(["tok-secret-99"]), hidden_name("myshop@4417"):
+                getattr(log, method)("x", name="myshop@4417", option="tok-secret-99")
+        finally:
+            structlog.reset_defaults()
+
+        (call,) = factory.logger.calls
+        assert call.method_name == method
+        assert call.kwargs["name"] == "myshop@<earlier label>"
+        assert "tok-secret-99" not in repr(call)
+        assert "4417" not in repr(call)
+
     def test_it_composes_with_log_secrets(self) -> None:
         """A secret option's scrub (#289) and the old-name placeholder apply together."""
         from structlog.testing import capture_logs

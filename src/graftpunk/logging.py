@@ -128,7 +128,20 @@ def _current_secrets() -> tuple[str, ...]:
 
 # The logging methods of a structlog bound logger, and their async forms ("a" + name).
 _LOG_METHODS = frozenset(
-    {"debug", "info", "warning", "warn", "error", "critical", "fatal", "exception", "msg", "log"}
+    {
+        "debug",
+        "info",
+        "warning",
+        "warn",
+        "error",
+        "err",
+        "critical",
+        "fatal",
+        "failure",
+        "exception",
+        "msg",
+        "log",
+    }
 )
 
 
