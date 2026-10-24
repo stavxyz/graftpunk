@@ -1228,11 +1228,14 @@ params:
 
 A `${NAME}` default is resolved when the command runs, not when the plugin
 loads, the way a header's `${NAME}` is: from the process environment, then the
-[workstation env file](#the-workstation-env-file) (`~/.config/graftpunk/env`), whose entry can be a
-`$(...)` command that reads a password manager. `${NAME:fallback}` gives
-`fallback` when `NAME` is unset. A `${NAME}` with no fallback that is unset
+[workstation env file](#the-workstation-env-file) (`~/.config/graftpunk/env`),
+whose entry can be a `$(...)` command that reads a password manager. `NAME` must
+be upper-case letters, digits and `_`, starting with a letter or `_`; a
+lower-case `${name}` is not a placeholder and is passed as written. An empty
+value counts as unset. `${NAME:fallback}` gives `fallback` when `NAME` is unset,
+and `${NAME:}` gives an empty value. A `${NAME}` with no fallback that is unset
 stops the command with an error naming the variable; it never becomes an empty
-value or the placeholder text. Neither `gp --help` nor shell completion resolves
+value or the placeholder text. A literal `${NAME}` default cannot be written. Neither `gp --help` nor shell completion resolves
 it, so pressing Tab never runs a `$(...)` command. A `${NAME}` default makes
 `required` unnecessary, and a required param with a default is refused. A
 positional argument's default is never expanded.
@@ -1266,8 +1269,7 @@ the environment, the prompt or a default):
 
 A value shorter than three characters is not scrubbed anywhere, and a
 three-character one is replaced wherever it occurs in a log line, inside words
-and numbers too. A secret
-option must be a `str` option: Click quotes a value it cannot convert in its
+and numbers too. A secret option must be a `str` option: Click quotes a value it cannot convert in its
 error message, so a `type=int` PIN would print the PIN. It cannot be a flag,
 `multiple`, `show_default` or a positional argument; graftpunk refuses each
 when the plugin is loaded. Parameters introspected from the handler's
@@ -1791,7 +1793,7 @@ and digits with a letter among them (`aB3+xY7+qW2`), and so are groups of
 digits separated by spaces or `+` (`4111 1111 1111 1111`, `555 123 4567`): a
 cookie holding only such values is not flagged. A short random id sometimes is.
 Measured on 100,000 random values per shape on 2026-10-24
-(`scripts/cookie_value_rates.py` prints the table), these are left out:
+(`scripts/cookie_value_rates.py` prints the table), these are left out in total, counting the ids `reads_as_words` already left out before 1.25.0:
 14.6% of 8 lowercase letters, 0.88% of 8 standard-base64 characters, 2.7% of 6
 mixed-case letters, 0.78% of 8 and 0.21% of 12. Ids of capitals alone are told
 from a word in capitals only by their letter pairs, as lowercase ids have been
