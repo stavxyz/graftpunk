@@ -43,19 +43,34 @@ def _write_private_temp(target: Path, data: bytes) -> Path:
     return path
 
 
-def _link_backup(path: Path) -> Path | None:
-    """Hard-link *path* to a new name beside it, or None when there is no file to keep.
+_backup_copy_logged = False
 
-    The link costs no copy and keeps the old file's bytes reachable after
+
+def _keep_backup(path: Path) -> Path | None:
+    """Keep the file at *path* under a new name beside it; None when there is none to keep.
+
+    A hard link costs no copy and keeps the old file's bytes reachable after
     :func:`os.replace` puts a new file at *path*. A filesystem that refuses
-    hard links gives None, and a failed save then cannot restore the old file.
+    hard links gets a copy instead (logged once per process at debug). Only
+    when the copy fails too is there no backup, and a failed save then cannot
+    restore the old file.
     """
+    global _backup_copy_logged
     if not path.exists():
         return None
     backup = path.with_name(f".{path.name}.{os.getpid()}.{id(path):x}.bak")
     try:
         os.link(path, backup)
-    except OSError:
+        return backup
+    except OSError as exc:
+        if not _backup_copy_logged:
+            _backup_copy_logged = True
+            LOG.debug("session_backup_link_failed", error_type=type(exc).__name__)
+    try:
+        shutil.copy2(path, backup)
+    except OSError as exc:
+        backup.unlink(missing_ok=True)
+        LOG.warning("session_backup_failed", error_type=type(exc).__name__)
         return None
     return backup
 
@@ -141,7 +156,7 @@ class LocalSessionStorage:
         # Both files are written in full to temporary files beside them and
         # only then renamed into place, so a write that fails (a full disk)
         # leaves the slot as it was, or no slot at all. Before the pickle is
-        # replaced, the old one is hard-linked to a backup; if anything is
+        # replaced, the old one is hard-linked (or copied) to a backup; if anything is
         # raised between the two renames, the old pickle is put back (or a
         # slot this save created is removed), so the pickle and the metadata
         # never disagree after a failed save. What remains is a crash, or a
@@ -153,13 +168,14 @@ class LocalSessionStorage:
         # business either (#178, #293).
         written: list[Path] = []
         backup: Path | None = None
+        keep_backup = False
         pickle_replaced = False
         try:
             pickle_tmp = _write_private_temp(pickle_path, encrypted_data)
             written.append(pickle_tmp)
             metadata_tmp = _write_private_temp(metadata_path, metadata_bytes)
             written.append(metadata_tmp)
-            backup = _link_backup(pickle_path)
+            backup = _keep_backup(pickle_path)
             os.replace(pickle_tmp, pickle_path)
             pickle_replaced = True
             os.replace(metadata_tmp, metadata_path)
@@ -167,13 +183,28 @@ class LocalSessionStorage:
             for tmp in written:
                 tmp.unlink(missing_ok=True)
             if created_dir:
-                shutil.rmtree(session_dir, ignore_errors=True)
-            elif pickle_replaced and backup is not None:
+                # Only what this save wrote, and the directory only when that
+                # leaves it empty: another writer may have joined it meanwhile.
+                if pickle_replaced:
+                    pickle_path.unlink(missing_ok=True)
                 with contextlib.suppress(OSError):
+                    session_dir.rmdir()
+            elif pickle_replaced and backup is not None:
+                try:
                     os.replace(backup, pickle_path)
+                    backup = None
+                except OSError as exc:
+                    # The backup is now the only copy of the old pickle: keep it.
+                    keep_backup = True
+                    LOG.error(
+                        "session_restore_failed",
+                        name=name,
+                        backup=str(backup),
+                        error=str(exc),
+                    )
             raise
         finally:
-            if backup is not None:
+            if backup is not None and not keep_backup:
                 backup.unlink(missing_ok=True)
 
         LOG.info("session_save_completed", name=name, path=str(session_dir))
@@ -359,6 +390,27 @@ class LocalSessionStorage:
             return sorted(names)
         except OSError as exc:
             LOG.error("failed_to_list_sessions", error=str(exc))
+            return []
+
+    def incomplete_sessions(self) -> list[str]:
+        """Slot directories holding a pickle but no metadata.
+
+        A crash during a save, or an older release, can leave one. They are
+        not sessions (:meth:`list_sessions` leaves them out, and loading one
+        fails), but clearing every session removes them too.
+        """
+        if not self.base_dir.exists():
+            return []
+        try:
+            return sorted(
+                item.name
+                for item in self.base_dir.iterdir()
+                if item.is_dir()
+                and (item / "session.pickle").exists()
+                and not (item / "metadata.json").exists()
+            )
+        except OSError as exc:
+            LOG.error("failed_to_list_incomplete_sessions", error=str(exc))
             return []
 
     def delete_session(self, name: str) -> bool:

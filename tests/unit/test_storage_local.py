@@ -17,6 +17,24 @@ from graftpunk.storage.base import SessionMetadata, dict_to_metadata, metadata_t
 from graftpunk.storage.local import LocalSessionStorage
 
 
+@pytest.fixture
+def sample_metadata():
+    """Session metadata for a save; the classes that need other values define their own."""
+    now = datetime.now(UTC)
+    return SessionMetadata(
+        name="slot",
+        checksum="abc123",
+        created_at=now,
+        modified_at=now,
+        expires_at=now + timedelta(hours=24),
+        domain="example.com",
+        current_url="https://example.com/dashboard",
+        cookie_count=1,
+        cookie_domains=["example.com"],
+        status="active",
+    )
+
+
 class TestLocalSessionStorage:
     """Tests for LocalSessionStorage."""
 
@@ -242,6 +260,99 @@ class TestLegacyFlatFile:
         assert "legacy-provider" in sessions
         assert "modern-provider" in sessions
         assert sessions == sorted(sessions)
+
+    def _two_saves(self, storage, sample_metadata):
+        storage.save_session("slot", b"old bytes", sample_metadata)
+        return storage.base_dir / "slot"
+
+    @staticmethod
+    def _failing_metadata_rename(monkeypatch, *, restore_fails=False):
+        real_replace = os.replace
+
+        def replace(src, dst):
+            name = Path(dst).name
+            if name == "metadata.json":
+                raise OSError(28, "No space left on device")
+            if restore_fails and name == "session.pickle" and Path(src).suffix == ".bak":
+                raise OSError(5, "Input/output error")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr("graftpunk.storage.local.os.replace", replace)
+
+    def test_a_failed_restore_keeps_the_backup_and_logs_its_path(
+        self, storage, sample_metadata, monkeypatch
+    ):
+        """The backup is the only copy of the old pickle once the restore fails (#293)."""
+        slot = self._two_saves(storage, sample_metadata)
+        self._failing_metadata_rename(monkeypatch, restore_fails=True)
+
+        with capture_logs() as logs, pytest.raises(OSError):
+            storage.save_session("slot", b"new bytes", sample_metadata)
+
+        backups = list(slot.glob(".session.pickle.*.bak"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == b"old bytes"
+        failed = [entry for entry in logs if entry["event"] == "session_restore_failed"]
+        assert failed and failed[0]["backup"] == str(backups[0])
+        assert failed[0]["log_level"] == "error"
+
+    def test_a_filesystem_without_hard_links_still_restores(
+        self, storage, sample_metadata, monkeypatch
+    ):
+        slot = self._two_saves(storage, sample_metadata)
+
+        def no_links(*_args):
+            raise OSError(1, "Operation not permitted")
+
+        monkeypatch.setattr("graftpunk.storage.local.os.link", no_links)
+        monkeypatch.setattr("graftpunk.storage.local._backup_copy_logged", False)
+        self._failing_metadata_rename(monkeypatch)
+
+        with capture_logs() as logs, pytest.raises(OSError):
+            storage.save_session("slot", b"new bytes", sample_metadata)
+
+        assert (slot / "session.pickle").read_bytes() == b"old bytes"
+        assert sorted(p.name for p in slot.iterdir()) == ["metadata.json", "session.pickle"]
+        assert storage.load_session("slot")[0] == b"old bytes"
+        linked = [entry for entry in logs if entry["event"] == "session_backup_link_failed"]
+        assert [entry["log_level"] for entry in linked] == ["debug"]
+
+    def test_a_failed_first_save_leaves_another_writers_file(
+        self, storage, sample_metadata, monkeypatch
+    ):
+        """Only what the failed save wrote is removed from a slot it created."""
+        real_replace = os.replace
+        other = storage.base_dir / "slot" / "other-writer.tmp"
+
+        def replace(src, dst):
+            if Path(dst).name == "metadata.json":
+                other.write_bytes(b"theirs")
+                raise OSError(28, "No space left on device")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr("graftpunk.storage.local.os.replace", replace)
+        with pytest.raises(OSError):
+            storage.save_session("slot", b"new bytes", sample_metadata)
+
+        assert sorted(p.name for p in (storage.base_dir / "slot").iterdir()) == ["other-writer.tmp"]
+        assert storage.list_sessions() == []
+
+    def test_clearing_every_session_removes_a_pickle_only_slot(self, tmp_path, monkeypatch):
+        from graftpunk import cache as cache_mod
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        cache_mod._reset_session_storage_backend()
+        try:
+            backend = cache_mod._get_session_storage_backend()
+            half = backend.base_dir / "half-provider"
+            half.mkdir(parents=True)
+            (half / "session.pickle").write_bytes(b"data")
+
+            assert cache_mod.list_sessions() == []
+            assert cache_mod.clear_session_cache() == ["half-provider"]
+            assert not half.exists()
+        finally:
+            cache_mod._reset_session_storage_backend()
 
     def test_a_directory_with_only_a_pickle_is_not_listed(self, storage, tmp_path):
         """What a save interrupted before its metadata landed leaves is not a session (#293)."""

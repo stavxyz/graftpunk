@@ -1017,8 +1017,11 @@ def clear_session_cache(
             removed.append(session_name)
         return removed
 
-    # Clear all sessions
-    for name in backend.list_sessions():
+    # Clear all sessions, and the slots a failed save left without metadata
+    # (local storage only): they are not listed, but loading one says to clear.
+    incomplete = getattr(backend, "incomplete_sessions", None)
+    leftovers = incomplete() if callable(incomplete) else []
+    for name in [*backend.list_sessions(), *leftovers]:
         if backend.delete_session(name):
             removed.append(name)
 
