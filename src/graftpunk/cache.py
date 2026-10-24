@@ -995,6 +995,17 @@ def list_sessions_with_metadata(
     return sorted(results, key=lambda x: x.get("modified_at", ""), reverse=True)
 
 
+def list_incomplete_sessions(backend_override: str | None = None) -> list[str]:
+    """Slots holding a session pickle but no metadata, which no listing shows.
+
+    A crash during a save, or an older release, can leave one on the local
+    backend; other backends report none. Clearing every session removes them.
+    """
+    backend = _get_session_storage_backend(backend_override=backend_override)
+    incomplete = getattr(backend, "incomplete_sessions", None)
+    return list(incomplete()) if callable(incomplete) else []
+
+
 def clear_session_cache(
     session_name: str | None = None,
     backend_override: str | None = None,
@@ -1017,10 +1028,9 @@ def clear_session_cache(
             removed.append(session_name)
         return removed
 
-    # Clear all sessions, and the slots a failed save left without metadata
-    # (local storage only): they are not listed, but loading one says to clear.
-    incomplete = getattr(backend, "incomplete_sessions", None)
-    leftovers = incomplete() if callable(incomplete) else []
+    # Clear all sessions, and the slots a failed save left without metadata:
+    # they are not listed, but loading one says to clear.
+    leftovers = list_incomplete_sessions(backend_override=backend_override)
     for name in [*backend.list_sessions(), *leftovers]:
         if backend.delete_session(name):
             removed.append(name)

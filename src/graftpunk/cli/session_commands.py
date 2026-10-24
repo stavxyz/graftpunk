@@ -17,6 +17,7 @@ from graftpunk import (
     list_sessions_with_metadata,
     load_session,
 )
+from graftpunk.cache import list_incomplete_sessions
 from graftpunk.cli.errors import needs_browser_stack
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.exceptions import (
@@ -342,13 +343,20 @@ def session_clear(
         raise typer.Exit(1) from None
 
     if all_sessions:
-        if not all_metadata:
+        # Slots a failed save left without metadata: not sessions, but loading
+        # one says to clear, so clearing everything removes them too (#293).
+        incomplete = [
+            {"name": name, "domain": "incomplete, no metadata"}
+            for name in list_incomplete_sessions(backend_override=backend_override)
+        ]
+        if not all_metadata and not incomplete:
             console.print("[dim]No sessions to clear[/dim]")
             return
 
         if not force:
-            console.print(f"[yellow]This will remove {len(all_metadata)} session(s):[/yellow]")
-            for s in all_metadata:
+            count = len(all_metadata) + len(incomplete)
+            console.print(f"[yellow]This will remove {count} session(s):[/yellow]")
+            for s in [*all_metadata, *incomplete]:
                 console.print(
                     f"  - {escape(str(s['name']))} ({escape(str(s.get('domain') or 'no domain'))})"
                 )
@@ -357,7 +365,7 @@ def session_clear(
                 return
 
         removed = []
-        for s in all_metadata:
+        for s in [*all_metadata, *incomplete]:
             result = clear_session_cache(
                 s["name"],
                 backend_override=backend_override,

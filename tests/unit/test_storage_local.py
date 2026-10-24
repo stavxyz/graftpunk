@@ -349,7 +349,35 @@ class TestLegacyFlatFile:
             (half / "session.pickle").write_bytes(b"data")
 
             assert cache_mod.list_sessions() == []
+            assert cache_mod.list_incomplete_sessions() == ["half-provider"]
             assert cache_mod.clear_session_cache() == ["half-provider"]
+            assert not half.exists()
+        finally:
+            cache_mod._reset_session_storage_backend()
+
+    def test_gp_session_clear_all_removes_a_pickle_only_slot(self, tmp_path, monkeypatch):
+        import typer
+        from typer.testing import CliRunner
+
+        from graftpunk import cache as cache_mod
+        from graftpunk.cli.session_commands import session_app
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        cache_mod._reset_session_storage_backend()
+        try:
+            backend = cache_mod._get_session_storage_backend()
+            half = backend.base_dir / "half-provider"
+            half.mkdir(parents=True)
+            (half / "session.pickle").write_bytes(b"data")
+            app = typer.Typer()
+            app.add_typer(session_app, name="session")
+
+            result = CliRunner().invoke(
+                app, ["session", "clear", "--all", "--force"], env={"COLUMNS": "200"}
+            )
+
+            assert result.exit_code == 0, result.output
+            assert "half-provider" in result.output
             assert not half.exists()
         finally:
             cache_mod._reset_session_storage_backend()
