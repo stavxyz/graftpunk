@@ -69,6 +69,18 @@ class TestBlameOnlyWhatFailed:
         assert failed["response"]["status"] == 0
         assert failed["response"]["_error"].startswith("ConnectionError: ")
 
+    def test_a_tolerated_hop_is_not_blamed_for_the_final_read(self, site: str) -> None:
+        session, capture = _recording()
+        with pytest.raises(requests.exceptions.ChunkedEncodingError):
+            session.get(f"{site}/badgz-to-truncated", timeout=5)
+        capture.stop_capture()
+
+        hop, final = capture.get_har_entries()
+        assert hop["response"]["content"]["_bodyNotCapturedReason"] == "read_failed"
+        assert final["response"]["content"]["_bodyNotCapturedReason"] == (
+            "read_failed: ChunkedEncodingError"
+        )
+
     def test_a_401_a_hook_replaced_is_not_read(self, site: str) -> None:
         session, capture = _recording()
 

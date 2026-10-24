@@ -19,6 +19,7 @@ Routes:
     GET  /trunc-cookie     200 setting ``sid``, ``Content-Length: 1000`` but 10 bytes, then closes
     GET  /bad400       400 with a JSON error body
     GET  /badgz-to-closed  302 with a body that is not gzip, to a port nothing listens on
+    GET  /badgz-to-truncated  302 with a body that is not gzip, to /truncated
     GET  /needauth     401 unless ``Authorization: ok``, then 200
     GET  /fastredir    302 to /slow
     HEAD (any path)    200 with no body
@@ -77,6 +78,11 @@ class _Site(BaseHTTPRequestHandler):
             return
         if self.path == "/bad400":
             self._send(400, b'{"error": "bad thing"}', "application/json")
+            return
+        if self.path == "/badgz-to-truncated":
+            self._send(
+                302, b"not gzip at all", "text/html", Location="/truncated", Content_Encoding="gzip"
+            )
             return
         if self.path == "/badgz-to-closed":
             self._send(

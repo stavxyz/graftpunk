@@ -179,6 +179,26 @@ class TestNodriverSessionRecordsTheNetwork:
         assert second["_bodyNotCapturedReason"] == "browser_disconnected"
 
     @pytest.mark.asyncio
+    async def test_a_body_fetched_at_stop_is_kept_when_a_later_fetch_disconnects(self) -> None:
+        from tests.unit.test_observe_post_data import _record
+
+        def at_stop(rid: str, tab: FakeTab) -> bool:
+            if not tab.stopping:
+                return False  # no eager fetch: both are left for stop
+            if rid == "1.2":
+                raise ConnectionError("browser went away")
+            return True
+
+        tab = FakeTab({}, _always, response_available=at_stop)
+        events = [*_fetch_post("1.1", inline=BODY), *_fetch_post("1.2", inline=BODY)]
+        backend = await _record(tab, events)
+
+        first, second = (e["response"]["content"] for e in backend.get_har_entries())
+        assert first["text"] == RESPONSE
+        assert "_bodyNotCaptured" not in first
+        assert second["_bodyNotCapturedReason"] == "browser_disconnected"
+
+    @pytest.mark.asyncio
     async def test_bodies_left_when_stop_has_no_tab_are_marked(self) -> None:
         from graftpunk.observe.capture import NodriverCaptureBackend
         from tests.unit.test_observe_post_data import _never
