@@ -10,6 +10,7 @@ captures' marks for bodies stop could not fetch.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 from typing import Any
@@ -39,7 +40,9 @@ def _raise_for_status(response: requests.Response, *_a: Any, **_k: Any) -> None:
 
 class TestBlameOnlyWhatFailed:
     @pytest.mark.parametrize("record", [False, True])
-    def test_a_hook_that_raises_leaves_the_body_recorded(self, site: str, record: bool) -> None:
+    def test_a_hook_that_raises_leaves_the_body_to_the_caller(
+        self, site: str, record: bool
+    ) -> None:
         session = requests.Session()
         session.hooks["response"].append(_raise_for_status)
         capture = None
@@ -53,8 +56,113 @@ class TestBlameOnlyWhatFailed:
             capture.stop_capture()
             (entry,) = capture.get_har_entries()
             content = entry["response"]["content"]
-            assert json.loads(content["text"]) == {"error": "bad thing"}
-            assert "_bodyNotCaptured" not in content
+            # The recorder reads nothing once the hook has raised; the caller
+            # still read the body from the exception's response.
+            assert content["text"] is None
+            assert content["_bodyNotCapturedReason"] == "not_read: HTTPError"
+
+    @pytest.mark.parametrize("record", [False, True])
+    def test_a_hook_raising_on_a_slow_body_raises_at_once(self, site: str, record: bool) -> None:
+        import time
+
+        session = requests.Session()
+        session.hooks["response"].append(_raise_for_status)
+        if record:
+            session, _capture = _recording(session)
+        started = time.monotonic()
+        with pytest.raises(requests.HTTPError):
+            session.get(f"{site}/slow400", timeout=5)
+
+        # The body takes 1.5 s; neither run waits for it.
+        assert time.monotonic() - started < 0.75
+
+    def test_a_keyboard_interrupt_from_a_hook_propagates_untouched(
+        self, site: str, tmp_path: Any
+    ) -> None:
+        import time
+
+        def interrupt(_response: requests.Response, *_a: Any, **_k: Any) -> None:
+            raise KeyboardInterrupt
+
+        spool = tmp_path / "network.har.spool"
+        session = requests.Session()
+        session.hooks["response"].append(interrupt)
+        capture = HttpCaptureBackend(session, spool_path=spool, bodies_dir=tmp_path / "bodies")
+        capture.start_capture()
+        started = time.monotonic()
+        with pytest.raises(KeyboardInterrupt):
+            session.get(f"{site}/slow400", timeout=5)
+
+        assert time.monotonic() - started < 0.75
+        # Nothing written on its way out.
+        assert not spool.exists()
+        assert not (tmp_path / "bodies").exists()
+
+    def test_a_read_timeout_is_a_read_failure_not_an_empty_body(self, site: str) -> None:
+        session, capture = _recording()
+        with pytest.raises(requests.ConnectionError):
+            session.get(f"{site}/stall", timeout=(3, 0.4))
+        capture.stop_capture()
+
+        (entry,) = capture.get_har_entries()
+        content = entry["response"]["content"]
+        assert content["text"] is None
+        assert content["_bodyNotCapturedReason"] == "read_failed: ConnectionError"
+
+    def test_a_side_request_does_not_take_the_blame_from_the_outer_read(self, site: str) -> None:
+        session, capture = _recording()
+
+        def side_request(response: requests.Response, *_a: Any, **_k: Any) -> None:
+            if response.url.endswith("/truncated"):
+                session.get(f"{site}/home", timeout=5)
+
+        session.hooks["response"].append(side_request)
+        with pytest.raises(requests.exceptions.ChunkedEncodingError):
+            session.get(f"{site}/truncated", timeout=5)
+        capture.stop_capture()
+
+        outer, side = capture.get_har_entries()
+        assert outer["response"]["content"]["_bodyNotCapturedReason"] == (
+            "read_failed: ChunkedEncodingError"
+        )
+        assert side["response"]["content"]["text"] == "<h1>home</h1>"
+
+    def test_a_caught_refused_side_request_does_not_take_the_blame(self, site: str) -> None:
+        session, capture = _recording()
+
+        def side_request(response: requests.Response, *_a: Any, **_k: Any) -> None:
+            if response.url.endswith("/truncated"):
+                with contextlib.suppress(requests.ConnectionError):
+                    session.get("http://127.0.0.1:9/x", timeout=5)
+
+        session.hooks["response"].append(side_request)
+        with pytest.raises(requests.exceptions.ChunkedEncodingError):
+            session.get(f"{site}/truncated", timeout=5)
+        capture.stop_capture()
+
+        outer, side = capture.get_har_entries()
+        assert outer["response"]["content"]["_bodyNotCapturedReason"] == (
+            "read_failed: ChunkedEncodingError"
+        )
+        assert side["response"]["content"]["_bodyNotCapturedReason"] == "no_response"
+
+    def test_a_refused_side_request_is_not_taken_for_a_read_error(self, site: str) -> None:
+        session, capture = _recording()
+
+        def side_request(response: requests.Response, *_a: Any, **_k: Any) -> None:
+            if response.url.endswith("/home"):
+                session.get("http://127.0.0.1:9/x", timeout=5)
+
+        session.hooks["response"].append(side_request)
+        with pytest.raises(requests.ConnectionError):
+            session.get(f"{site}/home", timeout=5)
+        capture.stop_capture()
+
+        outer, side = capture.get_har_entries()
+        assert outer["response"]["content"]["_bodyNotCapturedReason"] == (
+            "not_read: ConnectionError"
+        )
+        assert side["response"]["content"]["_bodyNotCapturedReason"] == "no_response"
 
     def test_a_refused_connection_after_a_hop_is_that_requests_error(self, site: str) -> None:
         session, capture = _recording()
@@ -145,6 +253,29 @@ class TestTiming:
         assert _start(hop) <= _start(landing)
         assert _start(landing) >= _start(hop) + hop["time"] / 1000 - 0.001
 
+    def test_a_hop_noted_by_the_adapter_is_timed_by_the_adapter(self, site: str) -> None:
+        """A re-sent hop has no ``elapsed`` (only Session.send sets it); the landing
+        page after it, through a late adapter, starts when the adapter saw the
+        hop end, not when it started."""
+        session, capture = _recording()
+        session.mount(f"{site}/home", requests.adapters.HTTPAdapter())
+
+        def resend(response: requests.Response, *_a: Any, **_k: Any) -> Any:
+            if response.status_code != 401:
+                return response
+            request = requests.Request("GET", f"{site}/slowredir").prepare()
+            return response.connection.send(request, timeout=5)
+
+        session.hooks["response"].append(resend)
+        final = session.get(f"{site}/needauth", timeout=5)
+        capture.stop_capture()
+
+        assert final.text == "<h1>home</h1>"
+        entries = {e["request"]["url"].rsplit("/", 1)[1]: e for e in capture.get_har_entries()}
+        hop, landing = entries["slowredir"], entries["home"]
+        assert hop["time"] >= 250
+        assert _start(landing) >= _start(hop) + 0.25
+
     def test_a_resend_through_the_adapter_gets_its_real_time(self, site: str) -> None:
         session, capture = _recording()
 
@@ -188,6 +319,10 @@ class TestSessionWrapper:
         session.get(f"{site}/home", timeout=5)
         dill.dumps(session)  # pickles as with observe off
         capture.stop_capture()
+
+        # Recorded by its adapters alone, without the body.
+        (entry,) = capture.get_har_entries()
+        assert entry["response"]["content"]["_bodyNotCapturedReason"] == "not_read"
 
     def test_the_session_send_is_restored_at_stop(self, site: str) -> None:
         session, capture = _recording()

@@ -22,6 +22,9 @@ Routes:
     GET  /badgz-to-truncated  302 with a body that is not gzip, to /truncated
     GET  /needauth     401 unless ``Authorization: ok``, then 200
     GET  /fastredir    302 to /slow
+    GET  /slowredir    302 to /home, sent after 0.3 s
+    GET  /slow400      400 whose 12-byte body follows the headers by 1.5 s
+    GET  /stall        200, ``Content-Length: 20``: 12 bytes, a 1.5 s pause, the rest
     HEAD (any path)    200 with no body
     POST /api/search   echoes the JSON body back
     POST /login        302 to /home, setting two cookies
@@ -99,6 +102,13 @@ class _Site(BaseHTTPRequestHandler):
             else:
                 self._send(401, b'{"error": "who are you"}', "application/json")
             return
+        if self.path == "/slowredir":
+            time.sleep(0.3)
+            self._send(302, b"", "text/html", Location="/home")
+            return
+        if self.path in ("/slow400", "/stall"):
+            self._dribble()
+            return
         if self.path == "/fastredir":
             self._send(302, b"", "text/html", Location="/slow")
             return
@@ -133,6 +143,24 @@ class _Site(BaseHTTPRequestHandler):
         self.wfile.write(b'{"rows": [')
         self.wfile.flush()
         self.close_connection = True
+
+    def _dribble(self) -> None:
+        """Send the headers, then the body slowly: all of it late, or part, a pause, the rest."""
+        stall = self.path == "/stall"
+        body = b'{"rows": [1, 2, 3]}\n' if stall else b'{"e": "bad"}'
+        self.send_response(200 if stall else 400)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.flush()
+        try:
+            if stall:
+                self.wfile.write(body[:12])
+                self.wfile.flush()
+            time.sleep(1.5)
+            self.wfile.write(body[12:] if stall else body)
+        except OSError:
+            pass  # the client gave up first
 
     def do_HEAD(self) -> None:
         self.send_response(200)

@@ -239,7 +239,7 @@ class _RecordingAdapterSend:
         started = time.time()
         try:
             response = self.original(request, *args, **kwargs)
-        except BaseException as exc:
+        except Exception as exc:
             self.capture._seen(_Noted(started, time.time() - started, None, request, exc))
             raise
         self.capture._seen(_Noted(started, time.time() - started, response))
@@ -279,7 +279,10 @@ class _RecordingSessionSend:
             raise
         finally:
             local.depth -= 1
-            if outer:
+            if outer and not isinstance(error, Exception) and error is not None:
+                # KeyboardInterrupt, SystemExit: propagate untouched, no I/O.
+                local.seen = None
+            elif outer:
                 seen, local.seen = local.seen, None
                 # Session.send streams by the session's default when not told.
                 stream = bool(kwargs.get("stream", self.capture._session.stream))
@@ -292,6 +295,9 @@ _READ_ERRORS: tuple[type[BaseException], ...] = (
     requests.exceptions.ChunkedEncodingError,
     requests.exceptions.ContentDecodingError,
     requests.exceptions.StreamConsumedError,
+    # A read timeout or SSL error while reading. A ConnectionError from a
+    # send is noted by the adapter wrapper as a request with no response.
+    requests.exceptions.ConnectionError,
 )
 
 
@@ -403,10 +409,10 @@ class HttpCaptureBackend:
                 seen.append(_Noted(next_start, elapsed, response))
                 next_start += elapsed
         seen.sort(key=lambda n: n.started)
-        responses = [n for n in seen if n.response is not None]
-        last = responses[-1].response if responses else None
-        failed_send = any(n.response is None for n in seen)
-        for item in seen:
+        # A ConnectionError the adapter raised on a send is that request's,
+        # not a body read's.
+        read_error = isinstance(error, _READ_ERRORS) and not any(n.error is error for n in seen)
+        for index, item in enumerate(seen):
             if item.response is None:
                 if item.request is not None and item.error is not None:
                     self.record_failure(
@@ -418,8 +424,8 @@ class HttpCaptureBackend:
                 response,
                 stream=stream,
                 error=error,
-                last=response is last and not failed_send,
-                followed=response is not last or failed_send,
+                read_error=read_error,
+                followed=index < len(seen) - 1,
             )
             self.record(
                 response,
@@ -434,41 +440,37 @@ class HttpCaptureBackend:
         *,
         stream: bool,
         error: BaseException | None,
-        last: bool,
+        read_error: bool,
         followed: bool,
     ) -> str | None:
-        """Why *response*'s body is not in hand, or None when it is.
+        """Why *response*'s body is not in hand, or None when requests read it.
 
-        *last* is the call's final response, the one whose read the call's own
-        error can come from; *followed* is a response requests moved past to
-        send another request.
+        The recorder reads no body: it records what requests read and says why
+        the rest is missing. *followed* is true when the call sent something
+        after this response; *read_error* is true when the call's *error* was
+        raised by a body read.
 
-        Only a read that raised is a ``read_failed``. A call's error that a
-        body read did not raise (a hook's ``raise_for_status``, a refused
-        connection on the next hop) is not blamed on any body: the last
-        response's body, if untouched and not streamed, is read here, after
-        requests has raised, and requests keeps it for the caller.
+        - ``streamed``: the caller asked for a stream, so the body is the
+          caller's to read.
+        - ``read_failed``: a redirect hop requests moved past, so it tried to
+          read the hop's body, failed, and tolerated it.
+        - ``read_failed: <error>``: the call raised a read error (a broken,
+          undecodable or timed-out body) and this body is unread.
+        - ``not_read: <error>``: the call raised something else (a response
+          hook raised) before requests read this body; the caller still has it
+          on the exception's response.
+        - ``not_read``: nothing read it (a 401 a hook replaced).
         """
         if _read_by_requests(response):
             return None
         if stream:
             return "streamed"
-        if last and isinstance(error, _READ_ERRORS):
-            # requests raised reading this body.
-            return f"read_failed: {type(error).__name__}"
         if response.is_redirect and followed:
-            # resolve_redirects reads a hop's body before following it; an
-            # unread hop is one whose read failed and was tolerated.
             return "read_failed"
-        if last and error is not None:
-            # The call failed after the response arrived, before requests read
-            # the body (a hook raised): read it now, as requests would have.
-            try:
-                response.content  # noqa: B018
-            except Exception as exc:  # noqa: BLE001 - the call's own error stands
-                return f"read_failed: {type(exc).__name__}"
-            return None
-        # Nothing read it: a 401 a hook replaced, a hop a hook discarded.
+        if read_error and error is not None:
+            return f"read_failed: {type(error).__name__}"
+        if error is not None:
+            return f"not_read: {type(error).__name__}"
         return "not_read"
 
     def _warn_unwrapped(self) -> None:
