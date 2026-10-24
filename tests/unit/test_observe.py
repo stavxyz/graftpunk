@@ -1403,6 +1403,8 @@ class TestSharedHARHelpers:
     def test_text_that_does_not_decode_goes_to_bodies(self, tmp_path: Path) -> None:
         response = self._stored("text/html", "café".encode("latin-1"), tmp_path)
         assert response["_bodyFile"] == "bodies/r1.html"
+        assert response["_bodyFileReason"] == "not_decodable"
+        assert "body" not in response
         assert (tmp_path / "bodies" / "r1.html").read_bytes() == "café".encode("latin-1")
 
     def test_a_body_left_out_says_why(self) -> None:

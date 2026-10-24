@@ -103,9 +103,9 @@ def har_entry_for_response(
     ``<request_id>.request<ext>``. The response body follows
     :func:`graftpunk.observe.capture._process_response_body`: text within
     *max_body_size* goes into the HAR, decoded with its declared charset, else
-    as UTF-8, else with the charset ``requests`` detects
-    (``Response.apparent_encoding``); any other body goes to *bodies_dir* as
-    raw bytes; without one it is left out and marked. With *body_unread* set,
+    as UTF-8 (no charset is guessed); any other body, one that does not
+    decode included, goes to *bodies_dir* as raw bytes; without one it is left
+    out and marked. With *body_unread* set,
     the response body is not read at all (a streamed response, or one whose
     read failed) and the entry says why with ``_bodyNotCaptured`` and
     ``_bodyNotCapturedReason``, unless the response has no body to read (a
@@ -159,7 +159,6 @@ def har_entry_for_response(
             content_type,
             max_body_size,
             bodies_dir,
-            detect_charset=lambda: response.apparent_encoding,
         )
     elif not (response.is_redirect or _has_empty_body(response)):
         summary["_bodyNotCaptured"] = body_unread

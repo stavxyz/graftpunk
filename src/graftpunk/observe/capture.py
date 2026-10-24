@@ -128,20 +128,17 @@ def _declared_charset(content_type: str) -> str | None:
     return None
 
 
-def _decode_text(
-    raw: bytes, charset: str | None, detect: Callable[[], str | None] | None
-) -> str | None:
-    """*raw* as text: in its declared charset when there is one, else as UTF-8,
-    else in the charset *detect* returns. None when none of those decodes it."""
-    candidates = [charset] if charset else ["utf-8", detect() if detect is not None else None]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        try:
-            return raw.decode(candidate)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return None
+def _decode_text(raw: bytes, charset: str | None) -> str | None:
+    """*raw* as text in its declared *charset*, else as UTF-8; None when that fails.
+
+    No charset is guessed: a guess can be wrong, and the HAR would then hold
+    text whose bytes are lost. A body that does not decode is kept as raw
+    bytes in ``bodies/`` instead.
+    """
+    try:
+        return raw.decode(charset or "utf-8")
+    except (UnicodeDecodeError, LookupError):
+        return None
 
 
 def _write_body_file(bodies_dir: Path, name: str, raw: bytes) -> str:
@@ -162,20 +159,19 @@ def _process_response_body(
     mime: str,
     max_body_size: int,
     bodies_dir: Path | None,
-    *,
-    detect_charset: Callable[[], str | None] | None = None,
 ) -> None:
     """Store a response body in the HAR as text, in ``bodies_dir``, or mark it left out.
 
     A body of a text type (:func:`_is_text_mime`) within *max_body_size* goes
     into the HAR as text. A ``str`` body (CDP's, when not base64) is that text
     already; bytes are decoded with the charset *mime* declares, else as
-    UTF-8, else with the charset *detect_charset* returns. Every other body,
-    one of a binary, unknown or missing type, a larger one and one that does
-    not decode, is written to ``bodies_dir`` as raw bytes, named
-    ``<request_id><ext>``, and referenced as ``_bodyFile``. Without
-    ``bodies_dir`` (or when the write fails) it is left out and marked:
-    ``_bodyNotCaptured`` holds why. An empty body is stored as empty text.
+    UTF-8, and never with a guessed charset. Every other body, one of a
+    binary, unknown or missing type, a larger one and one that does not
+    decode, is written to ``bodies_dir`` as raw bytes, named
+    ``<request_id><ext>``, referenced as ``_bodyFile``, with why in
+    ``_bodyFileReason``. Without ``bodies_dir`` (or when the write fails) it
+    is left out and marked: ``_bodyNotCaptured`` holds why. An empty body is
+    stored as empty text.
 
     Modifies *response* in place and sets ``bodySize``.
     """
@@ -201,7 +197,7 @@ def _process_response_body(
         reason = "over_max_body_size"
     else:
         if text is None:
-            text = _decode_text(body_bytes, _declared_charset(mime), detect_charset)
+            text = _decode_text(body_bytes, _declared_charset(mime))
         if text is not None:
             response["body"] = text
             return
@@ -212,6 +208,7 @@ def _process_response_body(
             response["_bodyFile"] = _write_body_file(
                 bodies_dir, f"{request_id}{_mime_to_extension(mime)}", body_bytes
             )
+            response["_bodyFileReason"] = reason
             return
         except OSError as exc:
             LOG.warning("response_body_file_write_failed", request_id=request_id, error=str(exc))
@@ -929,6 +926,9 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
             },
         },
     }
+    if response.get("_bodyFileReason"):
+        # Why the body is in bodies/ rather than the HAR (HAR 1.2 custom field).
+        entry["response"]["content"]["_bodyFileReason"] = response["_bodyFileReason"]
     not_captured = response.get("_bodyNotCaptured")
     if not_captured:
         # HAR 1.2 custom fields, as _bodyFile is: the body is not in the HAR
