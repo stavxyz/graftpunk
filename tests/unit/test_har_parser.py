@@ -561,6 +561,12 @@ class TestHeaderParsing:
 
         value = "a=1\rb= two ; flag\r\nc=3;=orphan\nd=4"
         parsed = self._request_with_headers([{"name": "Cookie", "value": value}])
+        assert parsed.cookies == [
+            {"name": "a", "value": "1"},
+            {"name": "b", "value": "two"},
+            {"name": "c", "value": "3"},
+            {"name": "d", "value": "4"},
+        ]
         assert _request_cookies({"Cookie": value}) == parsed.cookies
 
 

@@ -4603,6 +4603,28 @@ class TestFlaggedNamesOf:
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
 
+    def test_sending_empty_does_not_clear_a_cookie_the_cookies_array_sets(
+        self, tmp_path: Path
+    ) -> None:
+        """A response.cookies entry alone (no Set-Cookie header) marks the cookie
+        as one a response sets."""
+        entry = self._with_cookies([("visit", "")], (("visit", ""),))
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    @pytest.mark.parametrize("side", ["request", "response"])
+    def test_a_cookie_with_a_value_field_missing_anywhere_stays_flagged(
+        self, tmp_path: Path, side: str
+    ) -> None:
+        """A missing value is one the recorder did not keep, so a form-state value
+        elsewhere does not clear it."""
+        entry = self._with_cookies([("lot", "12")], (("lot", "7"),))
+        entry[side]["cookies"].append({"name": "lot"})
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("lot",)
+
     def test_a_sent_cookie_with_no_value_field_stays_flagged(self, tmp_path: Path) -> None:
         """A missing value is a value the recorder did not keep, not an empty one."""
         entry = _entry("GET", "https://myshop.example.com/api/search")

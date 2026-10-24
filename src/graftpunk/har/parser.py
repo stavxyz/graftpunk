@@ -32,6 +32,7 @@ class HARRequest:
     method: str
     url: str
     headers: dict[str, str]
+    # {"name", "value", ...}; "value" is None when the HAR entry has no value field.
     cookies: list[dict[str, Any]]
     post_data: str | None = None
     query_string: list[dict[str, str]] = field(default_factory=list)
@@ -64,6 +65,7 @@ class HARResponse:
     status: int
     status_text: str
     headers: dict[str, str]
+    # {"name", "value", ...}; "value" is None when the HAR entry has no value field.
     cookies: list[dict[str, Any]]
     content_type: str | None = None
     body: str | None = None

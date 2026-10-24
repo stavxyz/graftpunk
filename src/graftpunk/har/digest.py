@@ -1982,22 +1982,24 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     - one with any value that is not form state: a value holding an id
       (graftpunk.har.paths.holds_an_id) or any other value neither rule reads
       as words (a session id);
-    - one with no non-empty value *entries* show, unless no response sets it and
-      a request sent it empty, which covers a ``Set-Cookie`` the recorder kept only as a name, a
-      cookie a response only ever set empty, and a call without *entries*,
-      where every cookie stays. (``gp observe digest`` does not call this; its
-      cookie list, ``d.cookies``, names every cookie.)
+    - one any of *entries* records with no value at all: a ``Set-Cookie`` the
+      recorder kept only as a name, or a cookie whose HAR entry has no
+      ``value`` field (parsed as ``None``), whatever its other values;
+    - one with no non-empty value *entries* show, which covers a cookie a
+      response only ever set empty and a call without *entries*, where every
+      cookie stays, unless no response sets it and a request sent it empty.
+      (``gp observe digest`` does not call this; its cookie list,
+      ``d.cookies``, names every cookie.)
 
     An empty value beside a non-empty one is a cleared field or an expired
     cookie, and holds nothing. A cookie a response only ever set empty stays
     flagged, since a recorder can write a ``Set-Cookie`` it did not fully parse
     as an empty ``response.cookies`` entry (the header can hold the value the
-    array lost). A request sending a cookie no response sets empty is evidence
-    it held nothing: it is what the browser sent. A cookie with no ``value``
-    field is parsed as ``None``, a value not seen, never as empty. A value of
-    punctuation alone (``""``) is a value the server did send. Values are read
-    from every entry's request and response cookies, whatever its host. ``Secure`` is not a
-    guard: a site served only over HTTPS can mark every cookie Secure.
+    array lost). When no response sets a cookie, a request sending it empty is
+    evidence it held nothing: that is what the browser sent. A value of punctuation alone
+    (``""``) is a value the server did send. Values are read from every entry's
+    request and response cookies, whatever its host. ``Secure`` is not a guard:
+    a site served only over HTTPS can mark every cookie Secure.
 
     A name that holds an account value (graftpunk.har.paths.holds_an_id) is not
     among them, in any form: :func:`redacted_names_of` counts those."""
@@ -2067,9 +2069,9 @@ def _names_a_session(name: str) -> bool:
 @dataclass
 class _CookiesSeen:
     """What a recording shows of each cookie name: its non-empty values, the names
-    a request sent empty, the names any response set, the names a response set
-    without a value the recorder kept, and the names a response set with
-    ``HttpOnly``."""
+    a request sent empty, the names any response set, the names a request or
+    response carried without a value the recorder kept, and the names a
+    response set with ``HttpOnly``."""
 
     values: dict[str, set[str]] = field(default_factory=dict)
     sent_empty: set[str] = field(default_factory=set)
@@ -2112,12 +2114,15 @@ def _without_quotes(value: str) -> str:
 
 def _cookies_seen(entries: Iterable[HAREntry]) -> _CookiesSeen:
     """Every non-empty value *entries* record for each cookie name, in requests and
-    responses; the names a response set with no value kept (a ``Set-Cookie`` only
-    in ``set_cookie_names``, or a value that is not a string); and the names a
-    response set with ``HttpOnly``, by its ``response.cookies`` entry's
-    ``httpOnly`` being true or by a ``Set-Cookie`` header carrying the attribute
-    (``set_cookie_http_only``). An empty value is skipped, so a cookie whose only
-    values are empty has no entry in ``values``."""
+    responses; the names a request sent empty; the names any response set (its
+    ``response.cookies`` or a ``Set-Cookie`` header); the names carried with no
+    value kept (a ``Set-Cookie`` only in ``set_cookie_names``, or a request or
+    response cookie whose value is not a string, such as ``None`` for a missing
+    ``value`` field); and the names a response set with ``HttpOnly``, by its
+    ``response.cookies`` entry's ``httpOnly`` being true or by a ``Set-Cookie``
+    header carrying the attribute (``set_cookie_http_only``). An empty value is
+    skipped, so a cookie whose only values are empty has no entry in
+    ``values``."""
     seen = _CookiesSeen()
     for entry in entries:
         for cookie in entry.request.cookies + entry.response.cookies:
