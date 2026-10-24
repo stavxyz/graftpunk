@@ -130,7 +130,8 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         Args:
             *args: Positional arguments passed to requestium.Session.
             headless: If True, run browser in headless mode.
-            default_timeout: Default timeout for element waits in seconds.
+            default_timeout: Accepted for compatibility and unused: the only path
+                that read it, `use_stealth=False` on Selenium, was removed (#287).
             use_stealth: Selenium backend: must be True (undetected-chromedriver
                 with anti-detection); False raises ValueError. Ignored by the
                 nodriver backend.
