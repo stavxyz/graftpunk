@@ -67,8 +67,11 @@ globalThis.document = {
   documentElement: {scrollWidth: spec.scrollWidth || window.innerWidth},
   querySelectorAll: (selector) => {
     if (selector === "script[src]") return (spec.scripts || []).map(script);
-    if (selector.startsWith("link[rel=modulepreload]")) {
-      return (spec.preloads || []).map((href) => ({href}));
+    if (selector === "link[rel][href]") {
+      const links = (spec.links || []).concat(
+        (spec.preloads || []).map((href) => ({href, rel: "modulepreload"})),
+      );
+      return links.map((l) => ({href: l.href, getAttribute: (name) => l[name] ?? null}));
     }
     if (spec.selectorThrows) throw new SyntaxError("bad selector");
     return (spec.nodes || []).map(node);
@@ -81,11 +84,22 @@ if (spec.priorEntries) {
   EXPR;
   spec.entries = later;
 }
-process.stdout.write(EXPR);
+if (spec.reads) {
+  // Successive reads of one document: each applies its changes to the page,
+  // then reads. All the readings are printed, in order.
+  const readings = [];
+  for (const change of spec.reads) {
+    Object.assign(spec, change);
+    readings.push(JSON.parse(EXPR));
+  }
+  process.stdout.write(JSON.stringify(readings));
+} else {
+  process.stdout.write(EXPR);
+}
 """
 
 
-def _run(expression: str, spec: dict[str, Any]) -> dict[str, Any]:
+def _run(expression: str, spec: dict[str, Any]) -> Any:
     assert NODE is not None
     program = _HARNESS.replace("SPEC", json.dumps(spec)).replace("EXPR", expression)
     result = subprocess.run(  # noqa: S603 - our own program, run by node
@@ -159,9 +173,9 @@ class TestPendingScripts:
         script = {"src": f"{_BASE}/legacy.js", **attributes}
         assert _ready(scripts=[script])["pending_scripts"] == pending
 
-    def test_a_page_that_cleared_its_timing_buffer_skips_the_check(self) -> None:
-        """After performance.clearResourceTimings() every earlier script lacks an
-        entry, and would count as pending for the rest of the document."""
+    def test_a_script_fetched_before_a_clear_stays_fetched(self) -> None:
+        """After performance.clearResourceTimings() the buffer has no entry for a
+        script that loaded long ago; the probe remembers the entries it read."""
         earlier = [_entry(f"{_BASE}/app.js"), _entry(f"{_BASE}/vendor.js")]
         reading = _ready(
             scripts=[{"src": f"{_BASE}/app.js"}, {"src": f"{_BASE}/vendor.js"}],
@@ -169,6 +183,35 @@ class TestPendingScripts:
             entries=[],
         )
         assert reading["pending_scripts"] == 0
+
+    def test_a_script_inserted_after_a_clear_is_pending_until_its_entry_arrives(self) -> None:
+        app, chunk = f"{_BASE}/app.js", f"{_BASE}/chunk.js"
+        readings = _ready(
+            reads=[
+                {"now": 1_000, "scripts": [{"src": app}], "entries": [_entry(app, end=500)]},
+                {"now": 2_000, "entries": []},  # the page clears the buffer
+                {"now": 3_000, "scripts": [{"src": app}, {"src": chunk}]},  # route chunk
+                {"now": 4_000, "entries": [_entry(chunk, end=3_500)]},
+            ]
+        )
+        assert [r["pending_scripts"] for r in readings] == [0, 0, 1, 0]
+        assert readings[2]["quiet_ms"] == 0
+        assert readings[3]["quiet_ms"] == 500
+
+    def test_a_clear_does_not_erase_the_last_finish_time(self) -> None:
+        """A script that finished 100 ms ago and was then cleared still counts."""
+        readings = _ready(
+            reads=[
+                {"now": 9_850, "entries": [_entry(f"{_BASE}/a.js", end=9_800)]},
+                {"now": 9_900, "entries": []},
+            ]
+        )
+        assert readings[1]["quiet_ms"] == 100
+
+    def test_a_script_cleared_before_any_read_saw_it_holds_the_wait(self) -> None:
+        """The safe direction: unseen, it reads as still downloading."""
+        reading = _ready(scripts=[{"src": f"{_BASE}/app.js"}], entries=[])
+        assert reading["pending_scripts"] == 1
 
     def test_a_buffer_that_only_grew_keeps_the_check(self) -> None:
         reading = _ready(
@@ -229,6 +272,32 @@ class TestQuietClock:
         reading = _ready(entries=[_entry(chunk, initiator, end=9_800)], preloads=[chunk])
         assert reading["quiet_ms"] == 200
 
+    @pytest.mark.parametrize(
+        ("rel", "as_", "counts"),
+        [
+            ("modulepreload", None, True),
+            ("ModulePreload", None, True),
+            ("preload", "script", True),
+            ("Preload", "SCRIPT", True),
+            ("preload prefetch", "script", True),
+            ("  prefetch\tpreload ", " Script ", True),
+            ("stylesheet modulepreload", None, True),
+            ("preload", "style", False),
+            ("preload", None, False),
+            ("prefetch", "script", False),
+            ("preloads", "script", False),
+        ],
+    )
+    def test_preload_links_match_rel_as_a_token_list_in_any_case(
+        self, rel: str, as_: str | None, counts: bool
+    ) -> None:
+        chunk = f"{_BASE}/vendor.js"
+        link: dict[str, str] = {"href": chunk, "rel": rel}
+        if as_ is not None:
+            link["as"] = as_
+        reading = _ready(entries=[_entry(chunk, "other", end=9_800)], links=[link])
+        assert reading["quiet_ms"] == (200 if counts else 9_000)
+
     def test_a_stylesheet_link_finishing_does_not(self) -> None:
         reading = _ready(
             entries=[_entry(f"{_BASE}/site.css", "link", end=9_800)],
@@ -266,6 +335,13 @@ class TestTargetProbe:
         scrolling right, so it is not an off-canvas copy."""
         column = {"box": {"left": 1_100, "top": 10, "right": 1_300, "bottom": 40}}
         assert _target([column], innerWidth=1_024, scrollWidth=1_400)["visible"] == [True]
+
+    def test_an_unclipped_drawer_that_widens_the_page_reads_as_visible(self) -> None:
+        """A known limit, pinned: an absolutely positioned or transformed copy past
+        the window that no ancestor clips widens the page's scroll width to cover
+        itself, and nothing the probe reads tells it from a fixed-width column."""
+        drawer = {"box": {"left": 1_100, "top": 10, "right": 1_400, "bottom": 40}}
+        assert _target([drawer], innerWidth=1_024, scrollWidth=1_400)["visible"] == [True]
 
     def test_past_the_right_edge_of_a_page_that_cannot_scroll_is_hidden(self) -> None:
         drawer = {"box": {"left": 1_024, "top": 10, "right": 1_324, "bottom": 40}}

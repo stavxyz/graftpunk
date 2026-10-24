@@ -60,10 +60,11 @@ _ACTIVE_REQUEST_TYPES = frozenset({"Document", "Script", "XHR", "Fetch"})
 # cannot satisfy a later one. Two more things keep the page busy:
 # - a resource of the kinds the CDP tracker counts finishing (resource timing
 #   initiatorType script, fetch, xmlhttprequest, iframe, frame or navigation),
-#   or a script preload (<link rel=modulepreload>, <link rel=preload as=script>)
-#   finishing, whatever initiatorType the browser gives it: a bundler's entry
-#   module runs only once its preloaded chunks arrive, so their arrival is
-#   activity. Images, styles, fonts and beacons are left out;
+#   or a script preload finishing, whatever initiatorType the browser gives it:
+#   a <link> whose rel holds the token modulepreload, or the token preload with
+#   as=script, both matched case-insensitively. A bundler's entry module runs
+#   only once its preloaded chunks arrive, so their arrival is activity. Images,
+#   styles, fonts and beacons are left out;
 # - a <script src> the browser fetches that has no timing entry yet, which is
 #   the hydration chunk this wait exists for. A script the browser never fetches
 #   would count as pending forever, so these are left out: a classic script with
@@ -73,19 +74,25 @@ _ACTIVE_REQUEST_TYPES = frozenset({"Document", "Script", "XHR", "Fetch"})
 #   the type string follows the HTML spec's rules for the type and language
 #   attributes), and a src that is not http or https (data:, blob:). The check
 #   is skipped once the timing buffer is full (250 entries by default), since a
-#   script past that point never gets an entry, and once the page has cleared
-#   the buffer (performance.clearResourceTimings), noticed as fewer entries than
-#   an earlier read of the same document saw.
-#   A script inserted through innerHTML is never fetched either, and nothing a
-#   page-side script can read tells it apart, so it still counts as pending and
-#   holds the wait to the cap.
+#   script past that point never gets an entry.
+# A page can empty the timing buffer (performance.clearResourceTimings, which
+# monitoring libraries call after they report). The probe therefore keeps, per
+# document, every entry name and the latest finish time it has read, and judges
+# against those rather than the buffer alone: a script that had its entry before
+# the clear stays fetched, and a script inserted after the clear stays pending
+# until its own entry arrives. A script that finished and was cleared before any
+# read saw its entry counts as pending, which holds the wait to the cap rather
+# than ending it early.
+# A script inserted through innerHTML is never fetched either, and nothing a
+# page-side script can read tells it apart, so it still counts as pending and
+# holds the wait to the cap.
 # Style attribute changes are left out of the observer: an animation writes them
 # every frame and would keep the page busy forever.
 _READY_JS = """(() => {
   const now = performance.now();
   let quiet = window.__graftpunkQuiet;
   if (!quiet) {
-    quiet = window.__graftpunkQuiet = {last: now, entries: 0};
+    quiet = window.__graftpunkQuiet = {last: now};
     try {
       new MutationObserver(() => { quiet.last = performance.now(); }).observe(document, {
         subtree: true, childList: true, characterData: true,
@@ -93,20 +100,24 @@ _READY_JS = """(() => {
       });
     } catch (e) {}
   }
+  if (!quiet.names) quiet.names = new Set();
+  if (!quiet.lastResource) quiet.lastResource = 0;
   const active = new Set(["script", "fetch", "xmlhttprequest", "iframe", "frame", "navigation"]);
   const entries = performance.getEntriesByType("resource");
-  const preloads = new Set(Array.from(
-    document.querySelectorAll("link[rel=modulepreload], link[rel=preload][as=script]"),
-    (link) => link.href,
-  ));
-  let lastResource = 0;
-  for (const entry of entries) {
-    const counts = active.has(entry.initiatorType) || preloads.has(entry.name);
-    if (counts && entry.responseEnd > lastResource) lastResource = entry.responseEnd;
+  const tokens = (value) => (value || "").toLowerCase().split(/\\s+/).filter(Boolean);
+  const preloads = new Set();
+  for (const link of document.querySelectorAll("link[rel][href]")) {
+    const rel = tokens(link.getAttribute("rel"));
+    const as = (link.getAttribute("as") || "").trim().toLowerCase();
+    if (rel.includes("modulepreload") || (rel.includes("preload") && as === "script")) {
+      preloads.add(link.href);
+    }
   }
-  const seen = quiet.entries || 0;
-  if (entries.length < seen) quiet.cleared = true;
-  quiet.entries = Math.max(seen, entries.length);
+  for (const entry of entries) {
+    quiet.names.add(entry.name);
+    const counts = active.has(entry.initiatorType) || preloads.has(entry.name);
+    if (counts && entry.responseEnd > quiet.lastResource) quiet.lastResource = entry.responseEnd;
+  }
   const jsTypes = new Set([
     "application/ecmascript", "application/javascript", "application/x-ecmascript",
     "application/x-javascript", "text/ecmascript", "text/javascript", "text/javascript1.0",
@@ -130,15 +141,14 @@ _READY_JS = """(() => {
     return /^https?:/i.test(script.src);
   };
   let pending = 0;
-  if (entries.length < 250 && !quiet.cleared) {
-    const fetched = new Set(entries.map((entry) => entry.name));
+  if (entries.length < 250) {
     for (const script of document.querySelectorAll("script[src]")) {
-      if (fetches(script) && !fetched.has(script.src)) pending += 1;
+      if (fetches(script) && !quiet.names.has(script.src)) pending += 1;
     }
   }
   return JSON.stringify({
     state: document.readyState,
-    quiet_ms: pending ? 0 : now - Math.max(quiet.last, lastResource),
+    quiet_ms: pending ? 0 : now - Math.max(quiet.last, quiet.lastResource),
     pending_scripts: pending,
   });
 })()"""
@@ -154,8 +164,14 @@ def target_js(selector: str) -> str:
     or past its right edge, which is where an off-canvas drawer parks its copy of
     a link. The right edge is the page's scroll width when the page is wider than
     the window, so a fixed-width layout driven in a narrow window keeps its
-    right-hand column visible; a drawer whose overflow the page clips still sits
-    past it. An element below the fold counts as visible.
+    right-hand column visible. A drawer whose overflow an ancestor clips still
+    sits past it (a ``position: fixed`` drawer should too, since fixed boxes do
+    not add to the scroll width; unverified in a browser). One case reads wrong: an
+    absolutely positioned or transformed copy past the window that nothing
+    clips widens the scroll width to cover itself, and nothing the probe can
+    read tells it from a fixed-width column, so it counts as visible. Such a
+    page shows a horizontal scrollbar. An element below the fold counts as
+    visible.
     """
     return (
         "((selector, limit) => {"

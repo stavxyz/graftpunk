@@ -264,8 +264,8 @@ class TestAmbiguousSelector:
     @pytest.mark.asyncio
     async def test_a_copy_added_ahead_after_typing_is_named_in_the_mismatch_hint(self) -> None:
         """The read-back looks at the old position, which now holds the new copy: the
-        warning says the field moved instead of blaming a detached node, and the
-        next attempt finds it again."""
+        warning says the selector now picks another match instead of blaming a
+        detached node, and the next attempt finds the field again."""
         page = _FakePage()
         page.add("input.user", "hidden-user", visible=False)
         shown = page.add("input.user", "user")
@@ -292,7 +292,7 @@ class TestAmbiguousSelector:
         (call,) = [
             c for c in log.warning.call_args_list if c.args[0] == "login_field_value_mismatch"
         ]
-        assert "moved from match 2 to match 3" in call.kwargs["hint"]
+        assert "now picks match 3, not match 2" in call.kwargs["hint"]
         assert "detached" not in call.kwargs["hint"]
 
     @pytest.mark.asyncio
