@@ -361,6 +361,25 @@ async def _clear_field(element: Any, tab: Any, selector: str, index: int = 0) ->
         await element.clear_input()
 
 
+async def _mismatch_hint(tab: Any, selector: str, index: int) -> str:
+    """Why the read-back may have missed the typed value, for the mismatch warning.
+
+    The read-back finds the field by its position among the selector's matches.
+    When a copy was added or removed ahead of it after typing, the position now
+    names another element, and the probe says so by choosing a different one. The
+    retry is the same either way: the next attempt selects the field again.
+    """
+    probe = await _probe_target_nodriver(tab, selector)
+    chosen = choose_target(probe).index if probe is not None else None
+    if chosen is not None and chosen != index:
+        return (
+            f"The selector's matches changed after typing (the field moved from match "
+            f"{index + 1} to match {chosen + 1}, so a copy was added or removed ahead of "
+            "it); the read-back looked at the old position. Re-selecting"
+        )
+    return "Typed into a detached node (page re-rendered the form?); re-selecting"
+
+
 async def _fill_field(
     tab: Any,
     selector: str,
@@ -456,7 +475,7 @@ async def _fill_field(
             attempt=attempt,
             expected_len=len(value),
             actual_len=len(actual),
-            hint="Typed into a detached node (page re-rendered the form?); re-selecting",
+            hint=await _mismatch_hint(tab, selector, index),
         )
 
     if last_actual:

@@ -45,7 +45,7 @@ if (spec.knowsNoModule !== false) {
 if (spec.quietLast !== undefined) window.__graftpunkQuiet = {last: spec.quietLast};
 const script = (s) => ({
   src: s.src,
-  getAttribute: (name) => (name === "type" && "type" in s ? s.type : null),
+  getAttribute: (name) => (name in s ? s[name] : null),
   hasAttribute: (name) => !!s[name],
 });
 const node = (n) => ({
@@ -64,12 +64,23 @@ const node = (n) => ({
 globalThis.getComputedStyle = (el) => el._style;
 globalThis.document = {
   readyState: spec.readyState || "complete",
+  documentElement: {scrollWidth: spec.scrollWidth || window.innerWidth},
   querySelectorAll: (selector) => {
     if (selector === "script[src]") return (spec.scripts || []).map(script);
+    if (selector.startsWith("link[rel=modulepreload]")) {
+      return (spec.preloads || []).map((href) => ({href}));
+    }
     if (spec.selectorThrows) throw new SyntaxError("bad selector");
     return (spec.nodes || []).map(node);
   },
 };
+if (spec.priorEntries) {
+  // An earlier read of the same document, which saw these entries.
+  const later = spec.entries;
+  spec.entries = spec.priorEntries;
+  EXPR;
+  spec.entries = later;
+}
 process.stdout.write(EXPR);
 """
 
@@ -126,6 +137,47 @@ class TestPendingScripts:
         )
         assert reading["pending_scripts"] == 1
 
+    def test_a_module_script_ignores_nomodule_and_is_fetched(self) -> None:
+        """The HTML spec skips nomodule only for a classic script."""
+        script = {"src": f"{_BASE}/app.mjs", "type": "module", "nomodule": True}
+        assert _ready(scripts=[script])["pending_scripts"] == 1
+
+    @pytest.mark.parametrize(
+        ("attributes", "pending"),
+        [
+            ({"language": "vbscript"}, 0),  # type string text/vbscript
+            ({"language": "javascript"}, 1),  # text/javascript
+            ({"language": "javascript1.2"}, 1),
+            ({"type": "", "language": "vbscript"}, 1),  # an empty type wins: JavaScript
+            ({"language": ""}, 1),
+            ({"type": "text/plain", "language": "javascript"}, 0),  # the type wins
+        ],
+    )
+    def test_the_language_attribute_sets_the_type_when_there_is_none(
+        self, attributes: dict[str, str], pending: int
+    ) -> None:
+        script = {"src": f"{_BASE}/legacy.js", **attributes}
+        assert _ready(scripts=[script])["pending_scripts"] == pending
+
+    def test_a_page_that_cleared_its_timing_buffer_skips_the_check(self) -> None:
+        """After performance.clearResourceTimings() every earlier script lacks an
+        entry, and would count as pending for the rest of the document."""
+        earlier = [_entry(f"{_BASE}/app.js"), _entry(f"{_BASE}/vendor.js")]
+        reading = _ready(
+            scripts=[{"src": f"{_BASE}/app.js"}, {"src": f"{_BASE}/vendor.js"}],
+            priorEntries=earlier,
+            entries=[],
+        )
+        assert reading["pending_scripts"] == 0
+
+    def test_a_buffer_that_only_grew_keeps_the_check(self) -> None:
+        reading = _ready(
+            scripts=[{"src": f"{_BASE}/late.js"}],
+            priorEntries=[_entry(f"{_BASE}/app.js")],
+            entries=[_entry(f"{_BASE}/app.js"), _entry(f"{_BASE}/b.js")],
+        )
+        assert reading["pending_scripts"] == 1
+
     @pytest.mark.parametrize(
         "kind", ["text/plain", "application/json", "text/template", "text/partytown"]
     )
@@ -170,6 +222,20 @@ class TestQuietClock:
     def test_the_document_state_is_reported(self) -> None:
         assert _ready(readyState="interactive")["state"] == "interactive"
 
+    @pytest.mark.parametrize("initiator", ["link", "other"])
+    def test_a_script_preload_finishing_resets_the_quiet_time(self, initiator: str) -> None:
+        """A bundler's entry module runs once its preloaded chunks arrive."""
+        chunk = f"{_BASE}/vendor.js"
+        reading = _ready(entries=[_entry(chunk, initiator, end=9_800)], preloads=[chunk])
+        assert reading["quiet_ms"] == 200
+
+    def test_a_stylesheet_link_finishing_does_not(self) -> None:
+        reading = _ready(
+            entries=[_entry(f"{_BASE}/site.css", "link", end=9_800)],
+            preloads=[f"{_BASE}/vendor.js"],
+        )
+        assert reading["quiet_ms"] == 9_000
+
 
 def _target(nodes: list[dict[str, Any]], **spec: Any) -> dict[str, Any]:
     return _run(target_js("a.signin"), {"now": 0, "nodes": nodes, **spec})
@@ -194,6 +260,26 @@ class TestTargetProbe:
     )
     def test_a_copy_no_user_can_see_is_not_visible(self, hidden: dict[str, Any]) -> None:
         assert _target([hidden, {}])["visible"] == [False, True]
+
+    def test_a_page_wider_than_the_window_keeps_its_right_column_visible(self) -> None:
+        """A fixed-width layout in a narrow window: the column is reachable by
+        scrolling right, so it is not an off-canvas copy."""
+        column = {"box": {"left": 1_100, "top": 10, "right": 1_300, "bottom": 40}}
+        assert _target([column], innerWidth=1_024, scrollWidth=1_400)["visible"] == [True]
+
+    def test_past_the_right_edge_of_a_page_that_cannot_scroll_is_hidden(self) -> None:
+        drawer = {"box": {"left": 1_024, "top": 10, "right": 1_324, "bottom": 40}}
+        assert _target([drawer], innerWidth=1_024, scrollWidth=1_024)["visible"] == [False]
+
+    def test_scrolled_right_the_page_edge_still_decides(self) -> None:
+        column = {"box": {"left": 700, "top": 10, "right": 900, "bottom": 40}}
+        assert _target([column], innerWidth=1_024, scrollWidth=1_400, scrollX=600)["visible"] == [
+            True
+        ]
+        past = {"box": {"left": 900, "top": 10, "right": 1_000, "bottom": 40}}
+        assert _target([past], innerWidth=1_024, scrollWidth=1_400, scrollX=600)["visible"] == [
+            False
+        ]
 
     def test_an_element_below_the_fold_is_visible(self) -> None:
         below = {"box": {"left": 10, "top": 3_000, "right": 110, "bottom": 3_030}}

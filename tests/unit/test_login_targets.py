@@ -262,6 +262,40 @@ class TestAmbiguousSelector:
         assert shown.value == "bob"
 
     @pytest.mark.asyncio
+    async def test_a_copy_added_ahead_after_typing_is_named_in_the_mismatch_hint(self) -> None:
+        """The read-back looks at the old position, which now holds the new copy: the
+        warning says the field moved instead of blaming a detached node, and the
+        next attempt finds it again."""
+        page = _FakePage()
+        page.add("input.user", "hidden-user", visible=False)
+        shown = page.add("input.user", "user")
+        real_send = shown.send_keys
+        inserted = False
+
+        async def send_keys(value: str) -> None:
+            nonlocal inserted
+            await real_send(value)
+            if not inserted:
+                inserted = True
+                late = _FakeElement(page, "late-copy", visible=False, disabled=False)
+                page.elements["input.user"].insert(0, late)
+
+        shown.send_keys = send_keys  # type: ignore[method-assign]
+
+        with patch("graftpunk.plugins.login_engine.LOG") as log:
+            ok = await _login(
+                _plugin(LoginStep(fields={"username": "input.user"})), page, {"username": "bob"}
+            )
+
+        assert ok is True
+        assert shown.value == "bob"
+        (call,) = [
+            c for c in log.warning.call_args_list if c.args[0] == "login_field_value_mismatch"
+        ]
+        assert "moved from match 2 to match 3" in call.kwargs["hint"]
+        assert "detached" not in call.kwargs["hint"]
+
+    @pytest.mark.asyncio
     async def test_ambiguity_is_warned_once_per_field_across_fill_attempts(self) -> None:
         page = _FakePage()
         page.add("input.user", "hidden-user", visible=False)
@@ -657,6 +691,61 @@ class TestSeleniumTwin:
         assert message.count("Step 1") == 1
         assert "Failed to click" not in message
 
+    def test_a_field_error_names_its_step_once(self) -> None:
+        page = _FakePage()
+        page.add("input.user", "a", visible=False)
+        page.add("input.user", "b", visible=False)
+
+        with pytest.raises(PluginError) as exc_info:
+            self._login(page, LoginStep(fields={"username": "input.user"}))
+        message = str(exc_info.value)
+        assert "matches 2 elements and none of them is visible" in message
+        assert message.count("Step 1") == 1
+        assert "Failed to fill" not in message
+
+    def test_after_a_retry_the_match_is_looked_up_again(self) -> None:
+        """The handle find_element gave before the wait may be stale by the time the
+        match is usable, so the click goes to a fresh lookup."""
+        page = _FakePage()
+        page.add("#go", "old-go", disabled=True)
+        probes = 0
+        real_probe = page._probe
+
+        def probe(expression: str) -> str:
+            nonlocal probes
+            probes += 1
+            if probes == 2:
+                page.elements["#go"] = [_FakeElement(page, "new-go", visible=True, disabled=False)]
+            return real_probe(expression)
+
+        page._probe = probe  # type: ignore[method-assign]
+
+        self._login(page, LoginStep(submit="#go"))
+
+        assert [name for name, _ in page.clicks] == ["new-go"]
+
+    def test_a_transition_during_the_visible_match_lookup_is_retried(self) -> None:
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        page = _FakePage()
+        page.add("a.signin", "mobile-copy", visible=False)
+        page.add("a.signin", "header-link")
+        driver_find_elements = _FakeDriver.find_elements
+        calls = 0
+
+        def flaky(self: _FakeDriver, by: str, selector: str) -> list[MagicMock]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise StaleElementReferenceException("the document changed")
+            return driver_find_elements(self, by, selector)
+
+        with patch.object(_FakeDriver, "find_elements", flaky):
+            self._login(page, LoginStep(submit="a.signin"))
+
+        assert calls == 2
+        assert [name for name, _ in page.clicks] == ["header-link"]
+
     def test_the_wait_is_bounded_by_the_login_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -832,6 +921,23 @@ class TestStaleRequests:
         assert activity.quiet_for() == 0.0
         time.sleep(0.03)
         assert activity.quiet_for() > 0.0
+
+    def test_the_cutoff_is_the_cap_exactly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On a hand-stepped clock: busy just before the 5 s cap, quiet just after it."""
+        from types import SimpleNamespace
+
+        from graftpunk.plugins import login_ready
+
+        monkeypatch.setattr(login_ready, "_READY_MAX_WAIT", 5.0)
+        now = [100.0]
+        monkeypatch.setattr(login_ready, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        activity = login_ready.NetworkActivity()
+        activity._on_request(SimpleNamespace(request_id="poll", type_=SimpleNamespace(value="XHR")))
+
+        now[0] = 104.9
+        assert activity.quiet_for() == 0.0
+        now[0] = 105.1
+        assert activity.quiet_for() == pytest.approx(5.1)
 
 
 class TestTransitions:

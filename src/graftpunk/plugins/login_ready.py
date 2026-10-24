@@ -59,23 +59,33 @@ _ACTIVE_REQUEST_TYPES = frozenset({"Document", "Script", "XHR", "Fetch"})
 # time from before it started, so a page that went quiet during an earlier step
 # cannot satisfy a later one. Two more things keep the page busy:
 # - a resource of the kinds the CDP tracker counts finishing (resource timing
-#   initiatorType script, fetch, xmlhttprequest, iframe, frame or navigation);
-#   images, styles, fonts and beacons are left out;
+#   initiatorType script, fetch, xmlhttprequest, iframe, frame or navigation),
+#   or a script preload (<link rel=modulepreload>, <link rel=preload as=script>)
+#   finishing, whatever initiatorType the browser gives it: a bundler's entry
+#   module runs only once its preloaded chunks arrive, so their arrival is
+#   activity. Images, styles, fonts and beacons are left out;
 # - a <script src> the browser fetches that has no timing entry yet, which is
 #   the hydration chunk this wait exists for. A script the browser never fetches
 #   would count as pending forever, so these are left out: a classic script with
-#   nomodule (on a browser that knows nomodule), a type that is neither empty, a
-#   JavaScript MIME type nor "module" (text/plain, application/json,
-#   text/template and the like), and a src that is not http or https (data:,
-#   blob:). The check is skipped once the timing buffer is full (250 entries by
-#   default), since a script past that point never gets an entry.
+#   nomodule (on a browser that knows nomodule; a module script ignores it), a
+#   type string that is neither a JavaScript MIME type nor "module" (text/plain,
+#   application/json, text/template, or text/vbscript from language="vbscript";
+#   the type string follows the HTML spec's rules for the type and language
+#   attributes), and a src that is not http or https (data:, blob:). The check
+#   is skipped once the timing buffer is full (250 entries by default), since a
+#   script past that point never gets an entry, and once the page has cleared
+#   the buffer (performance.clearResourceTimings), noticed as fewer entries than
+#   an earlier read of the same document saw.
+#   A script inserted through innerHTML is never fetched either, and nothing a
+#   page-side script can read tells it apart, so it still counts as pending and
+#   holds the wait to the cap.
 # Style attribute changes are left out of the observer: an animation writes them
 # every frame and would keep the page busy forever.
 _READY_JS = """(() => {
   const now = performance.now();
   let quiet = window.__graftpunkQuiet;
   if (!quiet) {
-    quiet = window.__graftpunkQuiet = {last: now};
+    quiet = window.__graftpunkQuiet = {last: now, entries: 0};
     try {
       new MutationObserver(() => { quiet.last = performance.now(); }).observe(document, {
         subtree: true, childList: true, characterData: true,
@@ -85,12 +95,18 @@ _READY_JS = """(() => {
   }
   const active = new Set(["script", "fetch", "xmlhttprequest", "iframe", "frame", "navigation"]);
   const entries = performance.getEntriesByType("resource");
+  const preloads = new Set(Array.from(
+    document.querySelectorAll("link[rel=modulepreload], link[rel=preload][as=script]"),
+    (link) => link.href,
+  ));
   let lastResource = 0;
   for (const entry of entries) {
-    if (active.has(entry.initiatorType) && entry.responseEnd > lastResource) {
-      lastResource = entry.responseEnd;
-    }
+    const counts = active.has(entry.initiatorType) || preloads.has(entry.name);
+    if (counts && entry.responseEnd > lastResource) lastResource = entry.responseEnd;
   }
+  const seen = quiet.entries || 0;
+  if (entries.length < seen) quiet.cleared = true;
+  quiet.entries = Math.max(seen, entries.length);
   const jsTypes = new Set([
     "application/ecmascript", "application/javascript", "application/x-ecmascript",
     "application/x-javascript", "text/ecmascript", "text/javascript", "text/javascript1.0",
@@ -100,15 +116,21 @@ _READY_JS = """(() => {
   ]);
   const knowsNoModule = typeof HTMLScriptElement !== "undefined"
     && "noModule" in HTMLScriptElement.prototype;
+  const typeString = (script) => {
+    const type = script.getAttribute("type");
+    const language = script.getAttribute("language");
+    if (type === "" || (type === null && !language)) return "text/javascript";
+    return (type !== null ? type : "text/" + language).trim().toLowerCase();
+  };
   const fetches = (script) => {
-    const type = (script.getAttribute("type") || "").trim().toLowerCase();
-    const classic = type === "" || jsTypes.has(type);
+    const type = typeString(script);
+    const classic = jsTypes.has(type);
     if (!classic && type !== "module") return false;
     if (classic && knowsNoModule && script.hasAttribute("nomodule")) return false;
     return /^https?:/i.test(script.src);
   };
   let pending = 0;
-  if (entries.length < 250) {
+  if (entries.length < 250 && !quiet.cleared) {
     const fetched = new Set(entries.map((entry) => entry.name));
     for (const script of document.querySelectorAll("script[src]")) {
       if (fetches(script) && !fetched.has(script.src)) pending += 1;
@@ -129,8 +151,11 @@ def target_js(selector: str) -> str:
 
     Visible means laid out (it has client rects), not hidden by ``visibility``,
     ``display`` or ``opacity: 0``, and not pushed off the page's left or top edge
-    or past the right edge of the viewport, which is where an off-canvas drawer
-    parks its copy of a link. An element below the fold counts as visible.
+    or past its right edge, which is where an off-canvas drawer parks its copy of
+    a link. The right edge is the page's scroll width when the page is wider than
+    the window, so a fixed-width layout driven in a narrow window keeps its
+    right-hand column visible; a drawer whose overflow the page clips still sits
+    past it. An element below the fold counts as visible.
     """
     return (
         "((selector, limit) => {"
@@ -149,7 +174,9 @@ def target_js(selector: str) -> str:
         "  }"
         "  const box = el.getBoundingClientRect();"
         "  if (box.right + window.scrollX <= 0 || box.bottom + window.scrollY <= 0) return false;"
-        "  return box.left < window.innerWidth;"
+        "  const pageWidth = Math.max(window.innerWidth,"
+        "   document.documentElement ? document.documentElement.scrollWidth : 0);"
+        "  return box.left + window.scrollX < pageWidth;"
         " };"
         " const listed = Array.from(nodes).slice(0, limit);"
         " return JSON.stringify({count: nodes.length,"
