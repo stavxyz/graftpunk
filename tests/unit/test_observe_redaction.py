@@ -223,6 +223,13 @@ class TestIdentifiersMatchWholeValues:
             ('{"u": "\\u0022bob@example.com\\u0022"}', f'{{"u": "\\u0022{REDACTED}\\u0022"}}'),
             ("&quot;bob@example.com&quot;", f"&quot;{REDACTED}&quot;"),
             ("&#34;bob@example.com&#34;", f"&#34;{REDACTED}&#34;"),
+            # Lower-case hex, and the other JSON escapes.
+            ("x%3dbob%40example.com", f"x%3d{REDACTED}"),
+            ('{"m": "\\u002fbob@example.com"}', f'{{"m": "\\u002f{REDACTED}"}}'),
+            ('{"m": "a\\rbob@example.com"}', f'{{"m": "a\\r{REDACTED}"}}'),
+            ('{"m": "a\\tbob@example.com"}', f'{{"m": "a\\t{REDACTED}"}}'),
+            ('{"m": "a\\bbob@example.com"}', f'{{"m": "a\\b{REDACTED}"}}'),
+            ('{"m": "a\\fbob@example.com"}', f'{{"m": "a\\f{REDACTED}"}}'),
         ],
     )
     def test_in_its_raw_percent_encoded_and_json_forms(self, text: str, expected: str) -> None:
@@ -231,6 +238,43 @@ class TestIdentifiersMatchWholeValues:
         (clean,) = redact_har_entries([entry], Redaction(identifiers=(USER,)))
 
         assert clean["request"]["postData"]["text"] == expected
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("u%253Dbob", f"u%253D{REDACTED}"),
+            ("next=%252Fusers%252Fbob", f"next=%252Fusers%252F{REDACTED}"),
+            (
+                "next=%252Faccount%253Femail%253Dbob%2540example.com",
+                f"next=%252Faccount%253Femail%253D{REDACTED}",
+            ),
+        ],
+    )
+    def test_in_a_double_encoded_url(self, text: str, expected: str) -> None:
+        entry = {"request": {"headers": [{"name": "Referer", "value": text}]}}
+
+        (clean,) = redact_har_entries([entry], Redaction(identifiers=("bob", USER)))
+
+        assert clean["request"]["headers"][0]["value"] == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "%41bob",  # "Abob"
+            "%61bob",  # "abob"
+            "Abob",
+            "bob%41",  # "bobA"
+            "\\\\nbob",  # an escaped backslash, then "nbob"
+            '{"m": "\\u00e9bob"}',  # "ébob"
+            '{"m": "\\u0041bob"}',  # "Abob"
+        ],
+    )
+    def test_an_escape_of_a_letter_or_digit_does_not_split_a_word(self, text: str) -> None:
+        entry = {"request": {"postData": {"text": text}}}
+
+        (clean,) = redact_har_entries([entry], Redaction(identifiers=("bob",)))
+
+        assert clean["request"]["postData"]["text"] == text
 
     def test_a_secret_is_still_replaced_inside_other_text(self) -> None:
         entry = {"request": {"postData": {"text": f"x{HIDDEN}y"}}}
@@ -272,25 +316,20 @@ class TestBasicCredentials:
 
         assert clean["request"]["headers"][0]["value"] == f"{scheme} {REDACTED}"
 
-    def test_a_location_header_with_an_encoded_return_url(self) -> None:
-        location = "https://myshop.example/signin?returnUrl=%2Faccount%3Femail%3Dbob%40example.com"
-        entry = {"response": {"headers": [{"name": "Location", "value": location}]}}
-
-        (clean,) = redact_har_entries([entry], Redaction(identifiers=(USER,)))
-
-        assert clean["response"]["headers"][0]["value"] == (
-            f"https://myshop.example/signin?returnUrl=%2Faccount%3Femail%3D{REDACTED}"
-        )
-
     @pytest.mark.parametrize("space", ["%20", "+"])
     def test_a_url_encoded_echo(self, space: str) -> None:
         import urllib.parse
 
-        token = base64.b64encode(f"bob@example.com:{HIDDEN}".encode()).decode()
+        # A password whose token holds "/" and "+", sent as %2F and %2B.
+        hidden = "x??~~>>"
+        token = base64.b64encode(f"bob@example.com:{hidden}".encode()).decode()
+        assert "/" in token
+        assert "+" in token
         text = f"auth=Basic{space}{urllib.parse.quote(token, safe='')}&next=1"
+        assert "%2F" in text
         entry = {"request": {"postData": {"text": text}}}
 
-        (clean,) = redact_har_entries([entry], Redaction(secrets=(HIDDEN,)))
+        (clean,) = redact_har_entries([entry], Redaction(secrets=(hidden,)))
 
         assert clean["request"]["postData"]["text"] == f"auth=Basic{space}{REDACTED}&next=1"
 

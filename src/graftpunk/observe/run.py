@@ -11,7 +11,7 @@ import re
 import stat
 import tempfile
 import urllib.parse
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -121,6 +121,8 @@ def _secret_forms(secret: str) -> set[str]:
         secret,
         urllib.parse.quote_plus(secret),
         urllib.parse.quote(secret, safe=""),
+        # Twice: a return URL inside a return URL.
+        urllib.parse.quote(urllib.parse.quote(secret, safe=""), safe=""),
         json.dumps(secret)[1:-1],
         base64.b64encode(secret.encode()).decode(),
     }
@@ -177,16 +179,72 @@ def _redaction_forms(secrets: Iterable[str]) -> list[str]:
     return sorted(forms, key=len, reverse=True)
 
 
-# A whole value: not preceded or followed by a letter or digit, where an
-# escape sequence that ends in a letter or digit ("%XX", the JSON escapes
-# "\n", "\r", "\t", "\b", "\f" and "\uXXXX") also counts as a delimiter.
-# An HTML entity, "\"", "\/" and "\\" end in a character that is already one.
-_ESCAPE_BEFORE = (
-    r"(?<=%[0-9A-Fa-f]{2})",
-    r"(?<=\\[nrtbf])",
-    r"(?<=\\u[0-9A-Fa-f]{4})",
-)
-_WHOLE = "(?:(?<![A-Za-z0-9])|" + "|".join(_ESCAPE_BEFORE) + ")(?:{value})(?![A-Za-z0-9])"
+# A whole value: one not inside a longer word. Its neighbours are read decoded:
+# an escape ("%XX", "%25XX" for a double-encoded URL, the JSON escapes "\n",
+# "\r", "\t", "\b", "\f" and "\uXXXX") is the character it stands for, so
+# "%3Dbob" and "\nbob" are delimited and "%41bob" ("Abob") is not.
+_PERCENT_BEFORE = re.compile(r"%(?:25)?([0-9A-Fa-f]{2})$")
+_UNICODE_BEFORE = re.compile(r"(\\+)u([0-9A-Fa-f]{4})$")
+_CONTROL_BEFORE = re.compile(r"(\\+)[nrtbf]$")
+_PERCENT_AFTER = re.compile(r"%(?:25)?([0-9A-Fa-f]{2})")
+
+
+def _is_word_char(char: str) -> bool:
+    """A letter or digit, in any script."""
+    return char.isalnum()
+
+
+def _is_ascii_word_char(char: str) -> bool:
+    """A letter or digit in ASCII: bytes read as latin-1, where a byte over
+    0x7F is part of a multi-byte character, not a letter of its own."""
+    return char.isascii() and char.isalnum()
+
+
+def _delimited_before(text: str, start: int, word: Callable[[str], bool]) -> bool:
+    """Whether the text before *start* ends a word: nothing, a non-alphanumeric
+    character, or an escape that decodes to one."""
+    if start == 0 or not word(text[start - 1]):
+        return True
+    head = text[max(0, start - 16) : start]
+    percent = _PERCENT_BEFORE.search(head)
+    if percent:
+        return not word(chr(int(percent.group(1), 16)))
+    unicode = _UNICODE_BEFORE.search(head)
+    if unicode and len(unicode.group(1)) % 2 == 1:
+        return not word(chr(int(unicode.group(2), 16)))
+    control = _CONTROL_BEFORE.search(head)
+    # An odd run of backslashes is an escape; an even one is escaped backslashes.
+    return bool(control and len(control.group(1)) % 2 == 1)
+
+
+def _delimited_after(text: str, end: int, word: Callable[[str], bool]) -> bool:
+    """Whether the text from *end* starts a new word: nothing, a non-alphanumeric
+    character other than an escape of a letter or digit."""
+    if end == len(text):
+        return True
+    if word(text[end]):
+        return False
+    percent = _PERCENT_AFTER.match(text, end)
+    return not (percent and word(chr(int(percent.group(1), 16))))
+
+
+def _replace_whole(
+    text: str,
+    pattern: re.Pattern[str],
+    replacement: Any,
+    word: Callable[[str], bool] = _is_word_char,
+) -> str:
+    """*text* with each whole-value match of *pattern* replaced by *replacement*
+    (a string, or a function of the matched text)."""
+
+    def replace(match: re.Match[str]) -> str:
+        if _delimited_before(text, match.start(), word) and _delimited_after(
+            text, match.end(), word
+        ):
+            return replacement(match.group(0)) if callable(replacement) else replacement
+        return match.group(0)
+
+    return pattern.sub(replace, text)
 
 
 @dataclass(frozen=True)
@@ -195,21 +253,20 @@ class _Scrubber:
 
     secret_forms: tuple[str, ...]
     identifier_re: re.Pattern[str] | None
-    identifier_bytes_re: re.Pattern[bytes] | None
+    identifier_bytes_re: re.Pattern[str] | None
     basic_values: tuple[str, ...]
 
     @classmethod
     def of(cls, redact: Redaction | Iterable[str]) -> _Scrubber:
         redaction = as_redaction(redact)
         forms = _redaction_forms(redaction.identifiers)
-        alternation = "|".join(re.escape(f) for f in forms)
+        # Bytes are matched as latin-1 text, one character per byte.
+        byte_forms = [f.encode("utf-8").decode("latin-1") for f in forms]
         return cls(
             secret_forms=tuple(_redaction_forms(redaction.secrets)),
-            identifier_re=re.compile(_WHOLE.replace("{value}", alternation)) if forms else None,
+            identifier_re=re.compile("|".join(re.escape(f) for f in forms)) if forms else None,
             identifier_bytes_re=(
-                re.compile(_WHOLE.replace("{value}", alternation).encode("utf-8"))
-                if forms
-                else None
+                re.compile("|".join(re.escape(f) for f in byte_forms)) if forms else None
             ),
             basic_values=_kept_secrets(redaction.everything),
         )
@@ -223,13 +280,19 @@ class _Scrubber:
             if form in value:
                 value = value.replace(form, REDACTED)
         if self.identifier_re is not None and not in_url:
-            value = self.identifier_re.sub(REDACTED, value)
+            value = _replace_whole(value, self.identifier_re, REDACTED)
         return value
 
     def scrub_bytes(self, raw: bytes) -> bytes:
         raw = _scrub_bytes(raw, list(self.secret_forms))
         if self.identifier_bytes_re is not None:
-            raw = self.identifier_bytes_re.sub(lambda m: b"*" * len(m.group(0)), raw)
+            text = _replace_whole(
+                raw.decode("latin-1"),
+                self.identifier_bytes_re,
+                lambda m: "*" * len(m),
+                _is_ascii_word_char,
+            )
+            raw = text.encode("latin-1")
         return raw
 
 
