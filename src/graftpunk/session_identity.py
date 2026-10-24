@@ -34,30 +34,56 @@ GP_SESSION_NAME_ATTR = "_gp_session_name"
 # One side of a session name: today's rule, unchanged.
 _PART_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
-# Identifier keywords, checked keyword-major (for each keyword, fields in
-# declaration order). The user⊂username overlap is intentional: username is
-# checked first, so it wins.
-_IDENTIFIER_KEYWORDS = ("username", "email", "login", "identifier", "user")
-
-# Derivation-only exclusions. Deliberately NOT SECRET_KEYWORDS (that set drives
-# prompt masking, where masking is deliberately over-eager and matches by
-# substring). These match by whole TOKEN instead — the field name split on
-# "_"/"-"/"." — so "pin" excludes "otp_pin" but not "shipping_email" or
-# "pinnacle_user" (a substring match would wrongly skip both). A field whose
-# name contains one of these as a token is never derived from — even when it
-# also matches an identifier keyword, so ``login_code`` is skipped despite
-# matching "login" (#151).
-_NON_IDENTIFIER_HINTS = (
-    "code",
-    "otp",
-    "pin",
-    "passphrase",
-    "answer",
-    "captcha",
-    "mfa",
-    "2fa",
-    "totp",
+#: A credential field is an account identifier only when its name, lower-cased
+#: with "_", "-", "." and spaces removed, is exactly one of these. Every other
+#: field is a secret: substring and token heuristics each let a secret spelling
+#: through (``user_pass``, ``userPINCode``, ``loginCode``), and a secret taken
+#: for an identifier becomes a session name or is left unredacted in an observe
+#: run (#293). ``account`` and ``accountid`` count for observe redaction but
+#: contain no label keyword, so they never name a session.
+IDENTIFIER_FIELD_NAMES: frozenset[str] = frozenset(
+    {
+        "username",
+        "email",
+        "emailaddress",
+        "useremail",
+        "loginemail",
+        "login",
+        "loginid",
+        "loginname",
+        "identifier",
+        "user",
+        "userid",
+        "account",
+        "accountid",
+    }
 )
+
+#: The account-label rule this release records in a slot's metadata
+#: (``account_rule``). A slot without it was written by graftpunk 1.24.0 or
+#: earlier, whose rule could label a session with a secret (#293); a write-back
+#: carries the slot's recorded value forward, so it is never upgraded by a save.
+ACCOUNT_RULE = 2
+
+_FIELD_NAME_NOISE_RE = re.compile(r"[_\-. ]")
+
+
+def normalize_field_name(field_name: str) -> str:
+    """*field_name* lower-cased with ``_``, ``-``, ``.`` and spaces removed."""
+    return _FIELD_NAME_NOISE_RE.sub("", field_name.lower())
+
+
+def is_identifier_field(field_name: str) -> bool:
+    """Whether a credential field holds an account identifier rather than a secret.
+
+    By the allowlist :data:`IDENTIFIER_FIELD_NAMES` only, on the name
+    normalized by :func:`normalize_field_name`: ``user_name``,
+    ``Email-Address`` and ``loginID`` are identifiers, and ``login_password``,
+    ``user_pass``, ``userPINCode`` and anything else are secrets. The one
+    definition shared by the account label (:func:`derive_account_identity`)
+    and observe redaction (:class:`graftpunk.observe.run.Redaction`).
+    """
+    return normalize_field_name(field_name) in IDENTIFIER_FIELD_NAMES
 
 
 def split_session_name(name: str) -> tuple[str, str | None]:
@@ -132,53 +158,122 @@ def resolve_account_session(base_name: str, existing_names: Iterable[str]) -> st
     raise AmbiguousSessionError(base_name, sorted(candidates))
 
 
-def derive_account_identity(
-    fields: Mapping[str, str], secret_keywords: frozenset[str]
-) -> tuple[str | None, str | None]:
+# The label keywords, in the order a field is looked for: for each keyword,
+# fields in declaration order, matching the keyword as a substring of the
+# lower-cased name. graftpunk 1.24.0 used the same order and matching, so the
+# current rule picks the field 1.24.0 picked whenever that field is an
+# identifier, and the label stays the same.
+_LABEL_KEYWORDS = ("username", "email", "login", "identifier", "user")
+
+
+def _pick_field(fields: Mapping[str, str], accept: Callable[[str], bool]) -> str | None:
+    """The first field, keyword-major, whose name holds a label keyword, whose
+    value is not empty and which *accept* accepts."""
+    for keyword in _LABEL_KEYWORDS:
+        for field_name, value in fields.items():
+            if keyword in field_name.lower() and value and accept(field_name):
+                return field_name
+    return None
+
+
+def account_field(fields: Mapping[str, str]) -> str | None:
+    """The login field the account label comes from, or None.
+
+    The field graftpunk 1.24.0 would pick (see :data:`_LABEL_KEYWORDS`), among
+    the fields :func:`is_identifier_field` accepts. A field with an empty value
+    is skipped.
+    """
+    return _pick_field(fields, is_identifier_field)
+
+
+def derive_account_identity(fields: Mapping[str, str]) -> tuple[str | None, str | None]:
     """Derive ``(identifier, label)`` from resolved login fields.
 
-    The identifier is the value of the first field whose name contains an
-    identifier keyword (keyword-major order: username, email, login,
-    identifier, user) and is neither secret per *secret_keywords* nor
-    non-identifier-shaped per :data:`_NON_IDENTIFIER_HINTS`. The set of
-    derivable fields is therefore closed by construction: there is no
-    "first non-secret field" fallback, so a one-time code, a PIN or a
-    security answer can never become a persisted, human-visible session
-    label. Returns ``(None, None)`` when no field qualifies — the session
-    then keeps its bare legacy name, and ``--as`` remains available to name
-    it explicitly.
+    The identifier is the value of :func:`account_field`. It is chosen as
+    graftpunk 1.24.0 chose it, from identifier fields only, so a plugin whose
+    1.24.0 label came from an identifier field keeps that exact label, and a
+    one-time code, a PIN or a password can never become a persisted,
+    human-visible session label (#293). Returns ``(None, None)`` when no field
+    qualifies: the session then keeps its bare name, and ``--as`` remains
+    available to name it explicitly.
 
     The label is the slugified identifier, validated with
     :func:`validate_account_label`; an identifier that cannot produce a legal
-    label yields ``(identifier, None)`` — the identifier is still recorded in
+    label yields ``(identifier, None)``: the identifier is still recorded in
     metadata while the session keeps its bare name.
     """
-
-    def is_derivable(field_name: str) -> bool:
-        lowered = field_name.lower()
-        if any(k in lowered for k in secret_keywords):
-            return False
-        tokens = re.split(r"[_.-]", lowered)
-        return not any(hint in tokens for hint in _NON_IDENTIFIER_HINTS)
-
-    def pick() -> str | None:
-        for keyword in _IDENTIFIER_KEYWORDS:
-            for field_name, value in fields.items():
-                if keyword in field_name.lower() and value and is_derivable(field_name):
-                    return value
-        return None
-
-    identifier = pick()
-    if identifier is None:
+    field = account_field(fields)
+    if field is None:
         return (None, None)
+    identifier = fields[field]
+    return (identifier, label_for(identifier))
+
+
+def label_for(identifier: str) -> str | None:
+    """The account label *identifier* slugifies to, or None when it is not a legal one."""
     label = slugify(identifier)
     if not label:
-        return (identifier, None)
+        return None
     try:
         validate_account_label(label)
     except ValueError:
-        return (identifier, None)
-    return (identifier, label)
+        return None
+    return label
+
+
+# graftpunk 1.24.0 and earlier filtered fields with a deny-list instead of the
+# allowlist, which let a PIN or a 2FA code through (#293). Kept only so a login
+# can find the slot that rule named and migrate it (graftpunk.session_migration);
+# delete it, with the migration, in a later release.
+_LEGACY_NON_IDENTIFIER_HINTS = (
+    "code",
+    "otp",
+    "pin",
+    "passphrase",
+    "answer",
+    "captcha",
+    "mfa",
+    "2fa",
+    "totp",
+)
+
+
+def _legacy_derivable(field_name: str, secret_keywords: frozenset[str]) -> bool:
+    lowered = field_name.lower()
+    if any(k in lowered for k in secret_keywords):
+        return False
+    tokens = re.split(r"[_.-]", lowered)
+    return not any(hint in tokens for hint in _LEGACY_NON_IDENTIFIER_HINTS)
+
+
+def _legacy_account_field(fields: Mapping[str, str], secret_keywords: frozenset[str]) -> str | None:
+    """The field graftpunk 1.24.0 labelled a session from. For migration only."""
+    return _pick_field(fields, lambda name: _legacy_derivable(name, secret_keywords))
+
+
+def _legacy_derive_account_identity(
+    fields: Mapping[str, str], secret_keywords: frozenset[str]
+) -> tuple[str | None, str | None]:
+    """``(identifier, label)`` by the rule graftpunk 1.24.0 and earlier used.
+
+    For migration only: never name a new session with it.
+    """
+    field = _legacy_account_field(fields, secret_keywords)
+    if field is None:
+        return (None, None)
+    identifier = fields[field]
+    return (identifier, label_for(identifier))
+
+
+def _legacy_secret_field(field_names: Iterable[str], secret_keywords: frozenset[str]) -> str | None:
+    """The field 1.24.0 labelled this plugin's sessions from, when it is a secret.
+
+    Worked out from the field names alone, as if every field had a value (a
+    login prompts for an empty one). None when 1.24.0 picked an identifier
+    field, or no field.
+    """
+    field = _legacy_account_field(dict.fromkeys(field_names, "x"), secret_keywords)
+    return field if field is not None and not is_identifier_field(field) else None
 
 
 class _AmbientUnread:

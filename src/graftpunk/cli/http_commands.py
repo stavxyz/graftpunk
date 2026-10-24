@@ -23,9 +23,13 @@ if TYPE_CHECKING:
 from graftpunk import _distribution
 from graftpunk import console as gp_console
 from graftpunk.cache import load_session_for_api_resolved, no_account_cached_message
-from graftpunk.cli.errors import exit_missing_browser_stack
+from graftpunk.cli.errors import exit_ambiguous_session, exit_missing_browser_stack
 from graftpunk.cookies import BrowserCookieSession
-from graftpunk.exceptions import SessionInvalidatedError, SessionNotFoundError
+from graftpunk.exceptions import (
+    AmbiguousSessionError,
+    SessionInvalidatedError,
+    SessionNotFoundError,
+)
 from graftpunk.logging import get_logger
 from graftpunk.observe import ObservabilityContext, build_observe_context
 from graftpunk.session_context import resolve_session
@@ -217,6 +221,10 @@ def _make_request(
                 resolved,
                 resolve=(not is_site_name) and split_session_name(resolved)[1] is None,
             )
+        except AmbiguousSessionError as exc:
+            # The rendered list masks a slot an earlier graftpunk named after a
+            # secret; the exception's own message would print it (#293).
+            exit_ambiguous_session(exc)
         except Exception as exc:  # noqa: BLE001 — CLI boundary
             module = _distribution.missing_browser_module(exc)
             if module is not None:

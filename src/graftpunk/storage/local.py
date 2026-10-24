@@ -1,10 +1,13 @@
 """Local filesystem session storage backend."""
 
+import contextlib
 import json
 import os
 import shutil
 import stat
 import sys
+import tempfile
+import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,12 +16,78 @@ from typing import IO, Any
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
 from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
+    UNCHANGED,
     SessionMetadata,
     dict_to_metadata,
     metadata_to_dict,
 )
 
 LOG = get_logger(__name__)
+
+
+def _write_private_temp(target: Path, data: bytes) -> Path:
+    """Write *data* to a new 0o600 temporary file beside *target*; return its path.
+
+    The caller renames it over *target* with :func:`os.replace`, which is
+    atomic on one filesystem, so a reader sees the old file or the new one.
+    """
+    fd, raw = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    path = Path(raw)
+    try:
+        if sys.platform != "win32":
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+_backup_copy_logged = False
+
+
+def _keep_backup(path: Path) -> Path | None:
+    """Keep the file at *path* under a new name beside it; None when there is none to keep.
+
+    A hard link costs no copy and keeps the old file's bytes reachable after
+    :func:`os.replace` puts a new file at *path*. A filesystem that refuses
+    hard links gets a copy instead (logged once per process at debug). Only
+    when the copy fails too is there no backup, and a failed save then cannot
+    restore the old file.
+    """
+    global _backup_copy_logged
+    if not path.exists():
+        return None
+    # A name no other backup can have, so this never takes or deletes one an
+    # earlier save kept.
+    backup = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.bak")
+    try:
+        os.link(path, backup)
+        return backup
+    except OSError as exc:
+        if not _backup_copy_logged:
+            _backup_copy_logged = True
+            LOG.debug("session_backup_link_failed", error_type=type(exc).__name__)
+    created = False
+    try:
+        # 0o600 from creation, like the pickle: copy2 would create it with
+        # the umask's mode and narrow it only afterwards.
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+        with os.fdopen(fd, "wb") as dst, path.open("rb") as src:
+            shutil.copyfileobj(src, dst)
+    except OSError as exc:
+        if created:
+            backup.unlink(missing_ok=True)
+        LOG.warning("session_backup_failed", error_type=type(exc).__name__)
+        return None
+    return backup
+
+
+def _kept_name(backup: Path) -> Path:
+    """The name a backup takes once a failed restore leaves it the only old copy."""
+    return backup.with_name(backup.name.removesuffix(".bak") + ".kept")
 
 
 class LocalSessionStorage:
@@ -83,22 +152,14 @@ class LocalSessionStorage:
             OSError: If save fails
         """
         session_dir = self.base_dir / name
+        created_dir = not session_dir.exists()
         session_dir.mkdir(parents=True, exist_ok=True)
 
         pickle_path = session_dir / "session.pickle"
         metadata_path = session_dir / "metadata.json"
+        stale_backups = list(session_dir.glob(f".{pickle_path.name}.*.kept"))
 
         LOG.info("session_save_started", name=name, path=str(pickle_path))
-
-        # Write encrypted pickle file with secure permissions from creation.
-        # The mode given to os.open only applies to a NEW file; an existing
-        # one keeps whatever mode it already had, so an explicit fchmod
-        # after the open tightens a re-save over a file left wide by some
-        # other means too (#178, PR #189 review).
-        fd = os.open(pickle_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(encrypted_data)
 
         # Stamp storage identity fields before serialization
         metadata = replace(
@@ -106,17 +167,77 @@ class LocalSessionStorage:
             storage_backend=self.storage_backend,
             storage_location=self.storage_location,
         )
+        metadata_bytes = json.dumps(metadata_to_dict(metadata), indent=2, default=str).encode()
 
-        # Write metadata with the same secure-from-creation permissions as the
-        # pickle: it carries the account identifier, the domain and the URL
-        # last visited — not secrets, but not other users' business either.
-        # Same re-save caveat as above: fchmod after the open, not just the
-        # os.open mode, so an existing wide file is tightened too.
-        metadata_dict = metadata_to_dict(metadata)
-        meta_fd = os.open(metadata_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(meta_fd, 0o600)
-        with os.fdopen(meta_fd, "w") as f:
-            json.dump(metadata_dict, f, indent=2, default=str)
+        # Both files are written in full to temporary files beside them and
+        # only then renamed into place, so a write that fails (a full disk)
+        # leaves the slot as it was, or no slot at all. Before the pickle is
+        # replaced, the old one is hard-linked (or copied) to a backup; if anything is
+        # raised between the two renames, the old pickle is put back (or a
+        # slot this save created is removed), so the pickle and the metadata
+        # never disagree after a failed save. What remains is a crash, or a
+        # reader, between the two renames: such a slot fails its integrity
+        # check until it is saved again, as the next login does. The
+        # temporary files are 0o600 from creation, like the files they
+        # replace: the metadata carries the account identifier, the domain
+        # and the URL last visited, not secrets, but not other users'
+        # business either (#178, #293).
+        written: list[Path] = []
+        backup: Path | None = None
+        keep_backup = False
+        pickle_replaced = False
+        try:
+            pickle_tmp = _write_private_temp(pickle_path, encrypted_data)
+            written.append(pickle_tmp)
+            metadata_tmp = _write_private_temp(metadata_path, metadata_bytes)
+            written.append(metadata_tmp)
+            backup = _keep_backup(pickle_path)
+            # Set before the rename: an exception landing just after it
+            # returns must still restore. Restoring when the rename never
+            # happened puts the same old bytes back (for a hard link, the
+            # rename does nothing), and the finally removes the backup.
+            pickle_replaced = True
+            os.replace(pickle_tmp, pickle_path)
+            os.replace(metadata_tmp, metadata_path)
+        except BaseException:
+            for tmp in written:
+                tmp.unlink(missing_ok=True)
+            if created_dir:
+                # Only what this save wrote, and the directory only when that
+                # leaves it empty: another writer may have joined it meanwhile.
+                if pickle_replaced:
+                    pickle_path.unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    session_dir.rmdir()
+            elif pickle_replaced and backup is not None:
+                try:
+                    os.replace(backup, pickle_path)
+                except OSError as exc:
+                    # The backup is now the only copy of the old pickle: keep
+                    # it, under a name the next successful save will clear.
+                    keep_backup = True
+                    kept = _kept_name(backup)
+                    with contextlib.suppress(OSError):
+                        os.replace(backup, kept)
+                        backup = kept
+                    LOG.error(
+                        "session_restore_failed",
+                        name=name,
+                        backup=str(backup),
+                        error=str(exc),
+                    )
+            raise
+        finally:
+            if backup is not None and not keep_backup:
+                backup.unlink(missing_ok=True)
+
+        # A backup an earlier save kept after its restore failed is stale once
+        # this save has landed both files. Only kept ones, found before this
+        # save began: a save still in flight has its backup under the plain
+        # name. The save is complete, so a failure here only leaves the file.
+        for stale in stale_backups:
+            with contextlib.suppress(OSError):
+                stale.unlink(missing_ok=True)
 
         LOG.info("session_save_completed", name=name, path=str(session_dir))
         return str(session_dir)
@@ -285,7 +406,13 @@ class LocalSessionStorage:
         names = []
         try:
             for item in self.base_dir.iterdir():
-                if item.is_dir() and (item / "session.pickle").exists():
+                # A slot is listed only with both files: a directory a crashed
+                # save left with a pickle and no metadata is not a session.
+                if (
+                    item.is_dir()
+                    and (item / "session.pickle").exists()
+                    and (item / "metadata.json").exists()
+                ):
                     names.append(item.name)
                 elif item.is_file() and item.suffix == ".pickle":
                     # Legacy flat file structure
@@ -295,6 +422,27 @@ class LocalSessionStorage:
             return sorted(names)
         except OSError as exc:
             LOG.error("failed_to_list_sessions", error=str(exc))
+            return []
+
+    def incomplete_sessions(self) -> list[str]:
+        """Slot directories holding a pickle but no metadata.
+
+        A crash during a save, or an older release, can leave one. They are
+        not sessions (:meth:`list_sessions` leaves them out, and loading one
+        fails), but clearing every session removes them too.
+        """
+        if not self.base_dir.exists():
+            return []
+        try:
+            return sorted(
+                item.name
+                for item in self.base_dir.iterdir()
+                if item.is_dir()
+                and (item / "session.pickle").exists()
+                and not (item / "metadata.json").exists()
+            )
+        except OSError as exc:
+            LOG.error("failed_to_list_incomplete_sessions", error=str(exc))
             return []
 
     def delete_session(self, name: str) -> bool:
@@ -357,12 +505,18 @@ class LocalSessionStorage:
         self,
         name: str,
         status: str | None = None,
+        *,
+        account_identifier: Any = UNCHANGED,
+        account_rule: Any = UNCHANGED,
     ) -> bool:
         """Update session metadata fields.
 
         Args:
             name: Session identifier
             status: New status value
+            account_identifier: New account identifier (None clears it);
+                left alone when not given.
+            account_rule: New account rule; left alone when not given.
 
         Returns:
             True if updated, False if session not found
@@ -385,10 +539,21 @@ class LocalSessionStorage:
                     raise ValueError(f"Invalid status '{status}'. Must be 'active' or 'logged_out'")
                 metadata_dict["status"] = status
 
+            if account_identifier is not UNCHANGED:
+                metadata_dict["account_identifier"] = account_identifier
+            if account_rule is not UNCHANGED:
+                metadata_dict["account_rule"] = account_rule
+
             metadata_dict["modified_at"] = datetime.now(UTC).isoformat()
 
-            with metadata_path.open("w") as f:
-                json.dump(metadata_dict, f, indent=2, default=str)
+            tmp = _write_private_temp(
+                metadata_path, json.dumps(metadata_dict, indent=2, default=str).encode()
+            )
+            try:
+                os.replace(tmp, metadata_path)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
 
             LOG.info("session_metadata_updated", name=name, status=status)
             return True

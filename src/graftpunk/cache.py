@@ -14,8 +14,10 @@ Thread Safety:
     synchronization is required when calling cache functions.
 """
 
+import contextlib
 import hashlib
 import io
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from http import cookiejar
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
@@ -30,6 +32,7 @@ from graftpunk.encryption import decrypt_data, encrypt_data
 from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNotFoundError
 from graftpunk.logging import get_logger
 from graftpunk.session_identity import (
+    ACCOUNT_RULE,
     GP_ACCOUNT_ATTR,
     GP_SESSION_NAME_ATTR,
     resolve_account_session,
@@ -260,7 +263,9 @@ def _stamp_session_slot(session: Any, name: str) -> None:
         )
 
 
-def cache_session(session: T, session_name: str | None = None) -> str:
+def cache_session(
+    session: T, session_name: str | None = None, *, account_rule: int | None = ACCOUNT_RULE
+) -> str:
     """Cache a session with metadata.
 
     Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
@@ -271,6 +276,9 @@ def cache_session(session: T, session_name: str | None = None) -> str:
     Args:
         session: Session object to cache (must be picklable).
         session_name: Optional session name. If not provided, tries to get from session.
+        account_rule: The account-label rule to record. A write-back passes the
+            slot's recorded value, so a slot graftpunk 1.24.0 named stays
+            recognisable as one (#293).
 
     Returns:
         Storage location string.
@@ -308,6 +316,7 @@ def cache_session(session: T, session_name: str | None = None) -> str:
             cookie_domains=raw_metadata.get("cookie_domains", []),
             status="active",
             account_identifier=raw_metadata.get("account_identifier"),
+            account_rule=account_rule,
         )
 
         # Save to backend
@@ -437,6 +446,14 @@ def _load_session_with_metadata(
         # The slot this object came out of, for any write-back that follows
         # (#174). Set here rather than in the pickle so it can never be stale.
         _stamp_session_slot(session, name)
+        # Metadata recorded under the current rule is the authority on the
+        # account: a login may have replaced a 1.24.0 record there without
+        # touching the pickle (set_session_account). Taking it here means any
+        # save of this copy writes the replaced value, and the pickle loses the
+        # old one (#293).
+        if metadata.account_rule == ACCOUNT_RULE:
+            with contextlib.suppress(Exception):
+                setattr(session, GP_ACCOUNT_ATTR, metadata.account_identifier)
 
         LOG.info("successfully_loaded_session", name=name, backend=settings.storage_backend)
         return session, metadata
@@ -923,9 +940,11 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         # identifier already returned by this load's metadata (stored_metadata,
         # from the same backend read — no extra backend call) so identity
         # survives this refresh either way.
+        # A slot under the current account rule already took its account from
+        # the metadata at load (#293).
         if getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier:
             setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
-        cache_session(original, target)
+        cache_session(original, target, account_rule=stored_metadata.account_rule)
         LOG.info("session_cookies_updated", session_name=target)
     except Exception as exc:  # noqa: BLE001 — best-effort save
         LOG.warning(
@@ -976,6 +995,17 @@ def list_sessions_with_metadata(
     return sorted(results, key=lambda x: x.get("modified_at", ""), reverse=True)
 
 
+def list_incomplete_sessions(backend_override: str | None = None) -> list[str]:
+    """Slots holding a session pickle but no metadata, which no listing shows.
+
+    A crash during a save, or an older release, can leave one on the local
+    backend; other backends report none. Clearing every session removes them.
+    """
+    backend = _get_session_storage_backend(backend_override=backend_override)
+    incomplete = getattr(backend, "incomplete_sessions", None)
+    return list(incomplete()) if callable(incomplete) else []
+
+
 def clear_session_cache(
     session_name: str | None = None,
     backend_override: str | None = None,
@@ -998,12 +1028,74 @@ def clear_session_cache(
             removed.append(session_name)
         return removed
 
-    # Clear all sessions
-    for name in backend.list_sessions():
+    # Clear all sessions, and the slots a failed save left without metadata:
+    # they are not listed, but loading one says to clear.
+    leftovers = list_incomplete_sessions(backend_override=backend_override)
+    for name in [*backend.list_sessions(), *leftovers]:
         if backend.delete_session(name):
             removed.append(name)
 
     return removed
+
+
+def copy_session(source: str, dest: str, *, account_identifier: str | None) -> None:
+    """Copy the session cached under *source* to *dest*, recording *account_identifier*.
+
+    The session is unpickled and pickled again, so the names and identifier it
+    carries inside its pickle are replaced too: ``BrowserSession`` keeps its
+    session name and account identifier there. Created, modified and expiry
+    times and status are kept, since it is the same session under another
+    name; the metadata records the current account rule. The copy is read back
+    and its checksum compared before this returns, so a caller may delete
+    *source* afterwards. *source* equal to *dest* rewrites the slot in place.
+    *source* itself is never deleted here.
+
+    Raises:
+        ValueError: *dest* is not a legal session name.
+        SessionNotFoundError: Nothing is cached under *source*.
+        SessionExpiredError: *source* is expired or cannot be read, or the copy
+            did not read back as written.
+        ImportError: *source* needs the browser stack, which is not installed.
+        Exception: Whatever the backend raises when saving *dest*.
+    """
+    validate_session_name(dest)
+    backend = _get_session_storage_backend()
+    session, metadata = _load_session_with_metadata(source)
+    setattr(session, GP_ACCOUNT_ATTR, account_identifier)
+    if hasattr(session, "_session_name"):
+        setattr(session, "_session_name", dest)  # noqa: B010 (the name a BrowserSession pickles)
+    _stamp_session_slot(session, dest)
+    pickled_data = pickle.dumps(session)
+    checksum = hashlib.sha256(pickled_data).hexdigest()
+    copied = replace(
+        metadata,
+        name=dest,
+        checksum=checksum,
+        account_identifier=account_identifier,
+        account_rule=ACCOUNT_RULE,
+    )
+    backend.save_session(dest, encrypt_data(pickled_data), copied)
+    stored_data, stored_metadata = backend.load_session(dest)
+    if (
+        stored_metadata.checksum != checksum
+        or hashlib.sha256(decrypt_data(stored_data)).hexdigest() != checksum
+    ):
+        raise SessionExpiredError(f"Session '{dest}' did not read back as written.")
+
+
+def set_session_account(name: str, account_identifier: str | None) -> bool:
+    """Record *account_identifier* on *name* under the current account rule.
+
+    Only the metadata is rewritten: the session is neither loaded nor saved,
+    so an expired or unreadable slot is updated too. A later write-back takes
+    the identifier from this metadata rather than from the pickle
+    (:func:`update_session_cookies`). Returns False when nothing is cached
+    under *name*.
+    """
+    backend = _get_session_storage_backend()
+    return backend.update_session_metadata(
+        name, account_identifier=account_identifier, account_rule=ACCOUNT_RULE
+    )
 
 
 def update_session_status(name: str, status: str) -> None:

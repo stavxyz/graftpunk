@@ -16,6 +16,7 @@ import traceback
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, TextIO
 
 import structlog
@@ -127,7 +128,20 @@ def _current_secrets() -> tuple[str, ...]:
 
 # The logging methods of a structlog bound logger, and their async forms ("a" + name).
 _LOG_METHODS = frozenset(
-    {"debug", "info", "warning", "warn", "error", "critical", "fatal", "exception", "msg", "log"}
+    {
+        "debug",
+        "info",
+        "warning",
+        "warn",
+        "error",
+        "err",
+        "critical",
+        "fatal",
+        "failure",
+        "exception",
+        "msg",
+        "log",
+    }
 )
 
 
@@ -421,10 +435,11 @@ class GraftpunkLogger:
         )
 
     def _resolve(self) -> Any:
+        values = _redact(self._initial_values) if _redactions.get() else self._initial_values
         if structlog.is_configured():
             # As in _quiet_logger: get_logger's keyword parameters are not context.
-            return structlog.get_logger(*self._factory_args).bind(**self._initial_values)
-        return _quiet_logger(self._initial_values)
+            return structlog.get_logger(*self._factory_args).bind(**values)
+        return _quiet_logger(values)
 
     def _with(self, values: dict[str, Any]) -> GraftpunkLogger:
         return GraftpunkLogger(self._factory_args, values)
@@ -453,10 +468,64 @@ class GraftpunkLogger:
         # has no attributes yet: answering must not build a logger.
         if name.startswith("__") or name in ("_factory_args", "_initial_values"):
             raise AttributeError(name)
+        is_log_method = name in _LOG_METHODS or name[1:] in _LOG_METHODS
         secrets = _current_secrets()
-        if secrets and (name in _LOG_METHODS or name[1:] in _LOG_METHODS):
-            return _scrubbing_call(self, name, secrets)
-        return getattr(self._resolve(), name)
+        if secrets and is_log_method:
+            method = _scrubbing_call(self, name, secrets)
+        else:
+            method = getattr(self._resolve(), name)
+        # redacted_values() rewrites its pairs first; log_secrets() then
+        # scrubs its values from what is left. Either may be active alone.
+        if _redactions.get() and is_log_method:
+            return _redacting_call(method)
+        return method
+
+
+# Values that must not reach a log line, each with what to write instead. Set
+# only inside redacted_values(); a contextvar, so another thread's or task's
+# lines are untouched.
+_redactions: ContextVar[tuple[tuple[str, str], ...]] = ContextVar(
+    "graftpunk_log_redactions", default=()
+)
+
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, str):
+        for secret, placeholder in _redactions.get():
+            value = value.replace(secret, placeholder)
+        return value
+    if isinstance(value, dict):
+        return {_redact(key): _redact(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_redact(item) for item in value)
+    return value
+
+
+def _redacting_call(method: Any) -> Any:
+    def call(*args: Any, **kwargs: Any) -> Any:
+        return method(*_redact(args), **_redact(kwargs))
+
+    return call
+
+
+@contextmanager
+def redacted_values(*pairs: tuple[str, str]) -> Iterator[None]:
+    """Within the block, write each pair's first string as its second in graftpunk's log lines.
+
+    Every string in a line's event, positional arguments, keyword values and
+    bound context is rewritten, including inside lists, tuples and dicts (keys
+    and values), so a path or an error message that holds the value is
+    covered too. Matching is by substring: a longer string that contains the
+    value has that part replaced. Only
+    graftpunk's own loggers (:func:`get_logger`) are affected, and only in the
+    current thread or task. An empty value is ignored.
+    """
+    kept = tuple((secret, placeholder) for secret, placeholder in pairs if secret)
+    token = _redactions.set(_redactions.get() + kept)
+    try:
+        yield
+    finally:
+        _redactions.reset(token)
 
 
 # suppress_asyncio_noise() windows can overlap (two backends stopping at once,

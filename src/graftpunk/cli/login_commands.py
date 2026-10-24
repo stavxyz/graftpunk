@@ -10,6 +10,7 @@ import asyncio
 import inspect
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -17,20 +18,33 @@ from rich.status import Status
 
 from graftpunk import _distribution, workstation_env
 from graftpunk import console as gp_console
-from graftpunk.cache import get_session_metadata
+from graftpunk.cache import get_session_metadata, list_sessions
 from graftpunk.cli.errors import exit_missing_browser_stack
 from graftpunk.logging import get_logger
+from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
     LoginConfig,
     has_declarative_login,
 )
 from graftpunk.plugins.login_engine import generate_login_method
-from graftpunk.session_context import get_active_session
+from graftpunk.session_context import SESSION_FILE_NAME, get_active_session
 from graftpunk.session_identity import (
     derive_account_identity,
     join_session_name,
+    split_session_name,
     validate_account_label,
+)
+from graftpunk.session_migration import (
+    LegacySlotMigration,
+    earlier_name,
+    finish_superseded_slot,
+    hidden_name,
+    is_legacy_secret_slot,
+    migrate_legacy_account_slot,
+    plugin_secret_field,
+    records_legacy_secret,
+    replace_legacy_record,
 )
 from graftpunk.session_scope import operating_session
 
@@ -81,6 +95,15 @@ def resolve_login_callable(plugin: CLIPluginProtocol) -> Callable[..., Any] | No
         LOG.debug("declarative_login_generated", plugin=plugin.site_name)
         return login_func
     return None
+
+
+def legacy_secret_field_of(plugin: CLIPluginProtocol) -> str | None:
+    """The secret field graftpunk 1.24.0 named *plugin*'s sessions after, if any (#293).
+
+    Worked out from the login field names (:func:`resolve_login_fields`).
+    None when 1.24.0 labelled them from an identifier field, or from none.
+    """
+    return plugin_secret_field(resolve_login_fields(plugin), SECRET_KEYWORDS)
 
 
 def resolve_login_fields(plugin: CLIPluginProtocol) -> dict[str, str]:
@@ -288,11 +311,12 @@ def make_login_body(
 
         # The operating identity: derived from the RESOLVED credentials, so
         # the kwarg filter runs here rather than before the loop.
-        identifier, derived_label = derive_account_identity(credentials, secret_keywords)
+        identifier, derived_label = derive_account_identity(credentials)
         label = as_label or derived_label
         target_name = (
             join_session_name(plugin.session_name, label) if label else plugin.session_name
         )
+        migration = _migrate_legacy_slot(plugin, credentials, target_name, identifier)
         login_kwargs = _accepted_login_kwargs(
             login_method,
             headless=headless_override,
@@ -372,8 +396,13 @@ def make_login_body(
         # already sealed (a failure exited), so nothing here can turn a cached
         # login into "Login failed". Each advisory gets its own try, so a
         # storage hiccup in one costs that hint alone.
+        landed = False
+        legacy_record = _holds_legacy_record(plugin, target_name, stored_before)
         try:
-            _warn_if_slot_changes_hands_post(stored_before, identifier, target_name)
+            # A 1.24.0 record of a secret is replaced below; naming it in a
+            # "recorded for" warning would print the secret (#293).
+            if not legacy_record:
+                _warn_if_slot_changes_hands_post(stored_before, identifier, target_name)
             # What the CLI computed, not what landed: compare the slot across
             # the login, since the one pre-attempt fetch already captured it.
             # Existence alone would not answer it: a hand-written login caching
@@ -410,11 +439,17 @@ def make_login_body(
                 exc_type=type(exc).__name__,
             )
 
+        if migration is not None and migration.action == "superseded":
+            migration = _finish_superseded(plugin, migration, landed=landed)
+        if legacy_record:
+            _replace_legacy_record(plugin, target_name, identifier)
+
         # get_active_session() reads the environment (cwd, .gp-session) and can
         # raise on a removed cwd or an unreadable file.
         try:
             current = get_active_session()
             if current and current != target_name:
+                current = _shown_pin(plugin, current, migration)
                 gp_console.info(
                     f"This shell is pinned to {current} — "
                     f"run: gp session use {target_name} to switch"
@@ -430,6 +465,172 @@ def make_login_body(
             )
 
     return body
+
+
+def _migrate_legacy_slot(
+    plugin: CLIPluginProtocol,
+    credentials: dict[str, str],
+    target_name: str,
+    identifier: str | None,
+) -> LegacySlotMigration | None:
+    """Deal with the slot graftpunk 1.24.0 named after a secret for these credentials (#293).
+
+    Runs before the login attempt (see
+    :func:`graftpunk.session_migration.migrate_legacy_account_slot`); a stale
+    slot that must wait for the login is finished by :func:`_finish_superseded`.
+    Advisory: a failure is logged and the login goes on. The old name is never
+    printed or logged, since it holds the secret.
+    """
+    try:
+        migration = migrate_legacy_account_slot(
+            plugin.session_name,
+            credentials,
+            SECRET_KEYWORDS,
+            target_name=target_name,
+            identifier=identifier,
+            observe_base_dir=OBSERVE_BASE_DIR,
+            environ=os.environ,
+            cwd=Path.cwd(),
+            existing_names=list_sessions,
+        )
+    except Exception as exc:  # noqa: BLE001 (a migration hiccup must not block a login)
+        LOG.warning(
+            "legacy_account_slot_migration_failed",
+            plugin=plugin.site_name,
+            session=target_name,
+            exc_type=type(exc).__name__,
+        )
+        return None
+    if migration is not None:
+        _report_before_login(migration)
+    return migration
+
+
+def _finish_superseded(
+    plugin: CLIPluginProtocol, migration: LegacySlotMigration, *, landed: bool
+) -> LegacySlotMigration:
+    """Delete a superseded stale slot once the login has written its slot (#293). Advisory."""
+    try:
+        finished = finish_superseded_slot(
+            migration, landed=landed, observe_base_dir=OBSERVE_BASE_DIR, cwd=Path.cwd()
+        )
+    except Exception as exc:  # noqa: BLE001 (advisory: the login already succeeded)
+        LOG.warning(
+            "legacy_account_slot_migration_failed",
+            plugin=plugin.site_name,
+            session=migration.new_name,
+            exc_type=type(exc).__name__,
+        )
+        return migration
+    _report_slot_outcome(finished)
+    return finished
+
+
+def _report_before_login(migration: LegacySlotMigration) -> None:
+    """What the pre-login step did, naming the field and never the old name."""
+    target_name = migration.new_name
+    source = f"the {migration.source_field} field, which is not an account identifier"
+    if migration.action == "superseded":
+        if migration.problem:
+            gp_console.warn(migration.problem)
+    else:
+        _report_slot_outcome(migration)
+    if migration.leftovers:
+        base = split_session_name(target_name)[0]
+        one = migration.leftovers == 1
+        count = "Another session" if one else f"{migration.leftovers} sessions"
+        gp_console.warn(
+            f"{count} of {base} cached by graftpunk 1.24.0 or earlier "
+            f"{'is' if one else 'are'} named after {source}, and gp cannot tell which "
+            f"account {'it belongs' if one else 'each belongs'} to, so it leaves "
+            f"{'it' if one else 'them'} alone. To remove one you no longer use, find its "
+            "name with: gp session list, then run: gp session clear <name>"
+        )
+
+
+def _holds_legacy_record(
+    plugin: CLIPluginProtocol, target_name: str, stored: dict[str, Any] | None
+) -> bool:
+    """Whether *target_name* records a secret 1.24.0 took for the account (#293).
+
+    That includes a slot whose own name is the recorded value: its record is
+    kept, but it is still a secret, so it is not printed either. A check that
+    fails answers True: it only withholds a warning that would otherwise print
+    the recorded value, and the replacement after the login checks again.
+    """
+    try:
+        return legacy_secret_field_of(plugin) is not None and records_legacy_secret(stored)
+    except Exception as exc:  # noqa: BLE001 (advisory: never blocks a login)
+        LOG.warning("legacy_record_check_failed", exc_type=type(exc).__name__)
+        return True
+
+
+def _replace_legacy_record(
+    plugin: CLIPluginProtocol, target_name: str, identifier: str | None
+) -> None:
+    """After a successful login: make sure *target_name* no longer records a 1.24.0 secret."""
+    try:
+        secret_field = legacy_secret_field_of(plugin)
+        replace_legacy_record(target_name, identifier, secret_field=secret_field)
+        metadata = get_session_metadata(target_name)
+    except Exception as exc:  # noqa: BLE001 (advisory: the login already succeeded)
+        LOG.warning(
+            "legacy_account_record_not_replaced",
+            session=target_name,
+            exc_type=type(exc).__name__,
+        )
+        gp_console.warn(
+            f"Could not replace the account recorded on '{target_name}' by an earlier "
+            "graftpunk; the next successful login tries again."
+        )
+        return
+    if records_legacy_secret(metadata):
+        # Only a slot named after its own record gets here: it keeps the record.
+        return
+    gp_console.info(
+        f"Replaced the account recorded on '{target_name}': it came from the "
+        f"{secret_field} field, which is not an account identifier."
+    )
+
+
+def _report_slot_outcome(migration: LegacySlotMigration) -> None:
+    """What happened to the stale slot, if anything, and the pins that named it."""
+    target_name = migration.new_name
+    why = (
+        f"its name came from the {migration.source_field} field, which is not an account identifier"
+    )
+    if migration.action == "renamed":
+        gp_console.info(f"Renamed this account's earlier session to '{target_name}': {why}.")
+    elif migration.action == "deleted":
+        gp_console.info(f"Removed this account's earlier session: {why}.")
+    elif migration.action == "kept" and migration.problem:
+        gp_console.warn(migration.problem)
+        return
+    else:
+        return
+    if migration.pin_updated:
+        gp_console.info(f"Updated {SESSION_FILE_NAME} here to {target_name}.")
+    if migration.env_pinned:
+        gp_console.warn(f"GRAFTPUNK_SESSION names the old session; set it to {target_name}.")
+    gp_console.info(
+        f"If another directory pins the old session, run there: gp session use {target_name}"
+    )
+
+
+def _shown_pin(
+    plugin: CLIPluginProtocol, current: str, migration: LegacySlotMigration | None
+) -> str:
+    """*current* as the pin hint may print it: a name 1.24.0 took from a secret is masked."""
+    base = plugin.session_name
+    if migration is not None and current == migration.stale_name:
+        return earlier_name(base)
+    if split_session_name(current)[0] != base or split_session_name(current)[1] is None:
+        return current
+    if legacy_secret_field_of(plugin) is None:
+        return current
+    with hidden_name(current):
+        metadata = get_session_metadata(current)
+    return earlier_name(base) if is_legacy_secret_slot(current, metadata) else current
 
 
 async def _awaited(awaitable: Any) -> Any:

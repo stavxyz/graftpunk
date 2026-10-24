@@ -305,6 +305,36 @@ class TestSupabaseSessionStorage:
         assert result is True
 
     @patch("supabase.create_client")
+    def test_update_session_metadata_sets_the_account(self, mock_create_client):
+        """The account keywords reach the uploaded metadata; status is left alone (#293)."""
+        storage, mock_client = _make_storage(mock_create_client)
+        now = datetime.now(UTC)
+        metadata_dict = {
+            "name": "test",
+            "checksum": "abc",
+            "created_at": now.isoformat(),
+            "modified_at": now.isoformat(),
+            "expires_at": None,
+            "domain": None,
+            "current_url": None,
+            "cookie_count": 0,
+            "cookie_domains": [],
+            "status": "active",
+            "account_identifier": "829341",
+        }
+        mock_storage_bucket = MagicMock()
+        mock_client.storage.from_.return_value = mock_storage_bucket
+        mock_storage_bucket.download.return_value = json.dumps(metadata_dict).encode("utf-8")
+
+        assert storage.update_session_metadata("test", account_identifier="bob", account_rule=2)
+
+        uploaded = json.loads(mock_storage_bucket.upload.call_args.kwargs["file"])
+        assert uploaded["account_identifier"] == "bob"
+        assert uploaded["account_rule"] == 2
+        assert uploaded["status"] == "active"
+        assert uploaded["checksum"] == "abc"
+
+    @patch("supabase.create_client")
     def test_update_session_metadata_not_found(self, mock_create_client):
         """Test update returns False when session not found."""
         from storage3.exceptions import StorageApiError

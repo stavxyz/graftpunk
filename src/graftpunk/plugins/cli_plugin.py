@@ -1502,11 +1502,12 @@ def cache_login_session(
     The identifier rides the session object so ``_extract_session_metadata``
     records it. Returns the session name used.
     """
-    from graftpunk.session_identity import GP_ACCOUNT_ATTR
+    from graftpunk.session_identity import ACCOUNT_RULE, GP_ACCOUNT_ATTR
 
     scope = operating_session_for(plugin.session_name) if name is None else None
     session_name = name if name is not None else (scope.name if scope else plugin.session_name)
     account = identifier if identifier is not None else (scope.identifier if scope else None)
+    account_rule: int | None = ACCOUNT_RULE
     if account is None:
         # The one read in the funnel; cache_session itself stays read-free. A
         # storage failure here costs the carried-forward account, never the
@@ -1523,10 +1524,45 @@ def cache_login_session(
             )
             stored = None
         account = stored.get("account_identifier") if stored else None
+        # The carried-forward account keeps the rule that recorded it, so a
+        # refresh never makes a slot graftpunk 1.24.0 named look current (#293).
+        if account is not None:
+            account_rule = stored.get("account_rule") if stored else None
+        if (
+            account is not None
+            and account_rule is None
+            and _records_legacy_secret(plugin, session_name, stored)
+        ):
+            # 1.24.0 recorded this plugin's secret field (a PIN, a code) as the
+            # account; it is not carried into a slot this release writes.
+            account, account_rule = None, ACCOUNT_RULE
     if account is not None:
         setattr(session, GP_ACCOUNT_ATTR, account)
-    cache_session(session, session_name)
+    cache_session(session, session_name, account_rule=account_rule)
     return session_name
+
+
+def _records_legacy_secret(
+    plugin: CLIPluginProtocol, session_name: str, stored: dict[str, Any] | None
+) -> bool:
+    """Whether *stored* is a 1.24.0 record of *plugin*'s secret label field (#293).
+
+    False for a slot whose own name is that secret: its record is how gp
+    recognises and masks it. A failure to tell is answered False, which
+    carries the record forward as before.
+    """
+    try:
+        from graftpunk.cli.login_commands import legacy_secret_field_of
+        from graftpunk.session_migration import is_legacy_secret_slot, records_legacy_secret
+
+        return (
+            legacy_secret_field_of(plugin) is not None
+            and records_legacy_secret(stored)
+            and not is_legacy_secret_slot(session_name, stored)
+        )
+    except Exception as exc:  # noqa: BLE001 (advisory: never blocks a cache write)
+        LOG.warning("legacy_record_check_failed", exc_type=type(exc).__name__)
+        return False
 
 
 def has_declarative_login(plugin: CLIPluginProtocol) -> TypeGuard[SitePlugin]:

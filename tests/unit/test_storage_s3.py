@@ -343,6 +343,35 @@ class TestUpdateSessionMetadata:
         assert result is True
         mock_s3_client.put_object.assert_called_once()
 
+    def test_update_session_metadata_sets_the_account(
+        self, storage, mock_s3_client, sample_metadata
+    ):
+        """The account keywords reach the uploaded metadata; status is left alone (#293)."""
+        metadata_dict = {
+            "name": "test",
+            "checksum": "abc",
+            "created_at": sample_metadata.created_at.isoformat(),
+            "modified_at": sample_metadata.modified_at.isoformat(),
+            "expires_at": None,
+            "domain": None,
+            "current_url": None,
+            "cookie_count": 0,
+            "cookie_domains": [],
+            "status": "active",
+            "account_identifier": "829341",
+        }
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps(metadata_dict).encode()
+        mock_s3_client.get_object.return_value = {"Body": mock_body}
+
+        assert storage.update_session_metadata("test", account_identifier=None, account_rule=2)
+
+        uploaded = json.loads(mock_s3_client.put_object.call_args.kwargs["Body"])
+        assert uploaded["account_identifier"] is None
+        assert uploaded["account_rule"] == 2
+        assert uploaded["status"] == "active"
+        assert uploaded["checksum"] == "abc"
+
     def test_update_session_metadata_not_found(self, storage, mock_s3_client):
         """Test update returns False when session not found."""
         from botocore.exceptions import ClientError

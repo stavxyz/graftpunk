@@ -41,7 +41,8 @@ SECRET_FIELD_NAMES = [
     "userPass",
     "login_pw",
     "user_passcode",
-    "user_email",
+    "j_username",
+    "shipping_email",
 ]
 IDENTIFIER_FIELD_NAMES = [
     "username",
@@ -60,6 +61,11 @@ IDENTIFIER_FIELD_NAMES = [
     "account",
     "Account ID",
     "account_id",
+    "identifier",
+    "user_email",
+    "userEmail",
+    "login_email",
+    "LoginEmail",
 ]
 HIDDEN = "s3cret-value-77"
 USER = "bob@example.com"
