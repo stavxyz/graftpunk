@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import pickle
 import subprocess
 import sys
 from pathlib import Path
@@ -144,15 +146,19 @@ class TestLoad:
         with pytest.raises(SidecarError, match="build the Sidecar with flagged_reasons"):
             sidecar_text(Sidecar(status=200, content_type="text/plain", flagged_names=("a",)))
 
-    def test_the_reasons_cannot_be_changed_after_the_checks(self) -> None:
-        """A Sidecar is what its checks passed, so it never writes a file the
+    def test_reasons_changed_after_construction_are_refused_at_write(self) -> None:
+        """The reasons are a plain dict, so a Sidecar pickles and copies as in
+        1.26.0; the writer checks them again, so it never writes a file the
         loader refuses."""
         reasons = {"a": ["session_name"]}
         sidecar = Sidecar(status=200, content_type="text/plain", flagged_reasons=reasons)
         reasons["a"].append("made_up")
         assert sidecar.flagged_reasons == {"a": ("session_name",)}
-        with pytest.raises(TypeError):
-            sidecar.flagged_reasons["b"] = ("token_name",)  # type: ignore[index]
+        assert pickle.loads(pickle.dumps(sidecar)) == sidecar  # noqa: S301 - its own bytes
+        assert copy.deepcopy(sidecar) == sidecar
+        sidecar.flagged_reasons["a"] = ("made_up",)
+        with pytest.raises(SidecarError, match="unknown reasons: made_up"):
+            sidecar_text(sidecar)
 
     def test_the_vocabulary_is_the_digests(self) -> None:
         """The sidecar imports nothing from the digest, so the two spellings of the
