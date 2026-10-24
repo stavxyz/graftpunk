@@ -1480,14 +1480,6 @@ account label on a slot is the identifier in the credentials you submitted,
 slugified: `alice@example.com` gives `myshop@alice-example-com`. graftpunk never
 asks the site which account is actually signed in.
 
-Only a login field with an identifier name gives a label: `username`, `email`,
-`email_address`, `user_email`, `login_email`, `login`, `login_id`, `login_name`,
-`identifier`, `user`, `user_id`, `account` or `account_id`, in any case and with `_`, `-`, `.` or spaces
-anywhere (`userName` and `Email-Address` count). A field named anything else,
-such as `memberNumber` or `userPin`, never names a session, and a login with no
-identifier field caches the bare plugin name. Name the identifier field one of
-these, or log in with `--as <label>`.
-
 That is fine until it is not. If the site can land you on a different account
 than the credentials suggest (a shared login, an account switcher, an SSO tenant
 that resolves elsewhere), the slot name is a claim nobody checked. When it
