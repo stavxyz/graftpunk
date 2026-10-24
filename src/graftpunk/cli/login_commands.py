@@ -27,6 +27,7 @@ from graftpunk.plugins.cli_plugin import (
 )
 from graftpunk.plugins.login_engine import generate_login_method
 from graftpunk.session_context import get_active_session
+from graftpunk.session_identity import SECRET_KEYWORDS as _SECRET_KEYWORDS
 from graftpunk.session_identity import (
     derive_account_identity,
     join_session_name,
@@ -39,7 +40,8 @@ LOG = get_logger(__name__)
 # Field-name keywords that mark a credential as secret. Shared policy:
 # make_login_body masks prompts with it, and gp config's set guardrail
 # (cli/config_commands.py) warns on literal values for such names.
-SECRET_KEYWORDS = frozenset({"password", "secret", "token", "key"})
+# Defined beside the identifier rule it shares; re-exported for the CLI.
+SECRET_KEYWORDS = _SECRET_KEYWORDS
 
 
 def login_method(plugin: CLIPluginProtocol) -> Callable[..., Any] | None:

@@ -25,13 +25,10 @@ REDACTED = "***REDACTED***"
 # Secrets shorter than this are not redacted: replacing every "ab" in a HAR
 # would mangle it beyond use, and such values are not meaningfully secret.
 _MIN_REDACT_LEN = 3
-# An HTTP Basic credential: the scheme, then base64 of "user:password".
-_BASIC_RE = re.compile(r"(\bBasic\s+)([A-Za-z0-9+/]+={0,2})", re.IGNORECASE)
+# An HTTP Basic credential: the scheme, then base64 of "user:password". A JSON
+# body may escape each "/" of the token as "\/".
+_BASIC_RE = re.compile(r"(\bBasic\s+)((?:[A-Za-z0-9+]|/|\\/)+={0,2})", re.IGNORECASE)
 
-
-#: A credential field whose name holds one of these is an identifier: it is
-#: scrubbed from bodies and headers, but left in URLs so they stay readable.
-IDENTIFIER_KEYWORDS = ("username", "user", "email", "login")
 # The HAR fields that hold a URL (or its query) rather than a body or header.
 _URL_FIELDS = frozenset({"url", "queryString", "redirectURL"})
 
@@ -40,10 +37,12 @@ _URL_FIELDS = frozenset({"url", "queryString", "redirectURL"})
 class Redaction:
     """What a run is scrubbed of.
 
-    *secrets* are replaced everywhere. *identifiers* (a username, an email)
-    are replaced everywhere except the HAR's URL fields (``request.url``,
+    *secrets* are replaced everywhere, wherever they occur. *identifiers* (a
+    username, an email) are replaced only where they stand as a whole value,
+    and never in the HAR's URL fields (``request.url``,
     ``request.queryString`` and ``response.redirectURL``), so the endpoints
-    the digest reads stay readable.
+    the digest reads stay readable and a short username does not eat into
+    other words.
     """
 
     secrets: tuple[str, ...] = ()
@@ -51,16 +50,17 @@ class Redaction:
 
     @classmethod
     def from_credentials(cls, credentials: Mapping[str, str]) -> Redaction:
-        """Every credential value: an identifier field's as an identifier, the rest as secrets."""
+        """Every credential value, an identifier field's as an identifier and the
+        rest as secrets, by :func:`graftpunk.session_identity.is_identifier_field`:
+        secret words win, so ``login_password`` or ``email_code`` is a secret."""
+        from graftpunk.session_identity import is_identifier_field
+
         secrets: list[str] = []
         identifiers: list[str] = []
         for name, value in credentials.items():
             if not value:
                 continue
-            lowered = name.lower()
-            (identifiers if any(k in lowered for k in IDENTIFIER_KEYWORDS) else secrets).append(
-                str(value)
-            )
+            (identifiers if is_identifier_field(name) else secrets).append(str(value))
         return cls(tuple(secrets), tuple(identifiers))
 
     @property
@@ -104,30 +104,26 @@ def redact_har_entries(
     possibly in a query string, in ``Authorization`` headers, and echoed by
     some sites into response bodies. Replace each secret -- raw, URL-encoded,
     JSON-escaped and base64 -- in every string of every entry, longest forms
-    first so a partial encoding does not leave a fragment behind. Before that,
-    an HTTP Basic credential (``Basic <base64 of user:password>``) whose
-    decoded text contains a secret is replaced whole, wherever it appears: the
-    secret's own base64 is found inside ``user:password`` only for some
-    username lengths.
+    first so a partial encoding does not leave a fragment behind. An
+    identifier (see :class:`Redaction`) is replaced in the same forms, but
+    only as a whole value and not in the URL fields. Before either, an HTTP
+    Basic credential (``Basic <base64 of user:password>``, the scheme in any
+    case) whose decoded text contains a credential is replaced whole,
+    wherever it appears: a secret's own base64 is found inside
+    ``user:password`` only for some username lengths.
 
     Args:
         entries: HAR 1.2 entry dicts (not mutated).
-        secrets: A :class:`Redaction`, or values that are all secrets. An
-            identifier is left in the URL fields; empty and very short values
-            are skipped.
+        secrets: A :class:`Redaction`, or values that are all secrets. Empty
+            and very short values are skipped.
     """
-    redaction = as_redaction(secrets)
-    everything = _kept_secrets(redaction.everything)
-    ordered = _redaction_forms(everything)
-    if not ordered:
+    scrubber = _Scrubber.of(secrets)
+    if not scrubber:
         return entries
-    url_ordered = _redaction_forms(redaction.secrets)
 
     def scrub(value: Any, in_url: bool = False) -> Any:
         if isinstance(value, str):
-            if in_url:
-                return _scrub_text(value, url_ordered, everything)
-            return _scrub_text(value, ordered, everything)
+            return scrubber.scrub_text(value, in_url=in_url)
         if isinstance(value, dict):
             return {k: scrub(v, in_url or k in _URL_FIELDS) for k, v in value.items()}
         if isinstance(value, list):
@@ -150,12 +146,58 @@ def _redaction_forms(secrets: Iterable[str]) -> list[str]:
     return sorted(forms, key=len, reverse=True)
 
 
+# A whole value: not preceded or followed by a letter or digit.
+_WHOLE = r"(?<![A-Za-z0-9]){}(?![A-Za-z0-9])"
+
+
+@dataclass(frozen=True)
+class _Scrubber:
+    """A :class:`Redaction` compiled for scrubbing text and bytes."""
+
+    secret_forms: tuple[str, ...]
+    identifier_re: re.Pattern[str] | None
+    identifier_bytes_re: re.Pattern[bytes] | None
+    basic_values: tuple[str, ...]
+
+    @classmethod
+    def of(cls, redact: Redaction | Iterable[str]) -> _Scrubber:
+        redaction = as_redaction(redact)
+        forms = _redaction_forms(redaction.identifiers)
+        alternation = "|".join(re.escape(f) for f in forms)
+        return cls(
+            secret_forms=tuple(_redaction_forms(redaction.secrets)),
+            identifier_re=re.compile(_WHOLE.format(f"(?:{alternation})")) if forms else None,
+            identifier_bytes_re=(
+                re.compile(_WHOLE.format(f"(?:{alternation})").encode("utf-8")) if forms else None
+            ),
+            basic_values=_kept_secrets(redaction.everything),
+        )
+
+    def __bool__(self) -> bool:
+        return bool(self.secret_forms or self.identifier_re)
+
+    def scrub_text(self, value: str, *, in_url: bool = False) -> str:
+        value = _scrub_basic(value, self.basic_values)
+        for form in self.secret_forms:
+            if form in value:
+                value = value.replace(form, REDACTED)
+        if self.identifier_re is not None and not in_url:
+            value = self.identifier_re.sub(REDACTED, value)
+        return value
+
+    def scrub_bytes(self, raw: bytes) -> bytes:
+        raw = _scrub_bytes(raw, list(self.secret_forms))
+        if self.identifier_bytes_re is not None:
+            raw = self.identifier_bytes_re.sub(lambda m: b"*" * len(m.group(0)), raw)
+        return raw
+
+
 def _scrub_basic(value: str, secrets: tuple[str, ...]) -> str:
     """*value* with each Basic credential whose decoded text holds a secret replaced."""
 
     def replace(match: re.Match[str]) -> str:
         try:
-            decoded = base64.b64decode(match.group(2), validate=True)
+            decoded = base64.b64decode(match.group(2).replace("\\/", "/"), validate=True)
         except (binascii.Error, ValueError):
             return match.group(0)
         text = decoded.decode("utf-8", errors="replace")
@@ -164,14 +206,6 @@ def _scrub_basic(value: str, secrets: tuple[str, ...]) -> str:
         return match.group(0)
 
     return _BASIC_RE.sub(replace, value)
-
-
-def _scrub_text(value: str, ordered: list[str], secrets: tuple[str, ...] = ()) -> str:
-    value = _scrub_basic(value, secrets)
-    for form in ordered:
-        if form in value:
-            value = value.replace(form, REDACTED)
-    return value
 
 
 def _replace_file(path: Path, data: bytes) -> None:
@@ -222,9 +256,8 @@ def redact_request_body_files(
     scrubbed. A reference outside *run_dir*, or to a missing file, is skipped.
     Response bodies in ``bodies/`` are not scanned here.
     """
-    kept = _kept_secrets(as_redaction(secrets).everything)
-    ordered = _redaction_forms(kept)
-    if not ordered:
+    scrubber = _Scrubber.of(secrets)
+    if not scrubber:
         return
     root = run_dir.resolve()
     for entry in entries:
@@ -242,12 +275,12 @@ def redact_request_body_files(
             try:
                 text = raw.decode("utf-8")
             except UnicodeDecodeError:
-                masked = _scrub_bytes(raw, ordered)
+                masked = scrubber.scrub_bytes(raw)
                 if masked != raw:
                     _replace_file(path, masked)
                     LOG.info("request_body_file_scrubbed", file=ref, binary=True)
                 continue
-            scrubbed = _scrub_text(text, ordered, kept)
+            scrubbed = scrubber.scrub_text(text)
             if scrubbed != text:
                 data = scrubbed.encode("utf-8")
                 _replace_file(path, data)

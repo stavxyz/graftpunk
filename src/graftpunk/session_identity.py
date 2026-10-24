@@ -34,6 +34,12 @@ GP_SESSION_NAME_ATTR = "_gp_session_name"
 # One side of a session name: today's rule, unchanged.
 _PART_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
+# Field-name words that mark a credential as secret. Matched by substring,
+# deliberately over-eager: they drive prompt masking, and they make a field a
+# secret for observe scrubbing even when it also holds an identifier word
+# (``login_password``, ``user_key``).
+SECRET_KEYWORDS = frozenset({"password", "secret", "token", "key"})
+
 # Identifier keywords, checked keyword-major (for each keyword, fields in
 # declaration order). The user⊂username overlap is intentional: username is
 # checked first, so it wins.
@@ -58,6 +64,36 @@ _NON_IDENTIFIER_HINTS = (
     "2fa",
     "totp",
 )
+
+
+def _name_tokens(field_name: str) -> list[str]:
+    """*field_name* lower-cased and split on ``_``, ``.``, ``-`` and camelCase."""
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", field_name)
+    return re.split(r"[_.-]", spaced.lower())
+
+
+def is_derivable_field(field_name: str, secret_keywords: Iterable[str] = SECRET_KEYWORDS) -> bool:
+    """Whether a field may be an identifier: no secret word in its name (by
+    substring) and no :data:`_NON_IDENTIFIER_HINTS` token (``login_code``,
+    ``userPin``)."""
+    lowered = field_name.lower()
+    if any(k in lowered for k in secret_keywords):
+        return False
+    tokens = _name_tokens(field_name)
+    return not any(hint in tokens for hint in _NON_IDENTIFIER_HINTS)
+
+
+def is_identifier_field(field_name: str) -> bool:
+    """Whether a credential field holds an account identifier, not a secret.
+
+    Its name holds an identifier word (``username``, ``email``, ``login``,
+    ``identifier``, ``user``) and is derivable (:func:`is_derivable_field`):
+    secret words win, so ``login_password``, ``user_key``, ``email_token``,
+    ``email_code`` and ``userPin`` are secrets. The one rule both the account
+    label and observe scrubbing use.
+    """
+    lowered = field_name.lower()
+    return any(k in lowered for k in _IDENTIFIER_KEYWORDS) and is_derivable_field(field_name)
 
 
 def split_session_name(name: str) -> tuple[str, str | None]:
@@ -154,17 +190,14 @@ def derive_account_identity(
     metadata while the session keeps its bare name.
     """
 
-    def is_derivable(field_name: str) -> bool:
-        lowered = field_name.lower()
-        if any(k in lowered for k in secret_keywords):
-            return False
-        tokens = re.split(r"[_.-]", lowered)
-        return not any(hint in tokens for hint in _NON_IDENTIFIER_HINTS)
-
     def pick() -> str | None:
         for keyword in _IDENTIFIER_KEYWORDS:
             for field_name, value in fields.items():
-                if keyword in field_name.lower() and value and is_derivable(field_name):
+                if (
+                    keyword in field_name.lower()
+                    and value
+                    and is_derivable_field(field_name, secret_keywords)
+                ):
                     return value
         return None
 
