@@ -4558,6 +4558,119 @@ class TestFlaggedNamesOf:
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
 
+    def test_a_cookie_the_recording_only_sends_is_judged_like_one_it_sets(
+        self, tmp_path: Path
+    ) -> None:
+        """A recording made with a cached session (#274) never sees the session
+        set: its requests send it. A sent session name or an opaque sent value is
+        flagged, and sent form state is left out, as for a cookie a response sets."""
+        entry = self._with_cookies(
+            [],
+            (
+                ("sessionid", "lanterns"),
+                ("visit", "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"),
+                ("lot", "12"),
+                ("text", "running+shoes"),
+            ),
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("sessionid", "visit")
+
+    @pytest.mark.parametrize("array", ["absent", "empty"])
+    def test_a_sent_cookie_is_read_from_the_cookie_header_when_the_array_has_none(
+        self, tmp_path: Path, array: str
+    ) -> None:
+        """Every Cookie header counts, in any case, as HTTP/2 can split one into
+        several."""
+        entry = _entry("GET", "https://myshop.example.com/api/search")
+        entry["request"]["headers"] = [
+            {"name": "cookie", "value": "sessionid=Zq9XkLmPwR4t7Bv2Hn8Ks3Jd; lot=12"},
+            {"name": "Cookie", "value": "visit=Hn8Ks3JdZq9XkLmPwR4t7Bv2"},
+        ]
+        if array == "absent":
+            del entry["request"]["cookies"]
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("sessionid", "visit")
+
+    def test_a_cookie_only_ever_sent_empty_is_left_out(self, tmp_path: Path) -> None:
+        """An empty value a request sends is what the browser sent, so the cookie
+        held nothing; a response that only ever sets a cookie empty may be a
+        recorder that dropped the value, so that cookie stays flagged."""
+        entry = self._with_cookies([("visit", "")], (("cart", ""),))
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    def test_sending_empty_does_not_clear_a_cookie_the_cookies_array_sets(
+        self, tmp_path: Path
+    ) -> None:
+        """A response.cookies entry alone (no Set-Cookie header) marks the cookie
+        as one a response sets."""
+        entry = self._with_cookies([("visit", "")], (("visit", ""),))
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    @pytest.mark.parametrize("side", ["request", "response"])
+    def test_a_cookie_with_a_value_field_missing_anywhere_stays_flagged(
+        self, tmp_path: Path, side: str
+    ) -> None:
+        """A missing value is one the recorder did not keep, so a form-state value
+        elsewhere does not clear it."""
+        entry = self._with_cookies([("lot", "12")], (("lot", "7"),))
+        entry[side]["cookies"].append({"name": "lot"})
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("lot",)
+
+    def test_a_sent_cookie_with_no_value_field_stays_flagged(self, tmp_path: Path) -> None:
+        """A missing value is a value the recorder did not keep, not an empty one."""
+        entry = _entry("GET", "https://myshop.example.com/api/search")
+        entry["request"]["cookies"] = [{"name": "cart"}]
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("cart",)
+
+    def test_sending_empty_does_not_clear_a_cookie_a_response_sets(self, tmp_path: Path) -> None:
+        """The Set-Cookie header holds a value the response.cookies array lost; a
+        later request sending the cookie empty is no evidence about that value."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            set_cookies=["visit=Zq9XkLmPwR4t7Bv2Hn8Ks3Jd; Path=/"],
+        )
+        entry["response"]["cookies"] = [{"name": "visit", "value": ""}]
+        later = self._with_cookies([], (("visit", ""),))
+        har = _write_har(tmp_path, [entry, later])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    def test_a_token_named_cookie_read_from_a_cookie_header_is_a_token_candidate(
+        self, tmp_path: Path
+    ) -> None:
+        """For a HAR with no request.cookies array, the Cookie header's cookies
+        reach the digest's token candidates like the array's would."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/search",
+            request_headers={"Cookie": "csrftoken=Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"},
+        )
+        del entry["request"]["cookies"]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [entry])))
+        assert [token.name for token in result.tokens] == ["csrftoken"]
+
+    def test_a_sent_id_cookie_name_is_left_out_and_counted(self, tmp_path: Path) -> None:
+        entry = self._with_cookies(
+            [], (("sess_40912873", "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"), ("sessionid", "x"))
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        parsed = parse_har_file(har).entries
+        assert flagged_names_of(result, parsed) == ("sessionid",)
+        assert redacted_names_of(result, parsed) == 1
+
     @pytest.mark.parametrize("shape", sorted(_FORM_STATE_LOSS_CEILINGS))
     def test_few_random_values_of_a_biased_shape_read_as_form_state(self, shape: str) -> None:
         """Shapes the #296 reviews measured beyond uniform alphabets: short mixed

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading
+
+1. **A cookie the recording only sends is now in `flagged_names`, so a committed fixture can fail `fixtures_are_sanitised` on the first run after you regenerate its sidecar** (#274). `gp observe fixtures` used to read only the cookies a response sets. A recording made with a cached session never sees its session set, because the browser holds the cookie before the recording starts and only requests send it, so a session cookie copied into a fixture passed the check. A cookie a request sends is now judged by the same rule as one a response sets: it is flagged when its name reads as a token or session name, when a response set it with `HttpOnly`, or when any value it held is not form state, and otherwise left out when every value it held is form state or no response sets it and requests only ever sent it empty. A cookie whose HAR entry has no value field, in a request or a response, is now read as a value the recorder did not keep, so it stays flagged whatever its other values; 1.26.0 read the missing field as empty and could leave such a cookie out. That reaches every cookie the cached session carries, not only its session: an analytics cookie such as `_ga`, or a cookie named `id` or `user` holding an opaque value, is now flagged too, and the check matches a flagged name anywhere in a fixture, a JSON key included. The cookies a request sends are read from the HAR's `request.cookies`, or from its `Cookie` headers when that array is missing or empty, so a recording that kept neither still never flags a cached session: on a measured login nodriver 0.48.1 delivered no request `Cookie` header and 0.50.3 did (HOW_IT_WORKS, "Diagnosing a failed login"), so record with a current nodriver or record a fresh login. A sidecar already committed does not change until `gp observe fixtures` writes it again. When the check then names a cookie in a fixture, rename it there where the fixture's structure allows; where the plugin reads that key, record again with `gp observe --no-session interactive <url>` and log in during the recording, so the HAR holds only the cookies the site sets then.
+
+### Fixed
+
+- **`gp observe fixtures` flags a cookie the recording only sends, such as a session injected from a cache** (#274). A cookie whose name holds an id is counted in `redacted_names` whether a response set it or a request sent it. The HAR parser now reads a request's cookies from its `Cookie` headers when the HAR's `request.cookies` array is missing or empty, skipping a header whose name or value is not a string. A cookie in the parse result (`HAREntry.request.cookies` and `response.cookies`) whose HAR entry has no `value` field now has the value `None`, not `""`. graftpunk's own recorder always writes the array; for a HAR from another recorder that leaves it out, `gp observe digest` can now also list a token-named cookie a request sends among its token candidates.
+
 ## [1.26.0] - 2026-10-24
 
 This is a minor release. Several changes reach a program on the first run after the upgrade:

@@ -735,8 +735,8 @@ fixtures` names captures. A plugin added to an existing suite gets
 and two plugins in one suite can share an endpoint path. `gp observe
 fixtures` writes a `<file>.meta.json` sidecar beside every capture (a `schema`
 number, the status, the content type, the body parameter names, the hash of the
-captured body, every cookie name the recording set except a cookie whose every
-non-empty recorded value is form state and that has neither a token or
+captured body, every cookie name the recording set or sent except a cookie
+whose every non-empty recorded value is form state and that has neither a token or
 session-like name nor a `Set-Cookie` with `HttpOnly` (in the header or in the
 HAR's `response.cookies` array), and the token names the run's digest recorded, a
 name that holds an id left out and counted in

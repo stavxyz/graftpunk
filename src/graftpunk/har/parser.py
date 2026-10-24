@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +32,7 @@ class HARRequest:
     method: str
     url: str
     headers: dict[str, str]
+    # {"name", "value", ...}; "value" is None when the HAR entry has no value field.
     cookies: list[dict[str, Any]]
     post_data: str | None = None
     query_string: list[dict[str, str]] = field(default_factory=list)
@@ -63,6 +65,7 @@ class HARResponse:
     status: int
     status_text: str
     headers: dict[str, str]
+    # {"name", "value", ...}; "value" is None when the HAR entry has no value field.
     cookies: list[dict[str, Any]]
     content_type: str | None = None
     body: str | None = None
@@ -154,7 +157,9 @@ def _parse_cookies(cookies_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for cookie in cookies_list:
         parsed = {
             "name": cookie.get("name", ""),
-            "value": cookie.get("value", ""),
+            # A missing value is not an empty one: None marks a value the
+            # recorder did not keep (graftpunk.har.digest reads it so).
+            "value": cookie.get("value"),
         }
         # Include optional attributes if present
         for attr in ["path", "domain", "expires", "httpOnly", "secure"]:
@@ -198,6 +203,37 @@ def _set_cookie_lines(headers_list: list[dict[str, str]]) -> list[tuple[str, boo
             )
             cookies.append((name, http_only))
     return cookies
+
+
+def cookie_header_pairs(values: Iterable[str]) -> list[dict[str, str]]:
+    """``{"name", "value"}`` for every cookie the ``Cookie`` header *values* send,
+    in order: every line of a value (Chromium joins several headers with line
+    breaks, and HTTP/2 can split one into several), and every ``;``-separated
+    ``name=value`` pair, name and value stripped. A pair with no ``=`` or no name
+    is skipped (RFC 6265 lets a server send a nameless ``=value``; HAR has no
+    representation for it). The recorder writes ``request.cookies`` with this
+    and the parser falls back to it, so the two cannot drift."""
+    cookies: list[dict[str, str]] = []
+    for value in values:
+        for line in _LINE_BREAK_RE.split(value):
+            for pair in line.split(";"):
+                name, sep, cookie_value = pair.partition("=")
+                if sep and name.strip():
+                    cookies.append({"name": name.strip(), "value": cookie_value.strip()})
+    return cookies
+
+
+def _cookie_header_values(headers_list: list[Any]) -> list[str]:
+    """The value of every ``Cookie`` header in *headers_list*, the raw HAR list (the
+    ``_parse_headers`` dict keeps only the last header of a name), in any case.
+    A header whose name or value is not a string is skipped, since the fallback
+    that reads these must never fail an entry that parses without it."""
+    values: list[str] = []
+    for header in headers_list:
+        name, value = header.get("name"), header.get("value")
+        if isinstance(name, str) and name.lower() == "cookie" and isinstance(value, str):
+            values.append(value)
+    return values
 
 
 def _parse_set_cookie_names(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
@@ -286,7 +322,10 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         method=request_data.get("method", "GET"),
         url=request_data.get("url", ""),
         headers=_parse_headers(request_data.get("headers", [])),
-        cookies=_parse_cookies(request_data.get("cookies", [])),
+        # A recorder that leaves the array out (or empty) still kept the header,
+        # and a cookie the request sends must still be seen (#274).
+        cookies=_parse_cookies(request_data.get("cookies") or [])
+        or cookie_header_pairs(_cookie_header_values(request_data.get("headers", []))),
         post_data=post_data,
         query_string=request_data.get("queryString", []),
         post_data_mime_type=post_data_mime_type,

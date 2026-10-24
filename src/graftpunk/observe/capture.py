@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
+from graftpunk.har.parser import cookie_header_pairs
 from graftpunk.logging import get_logger
 
 try:
@@ -853,13 +854,7 @@ def _parse_cookie_pairs(fragments: list[str]) -> list[dict[str, str]]:
 
 def _request_cookies(headers: Mapping[str, str]) -> list[dict[str, str]]:
     """HAR ``request.cookies`` from every raw ``Cookie`` header value."""
-    fragments = [
-        f
-        for value in _header_values(headers, "cookie")
-        for line in value.split("\n")
-        for f in line.split(";")
-    ]
-    return _parse_cookie_pairs(fragments)
+    return cookie_header_pairs(_header_values(headers, "cookie"))
 
 
 _COOKIE_FLAG_ATTRS = {"httponly": "httpOnly", "secure": "secure"}

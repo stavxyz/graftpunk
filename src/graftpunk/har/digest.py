@@ -839,6 +839,19 @@ def _response_cookie_names(entry: HAREntry) -> list[str]:
     return names
 
 
+def _entry_cookie_names(entry: HAREntry) -> list[str]:
+    """Cookie names this entry carries: the ones its response sets
+    (:func:`_response_cookie_names`), then the ones its request sends that the
+    response does not set. A recording made with a cached session sends its
+    session without any response setting it (#274)."""
+    names = _response_cookie_names(entry)
+    for cookie in entry.request.cookies:
+        name = cookie.get("name", "")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def _redirect_target(entry: HAREntry) -> tuple[str, str]:
     """The host and path a 3xx response sent the client to, as
     :func:`_redirect_target_path` spells the path; both empty when it names none."""
@@ -1933,9 +1946,11 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     """The names a committed fixture must never contain, sorted and deduplicated:
     every cookie name the digest recorded on any in-scope host (not the primary
     host alone: a second first-party host can set its own session cookie), every
-    token candidate's name, and every cookie name any of *entries* sets, whatever
-    its host and whether or not the digest counted it as static, except a cookie
-    that only ever holds words (below).
+    token candidate's name, and every cookie name any of *entries* sets or sends,
+    whatever its host and whether or not the digest counted it as static, except
+    a cookie that only ever holds words (below). A sent cookie counts because a
+    recording made with a cached session never sees the session set: the
+    browser holds it before the recording starts, and only requests carry it.
 
     ``d.cookies`` stays the digest's own scoped list; *entries* widens only this
     safety net. ``gp observe fixtures`` passes every entry in the HAR, since a
@@ -1967,35 +1982,41 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     - one with any value that is not form state: a value holding an id
       (graftpunk.har.paths.holds_an_id) or any other value neither rule reads
       as words (a session id);
-    - one with no non-empty value *entries* show, which covers a ``Set-Cookie``
-      the recorder kept only as a name, a cookie only ever empty, and a call
-      without *entries*, where every cookie stays. (``gp observe digest`` does not
-      call this; its cookie list, ``d.cookies``, names every cookie.)
+    - one any of *entries* records with no value at all: a ``Set-Cookie`` the
+      recorder kept only as a name, or a cookie whose HAR entry has no
+      ``value`` field (parsed as ``None``), whatever its other values;
+    - one with no non-empty value *entries* show, which covers a cookie a
+      response only ever set empty and a call without *entries*, where every
+      cookie stays, unless no response sets it and a request sent it empty.
+      (``gp observe digest`` does not call this; its cookie list,
+      ``d.cookies``, names every cookie.)
 
     An empty value beside a non-empty one is a cleared field or an expired
-    cookie, and holds nothing. A cookie only ever empty stays flagged because a
-    HAR cookie with no ``value`` field reads as empty too, so an empty value is
-    no evidence the recorder saw what the cookie held; a value of punctuation
-    alone (``""``) is a value the server did send. Values are read from every
-    entry's request and response cookies, whatever its host. ``Secure`` is not a
-    guard: a site served only over HTTPS can mark every cookie Secure.
+    cookie, and holds nothing. A cookie a response only ever set empty stays
+    flagged, since a recorder can write a ``Set-Cookie`` it did not fully parse
+    as an empty ``response.cookies`` entry (the header can hold the value the
+    array lost). When no response sets a cookie, a request sending it empty is
+    evidence it held nothing: that is what the browser sent. A value of punctuation alone
+    (``""``) is a value the server did send. Values are read from every entry's
+    request and response cookies, whatever its host. ``Secure`` is not a guard:
+    a site served only over HTTPS can mark every cookie Secure.
 
     A name that holds an account value (graftpunk.har.paths.holds_an_id) is not
     among them, in any form: :func:`redacted_names_of` counts those."""
     entries = tuple(entries)
     seen = _cookies_seen(entries)
     entry_cookies = {
-        name for entry in entries for name in _response_cookie_names(entry) if not holds_an_id(name)
+        name for entry in entries for name in _entry_cookie_names(entry) if not holds_an_id(name)
     }
 
     def holds_only_words(name: str) -> bool:
         return (
-            name in seen.values
+            (name in seen.values or (name in seen.sent_empty and name not in seen.set_by_response))
             and name not in seen.unseen
             and name not in seen.http_only
             and not looks_like_token_name(name)
             and not _names_a_session(name)
-            and all(_form_state(value) for value in seen.values[name])
+            and all(_form_state(value) for value in seen.values.get(name, ()))
         )
 
     cookies = {name for name in set(d.cookies) | entry_cookies if not holds_only_words(name)}
@@ -2048,10 +2069,13 @@ def _names_a_session(name: str) -> bool:
 @dataclass
 class _CookiesSeen:
     """What a recording shows of each cookie name: its non-empty values, the names
-    a response set without a value the recorder kept, and the names a response
-    set with ``HttpOnly``."""
+    a request sent empty, the names any response set, the names a request or
+    response carried without a value the recorder kept, and the names a
+    response set with ``HttpOnly``."""
 
     values: dict[str, set[str]] = field(default_factory=dict)
+    sent_empty: set[str] = field(default_factory=set)
+    set_by_response: set[str] = field(default_factory=set)
     unseen: set[str] = field(default_factory=set)
     http_only: set[str] = field(default_factory=set)
 
@@ -2090,12 +2114,15 @@ def _without_quotes(value: str) -> str:
 
 def _cookies_seen(entries: Iterable[HAREntry]) -> _CookiesSeen:
     """Every non-empty value *entries* record for each cookie name, in requests and
-    responses; the names a response set with no value kept (a ``Set-Cookie`` only
-    in ``set_cookie_names``, or a value that is not a string); and the names a
-    response set with ``HttpOnly``, by its ``response.cookies`` entry's
-    ``httpOnly`` being true or by a ``Set-Cookie`` header carrying the attribute
-    (``set_cookie_http_only``). An empty value is skipped, so a cookie whose only
-    values are empty has no entry in ``values``."""
+    responses; the names a request sent empty; the names any response set (its
+    ``response.cookies`` or a ``Set-Cookie`` header); the names carried with no
+    value kept (a ``Set-Cookie`` only in ``set_cookie_names``, or a request or
+    response cookie whose value is not a string, such as ``None`` for a missing
+    ``value`` field); and the names a response set with ``HttpOnly``, by its
+    ``response.cookies`` entry's ``httpOnly`` being true or by a ``Set-Cookie``
+    header carrying the attribute (``set_cookie_http_only``). An empty value is
+    skipped, so a cookie whose only values are empty has no entry in
+    ``values``."""
     seen = _CookiesSeen()
     for entry in entries:
         for cookie in entry.request.cookies + entry.response.cookies:
@@ -2107,6 +2134,16 @@ def _cookies_seen(entries: Iterable[HAREntry]) -> _CookiesSeen:
                 seen.unseen.add(name)
             elif value:
                 seen.values.setdefault(name, set()).add(value)
+        # A request's empty value is what the browser sent, so it is evidence the
+        # cookie held nothing; a response's may be a value the recorder dropped.
+        # A missing value field parses as None, never as "", so it is not this.
+        seen.sent_empty.update(
+            cookie.get("name", "")
+            for cookie in entry.request.cookies
+            if cookie.get("name") and cookie.get("value") == ""
+        )
+        seen.set_by_response.update(cookie.get("name", "") for cookie in entry.response.cookies)
+        seen.set_by_response.update(entry.response.set_cookie_names)
         # Either source is enough: the response.cookies array often leaves
         # httpOnly out when the Set-Cookie header carries it, so an absent
         # flag there is unknown, not false.
@@ -2126,12 +2163,12 @@ def redacted_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> int:
     account value: the cookie names, plus the token candidate names the digest
     dropped (a cookie that is also a token candidate counts once as each). The
     cookie count is the larger of the distinct id cookie names any of *entries*
-    sets and the digest's own ``d.cookie_names_dropped_as_ids``, so it is never
-    low: called without the run's entries, or with only some of them, it still
-    holds every one the digest dropped. The fixture sidecar records this count,
-    never the names."""
+    sets or sends and the digest's own ``d.cookie_names_dropped_as_ids``, so it
+    is never low: called without the run's entries, or with only some of them,
+    it still holds every one the digest dropped. The fixture sidecar records
+    this count, never the names."""
     entry_id_cookies = {
-        name for entry in entries for name in _response_cookie_names(entry) if holds_an_id(name)
+        name for entry in entries for name in _entry_cookie_names(entry) if holds_an_id(name)
     }
     cookies = max(len(entry_id_cookies), d.cookie_names_dropped_as_ids)
     return cookies + d.token_names_dropped_as_ids
