@@ -90,10 +90,25 @@ class TestJsonToCsv:
         assert path == str(out.resolve())
         assert _csv_rows(out) == [["n", "'=h", "other"], ["-5", "ok", ""], ["-1.5", "", ""]]
 
+    def test_non_string_keys_are_written(self, tmp_path: Path) -> None:
+        out = tmp_path / "x.csv"
+        json_to_csv([{1: "a", None: "b", "c": 2}], out)  # type: ignore[dict-item]
+        assert _csv_rows(out) == [["1", "None", "c"], ["a", "b", "2"]]
+
+    def test_list_of_numbers_is_joined_text(self, tmp_path: Path) -> None:
+        out = tmp_path / "x.csv"
+        json_to_csv([{"a": [-5, 3], "b": [1, 2]}], out)
+        assert _csv_rows(out) == [["a", "b"], ["'-5, 3", "1, 2"]]
+
     def test_nested_values_flatten_as_before(self, tmp_path: Path) -> None:
         out = tmp_path / "x.csv"
         json_to_csv([{"a": {"b": "-x"}}], out)
         assert _csv_rows(out) == [["a.b"], ["'-x"]]
+
+
+# "{=...}" is an array formula, which write() stores as one even with
+# strings_to_formulas=False; only write_string keeps it text.
+FORMULAS = ["=1+1", "{=SUM(A1:A2)}"]
 
 
 def _xlsx_cells(path: Path, sheet: str | None = None) -> list[list[openpyxl.cell.Cell]]:
@@ -119,24 +134,43 @@ class TestXlsxFormatter:
         assert [c.value for c in row] == ["https://evil.test/a", "mailto:a@b.test"]
         assert [c.hyperlink for c in row] == [None, None]
 
-    def test_header_formula_is_text(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("text", FORMULAS)
+    def test_header_formula_is_text(self, tmp_path: Path, text: str) -> None:
         out = tmp_path / "x.xlsx"
-        XlsxFormatter().format([{"=1+1": "v"}], MagicMock(spec=Console), output_path=str(out))
+        XlsxFormatter().format([{text: "v"}], MagicMock(spec=Console), output_path=str(out))
         header = _xlsx_cells(out)[0][0]
-        assert (header.data_type, header.value) == ("s", "=1+1")
+        assert (header.data_type, header.value) == ("s", text)
 
-    def test_dict_keys_and_values_are_text(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("text", FORMULAS)
+    def test_dict_keys_and_values_are_text(self, tmp_path: Path, text: str) -> None:
         out = tmp_path / "x.xlsx"
-        XlsxFormatter().format({"=k": "=v", "n": -3}, MagicMock(spec=Console), output_path=str(out))
+        XlsxFormatter().format({text: text, "n": -3}, MagicMock(spec=Console), output_path=str(out))
         rows = _xlsx_cells(out)
-        assert [(c.data_type, c.value) for c in rows[1]] == [("s", "=k"), ("s", "=v")]
+        assert [(c.data_type, c.value) for c in rows[1]] == [("s", text), ("s", text)]
         assert [(c.data_type, c.value) for c in rows[2]] == [("s", "n"), ("n", -3)]
 
-    def test_scalar_is_text(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("text", FORMULAS)
+    def test_scalar_is_text(self, tmp_path: Path, text: str) -> None:
         out = tmp_path / "x.xlsx"
-        XlsxFormatter().format("=1+1", MagicMock(spec=Console), output_path=str(out))
+        XlsxFormatter().format(text, MagicMock(spec=Console), output_path=str(out))
         cell = _xlsx_cells(out)[0][0]
-        assert (cell.data_type, cell.value) == ("s", "=1+1")
+        assert (cell.data_type, cell.value) == ("s", text)
+
+    def test_empty_and_missing_values_stay_blank(self, tmp_path: Path) -> None:
+        out = tmp_path / "x.xlsx"
+        data = [{"a": "", "b": "x"}, {"b": "y"}]
+        XlsxFormatter().format(data, MagicMock(spec=Console), output_path=str(out))
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+        assert ws["A2"].value is None
+        assert ws["A3"].value is None
+        # A blank cell is absent from the sheet XML; an empty text cell is not.
+        assert {c.coordinate for row in ws.iter_rows() for c in row if c.data_type == "s"} == {
+            "A1",
+            "B1",
+            "B2",
+            "B3",
+        }
 
     def test_view_sheets_are_text(self, tmp_path: Path) -> None:
         out = tmp_path / "x.xlsx"

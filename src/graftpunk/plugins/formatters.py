@@ -145,7 +145,7 @@ def _write_empty_csv(
     if view and view.columns and view.columns.mode == "include":
         buf = io.StringIO()
         csv.writer(buf, lineterminator="\n").writerow(
-            [_neutralize_formula(c) for c in view.columns.columns]
+            [_neutralize_formula(str(c)) for c in view.columns.columns]
         )
         text = buf.getvalue()
     write_raw(text, console, output_path)
@@ -506,12 +506,14 @@ class XlsxFormatter:
 
 
 def _write_xlsx_cell(worksheet: Any, row: int, col: int, value: Any, fmt: Any = None) -> None:
-    """Write *value*, a string always as a string cell (#288).
+    """Write *value*, a non-empty string always as a string cell (#288).
 
     ``strings_to_formulas=False`` alone still lets ``write()`` store
-    ``{=...}`` as an array formula, so strings take ``write_string``.
+    ``{=...}`` as an array formula, so strings take ``write_string``. An empty
+    string goes to ``write()``, which leaves the cell blank, where
+    ``write_string`` would store an empty text cell.
     """
-    if isinstance(value, str):
+    if isinstance(value, str) and value:
         worksheet.write_string(row, col, value, fmt)
     else:
         worksheet.write(row, col, value, fmt)

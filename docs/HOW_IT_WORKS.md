@@ -1063,7 +1063,7 @@ All plugin commands support `--format` / `-f` with five built-in formatters:
 - **`json`** (default): Pretty-printed JSON with syntax highlighting via Rich.
 - **`table`**: Rich tables. Lists of dicts become rows; single dicts become key-value pairs. Falls back to JSON for other types.
 - **`csv`**: Comma-separated values. Headers are the union of all row keys. Nested dicts/lists are JSON-serialized in cells. A cell that is not a number and starts with `=`, `+`, `-`, `@`, a tab, a carriage return, a line feed, or a full-width `＝`, `＋`, `－` or `＠` gets a leading `'`, so a spreadsheet shows it as text and never runs it as a formula (#288). Header cells and `json_to_csv` follow the same rule.
-- **`xlsx`**: Excel workbook saved to disk. Files are written to `GP_DOWNLOADS_DIR` (default: `./gp-downloads/`), with bold headers and auto-sized columns. Every string is written as a text cell, never as a formula or a hyperlink; numbers stay numeric cells (#288).
+- **`xlsx`**: Excel workbook saved to disk. Files are written to `GP_DOWNLOADS_DIR` (default: `./gp-downloads/`), with bold headers and auto-sized columns. Every non-empty string is written as a text cell, never as a formula or a hyperlink; an empty string or a missing key leaves a blank cell, and numbers stay numeric cells (#288).
 - **`raw`**: Strings pass through directly; other types are JSON-dumped without highlighting.
 
 Third-party formatters can be registered via the `graftpunk.formatters` entry-point group. They must implement the `OutputFormatter` protocol (a `name` property and a `format()` method).

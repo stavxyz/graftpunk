@@ -133,7 +133,7 @@ def json_to_csv(
 
     with open(output, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([_neutralize_formula(c) for c in columns])
+        writer.writerow([_neutralize_formula(str(c)) for c in columns])
         for row in rows:
             writer.writerow([_csv_cell(row.get(c)) for c in columns])
 
