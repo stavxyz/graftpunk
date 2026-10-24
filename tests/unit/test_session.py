@@ -861,87 +861,49 @@ class TestInitStealthBackend:
             BrowserSession(backend="selenium", use_stealth=True)
 
 
-class TestInitStandardBackend:
-    """Tests for __init__ when backend='selenium' with use_stealth=False (lines 146-178)."""
+class TestInitSeleniumWithoutStealth:
+    """use_stealth=False on the Selenium backend is refused before any browser work (#287)."""
 
-    def test_init_standard_backend_success(self):
-        """Standard backend detects chrome version and calls super().__init__."""
+    @pytest.mark.parametrize("backend", ["selenium", "legacy"])
+    def test_use_stealth_false_raises_value_error_naming_alternatives(self, backend):
         from graftpunk.session import BrowserSession
 
+        # Reaching the stealth path would raise this instead of ValueError.
         with (
-            patch("graftpunk.backends.list_backends", return_value=["selenium", "nodriver"]),
-            patch("graftpunk.session.get_chrome_version", return_value="120"),
             patch(
-                "webdriver_manager.chrome.ChromeDriverManager.install",
-                return_value="/usr/bin/chromedriver",
+                "graftpunk.stealth.create_stealth_driver",
+                side_effect=RuntimeError("a driver was created"),
             ),
-            patch("requestium.Session.__init__") as mock_super_init,
+            pytest.raises(ValueError) as excinfo,
         ):
-            session = BrowserSession(backend="selenium", headless=True, use_stealth=False)
+            BrowserSession(backend=backend, use_stealth=False)
 
-        assert session._backend_type == "selenium"
-        assert session._use_stealth is False
-        mock_super_init.assert_called_once()
-        # Verify headless argument was passed through
-        call_kwargs = mock_super_init.call_args[1]
-        assert "headless" in call_kwargs["webdriver_options"]["arguments"]
-        assert "window-size=800,600" in call_kwargs["webdriver_options"]["arguments"]
+        message = str(excinfo.value)
+        assert "use_stealth=False" in message
+        assert "backend='nodriver'" in message
+        assert "get_backend('selenium', use_stealth=False)" in message
 
-    def test_init_standard_backend_chrome_version_failure(self):
-        """Standard backend raises BrowserError when chrome version detection fails."""
-        from graftpunk.exceptions import BrowserError, ChromeDriverError
-        from graftpunk.session import BrowserSession
-
-        with (
-            patch("graftpunk.backends.list_backends", return_value=["selenium", "nodriver"]),
-            patch(
-                "graftpunk.session.get_chrome_version",
-                side_effect=ChromeDriverError("no chrome"),
-            ),
-            pytest.raises(BrowserError, match="Failed to detect Chrome version"),
-        ):
-            BrowserSession(backend="selenium", use_stealth=False)
-
-    def test_init_standard_backend_session_not_created_error(self):
-        """Standard backend raises BrowserError on SessionNotCreatedException."""
-        import selenium.common.exceptions
-
+    def test_stealth_path_constructs_on_installed_requestium(self):
+        """The remaining Selenium path builds on the real requestium.Session and
+        BrowserSession.driver and quit() reach the driver it was given."""
         from graftpunk.exceptions import BrowserError
         from graftpunk.session import BrowserSession
 
-        with (
-            patch("graftpunk.backends.list_backends", return_value=["selenium", "nodriver"]),
-            patch("graftpunk.session.get_chrome_version", return_value="120"),
-            patch(
-                "webdriver_manager.chrome.ChromeDriverManager.install",
-                return_value="/usr/bin/chromedriver",
-            ),
-            patch(
-                "requestium.Session.__init__",
-                side_effect=selenium.common.exceptions.SessionNotCreatedException("fail"),
-            ),
-            pytest.raises(BrowserError, match="Failed to create browser session"),
-        ):
-            BrowserSession(backend="selenium", headless=False, use_stealth=False)
+        class StubDriver:
+            running = True
 
-    def test_init_standard_backend_no_headless(self):
-        """Standard backend omits headless argument when headless=False."""
-        from graftpunk.session import BrowserSession
+            def quit(self):
+                self.running = False
 
-        with (
-            patch("graftpunk.backends.list_backends", return_value=["selenium", "nodriver"]),
-            patch("graftpunk.session.get_chrome_version", return_value="120"),
-            patch(
-                "webdriver_manager.chrome.ChromeDriverManager.install",
-                return_value="/usr/bin/chromedriver",
-            ),
-            patch("requestium.Session.__init__") as mock_super_init,
-        ):
-            BrowserSession(backend="selenium", headless=False, use_stealth=False)
+        stub = StubDriver()
+        with patch("graftpunk.stealth.create_stealth_driver", return_value=stub):
+            session = BrowserSession(backend="selenium", headless=True)
 
-        call_kwargs = mock_super_init.call_args[1]
-        assert "headless" not in call_kwargs["webdriver_options"]["arguments"]
-        assert "window-size=800,600" in call_kwargs["webdriver_options"]["arguments"]
+        assert session.driver is stub
+        session.quit()
+        assert stub.running is False
+        with pytest.raises(BrowserError):
+            _ = session.driver
 
 
 class TestSessionNameUncached:

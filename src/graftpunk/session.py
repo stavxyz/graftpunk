@@ -32,11 +32,9 @@ import requestium
 import requests.cookies
 import selenium.common.exceptions
 import slugify as slugify_lib
-import webdriver_manager.chrome
 
 from graftpunk import console as gp_console
 from graftpunk.backends.nodriver import DEFAULT_CALL_TIMEOUT_S, DEFAULT_NAVIGATE_TIMEOUT_S
-from graftpunk.chrome import get_chrome_version
 from graftpunk.cookies import (
     BrowserCookiesMixin,
     _browser_cookie_domain,
@@ -45,7 +43,7 @@ from graftpunk.cookies import (
     cookie_from_browser,
     importing_httpie,
 )
-from graftpunk.exceptions import BrowserError, ChromeDriverError
+from graftpunk.exceptions import BrowserError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.capture import create_capture_backend
@@ -133,7 +131,9 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             *args: Positional arguments passed to requestium.Session.
             headless: If True, run browser in headless mode.
             default_timeout: Default timeout for element waits in seconds.
-            use_stealth: If True, use undetected-chromedriver with anti-detection.
+            use_stealth: Selenium backend: must be True (undetected-chromedriver
+                with anti-detection); False raises ValueError. Ignored by the
+                nodriver backend.
             backend: Browser backend to use. Default "selenium".
                 Available: "selenium" (default), "nodriver".
             observe_mode: Observability capture mode. One of "off", "full".
@@ -154,7 +154,8 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 ``call_timeout`` or ``navigate_timeout`` that is not None or a
                 positive number no larger than ``threading.TIMEOUT_MAX``
                 (nodriver backend).
-            ValueError: If unknown backend is specified.
+            ValueError: If unknown backend is specified, or ``use_stealth`` is
+                False on a backend other than nodriver.
         """
         # Validate backend
         from graftpunk.backends import get_backend, list_backends
@@ -162,6 +163,16 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         available = list_backends()
         if backend not in available:
             raise ValueError(f"Unknown backend '{backend}'. Available: {', '.join(available)}")
+        if backend != "nodriver" and not use_stealth:
+            # requestium 0.5 and later reject the keywords the old non-stealth
+            # path passed, and on 0.3 and 0.4 its lazily created driver was
+            # never reachable through BrowserSession.driver (#287).
+            raise ValueError(
+                "BrowserSession(use_stealth=False) is not supported on the Selenium "
+                "backend. Use the default use_stealth=True, backend='nodriver', or "
+                "graftpunk.backends.get_backend('selenium', use_stealth=False) for a "
+                "plain Selenium driver."
+            )
 
         self._backend_type = backend
         self._use_stealth = use_stealth
@@ -202,7 +213,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             except Exception as exc:
                 LOG.error("failed_to_create_nodriver_session", error=str(exc))
                 raise BrowserError(f"Failed to create nodriver browser session: {exc}") from exc
-        elif use_stealth:
+        else:
             # Use stealth driver (undetected-chromedriver + selenium-stealth)
             from graftpunk.stealth import create_stealth_driver
 
@@ -228,40 +239,6 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             except (selenium.common.exceptions.WebDriverException, OSError) as exc:
                 LOG.error("failed_to_create_stealth_session", error=str(exc))
                 raise BrowserError(f"Failed to create stealth browser session: {exc}") from exc
-        else:
-            # Use standard requestium approach
-            try:
-                chrome_version = get_chrome_version(major=True)
-                LOG.info("detected_chrome_version", version=chrome_version)
-            except ChromeDriverError as exc:
-                LOG.error("chrome_version_detection_failed", error=str(exc))
-                raise BrowserError(f"Failed to detect Chrome version: {exc}") from exc
-
-            defaults: dict[str, Any] = {
-                "webdriver_path": webdriver_manager.chrome.ChromeDriverManager(
-                    driver_version=chrome_version
-                ).install(),
-                "browser": "chrome",
-                "default_timeout": default_timeout,
-            }
-            defaults.update(kwargs)
-            defaults.setdefault("webdriver_options", {"arguments": []})
-
-            if headless:
-                defaults["webdriver_options"]["arguments"].append("headless")
-
-            # Set compact window size (800x600 instead of Chrome's large default)
-            defaults["webdriver_options"]["arguments"].append("window-size=800,600")
-
-            try:
-                super().__init__(*args, **defaults)
-                LOG.info("browser_session_initialized", headless=headless)
-            except selenium.common.exceptions.SessionNotCreatedException as exc:
-                LOG.error("failed_to_create_browser_session", error=str(exc))
-                raise BrowserError(
-                    "Failed to create browser session. Try clearing session cache with: gp clear"
-                ) from exc
-
         # The nodriver branch initializes requests.Session directly, past the mixin.
         self._give_new_jar_the_browser_cookie_policy()
 
