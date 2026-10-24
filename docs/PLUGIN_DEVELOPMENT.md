@@ -1263,7 +1263,7 @@ orders.csv` gets CSV. There is no need to call `sys.stdout.isatty()` in the
 command, and a plugin should not: it raises on a closed stream and fails when
 `sys.stdout` is `None` under an embedded interpreter.
 
-`format_hint` is typed `str`, so a name the plugin registered type-checks. A
+`format_hint` is typed `str | None`, so a name the plugin registered type-checks. A
 plugin that wants its own rule for files and pipes registers a formatter and
 names it in the hint. The formatter is handed the console and `output_path`
 (empty when the output is the console). Because rule 2 takes the `-o`
