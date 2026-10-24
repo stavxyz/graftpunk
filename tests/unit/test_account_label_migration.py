@@ -1071,6 +1071,25 @@ class TestCopyStamps:
 
 
 class TestRedaction:
+    def test_it_composes_with_log_secrets(self) -> None:
+        """A secret option's scrub (#289) and the old-name placeholder apply together."""
+        from structlog.testing import capture_logs
+
+        from graftpunk.logging import get_logger, log_secrets
+        from graftpunk.session_migration import hidden_name
+
+        log = get_logger("probe")
+        with capture_logs() as logs, log_secrets(["tok-secret-99"]), hidden_name("myshop@4417"):
+            log.bind(slot="myshop@4417").warning(
+                "x", name="myshop@4417", option="tok-secret-99", both="myshop@4417 tok-secret-99"
+            )
+
+        line = logs[0]
+        assert line["slot"] == "myshop@<earlier label>"
+        assert line["name"] == "myshop@<earlier label>"
+        assert "tok-secret-99" not in repr(line)
+        assert "4417" not in repr(line)
+
     def _capture(self, emit):  # noqa: ANN001, ANN202
         from structlog.testing import capture_logs
 
