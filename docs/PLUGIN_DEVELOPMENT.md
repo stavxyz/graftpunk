@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.24.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.25.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -1182,6 +1182,102 @@ def orders(self, ctx: CommandContext, page: int = 1, archived: bool = False) -> 
 `PluginParamSpec.option` makes a `--flag`; `PluginParamSpec.argument` makes a
 positional argument. A `bool` option with `default=False` becomes a real flag.
 
+### Secret options
+
+An option that carries a secret, such as an API key, a one-time code or a PIN,
+is marked `secret=True`:
+
+```python
+from graftpunk.plugins import CommandContext, PluginParamSpec, command
+
+
+@command(
+    help="Look up an item",
+    params=[
+        PluginParamSpec.option(
+            "api_key",
+            required=True,
+            secret=True,
+            help="API key",
+            click_kwargs={"envvar": "MYSHOP_API_KEY"},
+        ),
+    ],
+)
+def lookup(self, ctx: CommandContext, api_key: str) -> dict:
+    return ctx.request_json("GET", "/api/lookup", headers={"X-Api-Key": api_key})
+```
+
+In a YAML plugin the param takes `secret: true`, and can read its value from
+the environment in either of two ways:
+
+```yaml
+params:
+  - name: api_key
+    secret: true
+    envvar: MYSHOP_API_KEY        # the process environment, as in Python
+    help: "API key"
+```
+
+```yaml
+params:
+  - name: api_key
+    secret: true
+    default: "${MYSHOP_API_KEY}"  # resolved when the command runs
+    help: "API key"
+```
+
+A `${NAME}` default is resolved when the command runs, not when the plugin
+loads, the way a header's `${NAME}` is: from the process environment, then the
+[workstation env file](#the-workstation-env-file) (`~/.config/graftpunk/env`), whose entry can be a
+`$(...)` command that reads a password manager. `${NAME:fallback}` gives
+`fallback` when `NAME` is unset. A `${NAME}` with no fallback that is unset
+stops the command with an error naming the variable; it never becomes an empty
+value or the placeholder text. Neither `gp --help` nor shell completion resolves
+it, so pressing Tab never runs a `$(...)` command. A `${NAME}` default makes
+`required` unnecessary, and a required param with a default is refused. A
+positional argument's default is never expanded.
+
+The marker does four things, wherever the value came from (the command line,
+the environment, the prompt or a default):
+
+- A `gp --observe=full` run of the command is scrubbed of the value the way
+  it is scrubbed of the plugin's login credentials: raw, URL-encoded,
+  JSON-escaped, base64-encoded and in the form `requests` gives a value put
+  into a URL path, in every part of the HAR and in the request bodies written
+  to `bodies/`. Response bodies in `bodies/` are not scrubbed.
+- `--help` never shows the option's default.
+- graftpunk's error messages leave the value out, and so does every line
+  logged through `graftpunk.logging.get_logger` while the command runs, from
+  any thread, tracebacks included. Every value of the line is scrubbed, so a
+  plugin can log `LOG.warning("lookup_failed", error=exc)` with an exception
+  whose message holds the key: the line carries the message, scrubbed. The
+  scrub never makes a log call raise: a container that holds itself, or one
+  nested very deep, is logged as its scrubbed text, and a value with no text at
+  all as `<unprintable TYPE>`. A line the level filter drops costs nothing
+  extra. A plugin that prints, or logs some other way, gets no scrub.
+- A required secret option that is missing is prompted for with hidden input,
+  on stderr, when stdin is a terminal, so `gp myshop lookup > out.json` still
+  writes only the result. Without a terminal (a pipe, a script, CI) it is a
+  missing-option error, so supply the value from the environment there. In a
+  YAML plugin, a `${MYSHOP_API_KEY}` default reads the process environment and
+  then the workstation env file, `$(...)` entries included. An `envvar`, in
+  Python or YAML, reads the process environment only, which gp fills at
+  startup with the env file's static entries but not its `$(...)` entries.
+
+A value shorter than three characters is not scrubbed anywhere, and a
+three-character one is replaced wherever it occurs in a log line, inside words
+and numbers too. A secret
+option must be a `str` option: Click quotes a value it cannot convert in its
+error message, so a `type=int` PIN would print the PIN. It cannot be a flag,
+`multiple`, `show_default` or a positional argument; graftpunk refuses each
+when the plugin is loaded. Parameters introspected from the handler's
+signature are never secret: declare `params=` to mark one.
+
+`gp --network-debug` prints raw HTTP traffic, a secret included, so do not
+share its output. Passing a secret on the command line leaves it in the
+shell's history and in the process list while the command runs; prefer the
+environment or the prompt.
+
 ### One filter, several spellings
 
 Sites rename the same concept from endpoint to endpoint: the order list takes
@@ -1480,7 +1576,26 @@ account label on a slot is the identifier in the credentials you submitted,
 slugified: `alice@example.com` gives `myshop@alice-example-com`. graftpunk never
 asks the site which account is actually signed in.
 
-That is fine until it is not. If the site can land you on a different account
+From graftpunk 1.25.0, only a login field with an identifier name gives a
+label, and it takes two tests. First, the name lower-cased with `_`, `-`, `.`
+and spaces removed must be exactly `username`, `email`, `emailaddress`,
+`useremail`, `loginemail`, `login`, `loginid`, `loginname`, `identifier`,
+`user` or `userid`. Second, the name lower-cased with its separators kept must
+contain `username`, `email`, `login`, `identifier` or `user`. When several
+fields pass, the label comes from the first that contains `username`, then
+`email`, `login`, `identifier` and `user`, and among those from the first
+declared. So `{user_name, email}` labels from `email`: `user_name` contains
+`user` but not `username` as written. A field that passes only the first test
+(`e_mail`, `E-Mail`, `account`, `account_id`) gives no label. All four still
+count as identifiers for observe redaction, which keeps their values in a
+run's URLs; none of them names a session. A field named
+anything else, such as `memberNumber` or `userPin`, never names a session, and
+a login with no qualifying field caches the bare plugin name. Name the
+identifier field `username` or `email`, or log in with `--as <label>`. Before
+1.25.0, a field whose name merely contains one of those five words (such as
+`userPin`) could name the session after its value; pass `--as` there.
+
+Trusting the credentials is fine until it is not. If the site can land you on a different account
 than the credentials suggest (a shared login, an account switcher, an SSO tenant
 that resolves elsewhere), the slot name is a claim nobody checked. When it
 matters, write a command that asserts the identity against a live page and run
@@ -1546,7 +1661,8 @@ command entry as `[command]` and never runs it, and `gp config get NAME
 which is the other reason to prefer the command form for anything secret.
 
 A command entry runs only when a value is needed: a login, the first
-access of an allowlisted setting, or a YAML plugin's `${VAR}` header expansion.
+access of an allowlisted setting, or a YAML plugin's `${VAR}` header or option
+default when its command runs (see [Secret options](#secret-options)).
 `gp --help` never triggers it, so having several sites configured this way does
 not mean an approval prompt every time you use the CLI.
 
@@ -1633,23 +1749,33 @@ content type. `gp observe fixtures` writes one for every capture to commit
 beside the fixture. It holds no URL, no time, and no header, cookie, or query
 value: only the status, the content type, the hash of the captured body, the
 request's body parameter names, every cookie name the recording set except a
-cookie that only ever held words, and the token names the digest found.
+cookie that only ever held form state, and the token names the digest found.
 
 A cookie whose every non-empty value in the recording (in any request or
-response) reads as words holds no credential, so its name is left out of
+response) is form state holds no credential, so its name is left out of
 `flagged_names`: an invented fixture keeps such a name as a key or in prose.
+Form state is words, one word in capitals, a camelCase name, a name of a
+few words, or punctuation alone.
 Words are a search term such as `running shoes`, `iPhone 15`, `café`,
-`salt & pepper` or `512gb ssd`, a number
-of at most 5 digits such as `lot=12`, or a date. An empty value beside another
-value is a cleared field and is ignored. A cookie stays flagged, whatever its
-values, when its name reads as a token name (`csrftoken`) or has a session part
-(`sessionid`, `PHPSESSID`, `JSESSIONID`, `connect.sid`, `myshop_session`,
-`auth`, `jwt`, `login`), or when a response in the recording set it with
-`HttpOnly`, either by its `Set-Cookie` header carrying the attribute or by the
-HAR's `response.cookies` entry saying `httpOnly` is true (a HAR often leaves
-`httpOnly` out of that array when the header has it). It also stays flagged
-when any value it held does not read as words (a session id), or when the
-recording shows no non-empty value for it.
+`salt & pepper` or `512gb ssd`, a number of at most 5 digits such as `lot=12`,
+or a date. A word in capitals is a party or a code a form keeps in capitals
+(`LANDOWNER`, `GRANTEE`, `BRAL`); a camelCase name is a tab or field name
+(`currentTab`, `tabLISTresults`); a name is how a records search keeps a person
+(`SMITH, JOHN`, `ST. JOHN`, `O'Brien Mary`). A value in one pair of double quotes, as a
+server may send it, is judged without them. A value of ASCII punctuation and
+spaces alone, such as a field cleared to a quoted empty string (`""`), holds
+nothing; a control character (`%00`) or a percent-encoded value that decodes
+to something other than ASCII is not punctuation. An empty value beside another value is a cleared field and is
+ignored. A cookie stays flagged, whatever its values, when its name reads as a
+token name (`csrftoken`) or has a session part (`sessionid`, `PHPSESSID`,
+`JSESSIONID`, `connect.sid`, `myshop_session`, `auth`, `jwt`, `login`), or when
+a response in the recording set it with `HttpOnly`, either by its `Set-Cookie`
+header carrying the attribute or by the HAR's `response.cookies` entry saying
+`httpOnly` is true (a HAR often leaves `httpOnly` out of that array when the
+header has it). It also stays flagged when any value it held is not form state
+(a session id), or when the recording shows no non-empty value for it. A cookie
+only ever literally empty stays flagged, since a HAR cookie with no value reads
+as empty too; a cookie only ever set to `""` does not.
 
 Check that your session cookie is in `flagged_names` before you commit a
 sidecar. A cookie the recording only sends, which no response in it sets, is
@@ -1659,21 +1785,53 @@ before the recording starts. Record a fresh login, so that the server's
 `Set-Cookie` for the session is in the HAR, then run `gp observe fixtures`
 again. A session cookie a response does set can still be left out when its
 name has no session part, the response did not set it with `HttpOnly`, and
-every value it held reads as words. A numeric id of 5 digits or fewer always
-does. So does a value made of space- or `+`-separated pieces of 3 or fewer
-letters and digits with a letter among them (`aB3+xY7+qW2`), and so do groups
-of digits separated by spaces or `+` (`4111 1111 1111 1111`, `555 123 4567`):
-a cookie holding only such values is not flagged. A short random id sometimes
-does (14.8% of random 8-letter lowercase ids and 0.77% of random 8-character
-standard-base64 ids, measured on 100,000 each). The graft skill's
-`fixture-leaks.py`, which compares a fixture with the capture it was derived
-from, still reports any value from the captured response body left in the
-fixture, each run of 3 or more digits included. It reads the capture's body,
-not its cookie headers, and runs when the skill derives a fixture, not in the
-suite.
+every value it held is form state. A numeric id of 5 digits or fewer always
+is. So is a value made of space- or `+`-separated pieces of 3 or fewer letters
+and digits with a letter among them (`aB3+xY7+qW2`), and so are groups of
+digits separated by spaces or `+` (`4111 1111 1111 1111`, `555 123 4567`): a
+cookie holding only such values is not flagged. A short random id sometimes is.
+Measured on 100,000 random values per shape on 2026-10-24
+(`scripts/cookie_value_rates.py` prints the table), these are left out:
+14.6% of 8 lowercase letters, 0.88% of 8 standard-base64 characters, 2.7% of 6
+mixed-case letters, 0.78% of 8 and 0.21% of 12. Ids of capitals alone are told
+from a word in capitals only by their letter pairs, as lowercase ids have been
+since 1.23.0, so 42% of 4 random capitals, 19% of 7 and 5.2% of 12 are left
+out, and so are 16% of 8 random characters of capitals and spaces, which can
+read as a name. An id of capitals and
+digits is left out only when a draw holds no digit: 1.1% at 8 characters, 0.09%
+at 12 and none at 16. The graft skill's `fixture-leaks.py`, which compares a
+fixture with the capture it was derived from, still reports any value from the
+captured response body left in the fixture, each run of 3 or more digits
+included. It reads the capture's body, not its cookie headers, and runs when
+the skill derives a fixture, not in the suite.
 
-A form-state cookie can stay flagged the other way, when one of its values does
-not read as words. The rule `graftpunk.har.paths.reads_as_words` applies is:
+A form-state cookie can stay flagged the other way, when one of its values is
+not form state. A value is form state when it is ASCII punctuation and spaces
+alone, or when either of these rules reads it as words. The rule
+`graftpunk.har.paths.reads_as_cased_words` applies accepts three shapes, all
+ASCII:
+
+- Capitals alone, at most 15 letters spelled with letter pairs English words
+  use (`LANDOWNER`, `NASA`, `LEGO`).
+- camelCase of at most 3 parts of at most 15 letters. A part is a lower
+  case or capitalised word of at least 3 letters, spelled so and holding a
+  vowel (y counts), a capitalised joining word (`By`, `Of`, `To` and a few
+  more), or a run of at least 2 capitals, which must be spelled unless it ends
+  the value and has at most 3 letters (`viewPDF`). A run of capitals before lower case is read both as its own part (`tab`,
+  `LIST`, `results`) and as giving its last capital to the next part (`parse`,
+  `HTML`, `String`). So `currentTab`, `tabLISTresults`, `searchByNAME` and
+  `viewPDF` read so. A value that starts with a capital reads so only at 12
+  letters or more, with no joining word and every run of capitals spelled
+  (`LISTviewResults`, `HTMLParserView`).
+- A name of 2 to 4 words with a space among the joins, joined by a space, a
+  comma, an apostrophe, a full stop or a hyphen, each word a capital initial or
+  a word of at most 15 letters capitalised or in capitals and spelled so
+  (`SMITH, JOHN Q.`, `O'Brien Mary`).
+
+`iPad` (a first part of 1 letter), `CurrentTab` and `HTMLParser` (a capital
+first, under 12 letters), `currentTab2` (a digit), `XL` (the pair `xl`) and a surname with a
+letter pair English words do not use (`cz`, `sf`) do not read so. The rule
+`graftpunk.har.paths.reads_as_words` applies is:
 
 - A value of one word reads as words when no run of 6 or more digits or other
   id shape is in it and each of its runs of letters and digits, split at `-`,
@@ -1684,7 +1842,8 @@ not read as words. The rule `graftpunk.har.paths.reads_as_words` applies is:
   such as `2026-10-19` read as words, and `iPad`, `iPhone`, `eBay`, `NASA`,
   `XL`, `LEGO`, `512gb`, `24ct` and `50lbs` typed alone do not (`XL` fails on
   its `xl` pair, `NASA` on its run of 4 capitals, `512gb` because a quantity
-  counts only beside other words).
+  counts only beside other words). `NASA` and `LEGO` are still form state, by
+  the cased-words rule above.
 - A value of several words reads as words when no word holds an id and every
   word is one of: such a word, a number, at most 3 letters and digits (`4K`,
   `TV`), a quantity of a number and a lowercase unit from a fixed list (`512gb`,
@@ -1698,10 +1857,10 @@ not read as words. The rule `graftpunk.har.paths.reads_as_words` applies is:
   `mcdonalds` the pairs `mc` and `cd`).
 
 A cookie the server set with `HttpOnly` stays flagged whatever its values. When
-a plain-word cookie you expected to be left out is in
-`flagged_names` and an honest fixture fails on its name, record again searching
-only plain words and regenerate the sidecar, or rename the name in the fixture
-where its structure allows.
+a form-state cookie you expected to be left out is in `flagged_names` and an
+honest fixture fails on its name, record again searching only plain words and
+regenerate the sidecar, or rename the name in the fixture where its structure
+allows.
 
 A body key that does not read as a field name, or that holds an id by the
 digest's rule, is dropped from `body_params`, and a cookie or token name that
