@@ -90,6 +90,10 @@ class SessionMetadata:
     account_rule: int | None = None
 
 
+#: Marks a metadata field ``update_session_metadata`` leaves as it is.
+UNCHANGED: "Any" = object()
+
+
 def metadata_to_dict(metadata: SessionMetadata) -> dict[str, "Any"]:
     """Convert SessionMetadata to JSON-serializable dict.
 
@@ -235,12 +239,18 @@ class SessionStorageBackend(Protocol):
         self,
         name: str,
         status: str | None = None,
+        *,
+        account_identifier: "Any" = UNCHANGED,
+        account_rule: "Any" = UNCHANGED,
     ) -> bool:
-        """Update session metadata fields.
+        """Update session metadata fields, without reading or rewriting the session.
 
         Args:
             name: Session identifier
             status: New status value (e.g., "logged_out")
+            account_identifier: New account identifier (None clears it);
+                left alone when not given.
+            account_rule: New account rule; left alone when not given.
 
         Returns:
             True if updated, False if session not found

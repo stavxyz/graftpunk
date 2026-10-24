@@ -21,6 +21,7 @@ from graftpunk._distribution import install_command
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
 from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
+    UNCHANGED,
     SessionMetadata,
     dict_to_metadata,
     metadata_to_dict,
@@ -422,12 +423,18 @@ class SupabaseSessionStorage:
         self,
         name: str,
         status: str | None = None,
+        *,
+        account_identifier: Any = UNCHANGED,
+        account_rule: Any = UNCHANGED,
     ) -> bool:
         """Update session metadata fields.
 
         Args:
             name: Session identifier
             status: New status value
+            account_identifier: New account identifier (None clears it);
+                left alone when not given.
+            account_rule: New account rule; left alone when not given.
 
         Returns:
             True if updated, False if session not found
@@ -452,6 +459,10 @@ class SupabaseSessionStorage:
         updates: dict[str, Any] = {"modified_at": datetime.now(UTC)}
         if status is not None:
             updates["status"] = status
+        if account_identifier is not UNCHANGED:
+            updates["account_identifier"] = account_identifier
+        if account_rule is not UNCHANGED:
+            updates["account_rule"] = account_rule
 
         new_metadata = replace(metadata, **updates)
 

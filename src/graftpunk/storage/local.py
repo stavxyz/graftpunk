@@ -1,10 +1,12 @@
 """Local filesystem session storage backend."""
 
+import contextlib
 import json
 import os
 import shutil
 import stat
 import sys
+import tempfile
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,12 +15,32 @@ from typing import IO, Any
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
 from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
+    UNCHANGED,
     SessionMetadata,
     dict_to_metadata,
     metadata_to_dict,
 )
 
 LOG = get_logger(__name__)
+
+
+def _write_private_temp(target: Path, data: bytes) -> Path:
+    """Write *data* to a new 0o600 temporary file beside *target*; return its path.
+
+    The caller renames it over *target* with :func:`os.replace`, which is
+    atomic on one filesystem, so a reader sees the old file or the new one.
+    """
+    fd, raw = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    path = Path(raw)
+    try:
+        if sys.platform != "win32":
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
 
 
 class LocalSessionStorage:
@@ -83,6 +105,7 @@ class LocalSessionStorage:
             OSError: If save fails
         """
         session_dir = self.base_dir / name
+        created_dir = not session_dir.exists()
         session_dir.mkdir(parents=True, exist_ok=True)
 
         pickle_path = session_dir / "session.pickle"
@@ -90,33 +113,37 @@ class LocalSessionStorage:
 
         LOG.info("session_save_started", name=name, path=str(pickle_path))
 
-        # Write encrypted pickle file with secure permissions from creation.
-        # The mode given to os.open only applies to a NEW file; an existing
-        # one keeps whatever mode it already had, so an explicit fchmod
-        # after the open tightens a re-save over a file left wide by some
-        # other means too (#178, PR #189 review).
-        fd = os.open(pickle_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(encrypted_data)
-
         # Stamp storage identity fields before serialization
         metadata = replace(
             metadata,
             storage_backend=self.storage_backend,
             storage_location=self.storage_location,
         )
+        metadata_bytes = json.dumps(metadata_to_dict(metadata), indent=2, default=str).encode()
 
-        # Write metadata with the same secure-from-creation permissions as the
-        # pickle: it carries the account identifier, the domain and the URL
-        # last visited — not secrets, but not other users' business either.
-        # Same re-save caveat as above: fchmod after the open, not just the
-        # os.open mode, so an existing wide file is tightened too.
-        metadata_dict = metadata_to_dict(metadata)
-        meta_fd = os.open(metadata_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(meta_fd, 0o600)
-        with os.fdopen(meta_fd, "w") as f:
-            json.dump(metadata_dict, f, indent=2, default=str)
+        # Both files are written in full to temporary files beside them and
+        # only then renamed into place, so a write that fails (a full disk)
+        # leaves the slot as it was, or no slot at all, never a pickle without
+        # its metadata or one whose checksum the metadata does not match. The
+        # temporary files are 0o600 from creation, like the files they
+        # replace: the metadata carries the account identifier, the domain
+        # and the URL last visited, not secrets, but not other users'
+        # business either (#178, #293).
+        written: list[Path] = []
+        try:
+            pickle_tmp = _write_private_temp(pickle_path, encrypted_data)
+            written.append(pickle_tmp)
+            metadata_tmp = _write_private_temp(metadata_path, metadata_bytes)
+            written.append(metadata_tmp)
+            os.replace(pickle_tmp, pickle_path)
+            os.replace(metadata_tmp, metadata_path)
+        except BaseException:
+            for tmp in written:
+                tmp.unlink(missing_ok=True)
+            if created_dir:
+                with contextlib.suppress(OSError):
+                    session_dir.rmdir()
+            raise
 
         LOG.info("session_save_completed", name=name, path=str(session_dir))
         return str(session_dir)
@@ -357,12 +384,18 @@ class LocalSessionStorage:
         self,
         name: str,
         status: str | None = None,
+        *,
+        account_identifier: Any = UNCHANGED,
+        account_rule: Any = UNCHANGED,
     ) -> bool:
         """Update session metadata fields.
 
         Args:
             name: Session identifier
             status: New status value
+            account_identifier: New account identifier (None clears it);
+                left alone when not given.
+            account_rule: New account rule; left alone when not given.
 
         Returns:
             True if updated, False if session not found
@@ -385,10 +418,21 @@ class LocalSessionStorage:
                     raise ValueError(f"Invalid status '{status}'. Must be 'active' or 'logged_out'")
                 metadata_dict["status"] = status
 
+            if account_identifier is not UNCHANGED:
+                metadata_dict["account_identifier"] = account_identifier
+            if account_rule is not UNCHANGED:
+                metadata_dict["account_rule"] = account_rule
+
             metadata_dict["modified_at"] = datetime.now(UTC).isoformat()
 
-            with metadata_path.open("w") as f:
-                json.dump(metadata_dict, f, indent=2, default=str)
+            tmp = _write_private_temp(
+                metadata_path, json.dumps(metadata_dict, indent=2, default=str).encode()
+            )
+            try:
+                os.replace(tmp, metadata_path)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
 
             LOG.info("session_metadata_updated", name=name, status=status)
             return True
