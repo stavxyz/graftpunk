@@ -10,10 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Upgrading
 
 1. **`BrowserSession(use_stealth=False)` on the Selenium backend now raises `ValueError`** (#287). The message names the alternatives: the default `use_stealth=True`, `backend="nodriver"`, or `graftpunk.backends.get_backend("selenium", use_stealth=False)` for a plain Selenium driver without a requests session. Through 1.24.0 the call failed in one of two ways, depending on the installed requestium. With requestium 0.5.1 (the version `uv.lock` pins) or 0.6.0 (what a fresh install resolves) it raised `TypeError: Session.__init__() got an unexpected keyword argument 'browser'`, after downloading a ChromeDriver. With requestium 0.3.0 or 0.4.0 it returned a session whose `driver` raised `BrowserError("Selenium WebDriver not available...")`, so no Chrome was ever started. `use_stealth=False` with `backend="nodriver"` is unchanged, as is unpickling a cached session saved with `use_stealth=False`. Nothing in graftpunk, its CLI or its plugin scaffolding passes `use_stealth=False` to `BrowserSession`.
+2. **A sidecar `gp observe fixtures` writes from this release can flag fewer cookie names** (#296). A cookie a response set whose values were only words, words in capitals or camelCase, or punctuation alone is now left out of `flagged_names` (Fixed, #296). A committed sidecar keeps its old `flagged_names` until you write it again, as 1.23.0's Upgrading item 3 describes: run `gp observe fixtures` on the recording again, copy the new sidecar over the committed one unchanged, and check that your session cookie is still in `flagged_names` before you commit it. Until you do, the graft skill's `fixture-leaks.py` reports that the committed sidecar differs from gp's.
+
+### Added
+
+- **`graftpunk.har.paths.reads_as_cased_words`** (#296), the test `flagged_names_of` uses for a value that is one word in capitals or camelCase.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.12** (#296). Its guide states the form-state rule below. It still needs graftpunk 1.24.0 or later; on 1.24.0, `gp observe fixtures` flags the cased-word and cleared cookies the guide says it leaves out.
 
 ### Removed
 
 - **The non-stealth Selenium path of `BrowserSession`** (#287). It never had a working driver on any requestium version graftpunk allows, so `BrowserSession(backend="selenium", use_stealth=False)` and `backend="legacy"` with `use_stealth=False` now raise `ValueError` before any download or launch. See Upgrading, item 1. Closes #287.
+
+### Fixed
+
+- **`gp observe fixtures` no longer flags a form-state cookie for a cleared field or a word in capitals or camelCase** (#296). 1.23.0 left out of `flagged_names` a cookie whose every non-empty value read as words, but two shapes of form state did not. A site that clears a field by setting its cookie to a quoted empty string (`""`) kept that cookie flagged, since only a literally empty value was ignored. A surname or a code a form keeps in capitals (`MERRIVALE`, `OWNR`) and a camelCase tab name (`currentTab`, `tabLISTresults`) kept theirs flagged, since `reads_as_words` rejects a run of 4 capitals and a word in brand casing. Now a value of punctuation, quotes and whitespace alone holds nothing, and a value that `graftpunk.har.paths.reads_as_cased_words` accepts is form state: letters alone, either in capitals and at most 15 letters spelled with letter pairs English words use, or camelCase that starts lower case and splits into at most 4 such parts of 3 to 15 letters. A cookie only ever set to `""` is left out; a cookie only ever literally empty stays flagged, since a HAR cookie with no value field reads as empty too. A cookie still stays flagged by a token or session name, by `HttpOnly`, by a value that holds an id or reads neither as words nor as cased words, or by having no non-empty value in the recording.
+
+  The cost was measured on 100,000 random values per shape (seed 273, 2026-10-24) as the share flagged under 1.24.0 and now. Base64 of 16, 22 and 32 characters, hex of 8, 16 and 32, lowercase letters of 8, 12, 16 and 32, mixed-case letters of 32, UUIDs, JWTs, JWT signatures and numbers of 5, 6, 8 and 10 digits are unchanged. Of 8-character standard base64, 99.25% were flagged and 99.15% are; of mixed-case letters, 99.89% and 99.42% at 8, 99.995% and 99.91% at 12, and 100% and 99.98% at 16. An id of capitals alone is the rule's known limit: all were flagged, and now 58% of 4 random capitals are, 81% of 7, 89% of 9 and 95% of 12. A rule that flagged only a value holding an id (`holds_an_id`) was measured and rejected: it flags no value of lowercase or mixed-case letters and 0.01% of 16- and 22-character base64. Closes #296.
 
 ## [1.24.0] - 2026-10-24
 

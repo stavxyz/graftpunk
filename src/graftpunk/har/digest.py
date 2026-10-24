@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs, unquote, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, unquote, unquote_plus, urljoin, urlparse, urlunparse
 
 from graftpunk.har.documents import (
     PASSWORD_NAME_HINTS,
@@ -38,6 +38,7 @@ from graftpunk.har.paths import (
     looks_dynamic,
     normal_host,
     param_name_for_segment,
+    reads_as_cased_words,
     reads_as_words,
     template_path,
 )
@@ -1943,11 +1944,15 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     plain strings and imports nothing from the digest.
 
     The list stands in for a leak the suite cannot see: a copied cookie or token
-    whose value sits next to its name. A cookie whose every recorded value reads
-    as words (graftpunk.har.paths.reads_as_words: a search term, a lot number, a
-    date) holds no credential, and its name is often an ordinary word that an
-    invented fixture keeps as a key or in prose (``text``, ``lot``), so it is
-    left out. Every other cookie stays:
+    whose value sits next to its name. A cookie whose every recorded value is
+    form state holds no credential, and its name is often an ordinary word that
+    an invented fixture keeps as a key or in prose (``text``, ``lot``), so it is
+    left out. A value is form state when it reads as words
+    (graftpunk.har.paths.reads_as_words: a search term, a lot number, a date),
+    when it is one word in capitals or a camelCase run of words
+    (graftpunk.har.paths.reads_as_cased_words: ``MERRIVALE``, ``currentTab``),
+    or when it holds no letter or digit (``""``, a field cleared to a quoted
+    empty string). Every other cookie stays:
 
     - one whose name reads as a token name (``csrftoken``) or names a session
       (:func:`_names_a_session`: ``sessionid``, ``PHPSESSID``, ``connect.sid``),
@@ -1958,16 +1963,21 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
       ``response.cookies`` entry says ``httpOnly`` is true or when a
       ``Set-Cookie`` header carries the attribute: the array often leaves it out
       when the header has it, so an absent flag there is unknown, not false;
-    - one with any non-empty value that does not read as words (a session id);
+    - one with any value that is not form state: a value holding an id
+      (graftpunk.har.paths.holds_an_id) or any other value neither rule reads
+      as words (a session id);
     - one with no non-empty value *entries* show, which covers a ``Set-Cookie``
       the recorder kept only as a name, a cookie only ever empty, and a call
       without *entries*, where every cookie stays. (``gp observe digest`` does not
       call this; its cookie list, ``d.cookies``, names every cookie.)
 
     An empty value beside a non-empty one is a cleared field or an expired
-    cookie, and holds nothing. Values are read from every entry's request and
-    response cookies, whatever its host. ``Secure`` is not a guard: a site
-    served only over HTTPS can mark every cookie Secure.
+    cookie, and holds nothing. A cookie only ever empty stays flagged because a
+    HAR cookie with no ``value`` field reads as empty too, so an empty value is
+    no evidence the recorder saw what the cookie held; a value of punctuation
+    alone (``""``) is a value the server did send. Values are read from every
+    entry's request and response cookies, whatever its host. ``Secure`` is not a
+    guard: a site served only over HTTPS can mark every cookie Secure.
 
     A name that holds an account value (graftpunk.har.paths.holds_an_id) is not
     among them, in any form: :func:`redacted_names_of` counts those."""
@@ -1984,7 +1994,7 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
             and name not in seen.http_only
             and not looks_like_token_name(name)
             and not _names_a_session(name)
-            and all(reads_as_words(value) for value in seen.values[name])
+            and all(_form_state(value) for value in seen.values[name])
         )
 
     cookies = {name for name in set(d.cookies) | entry_cookies if not holds_only_words(name)}
@@ -2043,6 +2053,17 @@ class _CookiesSeen:
     values: dict[str, set[str]] = field(default_factory=dict)
     unseen: set[str] = field(default_factory=set)
     http_only: set[str] = field(default_factory=set)
+
+
+def _form_state(value: str) -> bool:
+    """True when *value*, a non-empty cookie value, holds no credential by
+    :func:`flagged_names_of`'s rule: it holds no letter or digit once decoded,
+    or it reads as words or as cased words."""
+    return (
+        not any(ch.isalnum() for ch in unquote_plus(value))
+        or reads_as_words(value)
+        or reads_as_cased_words(value)
+    )
 
 
 def _cookies_seen(entries: Iterable[HAREntry]) -> _CookiesSeen:

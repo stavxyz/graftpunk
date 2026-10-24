@@ -21,6 +21,7 @@ from graftpunk.har.paths import (
     keys_are_ids,
     looks_dynamic,
     param_name_for_segment,
+    reads_as_cased_words,
     reads_as_words,
     template_path,
     templated_url,
@@ -648,6 +649,110 @@ class TestReadsAsWords:
         rng = random.Random(273)  # noqa: S311 - a fixed sample, not a secret
         ids = ["".join(rng.choices(alphabet, k=length)) for _ in range(5_000)]
         assert [value for value in ids if reads_as_words(value)] == []
+
+
+_BASE64 = string.ascii_letters + string.digits + "+/"
+_BASE64URL = string.ascii_letters + string.digits + "-_"
+_HEX = string.digits + "abcdef"
+
+
+def _random_value(shape: str, rng: random.Random) -> str:
+    kind, _, size = shape.rpartition(" ")
+    if shape == "uuid":
+        return str(uuid.UUID(int=rng.getrandbits(128), version=4))
+    if shape == "jwt signature":
+        return "".join(rng.choices(_BASE64URL, k=43))
+    length = int(size)
+    if kind == "numeric":
+        return str(rng.randrange(10 ** (length - 1), 10**length))
+    alphabet = {
+        "base64": _BASE64,
+        "hex": _HEX,
+        "lowercase": string.ascii_lowercase,
+        "mixed-case": string.ascii_letters,
+        "capitals": string.ascii_uppercase,
+    }[kind]
+    return "".join(rng.choices(alphabet, k=length))
+
+
+# shape: the share of random values of that shape reads_as_cased_words accepts
+# and reads_as_words rejects, so the share a cookie value the 1.24.0 rule flagged
+# is no longer flagged for (#296). Each ceiling is the rate measured on these
+# 10,000 values per shape (2026-10-24) plus 0.0005. The capital shapes are the
+# rule's known limit: a word in capitals is judged only by its letter pairs.
+_CASED_WORD_LOSS_CEILINGS = {
+    "base64 8": 0.0014,
+    "base64 16": 0.0,
+    "base64 22": 0.0,
+    "base64 32": 0.0,
+    "hex 8": 0.0,
+    "hex 16": 0.0,
+    "hex 32": 0.0,
+    "lowercase 8": 0.0,
+    "lowercase 12": 0.0,
+    "lowercase 16": 0.0,
+    "lowercase 32": 0.0,
+    "mixed-case 8": 0.0058,
+    "mixed-case 12": 0.001,
+    "mixed-case 16": 0.0008,
+    "mixed-case 32": 0.0,
+    "uuid": 0.0,
+    "jwt signature": 0.0,
+    "numeric 5": 0.0,
+    "numeric 6": 0.0,
+    "numeric 8": 0.0,
+    "numeric 10": 0.0,
+    "capitals 4": 0.4225,
+    "capitals 7": 0.1935,
+    "capitals 9": 0.1144,
+    "capitals 12": 0.0543,
+}
+
+
+class TestReadsAsCasedWords:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "MERRIVALE",
+            "TANSLEY",
+            "OWNR",
+            "NASA",
+            "LEGO",
+            "currentTab",
+            "tabLISTresults",
+            "startDate",
+        ],
+    )
+    def test_a_word_in_capitals_or_camel_case_reads_as_cased_words(self, value: str) -> None:
+        assert reads_as_cased_words(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "",
+            '""',
+            "iPhone",
+            "iPad",
+            "XL",
+            "searchByName",
+            "kQzPwMxT",
+            "QZXKWPRM",
+            "CurrentTab",
+            "currentTab2",
+            "current tab",
+            "ABCDEFGHIJKLMNOPQRST",
+            "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd",
+        ],
+    )
+    def test_other_values_do_not(self, value: str) -> None:
+        assert not reads_as_cased_words(value)
+
+    @pytest.mark.parametrize("shape", sorted(_CASED_WORD_LOSS_CEILINGS))
+    def test_few_random_values_reads_as_words_rejects_read_as_cased_words(self, shape: str) -> None:
+        rng = random.Random(f"296-{shape}")  # noqa: S311 - a fixed sample, not a secret
+        values = [_random_value(shape, rng) for _ in range(10_000)]
+        lost = [v for v in values if reads_as_cased_words(v) and not reads_as_words(v)]
+        assert len(lost) / len(values) <= _CASED_WORD_LOSS_CEILINGS[shape]
 
 
 # The graft skill's HAR reader runs on the standard library alone, so it carries

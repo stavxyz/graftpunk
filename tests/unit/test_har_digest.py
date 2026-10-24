@@ -4357,6 +4357,73 @@ class TestFlaggedNamesOf:
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
 
+    def test_a_search_forms_cleared_and_cased_word_cookies_are_left_out(
+        self, tmp_path: Path
+    ) -> None:
+        """A property search's form state (#296): fields cleared to a quoted empty
+        string, a surname in capitals, a 4-letter code and a camelCase tab name
+        hold no credential. The session cookie (HttpOnly), the CSRF cookie, header
+        and hidden input (token names) stay flagged."""
+        page = _entry(
+            "GET",
+            "https://records.example.com/search",
+            content_type="text/html",
+            body=(
+                '<form method="post" action="/search">'
+                '<input type="hidden" name="csrfmiddlewaretoken" value="planted">'
+                "</form>"
+            ),
+            set_cookies=["sessionid=k3v9q2m7x1c8z4w6r5t0y2u8i3o7p1a9; Path=/; HttpOnly"],
+        )
+        page["response"]["cookies"] = [
+            {"name": "sessionid", "value": "k3v9q2m7x1c8z4w6r5t0y2u8i3o7p1a9"},
+            {"name": "csrftoken", "value": "Qm7Zr2Xk9Lp4Wv8Bn3Hd6Ts1Fy5Gc0Je"},
+            {"name": "block", "value": '""'},
+            {"name": "lot", "value": '""'},
+            {"name": "subdivision", "value": '""'},
+            {"name": "text", "value": '""'},
+            {"name": "startDate", "value": '""'},
+        ]
+        search = _entry(
+            "POST",
+            "https://records.example.com/search",
+            request_headers={"X-CSRFToken": "planted"},
+        )
+        search["response"]["cookies"] = [
+            {"name": "text", "value": "mill%20creek"},
+            {"name": "startDate", "value": "10/01/2026"},
+            {"name": "name1", "value": "MERRIVALE"},
+            {"name": "name1", "value": "TANSLEY"},
+            {"name": "name_type1", "value": "OWNR"},
+            {"name": "currentTab", "value": "tabLISTresults"},
+        ]
+        har = _write_har(tmp_path, [page, search])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == (
+            "X-CSRFToken",
+            "csrfmiddlewaretoken",
+            "csrftoken",
+            "sessionid",
+        )
+
+    @pytest.mark.parametrize("cleared", ['""', "''", "%22%22", "%20", "-"])
+    def test_a_value_of_punctuation_alone_holds_nothing(self, tmp_path: Path, cleared: str) -> None:
+        """A field cleared to a quoted empty string is a value the server sent,
+        and it holds nothing; a cookie only ever set so is not flagged."""
+        har = _write_har(tmp_path, [self._with_cookies([("block", cleared)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
+    @pytest.mark.parametrize("value", ["kqzpwmxtrvbnhgfd", "xQzKwPmRtVbNhGfL", "Zq9XkLmP"])
+    def test_a_random_value_with_no_id_shape_still_flags_a_plain_named_cookie(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        """holds_an_id reads none of these as an id; they are flagged because
+        they read neither as words nor as cased words."""
+        har = _write_har(tmp_path, [self._with_cookies([("visit", value)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
 
 class TestEveryNamePositionGoesThroughTheIdRule:
     """Response keys, header names, and cookie names go through
