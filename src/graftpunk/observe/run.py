@@ -26,8 +26,42 @@ REDACTED = "***REDACTED***"
 # would mangle it beyond use, and such values are not meaningfully secret.
 _MIN_REDACT_LEN = 3
 # An HTTP Basic credential: the scheme, then base64 of "user:password". A JSON
-# body may escape each "/" of the token as "\/".
-_BASIC_RE = re.compile(r"(\bBasic\s+)((?:[A-Za-z0-9+]|/|\\/)+={0,2})", re.IGNORECASE)
+# body may escape each "/" of the token as "\/"; a URL-encoded one writes the
+# space as "%20" or "+" and "+", "/" and "=" as "%2B", "%2F" and "%3D".
+_BASIC_RE = re.compile(
+    r"(\bBasic(?:\s+|%20|\+))((?:[A-Za-z0-9+/=]|\\/|%2[BbFf]|%3[Dd])+)", re.IGNORECASE
+)
+
+#: A credential field is an identifier only when its name, lower-cased with
+#: "_", "-", "." and spaces removed, is exactly one of these. Every other
+#: credential field is a secret: name heuristics have each missed a secret
+#: spelling, and a secret taken for an identifier is left in URLs.
+IDENTIFIER_FIELD_NAMES = frozenset(
+    {
+        "username",
+        "user",
+        "userid",
+        "email",
+        "emailaddress",
+        "login",
+        "loginid",
+        "loginname",
+        "account",
+        "accountid",
+    }
+)
+
+
+def is_identifier_field(field_name: str) -> bool:
+    """Whether a credential field holds an account identifier rather than a secret.
+
+    By the allowlist :data:`IDENTIFIER_FIELD_NAMES` only, on the name
+    lower-cased with ``_``, ``-``, ``.`` and spaces removed: ``user_name``,
+    ``Email-Address`` and ``loginID`` are identifiers, and ``login_password``,
+    ``user_pass``, ``userPINCode`` and anything else are secrets.
+    """
+    return re.sub(r"[_\-. ]", "", field_name.lower()) in IDENTIFIER_FIELD_NAMES
+
 
 # The HAR fields that hold a URL (or its query) rather than a body or header.
 _URL_FIELDS = frozenset({"url", "queryString", "redirectURL"})
@@ -51,10 +85,7 @@ class Redaction:
     @classmethod
     def from_credentials(cls, credentials: Mapping[str, str]) -> Redaction:
         """Every credential value, an identifier field's as an identifier and the
-        rest as secrets, by :func:`graftpunk.session_identity.is_identifier_field`:
-        secret words win, so ``login_password`` or ``email_code`` is a secret."""
-        from graftpunk.session_identity import is_identifier_field
-
+        rest as secrets, by :func:`is_identifier_field` (an allowlist)."""
         secrets: list[str] = []
         identifiers: list[str] = []
         for name, value in credentials.items():
@@ -146,8 +177,22 @@ def _redaction_forms(secrets: Iterable[str]) -> list[str]:
     return sorted(forms, key=len, reverse=True)
 
 
-# A whole value: not preceded or followed by a letter or digit.
-_WHOLE = r"(?<![A-Za-z0-9]){}(?![A-Za-z0-9])"
+# A whole value: not preceded or followed by a letter or digit, where an
+# escape sequence ("%XX", a JSON escape, an HTML entity) also counts as a
+# delimiter, since its last character is often a letter or digit.
+_ESCAPE_BEFORE = (
+    r"(?<=%[0-9A-Fa-f]{2})",
+    r"(?<=\\[nrtbf\"/\\])",
+    r"(?<=\\u[0-9A-Fa-f]{4})",
+    r"(?<=&quot;)",
+    r"(?<=&amp;)",
+    r"(?<=&apos;)",
+    r"(?<=&lt;)",
+    r"(?<=&gt;)",
+    r"(?<=&#\d\d;)",
+    r"(?<=&#x[0-9A-Fa-f]{2};)",
+)
+_WHOLE = "(?:(?<![A-Za-z0-9])|" + "|".join(_ESCAPE_BEFORE) + ")(?:{value})(?![A-Za-z0-9])"
 
 
 @dataclass(frozen=True)
@@ -166,9 +211,11 @@ class _Scrubber:
         alternation = "|".join(re.escape(f) for f in forms)
         return cls(
             secret_forms=tuple(_redaction_forms(redaction.secrets)),
-            identifier_re=re.compile(_WHOLE.format(f"(?:{alternation})")) if forms else None,
+            identifier_re=re.compile(_WHOLE.replace("{value}", alternation)) if forms else None,
             identifier_bytes_re=(
-                re.compile(_WHOLE.format(f"(?:{alternation})").encode("utf-8")) if forms else None
+                re.compile(_WHOLE.replace("{value}", alternation).encode("utf-8"))
+                if forms
+                else None
             ),
             basic_values=_kept_secrets(redaction.everything),
         )
@@ -197,7 +244,8 @@ def _scrub_basic(value: str, secrets: tuple[str, ...]) -> str:
 
     def replace(match: re.Match[str]) -> str:
         try:
-            decoded = base64.b64decode(match.group(2).replace("\\/", "/"), validate=True)
+            token = urllib.parse.unquote(match.group(2).replace("\\/", "/"))
+            decoded = base64.b64decode(token, validate=True)
         except (binascii.Error, ValueError):
             return match.group(0)
         text = decoded.decode("utf-8", errors="replace")

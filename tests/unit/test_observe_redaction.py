@@ -1,9 +1,9 @@
 """What an observe run is scrubbed of (#283).
 
 Every credential is scrubbed from login and plugin-command runs. An identifier
-field (by :func:`graftpunk.session_identity.is_identifier_field`, where secret
-words win) is replaced only as a whole value and left in the URL fields; every
-other credential is a secret, replaced wherever it occurs. An HTTP Basic
+field (by the allowlist :func:`graftpunk.observe.run.is_identifier_field`) is
+replaced only as a whole value and left in the URL fields; every other
+credential is a secret, replaced wherever it occurs. An HTTP Basic
 credential holding a credential is replaced whole.
 """
 
@@ -18,9 +18,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from graftpunk.observe.run import REDACTED, Redaction, redact_har_entries
-from graftpunk.session_identity import is_identifier_field
+from graftpunk.observe.run import REDACTED, Redaction, is_identifier_field, redact_har_entries
 
+# Every name the reviews of #286 found a heuristic leak: all are secrets.
 SECRET_FIELD_NAMES = [
     "login_password",
     "user_password",
@@ -31,6 +31,35 @@ SECRET_FIELD_NAMES = [
     "login_token",
     "user_key",
     "userkey",
+    "userPINCode",
+    "loginMFACode",
+    "emailOTPCode",
+    "user2FA",
+    "user_pass",
+    "login_pwd",
+    "user_passwd",
+    "userPass",
+    "login_pw",
+    "user_passcode",
+    "user_email",
+]
+IDENTIFIER_FIELD_NAMES = [
+    "username",
+    "user_name",
+    "UserName",
+    "user",
+    "user-id",
+    "userID",
+    "email",
+    "Email",
+    "email_address",
+    "emailAddress",
+    "login",
+    "login.id",
+    "loginName",
+    "account",
+    "Account ID",
+    "account_id",
 ]
 HIDDEN = "s3cret-value-77"
 USER = "bob@example.com"
@@ -38,12 +67,12 @@ USER = "bob@example.com"
 
 class TestTheClassifier:
     @pytest.mark.parametrize("name", SECRET_FIELD_NAMES)
-    def test_a_secret_word_wins_over_an_identifier_word(self, name: str) -> None:
+    def test_a_name_off_the_allowlist_is_a_secret(self, name: str) -> None:
         assert not is_identifier_field(name)
         assert Redaction.from_credentials({name: HIDDEN}) == Redaction(secrets=(HIDDEN,))
 
-    @pytest.mark.parametrize("name", ["username", "email", "user_email", "login", "userName"])
-    def test_an_identifier_field(self, name: str) -> None:
+    @pytest.mark.parametrize("name", IDENTIFIER_FIELD_NAMES)
+    def test_an_allowlisted_name_in_any_spelling_is_an_identifier(self, name: str) -> None:
         assert is_identifier_field(name)
         assert Redaction.from_credentials({name: USER}) == Redaction(identifiers=(USER,))
 
@@ -184,6 +213,16 @@ class TestIdentifiersMatchWholeValues:
             (json.dumps({"u": USER}), json.dumps({"u": REDACTED})),
             (f"x{USER}y", f"x{USER}y"),
             (f"{USER}2", f"{USER}2"),
+            # An escape sequence is a delimiter, though it ends in a letter or digit.
+            (
+                "returnUrl=%2Faccount%3Femail%3Dbob%40example.com",
+                f"returnUrl=%2Faccount%3Femail%3D{REDACTED}",
+            ),
+            ("%22bob%40example.com%22", f"%22{REDACTED}%22"),
+            ('{"msg": "hello\\nbob@example.com"}', f'{{"msg": "hello\\n{REDACTED}"}}'),
+            ('{"u": "\\u0022bob@example.com\\u0022"}', f'{{"u": "\\u0022{REDACTED}\\u0022"}}'),
+            ("&quot;bob@example.com&quot;", f"&quot;{REDACTED}&quot;"),
+            ("&#34;bob@example.com&#34;", f"&#34;{REDACTED}&#34;"),
         ],
     )
     def test_in_its_raw_percent_encoded_and_json_forms(self, text: str, expected: str) -> None:
@@ -232,6 +271,28 @@ class TestBasicCredentials:
         (clean,) = redact_har_entries([entry], Redaction(secrets=(HIDDEN,)))
 
         assert clean["request"]["headers"][0]["value"] == f"{scheme} {REDACTED}"
+
+    def test_a_location_header_with_an_encoded_return_url(self) -> None:
+        location = "https://myshop.example/signin?returnUrl=%2Faccount%3Femail%3Dbob%40example.com"
+        entry = {"response": {"headers": [{"name": "Location", "value": location}]}}
+
+        (clean,) = redact_har_entries([entry], Redaction(identifiers=(USER,)))
+
+        assert clean["response"]["headers"][0]["value"] == (
+            f"https://myshop.example/signin?returnUrl=%2Faccount%3Femail%3D{REDACTED}"
+        )
+
+    @pytest.mark.parametrize("space", ["%20", "+"])
+    def test_a_url_encoded_echo(self, space: str) -> None:
+        import urllib.parse
+
+        token = base64.b64encode(f"bob@example.com:{HIDDEN}".encode()).decode()
+        text = f"auth=Basic{space}{urllib.parse.quote(token, safe='')}&next=1"
+        entry = {"request": {"postData": {"text": text}}}
+
+        (clean,) = redact_har_entries([entry], Redaction(secrets=(HIDDEN,)))
+
+        assert clean["request"]["postData"]["text"] == f"auth=Basic{space}{REDACTED}&next=1"
 
     def test_a_json_body_that_escapes_its_slashes(self) -> None:
         # A credential whose base64 holds "/" (escaped as "\\/" by some JSON encoders).
