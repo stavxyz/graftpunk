@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import requests
 from typer.testing import CliRunner
 
-from graftpunk.cli.http_commands import _save_observe_data
+from graftpunk.cli.http_commands import _start_observe
 from graftpunk.cli.main import app
 from graftpunk.observe.storage import session_dirname
 from tests.unit.cli_harness import echo_loaded_session, strip_ansi
@@ -40,6 +41,13 @@ def _fake_response() -> requests.Response:
         "GET", "https://example.com/", headers={"User-Agent": "test"}
     ).prepare()
     return response
+
+
+def _http_run(name: str) -> Any:
+    """The run ``gp http`` files for a request made with session *name*."""
+    run = _start_observe(requests.Session(), name, "https://example.com")
+    run.finish()
+    return run._storage
 
 
 async def _run_observe_go_with_fake_browser(base_dir: Path, namespace: str) -> None:
@@ -82,8 +90,8 @@ class TestHttpWriterReaderRoundTrip:
 
     @pytest.mark.parametrize("name", [LABELLED, UNDERSCORED])
     def test_saved_run_is_found_by_show(self, tmp_path: Path, name: str) -> None:
-        with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            storage = _save_observe_data(name, _fake_response())
+        with patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path):
+            storage = _http_run(name)
 
         assert storage is not None, "labelled session names must not break the HAR save"
         assert storage.run_dir.parent.name == session_dirname(name)
@@ -97,17 +105,17 @@ class TestHttpWriterReaderRoundTrip:
     def test_labelled_name_does_not_trip_the_best_effort_warning(self, tmp_path: Path) -> None:
         """The broad except used to swallow ObserveStorage's ValueError (#151)."""
         with (
-            patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path),
-            patch("graftpunk.cli.http_commands.LOG") as log,
+            patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.observe.context.LOG") as log,
         ):
-            _save_observe_data(LABELLED, _fake_response())
+            _http_run(LABELLED)
 
         assert log.warning.call_args_list == []
 
     @pytest.mark.parametrize("name", [LABELLED, UNDERSCORED])
     def test_saved_run_is_found_by_list(self, tmp_path: Path, name: str) -> None:
-        with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            _save_observe_data(name, _fake_response())
+        with patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path):
+            _http_run(name)
 
         with (
             patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path),
@@ -129,6 +137,7 @@ class TestHttpObserveUsesTheResolvedName:
 
         session = MagicMock(spec=requests.Session)
         session.headers = {}
+        session.adapters = {}
         session.request.return_value = _fake_response()
 
         with (
@@ -139,7 +148,7 @@ class TestHttpObserveUsesTheResolvedName:
             patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", []),
             patch("graftpunk.cli.plugin_commands._plugin_session_map", {"myshop": "myshop"}),
             patch("graftpunk.cli.plugin_commands.list_sessions", return_value=["myshop@alice"]),
-            patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path),
         ):
             result = runner.invoke(
                 root_app, ["http", "get", "--session", "myshop", "https://example.com"]
@@ -167,6 +176,7 @@ class TestHttpObserveUsesTheResolvedName:
 
         session = MagicMock(spec=requests.Session)
         session.headers = {}
+        session.adapters = {}
         session.request.return_value = _fake_response()
 
         with (
@@ -176,7 +186,7 @@ class TestHttpObserveUsesTheResolvedName:
             ),
             patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", []),
             patch("graftpunk.cli.plugin_commands._plugin_session_map", {}),
-            patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path),
         ):
             result = runner.invoke(
                 root_app, ["http", "get", "--session", "myshop", "https://example.com"]

@@ -9,12 +9,12 @@ import os
 import stat
 import tempfile
 import urllib.parse
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
 from graftpunk.logging import get_logger
-from graftpunk.observe.storage import ObserveStorage
+from graftpunk.observe.storage import ObserveStorage, write_private_file
 
 LOG = get_logger(__name__)
 
@@ -181,25 +181,44 @@ def write_capture_data(storage: ObserveStorage, capture: Any, redact: Iterable[s
     is guarded on its own and logged at error level when it fails, since the
     user opted into this run: a failure here never reaches the caller.
 
+    A capture with ``iter_har_entries`` (the HTTP capture, which spools its
+    entries to disk) is read, scrubbed and written one entry at a time, and
+    its spool removed once the HAR is written.
+
     Returns:
         The number of HAR entries written, 0 when the HAR could not be.
     """
+    from graftpunk.observe.http_capture import HttpCaptureBackend
+
     redact = tuple(redact)
     written = 0
-    try:
-        entries = redact_har_entries(capture.get_har_entries(), redact)
+
+    def scrubbed(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        clean = redact_har_entries(entries, redact)
         # Scrub the body files first, since that can update an entry's
         # _postDataSize; a failure there must not cost the HAR.
         try:
-            redact_request_body_files(entries, redact, storage.run_dir)
+            redact_request_body_files(clean, redact, storage.run_dir)
         except Exception as exc:  # noqa: BLE001 - each write is best-effort
             LOG.error(
                 "observe_request_body_redaction_failed",
                 error=str(exc),
                 exc_type=type(exc).__name__,
             )
-        storage.write_har(entries)
-        written = len(entries)
+        return clean
+
+    def one_at_a_time(entries: Iterable[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+        for entry in entries:
+            yield from scrubbed([entry])
+
+    try:
+        if isinstance(capture, HttpCaptureBackend):
+            written = storage.write_har(one_at_a_time(capture.iter_har_entries()))
+            capture.discard_spool()
+        else:
+            entries = scrubbed(capture.get_har_entries())
+            storage.write_har(entries)
+            written = len(entries)
     except Exception as exc:  # noqa: BLE001 - each write is best-effort
         LOG.error("observe_har_write_failed", error=str(exc), exc_type=type(exc).__name__)
     try:
@@ -271,7 +290,7 @@ async def save_observe_run(
         if page_source:
             source_path = storage.run_dir / "page-source.html"
             if (
-                step("page source", lambda: source_path.write_text(page_source, encoding="utf-8"))
+                step("page source", lambda: write_private_file(source_path, page_source))
                 is not None
             ):
                 say(f"[green]Page source saved:[/green] {source_path}")

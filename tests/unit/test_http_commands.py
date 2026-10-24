@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
 import io
-import json
-from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,7 +15,6 @@ from graftpunk.cli.http_commands import (
     _print_response,
     _resolve_json_body,
     _resolve_role_name,
-    _save_observe_data,
 )
 from tests.unit.cli_harness import echo_loaded_session
 
@@ -418,102 +413,6 @@ class TestMakeRequestErrorPaths:
         mock_load.assert_called_once_with("nonexistent", resolve=True)
 
 
-class TestSaveObserveData:
-    """Tests for _save_observe_data."""
-
-    @staticmethod
-    def _response(
-        method: str,
-        url: str,
-        status: int,
-        body: bytes,
-        *,
-        content_type: str = "application/json",
-        request_body: str | None = None,
-        location: str | None = None,
-    ) -> requests.Response:
-        response = requests.Response()
-        response.status_code = status
-        response.reason = "OK" if status == 200 else "Found"
-        response.headers["Content-Type"] = content_type
-        if location is not None:
-            response.headers["Location"] = location
-        response._content = body
-        response.url = url
-        response.elapsed = datetime.timedelta(seconds=0.3)
-        response.request = requests.Request(
-            method,
-            url,
-            data=request_body,
-            headers={"User-Agent": "test", "Content-Type": "application/json"},
-        ).prepare()
-        return response
-
-    @staticmethod
-    def _entries(storage: Any) -> list[dict[str, Any]]:
-        return json.loads((storage.run_dir / "network.har").read_text())["log"]["entries"]
-
-    def test_records_the_request_and_response_bodies(self, tmp_path: Path) -> None:
-        response = self._response(
-            "POST",
-            "https://example.com/api",
-            200,
-            b'{"created": true}',
-            request_body='{"name": "test"}',
-        )
-
-        with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            storage = _save_observe_data("test-session", response)
-
-        assert storage is not None
-        (entry,) = self._entries(storage)
-        assert entry["request"]["method"] == "POST"
-        assert entry["request"]["url"] == "https://example.com/api"
-        assert entry["request"]["postData"]["text"] == '{"name": "test"}'
-        assert entry["response"]["content"]["text"] == '{"created": true}'
-        assert entry["time"] == pytest.approx(300.0)
-        assert not (storage.run_dir / "bodies").exists()
-
-    def test_records_each_redirect_hop(self, tmp_path: Path) -> None:
-        hop = self._response(
-            "POST",
-            "https://example.com/login",
-            302,
-            b"",
-            content_type="text/html",
-            request_body="user=alice",
-            location="/home",
-        )
-        final = self._response(
-            "GET", "https://example.com/home", 200, b"<h1>home</h1>", content_type="text/html"
-        )
-        final.history = [hop]
-
-        with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            storage = _save_observe_data("test-session", final)
-
-        assert storage is not None
-        first, second = self._entries(storage)
-        assert first["response"]["status"] == 302
-        assert first["response"]["redirectURL"] == "https://example.com/home"
-        assert first["request"]["postData"]["text"] == "user=alice"
-        assert second["response"]["content"]["text"] == "<h1>home</h1>"
-
-    def test_a_body_over_the_cap_goes_to_bodies(self, tmp_path: Path) -> None:
-        from graftpunk.observe.capture import MAX_RESPONSE_BODY_SIZE
-
-        big = b'{"rows": "' + b"x" * MAX_RESPONSE_BODY_SIZE + b'"}'
-        response = self._response("GET", "https://example.com/export", 200, big)
-
-        with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            storage = _save_observe_data("test-session", response)
-
-        assert storage is not None
-        (entry,) = self._entries(storage)
-        assert entry["response"]["content"]["_bodyFile"] == "bodies/http-1.json"
-        assert (storage.run_dir / "bodies" / "http-1.json").read_bytes() == big
-
-
 class TestPrintResponse:
     """Tests for _print_response."""
 
@@ -584,8 +483,7 @@ class TestHttpCommandCLI:
 
         with (
             patch.object(requests.Session, "request", return_value=mock_response),
-            patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", "/tmp/test-observe"),  # noqa: S108
-            patch("graftpunk.cli.http_commands._save_observe_data"),
+            patch("graftpunk.cli.http_commands._start_observe"),
         ):
             result = runner.invoke(app, ["http", "get", "--no-session", "https://example.com"])
 
@@ -849,7 +747,7 @@ class TestRoleCLI:
                 "graftpunk.cli.http_commands.load_session_for_api_resolved",
                 side_effect=echo_loaded_session(mock_session),
             ),
-            patch("graftpunk.cli.http_commands._save_observe_data"),
+            patch("graftpunk.cli.http_commands._start_observe"),
             patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", []),
             patch("graftpunk.cli.plugin_commands._plugin_session_map", {}),
         ):

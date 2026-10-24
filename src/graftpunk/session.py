@@ -121,6 +121,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         observe_mode: str = "off",
         call_timeout: float | None = DEFAULT_CALL_TIMEOUT_S,
         navigate_timeout: float | None = DEFAULT_NAVIGATE_TIMEOUT_S,
+        performance_log: bool | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize browser session.
@@ -143,6 +144,11 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 the URL and raises ``BrowserError``; the tab stays on the
                 page it showed before. None waits without a limit. Default
                 120.
+            performance_log: Stealth Selenium driver only. Have ChromeDriver
+                keep Chrome's performance log, which every Selenium capture
+                (observe, and the login's header-role capture) reads. None,
+                the default, keeps it exactly when ``observe_mode`` is not
+                "off".
             **kwargs: Additional keyword arguments passed to requestium.Session.
 
         Raises:
@@ -208,7 +214,10 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 # The observe capture reads Chrome's performance log, which
                 # ChromeDriver keeps only when asked at launch; off mode pays nothing.
                 self._stealth_driver = create_stealth_driver(
-                    headless=headless, performance_log=observe_mode != "off"
+                    headless=headless,
+                    performance_log=(
+                        observe_mode != "off" if performance_log is None else performance_log
+                    ),
                 )
 
                 # Initialize requestium Session without creating a new driver
@@ -479,6 +488,8 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         LOG.error("observe_start_capture_failed", error=str(exc), exc_type=type(exc).__name__)
         gp_console.warn(f"Observability capture unavailable: could not start it ({exc}).")
         self._capture = None
+        if self._observe_storage is not None and self._observe_storage.remove_if_empty():
+            self._observe_storage = None
 
     def _start_observe(self) -> None:
         """Initialize observability capture if mode is not 'off' and driver exists.

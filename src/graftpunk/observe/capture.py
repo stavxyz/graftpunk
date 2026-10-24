@@ -52,7 +52,20 @@ BINARY_MIME_PREFIXES = (
     "application/vnd.ms-",
 )
 
-TEXT_MIME_KEYWORDS = ("json", "html", "text", "xml", "javascript", "css")
+TEXT_MIME_KEYWORDS = (
+    "json",
+    "html",
+    "text",
+    "xml",
+    "javascript",
+    "css",
+    "csv",
+    "x-www-form-urlencoded",
+    "yaml",
+)
+
+# Statuses that carry no body by definition: nothing to fetch or store.
+_BODYLESS_STATUSES = frozenset({204, 205, 304})
 
 
 def _is_binary_mime(mime: str) -> bool:
@@ -62,14 +75,24 @@ def _is_binary_mime(mime: str) -> bool:
 
 
 def _is_text_mime(mime: str) -> bool:
-    """Check if MIME type represents a text format worth capturing body for."""
+    """Check if MIME type represents a text format that can go into the HAR as text."""
     mime_lower = mime.lower()
     return any(kw in mime_lower for kw in TEXT_MIME_KEYWORDS)
 
 
-def _should_stream_to_disk(mime: str, body_size: int, max_body_size: int) -> bool:
-    """Determine if a response body should be streamed to disk."""
-    return _is_binary_mime(mime) or (_is_text_mime(mime) and body_size > max_body_size)
+def _has_no_body(status: Any) -> bool:
+    """True for a 1xx, 204, 205 or 304 response, which has no body to fetch."""
+    return isinstance(status, int) and (100 <= status < 200 or status in _BODYLESS_STATUSES)
+
+
+def _body_expected(data: dict[str, Any], response: dict[str, Any]) -> bool:
+    """Whether the browser captures fetch this response's body.
+
+    Every response's body is fetched, whatever its type (an unknown or missing
+    type is kept in ``bodies/``), except where HTTP says there is none: a HEAD
+    request, or a 1xx, 204, 205 or 304 status.
+    """
+    return data.get("method") != "HEAD" and not _has_no_body(response.get("status"))
 
 
 def _mime_to_extension(mime: str) -> str:
@@ -82,6 +105,9 @@ def _mime_to_extension(mime: str) -> str:
         "application/xml": ".xml",
         "text/plain": ".txt",
         "text/css": ".css",
+        "text/csv": ".csv",
+        "application/csv": ".csv",
+        "application/x-www-form-urlencoded": ".txt",
         "application/javascript": ".js",
         "text/javascript": ".js",
         "application/pdf": ".pdf",
@@ -93,6 +119,41 @@ def _mime_to_extension(mime: str) -> str:
     return mapping.get(mime_lower, ".bin")
 
 
+def _declared_charset(content_type: str) -> str | None:
+    """The ``charset`` parameter of a ``Content-Type`` value, or None."""
+    for param in content_type.split(";")[1:]:
+        name, sep, value = param.partition("=")
+        if sep and name.strip().lower() == "charset":
+            return value.strip().strip("\"'") or None
+    return None
+
+
+def _decode_text(
+    raw: bytes, charset: str | None, detect: Callable[[], str | None] | None
+) -> str | None:
+    """*raw* as text: in its declared charset when there is one, else as UTF-8,
+    else in the charset *detect* returns. None when none of those decodes it."""
+    candidates = [charset] if charset else ["utf-8", detect() if detect is not None else None]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            return raw.decode(candidate)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return None
+
+
+def _write_body_file(bodies_dir: Path, name: str, raw: bytes) -> str:
+    """Write *raw* to ``bodies_dir/name``, owner-only, and return its run-relative path."""
+    from graftpunk.observe.storage import make_private_dir, write_private_file
+
+    bodies_dir.parent.mkdir(parents=True, exist_ok=True)
+    make_private_dir(bodies_dir)
+    write_private_file(bodies_dir / name, raw)
+    return f"bodies/{name}"
+
+
 def _process_response_body(
     response: dict[str, Any],
     body: str | bytes,
@@ -101,39 +162,62 @@ def _process_response_body(
     mime: str,
     max_body_size: int,
     bodies_dir: Path | None,
+    *,
+    detect_charset: Callable[[], str | None] | None = None,
 ) -> None:
-    """Decode, size-check, and store a response body (in-memory or on disk).
+    """Store a response body in the HAR as text, in ``bodies_dir``, or mark it left out.
 
-    Modifies *response* dict in-place to add ``body`` text or ``_bodyFile`` reference,
-    and updates ``bodySize``.
+    A body of a text type (:func:`_is_text_mime`) within *max_body_size* goes
+    into the HAR as text. A ``str`` body (CDP's, when not base64) is that text
+    already; bytes are decoded with the charset *mime* declares, else as
+    UTF-8, else with the charset *detect_charset* returns. Every other body,
+    one of a binary, unknown or missing type, a larger one and one that does
+    not decode, is written to ``bodies_dir`` as raw bytes, named
+    ``<request_id><ext>``, and referenced as ``_bodyFile``. Without
+    ``bodies_dir`` (or when the write fails) it is left out and marked:
+    ``_bodyNotCaptured`` holds why. An empty body is stored as empty text.
+
+    Modifies *response* in place and sets ``bodySize``.
     """
     if base64_encoded:
         body_bytes = base64.b64decode(body)
+        text: str | None = None
+    elif isinstance(body, str):
+        body_bytes = body.encode("utf-8", errors="surrogatepass")
+        text = body
     else:
-        body_bytes = body.encode("utf-8") if isinstance(body, str) else body
+        body_bytes = body
+        text = None
 
-    body_size = len(body_bytes) if body_bytes else 0
+    body_size = len(body_bytes)
     response["bodySize"] = body_size
+    if body_size == 0:
+        response["body"] = ""
+        return
 
-    if bodies_dir and _should_stream_to_disk(mime, body_size, max_body_size):
-        bodies_dir.mkdir(parents=True, exist_ok=True)
-        ext = _mime_to_extension(mime)
-        body_filename = f"{request_id}{ext}"
-        body_path = bodies_dir / body_filename
-        if isinstance(body_bytes, bytes):
-            body_path.write_bytes(body_bytes)
-        else:
-            body_path.write_text(body_bytes, encoding="utf-8")
-        response["_bodyFile"] = f"bodies/{body_filename}"
-    elif _is_text_mime(mime) and body_size <= max_body_size:
-        if isinstance(body, str) and not base64_encoded:
-            response["body"] = body
-        else:
-            response["body"] = (
-                body_bytes.decode("utf-8", errors="replace")
-                if isinstance(body_bytes, bytes)
-                else str(body_bytes)
+    if not _is_text_mime(mime):
+        reason = "binary" if _is_binary_mime(mime) else "not_text"
+    elif body_size > max_body_size:
+        reason = "over_max_body_size"
+    else:
+        if text is None:
+            text = _decode_text(body_bytes, _declared_charset(mime), detect_charset)
+        if text is not None:
+            response["body"] = text
+            return
+        reason = "not_decodable"
+
+    if bodies_dir is not None:
+        try:
+            response["_bodyFile"] = _write_body_file(
+                bodies_dir, f"{request_id}{_mime_to_extension(mime)}", body_bytes
             )
+            return
+        except OSError as exc:
+            LOG.warning("response_body_file_write_failed", request_id=request_id, error=str(exc))
+            reason = "write_failed"
+    response["_bodyNotCaptured"] = reason
+    LOG.info("response_body_not_captured", request_id=request_id, size=body_size, reason=reason)
 
 
 def _wall_time_to_iso(wall_time: float | None) -> str:
@@ -352,10 +436,9 @@ def _keep_post_data(
         stem, ext = f"{request_id}.request", _mime_to_extension(_request_content_type(data))
         name, copy = f"{stem}{ext}", 2
         try:
-            bodies_dir.mkdir(parents=True, exist_ok=True)
             while (bodies_dir / name).exists():
                 name, copy = f"{stem}-{copy}{ext}", copy + 1
-            (bodies_dir / name).write_bytes(body.raw)
+            _write_body_file(bodies_dir, name, body.raw)
         except OSError as exc:
             LOG.warning("post_data_file_write_failed", request_id=request_id, error=str(exc))
         else:
@@ -846,6 +929,13 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
             },
         },
     }
+    not_captured = response.get("_bodyNotCaptured")
+    if not_captured:
+        # HAR 1.2 custom fields, as _bodyFile is: the body is not in the HAR
+        # or in bodies/, and why.
+        content = entry["response"]["content"]
+        content["_bodyNotCaptured"] = True
+        content["_bodyNotCapturedReason"] = str(not_captured)
     # Add POST data if present
     post_data = request_data.get("post_data")
     if post_data is not None:
@@ -1109,7 +1199,7 @@ class SeleniumCaptureBackend:
             # Fetch response body
             response = data.get("response", {})
             mime = response.get("mimeType", "")
-            if _is_text_mime(mime) or _is_binary_mime(mime):
+            if _body_expected(data, response):
                 try:
                     result = self._driver.execute_cdp_cmd(
                         "Network.getResponseBody", {"requestId": request_id}
@@ -1556,7 +1646,7 @@ class NodriverCaptureBackend:
             # Fetch response body (fallback for any missed by eager fetch)
             response = data.get("response", {})
             mime = response.get("mimeType", "")
-            if _is_text_mime(mime) or _is_binary_mime(mime):
+            if _body_expected(data, response):
                 try:
                     body, base64_encoded = await tab.send(
                         cdp_net.get_response_body(cdp_net.RequestId(request_id)),
@@ -1760,7 +1850,7 @@ class NodriverCaptureBackend:
                 return
 
             mime = response.get("mimeType", "")
-            if not (_is_text_mime(mime) or _is_binary_mime(mime)):
+            if not _body_expected(data, response):
                 return
 
             tab = self._tab

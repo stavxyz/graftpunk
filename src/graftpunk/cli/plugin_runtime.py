@@ -218,7 +218,21 @@ def run_plugin_command(
             kwargs=kwargs,
         )
     finally:
-        observe_ctx.finish()
+        observe_ctx.finish(redact=_observe_secrets(plugin, observe_mode))
+
+
+def _observe_secrets(plugin: CLIPluginProtocol, observe_mode: str) -> list[str]:
+    """What a plugin command's run is scrubbed of: the plugin's login credentials
+    gp can read (:func:`graftpunk.cli.login_commands.known_credential_values`)."""
+    if observe_mode == "off":
+        return []
+    from graftpunk.cli.login_commands import known_credential_values
+
+    try:
+        return known_credential_values(plugin)
+    except Exception as exc:  # noqa: BLE001 - the run is still written, unscrubbed
+        LOG.error("observe_secrets_unavailable", error=str(exc), exc_type=type(exc).__name__)
+        return []
 
 
 def _inject_tokens_and_run(

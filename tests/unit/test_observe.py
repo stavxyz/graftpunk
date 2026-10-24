@@ -14,14 +14,13 @@ import selenium.common.exceptions
 
 from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
 from graftpunk.observe.capture import (
-    MAX_RESPONSE_BODY_SIZE,
     NodriverCaptureBackend,
     SeleniumCaptureBackend,
     _build_har_entry,
     _is_binary_mime,
     _is_text_mime,
     _mime_to_extension,
-    _should_stream_to_disk,
+    _process_response_body,
     _wall_time_to_iso,
     create_capture_backend,
 )
@@ -1365,18 +1364,52 @@ class TestSharedHARHelpers:
     def test_is_text_mime_image_is_false(self) -> None:
         assert _is_text_mime("image/png") is False
 
-    def test_should_stream_to_disk_binary(self) -> None:
-        assert _should_stream_to_disk("image/png", 100, MAX_RESPONSE_BODY_SIZE) is True
+    @staticmethod
+    def _stored(mime: str, body: bytes, tmp_path: Path, *, max_size: int = 100) -> dict:
+        response: dict = {}
+        _process_response_body(response, body, False, "r1", mime, max_size, tmp_path / "bodies")
+        return response
 
-    def test_should_stream_to_disk_large_text(self) -> None:
-        large = MAX_RESPONSE_BODY_SIZE + 1
-        assert _should_stream_to_disk("text/html", large, MAX_RESPONSE_BODY_SIZE) is True
+    def test_binary_body_goes_to_bodies(self, tmp_path: Path) -> None:
+        response = self._stored("image/png", b"\x89PNG", tmp_path)
+        assert response["_bodyFile"] == "bodies/r1.png"
+        assert "body" not in response
 
-    def test_should_stream_to_disk_small_text(self) -> None:
-        assert _should_stream_to_disk("text/html", 100, MAX_RESPONSE_BODY_SIZE) is False
+    def test_large_text_goes_to_bodies(self, tmp_path: Path) -> None:
+        response = self._stored("text/html", b"x" * 101, tmp_path)
+        assert response["_bodyFile"] == "bodies/r1.html"
 
-    def test_should_stream_to_disk_unknown_mime(self) -> None:
-        assert _should_stream_to_disk("application/x-unknown", 100, MAX_RESPONSE_BODY_SIZE) is False
+    def test_small_text_stays_in_the_har(self, tmp_path: Path) -> None:
+        response = self._stored("text/html", b"<p>hi</p>", tmp_path)
+        assert response["body"] == "<p>hi</p>"
+        assert not (tmp_path / "bodies").exists()
+
+    def test_unknown_or_missing_type_goes_to_bodies_as_raw_bytes(self, tmp_path: Path) -> None:
+        assert self._stored("application/x-unknown", b"\x00\x01", tmp_path)["_bodyFile"] == (
+            "bodies/r1.bin"
+        )
+        assert (tmp_path / "bodies" / "r1.bin").read_bytes() == b"\x00\x01"
+        assert self._stored("", b'{"a": 1}', tmp_path)["_bodyFile"] == "bodies/r1.bin"
+
+    def test_csv_and_form_bodies_are_text(self, tmp_path: Path) -> None:
+        assert self._stored("application/csv", b"a,b\n1,2\n", tmp_path)["body"] == "a,b\n1,2\n"
+        form = self._stored("application/x-www-form-urlencoded", b"token=abc&x=1", tmp_path)
+        assert form["body"] == "token=abc&x=1"
+
+    def test_text_is_decoded_with_its_declared_charset(self, tmp_path: Path) -> None:
+        response = self._stored("text/html; charset=iso-8859-1", "café".encode("latin-1"), tmp_path)
+        assert response["body"] == "café"
+
+    def test_text_that_does_not_decode_goes_to_bodies(self, tmp_path: Path) -> None:
+        response = self._stored("text/html", "café".encode("latin-1"), tmp_path)
+        assert response["_bodyFile"] == "bodies/r1.html"
+        assert (tmp_path / "bodies" / "r1.html").read_bytes() == "café".encode("latin-1")
+
+    def test_a_body_left_out_says_why(self) -> None:
+        response: dict = {}
+        _process_response_body(response, b"\x00", False, "r1", "image/png", 100, None)
+        assert response["_bodyNotCaptured"] == "binary"
+        assert "body" not in response
 
     def test_mime_to_extension_known(self) -> None:
         assert _mime_to_extension("application/json") == ".json"

@@ -94,8 +94,9 @@ class ObservabilityContext:
     def start(self) -> None:
         """Start the capture, when there is one.
 
-        A capture that fails to start is logged and dropped: the run then
-        records no network data, and the command still runs.
+        A capture that fails to start is logged and dropped, the run directory
+        is removed while it is still empty, and the command still runs, with
+        nothing recorded.
         """
         if self._mode == "off" or self._capture is None:
             return
@@ -107,6 +108,8 @@ class ObservabilityContext:
             LOG.error("observe_start_capture_failed", error=str(exc), exc_type=type(exc).__name__)
             gp_console.warn(f"Observability capture unavailable: could not start it ({exc}).")
             self._capture = None
+            if self._storage is not None and self._storage.remove_if_empty():
+                self._storage = None
 
     def finish(self, redact: Iterable[str] = ()) -> None:
         """Stop the capture and write its HAR, bodies and console logs to the run.
@@ -198,10 +201,14 @@ def build_observe_context(
         return ObservabilityContext(capture=capture, storage=storage, mode=mode)
 
     if http_session is not None:
-        from graftpunk.observe.http_capture import HttpCaptureBackend
+        from graftpunk.observe.http_capture import SPOOL_NAME, HttpCaptureBackend
 
         return ObservabilityContext(
-            capture=HttpCaptureBackend(http_session, bodies_dir=bodies_dir),
+            capture=HttpCaptureBackend(
+                http_session,
+                bodies_dir=bodies_dir,
+                spool_path=storage.run_dir / SPOOL_NAME,
+            ),
             storage=storage,
             mode=mode,
         )
