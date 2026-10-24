@@ -5,7 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.24.0] - 2026-10-24
+
+This is a minor release. Several changes reach a program on the first run after the upgrade:
+
+- **Plugin commands with observe on:** `gp --observe=full <plugin> <command>` now records the command's HTTP traffic, with cookies, headers and bodies. The run is scrubbed of the plugin's login credentials (Upgrading, item 1).
+- **Observe run files:** every observe run is written readable only by its owner (item 2).
+- **HAR shape:** the HARs `gp http` and the browser captures write change shape. They now keep every body, and they mark any body they could not keep (items 3 to 5).
+- **Selenium logins:** a Selenium login run with `--observe full` caches header roles for the first time (item 6).
+- **Login runs:** a login run's HAR keeps the username in its URLs (item 7).
+- **Output formats:** a built-in `format_hint` applies only to a terminal, and `-o` picks the format from the file's suffix (items 8 and 9).
+
+Item 10 is about upgrading itself.
 
 ### Upgrading
 
@@ -28,6 +39,7 @@ Items 1 to 9 take effect on the first run after upgrading. Item 2 concerns every
 7. **A login run's HAR now keeps the username in its URLs** (#283). `gp --observe=full <plugin> login` scrubs every credential, as before, but an identifier field's value (the username or email, by the rule in item 1) is now left in `request.url`, `request.queryString` and `response.redirectURL`. Through 1.23.0 it was replaced there too. It is still replaced in headers and bodies, as a whole value. A password or other secret is replaced everywhere, as before, and a Basic credential holding a credential is now replaced whole. There is no switch to restore the old URL scrub; a run that must not show the account name should not be shared.
 8. **A `format_hint` naming a built-in formatter now applies only to a terminal** (#284). A command whose `CommandResult` sets `format_hint` to `json`, `table`, `raw`, `csv`, `xlsx` or `pdf`, and whose plugin does not override that name in `format_overrides`, gets that format only when it is run with no `-o` and stdout is a terminal. Through 1.23.0 the hint applied whenever `-f` was not given, so `gp <plugin> <command> -o out.json` typed in a terminal wrote a box table into `out.json`, and the same command piped printed the table too. A pipe now gets JSON, and an `-o` file gets the format its suffix names (item 9) or JSON. A `format_hint="xlsx"` or `"pdf"` command piped or redirected no longer saves a file to the downloads directory; it prints JSON. Pass `-f` to get the old output: `-f table -o out.txt`, `-f csv | ...`. Every other hint applies everywhere, `-o` included, as through 1.23.0: a name the plugin registered in `SitePlugin.format_overrides` or `CommandResult.format_overrides` (a built-in name such as `table` included, when the plugin overrides it), and a formatter a package installed through the `graftpunk.formatters` entry-point group under a name that is not built in. That formatter receives `output_path` and the console and decides from them.
 9. **`-o` picks the format from the file's suffix when `-f` is not given** (#284). `-o rows.csv` writes CSV, `-o rows.xlsx` a workbook and `-o rows.pdf` a PDF, matching the suffix in any case; a file named just `.csv` counts. Through 1.23.0 each of these got JSON, the CLI default, unless a hint said otherwise. Any other suffix, or none, still gets JSON. A hint that applies everywhere (item 8) and an explicit `-f` take precedence over the suffix, so `-f json -o rows.csv` writes JSON as before. An empty result written with `-o rows.csv`, or `-f csv -o rows.csv`, now writes an empty file, or the header row when the command's default view lists its columns; through 1.23.0 `-f csv` wrote nothing and left an existing file as it was. Data CSV or PDF cannot hold (a scalar, or a list that is not all dicts, for CSV; anything but a list or a dict for PDF) is written as raw text or JSON, as with `-f`, and gp now warns `<path>: the data cannot be written as ...; wrote ...`.
+10. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
 
 ### Added
 
@@ -35,6 +47,7 @@ Items 1 to 9 take effect on the first run after upgrading. Item 2 concerns every
 
 ### Changed
 
+- **The `/graftpunk:graft` skill is 0.1.11 and needs graftpunk 1.24.0 or later** (#284). Its guide has a new section, "Choosing an output format", that tells plugin authors to set `format_hint` unconditionally and shows a plugin's own formatter using `graftpunk.console.stream_is_tty` and `graftpunk.plugins.write_rendered_to_file`, which 1.24.0 adds.
 - **`CommandResult.format_hint` is typed `str | None`**, so a name a plugin registered in `format_overrides` type-checks (#284). It was a `Literal` of the six core formatter names. Code that passed a core name is unaffected.
 
 ### Fixed

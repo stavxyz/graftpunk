@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.23.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.24.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -1233,6 +1233,98 @@ order, with the same headers. Somebody downstream has a spreadsheet or a script
 built on that layout, and a plugin that invents a tidier one is a plugin that
 has to be un-invented later. The digest's record of the export endpoint tells
 you what the real export looked like.
+
+### Choosing an output format
+
+A command can suggest how its result is shown with
+`CommandResult(data=..., format_hint="table")`. Set the hint unconditionally;
+gp decides where it applies, in this order:
+
+1. An explicit `-f`/`--format` always wins.
+2. A hint naming a formatter the plugin registered, in
+   `SitePlugin.format_overrides` or `CommandResult.format_overrides` (under
+   any name, a built-in one included), or a formatter a package installed
+   through the `graftpunk.formatters` entry-point group under a name that is
+   not built in, runs for the terminal, a pipe and an `-o` file alike. That
+   formatter owns the `-o` decision: gp does not apply rule 4 for it.
+3. A hint naming one of the six built-in formatters (`json`, `table`, `raw`,
+   `csv`, `xlsx` or `pdf`) that the plugin did not override applies only when
+   the output is the console and the console is a terminal. A pipe, or an
+   `-o` file, does not get it.
+4. `-o` with a `.json`, `.csv`, `.xlsx` or `.pdf` suffix (any case) gets that
+   format. An empty result written with `-o rows.csv` leaves an empty file,
+   or the header row when the default view lists its columns.
+5. Anything else gets the CLI default, `json`.
+
+So for a command that returns `format_hint="table"`, `gp myshop orders`
+typed in a terminal shows a table, while `gp myshop orders | jq` and
+`gp myshop orders -o orders.json` get JSON, and `gp myshop orders -o
+orders.csv` gets CSV. There is no need to call `sys.stdout.isatty()` in the
+command, and a plugin should not: it raises on a closed stream and fails when
+`sys.stdout` is `None` under an embedded interpreter.
+
+`format_hint` is typed `str`, so a name the plugin registered type-checks. A
+plugin that wants its own rule for files and pipes registers a formatter and
+names it in the hint. The formatter is handed the console and `output_path`
+(empty when the output is the console). Because rule 2 takes the `-o`
+decision away from gp, the formatter must handle every suffix it should
+honour itself; the example below does so by handing a file to the built-in
+formatter its suffix names.
+
+```python
+import json
+from pathlib import Path
+
+from graftpunk.console import stream_is_tty, write_raw
+from graftpunk.plugins import CommandResult, SitePlugin, command
+from graftpunk.plugins.formatters import BUILTIN_FORMATTERS
+
+SUFFIX_FORMATS = {".json": "json", ".csv": "csv", ".xlsx": "xlsx", ".pdf": "pdf"}
+
+
+class DefaultFormatter:
+    name = "default"
+    binary = False
+
+    def format(self, data, console, output_config=None, output_path=""):
+        if output_path:
+            # Path(".csv").suffix is empty, so split the name to read a bare ".csv" too.
+            _, dot, ext = Path(output_path).name.lower().rpartition(".")
+            fmt = SUFFIX_FORMATS.get(f".{ext}" if dot else "", "json")
+            BUILTIN_FORMATTERS[fmt].format(data, console, output_config, output_path)
+        elif stream_is_tty(console):
+            BUILTIN_FORMATTERS["table"].format(data, console, output_config)
+        else:
+            write_raw(json.dumps(data, default=str) + "\n", console)
+
+
+class MyShopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+    format_overrides = {"default": DefaultFormatter()}
+
+    @command(help="List recent invoices")
+    def invoices(self, ctx):
+        return CommandResult(data=..., format_hint="default")
+```
+
+- `stream_is_tty(console)`, from `graftpunk.console`, answers whether the
+  console's stream is an interactive terminal. A closed stream, a `None`
+  `sys.stdout` or a stream with no `isatty` answers `False` instead of
+  raising.
+- `write_rendered_to_file(output_path, render_fn)`, from `graftpunk.plugins`
+  (also `graftpunk.plugins.formatters`), calls `render_fn` with a colour-less,
+  200-column Rich console and writes what it printed to `output_path` as
+  UTF-8, creating parent directories. Use it to put a rendered table in a
+  file; use `write_raw` for data (JSON, CSV) so Rich never wraps or
+  reinterprets it.
+
+The private names `graftpunk.console._stream_is_tty`,
+`graftpunk.plugins.formatters._stream_is_tty` and
+`graftpunk.plugins.formatters._write_to_file` remain as aliases of these, so
+existing imports keep working; new code should use the public names. Patching
+a private alias in a test no longer changes what gp does; give the console a
+stream whose `isatty()` answers instead.
 
 ### Keep a lab notebook
 
