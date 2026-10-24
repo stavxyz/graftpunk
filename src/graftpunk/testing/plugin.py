@@ -196,8 +196,9 @@ def _missing_sidecar(relative: Path, sidecar_name: str) -> str:
         f"{relative}: no sidecar ({sidecar_name}). For a fixture derived from a capture, "
         f"copy the sidecar gp observe fixtures wrote beside the capture. For a hand-made "
         f'fixture, write {sidecar_name} with "schema": {schema}, a status, a content type, '
-        f'"body_params": [], "capture_sha256": null, "flagged_names": [], and '
-        f'"redacted_names": 0, which declares that the file came off no account.'
+        f'"body_params": [], "capture_sha256": null, "flagged_names": [], '
+        f'"flagged_reasons": {{}}, and "redacted_names": 0, which declares that the file '
+        f"came off no account."
     )
 
 
@@ -456,8 +457,10 @@ def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> lis
     gp from the response and hold no cookie value (a media type such as
     ``text/html`` is not a leak of a cookie named ``text``); ``body_params``
     holds request field names, which legitimately include a posted form's own
-    CSRF field; and the rest are the names themselves, a digest, a count, and
-    the schema number."""
+    CSRF field; and the rest are the names themselves, their reasons, a digest,
+    a count, and the schema number. A schema 2 sidecar's reasons are named in
+    the problem, so the author can tell a form-state cookie flagged by its name
+    from a session value without the recording."""
     problems: list[str] = []
     raw = body.decode("utf-8", errors="replace")
     texts = {form.casefold() for form in (raw, *_decoded_forms(raw))}
@@ -467,9 +470,12 @@ def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> lis
             continue
         pattern = _flagged_name_pattern(name)
         if any(pattern.search(text) for text in texts):
+            why = sidecar.flagged_reasons.get(name)
+            flagged_by = f" (flagged by: {', '.join(why)})" if why else ""
             problems.append(
                 f"{relative}: contains the flagged name {name!r}, a cookie or token "
-                f"name the capture's digest recorded; rename it in the fixture."
+                f"name the capture's digest recorded{flagged_by}; rename it in the "
+                f"fixture."
             )
     return problems
 

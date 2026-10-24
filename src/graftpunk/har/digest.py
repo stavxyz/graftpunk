@@ -14,7 +14,7 @@ import string
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 from urllib.parse import parse_qs, unquote, unquote_plus, urljoin, urlparse, urlunparse
 
 from graftpunk.har.documents import (
@@ -68,7 +68,10 @@ __all__ = [
     "body_params",
     "digest",
     "endpoint_template",
+    "FLAGGED_REASONS",
+    "FlaggedReason",
     "flagged_names_of",
+    "flagged_reasons_of",
     "redacted_names_of",
 ]
 
@@ -2003,24 +2006,78 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
 
     A name that holds an account value (graftpunk.har.paths.holds_an_id) is not
     among them, in any form: :func:`redacted_names_of` counts those."""
+    return tuple(sorted(flagged_reasons_of(d, entries)))
+
+
+FlaggedReason = Literal[
+    "token_candidate",
+    "token_name",
+    "session_name",
+    "http_only",
+    "value_not_form_state",
+    "value_not_kept",
+    "no_value_seen",
+    "sent_only",
+]
+"""Why :func:`flagged_reasons_of` flags a name. Every reason but ``sent_only`` is
+enough on its own to flag a name; ``sent_only`` says no response in the
+recording set the cookie (a recording made with a cached session) and is only
+ever written beside a reason that flagged it."""
+
+FLAGGED_REASONS: tuple[FlaggedReason, ...] = get_args(FlaggedReason)
+
+
+def flagged_reasons_of(
+    d: RunDigest, entries: Iterable[HAREntry] = ()
+) -> dict[str, tuple[FlaggedReason, ...]]:
+    """Each name :func:`flagged_names_of` returns, with the reasons it is flagged,
+    sorted. The rule is :func:`flagged_names_of`'s; this spells it as reasons:
+
+    - ``token_candidate``: the digest recorded the name as a token candidate;
+    - ``token_name``: a cookie whose name reads as a token name;
+    - ``session_name``: a cookie whose name has a session part
+      (:func:`_names_a_session`);
+    - ``http_only``: a response in *entries* set the cookie with ``HttpOnly``;
+    - ``value_not_form_state``: a value *entries* record for the cookie is not
+      form state;
+    - ``value_not_kept``: *entries* carry the cookie with no value kept (a
+      ``Set-Cookie`` kept only as a name, or a HAR entry with no ``value``);
+    - ``no_value_seen``: *entries* show no non-empty value for the cookie, and no
+      request sent it empty that no response sets, which is every cookie when
+      *entries* is empty;
+    - ``sent_only``: alongside another reason, no response in *entries* set the
+      cookie and the digest's own list does not name it."""
     entries = tuple(entries)
     seen = _cookies_seen(entries)
     entry_cookies = {
         name for entry in entries for name in _entry_cookie_names(entry) if not holds_an_id(name)
     }
-
-    def holds_only_words(name: str) -> bool:
-        return (
-            (name in seen.values or (name in seen.sent_empty and name not in seen.set_by_response))
-            and name not in seen.unseen
-            and name not in seen.http_only
-            and not looks_like_token_name(name)
-            and not _names_a_session(name)
-            and all(_form_state(value) for value in seen.values.get(name, ()))
-        )
-
-    cookies = {name for name in set(d.cookies) | entry_cookies if not holds_only_words(name)}
-    return tuple(sorted(cookies | {token.name for token in d.tokens}))
+    reasons: dict[str, set[FlaggedReason]] = {}
+    for name in set(d.cookies) | entry_cookies:
+        values = seen.values.get(name, set())
+        sent_empty = name in seen.sent_empty and name not in seen.set_by_response
+        why: set[FlaggedReason] = set()
+        if looks_like_token_name(name):
+            why.add("token_name")
+        if _names_a_session(name):
+            why.add("session_name")
+        if name in seen.http_only:
+            why.add("http_only")
+        if name in seen.unseen:
+            why.add("value_not_kept")
+        if any(not _form_state(value) for value in values):
+            why.add("value_not_form_state")
+        if not values and not sent_empty:
+            why.add("no_value_seen")
+        if why:
+            if entries and name not in seen.set_by_response and name not in d.cookies:
+                why.add("sent_only")
+            reasons[name] = why
+    for token in d.tokens:
+        reasons.setdefault(token.name, set()).add("token_candidate")
+    return {
+        name: tuple(r for r in FLAGGED_REASONS if r in why) for name, why in sorted(reasons.items())
+    }
 
 
 # The parts of a cookie name that say it holds a session or a credential, so the

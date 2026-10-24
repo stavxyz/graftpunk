@@ -112,13 +112,20 @@ class TestWriteSidecar:
             status=200,
             content_type="application/json",
             body_params=["page", "archived"],
-            flagged_names=["shop_session", "csrf-token", "shop_session"],
+            flagged_reasons={
+                "shop_session": ["session_name", "http_only", "session_name"],
+                "csrf-token": ["token_name"],
+            },
         )
         assert path == sidecar_path(fixture)
         sidecar = load_sidecar(path)
         assert sidecar.capture_sha256 == hashlib.sha256(fixture.read_bytes()).hexdigest()
         assert sidecar.body_params == ("archived", "page")
         assert sidecar.flagged_names == ("csrf-token", "shop_session")
+        assert sidecar.flagged_reasons == {
+            "csrf-token": ("token_name",),
+            "shop_session": ("http_only", "session_name"),
+        }
         assert "url" not in json.loads(path.read_text())
         assert "captured_at" not in json.loads(path.read_text())
 
@@ -129,7 +136,7 @@ class TestWriteSidecar:
         fixture = tmp_path / "get_orders.html"
         fixture.write_bytes(b"")
         path = write_sidecar(
-            fixture, status=204, content_type="text/html", body_params=[], flagged_names=[]
+            fixture, status=204, content_type="text/html", body_params=[], flagged_reasons={}
         )
         assert load_sidecar(path).capture_sha256 is None
         assert json.loads(path.read_text())["capture_sha256"] is None

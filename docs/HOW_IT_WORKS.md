@@ -739,8 +739,9 @@ captured body, every cookie name the recording set or sent except a cookie
 whose every non-empty recorded value is form state and that has neither a token or
 session-like name nor a `Set-Cookie` with `HttpOnly` (in the header or in the
 HAR's `response.cookies` array), and the token names the run's digest recorded, a
-name that holds an id left out and counted in
-`redacted_names`, but never the URL or the capture time), written to be
+name that holds an id left out and counted in `redacted_names`; from schema 2,
+`flagged_reasons` gives each flagged name's reasons, and the fixtures check
+repeats them in its problem line; but never the URL or the capture time), written to be
 committed beside the fixture derived from it once you have read its body
 parameter names and its `flagged_names`: a body key that does not read as a
 field name or holds an id is dropped, but the rule is lexical, so an account

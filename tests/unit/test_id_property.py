@@ -22,6 +22,7 @@ from graftpunk.har.digest import (
     body_params,
     digest,
     flagged_names_of,
+    flagged_reasons_of,
     redacted_names_of,
 )
 from graftpunk.har.parser import parse_har_file
@@ -156,7 +157,7 @@ def _run(tmp_path: Path, position: str, value: str) -> Path:
 def _sidecars(har: Path) -> list[str]:
     result = digest(DigestSource.from_har(har))
     entries = parse_har_file(har).entries
-    flagged = flagged_names_of(result, entries)
+    flagged = flagged_reasons_of(result, entries)
     redacted = redacted_names_of(result, entries)
     return [
         sidecar_text(
@@ -164,7 +165,7 @@ def _sidecars(har: Path) -> list[str]:
                 status=entry.response.status,
                 content_type=entry.response.content_type or "",
                 body_params=tuple(body_params(entry)),
-                flagged_names=flagged,
+                flagged_reasons=flagged,
                 redacted_names=redacted,
             )
         )

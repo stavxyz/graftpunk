@@ -576,6 +576,12 @@ def main(argv: list[str]) -> int:
         for key in ("body_params", "flagged_names"):
             names = sidecar.get(key) or []
             print(f"sidecar {key}: {', '.join(map(str, names)) if names else '(none)'}")
+        # Schema 2 says why each name is flagged; a schema 1 sidecar has no key.
+        reasons = sidecar.get("flagged_reasons")
+        if isinstance(reasons, dict):
+            for name, why in sorted(reasons.items()):
+                shown = ", ".join(map(str, why)) if isinstance(why, list) else repr(why)
+                print(f"sidecar flagged {name}: {shown}")
     if not left:
         print("fixture-leaks: no captured value is left in the fixture.")
     return 1 if left or differs else 0

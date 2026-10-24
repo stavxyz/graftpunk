@@ -13,6 +13,7 @@ import pytest
 from graftpunk.contracts import current_schema
 from graftpunk.testing.sidecar import (
     FIXTURES_PLACEHOLDER,
+    FLAGGED_REASONS,
     SIDECAR_FIELDS,
     Sidecar,
     SidecarError,
@@ -56,6 +57,9 @@ class TestTheFormat:
     def test_version_one_is_the_committable_key_set(self) -> None:
         assert SIDECAR_FIELDS[1] == _V1_FIELDS
 
+    def test_version_two_adds_flagged_reasons(self) -> None:
+        assert SIDECAR_FIELDS[2] == _V1_FIELDS | {"flagged_reasons"}
+
     def test_every_version_up_to_the_current_one_has_a_key_set(self) -> None:
         assert set(SIDECAR_FIELDS) == set(range(1, current_schema("sidecar") + 1))
 
@@ -88,11 +92,64 @@ class TestLoad:
             content_type="text/plain",
             body_params=("page",),
             capture_sha256="ab" * 32,
-            flagged_names=("shop_session",),
+            flagged_reasons={"shop_session": ("session_name", "http_only")},
         )
         path = tmp_path / "x.json.meta.json"
         path.write_text(sidecar_text(sidecar), encoding="utf-8")
         assert load_sidecar(path) == sidecar
+        assert load_sidecar(path).flagged_names == ("shop_session",)
+        assert load_sidecar(path).flagged_reasons == {"shop_session": ("http_only", "session_name")}
+
+    def test_a_schema_1_sidecar_still_loads_without_reasons(self, tmp_path: Path) -> None:
+        """Sidecars committed under schema 1 load unchanged; they recorded no
+        reasons."""
+        path = tmp_path / "x.json.meta.json"
+        path.write_text(json.dumps(_v1(flagged_names=["shop_session"])), encoding="utf-8")
+        sidecar = load_sidecar(path)
+        assert sidecar.flagged_names == ("shop_session",)
+        assert sidecar.flagged_reasons == {}
+
+    def test_a_schema_1_key_set_is_refused_under_schema_2(self, tmp_path: Path) -> None:
+        path = tmp_path / "x.json.meta.json"
+        path.write_text(json.dumps(_v1(schema=2)), encoding="utf-8")
+        with pytest.raises(SidecarError, match="missing keys: flagged_reasons"):
+            load_sidecar(path)
+
+    @pytest.mark.parametrize(
+        ("names", "reasons", "match"),
+        [
+            (["a"], {}, "keyed by exactly the flagged names"),
+            (["a"], {"a": ["session_name"], "b": ["token_name"]}, "keyed by exactly"),
+            (["a"], {"a": ["made_up"]}, "unknown reasons: made_up"),
+            (["a"], {"a": []}, "must name a reason that flags it"),
+            (["a"], {"a": ["sent_only"]}, "must name a reason that flags it"),
+            (["a"], {"a": "session_name"}, "object of lists of strings"),
+            (["a"], ["a"], "object of lists of strings"),
+        ],
+        ids=["missing", "extra", "unknown", "empty", "sent-only-alone", "string", "list"],
+    )
+    def test_schema_2_reasons_are_held_to_the_flagged_names_and_the_vocabulary(
+        self, tmp_path: Path, names: list[str], reasons: object, match: str
+    ) -> None:
+        path = tmp_path / "x.json.meta.json"
+        payload = _v1(schema=2, flagged_names=names, flagged_reasons=reasons)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(SidecarError, match=match):
+            load_sidecar(path)
+
+    def test_a_sidecar_with_names_and_no_reasons_cannot_be_written(self) -> None:
+        """The current schema records a reason for every flagged name, so a
+        schema 1 sidecar's facts are refused rather than written as an
+        unloadable file."""
+        with pytest.raises(SidecarError, match="build the Sidecar with flagged_reasons"):
+            sidecar_text(Sidecar(status=200, content_type="text/plain", flagged_names=("a",)))
+
+    def test_the_vocabulary_is_the_digests(self) -> None:
+        """The sidecar imports nothing from the digest, so the two spellings of the
+        reasons are held equal here."""
+        from graftpunk.har.digest import FLAGGED_REASONS as DIGEST_REASONS
+
+        assert set(DIGEST_REASONS) == FLAGGED_REASONS
 
     def test_a_missing_schema_is_refused(self, tmp_path: Path) -> None:
         payload = _v1()

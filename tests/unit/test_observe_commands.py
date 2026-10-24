@@ -570,11 +570,15 @@ class TestFixturesCommand:
             "body_params",
             "capture_sha256",
             "flagged_names",
+            "flagged_reasons",
             "redacted_names",
         }
-        assert sidecar["schema"] == 1
+        assert sidecar["schema"] == 2
         assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
         assert sidecar["flagged_names"] == ["shop_session"]
+        assert sidecar["flagged_reasons"] == {
+            "shop_session": ["session_name", "value_not_form_state"]
+        }
         assert "page=2" not in json.dumps(sidecar)
 
     def test_the_sidecar_counts_an_id_cookie_name_and_holds_no_trace_of_it(

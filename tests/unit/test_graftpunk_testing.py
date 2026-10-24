@@ -255,7 +255,7 @@ def _captured(body: bytes, *flagged: str) -> Sidecar:
         status=200,
         content_type="application/json",
         capture_sha256=hashlib.sha256(body).hexdigest(),
-        flagged_names=flagged,
+        flagged_reasons=dict.fromkeys(flagged, ("session_name",)),
     )
 
 
@@ -314,7 +314,26 @@ class TestCheckFixturesTree:
         )
         (problem,) = check_fixtures_tree(tmp_path).problems
         assert "'myshop_session'" in problem
+        assert "(flagged by: session_name)" in problem
         assert problem.endswith("rename it in the fixture.")
+
+    def test_a_schema_1_sidecar_names_no_reasons(self, tmp_path: Path) -> None:
+        """A sidecar committed under schema 1 recorded no reasons, so the problem
+        line says nothing it cannot back."""
+        path = _fixture(tmp_path, "get_orders.json", b'{"myshop_session": "x"}', None)
+        payload = {
+            "schema": 1,
+            "status": 200,
+            "content_type": "application/json",
+            "body_params": [],
+            "capture_sha256": hashlib.sha256(b"captured").hexdigest(),
+            "flagged_names": ["myshop_session"],
+            "redacted_names": 0,
+        }
+        path.with_name(path.name + ".meta.json").write_text(json.dumps(payload))
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert "'myshop_session'" in problem
+        assert "flagged by" not in problem
 
     def test_a_flagged_name_in_the_content_type_passes(self, tmp_path: Path) -> None:
         """gp writes content_type from the response; a media type holds no cookie
@@ -324,7 +343,9 @@ class TestCheckFixturesTree:
             status=200,
             content_type="text/html; charset=utf-8",
             capture_sha256=hashlib.sha256(b"captured").hexdigest(),
-            flagged_names=("text", "html", "charset", "utf-8"),
+            flagged_reasons=dict.fromkeys(
+                ("text", "html", "charset", "utf-8"), ("value_not_form_state",)
+            ),
         )
         _fixture(tmp_path, "get_search.html", b"<p>Results</p>", sidecar)
         assert check_fixtures_tree(tmp_path).problems == ()
@@ -338,7 +359,7 @@ class TestCheckFixturesTree:
             content_type="application/json",
             body_params=("authenticity_token",),
             capture_sha256=hashlib.sha256(b"captured").hexdigest(),
-            flagged_names=("authenticity_token",),
+            flagged_reasons={"authenticity_token": ("token_name",)},
         )
         _fixture(tmp_path, "post_session.json", b'{"ok": true}', sidecar)
         assert check_fixtures_tree(tmp_path).problems == ()
