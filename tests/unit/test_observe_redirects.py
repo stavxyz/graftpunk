@@ -192,7 +192,9 @@ class TestNodriverRedirectHops:
         with patch("graftpunk.observe.capture.LOG") as mock_log:
             await backend.stop_capture_async()
 
-        assert tab.send.await_count == 0
+        # The final hop's response body may be fetched; no request body is.
+        methods = [next(c.args[0])["method"] for c in tab.send.await_args_list]
+        assert "Network.getRequestPostData" not in methods
         events = [c.args[0] for c in mock_log.warning.call_args_list]
         assert "redirect_hop_post_data_unavailable" in events
         assert backend.get_har_entries()[0]["request"].get("postData") is None

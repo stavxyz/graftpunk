@@ -8,6 +8,9 @@ from typing import Any
 
 import pytest
 
+# The local site the HTTP observe tests record (fixture: site).
+from tests.unit.observe_http_site import site  # noqa: F401
+
 # Rich builds a Console at import time and takes its width from the ambient
 # COLUMNS, so on an 80-column terminal table cells truncate and messages wrap
 # mid-word — and assertions on rendered output fail for reasons that have

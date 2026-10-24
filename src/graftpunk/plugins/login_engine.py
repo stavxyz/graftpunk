@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from graftpunk import console as gp_console
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
+from graftpunk.observe.run import Redaction
 from graftpunk.plugins.cli_plugin import cache_login_session
 from graftpunk.plugins.login_settle import (
     driver_url,
@@ -667,7 +668,7 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                             _header_capture,
                             "login",
                             console=gp_console.err_console,
-                            redact=credentials.values(),
+                            redact=Redaction.from_credentials(credentials),
                         )
                     except Exception as exc:  # broad by design: diagnostics are best-effort
                         LOG.error(
@@ -853,7 +854,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         # observe run land under this account's session (#151).
         browser_session.session_name = session_name or plugin.session_name
         # The observe HAR carries the login POST; scrub the credentials.
-        browser_session.observe_redact = credentials.values()
+        browser_session.observe_redact = Redaction.from_credentials(credentials)
         with browser_session as session:
             # Header capture for role extraction: reuse the session's observe
             # capture when it has one, else start a lightweight one.

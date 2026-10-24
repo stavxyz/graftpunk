@@ -15,7 +15,6 @@ from graftpunk.cli.http_commands import (
     _print_response,
     _resolve_json_body,
     _resolve_role_name,
-    _save_observe_data,
 )
 from tests.unit.cli_harness import echo_loaded_session
 
@@ -414,62 +413,6 @@ class TestMakeRequestErrorPaths:
         mock_load.assert_called_once_with("nonexistent", resolve=True)
 
 
-class TestSaveObserveData:
-    """Tests for _save_observe_data."""
-
-    def test_saves_har_entry(self, tmp_path: pytest.TempPathFactory) -> None:
-        mock_response = MagicMock(spec=requests.Response)
-        mock_response.status_code = 200
-        mock_response.reason = "OK"
-        mock_response.headers = {"Content-Type": "application/json"}
-        mock_response.content = b'{"ok": true}'
-        mock_response.text = '{"ok": true}'
-        mock_response.elapsed = MagicMock()
-        mock_response.elapsed.total_seconds.return_value = 0.5
-        mock_response.request = MagicMock()
-        mock_response.request.headers = {"User-Agent": "test"}
-
-        with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            result = _save_observe_data("test-session", "GET", "https://example.com", mock_response)
-
-        assert result is not None
-        assert result.run_dir.exists()
-
-    def test_includes_request_body(self, tmp_path: pytest.TempPathFactory) -> None:
-        mock_response = MagicMock(spec=requests.Response)
-        mock_response.status_code = 200
-        mock_response.reason = "OK"
-        mock_response.headers = {"Content-Type": "application/json"}
-        mock_response.content = b'{"created": true}'
-        mock_response.text = '{"created": true}'
-        mock_response.elapsed = MagicMock()
-        mock_response.elapsed.total_seconds.return_value = 0.3
-        mock_response.request = MagicMock()
-        mock_response.request.headers = {
-            "User-Agent": "test",
-            "Content-Type": "application/json",
-        }
-
-        with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):
-            result = _save_observe_data(
-                "test-session",
-                "POST",
-                "https://example.com/api",
-                mock_response,
-                request_body='{"name": "test"}',
-            )
-
-        assert result is not None
-        # Read the HAR file and verify postData is present
-        import json
-
-        har_path = result.run_dir / "network.har"
-        har_data = json.loads(har_path.read_text())
-        entry = har_data["log"]["entries"][0]
-        assert "postData" in entry["request"]
-        assert entry["request"]["postData"]["text"] == '{"name": "test"}'
-
-
 class TestPrintResponse:
     """Tests for _print_response."""
 
@@ -540,8 +483,7 @@ class TestHttpCommandCLI:
 
         with (
             patch.object(requests.Session, "request", return_value=mock_response),
-            patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", "/tmp/test-observe"),  # noqa: S108
-            patch("graftpunk.cli.http_commands._save_observe_data"),
+            patch("graftpunk.cli.http_commands._start_observe"),
         ):
             result = runner.invoke(app, ["http", "get", "--no-session", "https://example.com"])
 
@@ -805,7 +747,7 @@ class TestRoleCLI:
                 "graftpunk.cli.http_commands.load_session_for_api_resolved",
                 side_effect=echo_loaded_session(mock_session),
             ),
-            patch("graftpunk.cli.http_commands._save_observe_data"),
+            patch("graftpunk.cli.http_commands._start_observe"),
             patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", []),
             patch("graftpunk.cli.plugin_commands._plugin_session_map", {}),
         ):

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -178,6 +179,49 @@ def _warn_if_slot_changes_hands_post(
         )
 
 
+def credential_envvar(plugin: CLIPluginProtocol, field_name: str) -> str:
+    """The environment variable a login credential field is read from.
+
+    ``username_envvar`` / ``password_envvar`` on the plugin name their own
+    variable; every other field (and those two when unset) is
+    ``{SITE_PREFIX}_{FIELD}``.
+    """
+    overrides = {
+        "username": getattr(plugin, "username_envvar", ""),
+        "password": getattr(plugin, "password_envvar", ""),
+    }
+    override = overrides.get(field_name)
+    if override:
+        return override
+    site_prefix = plugin.site_name.upper().replace("-", "_").replace(" ", "_")
+    return f"{site_prefix}_{field_name.upper()}"
+
+
+def known_credentials(plugin: CLIPluginProtocol) -> dict[str, str]:
+    """The plugin's login credentials gp can read without running anything.
+
+    For each login field (:func:`resolve_login_fields`), the value its
+    environment variable holds, else the workstation env file's static value
+    for that name; a field with neither is left out. A ``$(...)`` command
+    value is not run: outside a login it could ask for a password or a
+    biometric approval, so a credential kept that way is not known here. Used
+    to scrub a plugin command's observe run as a login run is scrubbed
+    (:meth:`graftpunk.observe.run.Redaction.from_credentials`).
+    """
+    env_file = workstation_env.load()
+    values: dict[str, str] = {}
+    for field_name in resolve_login_fields(plugin):
+        name = credential_envvar(plugin, field_name)
+        value = os.environ.get(name)
+        if not value:
+            entry = env_file.get(name)
+            if entry is not None and entry.kind == workstation_env.STATIC:
+                value = entry.raw_value
+        if value:
+            values[field_name] = value
+    return values
+
+
 def make_login_body(
     plugin: CLIPluginProtocol,
     login_callable: Callable[..., Any],
@@ -192,14 +236,6 @@ def make_login_body(
     The resolved credentials dict is passed INTO the login callable.
     """
     secret_keywords = SECRET_KEYWORDS
-
-    envvar_overrides: dict[str, str] = {}
-    username_envvar = getattr(plugin, "username_envvar", "")
-    password_envvar = getattr(plugin, "password_envvar", "")
-    if username_envvar:
-        envvar_overrides["username"] = username_envvar
-    if password_envvar:
-        envvar_overrides["password"] = password_envvar
 
     # A login generated from login_config drives a browser; a hand-written
     # login() may be plain requests, so only the generated one is checked.
@@ -231,11 +267,10 @@ def make_login_body(
             except ValueError as exc:
                 raise typer.BadParameter(str(exc)) from exc
         credentials: dict[str, str] = {}
-        site_prefix = plugin.site_name.upper().replace("-", "_").replace(" ", "_")
 
         for field_name in fields:
             is_secret = any(kw in field_name.lower() for kw in secret_keywords)
-            envvar = envvar_overrides.get(field_name, f"{site_prefix}_{field_name.upper()}")
+            envvar = credential_envvar(plugin, field_name)
 
             # env -> workstation file, via the single precedence-owning
             # lookup() (empty-string env counts as a miss and falls through
