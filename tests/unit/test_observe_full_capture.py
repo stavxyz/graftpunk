@@ -286,6 +286,64 @@ class TestSeleniumSessionRecordsTheNetwork:
 
         assert create.call_args.kwargs["performance_log"] is True
 
+    @pytest.mark.parametrize(
+        ("mime", "kept"),
+        [
+            ("application/csv", "text"),
+            ("application/x-www-form-urlencoded", "text"),
+            ("application/x-protobuf", "file"),
+            ("", "file"),
+        ],
+    )
+    def test_a_body_of_any_type_is_fetched_and_kept(
+        self, tmp_path: Path, mime: str, kept: str
+    ) -> None:
+        from graftpunk.observe.capture import SeleniumCaptureBackend
+
+        log = [
+            _perf(
+                "Network.requestWillBeSent",
+                {"requestId": "6.1", "request": {"url": SEARCH, "method": "GET", "headers": {}}},
+            ),
+            _perf(
+                "Network.responseReceived",
+                {"requestId": "6.1", "response": {"status": 200, "headers": {}, "mimeType": mime}},
+            ),
+        ]
+        driver = MagicMock()
+        driver.get_log = lambda kind: log if kind == "performance" else []
+        driver.execute_cdp_cmd = MagicMock(
+            return_value={"body": "a,b\n1,2", "base64Encoded": False}
+        )
+        capture = SeleniumCaptureBackend(driver, bodies_dir=tmp_path / "bodies")
+        capture.stop_capture()
+
+        (entry,) = capture.get_har_entries()
+        content = entry["response"]["content"]
+        if kept == "text":
+            assert content["text"] == "a,b\n1,2"
+        else:
+            assert (tmp_path / content["_bodyFile"]).read_bytes() == b"a,b\n1,2"
+
+    def test_a_response_with_no_body_is_not_fetched(self) -> None:
+        from graftpunk.observe.capture import SeleniumCaptureBackend
+
+        log = [
+            _perf(
+                "Network.requestWillBeSent",
+                {"requestId": "6.2", "request": {"url": SEARCH, "method": "GET", "headers": {}}},
+            ),
+            _perf(
+                "Network.responseReceived",
+                {"requestId": "6.2", "response": {"status": 204, "headers": {}, "mimeType": ""}},
+            ),
+        ]
+        driver = MagicMock()
+        driver.get_log = lambda kind: log if kind == "performance" else []
+        SeleniumCaptureBackend(driver).stop_capture()
+
+        driver.execute_cdp_cmd.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # HTTP: a plugin command's requests session, and ``gp http``
@@ -739,16 +797,21 @@ class TestGpHttpRun:
             return CliRunner().invoke(app, ["http", *args])
 
     def test_each_hop_is_recorded_as_it_is_sent(self, site: str, tmp_path: Path) -> None:
+        import datetime
+
+        before = datetime.datetime.now(datetime.UTC)
         result = self._gp_http(
             tmp_path, "post", "--no-session", "-d", "user=alice", f"{site}/login"
         )
+        after = datetime.datetime.now(datetime.UTC)
 
         assert result.exit_code == 0, result.output
         hop, landing = _har_entries(_only_run(tmp_path))
         assert hop["response"]["status"] == 302
         assert hop["request"]["postData"]["text"] == "user=alice"
         assert landing["response"]["content"]["text"] == "<h1>home</h1>"
-        assert hop["startedDateTime"] <= landing["startedDateTime"]
+        started = [datetime.datetime.fromisoformat(e["startedDateTime"]) for e in (hop, landing)]
+        assert before <= started[0] <= started[1] <= after
 
     @pytest.mark.parametrize(
         ("path", "text"),
