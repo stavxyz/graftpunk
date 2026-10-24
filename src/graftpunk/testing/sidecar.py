@@ -6,7 +6,7 @@ Every field in it is meant to be committed: the capture's URL and time are not
 in it (the HAR and the digest hold them), ``capture_sha256`` is the hash of the
 captured body (null for an empty body, which holds nothing to sanitise), and
 ``flagged_names`` is every cookie name the recording set, less a cookie whose every
-recorded value reads as words (``graftpunk.har.digest.flagged_names_of``), and the
+recorded value is form state (``graftpunk.har.digest.flagged_names_of``), and the
 token names the digest recorded, never a value. A name that holds an account
 value (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``

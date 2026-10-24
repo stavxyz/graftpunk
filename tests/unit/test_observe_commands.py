@@ -29,7 +29,7 @@ from tests.unit.cli_harness import strip_ansi
 runner = CliRunner()
 
 # A cookie value shaped like a session id: flagged_names leaves out a cookie whose
-# every value reads as words, so a cookie that must be flagged needs one like it.
+# every value is form state, so a cookie that must be flagged needs one like it.
 _SESSION_VALUE = "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"
 
 

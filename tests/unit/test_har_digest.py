@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import json
+import random
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 from structlog.testing import capture_logs
@@ -27,6 +31,7 @@ from graftpunk.har.digest import (
     Endpoint,
     LoginObservation,
     ObservationKind,
+    _form_state,
     _parse_body,
     _with_login_flow,
     body_params,
@@ -36,7 +41,9 @@ from graftpunk.har.digest import (
     redacted_names_of,
 )
 from graftpunk.har.parser import parse_har_file
+from graftpunk.har.paths import reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
+from tests.unit.guide_harness import REPO_ROOT
 
 
 def _entry(
@@ -4084,6 +4091,44 @@ class TestLoginFlowFlag:
         assert _flow_endpoint("/anything").login_flow is False
 
 
+# The rate script's shapes, loaded by path: scripts/ is not a package.
+_RATES_SCRIPT = REPO_ROOT / "scripts" / "cookie_value_rates.py"
+
+
+def _rate_shapes(seed: str) -> dict[str, Callable[[], str]]:
+    spec = importlib.util.spec_from_file_location("cookie_value_rates", _RATES_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.shapes(random.Random(seed))  # noqa: S311 - a fixed sample
+
+
+# shape (scripts/cookie_value_rates.py): the share of random values the
+# form-state rule accepts and reads_as_words rejects. Each ceiling is the share
+# over 100,000 other values of the shape (2026-10-24) plus three standard errors
+# of the test's 10,000-value sample, sqrt(p * (1 - p) / 10,000), rounded up to 4
+# places; a shape with no loss in 100,000 has a ceiling of 0. Words in capitals,
+# alone or as a name, are told from random capitals only by spelling, which is
+# why the capital shapes lose most.
+_FORM_STATE_LOSS_CEILINGS = {
+    "mixed-case 6": 0.0231,
+    "mixed-case 10": 0.0043,
+    "capitals and spaces 8": 0.1605,
+    "capitals and name punctuation 8": 0.0632,
+    "letters and name punctuation 8": 0.0052,
+    "three words of 3 capitals": 0.0,
+    "two capitalised words of 4": 0.0,
+    "two words of 4 capitals": 0.1869,
+    "3 capitals, capitalised 8": 0.0,
+    '"3 capitals, capitalised 8"': 0.0758,
+    "4 lower, 3 capitals, 5 lower": 0.0739,
+    "5 lower, 5 capitals": 0.1041,
+    "4 lower, 2 to 4 capitals, 4 lower": 0.0864,
+    "three capitalised words of 3 to 5": 0.0272,
+    "4 capitals, 4 lower, capitalised 6": 0.0492,
+}
+
+
 class TestFlaggedNamesOf:
     def test_flagged_names_are_exactly_the_digest_cookie_and_token_names(
         self, tmp_path: Path
@@ -4356,6 +4401,174 @@ class TestFlaggedNamesOf:
         har = _write_har(tmp_path, [entry, later])
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    def test_a_search_forms_cleared_and_cased_word_cookies_are_left_out(
+        self, tmp_path: Path
+    ) -> None:
+        """A property search's form state (#296): fields cleared to a quoted empty
+        string, a name in capitals, a 4-letter code and a camelCase tab name
+        hold no credential. The session cookie (HttpOnly), the CSRF cookie, header
+        and hidden input (token names) stay flagged."""
+        page = _entry(
+            "GET",
+            "https://records.example.com/search",
+            content_type="text/html",
+            body=(
+                '<form method="post" action="/search">'
+                '<input type="hidden" name="csrfmiddlewaretoken" value="planted">'
+                "</form>"
+            ),
+            set_cookies=["sessionid=k3v9q2m7x1c8z4w6r5t0y2u8i3o7p1a9; Path=/; HttpOnly"],
+        )
+        page["response"]["cookies"] = [
+            {"name": "sessionid", "value": "k3v9q2m7x1c8z4w6r5t0y2u8i3o7p1a9"},
+            {"name": "csrftoken", "value": "Qm7Zr2Xk9Lp4Wv8Bn3Hd6Ts1Fy5Gc0Je"},
+            {"name": "block", "value": '""'},
+            {"name": "lot", "value": '""'},
+            {"name": "subdivision", "value": '""'},
+            {"name": "text", "value": '""'},
+            {"name": "startDate", "value": '""'},
+        ]
+        search = _entry(
+            "POST",
+            "https://records.example.com/search",
+            request_headers={"X-CSRFToken": "planted"},
+        )
+        search["response"]["cookies"] = [
+            {"name": "text", "value": "corner%20lot"},
+            {"name": "startDate", "value": "10/01/2026"},
+            {"name": "name1", "value": "LANDOWNER"},
+            {"name": "name1", "value": "GRANTEE"},
+            {"name": "name1", "value": '"BRL Grantees"'},
+            {"name": "name_type1", "value": "BRAL"},
+            {"name": "currentTab", "value": "panelGRIDview"},
+            {"name": "currentTab", "value": "GRIDviewPanels"},
+        ]
+        har = _write_har(tmp_path, [page, search])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == (
+            "X-CSRFToken",
+            "csrfmiddlewaretoken",
+            "csrftoken",
+            "sessionid",
+        )
+
+    @pytest.mark.parametrize("cleared", ['""', "''", "%22%22", "%20", "-"])
+    def test_a_value_of_punctuation_alone_holds_nothing(self, tmp_path: Path, cleared: str) -> None:
+        """A field cleared to a quoted empty string is a value the server sent,
+        and it holds nothing; a cookie only ever set so is not flagged."""
+        har = _write_har(tmp_path, [self._with_cookies([("block", cleared)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
+    @pytest.mark.parametrize(
+        "value", ["kqzpwmxtrvbnhgfd", "xQzKwPmRtVbNhGfL", "Zq9XkLmP", "LISTview", "HTMLParser"]
+    )
+    def test_a_random_value_with_no_id_shape_still_flags_a_plain_named_cookie(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        """holds_an_id reads none of these as an id; they are flagged because
+        they read neither as words nor as cased words. camelCase that starts with
+        a capital reads as cased words only at 12 letters or more, so the
+        8-letter LISTview and the 10-letter HTMLParser stay flagged."""
+        har = _write_har(tmp_path, [self._with_cookies([("visit", value)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    def test_percent_encoded_bytes_are_not_punctuation(self, tmp_path: Path) -> None:
+        """Invalid UTF-8 decodes to U+FFFD, which is neither a letter nor a digit;
+        only an ASCII value with none counts as holding nothing."""
+        value = quote(bytes(range(0x80, 0x90)), safe="")
+        har = _write_har(tmp_path, [self._with_cookies([("visit", value)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    def test_a_cleared_value_beside_a_random_one_does_not_hide_it(self, tmp_path: Path) -> None:
+        entries = [
+            self._with_cookies([("visit", '""')]),
+            self._with_cookies([("visit", "xQzKwPmRtVbNhGfL")]),
+        ]
+        har = _write_har(tmp_path, entries)
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    @pytest.mark.parametrize(
+        "value",
+        ['"LANDOWNER"', "%22LANDOWNER%22", '"currentTab"', '"corner lot"', '"BRL Grantees"'],
+    )
+    def test_a_quoted_form_value_is_read_without_its_quotes(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        """RFC 6265 lets a server send a value in double quotes, and a browser
+        keeps them."""
+        har = _write_har(tmp_path, [self._with_cookies([("name1", value)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ()
+
+    @pytest.mark.parametrize(
+        "value", ['"xQzKwPmRtVbNhGfL"', "%22xQzKwPmRtVbNhGfL%22", '"LANDOWNER']
+    )
+    def test_quotes_hide_no_random_value(self, tmp_path: Path, value: str) -> None:
+        """Only one balanced pair comes off, and what is inside is judged as any
+        other value."""
+        har = _write_har(tmp_path, [self._with_cookies([("name1", value)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("name1",)
+
+    @pytest.mark.parametrize("high", [False, True], ids=["any-bytes", "high-bytes"])
+    @pytest.mark.parametrize("length", [8, 16, 32])
+    def test_no_percent_encoded_random_bytes_read_as_cleared(self, length: int, high: bool) -> None:
+        """The share of percent-encoded random bytes the form-state rule accepts
+        and reads_as_words rejects: 0 of 10,000 per shape (2026-10-24). Bytes that
+        are not UTF-8 decode to U+FFFD, which must not read as punctuation."""
+        shape = f"{'high ' if high else ''}bytes {length}"
+        rng = random.Random(f"296-{shape}")  # noqa: S311 - a fixed sample, not a secret
+        low = 0x80 if high else 0
+        values = [
+            quote(bytes(rng.randrange(low, 0x100) for _ in range(length)), safe="")
+            for _ in range(10_000)
+        ]
+        assert [v for v in values if _form_state(v) and not reads_as_words(v)] == []
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            '""',
+            "%22%22",
+            '"BRL Grantees"',
+            '"XQZ Grantees"',
+            "%22XQZ%20Grantees%22",
+            "GRANTEE",
+            "LANDOWNER",
+            "GRIDviewPanels",
+        ],
+    )
+    def test_the_reported_shapes_are_form_state(self, value: str) -> None:
+        """#296's reporter sent case masks, never values: a cleared "", a quoted
+        "AAA Aaaaaaaa" (it failed only on its quotes), capitals of 7 and 9 and
+        an AAAAaaaaAaaaaa tab name. These are invented values with those masks."""
+        assert _form_state(value)
+
+    @pytest.mark.parametrize("value", ["%00", "%00%00", "%01%02", "\x01", '"%00"', "-%00-"])
+    def test_a_control_character_is_not_punctuation(self, tmp_path: Path, value: str) -> None:
+        """Only ASCII punctuation and spaces hold nothing; a control character is
+        a byte of a value, so the cookie stays flagged."""
+        assert not _form_state(value)
+        har = _write_har(tmp_path, [self._with_cookies([("visit", value)])])
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
+
+    @pytest.mark.parametrize("shape", sorted(_FORM_STATE_LOSS_CEILINGS))
+    def test_few_random_values_of_a_biased_shape_read_as_form_state(self, shape: str) -> None:
+        """Shapes the #296 reviews measured beyond uniform alphabets: short mixed
+        case, the name rule's alphabets, and words with a run of capitals inside.
+        Each ceiling is the share of 10,000 values the form-state rule accepts and
+        reads_as_words rejects (2026-10-24), plus 0.0005; the full table is
+        printed by scripts/cookie_value_rates.py."""
+        generate = _rate_shapes(f"296-{shape}")[shape]
+        values = [generate() for _ in range(10_000)]
+        lost = [v for v in values if _form_state(v) and not reads_as_words(v)]
+        assert len(lost) / len(values) <= _FORM_STATE_LOSS_CEILINGS[shape]
 
 
 class TestEveryNamePositionGoesThroughTheIdRule:
