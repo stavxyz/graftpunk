@@ -1952,7 +1952,7 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     quotes taken off, it reads as words (graftpunk.har.paths.reads_as_words: a
     search term, a lot number, a date) or as cased words
     (graftpunk.har.paths.reads_as_cased_words: ``LANDOWNER``, ``currentTab``,
-    ``SMITH, JOHN``), or when it is ASCII and holds no letter or digit (``""``,
+    ``SMITH, JOHN``), or when it is ASCII punctuation and spaces alone (``""``,
     a field cleared to a quoted empty string). Every other cookie stays:
 
     - one whose name reads as a token name (``csrftoken``) or names a session
@@ -2069,7 +2069,7 @@ def _form_state(value: str) -> bool:
     Only punctuation and spaces count as holding nothing: percent-encoded bytes
     decode to U+FFFD where they are not UTF-8, and an ASCII control character
     (``%00``) is a byte too, so a value of either stays a value. A value
-    masked with punctuation alone (``****``) also holds no letter or digit, so a
+    masked with punctuation alone (``****``) also holds nothing, so a
     recorder that masked every cookie value so would leave its plain-named
     cookies out; graftpunk's own redaction writes ``***REDACTED***``, which
     holds letters."""

@@ -719,8 +719,9 @@ surrounding double quotes taken off, it reads as words
 or as cased words (`graftpunk.har.paths.reads_as_cased_words`: one word in
 capitals such as `LANDOWNER`, a camelCase name such as `currentTab` or
 `tabLISTresults`, or one of 12 letters or more that starts with a capital such
-as `LISTviewResults`, or a name such as `SMITH, JOHN`), or when it is ASCII and
-holds no letter or digit (a field cleared to `""`). The cased-words rule is
+as `LISTviewResults`, or a name such as `SMITH, JOHN`), or when it is ASCII
+punctuation and spaces alone (a field cleared to `""`; a control character
+such as `%00` is not punctuation). The cased-words rule is
 told from a random id only by spelling, so it leaves out some random ids that
 `reads_as_words` alone flagged: measured on 100,000 values per shape
 (2026-10-24, `scripts/cookie_value_rates.py`), 0.67% of 8 mixed-case

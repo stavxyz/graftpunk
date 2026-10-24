@@ -4103,26 +4103,29 @@ def _rate_shapes(seed: str) -> dict[str, Callable[[], str]]:
     return module.shapes(random.Random(seed))  # noqa: S311 - a fixed sample
 
 
-# shape (scripts/cookie_value_rates.py): the share of 10,000 random values the
-# form-state rule accepts and reads_as_words rejects, measured 2026-10-24, plus
-# 0.0005. Words in capitals, alone or as a name, are told from random capitals
-# only by spelling, which is why the capital shapes lose most.
+# shape (scripts/cookie_value_rates.py): the share of random values the
+# form-state rule accepts and reads_as_words rejects. Each ceiling is the share
+# over 100,000 other values of the shape (2026-10-24) plus three standard errors
+# of the test's 10,000-value sample, sqrt(p * (1 - p) / 10,000), rounded up to 4
+# places; a shape with no loss in 100,000 has a ceiling of 0. Words in capitals,
+# alone or as a name, are told from random capitals only by spelling, which is
+# why the capital shapes lose most.
 _FORM_STATE_LOSS_CEILINGS = {
-    "mixed-case 6": 0.0169,
-    "mixed-case 10": 0.0029,
-    "capitals and spaces 8": 0.147,
-    "capitals and name punctuation 8": 0.0537,
-    "letters and name punctuation 8": 0.0042,
+    "mixed-case 6": 0.0231,
+    "mixed-case 10": 0.0043,
+    "capitals and spaces 8": 0.1605,
+    "capitals and name punctuation 8": 0.0632,
+    "letters and name punctuation 8": 0.0052,
     "three words of 3 capitals": 0.0,
     "two capitalised words of 4": 0.0,
-    "two words of 4 capitals": 0.1736,
+    "two words of 4 capitals": 0.1869,
     "3 capitals, capitalised 8": 0.0,
-    '"3 capitals, capitalised 8"': 0.0672,
-    "4 lower, 3 capitals, 5 lower": 0.0638,
-    "5 lower, 5 capitals": 0.0928,
-    "4 lower, 2 to 4 capitals, 4 lower": 0.0728,
-    "three capitalised words of 3 to 5": 0.0209,
-    "4 capitals, 4 lower, capitalised 6": 0.041,
+    '"3 capitals, capitalised 8"': 0.0758,
+    "4 lower, 3 capitals, 5 lower": 0.0739,
+    "5 lower, 5 capitals": 0.1041,
+    "4 lower, 2 to 4 capitals, 4 lower": 0.0864,
+    "three capitalised words of 3 to 5": 0.0272,
+    "4 capitals, 4 lower, capitalised 6": 0.0492,
 }
 
 
@@ -4526,6 +4529,25 @@ class TestFlaggedNamesOf:
             for _ in range(10_000)
         ]
         assert [v for v in values if _form_state(v) and not reads_as_words(v)] == []
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            '""',
+            "%22%22",
+            '"BRL Grantees"',
+            '"XQZ Grantees"',
+            "%22XQZ%20Grantees%22",
+            "GRANTEE",
+            "LANDOWNER",
+            "GRIDviewPanels",
+        ],
+    )
+    def test_the_reported_shapes_are_form_state(self, value: str) -> None:
+        """#296's reporter sent case masks, never values: a cleared "", a quoted
+        "AAA Aaaaaaaa" (it failed only on its quotes), capitals of 7 and 9 and
+        an AAAAaaaaAaaaaa tab name. These are invented values with those masks."""
+        assert _form_state(value)
 
     @pytest.mark.parametrize("value", ["%00", "%00%00", "%01%02", "\x01", '"%00"', "-%00-"])
     def test_a_control_character_is_not_punctuation(self, tmp_path: Path, value: str) -> None:

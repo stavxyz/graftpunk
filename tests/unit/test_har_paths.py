@@ -679,14 +679,16 @@ def _random_value(shape: str, rng: random.Random) -> str:
 
 # shape: the share of random values of that shape reads_as_cased_words accepts
 # and reads_as_words rejects, so the share a cookie value the 1.24.0 rule flagged
-# is no longer flagged for (#296). Each ceiling is the rate measured on these
-# 10,000 values per shape (2026-10-24) plus 0.0005. The capital shapes are the
+# is no longer flagged for (#296). Each ceiling is the share over 100,000 other
+# values of the shape (2026-10-24) plus three standard errors of the test's
+# 10,000-value sample, sqrt(p * (1 - p) / 10,000), rounded up to 4 places; a
+# shape with no loss in 100,000 has a ceiling of 0. The capital shapes are the
 # rule's known limit: a word in capitals is judged only by its letter pairs, so
 # an id of capitals and digits is lost when a draw holds no digit.
 _CASED_WORD_LOSS_CEILINGS = {
-    "base64 8": 0.0026,
-    "base64 12": 0.0,
-    "base64 16": 0.0,
+    "base64 8": 0.0025,
+    "base64 12": 0.0007,
+    "base64 16": 0.0002,
     "base64 22": 0.0,
     "base64 32": 0.0,
     "hex 8": 0.0,
@@ -696,9 +698,9 @@ _CASED_WORD_LOSS_CEILINGS = {
     "lowercase 12": 0.0,
     "lowercase 16": 0.0,
     "lowercase 32": 0.0,
-    "mixed-case 8": 0.0088,
-    "mixed-case 12": 0.0021,
-    "mixed-case 16": 0.0008,
+    "mixed-case 8": 0.0089,
+    "mixed-case 12": 0.0041,
+    "mixed-case 16": 0.0005,
     "mixed-case 32": 0.0,
     "uuid": 0.0,
     "jwt signature": 0.0,
@@ -706,12 +708,12 @@ _CASED_WORD_LOSS_CEILINGS = {
     "numeric 6": 0.0,
     "numeric 8": 0.0,
     "numeric 10": 0.0,
-    "capitals 4": 0.4225,
-    "capitals 7": 0.1935,
-    "capitals 9": 0.1144,
-    "capitals 12": 0.0543,
-    "capitals and digits 8": 0.0114,
-    "capitals and digits 12": 0.0013,
+    "capitals 4": 0.4374,
+    "capitals 7": 0.204,
+    "capitals 9": 0.125,
+    "capitals 12": 0.0602,
+    "capitals and digits 8": 0.0138,
+    "capitals and digits 12": 0.0019,
     "capitals and digits 16": 0.0,
 }
 
@@ -732,6 +734,7 @@ class TestReadsAsCasedWords:
             "searchByNAME",
             "searchByName",
             "viewPDF",
+            "getXQZ",
             "parseHTMLString",
             "LISTviewResults",
             "HTMLParserView",
@@ -756,6 +759,8 @@ class TestReadsAsCasedWords:
             "iPad",
             "XL",
             "searchBxName",
+            "tabXQZresults",
+            "getXQZZ",
             "kQzPwMxT",
             "HTMLParser",
             "LISTview",
@@ -802,6 +807,28 @@ class TestReadsAsCasedWords:
         started = time.perf_counter()
         assert not reads_as_cased_words(value)
         assert time.perf_counter() - started < 0.25
+
+
+class TestTheReportedFormStateShapes:
+    """#296's reporter sent case masks of their form-state values, never the
+    values. These are invented values with the same masks; the quoted and
+    cleared forms go through the digest's quote and punctuation handling, tested
+    in test_har_digest.py."""
+
+    @pytest.mark.parametrize("value", ["GRANTEE", "LANDOWNER"], ids=["AAAAAAA", "AAAAAAAAA"])
+    def test_a_word_of_7_or_9_capitals(self, value: str) -> None:
+        assert reads_as_cased_words(value)
+        assert not reads_as_words(value)
+
+    def test_a_tab_name_of_4_capitals_4_lower_and_a_capitalised_6(self) -> None:
+        """AAAAaaaaAaaaaa: camelCase that starts with a capital, 14 letters."""
+        assert reads_as_cased_words("GRIDviewPanels")
+
+    @pytest.mark.parametrize("value", ["BRL Grantees", "XQZ Grantees"])
+    def test_a_name_of_3_capitals_and_a_capitalised_8_inside_its_quotes(self, value: str) -> None:
+        """AAA Aaaaaaaa, the inside of the quoted value the digest takes the
+        quotes off: a word of 3 capitals passes as typed, spelled or not."""
+        assert reads_as_words(value)
 
 
 # The graft skill's HAR reader runs on the standard library alone, so it carries
