@@ -1958,7 +1958,7 @@ response set it with `HttpOnly`), `value_not_form_state` (a recorded value is
 not form state), `value_not_kept` (an entry in the recording holds the cookie without a value),
 `no_value_seen` (the recording shows no non-empty value), and `sent_only`,
 which is never the only reason and says no response in the recording set the
-cookie. A name flagged only by `value_not_form_state` with values you know to
+cookie. A name flagged only by `value_not_form_state` (with or without `sent_only`) with values you know to
 be form state is the false positive the paragraph above describes; a name with
 `http_only`, `session_name` or `token_name` is a credential until you have
 checked otherwise.

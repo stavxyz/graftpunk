@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import pickle
 import subprocess
@@ -156,6 +157,7 @@ class TestLoad:
         assert sidecar.flagged_reasons == {"a": ("session_name",)}
         assert pickle.loads(pickle.dumps(sidecar)) == sidecar  # noqa: S301 - its own bytes
         assert copy.deepcopy(sidecar) == sidecar
+        assert dataclasses.asdict(sidecar)["flagged_reasons"] == {"a": ("session_name",)}
         sidecar.flagged_reasons["a"] = ("made_up",)
         with pytest.raises(SidecarError, match="unknown reasons: made_up"):
             sidecar_text(sidecar)

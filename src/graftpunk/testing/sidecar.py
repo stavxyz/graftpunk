@@ -228,7 +228,9 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
 
     Raises:
         SidecarError: *sidecar* has flagged names and no reasons for them (a
-            schema 1 sidecar's facts), which the current schema cannot hold.
+            schema 1 sidecar's facts), which the current schema cannot hold, or
+            its reasons were changed after construction into a shape the loader
+            would refuse.
     """
     if sidecar.flagged_names and not sidecar.flagged_reasons:
         raise SidecarError(
