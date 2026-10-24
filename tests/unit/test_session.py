@@ -822,7 +822,8 @@ class TestInitStealthBackend:
         ):
             session = BrowserSession(backend="selenium", headless=True, use_stealth=True)
 
-        mock_create.assert_called_once_with(headless=True)
+        # Observe off: Chrome is not asked to keep a performance log.
+        mock_create.assert_called_once_with(headless=True, performance_log=False)
         assert session._backend_type == "selenium"
         assert session._use_stealth is True
         assert session._webdriver is mock_stealth_driver
@@ -1545,7 +1546,7 @@ class TestStopObserveAsync:
         mock_capture = MagicMock()
         mock_capture.stop_capture_async = AsyncMock(side_effect=RuntimeError("cdp error"))
         mock_capture.get_har_entries.return_value = []
-        mock_capture.get_console_logs.return_value = []
+        mock_capture.get_console_logs.return_value = [{"level": "log", "text": "hi"}]
         mock_storage = MagicMock()
         session._capture = mock_capture
         session._observe_storage = mock_storage

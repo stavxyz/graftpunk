@@ -52,6 +52,7 @@ def _get_platform_fingerprint() -> tuple[str, str, str]:
 def create_stealth_driver(
     headless: bool = False,
     profile_dir: Path | None = None,
+    performance_log: bool = False,
 ) -> uc.Chrome:
     """Create a stealth Chrome driver with anti-detection measures.
 
@@ -63,6 +64,9 @@ def create_stealth_driver(
     Args:
         headless: Run in headless mode (less stealthy, use with caution).
         profile_dir: Custom profile directory (default: ~/.config/graftpunk/chrome_profile).
+        performance_log: Have ChromeDriver keep Chrome's performance log, which
+            the Selenium observe capture reads its network events from.
+            ChromeDriver keeps it only when the capability is set at launch.
 
     Returns:
         Configured undetected Chrome driver with stealth settings applied.
@@ -87,6 +91,9 @@ def create_stealth_driver(
 
     if headless:
         options.add_argument("--headless=new")
+
+    if performance_log:
+        options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
     # Detect Chrome version for matching ChromeDriver
     try:

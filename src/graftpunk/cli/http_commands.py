@@ -8,7 +8,6 @@ observability via HAR capture.
 
 from __future__ import annotations
 
-import datetime
 import os
 import sys
 from collections.abc import Callable
@@ -28,8 +27,7 @@ from graftpunk.cli.errors import exit_missing_browser_stack
 from graftpunk.cookies import BrowserCookieSession
 from graftpunk.exceptions import SessionInvalidatedError, SessionNotFoundError
 from graftpunk.logging import get_logger
-from graftpunk.observe import OBSERVE_BASE_DIR
-from graftpunk.observe.storage import ObserveStorage, session_dirname
+from graftpunk.observe import ObservabilityContext, build_observe_context
 from graftpunk.session_context import resolve_session
 from graftpunk.session_identity import split_session_name
 
@@ -143,6 +141,7 @@ def _make_request(
     form_data: str | None = None,
     extra_headers: list[str] | None = None,
     timeout: float = 30.0,
+    on_session: Callable[[requests.Session, str | None], None] | None = None,
 ) -> tuple[requests.Response, str | None]:
     """Make an HTTP request, optionally using a cached graftpunk session.
 
@@ -165,6 +164,9 @@ def _make_request(
         form_data: Form-encoded body string (mutually exclusive with json_body).
         extra_headers: List of ``"Name: value"`` header strings.
         timeout: Request timeout in seconds.
+        on_session: Called with the ready session and the operating session
+            name just before the request is sent (``gp http`` starts its
+            observe recording there).
 
     Returns:
         The HTTP response and the operating session name it was made with
@@ -283,6 +285,9 @@ def _make_request(
                 )
         cast("GraftpunkSession", session).merge_header_roles(plugin_roles)
 
+    if on_session is not None:
+        on_session(session, resolved)
+
     try:
         response = _dispatch_request(session, method, url, role=role, **kwargs)
     except ValueError as exc:
@@ -324,71 +329,29 @@ def _make_request(
     return response, resolved
 
 
-def _save_observe_data(
-    session_name: str,
-    method: str,
-    url: str,
-    response: requests.Response,
-    request_body: str | None = None,
-) -> ObserveStorage | None:
-    """Save request/response data as a HAR entry.
+def _start_observe(
+    http_session: requests.Session, operating_session: str | None, url: str
+) -> ObservabilityContext:
+    """Start recording *http_session* into a new observe run, and return the run.
 
-    Args:
-        session_name: Session name for directory organization.
-        method: HTTP method used.
-        url: Request URL.
-        response: The HTTP response.
-        request_body: Optional request body text.
-
-    Returns:
-        ObserveStorage instance if saved, None on error.
+    The run is filed under the operating session name ``_make_request``
+    resolved, not the raw argument (#151), or for ``--no-session`` under the
+    site name inferred from *url*. Each request the session then sends is one
+    HAR entry per redirect hop, timed as it is sent
+    (:class:`graftpunk.observe.http_capture.HttpCaptureBackend`). The caller
+    calls ``finish()`` on the result.
     """
-    try:
-        run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
-        storage = ObserveStorage(OBSERVE_BASE_DIR, session_dirname(session_name), run_id)
+    namespace = operating_session
+    if not namespace:
+        from graftpunk.plugins import infer_site_name
 
-        # Build minimal HAR entry. A Response built by requests always carries
-        # its PreparedRequest, but the attribute is typed Optional.
-        if response.request is None:
-            LOG.warning("observe_har_missing_request", url=url)
-        sent_headers = response.request.headers if response.request is not None else {}
-        har_entry: dict[str, object] = {
-            "startedDateTime": datetime.datetime.now(tz=datetime.UTC).isoformat(),
-            "request": {
-                "method": method.upper(),
-                "url": url,
-                "headers": [{"name": k, "value": v} for k, v in sent_headers.items()],
-                "bodySize": len(request_body) if request_body else 0,
-            },
-            "response": {
-                "status": response.status_code,
-                "statusText": response.reason or "",
-                "headers": [{"name": k, "value": v} for k, v in response.headers.items()],
-                "content": {
-                    "size": len(response.content),
-                    "mimeType": response.headers.get("Content-Type", ""),
-                    "text": response.text[:50000],  # Cap at 50KB
-                },
-                "bodySize": len(response.content),
-            },
-            "time": response.elapsed.total_seconds() * 1000,
-        }
-
-        if request_body:
-            har_entry["request"] = {
-                **har_entry["request"],
-                "postData": {
-                    "mimeType": sent_headers.get("Content-Type", ""),
-                    "text": request_body,
-                },
-            }
-
-        storage.write_har([har_entry])
-        return storage
-    except Exception as exc:  # noqa: BLE001 — observability is best-effort
-        LOG.warning("observe_save_failed", error=str(exc))
-        gp_console.warn(f"Failed to save request trace: {exc}")
-        return None
+        namespace = infer_site_name(url) or ""
+        if not namespace:
+            LOG.warning("namespace_inference_failed", url=url, fallback="unknown")
+            namespace = "unknown"
+    run = build_observe_context(namespace, "", None, "full", http_session=http_session)
+    run.start()
+    return run
 
 
 def _print_response(
@@ -507,35 +470,30 @@ def _http_command(method: str) -> Callable[..., None]:
         if json_body is not None:
             resolved_json = _resolve_json_body(json_body)
 
-        response, operating_session = _make_request(
-            method,
-            url,
-            session_name=session,
-            no_session=no_session,
-            browser_headers=not no_browser_headers,
-            role=role,
-            json_body=resolved_json,
-            form_data=data,
-            extra_headers=header,
-            timeout=timeout,
-        )
+        # Observe (on by default): record the request as it is sent.
+        runs: list[ObservabilityContext] = []
 
-        # Observe: save HAR data by default
-        if not no_observe:
-            if operating_session:
-                # The name the request was actually made with — resolved once,
-                # by _make_request. Filing the run under the raw argument would
-                # hide it from `gp observe ls --session <resolved name>` (#151).
-                resolved_namespace = operating_session
-            else:
-                from graftpunk.plugins import infer_site_name
+        def record(http_session: requests.Session, operating: str | None) -> None:
+            if not no_observe:
+                runs.append(_start_observe(http_session, operating, url))
 
-                resolved_namespace = infer_site_name(url) or ""
-                if not resolved_namespace:
-                    LOG.warning("namespace_inference_failed", url=url, fallback="unknown")
-                    resolved_namespace = "unknown"
-            request_body = resolved_json or data
-            _save_observe_data(resolved_namespace, method, url, response, request_body)
+        try:
+            response, _operating_session = _make_request(
+                method,
+                url,
+                session_name=session,
+                no_session=no_session,
+                browser_headers=not no_browser_headers,
+                role=role,
+                json_body=resolved_json,
+                form_data=data,
+                extra_headers=header,
+                timeout=timeout,
+                on_session=record,
+            )
+        finally:
+            for run in runs:
+                run.finish()
 
         _print_response(response, body_only=body_only, verbose=verbose)
 

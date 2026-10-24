@@ -22,9 +22,10 @@ Example:
 
 import asyncio
 import copy
+from collections.abc import Iterable
 from http import cookiejar
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 import requestium
@@ -50,6 +51,9 @@ from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.capture import create_capture_backend
 from graftpunk.observe.storage import ObserveStorage, session_dirname
 from graftpunk.tokens import PICKLED_SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
+
+if TYPE_CHECKING:
+    from graftpunk.observe.run import Redaction
 
 LOG = get_logger(__name__)
 
@@ -166,7 +170,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         self._observe_mode = observe_mode
         self._capture: Any = None
         self._observe_storage: ObserveStorage | None = None
-        self._observe_redact: tuple[str, ...] = ()
+        self._observe_redact: Redaction | tuple[str, ...] = ()
 
         if backend == "nodriver":
             # Use nodriver backend directly (CDP-based, no ChromeDriver)
@@ -205,7 +209,11 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             LOG.info("creating_stealth_browser_session", headless=headless)
             try:
                 # Create stealth driver directly
-                self._stealth_driver = create_stealth_driver(headless=headless)
+                # The observe capture reads Chrome's performance log, which
+                # ChromeDriver keeps only when asked at launch; off mode pays nothing.
+                self._stealth_driver = create_stealth_driver(
+                    headless=headless, performance_log=observe_mode != "off"
+                )
 
                 # Initialize requestium Session without creating a new driver
                 # We'll override the driver property to use our stealth driver
@@ -291,12 +299,20 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
 
     @property
     def observe_redact(self) -> tuple[str, ...]:
-        """Secret values scrubbed from the observe HAR before it is written."""
-        return self._observe_redact
+        """Every value scrubbed from the observe HAR before it is written."""
+        from graftpunk.observe.run import as_redaction
+
+        return as_redaction(self._observe_redact).everything
 
     @observe_redact.setter
-    def observe_redact(self, values: Any) -> None:
-        self._observe_redact = tuple(str(v) for v in values if v)
+    def observe_redact(self, values: "Redaction | Iterable[str]") -> None:
+        """Plain values are all secrets; a :class:`graftpunk.observe.run.Redaction`
+        also names identifiers, which are left in URLs."""
+        from graftpunk.observe.run import Redaction
+
+        self._observe_redact = (
+            values if isinstance(values, Redaction) else tuple(str(v) for v in values if v)
+        )
 
     @property
     def driver(self) -> Any:
@@ -434,12 +450,10 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         LOG.info("starting_nodriver_backend_async")
         await backend_instance.start_async()
 
-    def _start_observe(self) -> None:
-        """Initialize observability capture if mode is not 'off' and driver exists."""
-        if self._observe_mode == "off":
-            return
+    def _observe_driver(self) -> Any | None:
+        """The driver to capture from, or None (with a warning) when there is none."""
         try:
-            driver = self.driver
+            return self.driver
         except BrowserError:
             LOG.warning(
                 "observe_start_skipped_no_driver",
@@ -449,17 +463,19 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 f"Observability capture unavailable: no browser driver. "
                 f"Requested mode '{self._observe_mode}' will have no effect."
             )
-            return
+            return None
+
+    def _open_observe_storage(self) -> ObserveStorage | None:
+        """Create this run's storage, or None (with a warning) when it cannot be."""
         from graftpunk.observe.run import make_run_id
 
-        run_id = make_run_id()
         # Storage requires a filesystem-safe name; a plugin's session_name is
         # only validated non-empty. session_dirname owns that mapping (the
         # observe readers apply the same one). Opt-in diagnostics must never
         # break the primary operation, so fall back to no capture on error.
         session_name = session_dirname(getattr(self, "_session_name", "default"))
         try:
-            self._observe_storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
+            return ObserveStorage(OBSERVE_BASE_DIR, session_name, make_run_id())
         except (ValueError, OSError) as exc:
             LOG.warning(
                 "observe_start_skipped_storage_error",
@@ -468,14 +484,88 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 exc_type=type(exc).__name__,
             )
             gp_console.warn(f"Observability capture unavailable: {exc}")
+            return None
+
+    def _capture_start_failed(self, exc: Exception) -> None:
+        """Degrade to no capture: opt-in diagnostics never break the session's work."""
+        LOG.error("observe_start_capture_failed", error=str(exc), exc_type=type(exc).__name__)
+        gp_console.warn(f"Observability capture unavailable: could not start it ({exc}).")
+        self._capture = None
+        if self._observe_storage is not None and self._observe_storage.remove_if_empty():
             self._observe_storage = None
+
+    def _start_observe(self) -> None:
+        """Initialize observability capture if mode is not 'off' and driver exists.
+
+        On nodriver this registers no CDP handlers, so it records no network
+        traffic: that takes ``async with``, which uses ``_start_observe_async``.
+        """
+        if self._observe_mode == "off":
+            return
+        driver = self._observe_driver()
+        if driver is None:
+            return
+        if self._backend_type == "nodriver":
+            LOG.warning("observe_nodriver_sync_start_records_no_network")
+            gp_console.warn(
+                "Observability on nodriver records network traffic only under "
+                "'async with BrowserSession(...)'; this run will have no HAR entries."
+            )
+        self._observe_storage = self._open_observe_storage()
+        if self._observe_storage is None:
             return
         # Bodies too large for the HAR, or binary, go beside it, as gp observe's do.
-        self._capture = create_capture_backend(
-            self._backend_type, driver, bodies_dir=self._observe_storage.run_dir / "bodies"
+        try:
+            self._capture = create_capture_backend(
+                self._backend_type, driver, bodies_dir=self._observe_storage.run_dir / "bodies"
+            )
+            self._capture.start_capture()
+        except Exception as exc:  # noqa: BLE001 - opt-in diagnostics are best-effort
+            self._capture_start_failed(exc)
+            return
+        LOG.info(
+            "observe_capture_started",
+            mode=self._observe_mode,
+            run_id=self._observe_storage.run_dir.name,
         )
-        self._capture.start_capture()
-        LOG.info("observe_capture_started", mode=self._observe_mode, run_id=run_id)
+
+    async def _start_observe_async(self) -> None:
+        """Start observability capture from ``__aenter__``, on the session's event loop.
+
+        nodriver's capture records only through CDP handlers, which
+        ``start_capture_async`` registers on a tab. It is started on the
+        browser's first page tab, the one ``driver.get(url)`` navigates when no
+        new tab is asked for, before anything loads in it. A page opened in
+        another tab is not recorded.
+        """
+        if self._backend_type != "nodriver":
+            self._start_observe()
+            return
+        if self._observe_mode == "off":
+            return
+        driver = self._observe_driver()
+        if driver is None:
+            return
+        self._observe_storage = self._open_observe_storage()
+        if self._observe_storage is None:
+            return
+        try:
+            tab = driver.main_tab
+            self._capture = create_capture_backend(
+                "nodriver",
+                driver,
+                get_tab=lambda: tab,
+                bodies_dir=self._observe_storage.run_dir / "bodies",
+            )
+            await self._capture.start_capture_async()
+        except Exception as exc:  # noqa: BLE001 - opt-in diagnostics are best-effort
+            self._capture_start_failed(exc)
+            return
+        LOG.info(
+            "observe_capture_started",
+            mode=self._observe_mode,
+            run_id=self._observe_storage.run_dir.name,
+        )
 
     def _take_error_screenshot(self, exc_type: type[BaseException] | None) -> None:
         """Take error screenshot if an exception occurred."""
@@ -494,32 +584,13 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         """Write HAR and console logs to storage."""
         if self._observe_storage is None or self._capture is None:
             return
-        from graftpunk.observe.run import redact_har_entries, redact_request_body_files
+        from graftpunk.observe.run import write_capture_data
 
-        try:
-            # getattr: sessions restored via __setstate__ or built without
-            # __init__ (tests) may predate the attribute.
-            secrets = getattr(self, "_observe_redact", ())
-            entries = redact_har_entries(self._capture.get_har_entries(), secrets)
-            # Scrub the body files first, since that can update an entry's
-            # _postDataSize; a failure there must not cost the HAR.
-            try:
-                redact_request_body_files(entries, secrets, self._observe_storage.run_dir)
-            except Exception as exc:
-                LOG.error(
-                    "observe_request_body_redaction_failed",
-                    error=str(exc),
-                    exc_type=type(exc).__name__,
-                )
-            self._observe_storage.write_har(entries)
-        except Exception as exc:
-            LOG.error("observe_har_write_failed", error=str(exc), exc_type=type(exc).__name__)
-        try:
-            self._observe_storage.write_console_logs(self._capture.get_console_logs())
-        except Exception as exc:
-            LOG.error(
-                "observe_console_log_write_failed", error=str(exc), exc_type=type(exc).__name__
-            )
+        # getattr: sessions restored via __setstate__ or built without
+        # __init__ (tests) may predate the attribute.
+        write_capture_data(
+            self._observe_storage, self._capture, getattr(self, "_observe_redact", ())
+        )
 
     def _stop_observe(
         self,
@@ -574,7 +645,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
 
     async def __aenter__(self) -> "BrowserSession":
         await self.start_async()
-        self._start_observe()
+        await self._start_observe_async()
         return self
 
     async def __aexit__(
