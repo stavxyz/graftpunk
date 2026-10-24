@@ -14,6 +14,7 @@ browser would for the page it describes, and records every click.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,20 +29,27 @@ _URL = "https://app.example.com/"
 
 
 class _FakeElement:
+    """An element that keeps what is typed into it, as an input does."""
+
     def __init__(self, page: _FakePage, name: str, *, visible: bool, disabled: bool) -> None:
         self._page = page
         self.name = name
         self.visible = visible
         self.disabled = disabled
+        self.value = ""
 
     async def click(self) -> None:
         self._page.clicks.append((self.name, self._page.hydrated))
 
     async def clear_input(self) -> None:
-        return None
+        self.value = ""
 
     async def send_keys(self, value: str) -> None:
-        return None
+        self.value += value
+
+
+# The trailing arguments of the read-back the engine evaluates: ("selector", index).
+_READBACK_ARGS = re.compile(r"\}\)\((\".*\"), (\d+)\)$")
 
 
 class _FakePage:
@@ -51,6 +59,8 @@ class _FakePage:
     ``hydrate_after`` times; until then its DOM is still changing, so the
     readiness probe reports no quiet time. ``never_quiet`` keeps it changing
     forever (an animated page). A click records whether the page had hydrated.
+    The field read-back answers with the value of the match it names, the way
+    ``document.querySelectorAll(selector)[index]`` would.
     """
 
     def __init__(self, *, hydrate_after: int = 0, never_quiet: bool = False) -> None:
@@ -89,25 +99,42 @@ class _FakePage:
     async def get_content(self) -> str:
         return "<html><body>Signed in</body></html>"
 
+    def _readiness(self) -> str:
+        self.ready_reads += 1
+        quiet = 0 if self._never_quiet or not self.hydrated else 5000
+        return json.dumps({"state": "complete", "quiet_ms": quiet})
+
+    def _probe(self, expression: str) -> str:
+        for selector, matches in self.elements.items():
+            if json.dumps(selector) in expression:
+                return json.dumps(
+                    {
+                        "count": len(matches),
+                        "visible": [m.visible for m in matches],
+                        "disabled": [m.disabled for m in matches],
+                    }
+                )
+        return json.dumps({"count": 0, "visible": [], "disabled": []})
+
+    def _read_back(self, expression: str) -> str:
+        args = _READBACK_ARGS.search(expression)
+        assert args is not None, expression
+        matches = self.elements.get(json.loads(args.group(1)), [])
+        index = int(args.group(2))
+        if index >= len(matches):
+            return json.dumps({"found": False, "value": None})
+        return json.dumps({"found": True, "value": matches[index].value})
+
     async def evaluate(self, expression: str, **kwargs: Any) -> Any:
         if "MutationObserver" in expression:
-            self.ready_reads += 1
-            quiet = 0 if self._never_quiet or not self.hydrated else 5000
-            return json.dumps({"state": "complete", "quiet_ms": quiet})
-        if "querySelectorAll" in expression:
-            for selector, matches in self.elements.items():
-                if json.dumps(selector) in expression:
-                    return json.dumps(
-                        {
-                            "count": len(matches),
-                            "visible": [m.visible for m in matches],
-                            "disabled": [m.disabled for m in matches],
-                        }
-                    )
-            return json.dumps({"count": 0, "visible": [], "disabled": []})
+            return self._readiness()
+        if "checkVisibility" in expression:
+            return self._probe(expression)
+        if "String(el.value)" in expression:
+            return self._read_back(expression)
         if expression == "document.readyState":
             return "complete"
-        return json.dumps({"found": True, "value": None})
+        raise AssertionError(f"unexpected expression: {expression[:80]}")
 
 
 def _plugin(*steps: LoginStep, timeout: float = 30.0) -> SitePlugin:
@@ -122,7 +149,9 @@ def _plugin(*steps: LoginStep, timeout: float = 30.0) -> SitePlugin:
     return P()
 
 
-async def _login(plugin: SitePlugin, page: _FakePage) -> bool:
+async def _login(
+    plugin: SitePlugin, page: _FakePage, credentials: dict[str, str] | None = None
+) -> bool:
     from graftpunk.plugins.login_engine import generate_login_method
 
     mock_bs = MagicMock()
@@ -137,7 +166,7 @@ async def _login(plugin: SitePlugin, page: _FakePage) -> bool:
         patch("graftpunk.BrowserSession", mock_bs),
         patch("graftpunk.plugins.login_engine.cache_login_session"),
     ):
-        return await generate_login_method(plugin)({})
+        return await generate_login_method(plugin)(credentials or {})
 
 
 class TestAmbiguousSelector:
@@ -168,17 +197,94 @@ class TestAmbiguousSelector:
         assert page.clicks == []
 
     @pytest.mark.asyncio
-    async def test_a_field_selector_is_held_to_the_same_rule(self) -> None:
+    async def test_a_field_with_a_hidden_copy_first_is_filled_and_verified(self) -> None:
+        """A page that duplicates its form (a mobile copy hidden ahead of the desktop
+        one): the fill, the clear check and the read-back all use the visible match,
+        so the typed value verifies on the first attempt."""
         page = _FakePage()
         hidden = page.add("input.user", "hidden-user", visible=False)
         shown = page.add("input.user", "user")
-        hidden.send_keys = AsyncMock()  # type: ignore[method-assign]
-        shown.send_keys = AsyncMock()  # type: ignore[method-assign]
 
-        await _login(_plugin(LoginStep(fields={"username": "input.user"})), page)
+        with (
+            patch("graftpunk.plugins.login_engine.LOG") as engine_log,
+            patch("graftpunk.plugins.login_ready.LOG") as ready_log,
+        ):
+            ok = await _login(
+                _plugin(LoginStep(fields={"username": "input.user"})), page, {"username": "bob"}
+            )
 
-        hidden.send_keys.assert_not_awaited()
-        shown.send_keys.assert_awaited()
+        assert ok is True
+        assert shown.value == "bob"
+        assert hidden.value == ""
+        assert not [
+            c
+            for c in engine_log.warning.call_args_list
+            if c.args[0] == "login_field_value_mismatch"
+        ]
+        warned = [
+            c for c in ready_log.warning.call_args_list if c.args[0] == "login_selector_ambiguous"
+        ]
+        assert len(warned) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_clear_check_reads_the_field_that_was_typed_into(self) -> None:
+        """A residue in the visible field is cleared again even when the hidden first
+        copy is empty (#148's second clear)."""
+        page = _FakePage()
+        page.add("input.user", "hidden-user", visible=False)
+        shown = page.add("input.user", "user")
+        clears = 0
+
+        async def clear_input() -> None:
+            # The first clear leaves a late keystroke behind, as #148 measured.
+            nonlocal clears
+            clears += 1
+            shown.value = "x" if clears == 1 else ""
+
+        sends = 0
+        real_send = shown.send_keys
+
+        async def send_keys(value: str) -> None:
+            nonlocal sends
+            sends += 1
+            await real_send(value)
+
+        shown.clear_input = clear_input  # type: ignore[method-assign]
+        shown.send_keys = send_keys  # type: ignore[method-assign]
+        shown.value = "stale"
+
+        await _login(
+            _plugin(LoginStep(fields={"username": "input.user"})), page, {"username": "bob"}
+        )
+
+        # Cleared twice before the one and only typing: no "xbob", no retry.
+        assert (clears, sends) == (2, 1)
+        assert shown.value == "bob"
+
+    @pytest.mark.asyncio
+    async def test_ambiguity_is_warned_once_per_field_across_fill_attempts(self) -> None:
+        page = _FakePage()
+        page.add("input.user", "hidden-user", visible=False)
+        shown = page.add("input.user", "user")
+        typed = 0
+
+        async def send_keys(value: str) -> None:
+            # The first attempt's keystrokes go nowhere (a re-rendered form).
+            nonlocal typed
+            typed += 1
+            if typed > 1:
+                shown.value += value
+
+        shown.send_keys = send_keys  # type: ignore[method-assign]
+
+        with patch("graftpunk.plugins.login_ready.LOG") as log:
+            await _login(
+                _plugin(LoginStep(fields={"username": "input.user"})), page, {"username": "bob"}
+            )
+
+        assert typed == 2
+        warned = [c for c in log.warning.call_args_list if c.args[0] == "login_selector_ambiguous"]
+        assert len(warned) == 1
 
     @pytest.mark.asyncio
     async def test_one_match_is_acted_on_without_a_warning(self) -> None:
@@ -452,6 +558,7 @@ class _FakeDriver:
     def _element(self, fake: _FakeElement) -> MagicMock:
         element = MagicMock()
         element.click.side_effect = lambda: self.page.clicks.append((fake.name, True))
+        element.send_keys.side_effect = lambda value: setattr(fake, "value", fake.value + value)
         return element
 
     def find_element(self, by: str, selector: str) -> MagicMock:
@@ -474,7 +581,7 @@ class _FakeDriver:
 
 
 class TestSeleniumTwin:
-    def _login(self, page: _FakePage, *steps: LoginStep) -> bool:
+    def _login(self, page: _FakePage, *steps: LoginStep, timeout: float = 30.0) -> bool:
         from graftpunk.plugins.login_engine import generate_login_method
 
         class P(SitePlugin):
@@ -483,7 +590,7 @@ class TestSeleniumTwin:
             help_text = "t"
             base_url = "https://app.example.com"
             backend = "selenium"
-            login_config = LoginConfig(steps=list(steps), settle=0.0)
+            login_config = LoginConfig(steps=list(steps), settle=0.0, timeout=timeout)
 
         mock_bs = MagicMock()
         instance = MagicMock()
@@ -495,7 +602,7 @@ class TestSeleniumTwin:
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_login_session"),
         ):
-            return generate_login_method(P())({})
+            return generate_login_method(P())({"username": "bob"})
 
     def test_the_visible_match_is_clicked(self) -> None:
         page = _FakePage()
@@ -521,3 +628,255 @@ class TestSeleniumTwin:
         self._login(page, LoginStep(submit="#go"))
 
         assert page.ready_reads == 3
+
+    def test_a_field_with_a_hidden_copy_first_is_typed_into_the_visible_one(self) -> None:
+        page = _FakePage()
+        hidden = page.add("input.user", "hidden-user", visible=False)
+        shown = page.add("input.user", "user")
+
+        self._login(page, LoginStep(fields={"username": "input.user"}))
+
+        assert (hidden.value, shown.value) == ("", "bob")
+
+    def test_a_single_disabled_match_fails(self) -> None:
+        page = _FakePage()
+        page.add("#go", "go", disabled=True)
+
+        with pytest.raises(PluginError, match=r"matches one element, and it is disabled"):
+            self._login(page, LoginStep(submit="#go"))
+        assert page.clicks == []
+
+    def test_the_error_names_its_step_once(self) -> None:
+        page = _FakePage()
+        page.add("a.signin", "a", visible=False)
+        page.add("a.signin", "b", visible=False)
+
+        with pytest.raises(PluginError) as exc_info:
+            self._login(page, LoginStep(submit="a.signin"))
+        message = str(exc_info.value)
+        assert message.count("Step 1") == 1
+        assert "Failed to click" not in message
+
+    def test_the_wait_is_bounded_by_the_login_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        monkeypatch.setattr("graftpunk.plugins.login_ready._READY_MAX_WAIT", 60.0)
+        page = _FakePage(never_quiet=True)
+        page.add("#go", "go")
+
+        started = time.monotonic()
+        self._login(page, LoginStep(submit="#go"), timeout=0.2)
+
+        assert time.monotonic() - started < 2.0
+        assert [name for name, _ in page.clicks] == ["go"]
+
+
+class _ReadinessScript:
+    """A tab or driver whose readiness reads follow a script, one entry per read.
+
+    Each entry is a JSON reading, or an exception to raise, or any other object
+    to return as it is (an unparseable answer). The last entry repeats.
+    """
+
+    def __init__(self, *script: Any) -> None:
+        self.script = script
+        self.reads = 0
+
+    def _next(self) -> Any:
+        entry = self.script[min(self.reads, len(self.script) - 1)]
+        self.reads += 1
+        if isinstance(entry, BaseException):
+            raise entry
+        if isinstance(entry, tuple):
+            state, quiet_ms = entry
+            return json.dumps({"state": state, "quiet_ms": quiet_ms})
+        return entry
+
+    async def evaluate(self, expression: str, **kwargs: Any) -> Any:
+        return self._next()
+
+    def execute_script(self, script: str) -> Any:
+        return self._next()
+
+
+class TestReadinessClock:
+    """The page keeps its quiet clock across steps; a wait counts only its own time."""
+
+    @pytest.fixture(autouse=True)
+    def _window(self, _fast_login_timings: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A window long enough to measure; requested after the fast timings so it wins."""
+        monkeypatch.setattr("graftpunk.plugins.login_ready._READY_QUIET_WINDOW", 0.05)
+        monkeypatch.setattr("graftpunk.plugins.login_ready._READY_MAX_WAIT", 5.0)
+
+    @pytest.mark.asyncio
+    async def test_quiet_from_before_the_wait_does_not_count_nodriver(self) -> None:
+        import time
+
+        from graftpunk.plugins.login_ready import await_page_ready_nodriver
+
+        tab = _ReadinessScript(("complete", 60_000))
+        started = time.monotonic()
+        await await_page_ready_nodriver(tab, budget=30.0, step=2, site_name="t")
+
+        assert time.monotonic() - started >= 0.05
+        assert tab.reads > 1
+
+    def test_quiet_from_before_the_wait_does_not_count_selenium(self) -> None:
+        import time
+
+        from graftpunk.plugins.login_ready import await_page_ready_selenium
+
+        driver = _ReadinessScript(("complete", 60_000))
+        started = time.monotonic()
+        await_page_ready_selenium(driver, budget=30.0, step=2, site_name="t")
+
+        assert time.monotonic() - started >= 0.05
+        assert driver.reads > 1
+
+    @pytest.mark.asyncio
+    async def test_a_step_after_a_navigating_click_waits_for_the_new_page(self) -> None:
+        """Step 1's click opens a new page. Step 2's first read still sees the old
+        document, quiet since step 1; the new page hydrates a few reads later."""
+
+        class TwoPages(_FakePage):
+            navigated_at: int | None = None
+
+            @property
+            def hydrated(self) -> bool:
+                return self.navigated_at is not None and self.ready_reads - self.navigated_at >= 4
+
+            def _readiness(self) -> str:
+                self.ready_reads += 1
+                since = None if self.navigated_at is None else self.ready_reads - self.navigated_at
+                if since is None or since == 1 or since >= 4:
+                    return json.dumps({"state": "complete", "quiet_ms": 60_000})
+                return json.dumps({"state": "loading", "quiet_ms": 0})
+
+        page = TwoPages()
+        nxt = page.add("#next", "next")
+        page.add("#go", "go")
+
+        async def navigate() -> None:
+            page.clicks.append(("next", page.hydrated))
+            page.navigated_at = page.ready_reads
+
+        nxt.click = navigate  # type: ignore[method-assign]
+
+        await _login(_plugin(LoginStep(submit="#next"), LoginStep(submit="#go")), page)
+
+        assert page.clicks[-1] == ("go", True)
+
+    @pytest.mark.asyncio
+    async def test_a_document_still_loading_is_not_ready_however_quiet(self) -> None:
+        from graftpunk.plugins.login_ready import await_page_ready_nodriver
+
+        # Interactive for far longer than the window: only "complete" can end the wait.
+        tab = _ReadinessScript(*([("interactive", 60_000)] * 200), ("complete", 60_000))
+        await await_page_ready_nodriver(tab, budget=30.0, step=1, site_name="t")
+
+        assert tab.reads > 200
+
+    @pytest.mark.asyncio
+    async def test_a_failed_or_odd_read_is_read_again(self) -> None:
+        """Mid-navigation the execution context can vanish under the read; that is
+        a not-ready read, not the end of the wait."""
+        from graftpunk.plugins.login_ready import await_page_ready_nodriver
+
+        tab = _ReadinessScript(
+            RuntimeError("Execution context was destroyed"), object(), ("complete", 60_000)
+        )
+        await await_page_ready_nodriver(tab, budget=30.0, step=1, site_name="t")
+
+        assert tab.reads > 3
+
+    def test_a_failed_read_is_read_again_on_selenium(self) -> None:
+        from graftpunk.plugins.login_ready import await_page_ready_selenium
+
+        driver = _ReadinessScript(RuntimeError("stale"), None, ("complete", 60_000))
+        await_page_ready_selenium(driver, budget=30.0, step=1, site_name="t")
+
+        assert driver.reads > 3
+
+    @pytest.mark.asyncio
+    async def test_a_page_never_readable_ends_at_the_cap_and_says_so(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.plugins import login_ready
+
+        monkeypatch.setattr(login_ready, "_READY_MAX_WAIT", 0.05)
+        tab = _ReadinessScript(RuntimeError("no runtime"))
+        with patch("graftpunk.plugins.login_ready.LOG") as log:
+            await login_ready.await_page_ready_nodriver(tab, budget=30.0, step=3, site_name="t")
+
+        (call,) = [c for c in log.info.call_args_list if c.args[0] == "login_page_ready_unreadable"]
+        assert call.kwargs["step"] == 3
+        assert "no runtime" in call.kwargs["error"]
+
+
+class TestStaleRequests:
+    def test_a_request_that_never_finishes_stops_counting_after_the_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+        from types import SimpleNamespace
+
+        from graftpunk.plugins import login_ready
+
+        monkeypatch.setattr(login_ready, "_READY_MAX_WAIT", 0.02)
+        activity = login_ready.NetworkActivity()
+        activity._on_request(
+            SimpleNamespace(request_id="poll", type_=SimpleNamespace(value="Fetch"))
+        )
+        assert activity.quiet_for() == 0.0
+        time.sleep(0.03)
+        assert activity.quiet_for() > 0.0
+
+
+class TestTransitions:
+    @pytest.mark.asyncio
+    async def test_a_transition_during_the_visible_match_lookup_is_retried(self) -> None:
+        page = _FakePage()
+        page.add("a.signin", "mobile-copy", visible=False)
+        page.add("a.signin", "header-link")
+        real = page.query_selector_all
+        calls = 0
+
+        async def flaky(selector: str) -> list[_FakeElement]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("Could not find node with given id")
+            return await real(selector)
+
+        page.query_selector_all = flaky  # type: ignore[method-assign]
+
+        await _login(_plugin(LoginStep(submit="a.signin")), page)
+
+        assert calls == 2
+        assert [name for name, _ in page.clicks] == ["header-link"]
+
+    @pytest.mark.asyncio
+    async def test_after_a_retry_the_first_match_is_looked_up_again(self) -> None:
+        """A handle taken before the wait may be detached by the time the match
+        becomes usable, so it is not reused."""
+        page = _FakePage()
+        go = page.add("#go", "old-go", disabled=True)
+        probes = 0
+        real_probe = page._probe
+
+        def probe(expression: str) -> str:
+            nonlocal probes
+            probes += 1
+            if probes == 2:
+                # The page re-rendered the button, enabled this time.
+                page.elements["#go"] = [_FakeElement(page, "new-go", visible=True, disabled=False)]
+            return real_probe(expression)
+
+        page._probe = probe  # type: ignore[method-assign]
+        assert go.name == "old-go"
+
+        await _login(_plugin(LoginStep(submit="#go")), page)
+
+        assert [name for name, _ in page.clicks] == ["new-go"]

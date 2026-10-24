@@ -12,7 +12,7 @@ import json
 import re
 import time
 import urllib.parse
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from graftpunk import console as gp_console
 from graftpunk.exceptions import PluginError
@@ -25,6 +25,7 @@ from graftpunk.plugins.login_ready import (
     await_page_ready_nodriver,
     await_page_ready_selenium,
     choose_target,
+    field_value_js,
     parse_target_probe,
     target_js,
     warn_ambiguous_selector,
@@ -203,6 +204,19 @@ async def _wait_for_element(
         raise PluginError(error_msg)
 
 
+class _Target(NamedTuple):
+    """The element a step acts on, and its position among the selector's matches.
+
+    The fill, the clear check, the read-back and the click all use this one
+    element: the read-back finds it again by ``index`` in the live document, so it
+    reads the field that was typed into even when a hidden copy comes first.
+    """
+
+    element: Any  # nodriver.Element, or a selenium WebElement
+    index: int
+    warned: bool  # whether the ambiguity warning has been logged for this selector
+
+
 async def _probe_target_nodriver(tab: Any, selector: str) -> TargetProbe | None:
     """The page's account of *selector*'s matches, or None when it cannot be read."""
     try:
@@ -213,20 +227,38 @@ async def _probe_target_nodriver(tab: Any, selector: str) -> TargetProbe | None:
     return parse_target_probe(raw)
 
 
+async def _query_match_nodriver(tab: Any, selector: str, index: int) -> Any:
+    """Match *index* of *selector*, or None when the page changed under the query.
+
+    A page transition invalidates the document node and nodriver's
+    ``query_selector_all`` raises, which is the case ``_select_with_retry``
+    absorbs for the first match; here the caller probes again.
+    """
+    try:
+        matches = await tab.query_selector_all(selector)
+    except Exception as exc:  # broad by design: a transition mid-query is retried
+        LOG.debug("login_target_query_failed", selector=selector, error=str(exc))
+        return None
+    return matches[index] if index < len(matches) else None
+
+
 async def _select_target(
     tab: Any,  # nodriver.Tab
     selector: str,
     *,
     context: str,
     site_name: str = "",
-) -> Any:  # nodriver.Element | None
+    warned: bool = False,
+) -> _Target | None:
     """The element a fill or a click acts on, or None when *selector* never matched.
 
     ``_select_with_retry`` waits for the selector to match at all, and returns
     the first match in document order. The target probe then asks the page which
     match a user could act on (see ``login_ready.choose_target``): with several
-    matches it is the first visible one, and the choice is logged with the
-    count. A probe that cannot be read leaves the first match, as before.
+    matches it is the first visible one, and the choice is logged with the count
+    unless *warned* says it already was. A probe that cannot be read leaves the
+    first match, as before. After a retry the match is looked up again, since a
+    handle taken before the wait may be detached by then.
 
     Raises:
         PluginError: Every match stayed hidden, or the chosen one stayed disabled,
@@ -237,11 +269,11 @@ async def _select_target(
         return None
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _ELEMENT_WAIT_TIMEOUT
-    warned = False
+    first_pass = True
     while True:
         probe = await _probe_target_nodriver(tab, selector)
         if probe is None:
-            return element
+            return _Target(element, 0, warned)
         choice = choose_target(probe)
         if choice.index is not None:
             if probe.count > 1 and not warned:
@@ -253,12 +285,12 @@ async def _select_target(
                     site_name=site_name,
                 )
                 warned = True
-            if choice.index == 0:
-                return element
-            matches = await tab.query_selector_all(selector)
-            if choice.index < len(matches):
-                return matches[choice.index]
-            # The page changed between the probe and the query: ask again.
+            if choice.index == 0 and first_pass:
+                return _Target(element, 0, warned)
+            chosen = await _query_match_nodriver(tab, selector, choice.index)
+            if chosen is not None:
+                return _Target(chosen, choice.index, warned)
+        first_pass = False
         if loop.time() >= deadline:
             raise PluginError(
                 f"{context}: selector '{selector}' {choice.problem or 'changed while it was read'} "
@@ -268,30 +300,27 @@ async def _select_target(
         await asyncio.sleep(_ELEMENT_RETRY_INTERVAL)
 
 
-async def _read_field_value(tab: Any, selector: str) -> str | None:
-    """Read an input's current value from the live DOM, by selector.
+async def _read_field_value(tab: Any, selector: str, index: int = 0) -> str | None:
+    """Read an input's current value from the live DOM: match *index* of *selector*.
 
     Deliberately re-queries the document rather than using the element handle
     that was typed into: if the page swapped the form, the handle points at a
-    detached node whose value is meaningless.
+    detached node whose value is meaningless. The index is the one the target
+    probe chose, so a hidden copy ahead of the field is not what gets read.
 
     The page-side expression always returns a JSON string, so nodriver's
     ``evaluate(return_by_value=True)`` quirk (a falsy value comes back as the
     RemoteObject itself) never applies.
 
     Returns:
-        The value as a string. ``""`` when the selector matches nothing in the
-        live document (the field is not there to hold a value). ``None`` only
-        when the read itself failed (evaluate raised, JS threw, unparseable
-        result) -- "cannot verify", which callers must not confuse with
-        "empty".
+        The value as a string. ``""`` when the selector matches nothing at that
+        index in the live document (the field is not there to hold a value).
+        ``None`` only when the read itself failed (evaluate raised, JS threw,
+        unparseable result) -- "cannot verify", which callers must not confuse
+        with "empty".
     """
-    js = (
-        f"(() => {{ const el = document.querySelector({json.dumps(selector)}); "
-        "return JSON.stringify({found: !!el, value: el ? String(el.value) : null}); })()"
-    )
     try:
-        result = await tab.evaluate(js, return_by_value=True)
+        result = await tab.evaluate(field_value_js(selector, index), return_by_value=True)
     except Exception as exc:  # broad by design: verification is best-effort
         LOG.debug("login_field_readback_failed", selector=selector, error=str(exc))
         return None
@@ -316,16 +345,17 @@ async def _read_field_value(tab: Any, selector: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-async def _clear_field(element: Any, tab: Any, selector: str) -> None:
+async def _clear_field(element: Any, tab: Any, selector: str, index: int = 0) -> None:
     """Empty the field and make sure it stayed empty.
 
     Keystrokes from a previous attempt can flush after the renderer lag that
-    the settle delay exists for; if the read-back is non-empty right after
-    clearing, clear once more so nothing is doubled (issue #148 measured that
-    doubled text is a worse failure than an empty field).
+    the settle delay exists for; if the read-back of the same match is
+    non-empty right after clearing, clear once more so nothing is doubled
+    (issue #148 measured that doubled text is a worse failure than an empty
+    field).
     """
     await element.clear_input()
-    current = await _read_field_value(tab, selector)
+    current = await _read_field_value(tab, selector, index)
     if current:
         LOG.debug("login_field_clear_repeated", selector=selector, residual_len=len(current))
         await element.clear_input()
@@ -368,22 +398,25 @@ async def _fill_field(
         PluginError: If the field cannot be found, or never accepts the value.
     """
     last_actual: str | None = None
+    warned = False
     for attempt in range(1, _FIELD_FILL_ATTEMPTS + 1):
-        element = await _select_target(
+        target = await _select_target(
             tab,
             selector,
             context=f"Step {step_idx}: login field '{field_name}'",
             site_name=site_name,
+            warned=warned,
         )
-        if element is None:
+        if target is None:
             raise PluginError(
                 f"Step {step_idx}: Login field '{field_name}' not found "
                 f"using selector '{selector}'. "
                 "Check your plugin's login step configuration."
             )
+        element, index, warned = target
         try:
             await element.click()
-            await _clear_field(element, tab, selector)
+            await _clear_field(element, tab, selector, index)
             await element.send_keys(value)
         except Exception as exc:
             if attempt == _FIELD_FILL_ATTEMPTS:
@@ -402,7 +435,7 @@ async def _fill_field(
             return
 
         await asyncio.sleep(_FIELD_SETTLE_DELAY)
-        actual = await _read_field_value(tab, selector)
+        actual = await _read_field_value(tab, selector, index)
         if actual is None:
             LOG.debug("login_field_unverifiable", field=field_name, selector=selector)
             return
@@ -853,7 +886,7 @@ async def _run_nodriver_steps(
                     )
                 pre_submit_url = tab_url(tab)
                 submit_clicked = True
-                await submit.click()
+                await submit.element.click()
             except PluginError:
                 raise
             except Exception as exc:
@@ -997,7 +1030,19 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
     return login
 
 
-def _find_target_selenium(driver: Any, selector: str, *, context: str, site_name: str) -> Any:
+def _query_match_selenium(driver: Any, selector: str, index: int) -> Any:
+    """The selenium twin of :func:`_query_match_nodriver`."""
+    try:
+        matches = driver.find_elements("css selector", selector)
+    except Exception as exc:  # broad by design: a transition mid-query is retried
+        LOG.debug("login_target_query_failed", selector=selector, error=str(exc))
+        return None
+    return matches[index] if index < len(matches) else None
+
+
+def _find_target_selenium(
+    driver: Any, selector: str, *, context: str, site_name: str, warned: bool = False
+) -> _Target:
     """The selenium twin of :func:`_select_target`.
 
     ``find_element`` raises when nothing matches, as it always did here; the
@@ -1005,16 +1050,16 @@ def _find_target_selenium(driver: Any, selector: str, *, context: str, site_name
     """
     element = driver.find_element("css selector", selector)
     deadline = time.monotonic() + _ELEMENT_WAIT_TIMEOUT
-    warned = False
+    first_pass = True
     while True:
         try:
             raw = driver.execute_script("return " + target_js(selector))
         except Exception as exc:  # broad by design: the probe is best-effort
             LOG.debug("login_target_probe_failed", selector=selector, error=str(exc))
-            return element
+            return _Target(element, 0, warned)
         probe = parse_target_probe(raw)
         if probe is None:
-            return element
+            return _Target(element, 0, warned)
         choice = choose_target(probe)
         if choice.index is not None:
             if probe.count > 1 and not warned:
@@ -1026,11 +1071,12 @@ def _find_target_selenium(driver: Any, selector: str, *, context: str, site_name
                     site_name=site_name,
                 )
                 warned = True
-            if choice.index == 0:
-                return element
-            matches = driver.find_elements("css selector", selector)
-            if choice.index < len(matches):
-                return matches[choice.index]
+            if choice.index == 0 and first_pass:
+                return _Target(element, 0, warned)
+            chosen = _query_match_selenium(driver, selector, choice.index)
+            if chosen is not None:
+                return _Target(chosen, choice.index, warned)
+        first_pass = False
         if time.monotonic() >= deadline:
             raise PluginError(
                 f"{context}: selector '{selector}' {choice.problem or 'changed while it was read'} "
@@ -1088,13 +1134,12 @@ def _run_selenium_steps(
                     selector,
                     context=f"Step {step_idx}: login field '{field_name}'",
                     site_name=plugin.site_name,
-                )
+                ).element
                 element.click()
                 element.send_keys(value)
-            except (
-                selenium.common.exceptions.WebDriverException,
-                PluginError,
-            ) as exc:
+            except PluginError:
+                raise
+            except selenium.common.exceptions.WebDriverException as exc:
                 raise PluginError(
                     f"Step {step_idx}: Failed to fill login field '{field_name}' "
                     f"(selector: '{selector}'): {exc}"
@@ -1108,14 +1153,13 @@ def _run_selenium_steps(
                     step.submit,
                     context=f"Step {step_idx}: submit",
                     site_name=plugin.site_name,
-                )
+                ).element
                 pre_submit_url = driver_url(session.driver)
                 submit_clicked = True
                 submit_el.click()
-            except (
-                selenium.common.exceptions.WebDriverException,
-                PluginError,
-            ) as exc:
+            except PluginError:
+                raise
+            except selenium.common.exceptions.WebDriverException as exc:
                 raise PluginError(
                     f"Step {step_idx}: Failed to click submit button "
                     f"(selector: '{step.submit}'): {exc}"

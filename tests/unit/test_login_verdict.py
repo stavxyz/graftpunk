@@ -172,3 +172,93 @@ class TestVerdictComesLast:
         verdict = _verdict(capsys.readouterr().err)
         assert "did not reach the expected post-login state" in verdict
         assert "Page:" not in verdict
+
+    def test_a_rate_limit_page_is_named(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        page = _StuckPage(failure_text="429 Too Many Requests")
+        code = _run_login(_plugin(success=".dashboard"), page, monkeypatch)
+
+        assert code == 1
+        verdict = _verdict(capsys.readouterr().err)
+        assert "rate-limit page (Too Many Requests)" in verdict
+        assert _LANDING in verdict
+
+    def test_a_page_that_could_not_be_read_is_named(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        class Gone(_StuckPage):
+            """The browser takes the submit and then answers nothing at all."""
+
+            url = None  # nodriver reports no URL while a tab navigates
+
+            async def get_content(self) -> str:
+                raise ConnectionError("browser went away")
+
+            async def query_selector(self, selector: str) -> Any:
+                raise ConnectionError("browser went away")
+
+        code = _run_login(_plugin(success=".dashboard", failure="Bad login"), Gone(), monkeypatch)
+
+        assert code == 1
+        verdict = _verdict(capsys.readouterr().err)
+        assert "the page could not be read after the submit (browser went away)" in verdict
+
+
+class _StuckDriver:
+    """A selenium driver whose page never shows the success element."""
+
+    current_url = _LANDING
+    page_source = "<html><body>Signing in</body></html>"
+
+    def __getattr__(self, name: str) -> MagicMock:
+        return MagicMock()
+
+    def find_element(self, by: str, selector: str) -> MagicMock:
+        from selenium.common.exceptions import NoSuchElementException
+
+        if selector == ".dashboard":
+            raise NoSuchElementException(selector)
+        return MagicMock()
+
+    def execute_script(self, script: str) -> Any:
+        return "complete" if script == "return document.readyState" else None
+
+
+class TestSeleniumVerdict:
+    def test_the_selenium_verdict_names_the_page(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from graftpunk.cli.login_commands import make_login_body
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class P(SitePlugin):
+            site_name = "acme"
+            session_name = "acme"
+            help_text = "t"
+            base_url = "https://app.example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#go")],
+                success=".dashboard",
+                timeout=0.2,
+                settle=0.0,
+            )
+
+        monkeypatch.setenv("ACME_USERNAME", "alice")
+        plugin = P()
+        mock_bs = MagicMock()
+        instance = MagicMock()
+        mock_bs.return_value = instance
+        instance.__enter__ = MagicMock(return_value=instance)
+        instance.__exit__ = MagicMock(return_value=False)
+        instance.driver = _StuckDriver()
+        root = SimpleNamespace(obj={"observe_mode": "off"})
+        ctx = SimpleNamespace(find_root=lambda: root, command_path="gp acme login")
+        body = make_login_body(plugin, generate_login_method(plugin), {"username": "#user"})
+        with patch("graftpunk.BrowserSession", mock_bs), pytest.raises(SystemExit):
+            body(ctx)
+
+        verdict = _verdict(capsys.readouterr().err)
+        assert "success element '.dashboard' did not appear" in verdict
+        assert f"Page: {_LANDING}" in verdict

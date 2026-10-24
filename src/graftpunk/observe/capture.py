@@ -1634,90 +1634,94 @@ class NodriverCaptureBackend:
         import nodriver.cdp.network as cdp_net
 
         stop_failures = 0
-        for request_id, data in list(self._request_map.items()):
-            if _is_redirect_hop(data):
-                if self._record_request_bodies:
-                    _note_lost_hop_body(request_id, data)
-                continue
-            # Retry a request body the request-time fetch did not get.
-            if self._record_request_bodies and _post_data_missing(data):
-                try:
-                    result = await tab.send(
-                        cdp_net.get_request_post_data(cdp_net.RequestId(request_id)),
-                        **_capture_session_kwargs(tab, self._capture_session_id),
-                    )
-                    _keep_post_data(
-                        data,
-                        _post_body(result),
-                        max_body_size=self._max_body_size,
-                        bodies_dir=self._bodies_dir,
-                        request_id=request_id,
-                    )
-                    data.pop("_post_data_error", None)
-                except ConnectionError as exc:
-                    LOG.warning(
-                        "nodriver_browser_disconnected_during_stop",
-                        phase="post_data",
-                        request_id=request_id,
-                        error=str(exc),
-                        exc_type=type(exc).__name__,
-                    )
-                    self._mark_unfetched_response_bodies("browser_disconnected")
-                    return
-                except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
-                    data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
+        # The summary goes out however the loop ends, a disconnect included: the
+        # per-request lines are debug lines, so it is the only warning about them.
+        try:
+            for request_id, data in list(self._request_map.items()):
+                if _is_redirect_hop(data):
+                    if self._record_request_bodies:
+                        _note_lost_hop_body(request_id, data)
+                    continue
+                # Retry a request body the request-time fetch did not get.
+                if self._record_request_bodies and _post_data_missing(data):
+                    try:
+                        result = await tab.send(
+                            cdp_net.get_request_post_data(cdp_net.RequestId(request_id)),
+                            **_capture_session_kwargs(tab, self._capture_session_id),
+                        )
+                        _keep_post_data(
+                            data,
+                            _post_body(result),
+                            max_body_size=self._max_body_size,
+                            bodies_dir=self._bodies_dir,
+                            request_id=request_id,
+                        )
+                        data.pop("_post_data_error", None)
+                    except ConnectionError as exc:
+                        LOG.warning(
+                            "nodriver_browser_disconnected_during_stop",
+                            phase="post_data",
+                            request_id=request_id,
+                            error=str(exc),
+                            exc_type=type(exc).__name__,
+                        )
+                        self._mark_unfetched_response_bodies("browser_disconnected")
+                        return
+                    except Exception as exc:  # noqa: BLE001 (CDP body fetch is best-effort)
+                        data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
 
-            # Skip response body if already eagerly fetched by _on_loading_finished
-            if request_id in self._bodies_fetched:
-                continue
+                # Skip response body if already eagerly fetched by _on_loading_finished
+                if request_id in self._bodies_fetched:
+                    continue
 
-            # Fetch response body (fallback for any missed by eager fetch)
-            response = data.get("response", {})
-            mime = response.get("mimeType", "")
-            if _body_expected(data, response):
-                try:
-                    body, base64_encoded = await tab.send(
-                        cdp_net.get_response_body(cdp_net.RequestId(request_id)),
-                        **_capture_session_kwargs(tab, self._capture_session_id),
-                    )
-                    _process_response_body(
-                        response=response,
-                        body=body,
-                        base64_encoded=base64_encoded,
-                        request_id=request_id,
-                        mime=mime,
-                        max_body_size=self._max_body_size,
-                        bodies_dir=self._bodies_dir,
-                    )
-                except ConnectionError as exc:
-                    LOG.warning(
-                        "nodriver_browser_disconnected_during_stop",
-                        phase="response_body",
-                        request_id=request_id,
-                        error=str(exc),
-                        exc_type=type(exc).__name__,
-                    )
-                    self._mark_unfetched_response_bodies("browser_disconnected")
-                    return
-                except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
-                    response["_bodyNotCaptured"] = f"fetch_failed: {type(exc).__name__}"
-                    stop_failures += 1
-                    # Per request, so debug; the count is one warning below (#275).
-                    LOG.debug(
-                        "nodriver_response_body_fetch_failed",
-                        request_id=request_id,
-                        url=data.get("url", "unknown"),
-                        error=str(exc),
-                    )
-        if stop_failures:
-            LOG.warning(
-                "nodriver_response_body_fetch_summary",
-                failed=stop_failures,
-                hint=(
-                    "These bodies are marked fetch_failed in the HAR. Run with debug "
-                    "logging to see each request and its error."
-                ),
-            )
+                # Fetch response body (fallback for any missed by eager fetch)
+                response = data.get("response", {})
+                mime = response.get("mimeType", "")
+                if _body_expected(data, response):
+                    try:
+                        body, base64_encoded = await tab.send(
+                            cdp_net.get_response_body(cdp_net.RequestId(request_id)),
+                            **_capture_session_kwargs(tab, self._capture_session_id),
+                        )
+                        _process_response_body(
+                            response=response,
+                            body=body,
+                            base64_encoded=base64_encoded,
+                            request_id=request_id,
+                            mime=mime,
+                            max_body_size=self._max_body_size,
+                            bodies_dir=self._bodies_dir,
+                        )
+                    except ConnectionError as exc:
+                        LOG.warning(
+                            "nodriver_browser_disconnected_during_stop",
+                            phase="response_body",
+                            request_id=request_id,
+                            error=str(exc),
+                            exc_type=type(exc).__name__,
+                        )
+                        self._mark_unfetched_response_bodies("browser_disconnected")
+                        return
+                    except Exception as exc:  # noqa: BLE001 (CDP body fetch is best-effort)
+                        response["_bodyNotCaptured"] = f"fetch_failed: {type(exc).__name__}"
+                        stop_failures += 1
+                        # Per request, so debug; the count is one warning below (#275).
+                        LOG.debug(
+                            "nodriver_response_body_fetch_failed",
+                            request_id=request_id,
+                            url=data.get("url", "unknown"),
+                            error=str(exc),
+                        )
+        finally:
+            if stop_failures:
+                LOG.warning(
+                    "nodriver_response_body_fetch_summary",
+                    failed=stop_failures,
+                    hint=(
+                        "These bodies are marked fetch_failed in the HAR. Run with debug "
+                        "logging to see each request and its error."
+                    ),
+                )
 
     def _on_request(self, event: Any) -> None:
         """Handle a CDP RequestWillBeSent event."""

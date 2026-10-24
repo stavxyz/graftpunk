@@ -8,20 +8,21 @@ it fills or clicks:
 - **Readiness.** Before a step that has no ``wait_for`` of its own, wait until
   the document has loaded and the page has gone quiet: no DOM change, no script
   or data request starting or finishing, and none in flight, for
-  ``_READY_QUIET_WINDOW`` seconds. The wait never runs longer than
-  ``_READY_MAX_WAIT`` or the login's own ``timeout``, whichever is smaller,
-  and a page that never goes quiet is acted on at that point, as before.
-  A plugin that names a hydration marker with ``wait_for`` has already said when
-  the page is ready, so the default stands aside for that step.
+  ``_READY_QUIET_WINDOW`` seconds, counted from when this wait started. The wait
+  never runs longer than ``_READY_MAX_WAIT`` or the login's own ``timeout``,
+  whichever is smaller, and a page that never goes quiet is acted on at that
+  point, as before. On nodriver, a plugin that names a hydration marker with
+  ``wait_for`` has already said when the page is ready, so the default stands
+  aside for that step. Selenium rejects ``wait_for``, so it always waits.
 - **The target.** A selector that matches more than one element acts on the
   first visible match, and says so; a selector whose matches are all hidden, or
   whose chosen match is disabled, fails with the count rather than clicking
   something no user could.
 
 The page-side probes return JSON strings, so nodriver's ``return_by_value``
-quirk (a falsy value comes back as the RemoteObject itself) never applies.
-Everything here is best-effort in the same way as the field read-back: a probe
-that cannot be read leaves the engine doing what it did before this module.
+quirk (a falsy value comes back as the RemoteObject itself) never applies. A
+probe that cannot be read is retried until the cap and then leaves the engine
+doing what it did before this module.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ LOG = get_logger(__name__)
 # Seconds the page must stay quiet before a step acts on it.
 _READY_QUIET_WINDOW = 0.5
 # The most one readiness wait spends, before LoginConfig.timeout caps it further.
+# A request in flight for longer than this no longer counts as in flight.
 _READY_MAX_WAIT = 5.0
 # Seconds between readiness reads.
 _READY_POLL_INTERVAL = 0.1
@@ -47,17 +49,28 @@ _TARGET_PROBE_LIMIT = 50
 
 # Request types whose completion can change what a click does: the page's own
 # scripts, frames, and the data they fetch. Images, fonts, styles, beacons and
-# event streams are left out, so an analytics ping or a long-lived stream does
-# not hold every login to the cap.
+# event streams are left out, so an analytics ping does not hold every login to
+# the cap. A fetch or XHR that stays open (a long poll, a streamed response)
+# would, so one older than _READY_MAX_WAIT no longer counts as in flight.
 _ACTIVE_REQUEST_TYPES = frozenset({"Document", "Script", "XHR", "Fetch"})
 
-# Installs one MutationObserver per document (the first read starts its quiet
-# clock), and reads the newest resource timing entry, which covers requests that
-# finished before the observer existed. A <script src> with no timing entry yet
-# is still downloading, which is the hydration chunk this wait is for; the check
-# is skipped once the timing buffer is full (250 entries by default), since a
-# script past that point never gets an entry. Style attribute changes are left
-# out: an animation writes them every frame and would keep the page busy forever.
+# The readiness probe. It installs one MutationObserver per document; the first
+# read starts that document's quiet clock. The wait in Python never counts quiet
+# time from before it started, so a page that went quiet during an earlier step
+# cannot satisfy a later one. Two more things keep the page busy:
+# - a resource of the kinds the CDP tracker counts finishing (resource timing
+#   initiatorType script, fetch, xmlhttprequest, iframe, frame or navigation);
+#   images, styles, fonts and beacons are left out;
+# - a <script src> the browser fetches that has no timing entry yet, which is
+#   the hydration chunk this wait exists for. A script the browser never fetches
+#   would count as pending forever, so these are left out: a classic script with
+#   nomodule (on a browser that knows nomodule), a type that is neither empty, a
+#   JavaScript MIME type nor "module" (text/plain, application/json,
+#   text/template and the like), and a src that is not http or https (data:,
+#   blob:). The check is skipped once the timing buffer is full (250 entries by
+#   default), since a script past that point never gets an entry.
+# Style attribute changes are left out of the observer: an animation writes them
+# every frame and would keep the page busy forever.
 _READY_JS = """(() => {
   const now = performance.now();
   let quiet = window.__graftpunkQuiet;
@@ -70,16 +83,35 @@ _READY_JS = """(() => {
       });
     } catch (e) {}
   }
+  const active = new Set(["script", "fetch", "xmlhttprequest", "iframe", "frame", "navigation"]);
   const entries = performance.getEntriesByType("resource");
   let lastResource = 0;
   for (const entry of entries) {
-    if (entry.responseEnd > lastResource) lastResource = entry.responseEnd;
+    if (active.has(entry.initiatorType) && entry.responseEnd > lastResource) {
+      lastResource = entry.responseEnd;
+    }
   }
+  const jsTypes = new Set([
+    "application/ecmascript", "application/javascript", "application/x-ecmascript",
+    "application/x-javascript", "text/ecmascript", "text/javascript", "text/javascript1.0",
+    "text/javascript1.1", "text/javascript1.2", "text/javascript1.3", "text/javascript1.4",
+    "text/javascript1.5", "text/jscript", "text/livescript", "text/x-ecmascript",
+    "text/x-javascript",
+  ]);
+  const knowsNoModule = typeof HTMLScriptElement !== "undefined"
+    && "noModule" in HTMLScriptElement.prototype;
+  const fetches = (script) => {
+    const type = (script.getAttribute("type") || "").trim().toLowerCase();
+    const classic = type === "" || jsTypes.has(type);
+    if (!classic && type !== "module") return false;
+    if (classic && knowsNoModule && script.hasAttribute("nomodule")) return false;
+    return /^https?:/i.test(script.src);
+  };
   let pending = 0;
   if (entries.length < 250) {
     const fetched = new Set(entries.map((entry) => entry.name));
     for (const script of document.querySelectorAll("script[src]")) {
-      if (!fetched.has(script.src)) pending += 1;
+      if (fetches(script) && !fetched.has(script.src)) pending += 1;
     }
   }
   return JSON.stringify({
@@ -93,7 +125,13 @@ _READY_JS = """(() => {
 def target_js(selector: str) -> str:
     """The page-side probe for *selector*: the match count, and per match whether
     it is visible and whether it is disabled. An expression, so selenium runs it
-    behind ``return``."""
+    behind ``return``.
+
+    Visible means laid out (it has client rects), not hidden by ``visibility``,
+    ``display`` or ``opacity: 0``, and not pushed off the page's left or top edge
+    or past the right edge of the viewport, which is where an off-canvas drawer
+    parks its copy of a link. An element below the fold counts as visible.
+    """
     return (
         "((selector, limit) => {"
         " let nodes;"
@@ -101,15 +139,36 @@ def target_js(selector: str) -> str:
         " catch (e) { return JSON.stringify({error: String(e)}); }"
         " const shown = (el) => {"
         "  if (!el.isConnected || el.getClientRects().length === 0) return false;"
-        "  if (typeof el.checkVisibility === 'function')"
-        "   return el.checkVisibility({visibilityProperty: true, checkVisibilityCSS: true});"
-        "  const style = getComputedStyle(el);"
-        "  return style.visibility !== 'hidden' && style.display !== 'none';"
+        "  if (typeof el.checkVisibility === 'function') {"
+        "   if (!el.checkVisibility({visibilityProperty: true, checkVisibilityCSS: true,"
+        "     opacityProperty: true, checkOpacity: true})) return false;"
+        "  } else {"
+        "   const style = getComputedStyle(el);"
+        "   if (style.visibility === 'hidden' || style.display === 'none'"
+        "     || style.opacity === '0') return false;"
+        "  }"
+        "  const box = el.getBoundingClientRect();"
+        "  if (box.right + window.scrollX <= 0 || box.bottom + window.scrollY <= 0) return false;"
+        "  return box.left < window.innerWidth;"
         " };"
         " const listed = Array.from(nodes).slice(0, limit);"
         " return JSON.stringify({count: nodes.length,"
         "  visible: listed.map(shown), disabled: listed.map((el) => el.matches(':disabled'))});"
         f"}})({json.dumps(selector)}, {_TARGET_PROBE_LIMIT})"
+    )
+
+
+def field_value_js(selector: str, index: int) -> str:
+    """Read the value of match *index* of *selector* from the live document.
+
+    By index, so the read-back and the clear check look at the element the step
+    typed into, which is not the first match when a hidden copy comes first.
+    """
+    return (
+        "((selector, index) => {"
+        " const el = document.querySelectorAll(selector)[index];"
+        " return JSON.stringify({found: !!el, value: el ? String(el.value) : null});"
+        f"}})({json.dumps(selector)}, {int(index)})"
     )
 
 
@@ -239,7 +298,7 @@ class NetworkActivity:
     """
 
     def __init__(self) -> None:
-        self._in_flight: set[str] = set()
+        self._in_flight: dict[str, float] = {}  # request id -> when it started
         self._last_change = time.monotonic()
 
     def attach(self, tab: Any) -> bool:
@@ -259,32 +318,73 @@ class NetworkActivity:
         kind = getattr(getattr(event, "type_", None), "value", None)
         if kind not in _ACTIVE_REQUEST_TYPES:
             return
-        self._in_flight.add(str(event.request_id))
-        self._last_change = time.monotonic()
+        now = time.monotonic()
+        self._in_flight[str(event.request_id)] = now
+        self._last_change = now
 
     def _on_done(self, event: Any) -> None:
         request_id = str(getattr(event, "request_id", ""))
-        if request_id in self._in_flight:
-            self._in_flight.discard(request_id)
+        if self._in_flight.pop(request_id, None) is not None:
             self._last_change = time.monotonic()
 
     def quiet_for(self) -> float:
-        """Seconds since the last tracked request started or ended; 0 while any is in flight."""
-        if self._in_flight:
+        """Seconds since the last tracked request started or ended; 0 while any is in flight.
+
+        A request in flight for longer than ``_READY_MAX_WAIT`` is not counted: a
+        long poll, or a finish event that never arrived, would otherwise hold every
+        later step of the login to the cap.
+        """
+        now = time.monotonic()
+        if any(now - started < _READY_MAX_WAIT for started in self._in_flight.values()):
             return 0.0
-        return time.monotonic() - self._last_change
+        return now - self._last_change
 
 
-def _ready(reading: PageReadiness, network: NetworkActivity | None) -> bool:
-    quiet = reading.quiet_for
+def _quiet_since(
+    reading: PageReadiness, network: NetworkActivity | None, *, waited: float
+) -> float:
+    """How long the page has been quiet, counting no time from before this wait began.
+
+    The page keeps its quiet clock across steps, so without the floor a step that
+    follows a navigating click could read the old document, quiet since the last
+    step, and act on the new one before it has loaded.
+    """
+    quiet = min(reading.quiet_for, waited)
     if network is not None:
         quiet = min(quiet, network.quiet_for())
-    return reading.state == "complete" and quiet >= _READY_QUIET_WINDOW
+    return quiet
+
+
+def _ready(reading: PageReadiness, network: NetworkActivity | None, *, waited: float) -> bool:
+    return (
+        reading.state == "complete"
+        and _quiet_since(reading, network, waited=waited) >= _READY_QUIET_WINDOW
+    )
 
 
 def _log_not_quiet(
-    *, site_name: str, step: int, reading: PageReadiness, waited: float, backend: str
+    *,
+    site_name: str,
+    step: int,
+    reading: PageReadiness | None,
+    waited: float,
+    backend: str,
+    error: str,
 ) -> None:
+    if reading is None:
+        LOG.info(
+            "login_page_ready_unreadable",
+            plugin=site_name,
+            step=step,
+            waited=f"{waited:.1f}s",
+            backend=backend,
+            error=error,
+            hint=(
+                "The page's readiness could not be read before the wait ran out, so "
+                "the step went ahead."
+            ),
+        )
+        return
     LOG.info(
         "login_page_not_quiet",
         plugin=site_name,
@@ -295,9 +395,19 @@ def _log_not_quiet(
         hint=(
             "The page was still changing when the readiness wait ran out, so the step "
             "went ahead. If a click does nothing, give the step a wait_for naming an "
-            "element only the page's script renders."
+            "element only the page's script renders (nodriver)."
         ),
     )
+
+
+class _ReadOutcome(NamedTuple):
+    reading: PageReadiness | None
+    error: str
+
+
+def _read_outcome(raw: object) -> _ReadOutcome:
+    reading = parse_page_readiness(raw)
+    return _ReadOutcome(reading, "" if reading is not None else "unparseable readiness read")
 
 
 async def await_page_ready_nodriver(
@@ -308,31 +418,34 @@ async def await_page_ready_nodriver(
     site_name: str,
     network: NetworkActivity | None = None,
 ) -> None:
-    """Wait until the page is loaded and quiet, for at most ``min(_READY_MAX_WAIT, budget)``."""
+    """Wait until the page is loaded and quiet, for at most ``min(_READY_MAX_WAIT, budget)``.
+
+    A read that fails (the execution context is torn down mid-navigation) or
+    returns something unexpected counts as not ready, and the wait reads again.
+    """
     loop = asyncio.get_running_loop()
     started = loop.time()
     deadline = started + min(_READY_MAX_WAIT, budget)
+    last = _ReadOutcome(None, "")
     while True:
         try:
-            raw = await tab.evaluate(_READY_JS, return_by_value=True)
-        except Exception as exc:  # broad by design: readiness is best-effort
-            LOG.debug("login_page_ready_unavailable", plugin=site_name, step=step, error=str(exc))
-            return
-        reading = parse_page_readiness(raw)
-        if reading is None:
-            LOG.debug("login_page_ready_unreadable", plugin=site_name, step=step)
-            return
+            outcome = _read_outcome(await tab.evaluate(_READY_JS, return_by_value=True))
+        except Exception as exc:  # broad by design: an unreadable read is a not-ready read
+            outcome = _ReadOutcome(None, f"{type(exc).__name__}: {exc}")
+        if outcome.reading is not None or last.reading is None:
+            last = outcome
         now = loop.time()
-        if _ready(reading, network):
+        if outcome.reading is not None and _ready(outcome.reading, network, waited=now - started):
             LOG.debug("login_page_ready", plugin=site_name, step=step, waited=now - started)
             return
         if now >= deadline:
             _log_not_quiet(
                 site_name=site_name,
                 step=step,
-                reading=reading,
+                reading=last.reading,
                 waited=now - started,
                 backend="nodriver",
+                error=last.error,
             )
             return
         await asyncio.sleep(min(_READY_POLL_INTERVAL, deadline - now))
@@ -342,27 +455,26 @@ def await_page_ready_selenium(driver: Any, *, budget: float, step: int, site_nam
     """The selenium twin of :func:`await_page_ready_nodriver`, with the DOM probe alone."""
     started = time.monotonic()
     deadline = started + min(_READY_MAX_WAIT, budget)
+    last = _ReadOutcome(None, "")
     while True:
         try:
-            raw = driver.execute_script("return " + _READY_JS)
-        except Exception as exc:  # broad by design: readiness is best-effort
-            LOG.debug("login_page_ready_unavailable", plugin=site_name, step=step, error=str(exc))
-            return
-        reading = parse_page_readiness(raw)
-        if reading is None:
-            LOG.debug("login_page_ready_unreadable", plugin=site_name, step=step)
-            return
+            outcome = _read_outcome(driver.execute_script("return " + _READY_JS))
+        except Exception as exc:  # broad by design: an unreadable read is a not-ready read
+            outcome = _ReadOutcome(None, f"{type(exc).__name__}: {exc}")
+        if outcome.reading is not None or last.reading is None:
+            last = outcome
         now = time.monotonic()
-        if _ready(reading, None):
+        if outcome.reading is not None and _ready(outcome.reading, None, waited=now - started):
             LOG.debug("login_page_ready", plugin=site_name, step=step, waited=now - started)
             return
         if now >= deadline:
             _log_not_quiet(
                 site_name=site_name,
                 step=step,
-                reading=reading,
+                reading=last.reading,
                 waited=now - started,
                 backend="selenium",
+                error=last.error,
             )
             return
         time.sleep(min(_READY_POLL_INTERVAL, deadline - now))
