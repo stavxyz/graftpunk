@@ -1098,6 +1098,69 @@ class TestPluginModuleWithLoginForm:
         assert "multi-step login" not in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
 
+    @staticmethod
+    def _snapshot_plugin(html: str) -> str:
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/", snapshot=True)
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        return render(spec)["src/graftpunk_myshop/plugin.py"]
+
+    def test_a_form_read_from_a_dom_snapshot_says_a_click_may_open_it(self) -> None:
+        """#267 part 2: the step carries the GP-FILL, right above it."""
+        plugin_code = self._snapshot_plugin(
+            '<div class="login"><input type="email" id="u" name="email">'
+            '<input type="password" id="p"><button type="submit" id="go">Go</button></div>'
+        )
+        lines = [line.strip() for line in plugin_code.splitlines()]
+        step = lines.index("LoginStep(")
+        above = " ".join(line.lstrip("#").strip() for line in lines[step - 2 : step])
+        assert above == (
+            "GP-FILL: read from the page at the moment of the credential post; if a click "
+            "opens this form, add a click-only LoginStep before this one."
+        )
+        assert 'url="/",' in plugin_code
+
+    def test_a_snapshot_group_outside_a_dialog_is_not_called_a_dialog(self) -> None:
+        plugin_code = self._snapshot_plugin(
+            '<div class="pw"><input type="password" id="p">'
+            '<button type="button" id="eye">Show</button></div>'
+        )
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert "dialog" not in comment
+        assert (
+            "GP-FILL: username has no selector: the login group's username lookup ends at "
+            "the first button-like control after the password and found none before it; "
+            "write one by hand if the login has one."
+        ) in comment
+        assert (
+            "GP-FILL: submit has no selector: the first button after the password in the "
+            "login group is not an explicit submit" in comment
+        )
+
+    def test_a_form_from_recorded_html_carries_no_snapshot_comment(self) -> None:
+        (form,) = extract_login_forms(
+            '<div role="dialog"><input id="u"><input type="password" id="p">'
+            '<button type="submit" id="go">Go</button></div>',
+            source="https://myshop.example.com/",
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        assert "moment of the credential post" not in render(spec)["src/graftpunk_myshop/plugin.py"]
+
     @pytest.mark.parametrize(
         "inner",
         [

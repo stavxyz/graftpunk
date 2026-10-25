@@ -9,8 +9,9 @@ HAR entry, so this module knows nothing about HAR (plugin tooling spec,
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from html.parser import HTMLParser
 from typing import Literal
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
@@ -115,6 +116,12 @@ class LoginForm:
     # method are empty, its action_target is ("", ""), and the digest credits a
     # credential post to it only by its input names. Internal.
     formless: bool = field(default=False, metadata={"internal": True})
+    # Read from a DOM snapshot the recorder took at a credential post (the live page
+    # as the user submitted it), not from a recorded HTML response. Internal.
+    from_snapshot: bool = field(default=False, metadata={"internal": True})
+    # A formless group bounded by an ancestor element of the password rather than
+    # by a dialog: read from a DOM snapshot only. Internal.
+    plain_block: bool = field(default=False, metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -152,6 +159,22 @@ class _RawInput:
     # The innermost dialog this control sits in, as its index in
     # _DocumentParser.dialog_hints, or None: what bounds a formless login group.
     dialog: int | None = None
+    # The innermost element this control sits in, as its index in
+    # _DocumentParser.blocks, or None; tracked for a DOM snapshot only.
+    block: int | None = None
+
+
+@dataclass
+class _Block:
+    """An element of a DOM snapshot, for bounding a login group outside any dialog:
+    its tag, its lowered id and class, the element it sits in, and the controls
+    inside it, as the range [start, end) of _DocumentParser.inputs."""
+
+    tag: str
+    hints: str
+    parent: int | None
+    start: int
+    end: int | None = None
 
 
 @dataclass
@@ -188,8 +211,16 @@ class _DocumentParser(HTMLParser):
     """Collects every ``<form>`` (with its inputs) and every ``<meta>`` in one pass,
     and the dialog each control sits in."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, track_blocks: bool = False) -> None:
         super().__init__(convert_charrefs=True)
+        # For a DOM snapshot, which the browser serialized with every element
+        # closed: each element as a _Block, and the open ones, innermost last, with
+        # how many of each tag are open, so an end tag pops to its own element and a
+        # stray one pops nothing.
+        self._track_blocks = track_blocks
+        self.blocks: list[_Block] = []
+        self._block_stack: list[int] = []
+        self._block_open: dict[str, int] = {}
         self.forms: list[_RawForm] = []
         self.metas: list[tuple[str, str]] = []
         # Every input, button, select, and textarea on the page, in a form or not, in
@@ -280,6 +311,7 @@ class _DocumentParser(HTMLParser):
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
             raw_input.dialog = self._innermost_dialog()
+            raw_input.block = self._block_stack[-1] if self._block_stack else None
             inside = self._current.element_id if self._current is not None else ""
             raw_input.outside_form = bool(raw_input.form_owner) and raw_input.form_owner != inside
             self.inputs.append(raw_input)
@@ -289,8 +321,27 @@ class _DocumentParser(HTMLParser):
             name, content = values.get("name"), values.get("content")
             if name and content:
                 self.metas.append((name, content))
+        if self._track_blocks and tag not in _VOID_TAGS:
+            parent = self._block_stack[-1] if self._block_stack else None
+            hints = f"{values.get('id', '')} {values.get('class', '')}".lower()
+            self._block_stack.append(len(self.blocks))
+            self.blocks.append(_Block(tag, hints, parent, start=len(self.inputs)))
+            self._block_open[tag] = self._block_open.get(tag, 0) + 1
+
+    def _close_blocks(self, tag: str) -> None:
+        """Close the open elements down to the innermost *tag*, when one is open."""
+        if not self._block_open.get(tag):
+            return
+        while self._block_stack:
+            block = self.blocks[self._block_stack.pop()]
+            block.end = len(self.inputs)
+            self._block_open[block.tag] -= 1
+            if block.tag == tag:
+                return
 
     def handle_endtag(self, tag: str) -> None:
+        if self._track_blocks:
+            self._close_blocks(tag)
         if self._open_count.get(tag, 0) > 0:
             count = self._open_count[tag] - 1
             self._open_count[tag] = count
@@ -309,11 +360,13 @@ class _DocumentParser(HTMLParser):
             self._current = None
 
 
-def _parse(html: str) -> _DocumentParser:
-    parser = _DocumentParser()
+def _parse(html: str, *, track_blocks: bool = False) -> _DocumentParser:
+    parser = _DocumentParser(track_blocks=track_blocks)
     parser.feed(html)
     if parser._current is not None:  # an unclosed <form>: keep what was seen
         parser.forms.append(parser._current)
+    for index in parser._block_stack:  # elements still open run to the end
+        parser.blocks[index].end = len(parser.inputs)
     # A control with form="id" belongs to that form wherever it sits on the page.
     owners = {form.element_id: form for form in parser.forms if form.element_id}
     for raw_input in parser.inputs:
@@ -585,6 +638,14 @@ def _is_submit(raw: _RawInput) -> bool:
     return raw.input_type == "submit" or (raw.tag == "input" and raw.input_type == "image")
 
 
+def _is_button_like(raw: _RawInput) -> bool:
+    """Any ``<button>``, or a submit, image, button, or reset input: what a user
+    presses, and what ends a formless group's fields."""
+    return raw.tag == "button" or (
+        raw.tag == "input" and raw.input_type in ("submit", "image", "button", "reset")
+    )
+
+
 def _has_username_hint(raw: _RawInput) -> bool:
     if raw.autocomplete in _USERNAME_AUTOCOMPLETE or raw.input_type == "email":
         return True
@@ -823,15 +884,23 @@ def _formless_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
     for raw in _formless_controls(parsed):
         if raw.dialog is not None:
             by_dialog.setdefault(raw.dialog, []).append(raw)
+    return _ranked_login_groups(
+        [(parsed.dialog_hints[dialog], group) for dialog, group in by_dialog.items()]
+    )
 
-    def sign_up_named(dialog: int, group: list[_RawInput]) -> bool:
+
+def _ranked_login_groups(groups: list[tuple[str, list[_RawInput]]]) -> list[list[_RawInput]]:
+    """The formless *groups* (each with its bounding element's lowered id and class)
+    that are a login, judged and ordered as :func:`_formless_login_groups` states."""
+
+    def sign_up_named(hints: str, group: list[_RawInput]) -> bool:
         words = " ".join(f"{raw.element_id} {raw.name}" for raw in group).lower()
-        words += " " + parsed.dialog_hints[dialog]
+        words += " " + hints
         return any(hint in words for hint in _SIGN_UP_HINTS)
 
     kept = [
-        (dialog, group)
-        for dialog, group in by_dialog.items()
+        (hints, group)
+        for hints, group in groups
         if _password_index(group) is not None
         and not _is_change_password(group)
         and not _is_registration(group)
@@ -847,11 +916,85 @@ def _formless_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
             pair[1][0].order,
         )
     )
-    return [group for _dialog, group in kept]
+    return [group for _hints, group in kept]
+
+
+# The elements that never bound a snapshot's login group: one bounded by the whole
+# page would take any input before the password as its username.
+_PAGE_ELEMENTS = frozenset({"html", "body"})
+
+
+def _block_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
+    """A DOM snapshot's login groups outside every dialog: for each password input
+    with no form owner and in no dialog, the formless controls in no dialog inside
+    the password's nearest ancestor element (never ``<html>`` or ``<body>``) that
+    holds a button-like control after the password (:func:`_is_button_like`). The
+    snapshot is taken as the user submits, so the control they pressed is likely
+    in that element; a password with no such ancestor is in no group. The groups
+    are judged and ordered as a dialog's are (:func:`_ranked_login_groups`).
+
+    Each walk up the ancestors skips the elements an earlier password's walk found
+    without a button after it: a later password has fewer controls after it, so
+    they have none for it either. That keeps the walks linear in the page's
+    elements however many passwords share them."""
+    controls = [raw for raw in _formless_controls(parsed) if raw.dialog is None]
+    buttons_before = [0]
+    for raw in parsed.inputs:
+        buttons_before.append(buttons_before[-1] + _is_button_like(raw))
+    # An element found with no button after an earlier password: the ancestor to
+    # look at instead.
+    skip_to: dict[int, int | None] = {}
+
+    def resolved(block: int | None) -> int | None:
+        path: list[int] = []
+        while block is not None and block in skip_to:
+            path.append(block)
+            block = skip_to[block]
+        for seen in path:
+            skip_to[seen] = block
+        return block
+
+    bounds: dict[int, None] = {}
+    for raw in controls:
+        if not _is_password(raw):
+            continue
+        block = resolved(raw.block)
+        while block is not None:
+            element = parsed.blocks[block]
+            end = element.end if element.end is not None else len(parsed.inputs)
+            if (
+                element.tag not in _PAGE_ELEMENTS
+                and buttons_before[end] > buttons_before[raw.order + 1]
+            ):
+                bounds[block] = None
+                break
+            skip_to[block] = element.parent
+            block = resolved(element.parent)
+    orders = [raw.order for raw in controls]
+    # Per position in *controls*: how many password inputs, and how many marked
+    # current-password, come before it. A group with two passwords and none marked is
+    # never a login, so it is left out before its controls are gathered.
+    passwords_before, current_before = [0], [0]
+    for raw in controls:
+        passwords_before.append(
+            passwords_before[-1] + (raw.tag == "input" and raw.input_type == "password")
+        )
+        current_before.append(current_before[-1] + (raw.autocomplete == "current-password"))
+    groups: list[tuple[str, list[_RawInput]]] = []
+    for block in bounds:
+        element = parsed.blocks[block]
+        end = element.end if element.end is not None else len(parsed.inputs)
+        first, last = bisect_left(orders, element.start), bisect_left(orders, end)
+        if passwords_before[last] - passwords_before[first] > 1 and (
+            current_before[last] == current_before[first]
+        ):
+            continue
+        groups.append((element.hints, controls[first:last]))
+    return _ranked_login_groups(groups)
 
 
 def extract_login_forms(
-    html: str, source: str, *, base: str | None = None
+    html: str, source: str, *, base: str | None = None, snapshot: bool = False
 ) -> tuple[LoginForm, ...]:
     """Every login ``<form>`` in *html*: one with a password input that is neither a
     change-password form (:func:`_is_change_password`, never kept) nor a
@@ -890,8 +1033,17 @@ def extract_login_forms(
     (:func:`_formless_selectors`), its ``action`` and ``method`` are empty (no
     browser submits it, a script sends it with a method of its own), its
     ``action_target`` is ``("", "")``, and ``formless`` is set.
+
+    With *snapshot*, *html* is a DOM snapshot the recorder took at a credential post
+    (the page as the user submitted it), every form it gives has ``from_snapshot``
+    set, and it gives one more kind of group, listed last: a password outside every
+    form and every dialog, bounded by its nearest ancestor holding a button-like
+    control after it (:func:`_block_login_groups`), with ``plain_block`` set. That
+    widening is for a snapshot only: in a recorded HTML response such a block is as
+    likely a page's layout as a login, and nothing says the user pressed a button
+    there.
     """
-    parsed = _parse(html)
+    parsed = _parse(html, track_blocks=snapshot)
     candidates = [
         raw
         for raw in parsed.forms
@@ -949,7 +1101,12 @@ def extract_login_forms(
         )
         if form is not None:
             forms.append(form)
-    for group in _formless_login_groups(parsed):
+    dialog_groups = _formless_login_groups(parsed)
+    block_groups = _block_login_groups(parsed) if snapshot else []
+    for group, plain_block in [
+        *((group, False) for group in dialog_groups),
+        *((group, True) for group in block_groups),
+    ]:
         form = _login_form(
             group,
             lambda control: _formless_selectors(control, parsed.inputs),
@@ -963,7 +1120,9 @@ def extract_login_forms(
             formless=True,
         )
         if form is not None:
-            forms.append(form)
+            forms.append(replace(form, plain_block=True) if plain_block else form)
+    if snapshot:
+        return tuple(replace(form, from_snapshot=True) for form in forms)
     return tuple(forms)
 
 
@@ -1004,15 +1163,7 @@ def _login_form(
         # submit after a typeless "Sign in" is never taken, and a toggle right after
         # the password ends the fields there (a GP-FILL over a wrong selector).
         block_end = next(
-            (
-                i
-                for i in range(password_index + 1, len(inputs))
-                if inputs[i].tag == "button"
-                or (
-                    inputs[i].tag == "input"
-                    and inputs[i].input_type in ("submit", "image", "button", "reset")
-                )
-            ),
+            (i for i in range(password_index + 1, len(inputs)) if _is_button_like(inputs[i])),
             len(inputs),
         )
         submit_index = (

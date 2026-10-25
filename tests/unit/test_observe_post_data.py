@@ -151,6 +151,11 @@ class FakeTab:
         self.session_id: str | None = "session-1"
         self.network_sessions: set[str | None] = set()
         self.post_data_requests: list[str] = []
+        # The live page DOM.getDocument and DOM.getOuterHTML describe: its HTML,
+        # or None to refuse both as Chrome does for a target that went away.
+        self.dom_html: str | None = None
+        self.dom_url = HOME
+        self.dom_requests: list[str] = []
 
     def reattach(self) -> None:
         assert self.session_id is not None
@@ -179,6 +184,24 @@ class FakeTab:
             body = self.bodies[rid]
             text, encoded = body if isinstance(body, tuple) else (body, False)
             reply: dict[str, Any] = {"postData": text, "base64Encoded": encoded}
+        elif method.startswith("DOM."):
+            self.dom_requests.append(method)
+            if self.dom_html is None:
+                raise ProtocolException({"code": -32000, "message": "Cannot find context"})
+            if method == "DOM.getDocument":
+                reply = {
+                    "root": {
+                        "nodeId": 1,
+                        "backendNodeId": 2,
+                        "nodeType": 9,
+                        "nodeName": "#document",
+                        "localName": "",
+                        "nodeValue": "",
+                        "documentURL": self.dom_url,
+                    }
+                }
+            else:
+                reply = {"outerHTML": self.dom_html}
         elif method == "Network.getResponseBody":
             if not enabled or not self.response_available(rid, self):
                 raise _refused()
@@ -1845,3 +1868,149 @@ class TestRequestBodyFileRedactionEdges:
         events = {e["event"] for e in logs}
         assert {"request_body_file_scrubbed", "request_body_file_not_scrubbed"} <= events
         assert all(self.SECRET not in repr(e) for e in logs)
+
+
+# A login modal a script rendered after a click: in no HTML response, only in the
+# live DOM at the moment the credential post was sent (#267, part 2).
+_LOGIN_MODAL = (
+    '<html><head><script>var token = "abc";</script></head><body>'
+    '<div id="app"><div class="modal" id="login-modal">'
+    '<input type="email" id="login-username" name="username" value="alice@example.com">'
+    '<input type="password" id="login-password" name="password" value="hunter2hunter2">'
+    '<button type="submit" id="login-submit">Sign in</button></div></div></body></html>'
+)
+_LOGIN_BODY = '{"username": "alice@example.com", "password": "hunter2hunter2"}'
+
+
+class TestDomSnapshotAtTheCredentialPost:
+    """With ``dom_snapshots_dir`` set (``gp observe`` only), a credential-shaped POST
+    snapshots the page's DOM, sanitized and redacted, into ``snapshots/``."""
+
+    async def _run(
+        self,
+        tmp_path: Path,
+        body: str,
+        *,
+        inline: bool = True,
+        snapshots: bool = True,
+        dom_html: str | None = _LOGIN_MODAL,
+    ) -> tuple[FakeTab, NodriverCaptureBackend, list[dict[str, Any]]]:
+        tab = FakeTab({"21.1": body}, _always)
+        tab.dom_html = dom_html
+        tab.dom_url = "https://myshop.example/account?next=%2Forders#top"
+        kwargs: dict[str, Any] = {"bodies_dir": tmp_path / "bodies"}
+        if snapshots:
+            kwargs["dom_snapshots_dir"] = tmp_path / "snapshots"
+        with capture_logs() as logs:
+            backend = await _record(
+                tab,
+                [
+                    _will_be_sent("21.1", inline=body if inline else None, url=LOGIN),
+                    _response_received("21.1", url=LOGIN),
+                    _loading_finished("21.1"),
+                ],
+                **kwargs,
+            )
+        return tab, backend, logs
+
+    @pytest.mark.asyncio
+    async def test_a_credential_post_writes_the_snapshot_and_links_it(self, tmp_path: Path) -> None:
+        tab, backend, _logs = await self._run(tmp_path, _LOGIN_BODY)
+
+        request = _only_entry(backend)["request"]
+        assert request["_domSnapshot"] == "snapshots/21.1.html"
+        assert request["_domSnapshotUrl"] == "https://myshop.example/account"
+        assert request["postData"]["text"] == _LOGIN_BODY
+        stored = tmp_path / "snapshots" / "21.1.html"
+        assert stat.S_IMODE(stored.stat().st_mode) == 0o600
+        text = stored.read_text()
+        assert 'id="login-password"' in text
+        assert "hunter2hunter2" not in text
+        assert "alice@example.com" not in text
+        assert "value=" not in text
+        assert "token" not in text
+        assert tab.dom_requests == ["DOM.getDocument", "DOM.getOuterHTML"]
+
+    @pytest.mark.asyncio
+    async def test_a_post_without_a_password_field_takes_no_snapshot(self, tmp_path: Path) -> None:
+        tab, backend, _logs = await self._run(tmp_path, BODY)
+
+        assert "_domSnapshot" not in _only_entry(backend)["request"]
+        assert tab.dom_requests == []
+        assert not (tmp_path / "snapshots").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_new_password_post_takes_no_snapshot(self, tmp_path: Path) -> None:
+        body = '{"email": "alice@example.com", "new_password": "x1y2z3", "password_confirm": "x"}'
+        tab, backend, _logs = await self._run(tmp_path, body)
+
+        assert "_domSnapshot" not in _only_entry(backend)["request"]
+        assert tab.dom_requests == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_snapshot_leaves_the_har_as_it_was_and_logs(
+        self, tmp_path: Path
+    ) -> None:
+        _tab, backend, logs = await self._run(tmp_path, _LOGIN_BODY, dom_html=None)
+
+        request = _only_entry(backend)["request"]
+        assert request["postData"]["text"] == _LOGIN_BODY
+        assert "_domSnapshot" not in request
+        assert "_domSnapshotUrl" not in request
+        failed = [e for e in logs if e["event"] == "nodriver_dom_snapshot_failed"]
+        assert [(e["log_level"], e["request_id"]) for e in failed] == [("debug", "21.1")]
+        (summary,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_summary"]
+        assert (summary["failed"], summary["attempted"]) == (1, 1)
+        assert not (tmp_path / "snapshots").exists()
+
+    @pytest.mark.asyncio
+    async def test_without_the_flag_nothing_is_snapshotted(self, tmp_path: Path) -> None:
+        tab, backend, _logs = await self._run(tmp_path, _LOGIN_BODY, snapshots=False)
+
+        assert "_domSnapshot" not in _only_entry(backend)["request"]
+        assert tab.dom_requests == []
+        assert not (tmp_path / "snapshots").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_body_fetched_after_the_event_still_triggers(self, tmp_path: Path) -> None:
+        tab, backend, _logs = await self._run(tmp_path, _LOGIN_BODY, inline=False)
+
+        request = _only_entry(backend)["request"]
+        assert tab.post_data_requests == ["21.1"]
+        assert request["_domSnapshot"] == "snapshots/21.1.html"
+        assert "hunter2hunter2" not in (tmp_path / "snapshots" / "21.1.html").read_text()
+
+    @pytest.mark.asyncio
+    async def test_one_snapshot_per_credential_post(self, tmp_path: Path) -> None:
+        tab, _backend, _logs = await self._run(tmp_path, _LOGIN_BODY)
+
+        assert tab.dom_requests.count("DOM.getDocument") == 1
+        assert sorted(p.name for p in (tmp_path / "snapshots").iterdir()) == ["21.1.html"]
+
+    @pytest.mark.asyncio
+    async def test_a_saved_run_keeps_the_snapshot_beside_the_har(self, tmp_path: Path) -> None:
+        from graftpunk.har.parser import parse_har_file
+        from graftpunk.observe.run import save_observe_run
+        from graftpunk.observe.storage import ObserveStorage
+
+        storage = ObserveStorage(tmp_path, "myshop", "r1")
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        backend = NodriverCaptureBackend(
+            object(),
+            get_tab=lambda: tab,
+            bodies_dir=storage.run_dir / "bodies",
+            dom_snapshots_dir=storage.run_dir / "snapshots",
+        )
+        await backend.start_capture_async()
+        for event in [
+            _will_be_sent("22.1", inline=_LOGIN_BODY, url=LOGIN),
+            _response_received("22.1", url=LOGIN),
+        ]:
+            await tab.dispatch(event)
+        await save_observe_run(storage, backend, "observe-go")
+
+        (entry,) = parse_har_file(storage.run_dir / "network.har").entries
+        assert entry.request.dom_snapshot_url == HOME
+        assert entry.request.dom_snapshot is not None
+        assert 'id="login-modal"' in entry.request.dom_snapshot

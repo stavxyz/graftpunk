@@ -656,6 +656,8 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
         for role, selector in fields.items()
     ]
     lines: list[str] = []
+    # A dialog's login, or a snapshot's group around the password (plain_block).
+    group = "login group" if form.plain_block else "login dialog"
     for role in form.neutral_roles:
         if role not in form.fields:
             continue
@@ -675,7 +677,7 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
         if role in form.absent_roles and form.formless and role == "submit":
             text = (
                 f"{GP_FILL_MARKER}: submit has no selector: the first button after the "
-                "password in the login dialog is not an explicit submit (an "
+                f"password in the {group} is not an explicit submit (an "
                 '<input type="submit"> or <input type="image">, or a <button '
                 'type="submit">), or there is none; outside a form a typeless or '
                 'type="button" button submits nothing and may be a show-password or a '
@@ -683,7 +685,7 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
             )
         elif role in form.absent_roles and form.formless:
             text = (
-                f"{GP_FILL_MARKER}: {role} has no selector: the login dialog's {role} lookup "
+                f"{GP_FILL_MARKER}: {role} has no selector: the {group}'s {role} lookup "
                 "ends at the first button-like control after the password and found none "
                 "before it; write one by hand if the login has one."
             )
@@ -704,6 +706,16 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
             )
             text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand."
         lines.extend(wrapped_comment_lines(text, indent=indent))
+    if form.from_snapshot:
+        # No recorded HTML held this form: the page's script rendered it, often
+        # after a click the recording does not know.
+        lines.extend(
+            wrapped_comment_lines(
+                f"{GP_FILL_MARKER}: read from the page at the moment of the credential post; "
+                "if a click opens this form, add a click-only LoginStep before this one.",
+                indent=indent,
+            )
+        )
     lines.append(f"{pad}LoginStep(")
     lines.extend(_exploded_literal_dict_lines(entries, indent=indent + INDENT_STEP))
     lines.extend(literal_lines(submit_value, indent=indent + INDENT_STEP, prefix="submit="))

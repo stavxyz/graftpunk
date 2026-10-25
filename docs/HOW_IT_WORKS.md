@@ -660,13 +660,28 @@ else it is unresolved; a control inside `<noscript>` is left out; its `action`
 and `method` are empty; and several such dialogs are listed with one holding a
 `current-password` input first, then one whose id or class and whose controls'
 ids and names do not name a sign-up (`signup`, `register`, `create`, `join`, and
-the like), then in document order. Only a page the run opened with a GET, or the
-saved page source, shows a dialog login: one in a POST's HTML response (a failed
-attempt re-rendered, a search result) is not read. A password outside every form
-and every dialog gives no login form: a login built from inputs in a plain
-`<div>` is not found, and neither is a modal that a script renders only after a
-click, which is in no recorded HTML response and is in the page source saved
-when the recording stops only if it is still open then. In a `<form>`, each
+the like), then in document order. Only a page the run opened with a GET, the
+saved page source, or a DOM snapshot (below) shows a dialog login: one in a
+POST's HTML response (a failed attempt re-rendered, a search result) is not
+read. In recorded HTML, a password outside every form and every dialog gives no
+login form: a login built from inputs in a plain `<div>` is not found there, and
+neither is a modal that a script renders only after a click, which is in no
+recorded HTML response and is in the page source saved when the recording stops
+only if it is still open then. `gp observe go` and `gp observe interactive` save
+that page too: when the page sends a POST whose body makes it a credential post
+by its field names (below), the recorder saves the page's DOM at that moment as
+`snapshots/<request id>.html`, and the digest reads it as a page the run opened
+with a GET, at the URL it was taken on, just before that post, so these rules
+and the ones below apply to it unchanged. A form that a recorded GET of the same
+page (by host and path) already held is not read from the snapshot again. In a
+snapshot, and only there, a password outside every form and every dialog also
+makes a login group: the controls with no form owner and in no dialog inside the
+password's nearest ancestor element that holds a button-like control after the
+password, never `<html>` or `<body>`, judged as a dialog's controls are. The
+snapshot is taken as the user submits, so the control they pressed is likely
+inside that element; in recorded HTML such an element is as likely the page's
+layout. The step built from a form read from a snapshot carries a `GP-FILL`
+saying a click may open the form. In a `<form>`, each
 input is selected by its id, else its name (when no other control inside any
 form with the same action shares it: a header mini-login and the main form can
 post to one action), else its type (the same way) (`input:not([type])` for a
@@ -883,7 +898,7 @@ Redirect chains are recorded one HAR entry per hop, linked by `response.redirect
 
 Both backends also subscribe to `Network.requestWillBeSentExtraInfo` / `responseReceivedExtraInfo`, the events that carry the raw wire headers Chromium filters out of `responseReceived`: the HAR's `response.headers` include `Set-Cookie` (also parsed into `response.cookies`) and `request.headers` include the raw `Cookie` header (parsed into `request.cookies`). On the login `POST → 302` hop that means the cookie the server minted is visible on the hop that minted it: CDP does not guarantee the order these events arrive in, so headers are buffered and correlated by request id (a late `responseReceivedExtraInfo` is matched to a waiting redirect hop by status code) rather than assumed in order; if a hop's ExtraInfo never arrives, the drain logs `extra_info_unmatched` with the count of hops still waiting. One measured caveat (counted at the event handler, on a real login of 11 requests): nodriver 0.48.1 delivered 1 `requestWillBeSentExtraInfo` event (none carrying `Cookie`) while 0.50.3 delivered 9 (6 with `Cookie`), so raw request `Cookie` headers depend on the nodriver version — measured on those two versions only, intermediate releases untested. `Set-Cookie` capture worked on both.
 
-**The run is sensitive.** The credentials you submitted are scrubbed from the HAR (raw, URL-encoded, JSON-escaped and base64 forms), and from the text request bodies written to the run's `bodies/` directory (a login POST too large for the HAR, for one), but the exchange still contains the session cookies the login minted. A binary request body in `bodies/` has each of those forms' bytes masked with as many `*` bytes, so its length and offsets stay as recorded, and the file is named in the log; response bodies in `bodies/` are not scanned. A body file that cannot be read or rewritten is logged and left as it was (it is rewritten atomically, so never truncated), and the HAR is written regardless. Treat the run directory like a cached session, and delete it when you are done.
+**The run is sensitive.** The credentials you submitted are scrubbed from the HAR (raw, URL-encoded, JSON-escaped and base64 forms), and from the text request bodies written to the run's `bodies/` directory (a login POST too large for the HAR, for one), but the exchange still contains the session cookies the login minted. A binary request body in `bodies/` has each of those forms' bytes masked with as many `*` bytes, so its length and offsets stay as recorded, and the file is named in the log; response bodies in `bodies/` are not scanned. A body file that cannot be read or rewritten is logged and left as it was (it is rewritten atomically, so never truncated), and the HAR is written regardless. Treat the run directory like a cached session, and delete it when you are done. A login run holds no DOM snapshot (see [Interactive Mode](#interactive-mode-gp-observe-interactive)).
 
 #### Single-Step Login (Traditional Form)
 
@@ -1308,13 +1323,14 @@ Observability data is stored in a structured directory:
         001-before-login.png
         002-after-login.png
     bodies/
+    snapshots/
     events.jsonl
     network.har
     console.jsonl
     metadata.json
 ```
 
-The run directory is created when the run starts. `screenshots/` and `bodies/` are created only when a file is written to them, and `console.jsonl` only when there are console logs, so a plugin command's run holds `network.har` (and `bodies/` when a body went there) and nothing empty. A run is readable only by its owner: the run directory, its subdirectories and a session directory gp creates are 0700, and every file gp writes in it is 0600, whatever the umask. A session directory that already exists keeps its mode, and runs written by graftpunk 1.23.0 or earlier keep theirs.
+The run directory is created when the run starts. `screenshots/`, `bodies/` and `snapshots/` (a `gp observe go` or `gp observe interactive` run's DOM snapshots, see [Interactive Mode](#interactive-mode-gp-observe-interactive)) are created only when a file is written to them, and `console.jsonl` only when there are console logs, so a plugin command's run holds `network.har` (and `bodies/` when a body went there) and nothing empty. A run is readable only by its owner: the run directory, its subdirectories and a session directory gp creates are 0700, and every file gp writes in it is 0600, whatever the umask. A session directory that already exists keeps its mode, and runs written by graftpunk 1.23.0 or earlier keep theirs.
 
 The directory component is the session name slugified (`session_dirname`): `myshop@alice` becomes `myshop-alice`, `my_shop` becomes `my-shop`. Every writer and every `gp observe list/show/clean` lookup applies that one mapping, so a labelled run stays discoverable.
 
@@ -1496,6 +1512,11 @@ Saved artifacts:
 - `page-source.html` — Page HTML at time of Ctrl+C
 - `console.jsonl` — Browser console log entries
 - `bodies/`: request and response bodies too large for the HAR, or binary, written to disk during capture (a request body as `<request id>.request<ext>`)
+- `snapshots/`: the page's DOM at each credential post, as `<request id>.html`, when one was saved
+
+A POST whose body makes it a credential post by its field names (a password-like field such as `password` or `passwd`, and none asking for a new password, by `graftpunk.har.digest.is_credential_body`, the rule the digest reads a recorded POST with) makes `gp observe go` and `gp observe interactive` save the page's DOM: `DOM.getDocument` then `DOM.getOuterHTML` of the document, the calls that read the page source, sent when Chrome reports the request (on `Network.requestWillBeSent`, or when a body Chrome did not inline has been fetched). The post's HAR entry links it as `request._domSnapshot` (`snapshots/<request id>.html`) and `request._domSnapshotUrl` (the page's URL without its query, fragment, or userinfo), and the digest reads it as the page the post was sent from (see the login form rules above). Nothing waits for it: the request and the page go on, and a snapshot that fails is one `nodriver_dom_snapshot_failed` debug line and a count in the `nodriver_dom_snapshot_summary` warning at stop, never a change to the HAR. At most one is taken per request. A page that closes its login modal when the response arrives can win that race: measured on 2026-10-24 in headless Chrome through nodriver 0.50.6, against a local server answering the post at once, all seven snapshots taken (over two recordings) were taken after the page's response handler had removed the modal, and in a recording whose server answered after 50 ms the snapshot held it. How a real site's latency compares is unverified. Only these two commands take snapshots: the login engine's capture (`gp --observe=full <plugin> login`), a plugin command's run, and library code's `create_capture_backend` take none.
+
+Before it is written (owner-only, as every file of a run), a snapshot is reduced to what the digest reads (`graftpunk.observe.snapshot.sanitize_dom_snapshot`): every element with only its `id`, `name`, `type`, `autocomplete`, `form`, `role`, `aria-modal`, `action`, `method`, `class`, `href`, and `for` attributes, so never a `value`, `checked`, `selected`, `style`, `data-` or event attribute; the contents of `<script>`, `<style>`, and `<template>` dropped; a `<textarea>`'s text dropped; and other text dropped unless it is inside an `a`, `button`, `label`, `summary`, `legend`, or `option`, which keeps at most 80 characters. The triggering post's own values are then redacted from it with the scrub the rest of a run uses (`graftpunk.observe.run.redact_text`): its password-like fields' values wherever they occur, and its identifier fields' values (the allowlist above) where they stand as a whole value. A snapshot can still hold what the page showed in a link, button, or label, and the ids and classes of the page's elements, which can carry an account value. An interactive run is not scrubbed of what you typed: the HAR holds the credential post's body as sent, so treat the run directory like a cached session, and delete it when you are done.
 
 ---
 

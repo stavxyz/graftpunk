@@ -358,6 +358,18 @@ def _cdp_entries(entries: Any) -> list[Any] | None:
     ]
 
 
+def _bare_page_url(url: str) -> str:
+    """*url* as scheme, host, and path: the page a DOM snapshot was taken on, as a
+    run stores it, without the query, fragment, or userinfo that can carry a token
+    or an account. Empty when it cannot be split."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return ""
+    host = parts.netloc.rpartition("@")[2]
+    return urllib.parse.urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
 def _is_redirect_hop(data: dict[str, Any]) -> bool:
     """True if ``data`` is a finalized redirect hop; body fetching must skip it.
 
@@ -953,6 +965,11 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
         omitted = request_data.get("_post_data_omitted")
         if omitted:
             entry["request"]["_postDataOmitted"] = dict(omitted)
+    if request_data.get("_dom_snapshot"):
+        # The page's DOM as the request was sent (HAR 1.2 custom fields, as
+        # _postDataFile is): the file under the run, and the page's bare URL.
+        entry["request"]["_domSnapshot"] = request_data["_dom_snapshot"]
+        entry["request"]["_domSnapshotUrl"] = request_data.get("_dom_snapshot_url", "")
     return entry
 
 
@@ -1375,11 +1392,19 @@ class NodriverCaptureBackend:
         max_body_size: int = MAX_RESPONSE_BODY_SIZE,
         bodies_dir: Path | None = None,
         record_request_bodies: bool = True,
+        dom_snapshots_dir: Path | None = None,
     ) -> None:
         self._browser = browser
         self._get_tab = get_tab
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
+        # Set only by gp observe's own browser setup: a credential-shaped POST then
+        # snapshots the page's DOM into this directory (_snapshot_dom). The login
+        # engine's capture never passes it; it knows its selectors already.
+        self._dom_snapshots_dir = dom_snapshots_dir if record_request_bodies else None
+        self._dom_snapshot_attempts = 0
+        self._dom_snapshot_failures = 0
+        self._dom_snapshotted: set[str] = set()
         # False for a capture whose HAR is never written (the login engine's
         # header-only capture): no request body is kept, fetched or logged about.
         self._record_request_bodies = record_request_bodies
@@ -1517,6 +1542,10 @@ class NodriverCaptureBackend:
         # as tasks, so the entry this fills in already exists. It fetches only for
         # an entry _on_request marked pending, which a header-only capture never does.
         tab.add_handler(network.RequestWillBeSent, self._on_request_post_data)
+        if self._dom_snapshots_dir is not None:
+            # After both: snapshots the page for an inline credential-shaped body
+            # that _on_request marked. A body fetched later is snapshotted by its fetch.
+            tab.add_handler(network.RequestWillBeSent, self._on_request_dom_snapshot)
         tab.add_handler(network.ResponseReceived, self._on_response)
         tab.add_handler(network.LoadingFinished, self._on_loading_finished)
         # Raw wire headers (Cookie / Set-Cookie) only arrive on the ExtraInfo
@@ -1568,6 +1597,16 @@ class NodriverCaptureBackend:
 
         try:
             await self._settle_request_time_fetches()
+            if self._dom_snapshot_failures:
+                LOG.warning(
+                    "nodriver_dom_snapshot_summary",
+                    failed=self._dom_snapshot_failures,
+                    attempted=self._dom_snapshot_attempts,
+                    hint=(
+                        "The page's DOM was not saved at these credential posts; the HAR "
+                        "is complete. Run with debug logging to see each request and why."
+                    ),
+                )
             await self._fetch_bodies_at_stop(tab)
         finally:
             # Whatever ended stop, no request-time fetch writes after the marks: a
@@ -1748,18 +1787,21 @@ class NodriverCaptureBackend:
                 "timestamp": getattr(event, "wall_time", None),
             }
             if self._record_request_bodies:
+                body = _inline_post_body(
+                    getattr(event.request, "post_data", None),
+                    _cdp_entries(getattr(event.request, "post_data_entries", None)),
+                )
                 _keep_post_data(
                     self._request_map[rid],
-                    _inline_post_body(
-                        getattr(event.request, "post_data", None),
-                        _cdp_entries(getattr(event.request, "post_data_entries", None)),
-                    ),
+                    body,
                     max_body_size=self._max_body_size,
                     bodies_dir=self._bodies_dir,
                     request_id=rid,
                 )
                 if _post_data_missing(self._request_map[rid]):
                     self._request_map[rid]["_post_data_pending"] = True
+                elif body is not None and self._snapshot_due(rid, body):
+                    self._request_map[rid]["_dom_snapshot_due"] = body.text
             self._extra_info.entry_created(self._request_map, rid)
             if redirect is not None:
                 self._extra_info.status_known(self._request_map, rid)
@@ -1805,13 +1847,18 @@ class NodriverCaptureBackend:
                 **_eager_send_kwargs(tab),
                 **_capture_session_kwargs(tab, self._capture_session_id),
             )
+            body = _post_body(result)
             _keep_post_data(
                 data,
-                _post_body(result),
+                body,
                 max_body_size=self._max_body_size,
                 bodies_dir=self._bodies_dir,
                 request_id=rid,
             )
+            # A body Chrome did not inline is known only now, later than the page's
+            # state at the post: still the nearest moment there is.
+            if body is not None and self._snapshot_due(rid, body):
+                await self._snapshot_dom(tab, rid, data, body.text)
         except Exception as exc:  # noqa: BLE001 - best-effort; stop_capture_async retries
             data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
             LOG.debug(
@@ -1822,6 +1869,84 @@ class NodriverCaptureBackend:
             )
         finally:
             self._post_data_tasks.discard(task)  # type: ignore[arg-type]
+
+    def _snapshot_due(self, rid: str, body: _PostBody) -> bool:
+        """Whether the request *rid* with *body* gets a DOM snapshot: snapshots are on,
+        it is a POST whose body is credential-shaped by the digest's own rule
+        (:func:`graftpunk.har.digest.is_credential_body`: a password-like field and
+        no new-password one), and none was taken for it yet."""
+        if self._dom_snapshots_dir is None or body.text is None:
+            return False
+        data = self._request_map.get(rid) or {}
+        if str(data.get("method", "")).upper() != "POST" or rid in self._dom_snapshotted:
+            return False
+        from graftpunk.har.digest import is_credential_body
+
+        return is_credential_body(body.text, _request_content_type(data))
+
+    async def _on_request_dom_snapshot(self, event: Any) -> None:
+        """Snapshot the page for a credential-shaped body Chrome inlined on
+        ``Network.requestWillBeSent`` (_on_request marks it)."""
+        rid = str(getattr(event, "request_id", ""))
+        data = self._request_map.get(rid)
+        if data is None or "_dom_snapshot_due" not in data:
+            return
+        body_text = data.pop("_dom_snapshot_due")
+        tab = self._tab
+        if tab is None or self._post_data_closed:
+            return
+        task = asyncio.current_task()
+        if task is not None:
+            self._post_data_tasks.add(task)
+        try:
+            await self._snapshot_dom(tab, rid, data, body_text)
+        finally:
+            self._post_data_tasks.discard(task)  # type: ignore[arg-type]
+
+    async def _snapshot_dom(
+        self, tab: Any, rid: str, data: dict[str, Any], body_text: str | None
+    ) -> None:
+        """Serialize the page's DOM as the credential post *rid* is sent, sanitize and
+        redact it (:func:`graftpunk.observe.snapshot.stored_dom_snapshot`), write it
+        owner-only as ``snapshots/<rid>.html``, and link it from the entry.
+
+        ``DOM.getDocument(depth=-1, pierce=True)`` then ``DOM.getOuterHTML`` of the
+        document, as nodriver's ``Tab.get_content`` reads the page source. Nothing
+        waits for it: the request and the page go on, and a snapshot that fails or
+        comes too late is one debug line and a count in the stop summary, never a
+        change to the entry. At most one per request id."""
+        snapshots_dir = self._dom_snapshots_dir
+        if snapshots_dir is None or rid in self._dom_snapshotted:
+            return
+        self._dom_snapshotted.add(rid)
+        self._dom_snapshot_attempts += 1
+        name = f"{rid}.html"
+        try:
+            import nodriver.cdp.dom as cdp_dom
+
+            from graftpunk.observe.snapshot import stored_dom_snapshot
+            from graftpunk.observe.storage import make_private_dir, write_private_file
+
+            session = _capture_session_kwargs(tab, self._capture_session_id)
+            document = await tab.send(cdp_dom.get_document(depth=-1, pierce=True), **session)
+            html = await tab.send(
+                cdp_dom.get_outer_html(backend_node_id=document.backend_node_id), **session
+            )
+            stored = stored_dom_snapshot(html, body_text, _request_content_type(data))
+            snapshots_dir.parent.mkdir(parents=True, exist_ok=True)
+            make_private_dir(snapshots_dir)
+            write_private_file(snapshots_dir / name, stored)
+        except Exception as exc:  # noqa: BLE001 - best-effort; the HAR never depends on it
+            self._dom_snapshot_failures += 1
+            LOG.debug(
+                "nodriver_dom_snapshot_failed",
+                request_id=rid,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            return
+        data["_dom_snapshot"] = f"{snapshots_dir.name}/{name}"
+        data["_dom_snapshot_url"] = _bare_page_url(getattr(document, "document_url", None) or "")
 
     def _on_request_extra_info(self, event: Any) -> None:
         """Handle a CDP RequestWillBeSentExtraInfo event (raw request headers)."""

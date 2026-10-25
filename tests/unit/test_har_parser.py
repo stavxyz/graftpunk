@@ -842,3 +842,71 @@ def test_the_set_cookie_parse_is_graftpunks(headers: list[dict[str, str]]) -> No
         (name, "httponly" in attributes) for name, attributes in script.set_cookie_lines(headers)
     ]
     assert ours == _set_cookie_lines(headers)
+
+
+class TestDomSnapshotFields:
+    """``request._domSnapshot`` and ``request._domSnapshotUrl`` (#267, part 2)."""
+
+    @staticmethod
+    def _har(tmp_path: Path, request_extra: dict[str, object]) -> Path:
+        request = {
+            "method": "POST",
+            "url": "https://myshop.example/api/login",
+            "headers": [],
+            "cookies": [],
+            **request_extra,
+        }
+        entry = {
+            "startedDateTime": "2026-10-24T10:00:00.000Z",
+            "time": 1,
+            "request": request,
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [],
+                "cookies": [],
+                "content": {"mimeType": "application/json", "text": "{}"},
+            },
+        }
+        run = tmp_path / "run"
+        run.mkdir(exist_ok=True)
+        path = run / "network.har"
+        path.write_text(json.dumps({"log": {"version": "1.2", "entries": [entry]}}))
+        return path
+
+    def test_both_fields_are_read(self, tmp_path: Path) -> None:
+        har = self._har(
+            tmp_path,
+            {
+                "_domSnapshot": "snapshots/7.1.html",
+                "_domSnapshotUrl": "https://myshop.example/",
+            },
+        )
+        (har.parent / "snapshots").mkdir()
+        (har.parent / "snapshots" / "7.1.html").write_text("<div id='m'></div>")
+
+        (entry,) = parse_har_file(har).entries
+
+        assert entry.request.dom_snapshot_file == "snapshots/7.1.html"
+        assert entry.request.dom_snapshot == "<div id='m'></div>"
+        assert entry.request.dom_snapshot_url == "https://myshop.example/"
+
+    def test_a_path_outside_the_har_directory_is_refused(self, tmp_path: Path) -> None:
+        (tmp_path / "outside.html").write_text("<div id='elsewhere'></div>")
+        har = self._har(
+            tmp_path,
+            {"_domSnapshot": "../outside.html", "_domSnapshotUrl": "https://myshop.example/"},
+        )
+
+        (entry,) = parse_har_file(har).entries
+
+        assert entry.request.dom_snapshot is None
+        assert entry.request.dom_snapshot_file is None
+
+    def test_a_missing_snapshot_or_none_at_all_reads_as_none(self, tmp_path: Path) -> None:
+        har = self._har(tmp_path, {"_domSnapshot": "snapshots/gone.html"})
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.dom_snapshot is None
+
+        plain = HARRequest(method="GET", url="https://myshop.example/", headers={}, cookies=[])
+        assert (plain.dom_snapshot, plain.dom_snapshot_url) == (None, None)
