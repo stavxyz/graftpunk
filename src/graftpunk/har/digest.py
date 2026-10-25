@@ -1076,6 +1076,36 @@ def _form_key(form: LoginForm) -> tuple[object, ...]:
     return (form.action, form.method, form.signature, form.hidden)
 
 
+def _site_wide_formless_home(
+    chosen: int,
+    scripted: list[int],
+    forms_on_page: dict[int, list[LoginForm]],
+    pages_of_key: dict[tuple[object, ...], set[int]],
+    script_driven: set[int],
+) -> int | None:
+    """The page a credential post found by its field names alone is credited to
+    instead of *chosen* (the nearest earlier page whose form has no target of its
+    own), when every such form on *chosen* is formless and one of them is on more
+    than one recorded page: a login modal shown site-wide. Among the earlier
+    scripted pages (*scripted*) showing one of those groups, the one whose path has
+    the fewest segments (``/`` when recorded), then the earliest recorded, so the
+    login opens at the same page whichever page the user signed in from. None when
+    *chosen* holds no such group."""
+    scripted_forms = [form for form in forms_on_page.get(chosen, []) if id(form) in script_driven]
+    if not scripted_forms or not all(form.formless for form in scripted_forms):
+        return None
+    keys = {_form_key(form) for form in scripted_forms}
+    if not any(len(pages_of_key.get(key, ())) > 1 for key in keys):
+        return None
+    paths = {
+        at: urlparse(form.source).path
+        for at in scripted
+        for form in forms_on_page.get(at, [])
+        if _form_key(form) in keys
+    }
+    return min(paths, key=lambda at: (len([s for s in paths[at].split("/") if s]), at))
+
+
 def _used_login(
     ranked: list[LoginForm],
     recorded: list[LoginForm],
@@ -1779,6 +1809,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         (at, targets, scripted) for at, _f, o, targets, scripted in pending if o.kind == "form_page"
     ]
     credential_posts: list[_CredentialPost] = []
+    # Per credential post: credited to its page only through a formless group shown
+    # on several pages (_site_wide_formless_home), which makes no page a login page.
+    site_wide: list[bool] = []
     pages_of_key: dict[tuple[object, ...], set[int]] = {}
     forms_on_page: dict[int, list[LoginForm]] = {}
     for form in login_forms:
@@ -1816,6 +1849,16 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             )
         else:
             chosen = max(scripted if by_field_names else [], default=None)
+        home = (
+            None
+            if matching or chosen is None
+            else _site_wide_formless_home(
+                chosen, scripted, forms_on_page, pages_of_key, script_driven
+            )
+        )
+        site_wide.append(home is not None)
+        if home is not None:
+            chosen = home
         credential_posts.append(_CredentialPost(went_to, body_names, chosen, by_field_names))
     promoted = {post.page_step for post in credential_posts}
 
@@ -1831,6 +1874,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     owned_posts, owned_pages = _used_login(
         ranked_forms, login_forms, page_of, [step for step, *_rest in posts], credential_posts
     )
+    # A page a post was credited to only through a site-wide formless group is the
+    # page the login opens, but it is a content page, so its GET keeps its command.
+    owned_pages -= {
+        post.page_step for post, home in zip(credential_posts, site_wide, strict=True) if home
+    } - {post.page_step for post, home in zip(credential_posts, site_wide, strict=True) if not home}
     for at, fallback, observation, _targets, _scripted in pending:
         kind = observation.kind
         if kind == "form_page" and at not in promoted:

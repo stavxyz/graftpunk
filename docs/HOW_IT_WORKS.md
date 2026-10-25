@@ -621,19 +621,35 @@ left out, and so is a lone one with a confirmation password; a lone form with
 one password marked `new-password` is kept (the attribute misused on a login
 form), and a password-plus-PIN form is a login form; a change-password form (a
 `current-password` input, a new password, and no username-like input) is not a
-login form at all; a stale-session check still counts any form with a password
-input as a login page (a `<form>`; inputs outside one do not count there). The
-controls outside every `<form>` (in none, and with no `form` attribute naming a
-form on the page) are one more login form when the same rules find a login in
-them: a login modal whose inputs sit in a `<div>` and that a script sends. It is
-listed after the page's forms, beside a real login form and never in its place.
-Its `action` and `method` are empty, since no browser submits it; each of its
-inputs is selected by its id, else by a name no other input on the page shares,
-else it is unresolved; a control inside `<noscript>` is left out; and the digest
-treats it as a form with no target of its own (below). A login modal that a
-script renders only after a click is in no recorded HTML response, and is in
-the page source saved when the recording stops only if it is still open then, so
-its inputs are usually still not found. In a `<form>`, each input is selected by its id, else its name (when no
+login form at all (judged on the page's forms alone, so nothing outside a form
+changes what a form gives); a stale-session check still counts any form with a
+password input as a login page (a `<form>`; inputs outside one do not count
+there). A password input with no form owner (in no `<form>` and with no `form`
+attribute, or with a `form` attribute naming no form on the page) makes a login
+form of its own, listed after the page's forms: a login modal whose inputs sit
+in a `<div>` and that a script sends. Its controls are the ownerless ones inside
+the innermost element around the password, below `<body>`, that holds a submit
+control, a `<button type="button">`, a text-like input before the password, or
+another password input; with no such element, the password alone. A control
+inside two such elements belongs to the innermost, so a header search box, a
+newsletter input, a cart button, or a cookie banner elsewhere on the page never
+takes a role, and the same modal on pages that differ elsewhere is one form.
+Each group is judged by the rules above on its own controls, so a sign-up modal
+beside a login modal leaves the login's, and the groups are listed with one
+holding a `current-password` input first, then one whose element's id or class
+and controls' ids and names do not name a sign-up (`signup`, `register`,
+`create`, `join`, and the like), then in document order. The same rules pick its
+roles, except that a `<button type="button">` after the password is the submit
+when nothing after it submits, and a missing submit is unresolved like a missing
+username, so the generated step carries a `GP-FILL` for each. Its `action` and
+`method` are empty, since no browser submits it; each of its inputs is selected
+by its id, else by a name no other input on the page shares, else it is
+unresolved; a control inside `<noscript>` is left out; and the digest treats it
+as a form with no target of its own (below). A login modal that a script renders
+only after a click is in no recorded HTML response, and is in the page source
+saved when the recording stops only if it is still open then, so its inputs are
+usually still not found. In a `<form>`, each input is selected by its id, else
+its name (when no
 other control inside any form with the same action shares it: a header
 mini-login and the main form can post to one action), else its type (the same
 way) (`input:not([type])` for a typeless input), and an id or a name that holds
@@ -668,9 +684,16 @@ however many assets lie between; a post found by its field names alone (no
 recorded form, a saved page source's included, posts where it went) promotes
 only the nearest page whose form does not post where the credential post went
 (an empty, `#`, or `javascript:` action, one naming the page itself, or inputs
-outside any form), and no page when every earlier form posts somewhere real. A
-POST whose body asks for a new password (`new_password`, `password_confirm`) is
-never a credential post by its field names. Every other page carrying a login form is an ordinary page and
+outside any form), and no page when every earlier form posts somewhere real.
+When every such form on that page is a formless group and one of them is on more
+than one recorded page (a login modal shown site-wide), the post is credited
+instead to the page, among the earlier ones showing that group, whose path has
+the fewest segments (`/` when it was recorded), then the earliest recorded: that
+is the page `login_config.url` opens whichever page the user signed in from, and
+no page's GET is part of the login flow, since a modal shown on every page makes
+none of them a login page. A POST whose body asks for a new password
+(`new_password`, `password_confirm`) is never a credential post by its field
+names. Every other page carrying a login form is an ordinary page and
 keeps its stub. The same form on several pages is one form, told by its
 structure (its element id and each control's tag, type, name, and id), and is
 kept as the copy whose selectors resolve best. Among the forms, one a credential

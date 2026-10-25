@@ -5013,6 +5013,73 @@ class TestLoginFieldsOutsideAnyForm:
         assert len(result.login_forms) == 1
         assert result.login_forms[0].formless
 
+    def test_the_same_modal_on_pages_that_differ_elsewhere_is_listed_once(
+        self, tmp_path: Path
+    ) -> None:
+        modal = self._HEADER + self._DIV_MODAL
+        search = '<header><input type="search" name="q" id="q"></header>'
+        color_filter = '<aside><input type="checkbox" name="color" id="c-red"></aside>'
+        entries = [
+            _entry("GET", f"{self._HOST}/", content_type="text/html", body=modal),
+            _entry("GET", f"{self._HOST}/products", content_type="text/html", body=search + modal),
+            _entry(
+                "GET", f"{self._HOST}/cart", content_type="text/html", body=color_filter + modal
+            ),
+            _entry(
+                "POST",
+                f"{self._HOST}/api/auth/login/",
+                post_data=json.dumps({"username": "alice", "password": "hunter2hunter2"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (form,) = result.login_forms
+        assert form.formless
+
+    def _site_wide(self, tmp_path: Path, *paths: str):  # noqa: ANN202
+        """The modal on every page in *paths*, then a sign-in from the last one."""
+        page = self._HEADER + "<main>product</main>" + self._DIV_MODAL
+        entries = [
+            *(
+                _entry("GET", f"{self._HOST}{p}", content_type="text/html", body=page)
+                for p in paths
+            ),
+            _entry(
+                "POST",
+                f"{self._HOST}/api/auth/login/",
+                body='{"ok": true}',
+                post_data=json.dumps({"username": "alice", "password": "hunter2hunter2"}),
+            ),
+            _entry("GET", f"{self._HOST}/api/account/", body='{"name": "x"}'),
+        ]
+        return digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+
+    def test_a_site_wide_modal_marks_no_page_as_the_login_page(self, tmp_path: Path) -> None:
+        """The modal is on / and /products/77 and the user signed in from
+        /products/77: neither page is a login page, so both keep their commands,
+        and the login opens at /, the page with the fewest path segments."""
+        result = self._site_wide(tmp_path, "/", "/products/77")
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/")] is False
+        assert flags[("GET", "/products/77")] is False
+        assert flags[("POST", "/api/auth/login/")] is True
+        assert [(o.method, o.kind) for o in result.login if o.login_flow] == [
+            ("POST", "credential_post")
+        ]
+        (form,) = result.login_forms
+        assert form.source == f"{self._HOST}/"
+        code = self._plugin(result)
+        assert 'url="/",' in code
+        assert "def products_77(" in code
+
+    def test_a_site_wide_modal_opens_at_the_earliest_of_the_shallowest_pages(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._site_wide(tmp_path, "/shop/products/77", "/products/42", "/account/orders")
+        (form,) = result.login_forms
+        assert form.source == f"{self._HOST}/products/42"
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert not any(flag for (method, _template), flag in flags.items() if method == "GET")
+
     def test_a_post_to_the_page_itself_is_not_matched_by_target(self, tmp_path: Path) -> None:
         """A formless group has no target: a POST to its page without a password
         field is not a credential post, unlike an actionless form's."""

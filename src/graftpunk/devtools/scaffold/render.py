@@ -672,7 +672,13 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
             )
         )
     for role in printable_unresolved_roles(form):
-        if role in form.absent_roles:
+        if role in form.absent_roles and form.formless:
+            text = (
+                f"{GP_FILL_MARKER}: {role} has no selector: no {role} control was recorded "
+                "beside the password, which sits outside any form; write one by hand if the "
+                "login has one."
+            )
+        elif role in form.absent_roles:
             text = (
                 f"{GP_FILL_MARKER}: {role} is not on the recorded form: a multi-step login asks "
                 "for it on another page; add a LoginStep for that page by hand."

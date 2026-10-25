@@ -148,6 +148,9 @@ class _RawInput:
     # Inside a <noscript> element: shown only when script is off, as an OAuth
     # form_post page's fallback submit button is.
     in_noscript: bool = False
+    # The elements this control sits inside, outermost first, each as its index in
+    # _DocumentParser.elements: what bounds a formless login group.
+    ancestors: tuple[int, ...] = ()
 
 
 @dataclass
@@ -158,8 +161,30 @@ class _RawForm:
     element_id: str = ""
 
 
+# The elements that never hold content, so never open: an end tag for one is ignored.
+_VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+
+
 class _DocumentParser(HTMLParser):
-    """Collects every ``<form>`` (with its inputs) and every ``<meta>`` in one pass."""
+    """Collects every ``<form>`` (with its inputs) and every ``<meta>`` in one pass,
+    and the open elements around each control."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -170,9 +195,20 @@ class _DocumentParser(HTMLParser):
         self.inputs: list[_RawInput] = []
         self._current: _RawForm | None = None
         self._noscript = 0
+        # Each element that opens, in document order, as its tag and its lowered id
+        # and class attributes; a control's ancestors index into it.
+        self.elements: list[tuple[str, str]] = []
+        # The open elements, as (tag, index into elements). An end tag closes back to
+        # its open element; one with no open element of its tag is ignored, and
+        # whatever is still open at the end of the document stays open.
+        self._open: list[tuple[str, int]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {k: (v or "") for k, v in attrs}
+        ancestors = tuple(index for _tag, index in self._open)
+        if tag not in _VOID_TAGS:
+            self._open.append((tag, len(self.elements)))
+            self.elements.append((tag, f"{values.get('id', '')} {values.get('class', '')}".lower()))
         if tag == "noscript":
             self._noscript += 1
         if tag == "form":
@@ -200,6 +236,7 @@ class _DocumentParser(HTMLParser):
             )
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
+            raw_input.ancestors = ancestors
             inside = self._current.element_id if self._current is not None else ""
             raw_input.outside_form = bool(raw_input.form_owner) and raw_input.form_owner != inside
             self.inputs.append(raw_input)
@@ -211,6 +248,11 @@ class _DocumentParser(HTMLParser):
                 self.metas.append((name, content))
 
     def handle_endtag(self, tag: str) -> None:
+        if tag not in _VOID_TAGS:
+            for position in range(len(self._open) - 1, -1, -1):
+                if self._open[position][0] == tag:
+                    del self._open[position:]
+                    break
         if tag == "noscript" and self._noscript:
             self._noscript -= 1
         if tag == "form" and self._current is not None:
@@ -686,29 +728,110 @@ def _formless_selectors(
     return None, None
 
 
-def _formless_login_group(parsed: _DocumentParser) -> list[_RawInput] | None:
-    """The page's controls outside every ``<form>``, in document order, when they
-    hold a login: a password input, and neither a change-password nor a
-    registration form's shape (:func:`_is_change_password`, :func:`_is_registration`).
-    A control is outside every form when it sits in none and its ``form`` attribute,
-    if any, names no form on the page. One inside ``<noscript>`` is left out: with
-    script on it is never in the page, and only script sends a formless group.
-    None when there is no such login."""
+def _is_plain_button(raw: _RawInput) -> bool:
+    """A ``<button type="button">``: it submits nothing, but a script-driven login
+    modal uses one as its sign-in control."""
+    return raw.tag == "button" and raw.input_type == "button"
+
+
+def _formless_controls(parsed: _DocumentParser) -> list[_RawInput]:
+    """The page's controls with no form owner, in document order: in no ``<form>``
+    and with no ``form`` attribute, or with a ``form`` attribute that names no form
+    on the page (which leaves a control with no owner even inside a ``<form>``).
+    One inside ``<noscript>`` is left out: with script on it is never in the page,
+    and only script sends a formless group."""
     owners = {form.element_id for form in parsed.forms if form.element_id}
-    controls = [
+    return [
         raw
         for raw in parsed.inputs
-        if raw.container is None
-        and not raw.in_noscript
-        and not (raw.form_owner and raw.form_owner in owners)
+        if not raw.in_noscript
+        and (
+            (raw.form_owner and raw.form_owner not in owners)
+            or (not raw.form_owner and raw.container is None)
+        )
     ]
-    if (
-        _password_index(controls) is None
-        or _is_change_password(controls)
-        or _is_registration(controls)
-    ):
-        return None
-    return controls
+
+
+def _formless_container(
+    password: _RawInput, controls: list[_RawInput], elements: list[tuple[str, str]]
+) -> int | None:
+    """The element a formless *password* input's login group is bounded by: the
+    innermost element around it, below ``<body>``, that holds a submit control or a
+    ``<button type="button">`` (:func:`_is_submit`, :func:`_is_plain_button`), a
+    text-like input before the password, or another password input (so a sign-up or
+    a password change is judged as one), among the formless *controls*. None when no
+    element smaller than ``<html>`` or ``<body>`` does: the password is then alone.
+    Never wider, so the role rules cannot reach a header search box, a newsletter
+    input, or a cart button elsewhere on the page."""
+    for ancestor in reversed(password.ancestors):
+        if elements[ancestor][0] in ("html", "body"):
+            return None
+        inside = [control for control in controls if ancestor in control.ancestors]
+        if any(
+            _is_submit(control)
+            or _is_plain_button(control)
+            or (_is_text_like(control) and control.order < password.order)
+            or (_is_password(control) and control is not password)
+            for control in inside
+        ):
+            return ancestor
+    return None
+
+
+# Words in a group's element or control ids, classes, and names that name a sign-up.
+_SIGN_UP_HINTS = ("signup", "sign-up", "sign_up", "register", "registration", "create", "join")
+
+
+def _formless_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
+    """The page's formless login groups, each the formless controls inside one
+    password input's bounding element (:func:`_formless_container`), or that
+    password alone. A control in several bounding elements belongs to the innermost.
+    Each group is judged on its own controls: one with no password, a change-password
+    group, and a registration group (:func:`_is_change_password`,
+    :func:`_is_registration`) are left out, so a sign-up modal beside a login modal
+    leaves the login's. Ordered with a group holding a ``current-password`` input
+    first, then one whose element, ids, or names do not name a sign-up
+    (``_SIGN_UP_HINTS``), then document order."""
+    controls = _formless_controls(parsed)
+    containers: set[int] = set()
+    alone: list[_RawInput] = []
+    for raw in controls:
+        if _is_password(raw):
+            container = _formless_container(raw, controls, parsed.elements)
+            if container is None:
+                alone.append(raw)
+            else:
+                containers.add(container)
+    groups: dict[object, list[_RawInput]] = {("alone", raw.order): [raw] for raw in alone}
+    alone_orders = {raw.order for raw in alone}
+    for raw in controls:
+        if raw.order in alone_orders:
+            continue
+        around = [ancestor for ancestor in raw.ancestors if ancestor in containers]
+        if around:
+            groups.setdefault(("element", around[-1]), []).append(raw)
+
+    def sign_up_named(key: object, group: list[_RawInput]) -> bool:
+        words = " ".join(f"{raw.element_id} {raw.name}" for raw in group).lower()
+        if isinstance(key, tuple) and key[0] == "element":
+            words += " " + parsed.elements[key[1]][1]
+        return any(hint in words for hint in _SIGN_UP_HINTS)
+
+    kept = [
+        (key, sorted(group, key=lambda raw: raw.order))
+        for key, group in groups.items()
+        if _password_index(group) is not None
+        and not _is_change_password(group)
+        and not _is_registration(group)
+    ]
+    kept.sort(
+        key=lambda pair: (
+            not any(raw.autocomplete == "current-password" for raw in pair[1]),
+            sign_up_named(pair[0], pair[1]),
+            pair[1][0].order,
+        )
+    )
+    return [group for _key, group in kept]
 
 
 def extract_login_forms(
@@ -716,10 +839,9 @@ def extract_login_forms(
 ) -> tuple[LoginForm, ...]:
     """Every login ``<form>`` in *html*: one with a password input that is neither a
     change-password form (:func:`_is_change_password`, never kept) nor a
-    registration form (:func:`_is_registration`). When the page has no such form
-    and no formless login (below), a form with exactly one password input is kept
-    (``new-password`` misused on a login form); a registration form with a
-    confirmation password never is.
+    registration form (:func:`_is_registration`). When the page has no such form, a
+    form with exactly one password input is kept (``new-password`` misused on a
+    login form); a registration form with a confirmation password never is.
 
     Each yields a :class:`LoginForm` with the form's action stripped of its query
     string, fragment, and ``;params`` (:func:`graftpunk.har.paths.bare_url`), and
@@ -737,11 +859,14 @@ def extract_login_forms(
     unmasked URL of the page the form came from (*source* is the masked one the
     digest prints), and the form's ``action_target`` resolves against it.
 
-    The page's controls outside every form yield one more, after the forms, when
-    they hold a login (:func:`_formless_login_group`): a script-driven login whose
-    inputs sit in a ``<div>``. The same role rules run over them; its selectors are
-    unscoped (:func:`_formless_selectors`), its ``action`` and ``method`` are empty
-    (no browser submits it, a script sends it with a method of its own), its
+    The page's controls outside every form yield more, after the forms and without
+    changing them: one per formless login group (:func:`_formless_login_groups`), a
+    script-driven login whose inputs sit in a ``<div>``. The same role rules run
+    over each group's controls, except that a ``<button type="button">`` after the
+    password is the submit when no submitting control is, and a missing submit is
+    absent and unresolved like a missing username. Its selectors are unscoped
+    (:func:`_formless_selectors`), its ``action`` and ``method`` are empty (no
+    browser submits it, a script sends it with a method of its own), its
     ``action_target`` is ``("", "")``, and ``formless`` is set.
     """
     parsed = _parse(html)
@@ -750,11 +875,11 @@ def extract_login_forms(
         for raw in parsed.forms
         if _password_index(raw.inputs) is not None and not _is_change_password(raw.inputs)
     ]
-    formless = _formless_login_group(parsed)
     # A registration form is left out only beside a login form: a lone form marked
-    # new-password is still the page's login form.
+    # new-password is still the page's login form. Judged on the forms alone, so a
+    # formless login never changes what a real form gives.
     logins = [raw for raw in candidates if not _is_registration(raw.inputs)]
-    if not logins and formless is None:
+    if not logins:
         # A lone form with one password is kept (new-password misused on a login
         # form); a lone form with a confirmation password is a registration form.
         logins = [raw for raw in candidates if len(_password_inputs(raw.inputs)) == 1]
@@ -802,9 +927,9 @@ def extract_login_forms(
         )
         if form is not None:
             forms.append(form)
-    if formless is not None:
+    for group in _formless_login_groups(parsed):
         form = _login_form(
-            formless,
+            group,
             lambda control: _formless_selectors(control, parsed.inputs),
             action="",
             method="",
@@ -849,9 +974,12 @@ def _login_form(
             hidden.append(raw_input.name)
 
     username_index = _username_index(inputs, password_index)
-    submit_index = next(
-        (i for i in range(password_index + 1, len(inputs)) if _is_submit(inputs[i])), None
-    )
+    after = range(password_index + 1, len(inputs))
+    submit_index = next((i for i in after if _is_submit(inputs[i])), None)
+    if submit_index is None and formless:
+        # A modal's sign-in control is often type="button"; only the group's own
+        # controls are searched, so it is never a button elsewhere on the page.
+        submit_index = next((i for i in after if _is_plain_button(inputs[i])), None)
     block_start = (username_index if username_index is not None else password_index) + 1
     block_end = submit_index if submit_index is not None else len(inputs)
     roles: list[tuple[str, _RawInput]] = []
@@ -908,6 +1036,10 @@ def _login_form(
         submit, unscoped_submit = selectors_for(inputs[submit_index])
         if submit is None:
             unresolved.append("submit")
+    elif formless:
+        # Nothing beside the password submits: a GP-FILL, never a guess.
+        absent.append("submit")
+        unresolved.append("submit")
     return LoginForm(
         action=action,
         method=method,

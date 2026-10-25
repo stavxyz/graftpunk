@@ -1030,6 +1030,29 @@ class TestPluginModuleWithLoginForm:
         ) in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
 
+    def test_a_formless_password_alone_says_its_roles_were_not_found(self) -> None:
+        html = '<div class="pw"><input type="password" id="p"></div>'
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/")
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        for role in ("username", "submit"):
+            assert (
+                f"GP-FILL: {role} has no selector: no {role} control was recorded beside the "
+                "password, which sits outside any form; write one by hand if the login has one."
+            ) in comment
+        assert "multi-step login" not in comment
+
     @staticmethod
     def _login_spec(*observations: LoginObservation) -> ScaffoldSpec:
         return ScaffoldSpec(
