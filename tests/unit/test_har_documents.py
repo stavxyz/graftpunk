@@ -1878,3 +1878,74 @@ class TestDialogSubmitAndParsingRound3:
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"password": "#p", "q": "#q"}
         assert form.submit is None
+
+
+class TestDialogFieldBlockAndForeignContentRound4:
+    """Review round 4 of #267."""
+
+    def test_the_field_block_ends_at_a_typeless_sign_in(self) -> None:
+        """A typeless "Sign in" is no submit, but the fields end there: a hidden
+        reset panel's input after it is no login field."""
+        html = _in_dialog(
+            '<input type="email" id="u" name="email"><input type="password" id="p" '
+            'name="password"><button id="signin">Sign in</button>'
+            '<div class="reset" hidden><input type="email" id="r" name="reset_email">'
+            '<button id="send">Send link</button></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"username": "#u", "password": "#p"}
+        assert form.submit is None
+        assert "submit" in form.unresolved_roles
+
+    @pytest.mark.parametrize(
+        "control",
+        [
+            '<button type="button" id="b">Sign in</button>',
+            '<input type="button" id="b" value="Sign in">',
+            '<input type="reset" id="b">',
+        ],
+        ids=["button-type-button", "input-button", "input-reset"],
+    )
+    def test_the_field_block_ends_at_any_button_like_control(self, control: str) -> None:
+        html = _in_dialog(
+            f'<input id="u"><input type="password" id="p">{control}'
+            '<input type="text" id="promo" name="promo">'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"username": "#u", "password": "#p"}
+
+    def test_a_field_before_the_first_button_stays_a_field(self) -> None:
+        html = _in_dialog(
+            '<input id="u"><input type="password" id="p"><input type="text" id="otp" '
+            'name="otp"><button id="go">Sign in</button>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"username": "#u", "password": "#p", "otp": "#otp"}
+
+    _SELF_CLOSING_DIALOG = (
+        '<div role="dialog"/><input id="u"><input type="password" id="p">'
+        '<input type="submit" id="go"></div>'
+    )
+
+    @pytest.mark.parametrize(
+        "before",
+        [
+            "<svg/>",
+            "<math/>",
+            '<svg><path d="x"/></svg>',
+            "<math><mi/></math>",
+            "<noscript/>",
+        ],
+        ids=["svg-self-closing", "math-self-closing", "svg-closed", "math-closed", "noscript"],
+    )
+    def test_foreign_content_and_noscript_end_where_a_browser_ends_them(self, before: str) -> None:
+        (form,) = extract_login_forms(before + self._SELF_CLOSING_DIALOG, source="s")
+        assert form.formless
+        assert form.submit == "#go"
+
+    def test_a_self_closing_element_in_math_closes_at_once(self) -> None:
+        html = (
+            '<math><mrow role="dialog"/></math><input id="u"><input type="password" id="p">'
+            '<input type="submit" id="go">'
+        )
+        assert extract_login_forms(html, source="s") == ()

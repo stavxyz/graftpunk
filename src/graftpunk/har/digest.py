@@ -1024,15 +1024,17 @@ def _used_forms_first(
     0. a real form a credential post went to (by its target, or found by its field
        names on the page it promoted), then a formless group a post was credited to
        (:func:`_formless_credit`), then any other real form, then any other formless
-       group: a dialog login never displaces a real form, and with no formless
-       group this term orders nothing the terms below do not;
+       group. A credited group ranks below every real form a post went to (a later
+       change-email form included) and above a real form no post went to, which
+       shares no name with the post, since a post is not credited to a group when a
+       real form does (:func:`digest`); with no formless group this term orders
+       nothing the terms below do not;
     1. one on the page that a credential post it went to promoted;
     2. the one the earliest credential post went to (a form no post went to ranks
        after every form one did); a post found by its field names alone went to
        the script-driven form (:func:`_script_driven_forms`) on the page it
-       promoted, or to the formless group it was credited to there
-       (:func:`_formless_credit`), so a script login ranks its form ahead of a later
-       form posting to its own page (a change-email form);
+       promoted, so a script login ranks its form ahead of a later form posting to
+       its own page (a change-email form);
     3. the one whose control names cover the most of that post's body;
     4. one that sits on no page a credential post did not promote (not a site-wide
        header form);
@@ -1887,15 +1889,34 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             )
         else:
             chosen = max(scripted if by_field_names else [], default=None)
+        # A real login form recorded anywhere in the run (a saved page source's
+        # included) that shares a name with the post keeps it, by the rules above,
+        # as before dialogs were read.
+        real_shares_a_name = any(
+            not form.formless and set(form.input_names) & body_names
+            for form in (*login_forms, *page_forms)
+        )
         credit = (
             _formless_credit(post_step, body_names, forms_on_page)
-            if by_field_names and chosen is None
+            if by_field_names and chosen is None and not real_shares_a_name
             else None
         )
         formless_key = None
         if credit is not None:
             chosen, formless_key = credit
-        site_wide.append(credit is not None and len(pages_of_key[credit[1]]) > 1)
+        # Several pages, not several loads: a reload, or a failed attempt landing
+        # back on the page, keeps one page.
+        site_wide.append(
+            credit is not None
+            and len(
+                {
+                    _request_target(form.source)
+                    for form in login_forms
+                    if id(form) in page_of and _form_key(form) == credit[1]
+                }
+            )
+            > 1
+        )
         credential_posts.append(
             _CredentialPost(went_to, body_names, chosen, by_field_names, formless_key)
         )

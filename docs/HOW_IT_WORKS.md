@@ -644,10 +644,13 @@ explicit one after the password: an `<input type="submit">` or `<input
 type="image">`, or a `<button type="submit">`. Outside a form a typeless or
 `type="button"` button submits nothing and may be a show-password or a close
 button, so it is never the submit, and a modal whose sign-in is one gets a
-`GP-FILL` for its submit, as it does for a missing username. Each of its inputs
-is selected by its id, else by a name no other input on the page shares, else it
-is unresolved; a control inside `<noscript>` is left out; its `action` and
-`method` are empty; and several such dialogs are listed with one holding a
+`GP-FILL` for its submit, as it does for a missing username. Its extra fields
+end at the first button-like control after the password (any `<button>`, or a
+submit, image, button, or reset input), taken as the submit or not, so a hidden
+reset panel's input after a typeless "Sign in" is no login field. Each of its
+inputs is selected by its id, else by a name no other input on the page shares,
+else it is unresolved; a control inside `<noscript>` is left out; its `action`
+and `method` are empty; and several such dialogs are listed with one holding a
 `current-password` input first, then one whose id or class and whose controls'
 ids and names do not name a sign-up (`signup`, `register`, `create`, `join`, and
 the like), then in document order. Only a page the run opened with a GET, or the
@@ -696,34 +699,38 @@ such a form, a post found by its field names alone is credited instead to an
 earlier page holding a dialog login (above) that shares at least one input name
 with the post's body: the dialog sharing the most names, then the page whose
 path has the fewest segments (`/` when it was recorded), then the earliest
-recorded. A dialog whose inputs have no names is never credited. When that
-dialog is on more than one recorded page (a login modal shown site-wide), no
-page's GET is part of the login flow, since none of them is a login page. A
-dialog login never displaces a real form: a real form a credential post went to
-ranks above any dialog a post was credited to, and with no post deciding, a real
-form ranks above a dialog, so a recording whose real form login gave a
-`login_config` gives the same one. When a dialog is the login, every credential
-post is part of it, as when no form was recorded, since a later password post
-cannot be told apart from the login's; and a page holding only dialogs that a
-login's redirect chain lands on stays a hop of that chain. `login_config.url`
-opens the page of the copy of the form the generator uses, which for a form on
-several pages is the copy whose selectors resolve best (below), not always the
-page the post was credited to. A POST whose body asks for a new password
-(`new_password`, `password_confirm`) is never a credential post by its field
-names. Every other page carrying a login form is an ordinary page and keeps its
-stub. The same form on several pages is one form, told by its
-structure (its element id and each control's tag, type, name, and id), and is
-kept as the copy whose selectors resolve best. Among the forms, one a credential
-post went to is listed first; among those, the one on the page that post
-promoted, then the one the earliest credential post went to (a login precedes a
-password change; a post found by its field names alone went to the form with no
-target of its own on the page it promoted, so a script login's form ranks ahead
-of a later form posting to its own page, such as a change-email form), then the
-one whose control names cover the most of the post's body, then one that sits on
-no page a credential post did not promote (a site-wide header form ranks below
-the main form), then the one with fewer unresolved roles, so the generator's
-`login_config` is built from the form the recording used. Only that login is the
-login flow: its promoted page; the credential posts that went to its form, or,
+recorded. A dialog whose inputs have no names is never credited, and no dialog
+is credited when a real login form recorded anywhere in the run (a saved page
+source's included) shares an input name with the post: that post goes to the
+real form by the rules above, as before dialogs were read. When the credited
+dialog is on more than one recorded page, counted by path, so a reload or a
+landing back on the page keeps one page (a login modal shown site-wide), no
+page's GET is part of the login flow, since none of them is a login page. A real
+form a credential post went to ranks above any dialog a post was credited to,
+and with no dialog credited a real form ranks above a dialog; a credited dialog
+ranks above a real form that no post went to and that shares no name with the
+post. When a dialog is the login, every credential post is part of it, as when
+no form was recorded, since a later password post cannot be told apart from the
+login's; and a page holding only dialogs that a login's redirect chain lands on
+stays a hop of that chain. `login_config.url` opens the page of the copy of the
+form the generator uses, which for a form on several pages is the copy whose
+selectors resolve best (below), not always the page the post was credited to. A
+POST whose body asks for a new password (`new_password`, `password_confirm`) is
+never a credential post by its field names. Every other page carrying a login
+form is an ordinary page and keeps its stub. The same form on several pages is
+one form, told by its structure (its element id and each control's tag, type,
+name, and id), and is kept as the copy whose selectors resolve best. Among the
+forms, one a credential post went to is listed first; among those, the one on
+the page that post promoted, then the one the earliest credential post went to
+(a login precedes a password change; a post found by its field names alone went
+to the form with no target of its own on the page it promoted, so a script
+login's form ranks ahead of a later form posting to its own page, such as a
+change-email form), then the one whose control names cover the most of the
+post's body, then one that sits on no page a credential post did not promote (a
+site-wide header form ranks below the main form), then the one with fewer
+unresolved roles, so the generator's `login_config` is built from the form the
+recording used. Only that login is the login flow: its promoted page; the
+credential posts that went to its form, or,
 when none did, the posts found by their field names alone to the first target no
 recorded form posts to (a script posting elsewhere than the form says); and each
 hop of those posts' redirect chains, a request to where the previous hop sent

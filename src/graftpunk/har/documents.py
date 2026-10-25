@@ -225,7 +225,9 @@ class _DocumentParser(HTMLParser):
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
-        if self._foreign or tag in ("svg", "math"):
+        # An <svg/> or <math/> itself counts: its start tag has just entered foreign
+        # content, so its end tag here leaves it.
+        if self._foreign:
             self.handle_endtag(tag)
         elif tag in ("form", "noscript"):
             # As before: a <form/> or <noscript/> holds nothing. Its open count is
@@ -871,9 +873,14 @@ def extract_login_forms(
     The page's controls outside every form yield more, after the forms and without
     changing them: one per formless login group (:func:`_formless_login_groups`), a
     script-driven login modal marked as a dialog. The same role rules run over each
-    group's controls; a ``<button type="button">`` is never its submit, as it is
-    never a form's, and a missing submit is absent and unresolved like a missing
-    username, so the generated step carries a ``GP-FILL``. Its selectors are unscoped
+    group's controls, with two differences. Only an explicit submit is its submit
+    (an ``<input type="submit">`` or ``<input type="image">``, or a
+    ``<button type="submit">``), never a typeless or ``type="button"`` button, which
+    submits nothing outside a form; a missing submit is absent and unresolved like a
+    missing username, so the generated step carries a ``GP-FILL``. And its extra
+    fields end at the first button-like control after the password (any
+    ``<button>``, or a submit, image, button, or reset input), taken as the submit
+    or not. Its selectors are unscoped
     (:func:`_formless_selectors`), its ``action`` and ``method`` are empty (no
     browser submits it, a script sends it with a method of its own), its
     ``action_target`` is ``("", "")``, and ``formless`` is set.
@@ -998,6 +1005,22 @@ def _login_form(
     )
     block_start = (username_index if username_index is not None else password_index) + 1
     block_end = submit_index if submit_index is not None else len(inputs)
+    if formless:
+        # The fields end at the first button-like control after the password, taken
+        # as the submit or not: a typeless "Sign in" ends them as a form's would, so
+        # a hidden reset panel's input after it is no login field.
+        block_end = next(
+            (
+                i
+                for i in range(password_index + 1, len(inputs))
+                if inputs[i].tag == "button"
+                or (
+                    inputs[i].tag == "input"
+                    and inputs[i].input_type in ("submit", "image", "button", "reset")
+                )
+            ),
+            len(inputs),
+        )
     roles: list[tuple[str, _RawInput]] = []
     if username_index is not None:
         roles.append(("username", inputs[username_index]))
