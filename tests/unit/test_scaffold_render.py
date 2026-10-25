@@ -61,6 +61,7 @@ from graftpunk.har.digest import (
     TokenCandidate,
     digest,
 )
+from graftpunk.har.documents import extract_login_forms
 from tests.unit.cli_harness import strip_ansi
 
 
@@ -981,6 +982,164 @@ class TestPluginModuleWithLoginForm:
         assert "from graftpunk.plugins import" in plugin_code
         assert "LoginConfig" in plugin_code
         assert "LoginStep" in plugin_code
+
+    def test_login_fields_outside_a_form_give_a_step_with_unscoped_selectors(self) -> None:
+        """A login dialog whose inputs sit in no ``<form>`` (#267): the step's
+        selectors are an id and a page-unique name, and none names a form."""
+        html = (
+            '<div class="modal" role="dialog"><input type="email" name="email">'
+            '<input type="password" id="login-password">'
+            '<button type="submit" id="login-submit">Sign in</button></div>'
+        )
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/")
+        assert form.formless
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        step = plugin_code[plugin_code.index("LoginStep(") : plugin_code.index("submit=")]
+        assert '"username": \'input[name="email"]\'' in step
+        assert '"password": "#login-password"' in step
+        assert 'submit="#login-submit"' in plugin_code
+        assert "form" not in step.lower()
+        assert 'url="/",' in plugin_code
+
+    def test_an_unresolved_formless_submit_says_why(self) -> None:
+        html = (
+            '<div role="dialog"><input id="u"><input type="password" id="p">'
+            '<button type="submit">Go</button></div>'
+        )
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/")
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: submit has no selector: it sits outside any form, and has no id and no "
+            "name that is unique on the recorded page and holds no account value; write one "
+            "by hand."
+        ) in comment
+        assert 'submit="GP-FILL: submit selector"' in plugin_code
+
+    def test_an_unresolved_formless_field_whose_id_holds_an_account_value(self) -> None:
+        """Review round 3 (toolkit M7, superpowers M5): the input has an id and a
+        name, but both hold an account value, so neither is used."""
+        html = (
+            '<div role="dialog"><input id="acct_12345678" name="acct_12345678">'
+            '<input type="password" id="p"><input type="submit" id="go"></div>'
+        )
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/")
+        assert "username" in form.unresolved_roles
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: username has no selector: it sits outside any form, and has no id and "
+            "no name that is unique on the recorded page and holds no account value; write "
+            "one by hand."
+        ) in comment
+        assert "12345678" not in plugin_code
+
+    def test_a_formless_password_alone_says_its_roles_were_not_found(self) -> None:
+        html = (
+            '<div class="pw" role="dialog"><input type="password" id="p">'
+            '<button type="button" id="eye">Show</button></div>'
+        )
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/")
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: username has no selector: the login dialog's username lookup ends at "
+            "the first button-like control after the password and found none before it; "
+            "write one by hand if the login has one."
+        ) in comment
+        assert (
+            "GP-FILL: submit has no selector: the first button after the password in the login "
+            'dialog is not an explicit submit (an <input type="submit"> or <input '
+            'type="image">, or a <button type="submit">), or there is none; outside a '
+            'form a typeless or type="button" button submits nothing and may be a '
+            "show-password or a close button, so a submit after it is not taken either; "
+            "write one by hand."
+        ) in comment
+        assert "multi-step login" not in comment
+        assert 'submit="GP-FILL: submit selector"' in plugin_code
+
+    @pytest.mark.parametrize(
+        "inner",
+        [
+            '<input type="email" id="u"><input type="password" id="p">'
+            '<button type="button" id="eye">Show</button>'
+            '<button type="submit" id="go">Sign in</button>',
+            '<div class="modal-body"><input type="email" id="u"><input type="password" '
+            'id="p"></div><div class="modal-footer"><button type="button" id="close">'
+            'Close</button><button type="submit" id="go">Sign in</button></div>',
+            '<input type="email" id="u"><input type="password" id="p"><button id="signin">'
+            'Sign in</button><div hidden><input type="email" id="r" name="reset_email">'
+            '<button type="submit" id="send">Send link</button></div>',
+        ],
+        ids=["toggle-then-submit", "close-before-sign-in", "hidden-panel"],
+    )
+    def test_a_submit_after_the_first_button_is_a_gp_fill_that_says_why(self, inner: str) -> None:
+        """Review round 6 (toolkit I1, p6c): the dialog does hold a submit, after a
+        button that is not one, and the comment says why it was not taken."""
+        html = f'<div role="dialog">{inner}</div>'
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/")
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: submit has no selector: the first button after the password in the login "
+            'dialog is not an explicit submit (an <input type="submit"> or <input '
+            'type="image">, or a <button type="submit">), or there is none; outside a '
+            'form a typeless or type="button" button submits nothing and may be a '
+            "show-password or a close button, so a submit after it is not taken either; "
+            "write one by hand."
+        ) in comment
+        assert 'submit="GP-FILL: submit selector"' in plugin_code
 
     @staticmethod
     def _login_spec(*observations: LoginObservation) -> ScaffoldSpec:

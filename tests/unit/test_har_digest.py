@@ -10,7 +10,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import pytest
 from structlog.testing import capture_logs
@@ -4912,3 +4912,728 @@ class TestDollarNames:
         assert endpoint.body_kind == "form"
         assert endpoint.body_params == {"name": "str"}
         assert endpoint.body_keys_dropped_as_non_names == 1
+
+
+class TestLoginFieldsInADialogOutsideAnyForm:
+    """A script-driven login modal marked as a dialog whose inputs sit in no
+    ``<form>`` (#267): in the page's HTML or in the saved page source."""
+
+    _HOST = "https://myshop.example.com"
+    _HEADER = '<header><a href="#" class="js-signin" id="signin-link">Sign in</a></header>'
+    _MODAL = (
+        '<div class="modal" id="login-modal" role="dialog" hidden><div class="login-form">'
+        '<input type="text" id="login-username" name="username" autocomplete="username">'
+        '<input type="password" id="login-password" name="password" '
+        'autocomplete="current-password">'
+        '<button type="submit" class="btn" id="login-submit">Sign in</button></div></div>'
+    )
+    _DIV_MODAL = _MODAL.replace(' role="dialog"', "")
+    _SPA_SHELL = '<div id="app"></div><script src="/static/app.js"></script>'
+    _POST_BODY = {"username": "alice", "password": "hunter2hunter2"}
+
+    def _entries(self, pages: list[tuple[str, str]], body: dict | None = None) -> list[dict]:
+        return [
+            *(
+                _entry("GET", f"{self._HOST}{path}", content_type="text/html", body=html)
+                for path, html in pages
+            ),
+            _entry(
+                "GET",
+                f"{self._HOST}/static/app.js",
+                content_type="application/javascript",
+                body="/*x*/",
+            ),
+            _entry(
+                "POST",
+                f"{self._HOST}/api/auth/login/",
+                body='{"ok": true}',
+                post_data=json.dumps(body or self._POST_BODY),
+            ),
+            _entry("GET", f"{self._HOST}/api/account/", body='{"name": "x"}'),
+        ]
+
+    def _digest(self, tmp_path: Path, pages: list[tuple[str, str]], body: dict | None = None):  # noqa: ANN202
+        return digest(DigestSource.from_har(_write_har(tmp_path, self._entries(pages, body))))
+
+    @staticmethod
+    def _flags(result) -> dict:  # noqa: ANN001
+        return {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+
+    @staticmethod
+    def _plugin(result) -> str:  # noqa: ANN001
+        return render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://myshop.example.com",
+                digest=result,
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+
+    def test_a_dialog_in_the_page_html_gives_one_login_form(self, tmp_path: Path) -> None:
+        result = self._digest(tmp_path, [("/", self._HEADER + self._MODAL)])
+        (form,) = result.login_forms
+        assert form.formless
+        assert form.source == f"{self._HOST}/"
+        assert form.fields == {"username": "#login-username", "password": "#login-password"}
+        assert form.submit == "#login-submit"
+        kinds = [(o.method, o.kind) for o in result.login if o.login_flow]
+        assert kinds == [("GET", "form_page"), ("POST", "credential_post")]
+        # Found by its field names alone, the post is credited to the page whose
+        # dialog's input names it carries.
+        flags = self._flags(result)
+        assert flags[("GET", "/")] is True
+        assert flags[("POST", "/api/auth/login/")] is True
+        projected = json.loads(render_endpoints_json(result))["login"]["forms"]
+        assert projected == [
+            {
+                "action": "",
+                "fields": {"password": "#login-password", "username": "#login-username"},
+                "neutral_roles": [],
+                "submit": "#login-submit",
+                "unresolved_roles": [],
+            }
+        ]
+        code = self._plugin(result)
+        assert "login_config = LoginConfig(" in code
+        assert 'url="/",' in code
+        assert '"username": "#login-username"' in code
+        assert 'submit="#login-submit"' in code
+
+    def test_a_dialog_in_the_page_source_gives_one_login_form(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        (run_dir / "page-source.html").write_text(self._HEADER + self._MODAL)
+        _write_har(run_dir, self._entries([("/", self._HEADER + self._SPA_SHELL)]))
+        result = digest(DigestSource.from_run_dir(run_dir, session="myshop", run_id="run"))
+        (form,) = result.login_forms
+        assert form.formless
+        assert [o.kind for o in result.login if o.method == "POST"] == ["credential_post"]
+        assert '"password": "#login-password"' in self._plugin(result)
+
+    def test_repro_cases_b_and_e_a_plain_div_modal_gives_no_login_form(
+        self, tmp_path: Path
+    ) -> None:
+        """Inputs in a ``<div>`` that is not a dialog stay unfound until the DOM
+        snapshot records the live modal."""
+        result = self._digest(tmp_path, [("/", self._HEADER + self._DIV_MODAL)])
+        assert result.login_forms == ()
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        (run_dir / "page-source.html").write_text(self._HEADER + self._DIV_MODAL)
+        _write_har(run_dir, self._entries([("/", self._HEADER + self._SPA_SHELL)]))
+        from_page_source = digest(
+            DigestSource.from_run_dir(run_dir, session="myshop", run_id="run")
+        )
+        assert from_page_source.login_forms == ()
+        assert "# No login form detected." in self._plugin(from_page_source)
+
+    def test_a_post_whose_names_the_dialog_lacks_is_not_credited_to_it(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._digest(
+            tmp_path, [("/", self._MODAL)], {"member": "alice", "pin_password": "1234"}
+        )
+        assert len(result.login_forms) == 1
+        assert self._flags(result)[("GET", "/")] is False
+        assert [o.kind for o in result.login if o.login_flow] == ["credential_post"]
+
+    def test_a_dialog_with_nameless_inputs_is_never_credited(self, tmp_path: Path) -> None:
+        nameless = self._MODAL.replace(' name="username"', "").replace(' name="password"', "")
+        result = self._digest(tmp_path, [("/", nameless)])
+        (form,) = result.login_forms
+        assert form.input_names == ()
+        assert self._flags(result)[("GET", "/")] is False
+
+    def test_the_post_goes_to_the_dialog_sharing_most_of_its_names(self, tmp_path: Path) -> None:
+        """Review round 2 (sitewide V): the checkout's own login dialog, not the
+        site-wide modal, is the one whose names the post carries."""
+        inline = (
+            '<section role="dialog" class="checkout-login"><input type="text" name="member" '
+            'id="member"><input type="password" name="pin" id="pin">'
+            '<button id="pin-go">Continue</button></section>'
+        )
+        result = self._digest(
+            tmp_path,
+            [("/", self._MODAL), ("/checkout", self._MODAL + inline)],
+            {"member": "alice", "pin": "1234", "password": "x"},
+        )
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert selected.fields == {"username": "#member", "password": "#pin"}
+        assert self._flags(result)[("GET", "/checkout")] is True
+        assert self._flags(result)[("GET", "/")] is False
+        assert 'url="/checkout",' in self._plugin(result)
+
+    def test_the_same_dialog_on_pages_that_differ_elsewhere_is_listed_once(
+        self, tmp_path: Path
+    ) -> None:
+        search = '<header><input type="search" name="q" id="q"></header>'
+        color_filter = '<aside><input type="checkbox" name="color" id="c-red"></aside>'
+        result = self._digest(
+            tmp_path,
+            [
+                ("/", self._MODAL),
+                ("/products", search + self._MODAL),
+                ("/cart", color_filter + self._MODAL),
+            ],
+        )
+        (form,) = result.login_forms
+        assert form.formless
+
+    def test_a_site_wide_dialog_marks_no_page_as_the_login_page(self, tmp_path: Path) -> None:
+        """The modal is on / and /products/77 and the user signed in from
+        /products/77: the post is credited to /, the page with the fewest path
+        segments, and neither page's GET is part of the login flow."""
+        page = self._HEADER + "<main>product</main>" + self._MODAL
+        result = self._digest(tmp_path, [("/", page), ("/products/77", page)])
+        flags = self._flags(result)
+        assert flags[("GET", "/")] is False
+        assert flags[("GET", "/products/77")] is False
+        assert flags[("POST", "/api/auth/login/")] is True
+        assert [(o.method, o.kind) for o in result.login if o.login_flow] == [
+            ("POST", "credential_post")
+        ]
+        (form,) = result.login_forms
+        assert form.source == f"{self._HOST}/"
+        code = self._plugin(result)
+        assert 'url="/",' in code
+        assert "def products_77(" in code
+
+    def test_a_site_wide_dialog_is_credited_to_the_earliest_shallowest_page(
+        self, tmp_path: Path
+    ) -> None:
+        page = "<main>product</main>" + self._MODAL
+        result = self._digest(
+            tmp_path,
+            [("/shop/products/77", page), ("/products/42", page), ("/account/orders", page)],
+        )
+        (form,) = result.login_forms
+        assert form.source == f"{self._HOST}/products/42"
+        assert not any(
+            flag for (method, _t), flag in self._flags(result).items() if method == "GET"
+        )
+
+    def test_login_config_url_is_the_page_of_the_copy_that_resolves_best(
+        self, tmp_path: Path
+    ) -> None:
+        """Review round 2 (sitewide U, d1 S1): the post is credited to /, but on /
+        the dialog's email name is shared with a newsletter input, so the copy kept
+        is /about's and the login opens there."""
+        named = (
+            '<div class="modal" role="dialog"><input type="email" name="email">'
+            '<input type="password" name="password">'
+            '<button type="submit" name="signin">Sign in</button></div>'
+        )
+        news = '<footer><input type="email" name="email"><button name="sub">Join</button></footer>'
+        result = self._digest(
+            tmp_path,
+            [("/", named + news), ("/about", named)],
+            {"email": "alice@example.com", "password": "hunter2hunter2"},
+        )
+        (form,) = result.login_forms
+        assert form.source == f"{self._HOST}/about"
+        assert 'url="/about",' in self._plugin(result)
+
+    def test_a_real_script_driven_form_on_the_page_keeps_the_credit(self, tmp_path: Path) -> None:
+        """Review round 2 (M10, M16): the page the user signed in from holds an
+        actionless real login form beside the site-wide dialog; it stays the login
+        page, as it was before formless groups existed."""
+        real = (
+            '<form><input type="email" name="username" id="email">'
+            '<input type="password" name="password" id="pass"><button>Sign in</button></form>'
+        )
+        result = self._digest(tmp_path, [("/about", self._MODAL), ("/login", real + self._MODAL)])
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert not selected.formless
+        assert self._flags(result)[("GET", "/login")] is True
+        assert self._flags(result)[("GET", "/about")] is False
+
+    def test_a_page_credited_by_target_stays_in_the_flow_beside_a_site_wide_credit(
+        self, tmp_path: Path
+    ) -> None:
+        """Review round 2 (M17): / holds the site-wide dialog and a form posting to
+        /session; one post goes there, a later script post is credited to /
+        through the dialog. / is still the login page."""
+        real = (
+            '<form action="/session" method="post"><input name="username" id="email">'
+            '<input type="password" name="password" id="pass"><button>Go</button></form>'
+        )
+        entries = [
+            _entry("GET", f"{self._HOST}/", content_type="text/html", body=real + self._MODAL),
+            _entry("GET", f"{self._HOST}/about", content_type="text/html", body=self._MODAL),
+            _entry(
+                "POST",
+                f"{self._HOST}/session",
+                status=302,
+                response_headers={"Location": "/"},
+                post_data=json.dumps(self._POST_BODY),
+            ),
+            _entry(
+                "POST",
+                f"{self._HOST}/api/auth/login/",
+                post_data=json.dumps(self._POST_BODY),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert self._flags(result)[("GET", "/")] is True
+        assert self._flags(result)[("GET", "/about")] is False
+
+    def test_a_post_to_the_page_itself_is_not_matched_by_target(self, tmp_path: Path) -> None:
+        """A formless group has no target: a POST to its page without a password
+        field is not a credential post, unlike an actionless form's."""
+        entries = [
+            _entry("GET", f"{self._HOST}/products", content_type="text/html", body=self._MODAL),
+            _entry("POST", f"{self._HOST}/products", post_data=json.dumps({"q": "tea"})),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert not any(o.kind == "credential_post" for o in result.login)
+
+    def test_markdown_names_the_group_as_inputs_outside_a_form(self, tmp_path: Path) -> None:
+        result = self._digest(tmp_path, [("/", self._MODAL)])
+        markdown = render_markdown(result)
+        assert f"- inputs outside a form (sent by script), source: {self._HOST}/" in markdown
+        assert "form at ``" not in markdown
+
+
+class _DialogDigestCase:
+    """Shared recordings and readers for the dialog-login digest tests."""
+
+    _HOST = "https://myshop.example.com"
+    _MODAL = (
+        '<div role="dialog" id="login-modal"><input type="email" id="m-email" name="email">'
+        '<input type="password" id="m-pw" name="password">'
+        '<button type="submit" id="m-go">Sign in</button></div>'
+    )
+    _REAL = (
+        '<form action="/login" method="post"><input type="text" name="username">'
+        '<input type="password" name="password"><button>Sign in</button></form>'
+    )
+    _BODY = {"email": "alice@example.com", "password": "hunter2hunter2"}
+
+    def _get(self, path: str, html: str, **kwargs: Any) -> dict:
+        return _entry("GET", f"{self._HOST}{path}", content_type="text/html", body=html, **kwargs)
+
+    def _post(self, path: str, payload: dict, **kwargs: Any) -> dict:
+        kwargs.setdefault("body", '{"ok": true}')
+        return _entry("POST", f"{self._HOST}{path}", post_data=json.dumps(payload), **kwargs)
+
+    @staticmethod
+    def _run(tmp_path: Path, entries: list[dict]):  # noqa: ANN205
+        return digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+
+    @staticmethod
+    def _flags(result) -> dict:  # noqa: ANN001
+        return {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+
+    @staticmethod
+    def _plugin(result) -> str:  # noqa: ANN001
+        return render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://myshop.example.com",
+                digest=result,
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+
+
+class TestDialogLoginsLeaveRealFormLoginsAsTheyWere(_DialogDigestCase):
+    """Review round 3 of #267: a real form a post went to, or one sharing a post's
+    names, keeps the login beside a dialog, and only
+    GET pages count for it. Each "as on main" result was read from a digest at
+    ae142f3 of the same recording."""
+
+    def test_d1_a_real_form_a_later_post_went_to_keeps_the_login(self, tmp_path: Path) -> None:
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", "<main>home</main>" + self._MODAL),
+                self._post("/api/auth", self._BODY),
+                self._get("/login", self._REAL),
+                self._post("/login", {"username": "alice", "password": "hunter2hunter2"}),
+                self._get("/account", "<main>acct</main>"),
+            ],
+        )
+        flags = self._flags(result)
+        # As on main.
+        assert flags[("GET", "/login")] is True
+        assert flags[("POST", "/login")] is True
+        assert flags[("POST", "/api/auth")] is False
+        code = self._plugin(result)
+        assert 'url="/login",' in code
+        assert "def login_2(" not in code
+
+    def test_d2_with_nothing_credited_a_real_form_is_the_login(self, tmp_path: Path) -> None:
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", "<main>home</main>" + self._MODAL),
+                self._get("/signin", self._REAL),
+                self._post("/api/session", {"member": "alice", "secret_password": "x"}),
+            ],
+        )
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert not selected.formless
+        # As on main.
+        assert 'url="/signin",' in self._plugin(result)
+        assert self._flags(result)[("POST", "/api/session")] is True
+
+    def test_d8_a_dialog_login_owns_every_credential_post(self, tmp_path: Path) -> None:
+        """With no real form, every credential post stays part of the login, as on
+        main: a dialog's post is found by its names alone, so a later password post
+        cannot be told apart from it."""
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", "<main>home</main>" + self._MODAL),
+                self._post("/api/auth", self._BODY),
+                self._get("/settings", "<main>s</main>"),
+                self._post("/api/reauth", {"password": "hunter2hunter2"}),
+            ],
+        )
+        flags = self._flags(result)
+        assert flags[("POST", "/api/auth")] is True
+        assert flags[("POST", "/api/reauth")] is True
+        code = self._plugin(result)
+        assert "def api_reauth(" not in code
+        assert "login_config = LoginConfig(" in code
+
+    def test_a_landing_page_showing_the_dialog_keeps_its_redirect_hop(self, tmp_path: Path) -> None:
+        """Review round 3 (M1): the login redirects to /account, whose layout still
+        holds the modal; its set_cookie hop is listed, as on main."""
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", self._MODAL),
+                _entry(
+                    "POST",
+                    f"{self._HOST}/login",
+                    status=302,
+                    response_headers={"Location": "/account"},
+                    post_data=json.dumps(self._BODY),
+                    set_cookies=["sid=abc; Path=/"],
+                ),
+                self._get(
+                    "/account", "<main>hi</main>" + self._MODAL, set_cookies=["seen=1; Path=/"]
+                ),
+            ],
+        )
+        login = [(o.method, urlparse(o.url).path, o.kind, o.login_flow) for o in result.login]
+        assert ("GET", "/account", "set_cookie", True) in login
+
+    def test_a_dialog_in_a_post_response_is_no_page_of_the_login(self, tmp_path: Path) -> None:
+        """Review round 3 (I2, E): a failed attempt re-renders the modal in a POST's
+        HTML response; the dialog is still on one GET page, so that page is the
+        login page."""
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", self._MODAL),
+                self._post(
+                    "/login",
+                    self._BODY,
+                    content_type="text/html",
+                    body="<main>Wrong password</main>" + self._MODAL,
+                ),
+                _entry(
+                    "POST",
+                    f"{self._HOST}/login",
+                    status=302,
+                    response_headers={"Location": "/account"},
+                    post_data=json.dumps(self._BODY),
+                ),
+            ],
+        )
+        assert len(result.login_forms) == 1
+        assert self._flags(result)[("GET", "/")] is True
+        assert 'url="/",' in self._plugin(result)
+
+    def test_a_dialog_only_in_a_post_response_gives_no_login_form(self, tmp_path: Path) -> None:
+        """Review round 3 (I2, E3): never a url the run reached only by POST."""
+        result = self._run(
+            tmp_path,
+            [
+                self._post("/s", {"q": "tea"}, content_type="text/html", body=self._MODAL),
+                self._post("/api/auth", self._BODY),
+            ],
+        )
+        assert result.login_forms == ()
+        assert 'url="/s"' not in self._plugin(result)
+
+    def test_a_dialog_recorded_after_the_post_is_not_credited(self, tmp_path: Path) -> None:
+        """Review round 3 (D5)."""
+        result = self._run(
+            tmp_path,
+            [
+                self._post("/api/auth", self._BODY),
+                self._get("/", "<main>home</main>" + self._MODAL),
+            ],
+        )
+        assert self._flags(result)[("GET", "/")] is False
+
+
+class TestDialogCreditAndPagesRound4(_DialogDigestCase):
+    """Review round 4 of #267."""
+
+    def _kinds(self, result) -> list[tuple[str, str, str, bool]]:  # noqa: ANN001
+        return [(o.method, urlparse(o.url).path, o.kind, o.login_flow) for o in result.login]
+
+    def test_d9_a_real_form_sharing_the_post_s_names_keeps_the_login(self, tmp_path: Path) -> None:
+        """A dialog is credited only when no real login form shares a name with the
+        post; here the /signin form does, so the result is main's."""
+        real = (
+            '<form action="/login" method="post"><input type="email" name="email">'
+            '<input type="password" name="password"><button>Sign in</button></form>'
+        )
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", "<main>home</main>" + self._MODAL),
+                self._get("/signin", real),
+                self._post("/api/session", self._BODY),
+            ],
+        )
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert not selected.formless
+        assert self._flags(result)[("GET", "/")] is False
+        code = self._plugin(result)
+        assert 'url="/signin",' in code
+        assert "def root(" in code
+
+    def test_a_real_form_in_the_saved_page_source_keeps_the_post_too(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        (run_dir / "page-source.html").write_text(
+            '<form action="#"><input type="email" name="email">'
+            '<input type="password" name="password"><button>Sign in</button></form>'
+        )
+        _write_har(
+            run_dir,
+            [
+                self._get("/", "<main>home</main>" + self._MODAL),
+                self._post("/api/auth", self._BODY),
+            ],
+        )
+        result = digest(DigestSource.from_run_dir(run_dir, session="myshop", run_id="run"))
+        assert self._flags(result)[("GET", "/")] is False
+
+    def test_reloading_the_dialog_s_page_keeps_it_one_page(self, tmp_path: Path) -> None:
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", self._MODAL),
+                self._get("/", self._MODAL),
+                self._post("/api/auth", self._BODY),
+            ],
+        )
+        assert self._flags(result)[("GET", "/")] is True
+
+    def test_landing_back_on_the_dialog_s_page_keeps_it_one_page(self, tmp_path: Path) -> None:
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", self._MODAL),
+                _entry(
+                    "POST",
+                    f"{self._HOST}/api/login",
+                    status=302,
+                    response_headers={"Location": "/"},
+                    post_data=json.dumps(self._BODY),
+                ),
+                self._get("/", self._MODAL),
+            ],
+        )
+        assert self._flags(result)[("GET", "/")] is True
+
+    def _login_then(self, after: list[dict]) -> list[dict]:
+        """A page with no form, a field-name login redirecting to /account, then
+        *after*."""
+        return [
+            self._get("/start", "<main>start</main>"),
+            _entry(
+                "POST",
+                f"{self._HOST}/login",
+                status=302,
+                response_headers={"Location": "/account"},
+                post_data=json.dumps(self._BODY),
+            ),
+            *after,
+        ]
+
+    def test_a_landing_page_holding_a_real_login_form_stays_a_form_page(
+        self, tmp_path: Path
+    ) -> None:
+        """Only a landing page holding nothing but dialogs is the chain's hop: one with
+        a real login form stays a form page, as on main, so its cookie is no hop."""
+        result = self._run(
+            tmp_path,
+            self._login_then(
+                [self._get("/account", self._REAL + self._MODAL, set_cookies=["seen=1; Path=/"])]
+            ),
+        )
+        assert ("GET", "/account", "set_cookie") not in [k[:3] for k in self._kinds(result)]
+
+    def test_a_dialog_page_past_the_login_window_is_a_form_page(self, tmp_path: Path) -> None:
+        """Past the window, /account is no hop of the first login, so it is a form
+        page a later post is credited to."""
+        filler = [
+            _entry("GET", f"{self._HOST}/api/item/{n}", body='{"n": 1}')
+            for n in range(_LOGIN_WINDOW + 1)
+        ]
+        result = self._run(
+            tmp_path,
+            self._login_then(
+                [
+                    *filler,
+                    self._get("/account", "<main>a</main>" + self._MODAL),
+                    self._post("/api/auth", self._BODY),
+                ]
+            ),
+        )
+        assert self._flags(result)[("GET", "/account")] is True
+
+    def test_a_dialog_page_the_chain_did_not_lead_to_is_a_form_page(self, tmp_path: Path) -> None:
+        result = self._run(
+            tmp_path,
+            self._login_then(
+                [
+                    self._get("/p/1", "<main>p</main>" + self._MODAL),
+                    self._post("/api/auth", self._BODY),
+                ]
+            ),
+        )
+        assert self._flags(result)[("GET", "/p/1")] is True
+
+
+class TestDialogCreditRound5(_DialogDigestCase):
+    """Review round 5 of #267: the credit gate looks at every credential post and
+    at visible names only, and pages are counted by host and path."""
+
+    @pytest.mark.parametrize("sharing_first", [True, False], ids=["sharing-first", "sharing-last"])
+    def test_p1_a_real_form_sharing_names_with_any_post_blocks_every_credit(
+        self, tmp_path: Path, sharing_first: bool
+    ) -> None:
+        """One post shares names with the /signin form, so the other, which shares
+        names only with the dialog, is credited to no dialog, in either order:
+        main's login_config."""
+        modal = self._MODAL.replace('name="email"', 'name="login_email"').replace(
+            'name="password"', 'name="passwd"'
+        )
+        posts = [
+            self._post("/api/v1/session", {"username": "alice", "password": "x"}),
+            self._post("/api/auth", {"login_email": "alice@example.com", "passwd": "x"}),
+        ]
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", "<main>home</main>" + modal),
+                self._get("/signin", self._REAL),
+                *(posts if sharing_first else posts[::-1]),
+            ],
+        )
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert not selected.formless
+        code = self._plugin(result)
+        assert 'url="/signin",' in code
+        assert "def root(" in code
+        assert self._flags(result)[("GET", "/")] is False
+
+    def test_a_post_matched_by_target_counts_in_the_credit_gate(self, tmp_path: Path) -> None:
+        """Review round 6 (toolkit M2): the post to the real form's own target shares
+        its names, so the later dialog post is credited to no dialog and / is no
+        form page of the login, as on main."""
+        modal = self._MODAL.replace('name="email"', 'name="login_email"').replace(
+            'name="password"', 'name="passwd"'
+        )
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", "<main>home</main>" + modal),
+                self._get("/signin", self._REAL),
+                self._post("/login", {"username": "alice", "password": "x"}),
+                self._post("/api/auth", {"login_email": "alice@example.com", "passwd": "x"}),
+            ],
+        )
+        assert not any(o.kind == "form_page" and urlparse(o.url).path == "/" for o in result.login)
+        assert 'url="/signin",' in self._plugin(result)
+
+    def test_p2_a_shared_hidden_name_does_not_block_the_credit(self, tmp_path: Path) -> None:
+        """A site-wide CSRF field is no shared name."""
+        modal = self._MODAL.replace("</div>", '<input type="hidden" name="csrf" value="t"></div>')
+        delete = (
+            '<form action="/account/delete" method="post"><input type="hidden" name="csrf" '
+            'value="t"><input type="password" name="confirm_pw"><button>Delete</button></form>'
+        )
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", "<main>home</main>" + modal),
+                self._post("/api/auth", {**self._BODY, "csrf": "t"}),
+                self._get("/account", delete),
+            ],
+        )
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert selected.formless
+        assert 'url="/",' in self._plugin(result)
+        assert self._flags(result)[("GET", "/")] is True
+
+    def test_a_dialog_takes_over_from_a_real_form_sharing_no_name(self, tmp_path: Path) -> None:
+        """Review round 5 (superpowers M7): the one documented case where a dialog is
+        the login beside a real login form, which no post went to and which shares
+        no name with any post."""
+        real = (
+            '<form action="/login" method="post"><input name="user">'
+            '<input type="password" name="pass"><button>Sign in</button></form>'
+        )
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", "<main>home</main>" + self._MODAL),
+                self._get("/signin", real),
+                self._post("/api/auth", self._BODY),
+            ],
+        )
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert selected.formless
+        assert 'url="/",' in self._plugin(result)
+        assert self._flags(result)[("GET", "/")] is True
+
+    def test_pages_are_counted_without_the_query(self, tmp_path: Path) -> None:
+        """Review round 5 (superpowers M9, P3)."""
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/?a=1", self._MODAL),
+                self._get("/?a=2", self._MODAL),
+                self._post("/api/auth", self._BODY),
+            ],
+        )
+        assert self._flags(result)[("GET", "/")] is True
+        assert "def root(" not in self._plugin(result)
+
+    def test_pages_on_two_hosts_are_two_pages(self, tmp_path: Path) -> None:
+        """Counted by host and path (review round 5, P3b)."""
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", self._MODAL),
+                _entry(
+                    "GET",
+                    "https://www.myshop.example.com/",
+                    content_type="text/html",
+                    body=self._MODAL,
+                ),
+                self._post("/api/auth", self._BODY),
+            ],
+        )
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert selected.formless
+        # The page credited is listed as a form page outside the login flow, and the
+        # GET / endpoint (both hosts' loads) is no part of the login.
+        pages = [o for o in result.login if o.kind == "form_page"]
+        assert [urlparse(o.url).path for o in pages] == ["/"]
+        assert not any(o.login_flow for o in pages)
+        assert self._flags(result)[("GET", "/")] is False
+        assert "def root(" in self._plugin(result)
