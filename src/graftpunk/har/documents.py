@@ -873,14 +873,14 @@ def extract_login_forms(
     The page's controls outside every form yield more, after the forms and without
     changing them: one per formless login group (:func:`_formless_login_groups`), a
     script-driven login modal marked as a dialog. The same role rules run over each
-    group's controls, with two differences. Only an explicit submit is its submit
-    (an ``<input type="submit">`` or ``<input type="image">``, or a
-    ``<button type="submit">``), never a typeless or ``type="button"`` button, which
-    submits nothing outside a form; a missing submit is absent and unresolved like a
-    missing username, so the generated step carries a ``GP-FILL``. And its extra
-    fields end at the first button-like control after the password (any
-    ``<button>``, or a submit, image, button, or reset input), taken as the submit
-    or not. Its selectors are unscoped
+    group's controls, with one difference: its extra fields, and the search for its
+    submit, end at the first button-like control after the password (any
+    ``<button>``, or a submit, image, button, or reset input). That control is the
+    submit only when it is an explicit one (an ``<input type="submit">`` or
+    ``<input type="image">``, or a ``<button type="submit">``), never a typeless or
+    ``type="button"`` button, which submits nothing outside a form; otherwise the
+    submit is absent and unresolved like a missing username, so the generated step
+    carries a ``GP-FILL``. Its selectors are unscoped
     (:func:`_formless_selectors`), its ``action`` and ``method`` are empty (no
     browser submits it, a script sends it with a method of its own), its
     ``action_target`` is ``("", "")``, and ``formless`` is set.
@@ -990,25 +990,15 @@ def _login_form(
             hidden.append(raw_input.name)
 
     username_index = _username_index(inputs, password_index)
-    # Outside a <form> a button submits nothing unless the page's script makes it,
-    # and a typeless or type="button" one there is as likely a show-password toggle
-    # or a Close button: a formless group takes only an explicit submit, else a
-    # GP-FILL. A form keeps its rule, where a typeless button submits.
-    submit_index = next(
-        (
-            i
-            for i in range(password_index + 1, len(inputs))
-            if _is_submit(inputs[i])
-            and not (formless and inputs[i].tag == "button" and not inputs[i].typed)
-        ),
-        None,
-    )
     block_start = (username_index if username_index is not None else password_index) + 1
-    block_end = submit_index if submit_index is not None else len(inputs)
     if formless:
-        # The fields end at the first button-like control after the password, taken
-        # as the submit or not: a typeless "Sign in" ends them as a form's would, so
-        # a hidden reset panel's input after it is no login field.
+        # Outside a <form> a button submits nothing unless the page's script makes
+        # it, and a typeless or type="button" one there is as likely a show-password
+        # toggle or a Close button. So the fields, and the submit search, end at the
+        # first button-like control after the password: it is the submit only when
+        # it is an explicit one, else the submit is a GP-FILL. A hidden reset panel's
+        # submit after a typeless "Sign in" is never taken, and a toggle right after
+        # the password ends the fields there (a GP-FILL over a wrong selector).
         block_end = next(
             (
                 i
@@ -1021,6 +1011,20 @@ def _login_form(
             ),
             len(inputs),
         )
+        submit_index = (
+            block_end
+            if block_end < len(inputs)
+            and _is_submit(inputs[block_end])
+            and (inputs[block_end].tag != "button" or inputs[block_end].typed)
+            else None
+        )
+    else:
+        # A form keeps its rule: the first submit after the password, a typeless
+        # button included, ends the fields.
+        submit_index = next(
+            (i for i in range(password_index + 1, len(inputs)) if _is_submit(inputs[i])), None
+        )
+        block_end = submit_index if submit_index is not None else len(inputs)
     roles: list[tuple[str, _RawInput]] = []
     if username_index is not None:
         roles.append(("username", inputs[username_index]))

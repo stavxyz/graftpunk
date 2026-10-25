@@ -644,36 +644,41 @@ explicit one after the password: an `<input type="submit">` or `<input
 type="image">`, or a `<button type="submit">`. Outside a form a typeless or
 `type="button"` button submits nothing and may be a show-password or a close
 button, so it is never the submit, and a modal whose sign-in is one gets a
-`GP-FILL` for its submit, as it does for a missing username. Its extra fields
-end at the first button-like control after the password (any `<button>`, or a
-submit, image, button, or reset input), taken as the submit or not, so a hidden
-reset panel's input after a typeless "Sign in" is no login field. Each of its
-inputs is selected by its id, else by a name no other input on the page shares,
-else it is unresolved; a control inside `<noscript>` is left out; its `action`
-and `method` are empty; and several such dialogs are listed with one holding a
-`current-password` input first, then one whose id or class and whose controls'
-ids and names do not name a sign-up (`signup`, `register`, `create`, `join`, and
-the like), then in document order. Only a page the run opened with a GET, or the
-saved page source, shows a dialog login: one in a POST's HTML response (a failed
-attempt re-rendered, a search result) is not read. A password outside every form
-and every dialog gives no login form: a login built from inputs in a plain
-`<div>` is not found, and neither is a modal that a script renders only after a
-click, which is in no recorded HTML response and is in the page source saved
-when the recording stops only if it is still open then. In a `<form>`, each
-input is selected by its id, else its name (when no other control inside any
-form with the same action shares it: a header mini-login and the main form can
-post to one action), else its type (the same way) (`input:not([type])` for a
-typeless input), and an id or a name that holds an account value is never used;
-a name that holds one, or no name, gets a neutral role key (`field_1`, never a
-name another input of the form has) and a `GP-FILL` naming which of the two it
-was. A selector by type is used only when it picks one input of the form, and is
-never printed without the form scope: when the form's action holds an id the
-printed selectors drop the scope, so only an id selector, or a name no other
-input on the page shares, is printed. A form whose action is empty or only a
-fragment (`#`, `#login`) is scoped to match that, and one whose action names
-another scheme than `http` or `https` has no path to template: it keeps its
-scope and is printed as written (`javascript:void(0)`), unless its text holds an
-id or a token by the path rule (`javascript:go(12345678)`) or an email anywhere
+`GP-FILL` for its submit, as it does for a missing username. Its extra fields,
+and the search for its submit, end at the first button-like control after the
+password (any `<button>`, or a submit, image, button, or reset input): that
+control is the submit when it is an explicit one, and otherwise the submit is a
+`GP-FILL`. So a hidden reset panel's input and its submit after a typeless "Sign
+in" are never taken, and a show-password toggle or a Close button right after
+the password ends the fields there, so an input after it (a one-time code) is
+left out and the submit is a `GP-FILL`: a `GP-FILL` is the safer failure than a
+wrong selector. Each of its inputs is selected by its id, else by a name no
+other input on the page shares, else it is unresolved; a control inside
+`<noscript>` is left out; its `action` and `method` are empty; and several such
+dialogs are listed with one holding a `current-password` input first, then one
+whose id or class and whose controls' ids and names do not name a sign-up
+(`signup`, `register`, `create`, `join`, and the like), then in document order.
+Only a page the run opened with a GET, or the saved page source, shows a dialog
+login: one in a POST's HTML response (a failed attempt re-rendered, a search
+result) is not read. A password outside every form and every dialog gives no
+login form: a login built from inputs in a plain `<div>` is not found, and
+neither is a modal that a script renders only after a click, which is in no
+recorded HTML response and is in the page source saved when the recording stops
+only if it is still open then. In a `<form>`, each input is selected by its id,
+else its name (when no other control inside any form with the same action shares
+it: a header mini-login and the main form can post to one action), else its type
+(the same way) (`input:not([type])` for a typeless input), and an id or a name
+that holds an account value is never used; a name that holds one, or no name,
+gets a neutral role key (`field_1`, never a name another input of the form has)
+and a `GP-FILL` naming which of the two it was. A selector by type is used only
+when it picks one input of the form, and is never printed without the form
+scope: when the form's action holds an id the printed selectors drop the scope,
+so only an id selector, or a name no other input on the page shares, is printed.
+A form whose action is empty or only a fragment (`#`, `#login`) is scoped to
+match that, and one whose action names another scheme than `http` or `https` has
+no path to template: it keeps its scope and is printed as written
+(`javascript:void(0)`), unless its text holds an id or a token by the path rule
+(`javascript:go(12345678)`) or an email anywhere
 (`javascript:go('alice@example.com', 'ref')`), when it is printed as
 `javascript:{id}` and its selectors lose the scope. A role left without a
 selector is listed in `LoginForm.unresolved_roles` and the projection's
@@ -699,59 +704,62 @@ such a form, a post found by its field names alone is credited instead to an
 earlier page holding a dialog login (above) that shares at least one input name
 with the post's body: the dialog sharing the most names, then the page whose
 path has the fewest segments (`/` when it was recorded), then the earliest
-recorded. A dialog whose inputs have no names is never credited, and no dialog
-is credited when a real login form recorded anywhere in the run (a saved page
-source's included) shares an input name with the post: that post goes to the
-real form by the rules above, as before dialogs were read. When the credited
-dialog is on more than one recorded page, counted by path, so a reload or a
-landing back on the page keeps one page (a login modal shown site-wide), no
-page's GET is part of the login flow, since none of them is a login page. A real
-form a credential post went to ranks above any dialog a post was credited to,
-and with no dialog credited a real form ranks above a dialog; a credited dialog
-ranks above a real form that no post went to and that shares no name with the
-post. When a dialog is the login, every credential post is part of it, as when
-no form was recorded, since a later password post cannot be told apart from the
-login's; and a page holding only dialogs that a login's redirect chain lands on
-stays a hop of that chain. `login_config.url` opens the page of the copy of the
-form the generator uses, which for a form on several pages is the copy whose
-selectors resolve best (below), not always the page the post was credited to. A
-POST whose body asks for a new password (`new_password`, `password_confirm`) is
-never a credential post by its field names. Every other page carrying a login
-form is an ordinary page and keeps its stub. The same form on several pages is
-one form, told by its structure (its element id and each control's tag, type,
-name, and id), and is kept as the copy whose selectors resolve best. Among the
-forms, one a credential post went to is listed first; among those, the one on
-the page that post promoted, then the one the earliest credential post went to
-(a login precedes a password change; a post found by its field names alone went
-to the form with no target of its own on the page it promoted, so a script
-login's form ranks ahead of a later form posting to its own page, such as a
-change-email form), then the one whose control names cover the most of the
-post's body, then one that sits on no page a credential post did not promote (a
-site-wide header form ranks below the main form), then the one with fewer
-unresolved roles, so the generator's `login_config` is built from the form the
-recording used. Only that login is the login flow: its promoted page; the
-credential posts that went to its form, or,
-when none did, the posts found by their field names alone to the first target no
-recorded form posts to (a script posting elsewhere than the form says); and each
-hop of those posts' redirect chains, a request to where the previous hop sent
-the client (on the same host) or a POST that submits an OAuth `form_post` page's
-form (a post form of hidden inputs only, a `<noscript>` submit button aside and
-a `<select>` or `<textarea>` counted as visible, on the previous hop's page,
-carrying only the hidden names of that page's forms posting there, to another
-host than the page's, hosts compared without case or a default port, as an
-identity provider's page posts to the app; a cart or logout form on a landing
-page is not one, and neither is a same-site form a script submits). A POST
-carrying a password field is never such a hop. A password change, an account
-edit, a later password-confirmed action (whatever the login form's action, its
-own page's or none), or any later POST answering with a redirect keeps its
-commands, and its redirect is not the login's landing page. When the landing is
-ambiguous, none is taken and `success_url` gets a `GP-FILL` saying why: a
-missing success signal is visible, and a wrong one would fail every login. A
-credential post answering 200 (a script login) starts no chain, whatever its
-page holds; a chain that rests on a 200 page holding a `form_post`-shaped form
-it did not follow (a same-host identity provider's, or a hidden-only logout form
-on the landing page) may or may not continue past it; and a chain whose last hop
-is a `form_post` submission answering without a redirect leaves the client on a
+recorded. A dialog whose inputs have no names is never credited. No dialog is
+credited at all when a real login form recorded anywhere in the run (a saved
+page source's included) shares a visible input name with any credential post of
+the run; a hidden input, such as a site-wide CSRF field, is no shared name. Such
+a run is digested as before dialogs were read: a post that is not credited to a
+dialog goes to whatever the rules above give, often no form, and the real form
+is the login by ranking. When the credited dialog is on more than one recorded
+page, counted by host and path, so a reload or a landing back on the page keeps
+one page (a login modal shown site-wide), no page's GET is part of the login
+flow, since none of them is a login page. A real form a credential post went to
+ranks above any dialog a post was credited to, and with no dialog credited a
+real form ranks above a dialog; a credited dialog ranks above a real form that
+no post went to, which then shares no visible name with any credential post.
+When a dialog is the login, every credential post is part of it, as when no form
+was recorded, since a later password post cannot be told apart from the login's;
+and a page holding only dialogs that a login's redirect chain lands on stays a
+hop of that chain. `login_config.url` opens the page of the copy of the form the
+generator uses, which for a form on several pages is the copy whose selectors
+resolve best (below), not always the page the post was credited to. A POST whose
+body asks for a new password (`new_password`, `password_confirm`) is never a
+credential post by its field names. Every other page carrying a login form is an
+ordinary page and keeps its stub. The same form on several pages is one form,
+told by its structure (its element id and each control's tag, type, name, and
+id), and is kept as the copy whose selectors resolve best. Among the forms, one
+a credential post went to is listed first; among those, the one on the page that
+post promoted, then the one the earliest credential post went to (a login
+precedes a password change; a post found by its field names alone went to the
+form with no target of its own on the page it promoted, so a script login's form
+ranks ahead of a later form posting to its own page, such as a change-email
+form), then the one whose control names cover the most of the post's body, then
+one that sits on no page a credential post did not promote (a site-wide header
+form ranks below the main form), then the one with fewer unresolved roles, so
+the generator's `login_config` is built from the form the recording used. Only
+that login is the login flow: its promoted page; the credential posts that went
+to its form, or, when none did, the posts found by their field names alone to
+the first target no recorded form posts to (a script posting elsewhere than the
+form says); and each hop of those posts' redirect chains, a request to where the
+previous hop sent the client (on the same host) or a POST that submits an OAuth
+`form_post` page's form (a post form of hidden inputs only, a `<noscript>`
+submit button aside and a `<select>` or `<textarea>` counted as visible, on the
+previous hop's page, carrying only the hidden names of that page's forms posting
+there, to another host than the page's, hosts compared without case or a default
+port, as an identity provider's page posts to the app; a cart or logout form on
+a landing page is not one, and neither is a same-site form a script submits). A
+POST carrying a password field is never such a hop. A password change, an
+account edit, a later password-confirmed action (whatever the login form's
+action, its own page's or none), or any later POST answering with a redirect
+keeps its commands, and its redirect is not the login's landing page. When the
+landing is ambiguous, none is taken and `success_url` gets a `GP-FILL` saying
+why: a missing success signal is visible, and a wrong one would fail every
+login. A credential post answering 200 (a script login) starts no chain,
+whatever its page holds; a chain that rests on a 200 page holding a
+`form_post`-shaped form it did not follow (a same-host identity provider's, or a
+hidden-only logout form on the landing page) may or may not continue past it;
+and a chain whose last hop is a `form_post` submission answering without a
+redirect leaves the client on a
 URL no redirect named; so none of these takes a landing. Each credential post
 starts over, so a later post never brings back a landing an earlier post's chain
 refused. A landing whose glob would match the login page takes none either,
