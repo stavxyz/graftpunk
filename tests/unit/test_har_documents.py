@@ -1465,3 +1465,77 @@ class TestAFormlessGroupStaysInsideTheElementAroundThePassword:
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#u", "password": "#p"}
         assert form.submit == "#go"
+
+
+class TestAFormlessGroupClimbsToItsDialog:
+    """When the element around the password holds no submit control, the group
+    widens to the nearest enclosing dialog, and never further (#267 review)."""
+
+    @pytest.mark.parametrize(
+        "opening",
+        [
+            '<div class="modal" role="dialog">',
+            '<div class="modal" role="alertdialog">',
+            '<div class="modal" aria-modal="true">',
+            "<dialog>",
+        ],
+        ids=["role-dialog", "role-alertdialog", "aria-modal", "dialog-element"],
+    )
+    def test_a_submit_in_the_dialog_footer_is_found(self, opening: str) -> None:
+        closing = "</dialog>" if opening == "<dialog>" else "</div>"
+        html = (
+            '<header><input type="search" id="q" name="q"></header>'
+            f'{opening}<div class="modal-dialog"><div class="modal-content">'
+            '<div class="modal-body"><input type="email" id="login-email">'
+            '<input type="password" id="login-password"></div>'
+            '<div class="modal-footer"><button type="button" id="close">Close</button>'
+            '<button type="submit" id="login-go">Sign in</button></div>'
+            f"</div></div>{closing}"
+            '<main><button id="add-to-cart">Add to cart</button></main>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"username": "#login-email", "password": "#login-password"}
+        assert form.submit == "#login-go"
+
+    def test_a_dialog_with_only_a_sign_in_link_takes_no_button_outside_it(self) -> None:
+        html = (
+            '<div class="modal" role="dialog"><div class="modal-body">'
+            '<input type="email" id="login-email"><input type="password" id="login-password">'
+            '</div><div class="modal-footer"><a href="#" id="login-go">Sign in</a></div></div>'
+            '<main><button id="add-to-cart">Add to cart</button></main>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.submit is None
+        assert "submit" in form.unresolved_roles
+
+    def test_a_dialog_holding_another_password_group_is_not_climbed_to(self) -> None:
+        html = (
+            '<div role="dialog">'
+            '<div class="login"><input type="email" id="le"><input type="password" id="lp">'
+            "</div>"
+            '<div class="signup"><input type="email" id="se">'
+            '<input type="password" id="sp" autocomplete="new-password"></div>'
+            '<div class="footer"><button id="go">Continue</button></div></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"username": "#le", "password": "#lp"}
+        assert form.submit is None
+
+    def test_no_dialog_ancestor_means_no_climb(self) -> None:
+        """A page wrapper is not a dialog: the cart button stays out."""
+        html = (
+            '<div id="app"><div class="login-body"><input type="email" id="le">'
+            '<input type="password" id="lp"></div>'
+            '<div class="actions"><button id="add-to-cart">Add to cart</button></div></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.submit is None
+
+    def test_a_dialog_that_is_itself_the_container_is_not_climbed_past(self) -> None:
+        html = (
+            '<div class="page"><div role="dialog"><input type="email" id="le">'
+            '<input type="password" id="lp"><a href="#" id="go">Sign in</a></div>'
+            '<button id="add-to-cart">Add to cart</button></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.submit is None

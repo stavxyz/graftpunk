@@ -198,6 +198,9 @@ class _DocumentParser(HTMLParser):
         # Each element that opens, in document order, as its tag and its lowered id
         # and class attributes; a control's ancestors index into it.
         self.elements: list[tuple[str, str]] = []
+        # The index of each element that is a dialog: a <dialog>, or one with
+        # role="dialog", role="alertdialog", or aria-modal="true".
+        self.dialogs: set[int] = set()
         # The open elements, as (tag, index into elements). An end tag closes back to
         # its open element; one with no open element of its tag is ignored, and
         # whatever is still open at the end of the document stays open.
@@ -208,6 +211,12 @@ class _DocumentParser(HTMLParser):
         ancestors = tuple(index for _tag, index in self._open)
         if tag not in _VOID_TAGS:
             self._open.append((tag, len(self.elements)))
+            if (
+                tag == "dialog"
+                or values.get("role", "").strip().lower() in ("dialog", "alertdialog")
+                or values.get("aria-modal", "").strip().lower() == "true"
+            ):
+                self.dialogs.add(len(self.elements))
             self.elements.append((tag, f"{values.get('id', '')} {values.get('class', '')}".lower()))
         if tag == "noscript":
             self._noscript += 1
@@ -753,7 +762,7 @@ def _formless_controls(parsed: _DocumentParser) -> list[_RawInput]:
 
 
 def _formless_container(
-    password: _RawInput, controls: list[_RawInput], elements: list[tuple[str, str]]
+    password: _RawInput, controls: list[_RawInput], parsed: _DocumentParser
 ) -> int | None:
     """The element a formless *password* input's login group is bounded by: the
     innermost element around it, below ``<body>``, that holds a submit control or a
@@ -761,12 +770,19 @@ def _formless_container(
     text-like input before the password, or another password input (so a sign-up or
     a password change is judged as one), among the formless *controls*. None when no
     element smaller than ``<html>`` or ``<body>`` does: the password is then alone.
-    Never wider, so the role rules cannot reach a header search box, a newsletter
-    input, or a cart button elsewhere on the page."""
+
+    When that element (or the password alone) holds no submit-capable control, the
+    group widens once, to the nearest dialog around the password
+    (``_DocumentParser.dialogs``) that is wider than it, when the dialog holds a
+    submit-capable control and no password the element does not: a modal's inputs
+    in its body and its button in its footer. Never past that dialog, and never
+    when no dialog is around the password, so the role rules cannot reach a header
+    search box, a newsletter input, or a cart button elsewhere on the page."""
+    container: int | None = None
     for ancestor in reversed(password.ancestors):
-        if elements[ancestor][0] in ("html", "body"):
-            return None
-        inside = [control for control in controls if ancestor in control.ancestors]
+        if parsed.elements[ancestor][0] in ("html", "body"):
+            break
+        inside = _controls_inside(ancestor, controls)
         if any(
             _is_submit(control)
             or _is_plain_button(control)
@@ -774,8 +790,35 @@ def _formless_container(
             or (_is_password(control) and control is not password)
             for control in inside
         ):
-            return ancestor
-    return None
+            container = ancestor
+            break
+    group = [password] if container is None else _controls_inside(container, controls)
+    if any(_is_submit(control) or _is_plain_button(control) for control in group):
+        return container
+    # The nearest dialog around the password, and only when it is wider than the
+    # element found: one inside that element was already passed by.
+    wider = (
+        password.ancestors
+        if container is None
+        else password.ancestors[: password.ancestors.index(container)]
+    )
+    dialogs = [ancestor for ancestor in wider if ancestor in parsed.dialogs]
+    nearest = [ancestor for ancestor in password.ancestors if ancestor in parsed.dialogs]
+    if not dialogs or dialogs[-1] != nearest[-1]:
+        return container
+    dialog = dialogs[-1]
+    in_dialog = _controls_inside(dialog, controls)
+    own_passwords = {id(control) for control in group if _is_password(control)}
+    if any(_is_submit(control) or _is_plain_button(control) for control in in_dialog) and all(
+        id(control) in own_passwords for control in in_dialog if _is_password(control)
+    ):
+        return dialog
+    return container
+
+
+def _controls_inside(element: int, controls: list[_RawInput]) -> list[_RawInput]:
+    """Those of *controls* inside the element at index *element*."""
+    return [control for control in controls if element in control.ancestors]
 
 
 # Words in a group's element or control ids, classes, and names that name a sign-up.
@@ -797,7 +840,7 @@ def _formless_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
     alone: list[_RawInput] = []
     for raw in controls:
         if _is_password(raw):
-            container = _formless_container(raw, controls, parsed.elements)
+            container = _formless_container(raw, controls, parsed)
             if container is None:
                 alone.append(raw)
             else:

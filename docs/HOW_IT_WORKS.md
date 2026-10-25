@@ -630,17 +630,24 @@ form of its own, listed after the page's forms: a login modal whose inputs sit
 in a `<div>` and that a script sends. Its controls are the ownerless ones inside
 the innermost element around the password, below `<body>`, that holds a submit
 control, a `<button type="button">`, a text-like input before the password, or
-another password input; with no such element, the password alone. A control
-inside two such elements belongs to the innermost, so a header search box, a
-newsletter input, a cart button, or a cookie banner elsewhere on the page never
-takes a role, and the same modal on pages that differ elsewhere is one form.
-Each group is judged by the rules above on its own controls, so a sign-up modal
-beside a login modal leaves the login's, and the groups are listed with one
-holding a `current-password` input first, then one whose element's id or class
-and controls' ids and names do not name a sign-up (`signup`, `register`,
-`create`, `join`, and the like), then in document order. The same rules pick its
-roles, except that a `<button type="button">` after the password is the submit
-when nothing after it submits, and a missing submit is unresolved like a missing
+another password input; with no such element, the password alone. When that
+element, or the lone password, holds no submit control or `<button
+type="button">`, the group widens once, to the nearest dialog around the
+password (a `<dialog>`, or an element with `role="dialog"`,
+`role="alertdialog"`, or `aria-modal="true"`) wider than that element, when the
+dialog holds such a control and no password of another group: a modal's inputs
+in its body and its button in its footer. It never widens past that dialog, nor
+when no dialog is around the password. A control inside two such elements
+belongs to the innermost, so a header search box, a newsletter input, a cart
+button, or a cookie banner elsewhere on the page never takes a role, and the
+same modal on pages that differ elsewhere is one form. Each group is judged by
+the rules above on its own controls, so a sign-up modal beside a login modal
+leaves the login's, and the groups are listed with one holding a
+`current-password` input first, then one whose element's id or class and
+controls' ids and names do not name a sign-up (`signup`, `register`, `create`,
+`join`, and the like), then in document order. The same rules pick its roles,
+except that a `<button type="button">` after the password is the submit when
+nothing after it submits, and a missing submit is unresolved like a missing
 username, so the generated step carries a `GP-FILL` for each. Its `action` and
 `method` are empty, since no browser submits it; each of its inputs is selected
 by its id, else by a name no other input on the page shares, else it is
