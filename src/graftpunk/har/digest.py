@@ -1216,6 +1216,16 @@ def _opened_from(via: tuple[str, ...], here_host: str) -> str:
     )
 
 
+def _visible_shape(form: LoginForm) -> tuple[object, ...]:
+    """What a user sees of a login form, for telling a DOM snapshot's copy of a page's
+    form from the recorded page's: whether it is a form, where it posts, its visible
+    input names, and its roles. Not its hidden inputs, attributes, or ids, which a
+    page's script adds or changes after load (a device fingerprint field, an
+    ``autocomplete``)."""
+    visible = sorted(set(form.input_names) - set(form.hidden))
+    return (form.formless, form.action_target, tuple(visible), tuple(sorted(form.fields)))
+
+
 def _snapshot_page_forms(
     html: str,
     page_url: str,
@@ -1226,7 +1236,8 @@ def _snapshot_page_forms(
     its URL the way the digest keeps one, and its login forms
     (:func:`graftpunk.har.documents.extract_login_forms` with ``snapshot``): each
     with that URL as its ``source``, and without the forms a recorded GET of the
-    same page already held, so a recorded copy is never doubled. Empty when
+    same page already held (by :func:`_visible_shape`), so a recorded copy is never
+    doubled and never takes the snapshot's ``GP-FILL``. Empty when
     *page_url* is not an http or https URL."""
     try:
         if urlparse(page_url).scheme.lower() not in _HTTP_SCHEMES:
@@ -1242,7 +1253,7 @@ def _snapshot_page_forms(
         for form in extract_login_forms(
             html, source=source, base=_unmasked_url(page_url), snapshot=True
         )
-        if _form_key(form) not in shown
+        if _visible_shape(form) not in shown
     )
     opened_from = _opened_from(redirected_via.get(page, ()), page[0])
     if opened_from:
@@ -1711,8 +1722,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # Where a GET's redirect sent the client (host and path), to the URLs of the GETs
     # of that redirect chain so far, in order.
     redirected_via: dict[tuple[str, str], tuple[str, ...]] = {}
-    # The forms (by _form_key) each recorded GET page held, by host and path: a DOM
-    # snapshot of that page adds only the forms its recorded HTML lacked.
+    # The forms (by _visible_shape) each recorded GET page held, by host and path: a
+    # DOM snapshot of that page adds only the forms its recorded HTML lacked.
     recorded_on_page: dict[tuple[str, str], set[tuple[object, ...]]] = {}
     credential_post_steps: list[int] = []
     # The credential post a redirect or set-cookie observation followed, by step:
@@ -1859,7 +1870,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             page_of.update((id(form), step) for form in forms_in_entry)
             if method == "GET":
                 recorded_on_page.setdefault((here_host, path), set()).update(
-                    _form_key(form) for form in forms_in_entry
+                    _visible_shape(form) for form in forms_in_entry
                 )
             script_driven.update(
                 id(form) for form in _script_driven_forms(entry.request.url, forms_in_entry)

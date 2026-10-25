@@ -1137,9 +1137,10 @@ class TestPluginModuleWithLoginForm:
         )
         assert "dialog" not in comment
         assert (
-            "GP-FILL: username has no selector: the login group's username lookup ends at "
-            "the first button-like control after the password and found none before it; "
-            "write one by hand if the login has one."
+            "GP-FILL: username has no selector: no element around the password in the "
+            "page's snapshot holds an input before it and a button after it, so the login "
+            "group is the password and its nearest button; write one by hand if the login "
+            "has one."
         ) in comment
         assert (
             "GP-FILL: submit has no selector: the first button after the password in the "

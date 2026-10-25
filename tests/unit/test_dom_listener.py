@@ -165,12 +165,18 @@ class TestTheScriptInAFakePage:
         assert result["calls"] == []
 
     def test_only_enter_among_keys(self, tmp_path: Path) -> None:
+        """Each key is far enough from the last for the debounce not to hide it."""
+        apart = DEBOUNCE_MS + 1
         result = _run(
             tmp_path,
             passwords=["x"],
-            fire=[{"type": "keydown", "key": "a"}, {"type": "keydown", "key": "Enter"}],
+            fire=[
+                {"type": "keydown", "key": "a"},
+                {"type": "keydown", "key": "Tab", "after": apart},
+                {"type": "keydown", "key": "Enter", "after": apart},
+            ],
         )
-        assert len(result["calls"]) == 1
+        assert [call["time"] for call in result["calls"]] == [1700000000000 + 2 * apart]
 
     def test_one_action_sends_one_snapshot(self, tmp_path: Path) -> None:
         """A click on a submit button fires click then submit on the same page."""

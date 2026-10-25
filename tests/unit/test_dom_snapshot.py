@@ -291,3 +291,141 @@ class TestASnapshotLoginGroupOutsideAnyDialog:
         (form,) = extract_login_forms(html, source=_SITE, snapshot=True)
         assert not form.formless
         assert form.from_snapshot
+
+    def test_a_show_password_toggle_does_not_bound_the_group(self) -> None:
+        """Review I3: the toggle's wrapper holds no input before the password, so the
+        group is the login block around it, and the username is found."""
+        html = (
+            '<main><div class="login"><input type="email" id="u" name="email">'
+            '<div class="pw-wrap"><input type="password" id="p">'
+            '<button type="button" id="eye">Show</button></div>'
+            '<button type="button" id="go">Sign in</button></div></main>'
+        )
+        (form,) = extract_login_forms(html, source=_SITE, snapshot=True)
+        assert form.fields == {"username": "#u", "password": "#p"}
+        assert form.plain_block
+
+    def test_a_password_step_alone_is_bounded_by_its_block(self) -> None:
+        """No element holds an input before the password: the nearest one holding a
+        button after it bounds the group, as for a password-only login step."""
+        html = (
+            '<main><div class="step"><input type="password" id="p">'
+            '<button type="submit" id="next">Next</button></div></main>'
+        )
+        (form,) = extract_login_forms(html, source=_SITE, snapshot=True)
+        assert form.fields == {"password": "#p"}
+        assert form.submit == "#next"
+        assert form.absent_roles == ("username",)
+
+    def test_a_button_only_before_the_password_bounds_nothing(self) -> None:
+        html = (
+            '<main><div id="box"><input type="text" id="u" name="user">'
+            '<button type="button" id="b">Help</button>'
+            '<input type="password" id="p" name="password"></div></main>'
+        )
+        assert extract_login_forms(html, source=_SITE, snapshot=True) == ()
+
+    def test_two_unmarked_passwords_in_one_block_give_none(self) -> None:
+        html = (
+            '<main><div id="box"><input type="text" id="u" name="user">'
+            '<input type="password" id="p1" name="secret">'
+            '<input type="password" id="p2" name="pin">'
+            '<button type="submit" id="s">Go</button></div></main>'
+        )
+        assert extract_login_forms(html, source=_SITE, snapshot=True) == ()
+
+
+class TestRedactionBeforeEscaping:
+    """Review I1: a value holding ``&``, ``<``, ``>``, ``"`` or ``'`` is redacted on its
+    decoded text, before the sanitizer escapes it again."""
+
+    PASSWORD = "p&ss<w>\"o'rd9"  # noqa: S105 - a test value, not a credential
+    EMAIL = "o'brien&co@example.com"
+
+    def _stored(self) -> str:
+        from html import escape
+
+        pw, em = escape(self.PASSWORD), escape(self.EMAIL)
+        page = (
+            f"<label>{pw}</label><button>Not {em}?</button>"
+            f'<a href="/u/{em}">me</a><a href="/forgot/{em.replace("&#x27;", chr(39))}">x</a>'
+            f'<div id="{em}" class="x {pw}" data-x="{pw}"></div>'
+        )
+        body = json.dumps({"email": self.EMAIL, "password": self.PASSWORD})
+        return stored_dom_snapshot(page, body, "application/json")
+
+    def test_no_spelling_of_either_value_is_stored(self) -> None:
+        from html import escape
+
+        out = self._stored()
+        for value in (self.PASSWORD, self.EMAIL):
+            for spelled in (value, escape(value), escape(value, quote=False)):
+                assert spelled not in out
+        assert "p&amp;ss" not in out
+        assert "brien" not in out
+        assert "***REDACTED***" in out
+
+    def test_the_escaped_forms_are_a_second_net(self) -> None:
+        from html import escape
+
+        body = json.dumps({"email": self.EMAIL, "password": self.PASSWORD})
+        redaction = snapshot_redaction(body, "application/json")
+        assert {escape(self.PASSWORD), escape(self.PASSWORD, quote=False)} <= set(redaction.secrets)
+        assert escape(self.EMAIL) in redaction.identifiers
+
+
+class TestUrlsKeepNoQueryOrFragment:
+    def test_href_and_action_lose_their_query_and_fragment(self) -> None:
+        out = sanitize_dom_snapshot(
+            '<a href="/account?token=abc123SECRET&amp;x=1#top">a</a>'
+            '<a href="#reviews">b</a><a href="javascript:go(40912873)">c</a>'
+            '<form action="https://myshop.example/login?next=%2Forders#x"></form>'
+        )
+        assert "abc123SECRET" not in out
+        assert "40912873" not in out
+        assert 'href="/account?"' in out
+        assert 'href="#"' in out
+        assert 'href="javascript:"' in out
+        assert 'action="https://myshop.example/login?"' in out
+
+    def test_a_stripped_action_still_scopes_to_the_live_form(self) -> None:
+        html = sanitize_dom_snapshot(
+            '<main><form action="/login?next=%2F" method="post"><input name="user">'
+            '<input type="password" name="pw"><button>Go</button></form></main>'
+        )
+        (form,) = extract_login_forms(html, source=_SITE, snapshot=True)
+        assert 'form[action^="/login?"] input[name="pw"]' in form.fields["password"]
+
+
+class TestSanitizerGuards:
+    def test_a_textarea_in_a_label_keeps_no_text(self) -> None:
+        out = sanitize_dom_snapshot("<label>Note <textarea>typed by alice</textarea></label>")
+        assert "typed by alice" not in out
+        assert ">Note <textarea></textarea></label>" in out
+
+    def test_nested_labelling_elements_share_one_budget(self) -> None:
+        out = sanitize_dom_snapshot(f"<label>{'x' * 60}<a href='/'>{'y' * 60}</a></label>")
+        assert out.count("x") + out.count("y") == TEXT_LIMIT
+
+    def test_the_sanitizer_redacts_decoded_values_itself(self) -> None:
+        """The first net on its own, without stored_dom_snapshot's second pass."""
+        from graftpunk.observe.run import Redaction
+
+        out = sanitize_dom_snapshot(
+            '<label>p&amp;ss&lt;9</label><div class="a p&amp;ss&lt;9"></div>',
+            Redaction(secrets=("p&ss<9",)),
+        )
+        assert "p&amp;ss" not in out
+        assert out.count("***REDACTED***") == 2
+
+    def test_nested_logins_each_with_their_own_block_parse_quickly(self) -> None:
+        """Each block bounds its own password, and an outer one holding several
+        unmarked passwords is left out before its controls are gathered."""
+        import time
+
+        depth = 3000
+        html = '<div><input type="text"><input type="password"><button>Go</button>' * depth
+        started = time.perf_counter()
+        forms = extract_login_forms(f"<main>{html}{'</div>' * depth}</main>", _SITE, snapshot=True)
+        assert len(forms) == 1
+        assert time.perf_counter() - started < 1.5

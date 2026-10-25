@@ -922,25 +922,36 @@ def _ranked_login_groups(groups: list[tuple[str, list[_RawInput]]]) -> list[list
 # The elements that never bound a snapshot's login group: one bounded by the whole
 # page would take any input before the password as its username.
 _PAGE_ELEMENTS = frozenset({"html", "body"})
+# How many ancestors holding a button after the password one walk looks at for one
+# that also holds an input before it. A login's wrapper sits a few levels above
+# its password; the bound keeps a walk short on a deeply nested page.
+_MAX_BOUND_WALK = 32
 
 
 def _block_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
     """A DOM snapshot's login groups outside every dialog: for each password input
     with no form owner and in no dialog, the formless controls in no dialog inside
     the password's nearest ancestor element (never ``<html>`` or ``<body>``) that
-    holds a button-like control after the password (:func:`_is_button_like`). The
-    snapshot is taken as the user submits, so the control they pressed is likely
-    in that element; a password with no such ancestor is in no group. The groups
-    are judged and ordered as a dialog's are (:func:`_ranked_login_groups`).
+    holds a button-like control after the password (:func:`_is_button_like`) and a
+    text-like input before it (:func:`_is_text_like`), such as the username. The
+    snapshot is taken as the user submits, so the control they pressed is likely in
+    that element, and a show-password toggle's wrapper, which holds a button after
+    the password but no input before it, does not stop the walk. When no ancestor
+    holds both (a password-only step), the nearest one holding a button after the
+    password bounds the group; a password with no such ancestor is in no group. The
+    groups are judged and ordered as a dialog's are (:func:`_ranked_login_groups`).
 
     Each walk up the ancestors skips the elements an earlier password's walk found
     without a button after it: a later password has fewer controls after it, so
-    they have none for it either. That keeps the walks linear in the page's
-    elements however many passwords share them."""
+    they have none for it either. Of the ancestors with a button after it, a walk
+    looks at no more than ``_MAX_BOUND_WALK``. That keeps the walks linear in the
+    page's elements however many passwords share them."""
     controls = [raw for raw in _formless_controls(parsed) if raw.dialog is None]
-    buttons_before = [0]
+    in_group = {id(raw) for raw in controls}
+    buttons_before, fields_before = [0], [0]
     for raw in parsed.inputs:
         buttons_before.append(buttons_before[-1] + _is_button_like(raw))
+        fields_before.append(fields_before[-1] + (id(raw) in in_group and _is_text_like(raw)))
     # An element found with no button after an earlier password: the ancestor to
     # look at instead.
     skip_to: dict[int, int | None] = {}
@@ -958,18 +969,29 @@ def _block_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
     for raw in controls:
         if not _is_password(raw):
             continue
+        nearest: int | None = None
+        chosen: int | None = None
+        looked = 0
         block = resolved(raw.block)
-        while block is not None:
+        while block is not None and looked < _MAX_BOUND_WALK:
             element = parsed.blocks[block]
             end = element.end if element.end is not None else len(parsed.inputs)
             if (
-                element.tag not in _PAGE_ELEMENTS
-                and buttons_before[end] > buttons_before[raw.order + 1]
+                element.tag in _PAGE_ELEMENTS
+                or buttons_before[end] <= buttons_before[raw.order + 1]
             ):
-                bounds[block] = None
+                skip_to[block] = element.parent
+                block = resolved(element.parent)
+                continue
+            looked += 1
+            nearest = block if nearest is None else nearest
+            if fields_before[raw.order] > fields_before[element.start]:
+                chosen = block
                 break
-            skip_to[block] = element.parent
             block = resolved(element.parent)
+        bound = chosen if chosen is not None else nearest
+        if bound is not None:
+            bounds[bound] = None
     orders = [raw.order for raw in controls]
     # Per position in *controls*: how many password inputs, and how many marked
     # current-password, come before it. A group with two passwords and none marked is
