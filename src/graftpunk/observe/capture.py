@@ -14,6 +14,7 @@ import os
 import tempfile
 import time
 import urllib.parse
+from collections import deque
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple, Protocol, runtime_checkable
@@ -64,6 +65,47 @@ TEXT_MIME_KEYWORDS = (
     "x-www-form-urlencoded",
     "yaml",
 )
+
+# How many of the page's own DOM snapshots (graftpunk.observe.dom_listener) the
+# recorder keeps: one user action sends one, so a few cover the actions before a
+# credential post.
+DOM_SNAPSHOT_BUFFER = 5
+
+
+class _ListenerSnapshot(NamedTuple):
+    """A DOM snapshot the page's isolated-world listener sent: when (ms since the
+    epoch, the page's ``Date.now()``), on which document, and its HTML, sanitized."""
+
+    time_ms: float
+    url: str
+    html: str
+
+
+def _wall_time_ms(wall_time: Any) -> float | None:
+    """CDP's ``wallTime`` (seconds since the epoch) in milliseconds, the unit of the
+    page's ``Date.now()``; None when it is missing or not a finite number."""
+    if isinstance(wall_time, bool) or not isinstance(wall_time, int | float):
+        return None
+    ms = float(wall_time) * 1000.0
+    return ms if math.isfinite(ms) else None
+
+
+def _origin(url: Any) -> tuple[str, str, int | None] | None:
+    """*url*'s scheme, host, and port (the default one filled in), or None."""
+    if not isinstance(url, str):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    if not scheme or not parts.hostname:
+        return None
+    if port is None:
+        port = {"http": 80, "https": 443}.get(scheme)
+    return scheme, parts.hostname.lower(), port
+
 
 # Statuses that carry no body by definition: nothing to fetch or store.
 _BODYLESS_STATUSES = frozenset({204, 205, 304})
@@ -1405,6 +1447,8 @@ class NodriverCaptureBackend:
         self._dom_snapshot_attempts = 0
         self._dom_snapshot_failures = 0
         self._dom_snapshotted: set[str] = set()
+        # The page's own snapshots, newest last (_on_binding_called).
+        self._listener_snapshots: deque[_ListenerSnapshot] = deque(maxlen=DOM_SNAPSHOT_BUFFER)
         # False for a capture whose HAR is never written (the login engine's
         # header-only capture): no request body is kept, fetched or logged about.
         self._record_request_bodies = record_request_bodies
@@ -1561,6 +1605,9 @@ class NodriverCaptureBackend:
                 LOG.debug("nodriver_extra_info_event_unavailable", event_name=name)
                 continue
             tab.add_handler(event_cls, handler)
+
+        if self._dom_snapshots_dir is not None:
+            await self._install_dom_listener(tab)
 
         # Console log capture
         await tab.send(cdp_runtime.enable())
@@ -1785,6 +1832,8 @@ class NodriverCaptureBackend:
                 "post_data": None,
                 "has_post_data": getattr(event.request, "has_post_data", False),
                 "timestamp": getattr(event, "wall_time", None),
+                # The page that sent it: a DOM snapshot must come from its origin.
+                "document_url": getattr(event, "document_url", None),
             }
             if self._record_request_bodies:
                 body = _inline_post_body(
@@ -1903,18 +1952,109 @@ class NodriverCaptureBackend:
         finally:
             self._post_data_tasks.discard(task)  # type: ignore[arg-type]
 
+    async def _install_dom_listener(self, tab: Any) -> None:
+        """Install the isolated-world listener (graftpunk.observe.dom_listener) that
+        sends the page's DOM through a binding as the user acts. A page whose target
+        refuses either command is still recorded, its credential posts snapshotted
+        by DevTools calls alone (_snapshot_dom), and the failure is one warning."""
+        import nodriver.cdp.page as cdp_page
+        import nodriver.cdp.runtime as cdp_runtime
+
+        from graftpunk.observe.dom_listener import BINDING_NAME, LISTENER_SCRIPT, WORLD_NAME
+
+        tab.add_handler(cdp_runtime.BindingCalled, self._on_binding_called)
+        try:
+            await tab.send(
+                cdp_runtime.add_binding(name=BINDING_NAME, execution_context_name=WORLD_NAME)
+            )
+            # Without the Page domain enabled, Chrome runs the script in no document
+            # created after this (measured on 2026-10-24 with nodriver 0.50.6: it
+            # ran only in the document open at the time and on about:blank).
+            await tab.send(cdp_page.enable())
+            await tab.send(
+                cdp_page.add_script_to_evaluate_on_new_document(
+                    source=LISTENER_SCRIPT, world_name=WORLD_NAME, run_immediately=True
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - the recording goes on without it
+            LOG.warning(
+                "nodriver_dom_listener_unavailable",
+                error=str(exc),
+                exc_type=type(exc).__name__,
+                hint="Credential posts are snapshotted by DevTools calls, which can be late.",
+            )
+
+    def _on_binding_called(self, event: Any) -> None:
+        """Keep a DOM snapshot the page's listener sent, sanitized, among the last
+        ``DOM_SNAPSHOT_BUFFER``. A call to another binding, or a payload that is not
+        the listener's (``html``, ``url``, ``time``), is dropped."""
+        from graftpunk.observe.dom_listener import BINDING_NAME
+
+        if getattr(event, "name", None) != BINDING_NAME:
+            return
+        try:
+            payload = json.loads(getattr(event, "payload", ""))
+            html, url, time_ms = payload["html"], payload["url"], payload["time"]
+            if (
+                not isinstance(html, str)
+                or not isinstance(url, str)
+                or isinstance(time_ms, bool)
+                or not isinstance(time_ms, int | float)
+                or len(html) > self._max_body_size
+            ):
+                raise ValueError("not a listener snapshot")
+            from graftpunk.observe.snapshot import sanitize_dom_snapshot
+
+            self._listener_snapshots.append(
+                _ListenerSnapshot(float(time_ms), url, sanitize_dom_snapshot(html))
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad payload costs only itself
+            LOG.debug("nodriver_dom_snapshot_payload_dropped", error=str(exc))
+
+    def _listener_snapshot(self, data: dict[str, Any]) -> _ListenerSnapshot | None:
+        """The latest snapshot the page's listener sent that is not after the request
+        *data* was sent (its ``wallTime``) and is from the origin of the document that
+        sent it; None when none is."""
+        wall_ms = _wall_time_ms(data.get("timestamp"))
+        origin = _origin(data.get("document_url") or data.get("url"))
+        if wall_ms is None or origin is None:
+            return None
+        return next(
+            (
+                snapshot
+                for snapshot in reversed(self._listener_snapshots)
+                if snapshot.time_ms <= wall_ms and _origin(snapshot.url) == origin
+            ),
+            None,
+        )
+
+    async def _read_dom(self, tab: Any) -> tuple[str, str]:
+        """The page's document URL and HTML, by ``DOM.getDocument(depth=-1,
+        pierce=True)`` then ``DOM.getOuterHTML`` of the document, as nodriver's
+        ``Tab.get_content`` reads the page source."""
+        import nodriver.cdp.dom as cdp_dom
+
+        session = _capture_session_kwargs(tab, self._capture_session_id)
+        document = await tab.send(cdp_dom.get_document(depth=-1, pierce=True), **session)
+        html = await tab.send(
+            cdp_dom.get_outer_html(backend_node_id=document.backend_node_id), **session
+        )
+        return getattr(document, "document_url", None) or "", html
+
     async def _snapshot_dom(
         self, tab: Any, rid: str, data: dict[str, Any], body_text: str | None
     ) -> None:
-        """Serialize the page's DOM as the credential post *rid* is sent, sanitize and
-        redact it (:func:`graftpunk.observe.snapshot.stored_dom_snapshot`), write it
-        owner-only as ``snapshots/<rid>.html``, and link it from the entry.
+        """Give the credential post *rid* the page's DOM as the user sent it, redacted
+        of the post's own values (:func:`graftpunk.observe.snapshot.redact_dom_snapshot`),
+        written owner-only as ``snapshots/<rid>.html`` and linked from the entry.
 
-        ``DOM.getDocument(depth=-1, pierce=True)`` then ``DOM.getOuterHTML`` of the
-        document, as nodriver's ``Tab.get_content`` reads the page source. Nothing
-        waits for it: the request and the page go on, and a snapshot that fails or
-        comes too late is one debug line and a count in the stop summary, never a
-        change to the entry. At most one per request id."""
+        The page's listener's snapshot when one qualifies (:meth:`_listener_snapshot`):
+        it was taken in the page before the page's handlers ran. Else the DOM as
+        DevTools reads it now (:meth:`_read_dom`), which can be after the page's
+        response handler changed it, logged as ``nodriver_dom_snapshot_late``. Nothing
+        waits for either: the request and the page go on, and a snapshot that fails
+        is one debug line and a count in the stop summary, never a change to the
+        entry. At most one per request id."""
         snapshots_dir = self._dom_snapshots_dir
         if snapshots_dir is None or rid in self._dom_snapshotted:
             return
@@ -1922,17 +2062,28 @@ class NodriverCaptureBackend:
         self._dom_snapshot_attempts += 1
         name = f"{rid}.html"
         try:
-            import nodriver.cdp.dom as cdp_dom
-
-            from graftpunk.observe.snapshot import stored_dom_snapshot
+            from graftpunk.observe.snapshot import redact_dom_snapshot, sanitize_dom_snapshot
             from graftpunk.observe.storage import make_private_dir, write_private_file
 
-            session = _capture_session_kwargs(tab, self._capture_session_id)
-            document = await tab.send(cdp_dom.get_document(depth=-1, pierce=True), **session)
-            html = await tab.send(
-                cdp_dom.get_outer_html(backend_node_id=document.backend_node_id), **session
-            )
-            stored = stored_dom_snapshot(html, body_text, _request_content_type(data))
+            page = self._listener_snapshot(data)
+            if page is None:
+                try:
+                    url, html = await self._read_dom(tab)
+                except Exception:
+                    # One may have arrived while DevTools answered.
+                    page = self._listener_snapshot(data)
+                    if page is None:
+                        raise
+                else:
+                    page = self._listener_snapshot(data)
+                    if page is None:
+                        LOG.debug(
+                            "nodriver_dom_snapshot_late",
+                            request_id=rid,
+                            hint="No snapshot from the page's listener; read by DevTools.",
+                        )
+                        page = _ListenerSnapshot(0.0, url, sanitize_dom_snapshot(html))
+            stored = redact_dom_snapshot(page.html, body_text, _request_content_type(data))
             snapshots_dir.parent.mkdir(parents=True, exist_ok=True)
             make_private_dir(snapshots_dir)
             write_private_file(snapshots_dir / name, stored)
@@ -1946,7 +2097,7 @@ class NodriverCaptureBackend:
             )
             return
         data["_dom_snapshot"] = f"{snapshots_dir.name}/{name}"
-        data["_dom_snapshot_url"] = _bare_page_url(getattr(document, "document_url", None) or "")
+        data["_dom_snapshot_url"] = _bare_page_url(page.url)
 
     def _on_request_extra_info(self, event: Any) -> None:
         """Handle a CDP RequestWillBeSentExtraInfo event (raw request headers)."""

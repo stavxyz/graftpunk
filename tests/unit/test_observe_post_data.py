@@ -156,6 +156,9 @@ class FakeTab:
         self.dom_html: str | None = None
         self.dom_url = HOME
         self.dom_requests: list[str] = []
+        # Every command sent, as (method, params), and the methods to refuse.
+        self.sent: list[tuple[str, dict[str, Any]]] = []
+        self.refuse: set[str] = set()
 
     def reattach(self) -> None:
         assert self.session_id is not None
@@ -172,6 +175,9 @@ class FakeTab:
         method = message["method"]
         rid = message.get("params", {}).get("requestId")
         enabled = session in self.network_sessions
+        self.sent.append((method, dict(message.get("params", {}))))
+        if method in self.refuse:
+            raise _refused()
         if method == "Network.enable":
             self.network_sessions.add(session)
         if method == "Network.getRequestPostData":
@@ -202,6 +208,8 @@ class FakeTab:
                 }
             else:
                 reply = {"outerHTML": self.dom_html}
+        elif method == "Page.addScriptToEvaluateOnNewDocument":
+            reply = {"identifier": "script-1"}
         elif method == "Network.getResponseBody":
             if not enabled or not self.response_available(rid, self):
                 raise _refused()
@@ -2014,3 +2022,212 @@ class TestDomSnapshotAtTheCredentialPost:
         assert entry.request.dom_snapshot_url == HOME
         assert entry.request.dom_snapshot is not None
         assert 'id="login-modal"' in entry.request.dom_snapshot
+
+
+# The wallTime _will_be_sent gives every request, in ms since the epoch.
+_POST_MS = 1_700_000_000_000
+
+
+def _binding_called(html: str, *, time_ms: float, url: str = LOGIN, name: str = "") -> Any:
+    from graftpunk.observe.dom_listener import BINDING_NAME
+
+    return parse_json_event(
+        {
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": name or BINDING_NAME,
+                "payload": json.dumps({"html": html, "url": url, "time": time_ms}),
+                "executionContextId": 7,
+            },
+        }
+    )
+
+
+class TestSnapshotFromTheIsolatedWorldListener:
+    """The page's own snapshot, sent through the binding as the user acted, is the
+    one a credential post takes: one not after the post, on the post's page origin."""
+
+    _LIVE = '<html><body><div id="after-the-response"></div></body></html>'
+
+    async def _run(
+        self, tmp_path: Path, before: list[Any], *, inline: bool = True, live: str | None = None
+    ) -> tuple[FakeTab, NodriverCaptureBackend, list[dict[str, Any]]]:
+        tab = FakeTab({"31.1": _LOGIN_BODY}, _always)
+        tab.dom_html = live
+        with capture_logs() as logs:
+            backend = await _record(
+                tab,
+                [
+                    *before,
+                    _will_be_sent("31.1", inline=_LOGIN_BODY if inline else None, url=LOGIN),
+                    _response_received("31.1", url=LOGIN),
+                    _loading_finished("31.1"),
+                ],
+                dom_snapshots_dir=tmp_path / "snapshots",
+            )
+        return tab, backend, logs
+
+    def _stored(self, tmp_path: Path) -> str:
+        return (tmp_path / "snapshots" / "31.1.html").read_text()
+
+    @pytest.mark.asyncio
+    async def test_the_listener_is_installed_in_an_isolated_world(self, tmp_path: Path) -> None:
+        from graftpunk.observe.dom_listener import BINDING_NAME, LISTENER_SCRIPT, WORLD_NAME
+
+        tab, _backend, _logs = await self._run(tmp_path, [])
+
+        methods = [method for method, _params in tab.sent]
+        assert methods.index("Page.enable") < methods.index("Page.addScriptToEvaluateOnNewDocument")
+        sent = dict(tab.sent)
+        assert sent["Runtime.addBinding"] == {
+            "name": BINDING_NAME,
+            "executionContextName": WORLD_NAME,
+        }
+        assert sent["Page.addScriptToEvaluateOnNewDocument"] == {
+            "source": LISTENER_SCRIPT,
+            "worldName": WORLD_NAME,
+            "runImmediately": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_without_the_flag_nothing_is_installed(self) -> None:
+        tab = FakeTab({}, _never)
+        await _record(tab, [_will_be_sent("31.2", inline=_LOGIN_BODY, url=LOGIN)])
+        methods = {method for method, _params in tab.sent}
+        assert "Runtime.addBinding" not in methods
+        assert "Page.addScriptToEvaluateOnNewDocument" not in methods
+
+    @pytest.mark.asyncio
+    async def test_a_listener_that_cannot_be_installed_leaves_the_capture_running(
+        self, tmp_path: Path
+    ) -> None:
+        tab = FakeTab({}, _never)
+        tab.refuse = {"Page.addScriptToEvaluateOnNewDocument"}
+        tab.dom_html = _LOGIN_MODAL
+        with capture_logs() as logs:
+            backend = await _record(
+                tab,
+                [_will_be_sent("31.3", inline=_LOGIN_BODY, url=LOGIN)],
+                dom_snapshots_dir=tmp_path / "snapshots",
+            )
+        assert [e["event"] for e in logs if e["event"] == "nodriver_dom_listener_unavailable"]
+        assert _only_entry(backend)["request"]["_domSnapshot"] == "snapshots/31.3.html"
+
+    @pytest.mark.asyncio
+    async def test_a_snapshot_sent_before_the_post_is_the_post_s(self, tmp_path: Path) -> None:
+        tab, backend, logs = await self._run(
+            tmp_path, [_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40)]
+        )
+
+        request = _only_entry(backend)["request"]
+        assert request["_domSnapshot"] == "snapshots/31.1.html"
+        assert request["_domSnapshotUrl"] == LOGIN
+        stored = self._stored(tmp_path)
+        assert 'id="login-password"' in stored
+        assert "hunter2hunter2" not in stored
+        assert "alice@example.com" not in stored
+        assert tab.dom_requests == []
+        assert not [e for e in logs if e["event"] == "nodriver_dom_snapshot_late"]
+
+    @pytest.mark.asyncio
+    async def test_a_snapshot_at_the_post_s_own_millisecond_still_counts(
+        self, tmp_path: Path
+    ) -> None:
+        """CDP's wallTime is seconds since the epoch, the page's Date.now() ms."""
+        await self._run(tmp_path, [_binding_called(_LOGIN_MODAL, time_ms=_POST_MS)])
+        assert 'id="login-modal"' in self._stored(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_a_snapshot_sent_after_the_post_is_not_used(self, tmp_path: Path) -> None:
+        tab, _backend, logs = await self._run(
+            tmp_path, [_binding_called(_LOGIN_MODAL, time_ms=_POST_MS + 1)], live=self._LIVE
+        )
+
+        stored = self._stored(tmp_path)
+        assert "after-the-response" in stored
+        assert "login-modal" not in stored
+        assert tab.dom_requests == ["DOM.getDocument", "DOM.getOuterHTML"]
+        assert [e["request_id"] for e in logs if e["event"] == "nodriver_dom_snapshot_late"] == [
+            "31.1"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_snapshot_from_another_origin_is_not_used(self, tmp_path: Path) -> None:
+        await self._run(
+            tmp_path,
+            [
+                _binding_called(
+                    _LOGIN_MODAL, time_ms=_POST_MS - 40, url="https://ads.example.net/frame"
+                )
+            ],
+            live=self._LIVE,
+        )
+        assert "login-modal" not in self._stored(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_the_latest_qualifying_snapshot_wins(self, tmp_path: Path) -> None:
+        older = _LOGIN_MODAL.replace('id="login-modal"', 'id="older-modal"')
+        await self._run(
+            tmp_path,
+            [
+                _binding_called(older, time_ms=_POST_MS - 900),
+                _binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40),
+                _binding_called(older, time_ms=_POST_MS + 50),
+            ],
+        )
+        stored = self._stored(tmp_path)
+        assert 'id="login-modal"' in stored
+        assert "older-modal" not in stored
+
+    @pytest.mark.asyncio
+    async def test_only_the_last_few_snapshots_are_kept(self, tmp_path: Path) -> None:
+        from graftpunk.observe.capture import DOM_SNAPSHOT_BUFFER
+
+        later = [
+            _binding_called("<p>x</p>", time_ms=_POST_MS - 10, url="https://other.example/")
+            for _ in range(DOM_SNAPSHOT_BUFFER)
+        ]
+        await self._run(
+            tmp_path,
+            [_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 500), *later],
+            live=self._LIVE,
+        )
+        assert "login-modal" not in self._stored(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_another_binding_s_call_is_ignored(self, tmp_path: Path) -> None:
+        await self._run(
+            tmp_path,
+            [_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40, name="somethingElse")],
+            live=self._LIVE,
+        )
+        assert "login-modal" not in self._stored(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_payload_is_dropped(self, tmp_path: Path) -> None:
+        from graftpunk.observe.dom_listener import BINDING_NAME
+
+        bad = parse_json_event(
+            {
+                "method": "Runtime.bindingCalled",
+                "params": {"name": BINDING_NAME, "payload": "not json", "executionContextId": 7},
+            }
+        )
+        await self._run(tmp_path, [bad], live=self._LIVE)
+        assert "after-the-response" in self._stored(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_a_body_fetched_late_takes_the_listener_s_snapshot(self, tmp_path: Path) -> None:
+        tab, _backend, _logs = await self._run(
+            tmp_path, [_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40)], inline=False
+        )
+        assert tab.post_data_requests == ["31.1"]
+        assert 'id="login-modal"' in self._stored(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_with_no_snapshot_and_no_page_the_har_is_intact(self, tmp_path: Path) -> None:
+        _tab, backend, logs = await self._run(tmp_path, [])
+        request = _only_entry(backend)["request"]
+        assert "_domSnapshot" not in request
+        assert request["postData"]["text"] == _LOGIN_BODY
+        assert [e["event"] for e in logs if e["event"] == "nodriver_dom_snapshot_failed"]

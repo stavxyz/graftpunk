@@ -25,6 +25,7 @@ __all__ = [
     "KEPT_ATTRIBUTES",
     "TEXT_LIMIT",
     "sanitize_dom_snapshot",
+    "redact_dom_snapshot",
     "snapshot_redaction",
     "stored_dom_snapshot",
 ]
@@ -201,8 +202,14 @@ def snapshot_redaction(body_text: str | None, content_type: str = "") -> Redacti
     return Redaction(tuple(secrets), tuple(identifiers))
 
 
+def redact_dom_snapshot(sanitized: str, body_text: str | None, content_type: str = "") -> str:
+    """*sanitized* (:func:`sanitize_dom_snapshot`'s output) with the triggering post's
+    values redacted (:func:`snapshot_redaction`) by
+    :func:`graftpunk.observe.run.redact_text`, the scrub the rest of a run uses."""
+    return redact_text(sanitized, snapshot_redaction(body_text, content_type))
+
+
 def stored_dom_snapshot(html: str, body_text: str | None, content_type: str = "") -> str:
     """*html* as a run stores it: sanitized (:func:`sanitize_dom_snapshot`), then
-    with the triggering post's values redacted (:func:`snapshot_redaction`) by
-    :func:`graftpunk.observe.run.redact_text`, the scrub the rest of a run uses."""
-    return redact_text(sanitize_dom_snapshot(html), snapshot_redaction(body_text, content_type))
+    redacted of the triggering post's values (:func:`redact_dom_snapshot`)."""
+    return redact_dom_snapshot(sanitize_dom_snapshot(html), body_text, content_type)
