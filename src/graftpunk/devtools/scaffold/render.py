@@ -683,8 +683,9 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
             )
         elif role in form.absent_roles and form.formless:
             text = (
-                f"{GP_FILL_MARKER}: {role} has no selector: the login dialog holds no {role} "
-                "input; write one by hand if the login has one."
+                f"{GP_FILL_MARKER}: {role} has no selector: the login dialog's {role} lookup "
+                "ends at the first button-like control after the password and found none "
+                "before it; write one by hand if the login has one."
             )
         elif role in form.absent_roles:
             text = (

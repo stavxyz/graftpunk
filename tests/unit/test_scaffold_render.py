@@ -1083,7 +1083,8 @@ class TestPluginModuleWithLoginForm:
             if line.strip().startswith("#")
         )
         assert (
-            "GP-FILL: username has no selector: the login dialog holds no username input; "
+            "GP-FILL: username has no selector: the login dialog's username lookup ends at "
+            "the first button-like control after the password and found none before it; "
             "write one by hand if the login has one."
         ) in comment
         assert (

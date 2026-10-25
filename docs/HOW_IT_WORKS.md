@@ -637,48 +637,50 @@ cannot move it; a self-closing `<div .../>` opens as a browser reads it, outside
 `<svg>` and `<math>`; and parsing stays linear in the page's length, however
 many dialogs are open. The limit: a dialog element missing its own end tag runs
 on to the end of the page, where a browser closes it with the element around it,
-so controls after it join its group. The rules above judge its controls, and a
-dialog with no password, with a sign-up or password-change shape, or with two
-password inputs and none marked `current-password` gives none. Its submit is an
-explicit one after the password: an `<input type="submit">` or `<input
-type="image">`, or a `<button type="submit">`. Outside a form a typeless or
-`type="button"` button submits nothing and may be a show-password or a close
-button, so it is never the submit, and a modal whose sign-in is one gets a
-`GP-FILL` for its submit, as it does for a missing username. Its extra fields,
-and the search for its submit, end at the first button-like control after the
-password (any `<button>`, or a submit, image, button, or reset input): that
-control is the submit when it is an explicit one, and otherwise the submit is a
-`GP-FILL`. So a hidden reset panel's input and its submit after a typeless "Sign
-in" are never taken, and a show-password toggle or a Close button right after
-the password ends the fields there, so an input after it (a one-time code) is
-left out and the submit is a `GP-FILL`: a `GP-FILL` is the safer failure than a
-wrong selector. Each of its inputs is selected by its id, else by a name no
-other input on the page shares, else it is unresolved; a control inside
-`<noscript>` is left out; its `action` and `method` are empty; and several such
-dialogs are listed with one holding a `current-password` input first, then one
-whose id or class and whose controls' ids and names do not name a sign-up
-(`signup`, `register`, `create`, `join`, and the like), then in document order.
-Only a page the run opened with a GET, or the saved page source, shows a dialog
-login: one in a POST's HTML response (a failed attempt re-rendered, a search
-result) is not read. A password outside every form and every dialog gives no
-login form: a login built from inputs in a plain `<div>` is not found, and
-neither is a modal that a script renders only after a click, which is in no
-recorded HTML response and is in the page source saved when the recording stops
-only if it is still open then. In a `<form>`, each input is selected by its id,
-else its name (when no other control inside any form with the same action shares
-it: a header mini-login and the main form can post to one action), else its type
-(the same way) (`input:not([type])` for a typeless input), and an id or a name
-that holds an account value is never used; a name that holds one, or no name,
-gets a neutral role key (`field_1`, never a name another input of the form has)
-and a `GP-FILL` naming which of the two it was. A selector by type is used only
-when it picks one input of the form, and is never printed without the form
-scope: when the form's action holds an id the printed selectors drop the scope,
-so only an id selector, or a name no other input on the page shares, is printed.
-A form whose action is empty or only a fragment (`#`, `#login`) is scoped to
-match that, and one whose action names another scheme than `http` or `https` has
-no path to template: it keeps its scope and is printed as written
-(`javascript:void(0)`), unless its text holds an id or a token by the path rule
-(`javascript:go(12345678)`) or an email anywhere
+so controls after it join its group. The rules above judge its controls (with
+its username lookup, extra fields, and submit search ending at its first
+button-like control after the password, below), and a dialog with no password,
+with a sign-up or password-change shape, or with two password inputs and none
+marked `current-password` gives none. Its submit is an explicit one after the
+password: an `<input type="submit">` or `<input type="image">`, or a `<button
+type="submit">`. Outside a form a typeless or `type="button"` button submits
+nothing and may be a show-password or a close button, so it is never the submit,
+and a modal whose sign-in is one gets a `GP-FILL` for its submit, as it does for
+a missing username. Its username lookup, its extra fields, and the search for
+its submit all end at the first button-like control after the password (any
+`<button>`, or a submit, image, button, or reset input): that control is the
+submit when it is an explicit one, and otherwise the submit is a `GP-FILL`; a
+username found nowhere before it is a `GP-FILL` too. So a hidden reset panel's
+input and its submit after a typeless "Sign in" are never taken, and a
+show-password toggle or a Close button right after the password ends the fields
+there, so an input after it (a one-time code) is left out and the submit is a
+`GP-FILL`: a `GP-FILL` is the safer failure than a wrong selector. Each of its
+inputs is selected by its id, else by a name no other input on the page shares,
+else it is unresolved; a control inside `<noscript>` is left out; its `action`
+and `method` are empty; and several such dialogs are listed with one holding a
+`current-password` input first, then one whose id or class and whose controls'
+ids and names do not name a sign-up (`signup`, `register`, `create`, `join`, and
+the like), then in document order. Only a page the run opened with a GET, or the
+saved page source, shows a dialog login: one in a POST's HTML response (a failed
+attempt re-rendered, a search result) is not read. A password outside every form
+and every dialog gives no login form: a login built from inputs in a plain
+`<div>` is not found, and neither is a modal that a script renders only after a
+click, which is in no recorded HTML response and is in the page source saved
+when the recording stops only if it is still open then. In a `<form>`, each
+input is selected by its id, else its name (when no other control inside any
+form with the same action shares it: a header mini-login and the main form can
+post to one action), else its type (the same way) (`input:not([type])` for a
+typeless input), and an id or a name that holds an account value is never used;
+a name that holds one, or no name, gets a neutral role key (`field_1`, never a
+name another input of the form has) and a `GP-FILL` naming which of the two it
+was. A selector by type is used only when it picks one input of the form, and is
+never printed without the form scope: when the form's action holds an id the
+printed selectors drop the scope, so only an id selector, or a name no other
+input on the page shares, is printed. A form whose action is empty or only a
+fragment (`#`, `#login`) is scoped to match that, and one whose action names
+another scheme than `http` or `https` has no path to template: it keeps its
+scope and is printed as written (`javascript:void(0)`), unless its text holds an
+id or a token by the path rule (`javascript:go(12345678)`) or an email anywhere
 (`javascript:go('alice@example.com', 'ref')`), when it is printed as
 `javascript:{id}` and its selectors lose the scope. A role left without a
 selector is listed in `LoginForm.unresolved_roles` and the projection's

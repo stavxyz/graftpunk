@@ -2077,3 +2077,18 @@ def test_a_form_s_autocomplete_username_is_found_anywhere_in_it_as_before() -> N
     )
     (form,) = extract_login_forms(html, source="s")
     assert form.fields["username"] == "#u"
+
+
+def test_the_literal_name_username_fallback_stops_at_a_dialog_s_first_button() -> None:
+    """Review round 7: after a show-password toggle, an input named username is no
+    longer in the dialog's field block, so the username is a GP-FILL; in a real form
+    the same controls give it, as on main."""
+    controls = (
+        '<input type="password" id="p"><button type="button" id="eye">Show</button>'
+        '<input id="u" name="username"><input type="submit" id="go">'
+    )
+    (dialog,) = extract_login_forms(_in_dialog(controls), source="s")
+    assert "username" not in dialog.fields
+    assert dialog.absent_roles[0] == "username"
+    (form,) = extract_login_forms(f'<form action="/login">{controls}</form>', source="s")
+    assert form.fields["username"] == "#u"

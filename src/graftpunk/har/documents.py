@@ -878,9 +878,10 @@ def extract_login_forms(
     The page's controls outside every form yield more, after the forms and without
     changing them: one per formless login group (:func:`_formless_login_groups`), a
     script-driven login modal marked as a dialog. The same role rules run over each
-    group's controls, with one difference: its extra fields, and the search for its
-    submit, end at the first button-like control after the password (any
-    ``<button>``, or a submit, image, button, or reset input). That control is the
+    group's controls, with one difference: its username lookup, its extra fields,
+    and the search for its submit all end at the first button-like control after
+    the password (any ``<button>``, or a submit, image, button, or reset input), so
+    a hidden reset panel's input after it is never the username. That control is the
     submit only when it is an explicit one (an ``<input type="submit">`` or
     ``<input type="image">``, or a ``<button type="submit">``), never a typeless or
     ``type="button"`` button, which submits nothing outside a form; otherwise the
