@@ -1028,8 +1028,7 @@ def _used_forms_first(
        change-email form included) and above a real form no post went to, which
        then shares no visible name with any credential post, since no group is
        credited in a run where a real form does (:func:`digest`); with no formless
-       group this term orders
-       nothing the terms below do not;
+       group this term orders nothing the terms below do not;
     1. one on the page that a credential post it went to promoted;
     2. the one the earliest credential post went to (a form no post went to ranks
        after every form one did); a post found by its field names alone went to
@@ -1877,9 +1876,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # No dialog is credited at all when a real login form recorded anywhere in the
     # run (a saved page source's included) shares a visible input name with any
     # credential post of the run; a hidden input (a site-wide CSRF field) is no
-    # shared name. Such a run is digested as before dialogs were read: a post not
-    # credited to a dialog goes to whatever the rules above give, often no form,
-    # and the real form is the login by ranking.
+    # shared name. In such a run the login, the login flow, and login_config are as
+    # before dialogs were read: a post not credited to a dialog goes to whatever the
+    # rules above give, often no form, and the real form is the login by ranking.
+    # The dialog is still listed among the login forms.
     real_form_shares_a_post_name = bool(
         {
             name

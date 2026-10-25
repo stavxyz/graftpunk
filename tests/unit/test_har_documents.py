@@ -2044,3 +2044,36 @@ class TestDialogSubmitBoundedByTheFieldBlockRound5:
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#u", "password": "#p", "otp": "#otp"}
         assert form.submit == "#go"
+
+
+def test_a_hidden_panel_s_username_input_is_never_the_username() -> None:
+    """Review round 6 (toolkit M1, B): the autocomplete="username" lookup stays
+    inside the dialog's field block."""
+    html = _in_dialog(
+        '<input type="email" id="u" name="email"><input type="password" id="p" '
+        'name="password"><button id="signin">Sign in</button><div class="reset" hidden>'
+        '<input type="email" id="r" name="reset_email" autocomplete="username">'
+        '<button type="submit" id="send">Send link</button></div>'
+    )
+    (form,) = extract_login_forms(html, source="s")
+    assert form.fields == {"username": "#u", "password": "#p"}
+
+
+def test_an_autocomplete_username_before_the_password_still_wins_in_a_dialog() -> None:
+    html = _in_dialog(
+        '<input id="a" name="a"><input id="u" name="login" autocomplete="username">'
+        '<input id="b" name="b"><input type="password" id="p">'
+        '<input type="submit" id="go">'
+    )
+    (form,) = extract_login_forms(html, source="s")
+    assert form.fields["username"] == "#u"
+
+
+def test_a_form_s_autocomplete_username_is_found_anywhere_in_it_as_before() -> None:
+    """A real form keeps main's rule: the lookup is not bounded by its submit."""
+    html = (
+        '<form action="/login"><input type="password" id="p"><button id="go">Go</button>'
+        '<input id="u" name="login" autocomplete="username"></form>'
+    )
+    (form,) = extract_login_forms(html, source="s")
+    assert form.fields["username"] == "#u"

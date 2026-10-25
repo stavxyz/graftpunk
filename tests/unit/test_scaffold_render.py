@@ -1087,12 +1087,57 @@ class TestPluginModuleWithLoginForm:
             "write one by hand if the login has one."
         ) in comment
         assert (
-            "GP-FILL: submit has no selector: the login dialog holds no explicit submit after "
-            'the password (an <input type="submit"> or <input type="image">, or a <button '
-            'type="submit">); outside a form a typeless or type="button" button submits '
-            "nothing and may be a show-password or a close button; write one by hand."
+            "GP-FILL: submit has no selector: the first button after the password in the login "
+            'dialog is not an explicit submit (an <input type="submit"> or <input '
+            'type="image">, or a <button type="submit">), or there is none; outside a '
+            'form a typeless or type="button" button submits nothing and may be a '
+            "show-password or a close button, so a submit after it is not taken either; "
+            "write one by hand."
         ) in comment
         assert "multi-step login" not in comment
+        assert 'submit="GP-FILL: submit selector"' in plugin_code
+
+    @pytest.mark.parametrize(
+        "inner",
+        [
+            '<input type="email" id="u"><input type="password" id="p">'
+            '<button type="button" id="eye">Show</button>'
+            '<button type="submit" id="go">Sign in</button>',
+            '<div class="modal-body"><input type="email" id="u"><input type="password" '
+            'id="p"></div><div class="modal-footer"><button type="button" id="close">'
+            'Close</button><button type="submit" id="go">Sign in</button></div>',
+            '<input type="email" id="u"><input type="password" id="p"><button id="signin">'
+            'Sign in</button><div hidden><input type="email" id="r" name="reset_email">'
+            '<button type="submit" id="send">Send link</button></div>',
+        ],
+        ids=["toggle-then-submit", "close-before-sign-in", "hidden-panel"],
+    )
+    def test_a_submit_after_the_first_button_is_a_gp_fill_that_says_why(self, inner: str) -> None:
+        """Review round 6 (toolkit I1, p6c): the dialog does hold a submit, after a
+        button that is not one, and the comment says why it was not taken."""
+        html = f'<div role="dialog">{inner}</div>'
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/")
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: submit has no selector: the first button after the password in the login "
+            'dialog is not an explicit submit (an <input type="submit"> or <input '
+            'type="image">, or a <button type="submit">), or there is none; outside a '
+            'form a typeless or type="button" button submits nothing and may be a '
+            "show-password or a close button, so a submit after it is not taken either; "
+            "write one by hand."
+        ) in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
 
     @staticmethod

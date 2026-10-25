@@ -666,14 +666,19 @@ def _password_index(inputs: list[_RawInput]) -> int | None:
     return next((i for i, raw in enumerate(inputs) if _is_password(raw)), None)
 
 
-def _username_index(inputs: list[_RawInput], password_index: int) -> int | None:
+def _username_index(
+    inputs: list[_RawInput], password_index: int, end: int | None = None
+) -> int | None:
     """The username input: one ``autocomplete="username"`` names anywhere in the form;
     else the input nearest before the password that ``autocomplete="email"`` names;
     else the hinted text-like input nearest before the password; else the text-like
     input nearest before it; else, when nothing text-like precedes the password,
     the first input after it literally named ``username``, ``email``, ``login``, or
-    ``user``. None when the form has none."""
-    for index, raw in enumerate(inputs):
+    ``user``. None when the form has none. With *end*, no input at or after that
+    index is looked at (a dialog's field block: a hidden reset panel's input after
+    it is never the username)."""
+    end = len(inputs) if end is None else end
+    for index, raw in enumerate(inputs[:end]):
         if _is_text_like(raw) and raw.autocomplete == "username":
             return index
     before = [index for index in range(password_index) if _is_text_like(inputs[index])]
@@ -688,7 +693,7 @@ def _username_index(inputs: list[_RawInput], password_index: int) -> int | None:
     return next(
         (
             index
-            for index in range(password_index + 1, len(inputs))
+            for index in range(password_index + 1, end)
             if _is_text_like(inputs[index])
             and inputs[index].name.lower() in _LITERAL_USERNAME_NAMES
         ),
@@ -989,8 +994,6 @@ def _login_form(
         else:
             hidden.append(raw_input.name)
 
-    username_index = _username_index(inputs, password_index)
-    block_start = (username_index if username_index is not None else password_index) + 1
     if formless:
         # Outside a <form> a button submits nothing unless the page's script makes
         # it, and a typeless or type="button" one there is as likely a show-password
@@ -1025,6 +1028,10 @@ def _login_form(
             (i for i in range(password_index + 1, len(inputs)) if _is_submit(inputs[i])), None
         )
         block_end = submit_index if submit_index is not None else len(inputs)
+    # A form's username is looked for among all its controls, as before; a dialog's
+    # only within its field block.
+    username_index = _username_index(inputs, password_index, block_end if formless else None)
+    block_start = (username_index if username_index is not None else password_index) + 1
     roles: list[tuple[str, _RawInput]] = []
     if username_index is not None:
         roles.append(("username", inputs[username_index]))

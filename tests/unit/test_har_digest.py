@@ -5511,22 +5511,26 @@ class TestDialogCreditRound5(_DialogDigestCase):
     """Review round 5 of #267: the credit gate looks at every credential post and
     at visible names only, and pages are counted by host and path."""
 
+    @pytest.mark.parametrize("sharing_first", [True, False], ids=["sharing-first", "sharing-last"])
     def test_p1_a_real_form_sharing_names_with_any_post_blocks_every_credit(
-        self, tmp_path: Path
+        self, tmp_path: Path, sharing_first: bool
     ) -> None:
-        """The first post shares names with the /signin form, so the second, which
-        shares names only with the dialog, is credited to no dialog: main's
-        login_config."""
+        """One post shares names with the /signin form, so the other, which shares
+        names only with the dialog, is credited to no dialog, in either order:
+        main's login_config."""
         modal = self._MODAL.replace('name="email"', 'name="login_email"').replace(
             'name="password"', 'name="passwd"'
         )
+        posts = [
+            self._post("/api/v1/session", {"username": "alice", "password": "x"}),
+            self._post("/api/auth", {"login_email": "alice@example.com", "passwd": "x"}),
+        ]
         result = self._run(
             tmp_path,
             [
                 self._get("/", "<main>home</main>" + modal),
                 self._get("/signin", self._REAL),
-                self._post("/api/v1/session", {"username": "alice", "password": "x"}),
-                self._post("/api/auth", {"login_email": "alice@example.com", "passwd": "x"}),
+                *(posts if sharing_first else posts[::-1]),
             ],
         )
         selected = next(f for f in result.login_forms if "password" in f.fields)
@@ -5535,6 +5539,25 @@ class TestDialogCreditRound5(_DialogDigestCase):
         assert 'url="/signin",' in code
         assert "def root(" in code
         assert self._flags(result)[("GET", "/")] is False
+
+    def test_a_post_matched_by_target_counts_in_the_credit_gate(self, tmp_path: Path) -> None:
+        """Review round 6 (toolkit M2): the post to the real form's own target shares
+        its names, so the later dialog post is credited to no dialog and / is no
+        form page of the login, as on main."""
+        modal = self._MODAL.replace('name="email"', 'name="login_email"').replace(
+            'name="password"', 'name="passwd"'
+        )
+        result = self._run(
+            tmp_path,
+            [
+                self._get("/", "<main>home</main>" + modal),
+                self._get("/signin", self._REAL),
+                self._post("/login", {"username": "alice", "password": "x"}),
+                self._post("/api/auth", {"login_email": "alice@example.com", "passwd": "x"}),
+            ],
+        )
+        assert not any(o.kind == "form_page" and urlparse(o.url).path == "/" for o in result.login)
+        assert 'url="/signin",' in self._plugin(result)
 
     def test_p2_a_shared_hidden_name_does_not_block_the_credit(self, tmp_path: Path) -> None:
         """A site-wide CSRF field is no shared name."""
@@ -5605,4 +5628,12 @@ class TestDialogCreditRound5(_DialogDigestCase):
                 self._post("/api/auth", self._BODY),
             ],
         )
-        assert not any(o.login_flow for o in result.login if o.kind == "form_page")
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert selected.formless
+        # The page credited is listed as a form page outside the login flow, and the
+        # GET / endpoint (both hosts' loads) is no part of the login.
+        pages = [o for o in result.login if o.kind == "form_page"]
+        assert [urlparse(o.url).path for o in pages] == ["/"]
+        assert not any(o.login_flow for o in pages)
+        assert self._flags(result)[("GET", "/")] is False
+        assert "def root(" in self._plugin(result)
