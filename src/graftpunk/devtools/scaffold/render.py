@@ -672,11 +672,16 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
             )
         )
     for role in printable_unresolved_roles(form):
-        if role in form.absent_roles and form.formless:
+        if role in form.absent_roles and form.formless and role == "submit":
             text = (
-                f"{GP_FILL_MARKER}: {role} has no selector: no {role} control was recorded "
-                "beside the password, which sits outside any form; write one by hand if the "
-                "login has one."
+                f"{GP_FILL_MARKER}: submit has no selector: the login dialog holds no submit "
+                'control after the password (a <button type="button"> is never taken as '
+                "one: it may be a show-password or a close button); write one by hand."
+            )
+        elif role in form.absent_roles and form.formless:
+            text = (
+                f"{GP_FILL_MARKER}: {role} has no selector: the login dialog holds no {role} "
+                "input; write one by hand if the login has one."
             )
         elif role in form.absent_roles:
             text = (

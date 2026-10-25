@@ -621,54 +621,47 @@ left out, and so is a lone one with a confirmation password; a lone form with
 one password marked `new-password` is kept (the attribute misused on a login
 form), and a password-plus-PIN form is a login form; a change-password form (a
 `current-password` input, a new password, and no username-like input) is not a
-login form at all (judged on the page's forms alone, so nothing outside a form
-changes what a form gives); a stale-session check still counts any form with a
-password input as a login page (a `<form>`; inputs outside one do not count
-there). A password input with no form owner (in no `<form>` and with no `form`
-attribute, or with a `form` attribute naming no form on the page) makes a login
-form of its own, listed after the page's forms: a login modal whose inputs sit
-in a `<div>` and that a script sends. Its controls are the ownerless ones inside
-the innermost element around the password, below `<body>`, that holds a submit
-control, a `<button type="button">`, a text-like input before the password, or
-another password input; with no such element, the password alone. When that
-element, or the lone password, holds no submit control or `<button
-type="button">`, the group widens once, to the nearest dialog around the
-password (a `<dialog>`, or an element with `role="dialog"`,
-`role="alertdialog"`, or `aria-modal="true"`) wider than that element, when the
-dialog holds such a control and no password of another group: a modal's inputs
-in its body and its button in its footer. It never widens past that dialog, nor
-when no dialog is around the password. A control inside two such elements
-belongs to the innermost, so a header search box, a newsletter input, a cart
-button, or a cookie banner elsewhere on the page never takes a role, and the
-same modal on pages that differ elsewhere is one form. Each group is judged by
-the rules above on its own controls, so a sign-up modal beside a login modal
-leaves the login's, and the groups are listed with one holding a
-`current-password` input first, then one whose element's id or class and
-controls' ids and names do not name a sign-up (`signup`, `register`, `create`,
-`join`, and the like), then in document order. The same rules pick its roles,
-except that a `<button type="button">` after the password is the submit when
-nothing after it submits, and a missing submit is unresolved like a missing
-username, so the generated step carries a `GP-FILL` for each. Its `action` and
-`method` are empty, since no browser submits it; each of its inputs is selected
-by its id, else by a name no other input on the page shares, else it is
-unresolved; a control inside `<noscript>` is left out; and the digest treats it
-as a form with no target of its own (below). A login modal that a script renders
-only after a click is in no recorded HTML response, and is in the page source
-saved when the recording stops only if it is still open then, so its inputs are
-usually still not found. In a `<form>`, each input is selected by its id, else
-its name (when no
-other control inside any form with the same action shares it: a header
-mini-login and the main form can post to one action), else its type (the same
-way) (`input:not([type])` for a typeless input), and an id or a name that holds
-an account value is never used; a name that holds one, or no name, gets a
-neutral role key (`field_1`, never a name another input of the form has) and a
-`GP-FILL` naming which of the two it was. A selector by type is used only when
-it picks one input of the form, and is never printed without the form scope:
-when the form's action holds an id the printed selectors drop the scope, so only
-an id selector, or a name no other input on the page shares, is printed. A form
-whose action is empty or only a fragment (`#`, `#login`) is scoped to match
-that, and one whose action names another scheme than `http` or `https` has no
-path to template: it keeps its scope and is printed as written
+login form at all; a stale-session check still counts any form with a password
+input as a login page (a `<form>`; inputs outside one do not count there). These
+rules are judged on the page's forms alone, so nothing outside a form changes
+what a form gives. A login modal that a script sends, whose inputs sit in no
+`<form>`, is read only when it is marked as a dialog: a `<dialog>`, or an
+element with `role="dialog"`, `role="alertdialog"`, or `aria-modal="true"`. The
+controls with no form owner (in no `<form>` and with no `form` attribute, or
+with a `form` attribute naming no form on the page) inside one dialog, and not
+inside a dialog nested in it, make one more login form, listed after the page's
+forms. A dialog ends at the end tag that closes its own element, counting only
+the start and end tags of its own tag name, so an unclosed `<p>` or `<li>` or a
+stray end tag of another element cannot move it; a dialog never closed runs to
+the end of the page. The rules above judge its controls, and a dialog with no
+password, with a sign-up or password-change shape, or with two password inputs
+and none marked `current-password` gives none. Its submit is an explicit one
+after the password (a submit or image input, or a typeless or `type="submit"`
+`<button>`); a `<button type="button">` never is, since it may be a
+show-password or a close button, so a modal whose sign-in is one gets a
+`GP-FILL` for its submit, as it does for a missing username. Each of its inputs
+is selected by its id, else by a name no other input on the page shares, else it
+is unresolved; a control inside `<noscript>` is left out; its `action` and
+`method` are empty; and several such dialogs are listed with one holding a
+`current-password` input first, then one whose id or class and whose controls'
+ids and names do not name a sign-up (`signup`, `register`, `create`, `join`, and
+the like), then in document order. A password outside every form and every
+dialog gives no login form: a login built from inputs in a plain `<div>` is not
+found, and neither is a modal that a script renders only after a click, which is
+in no recorded HTML response and is in the page source saved when the recording
+stops only if it is still open then. In a `<form>`, each input is selected by
+its id, else its name (when no other control inside any form with the same
+action shares it: a header mini-login and the main form can post to one action),
+else its type (the same way) (`input:not([type])` for a typeless input), and an
+id or a name that holds an account value is never used; a name that holds one,
+or no name, gets a neutral role key (`field_1`, never a name another input of
+the form has) and a `GP-FILL` naming which of the two it was. A selector by type
+is used only when it picks one input of the form, and is never printed without
+the form scope: when the form's action holds an id the printed selectors drop
+the scope, so only an id selector, or a name no other input on the page shares,
+is printed. A form whose action is empty or only a fragment (`#`, `#login`) is
+scoped to match that, and one whose action names another scheme than `http` or
+`https` has no path to template: it keeps its scope and is printed as written
 (`javascript:void(0)`), unless its text holds an id or a token by the path rule
 (`javascript:go(12345678)`) or an email anywhere
 (`javascript:go('alice@example.com', 'ref')`), when it is printed as
@@ -690,18 +683,21 @@ then the one whose form covers more of the post's body names, then the nearest,
 however many assets lie between; a post found by its field names alone (no
 recorded form, a saved page source's included, posts where it went) promotes
 only the nearest page whose form does not post where the credential post went
-(an empty, `#`, or `javascript:` action, one naming the page itself, or inputs
-outside any form), and no page when every earlier form posts somewhere real.
-When every such form on that page is a formless group and one of them is on more
-than one recorded page (a login modal shown site-wide), the post is credited
-instead to the page, among the earlier ones showing that group, whose path has
-the fewest segments (`/` when it was recorded), then the earliest recorded: that
-is the page `login_config.url` opens whichever page the user signed in from, and
-no page's GET is part of the login flow, since a modal shown on every page makes
-none of them a login page. A POST whose body asks for a new password
-(`new_password`, `password_confirm`) is never a credential post by its field
-names. Every other page carrying a login form is an ordinary page and
-keeps its stub. The same form on several pages is one form, told by its
+(an empty, `#`, or `javascript:` action, or one naming the page itself), and no
+page when every earlier form posts somewhere real. When no earlier page holds
+such a form, a post found by its field names alone is credited instead to an
+earlier page holding a dialog login (above) that shares at least one input name
+with the post's body: the dialog sharing the most names, then the page whose
+path has the fewest segments (`/` when it was recorded), then the earliest
+recorded. A dialog whose inputs have no names is never credited. When that
+dialog is on more than one recorded page (a login modal shown site-wide), no
+page's GET is part of the login flow, since none of them is a login page.
+`login_config.url` opens the page of the copy of the form the generator uses,
+which for a form on several pages is the copy whose selectors resolve best
+(below), not always the page the post was credited to. A POST whose body asks
+for a new password (`new_password`, `password_confirm`) is never a credential
+post by its field names. Every other page carrying a login form is an ordinary
+page and keeps its stub. The same form on several pages is one form, told by its
 structure (its element id and each control's tag, type, name, and id), and is
 kept as the copy whose selectors resolve best. Among the forms, one a credential
 post went to is listed first; among those, the one on the page that post

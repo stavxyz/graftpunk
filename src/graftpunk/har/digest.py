@@ -994,20 +994,22 @@ class _CredentialPost:
     page_step: int | None
     # Found by its field names alone: no recorded login form's target matched it.
     by_field_names: bool = False
+    # The formless group it was credited to by its input names (_formless_credit).
+    formless_key: tuple[object, ...] | None = None
 
 
 def _script_driven_forms(entry: HAREntry, forms: tuple[LoginForm, ...]) -> list[LoginForm]:
     """Those of *forms*, served by *entry*, with no target of their own: an empty,
-    ``#``, or ``javascript:`` action, one resolving to the page itself, or inputs
-    outside any form (``LoginForm.formless``). Script decides where such a form is
-    sent, so a credential post found by its field names alone may be its post."""
+    ``#``, or ``javascript:`` action, or one resolving to the page itself. Script
+    decides where such a form is sent, so a credential post found by its field names
+    alone may be its post. A formless group (``LoginForm.formless``) is not one: a
+    post is credited to it only by its input names (:func:`_formless_credit`)."""
     page = _request_target(entry.request.url)
     return [
         form
         for form in forms
-        if form.formless
-        or form.action_target == page
-        or form.action.lower().startswith("javascript:")
+        if not form.formless
+        and (form.action_target == page or form.action.lower().startswith("javascript:"))
     ]
 
 
@@ -1023,8 +1025,9 @@ def _used_forms_first(
     2. the one the earliest credential post went to (a form no post went to ranks
        after every form one did); a post found by its field names alone went to
        the script-driven form (:func:`_script_driven_forms`) on the page it
-       promoted, so a script login ranks its form ahead of a later form posting to
-       its own page (a change-email form);
+       promoted, or to the formless group it was credited to there
+       (:func:`_formless_credit`), so a script login ranks its form ahead of a later
+       form posting to its own page (a change-email form);
     3. the one whose control names cover the most of that post's body;
     4. one that sits on no page a credential post did not promote (not a site-wide
        header form);
@@ -1046,6 +1049,11 @@ def _used_forms_first(
             for order, post in enumerate(posts)
             if _target_matches(form.action_target, post.target)
             or (post.by_field_names and id(form) in script_driven and page == post.page_step)
+            or (
+                post.formless_key is not None
+                and _form_key(form) == post.formless_key
+                and page == post.page_step
+            )
         ]
         on_its_page = any(page == post.page_step for _o, post in matching)
         # A login precedes a password change: the form the earliest post went to wins
@@ -1076,34 +1084,36 @@ def _form_key(form: LoginForm) -> tuple[object, ...]:
     return (form.action, form.method, form.signature, form.hidden)
 
 
-def _site_wide_formless_home(
-    chosen: int,
-    scripted: list[int],
+def _formless_credit(
+    post_step: int,
+    body_names: frozenset[str],
     forms_on_page: dict[int, list[LoginForm]],
-    pages_of_key: dict[tuple[object, ...], set[int]],
-    script_driven: set[int],
-) -> int | None:
-    """The page a credential post found by its field names alone is credited to
-    instead of *chosen* (the nearest earlier page whose form has no target of its
-    own), when every such form on *chosen* is formless and one of them is on more
-    than one recorded page: a login modal shown site-wide. Among the earlier
-    scripted pages (*scripted*) showing one of those groups, the one whose path has
-    the fewest segments (``/`` when recorded), then the earliest recorded, so the
-    login opens at the same page whichever page the user signed in from. None when
-    *chosen* holds no such group."""
-    scripted_forms = [form for form in forms_on_page.get(chosen, []) if id(form) in script_driven]
-    if not scripted_forms or not all(form.formless for form in scripted_forms):
+) -> tuple[int, tuple[object, ...]] | None:
+    """The page and the formless group a credential post found by its field names
+    alone is credited to, when no earlier page holds a real form with no target of
+    its own: among the pages recorded before the post (step below *post_step*),
+    one holding a formless group (``LoginForm.formless``) that shares at least one
+    input name with the post's body (*body_names*), as a real form is matched by
+    the names it covers. The group sharing the most names wins, then the page whose
+    path has the fewest segments (``/`` when recorded), then the earliest recorded.
+    None when no formless group shares a name: a group whose inputs have no names
+    is never credited."""
+    candidates = [
+        (-len(set(form.input_names) & body_names), _path_segments(form.source), at, form)
+        for at, forms in forms_on_page.items()
+        if at < post_step
+        for form in forms
+        if form.formless and set(form.input_names) & body_names
+    ]
+    if not candidates:
         return None
-    keys = {_form_key(form) for form in scripted_forms}
-    if not any(len(pages_of_key.get(key, ())) > 1 for key in keys):
-        return None
-    paths = {
-        at: urlparse(form.source).path
-        for at in scripted
-        for form in forms_on_page.get(at, [])
-        if _form_key(form) in keys
-    }
-    return min(paths, key=lambda at: (len([s for s in paths[at].split("/") if s]), at))
+    _shared, _segments, at, form = min(candidates, key=lambda c: c[:3])
+    return at, _form_key(form)
+
+
+def _path_segments(url: str) -> int:
+    """How many non-empty path segments *url* has."""
+    return len([segment for segment in urlparse(url).path.split("/") if segment])
 
 
 def _used_login(
@@ -1809,8 +1819,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         (at, targets, scripted) for at, _f, o, targets, scripted in pending if o.kind == "form_page"
     ]
     credential_posts: list[_CredentialPost] = []
-    # Per credential post: credited to its page only through a formless group shown
-    # on several pages (_site_wide_formless_home), which makes no page a login page.
+    # Per credential post: credited to its page through a formless group shown on
+    # several recorded pages (_formless_credit), which makes no page a login page.
     site_wide: list[bool] = []
     pages_of_key: dict[tuple[object, ...], set[int]] = {}
     forms_on_page: dict[int, list[LoginForm]] = {}
@@ -1849,17 +1859,18 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             )
         else:
             chosen = max(scripted if by_field_names else [], default=None)
-        home = (
-            None
-            if matching or chosen is None
-            else _site_wide_formless_home(
-                chosen, scripted, forms_on_page, pages_of_key, script_driven
-            )
+        credit = (
+            _formless_credit(post_step, body_names, forms_on_page)
+            if by_field_names and not matching and chosen is None
+            else None
         )
-        site_wide.append(home is not None)
-        if home is not None:
-            chosen = home
-        credential_posts.append(_CredentialPost(went_to, body_names, chosen, by_field_names))
+        formless_key = None
+        if credit is not None:
+            chosen, formless_key = credit
+        site_wide.append(credit is not None and len(pages_of_key[credit[1]]) > 1)
+        credential_posts.append(
+            _CredentialPost(went_to, body_names, chosen, by_field_names, formless_key)
+        )
     promoted = {post.page_step for post in credential_posts}
 
     if source.page_source is not None and source.page_source.is_file():
@@ -1874,8 +1885,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     owned_posts, owned_pages = _used_login(
         ranked_forms, login_forms, page_of, [step for step, *_rest in posts], credential_posts
     )
-    # A page a post was credited to only through a site-wide formless group is the
-    # page the login opens, but it is a content page, so its GET keeps its command.
+    # A page a post was credited to only through a formless group shown on several
+    # pages is a content page showing a site-wide modal, so its GET keeps its command.
     owned_pages -= {
         post.page_step for post, home in zip(credential_posts, site_wide, strict=True) if home
     } - {post.page_step for post, home in zip(credential_posts, site_wide, strict=True) if not home}

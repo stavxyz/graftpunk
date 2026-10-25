@@ -984,10 +984,10 @@ class TestPluginModuleWithLoginForm:
         assert "LoginStep" in plugin_code
 
     def test_login_fields_outside_a_form_give_a_step_with_unscoped_selectors(self) -> None:
-        """A login modal whose inputs sit in a ``<div>`` (#267): the step's selectors
-        are an id and a page-unique name, and none names a form."""
+        """A login dialog whose inputs sit in no ``<form>`` (#267): the step's
+        selectors are an id and a page-unique name, and none names a form."""
         html = (
-            '<div class="modal"><input type="email" name="email">'
+            '<div class="modal" role="dialog"><input type="email" name="email">'
             '<input type="password" id="login-password">'
             '<button type="submit" id="login-submit">Sign in</button></div>'
         )
@@ -1009,7 +1009,10 @@ class TestPluginModuleWithLoginForm:
         assert 'url="/",' in plugin_code
 
     def test_an_unresolved_formless_submit_says_why(self) -> None:
-        html = '<div><input id="u"><input type="password" id="p"><button>Go</button></div>'
+        html = (
+            '<div role="dialog"><input id="u"><input type="password" id="p">'
+            "<button>Go</button></div>"
+        )
         (form,) = extract_login_forms(html, source="https://myshop.example.com/")
         spec = ScaffoldSpec(
             name="myshop",
@@ -1031,7 +1034,10 @@ class TestPluginModuleWithLoginForm:
         assert 'submit="GP-FILL: submit selector"' in plugin_code
 
     def test_a_formless_password_alone_says_its_roles_were_not_found(self) -> None:
-        html = '<div class="pw"><input type="password" id="p"></div>'
+        html = (
+            '<div class="pw" role="dialog"><input type="password" id="p">'
+            '<button type="button" id="eye">Show</button></div>'
+        )
         (form,) = extract_login_forms(html, source="https://myshop.example.com/")
         spec = ScaffoldSpec(
             name="myshop",
@@ -1046,12 +1052,17 @@ class TestPluginModuleWithLoginForm:
             for line in plugin_code.splitlines()
             if line.strip().startswith("#")
         )
-        for role in ("username", "submit"):
-            assert (
-                f"GP-FILL: {role} has no selector: no {role} control was recorded beside the "
-                "password, which sits outside any form; write one by hand if the login has one."
-            ) in comment
+        assert (
+            "GP-FILL: username has no selector: the login dialog holds no username input; "
+            "write one by hand if the login has one."
+        ) in comment
+        assert (
+            "GP-FILL: submit has no selector: the login dialog holds no submit control after "
+            'the password (a <button type="button"> is never taken as one: it may be a '
+            "show-password or a close button); write one by hand."
+        ) in comment
         assert "multi-step login" not in comment
+        assert 'submit="GP-FILL: submit selector"' in plugin_code
 
     @staticmethod
     def _login_spec(*observations: LoginObservation) -> ScaffoldSpec:

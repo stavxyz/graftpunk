@@ -109,10 +109,10 @@ class LoginForm:
     # opened there. The last such GET of the chain that is not a logout (opening one
     # would log out); empty when none. Set by the digest. Internal.
     opened_from: str = field(default="", metadata={"internal": True})
-    # Built from the page's controls outside every <form> (a script-driven login
-    # modal whose inputs sit in a <div>), not from a <form>: no browser submits it,
-    # so its action and method are empty, its action_target is ("", ""), and the
-    # digest counts it as sent by script. Internal.
+    # Built from the controls of a dialog that sit in no <form> (a script-driven
+    # login modal), not from a <form>: no browser submits it, so its action and
+    # method are empty, its action_target is ("", ""), and the digest credits a
+    # credential post to it only by its input names. Internal.
     formless: bool = field(default=False, metadata={"internal": True})
 
 
@@ -148,9 +148,9 @@ class _RawInput:
     # Inside a <noscript> element: shown only when script is off, as an OAuth
     # form_post page's fallback submit button is.
     in_noscript: bool = False
-    # The elements this control sits inside, outermost first, each as its index in
-    # _DocumentParser.elements: what bounds a formless login group.
-    ancestors: tuple[int, ...] = ()
+    # The innermost dialog this control sits in, as its index in
+    # _DocumentParser.dialog_hints, or None: what bounds a formless login group.
+    dialog: int | None = None
 
 
 @dataclass
@@ -161,7 +161,8 @@ class _RawForm:
     element_id: str = ""
 
 
-# The elements that never hold content, so never open: an end tag for one is ignored.
+# The elements that never hold content, so never open: neither their start nor their
+# end tag counts toward a dialog's end.
 _VOID_TAGS = frozenset(
     {
         "area",
@@ -184,7 +185,7 @@ _VOID_TAGS = frozenset(
 
 class _DocumentParser(HTMLParser):
     """Collects every ``<form>`` (with its inputs) and every ``<meta>`` in one pass,
-    and the open elements around each control."""
+    and the dialog each control sits in."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -195,29 +196,32 @@ class _DocumentParser(HTMLParser):
         self.inputs: list[_RawInput] = []
         self._current: _RawForm | None = None
         self._noscript = 0
-        # Each element that opens, in document order, as its tag and its lowered id
-        # and class attributes; a control's ancestors index into it.
-        self.elements: list[tuple[str, str]] = []
-        # The index of each element that is a dialog: a <dialog>, or one with
-        # role="dialog", role="alertdialog", or aria-modal="true".
-        self.dialogs: set[int] = set()
-        # The open elements, as (tag, index into elements). An end tag closes back to
-        # its open element; one with no open element of its tag is ignored, and
-        # whatever is still open at the end of the document stays open.
-        self._open: list[tuple[str, int]] = []
+        # Each dialog (a <dialog>, or an element with role="dialog",
+        # role="alertdialog", or aria-modal="true"), in document order, as its lowered
+        # id and class attributes; a control's dialog indexes into it.
+        self.dialog_hints: list[str] = []
+        # How many elements of each tag are open, counting only that tag's own start
+        # and end tags (never a void element's, and never below zero), so an implied
+        # end tag of another element cannot move a dialog's end.
+        self._open_count: dict[str, int] = {}
+        # The open dialogs, innermost last, as (tag, the tag's open count when the
+        # dialog opened, index into dialog_hints). A dialog closes when its tag's
+        # count falls below that level; one never closed runs to the end.
+        self._dialogs: list[tuple[str, int, int]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {k: (v or "") for k, v in attrs}
-        ancestors = tuple(index for _tag, index in self._open)
         if tag not in _VOID_TAGS:
-            self._open.append((tag, len(self.elements)))
+            level = self._open_count.get(tag, 0) + 1
+            self._open_count[tag] = level
             if (
                 tag == "dialog"
                 or values.get("role", "").strip().lower() in ("dialog", "alertdialog")
                 or values.get("aria-modal", "").strip().lower() == "true"
             ):
-                self.dialogs.add(len(self.elements))
-            self.elements.append((tag, f"{values.get('id', '')} {values.get('class', '')}".lower()))
+                self._dialogs.append((tag, level, len(self.dialog_hints)))
+                hints = f"{values.get('id', '')} {values.get('class', '')}".lower()
+                self.dialog_hints.append(hints)
         if tag == "noscript":
             self._noscript += 1
         if tag == "form":
@@ -245,7 +249,7 @@ class _DocumentParser(HTMLParser):
             )
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
-            raw_input.ancestors = ancestors
+            raw_input.dialog = self._dialogs[-1][2] if self._dialogs else None
             inside = self._current.element_id if self._current is not None else ""
             raw_input.outside_form = bool(raw_input.form_owner) and raw_input.form_owner != inside
             self.inputs.append(raw_input)
@@ -257,11 +261,12 @@ class _DocumentParser(HTMLParser):
                 self.metas.append((name, content))
 
     def handle_endtag(self, tag: str) -> None:
-        if tag not in _VOID_TAGS:
-            for position in range(len(self._open) - 1, -1, -1):
-                if self._open[position][0] == tag:
-                    del self._open[position:]
-                    break
+        if tag not in _VOID_TAGS and self._open_count.get(tag, 0) > 0:
+            count = self._open_count[tag] - 1
+            self._open_count[tag] = count
+            self._dialogs = [
+                dialog for dialog in self._dialogs if dialog[0] != tag or count >= dialog[1]
+            ]
         if tag == "noscript" and self._noscript:
             self._noscript -= 1
         if tag == "form" and self._current is not None:
@@ -737,12 +742,6 @@ def _formless_selectors(
     return None, None
 
 
-def _is_plain_button(raw: _RawInput) -> bool:
-    """A ``<button type="button">``: it submits nothing, but a script-driven login
-    modal uses one as its sign-in control."""
-    return raw.tag == "button" and raw.input_type == "button"
-
-
 def _formless_controls(parsed: _DocumentParser) -> list[_RawInput]:
     """The page's controls with no form owner, in document order: in no ``<form>``
     and with no ``form`` attribute, or with a ``form`` attribute that names no form
@@ -761,111 +760,45 @@ def _formless_controls(parsed: _DocumentParser) -> list[_RawInput]:
     ]
 
 
-def _formless_container(
-    password: _RawInput, controls: list[_RawInput], parsed: _DocumentParser
-) -> int | None:
-    """The element a formless *password* input's login group is bounded by: the
-    innermost element around it, below ``<body>``, that holds a submit control or a
-    ``<button type="button">`` (:func:`_is_submit`, :func:`_is_plain_button`), a
-    text-like input before the password, or another password input (so a sign-up or
-    a password change is judged as one), among the formless *controls*. None when no
-    element smaller than ``<html>`` or ``<body>`` does: the password is then alone.
-
-    When that element (or the password alone) holds no submit-capable control, the
-    group widens once, to the nearest dialog around the password
-    (``_DocumentParser.dialogs``) that is wider than it, when the dialog holds a
-    submit-capable control and no password the element does not: a modal's inputs
-    in its body and its button in its footer. Never past that dialog, and never
-    when no dialog is around the password, so the role rules cannot reach a header
-    search box, a newsletter input, or a cart button elsewhere on the page."""
-    container: int | None = None
-    for ancestor in reversed(password.ancestors):
-        if parsed.elements[ancestor][0] in ("html", "body"):
-            break
-        inside = _controls_inside(ancestor, controls)
-        if any(
-            _is_submit(control)
-            or _is_plain_button(control)
-            or (_is_text_like(control) and control.order < password.order)
-            or (_is_password(control) and control is not password)
-            for control in inside
-        ):
-            container = ancestor
-            break
-    group = [password] if container is None else _controls_inside(container, controls)
-    if any(_is_submit(control) or _is_plain_button(control) for control in group):
-        return container
-    # The nearest dialog around the password, and only when it is wider than the
-    # element found: one inside that element was already passed by.
-    wider = (
-        password.ancestors
-        if container is None
-        else password.ancestors[: password.ancestors.index(container)]
-    )
-    dialogs = [ancestor for ancestor in wider if ancestor in parsed.dialogs]
-    nearest = [ancestor for ancestor in password.ancestors if ancestor in parsed.dialogs]
-    if not dialogs or dialogs[-1] != nearest[-1]:
-        return container
-    dialog = dialogs[-1]
-    in_dialog = _controls_inside(dialog, controls)
-    own_passwords = {id(control) for control in group if _is_password(control)}
-    if any(_is_submit(control) or _is_plain_button(control) for control in in_dialog) and all(
-        id(control) in own_passwords for control in in_dialog if _is_password(control)
-    ):
-        return dialog
-    return container
-
-
-def _controls_inside(element: int, controls: list[_RawInput]) -> list[_RawInput]:
-    """Those of *controls* inside the element at index *element*."""
-    return [control for control in controls if element in control.ancestors]
-
-
-# Words in a group's element or control ids, classes, and names that name a sign-up.
+# Words in a dialog's id or class, or its controls' ids and names, that name a sign-up.
 _SIGN_UP_HINTS = ("signup", "sign-up", "sign_up", "register", "registration", "create", "join")
 
 
 def _formless_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
-    """The page's formless login groups, each the formless controls inside one
-    password input's bounding element (:func:`_formless_container`), or that
-    password alone. A control in several bounding elements belongs to the innermost.
-    Each group is judged on its own controls: one with no password, a change-password
-    group, and a registration group (:func:`_is_change_password`,
-    :func:`_is_registration`) are left out, so a sign-up modal beside a login modal
-    leaves the login's. Ordered with a group holding a ``current-password`` input
-    first, then one whose element, ids, or names do not name a sign-up
-    (``_SIGN_UP_HINTS``), then document order."""
-    controls = _formless_controls(parsed)
-    containers: set[int] = set()
-    alone: list[_RawInput] = []
-    for raw in controls:
-        if _is_password(raw):
-            container = _formless_container(raw, controls, parsed)
-            if container is None:
-                alone.append(raw)
-            else:
-                containers.add(container)
-    groups: dict[object, list[_RawInput]] = {("alone", raw.order): [raw] for raw in alone}
-    alone_orders = {raw.order for raw in alone}
-    for raw in controls:
-        if raw.order in alone_orders:
-            continue
-        around = [ancestor for ancestor in raw.ancestors if ancestor in containers]
-        if around:
-            groups.setdefault(("element", around[-1]), []).append(raw)
+    """The page's formless login groups: for each dialog (``_DocumentParser``
+    tracks a ``<dialog>``, ``role="dialog"``, ``role="alertdialog"``, and
+    ``aria-modal="true"``), the formless controls (:func:`_formless_controls`) whose
+    innermost dialog it is. A password outside every dialog is in no group: nothing
+    else on a page bounds a login's inputs reliably.
 
-    def sign_up_named(key: object, group: list[_RawInput]) -> bool:
+    Each dialog's controls are judged as a form's are: none when they hold no
+    password, when they are a change-password or a registration shape
+    (:func:`_is_change_password`, :func:`_is_registration`), or when they hold more
+    than one password input and none marked ``current-password`` (two logins, or a
+    login and a sign-up, the rules cannot tell apart). Ordered with a group holding
+    a ``current-password`` input first, then one whose dialog's id or class and
+    controls' ids and names do not name a sign-up (``_SIGN_UP_HINTS``), then
+    document order."""
+    by_dialog: dict[int, list[_RawInput]] = {}
+    for raw in _formless_controls(parsed):
+        if raw.dialog is not None:
+            by_dialog.setdefault(raw.dialog, []).append(raw)
+
+    def sign_up_named(dialog: int, group: list[_RawInput]) -> bool:
         words = " ".join(f"{raw.element_id} {raw.name}" for raw in group).lower()
-        if isinstance(key, tuple) and key[0] == "element":
-            words += " " + parsed.elements[key[1]][1]
+        words += " " + parsed.dialog_hints[dialog]
         return any(hint in words for hint in _SIGN_UP_HINTS)
 
     kept = [
-        (key, sorted(group, key=lambda raw: raw.order))
-        for key, group in groups.items()
+        (dialog, group)
+        for dialog, group in by_dialog.items()
         if _password_index(group) is not None
         and not _is_change_password(group)
         and not _is_registration(group)
+        and (
+            len(_password_inputs(group)) == 1
+            or any(raw.autocomplete == "current-password" for raw in group)
+        )
     ]
     kept.sort(
         key=lambda pair: (
@@ -874,7 +807,7 @@ def _formless_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
             pair[1][0].order,
         )
     )
-    return [group for _key, group in kept]
+    return [group for _dialog, group in kept]
 
 
 def extract_login_forms(
@@ -904,10 +837,10 @@ def extract_login_forms(
 
     The page's controls outside every form yield more, after the forms and without
     changing them: one per formless login group (:func:`_formless_login_groups`), a
-    script-driven login whose inputs sit in a ``<div>``. The same role rules run
-    over each group's controls, except that a ``<button type="button">`` after the
-    password is the submit when no submitting control is, and a missing submit is
-    absent and unresolved like a missing username. Its selectors are unscoped
+    script-driven login modal marked as a dialog. The same role rules run over each
+    group's controls; a ``<button type="button">`` is never its submit, as it is
+    never a form's, and a missing submit is absent and unresolved like a missing
+    username, so the generated step carries a ``GP-FILL``. Its selectors are unscoped
     (:func:`_formless_selectors`), its ``action`` and ``method`` are empty (no
     browser submits it, a script sends it with a method of its own), its
     ``action_target`` is ``("", "")``, and ``formless`` is set.
@@ -1017,12 +950,11 @@ def _login_form(
             hidden.append(raw_input.name)
 
     username_index = _username_index(inputs, password_index)
-    after = range(password_index + 1, len(inputs))
-    submit_index = next((i for i in after if _is_submit(inputs[i])), None)
-    if submit_index is None and formless:
-        # A modal's sign-in control is often type="button"; only the group's own
-        # controls are searched, so it is never a button elsewhere on the page.
-        submit_index = next((i for i in after if _is_plain_button(inputs[i])), None)
+    # Never a <button type="button">: a show-password toggle or a dialog's Close
+    # button is one, so a formless group without an explicit submit gets a GP-FILL.
+    submit_index = next(
+        (i for i in range(password_index + 1, len(inputs)) if _is_submit(inputs[i])), None
+    )
     block_start = (username_index if username_index is not None else password_index) + 1
     block_end = submit_index if submit_index is not None else len(inputs)
     roles: list[tuple[str, _RawInput]] = []
