@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import Callable
 
 import lxml.html
 import pytest
@@ -41,6 +42,25 @@ _MULTI_FORM_PAGE = """
 </form>
 </body></html>
 """
+
+
+def _parse_seconds(html: str) -> float:
+    """The fastest of three parses of *html*, so one slow scheduling slice on a
+    loaded CI runner does not decide the result."""
+    best = float("inf")
+    for _ in range(3):
+        started = time.perf_counter()
+        extract_login_forms(html, source="s")
+        best = min(best, time.perf_counter() - started)
+    return best
+
+
+def _assert_parses_in_linear_time(page: Callable[[int], str]) -> None:
+    """Four times the input takes well under sixteen times as long. A quadratic
+    parse grows sixteenfold; a linear one about fourfold. A ratio, not a wall-clock
+    bound, so a slow runner cannot fail it."""
+    small, large = _parse_seconds(page(5000)), _parse_seconds(page(20000))
+    assert large < 8 * small + 0.05, f"5000: {small:.3f}s, 20000: {large:.3f}s"
 
 
 class TestExtractLoginForms:
@@ -1551,10 +1571,11 @@ class TestADialogBoundsItsLoginGroup:
         assert form.submit == "#go"
 
     def test_a_long_page_of_unclosed_elements_parses_in_linear_time(self) -> None:
-        html = "<ul>" + "<li><input name='q'>" * 20000 + "</ul>" + _DIALOG_MODAL
-        started = time.perf_counter()
-        (form,) = extract_login_forms(html, source="s")
-        assert time.perf_counter() - started < 1
+        def page(n: int) -> str:
+            return "<ul>" + "<li><input name='q'>" * n + "</ul>" + _DIALOG_MODAL
+
+        _assert_parses_in_linear_time(page)
+        (form,) = extract_login_forms(page(20000), source="s")
         assert form.fields["password"] == "#login-password"  # noqa: S105
 
     def test_two_copies_of_a_modal_are_two_groups(self) -> None:
@@ -1872,15 +1893,15 @@ class TestDialogSubmitAndParsingRound3:
         assert extract_login_forms(html, source="s") == ()
 
     def test_thousands_of_nested_dialogs_parse_in_linear_time(self) -> None:
-        depth = 20000
-        html = (
-            '<div role="dialog"><span></span>' * depth
-            + '<input id="u"><input type="password" id="p"><input type="submit" id="go">'
-            + "</div>" * depth
-        )
-        started = time.perf_counter()
-        forms = extract_login_forms(html, source="s")
-        assert time.perf_counter() - started < 1
+        def page(depth: int) -> str:
+            return (
+                '<div role="dialog"><span></span>' * depth
+                + '<input id="u"><input type="password" id="p"><input type="submit" id="go">'
+                + "</div>" * depth
+            )
+
+        _assert_parses_in_linear_time(page)
+        forms = extract_login_forms(page(20000), source="s")
         assert [form.submit for form in forms] == ["#go"]
 
     def test_a_dialog_missing_its_own_end_tag_runs_on_past_its_cell(self) -> None:
