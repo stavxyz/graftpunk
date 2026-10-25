@@ -1104,7 +1104,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
         html = (
             f'{opening}<input type="email" id="u"><input type="password" id="p">'
             f'<button type="submit" id="go">Sign in</button>{closing.get(opening, "</div>")}'
-            '<main><button id="add-to-cart">Add to cart</button></main>'
+            '<main><button type="submit" id="add-to-cart">Add to cart</button></main>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert (form.fields, form.submit) == ({"username": "#u", "password": "#p"}, "#go")
@@ -1125,7 +1125,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
         html = (
             _in_dialog(
                 '<input type="email" name="email"><input type="password" name="password">'
-                '<button name="go">Sign in</button>'
+                '<button type="submit" name="go">Sign in</button>'
             )
             + '<footer><input type="email" name="email" placeholder="Newsletter"></footer>'
         )
@@ -1138,7 +1138,8 @@ class TestLoginFieldsInADialogOutsideAnyForm:
     def test_a_submit_with_no_id_or_unique_name_is_unresolved(self) -> None:
         html = _in_dialog(
             '<input name="user" id="u"><input type="password" name="pw">'
-            '<button>Sign in</button><button name="go" id="go-btn">Go</button>'
+            '<button type="submit">Sign in</button>'
+            '<button type="submit" name="go" id="go-btn">Go</button>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#u", "password": 'input[name="pw"]'}
@@ -1152,9 +1153,8 @@ class TestLoginFieldsInADialogOutsideAnyForm:
             '<input type="submit" id="go" value="Sign in">',
             '<input type="image" id="go" src="x.png">',
             '<button type="submit" id="go">Sign in</button>',
-            '<button id="go">Sign in</button>',
         ],
-        ids=["input-submit", "input-image", "button-submit", "button-typeless"],
+        ids=["input-submit", "input-image", "button-submit"],
     )
     def test_an_explicit_submit_after_the_password_is_the_submit(self, button: str) -> None:
         html = _in_dialog(f'<input id="u"><input type="password" id="p">{button}')
@@ -1163,7 +1163,8 @@ class TestLoginFieldsInADialogOutsideAnyForm:
 
     def test_a_submit_before_the_password_is_not_the_submit(self) -> None:
         html = _in_dialog(
-            '<button id="back">Back</button><input id="u"><input type="password" id="p">'
+            '<button type="submit" id="back">Back</button><input id="u">'
+            '<input type="password" id="p">'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.submit is None
@@ -1183,7 +1184,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
         """Review round 2 (n1 T1, shapes A and A2): the toggle in the password's own
         wrapper is not the submit, and the username before it is kept."""
         for sign_in in (
-            '<button id="go">Sign in</button>',
+            '<button type="submit" id="go">Sign in</button>',
             '<button type="submit" id="go">x</button>',
         ):
             html = _in_dialog(
@@ -1232,7 +1233,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
                 '<div class="modal-footer"><button type="button" id="close">Close</button>'
                 '<button type="submit" id="login-go">Sign in</button></div></div></div>'
             )
-            + '<main><button id="add-to-cart">Add to cart</button></main>'
+            + '<main><button type="submit" id="add-to-cart">Add to cart</button></main>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#login-email", "password": "#login-password"}
@@ -1241,7 +1242,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
     def test_a_selector_never_carries_a_form_scope(self) -> None:
         html = _in_dialog(
             '<input name="username"><input type="password" name="password">'
-            '<button name="signin">Sign in</button>'
+            '<button type="submit" name="signin">Sign in</button>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {
@@ -1257,7 +1258,8 @@ class TestLoginFieldsInADialogOutsideAnyForm:
     def test_beside_a_real_login_form_both_are_kept_the_real_one_first(self) -> None:
         html = (
             '<form action="/login" method="post"><input name="email" id="email">'
-            '<input type="password" name="password" id="pw"><button id="go">Go</button></form>'
+            '<input type="password" name="password" id="pw"><button type="submit" id="go">Go'
+            "</button></form>"
             f"{_DIALOG_MODAL}"
         )
         real, formless = extract_login_forms(html, source="s")
@@ -1273,7 +1275,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
     def test_a_real_form_s_controls_are_never_part_of_the_group(self) -> None:
         html = _in_dialog(
             '<form action="/search"><input type="text" name="q" id="q"></form>'
-            '<input type="password" id="pin"><button id="unlock">Unlock</button>'
+            '<input type="password" id="pin"><button type="submit" id="unlock">Unlock</button>'
         )
         (form,) = _formless(html)
         assert form.fields == {"password": "#pin"}
@@ -1319,9 +1321,9 @@ class TestLoginFieldsInADialogOutsideAnyForm:
             '<input type="password" id="cur" autocomplete="current-password">'
             '<input type="password" id="new" name="new_password">',
             '<input type="email" id="le"><input type="password" id="lp">'
-            '<button id="lgo">In</button>'
+            '<button type="submit" id="lgo">In</button>'
             '<input type="email" id="se"><input type="password" id="sp">'
-            '<button id="sgo">Up</button>',
+            '<button type="submit" id="sgo">Up</button>',
         ],
         ids=["new-password", "confirmation", "change-password", "two-unmarked-passwords"],
     )
@@ -1331,7 +1333,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
     def test_two_passwords_one_marked_current_password_is_a_login(self) -> None:
         html = _in_dialog(
             '<input type="email" id="le"><input type="password" id="lp" '
-            'autocomplete="current-password"><button id="lgo">Sign in</button>'
+            'autocomplete="current-password"><button type="submit" id="lgo">Sign in</button>'
             '<input type="password" id="pin" name="pin">'
         )
         (form,) = extract_login_forms(html, source="s")
@@ -1353,7 +1355,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
         real_form = (
             '<form action="/login" method="post"><input name="user" id="u">'
             '<input type="password" id="p" name="password" autocomplete="new-password">'
-            '<button id="b">Go</button></form>'
+            '<button type="submit" id="b">Go</button></form>'
         )
         (alone,) = extract_login_forms(real_form, source="s")
         forms = extract_login_forms(
@@ -1369,8 +1371,8 @@ class TestLoginFieldsInADialogOutsideAnyForm:
         assert extract_login_forms(only_noscript, source="s") == ()
         mixed = _in_dialog(
             '<input type="text" id="u"><input type="password" id="p">'
-            '<noscript><button id="fallback">Sign in</button></noscript>'
-            '<button id="go">Sign in</button>'
+            '<noscript><button type="submit" id="fallback">Sign in</button></noscript>'
+            '<button type="submit" id="go">Sign in</button>'
         )
         (form,) = extract_login_forms(mixed, source="s")
         assert form.submit == "#go"
@@ -1422,18 +1424,19 @@ class TestADialogBoundsItsLoginGroup:
     def test_a_modal_among_a_busy_page_s_formless_controls(self) -> None:
         html = (
             "<html><body>"
-            '<header><input type="search" name="q" id="q"><button id="search-go">Go</button>'
+            '<header><input type="search" name="q" id="q">'
+            '<button type="submit" id="search-go">Go</button>'
             '<a href="#" id="signin-link">Sign in</a></header>'
             '<main><div class="product"><input type="number" name="qty" id="qty">'
-            '<button id="add-to-cart">Add to cart</button></div></main>'
+            '<button type="submit" id="add-to-cart">Add to cart</button></div></main>'
             + _in_dialog(
                 '<div class="modal-body"><input type="email" id="login-email" name="email">'
                 '<input type="password" id="login-password" name="password">'
                 '<button type="submit" id="login-go">Sign in</button></div>'
             )
             + '<footer><input type="email" name="newsletter" id="nl">'
-            '<button id="subscribe">Subscribe</button></footer>'
-            '<div class="cookies"><button id="accept">Accept</button></div>'
+            '<button type="submit" id="subscribe">Subscribe</button></footer>'
+            '<div class="cookies"><button type="submit" id="accept">Accept</button></div>'
             "</body></html>"
         )
         (form,) = extract_login_forms(html, source="s")
@@ -1448,11 +1451,11 @@ class TestADialogBoundsItsLoginGroup:
             # n3 B2: role=dialog, password and a sign-in link, inside an app wrapper.
             '<body><div id="app"><header><input type="text" name="q" id="q"></header>'
             '<div role="dialog"><input type="password" id="pin"><a href="#" id="go">Sign in</a>'
-            '</div><main><button id="cart">Add to cart</button></main></div></body>',
+            '</div><main><button type="submit" id="cart">Add to cart</button></main></div></body>',
             # n3 B3: <dialog> with a password and a link, a newsletter around it.
             '<body><div class="page"><footer><input type="email" id="nl" name="newsletter">'
             '</footer><dialog><input type="password" id="pin"><a id="go">Continue</a></dialog>'
-            '<button id="sub">Subscribe</button></div></body>',
+            '<button type="submit" id="sub">Subscribe</button></div></body>',
         ],
         ids=["B2", "B3"],
     )
@@ -1467,8 +1470,8 @@ class TestADialogBoundsItsLoginGroup:
             '<div role="dialog" id="login"><input type="email" id="u">'
             '<input type="password" id="p" autocomplete="current-password">'
             '<dialog id="confirm"><input type="password" id="pin">'
-            '<button id="ok">OK</button></dialog>'
-            '<button id="go">Sign in</button></div>'
+            '<button type="submit" id="ok">OK</button></dialog>'
+            '<button type="submit" id="go">Sign in</button></div>'
         )
         outer, inner = extract_login_forms(html, source="s")
         assert (outer.fields, outer.submit) == ({"username": "#u", "password": "#p"}, "#go")
@@ -1480,8 +1483,9 @@ class TestADialogBoundsItsLoginGroup:
         html = (
             '<p>Welcome<div role="dialog"><p>Sign in<ul><li><input id="u">'
             '<li><input type="password" id="p"></ul></p></p><span></p></span>'
-            '<button id="go">Go</button></div>'
-            '<main><input name="q" id="q"><button id="cart">Add to cart</button></main>'
+            '<button type="submit" id="go">Go</button></div>'
+            '<main><input name="q" id="q"><button type="submit" id="cart">Add to cart'
+            "</button></main>"
         )
         (form,) = extract_login_forms(html, source="s")
         assert (form.fields, form.submit) == ({"username": "#u", "password": "#p"}, "#go")
@@ -1490,7 +1494,8 @@ class TestADialogBoundsItsLoginGroup:
         html = (
             '<div role="dialog"><div class="body"><div><input id="u"></div>'
             '<input type="password" id="p"></div><div class="footer">'
-            '<button id="go">Go</button></div></div><button id="cart">Cart</button>'
+            '<button type="submit" id="go">Go</button></div></div>'
+            '<button type="submit" id="cart">Cart</button>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.submit == "#go"
@@ -1499,7 +1504,8 @@ class TestADialogBoundsItsLoginGroup:
         """What follows is left out: the group only ever shrinks."""
         html = (
             '<div role="dialog"><input id="u"><input type="password" id="p"></div></div>'
-            '<button id="go">Go</button></div><button id="cart">Cart</button>'
+            '<button type="submit" id="go">Go</button></div>'
+            '<button type="submit" id="cart">Cart</button>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.submit is None
@@ -1507,7 +1513,7 @@ class TestADialogBoundsItsLoginGroup:
     def test_a_stray_end_tag_before_the_dialog_does_not_end_it(self) -> None:
         html = (
             '</div></div><div role="dialog"><input id="u"><input type="password" id="p">'
-            '<button id="go">Go</button></div>'
+            '<button type="submit" id="go">Go</button></div>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.submit == "#go"
@@ -1515,13 +1521,16 @@ class TestADialogBoundsItsLoginGroup:
     def test_a_void_end_tag_is_not_counted(self) -> None:
         html = (
             '<div role="dialog"><input id="u"></input><br></br><img src="x"></img>'
-            '<input type="password" id="p"><button id="go">Go</button></div>'
+            '<input type="password" id="p"><button type="submit" id="go">Go</button></div>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.submit == "#go"
 
     def test_an_unclosed_dialog_runs_to_the_end(self) -> None:
-        html = '<dialog><input id="u"><input type="password" id="p"><button id="go">Go</button>'
+        html = (
+            '<dialog><input id="u"><input type="password" id="p">'
+            '<button type="submit" id="go">Go</button>'
+        )
         (form,) = extract_login_forms(html, source="s")
         assert form.submit == "#go"
 
@@ -1535,10 +1544,10 @@ class TestADialogBoundsItsLoginGroup:
     def test_two_copies_of_a_modal_are_two_groups(self) -> None:
         html = _in_dialog(
             '<input id="u1" name="username"><input type="password" id="p1" name="password">'
-            '<button id="g1">Go</button>'
+            '<button type="submit" id="g1">Go</button>'
         ) + _in_dialog(
             '<input id="u2" name="username"><input type="password" id="p2" name="password">'
-            '<button id="g2">Go</button>'
+            '<button type="submit" id="g2">Go</button>'
         )
         one, two = extract_login_forms(html, source="s")
         assert (one.fields, one.submit) == ({"username": "#u1", "password": "#p1"}, "#g1")
@@ -1546,10 +1555,11 @@ class TestADialogBoundsItsLoginGroup:
 
     def test_a_current_password_group_is_listed_first(self) -> None:
         html = _in_dialog(
-            '<input id="a"><input type="password" id="ap"><button id="ago">Go</button>'
+            '<input id="a"><input type="password" id="ap"><button type="submit" id="ago">Go'
+            "</button>"
         ) + _in_dialog(
             '<input id="b"><input type="password" id="bp" autocomplete="current-password">'
-            '<button id="bgo">Go</button>'
+            '<button type="submit" id="bgo">Go</button>'
         )
         first, second = extract_login_forms(html, source="s")
         assert first.fields["password"] == "#bp"  # noqa: S105
@@ -1569,11 +1579,11 @@ class TestADialogBoundsItsLoginGroup:
         email, password = signup_ids
         html = _in_dialog(
             f'<input type="email" id="{email}"><input type="password" id="{password}">'
-            '<button id="sgo">Create</button>',
+            '<button type="submit" id="sgo">Create</button>',
             signup_opening,
         ) + _in_dialog(
             '<input type="email" id="le"><input type="password" id="lp">'
-            '<button id="lgo">Sign in</button>'
+            '<button type="submit" id="lgo">Sign in</button>'
         )
         first, second = extract_login_forms(html, source="s")
         assert first.fields == {"username": "#le", "password": "#lp"}
@@ -1582,10 +1592,10 @@ class TestADialogBoundsItsLoginGroup:
     def test_a_sign_up_dialog_marked_new_password_beside_a_login_dialog(self) -> None:
         html = _in_dialog(
             '<input type="email" id="le"><input type="password" id="lp">'
-            '<button id="lgo">Sign in</button>'
+            '<button type="submit" id="lgo">Sign in</button>'
         ) + _in_dialog(
             '<input type="email" id="se"><input type="password" id="sp" '
-            'autocomplete="new-password"><button id="sgo">Create</button>'
+            'autocomplete="new-password"><button type="submit" id="sgo">Create</button>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#le", "password": "#lp"}
@@ -1594,7 +1604,9 @@ class TestADialogBoundsItsLoginGroup:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Random pages with forms, dialogs, stray and unclosed tags: the real forms
-        are the same with formless groups built and with them switched off."""
+        are the same with formless groups built and with them switched off. This
+        compares against formless groups switched off in this code, not against
+        main: it shows real forms do not depend on the formless groups."""
         from graftpunk.har import documents
 
         rng = random.Random(267)  # noqa: S311 - a fixed sample, not a secret
@@ -1615,7 +1627,7 @@ _RANDOM_CONTROLS = (
     '<input type="password" autocomplete="new-password" name="pw2">',
     '<input type="password" autocomplete="current-password" id="cp{n}">',
     '<input type="hidden" name="csrf">',
-    '<button id="b{n}">Go</button>',
+    '<button type="submit" id="b{n}">Go</button>',
     '<button type="button" id="bb{n}">Go</button>',
     '<input type="submit" id="s{n}">',
     '<input type="password" name="password_confirm">',
@@ -1735,3 +1747,134 @@ _REVIEW_PROBES_OUTSIDE_A_DIALOG = {
 )
 def test_a_review_probe_outside_a_dialog_gives_no_formless_form(html: str) -> None:
     assert _formless(html) == []
+
+
+class TestDialogSubmitAndParsingRound3:
+    """Review round 3 of #267: the submit inside a dialog, self-closing tags, role
+    tokens, void elements, and many open dialogs."""
+
+    @pytest.mark.parametrize(
+        ("inner", "submit"),
+        [
+            # toggle.py: a typeless show-password toggle, then a type=submit sign-in.
+            (
+                '<input type="email" id="u" name="email"><div class="pw">'
+                '<input type="password" id="p" name="password">'
+                '<button class="toggle" aria-label="Show password" id="eye"></button></div>'
+                '<button type="submit" id="signin">Sign in</button>',
+                "#signin",
+            ),
+            # A typeless toggle, then a typeless sign-in: neither submits outside a form.
+            (
+                '<input type="email" id="u" name="email"><input type="password" id="p" '
+                'name="password"><button aria-label="Show password" id="eye"></button>'
+                '<button id="signin">Sign in</button>',
+                None,
+            ),
+            # A typeless "Forgot password?" button, then a typeless sign-in.
+            (
+                '<input type="email" id="u" name="email"><input type="password" id="p" '
+                'name="password"><button class="link" id="forgot">Forgot password?</button>'
+                '<button id="signin">Sign in</button>',
+                None,
+            ),
+        ],
+        ids=["typeless-toggle-then-submit", "two-typeless", "forgot-then-typeless"],
+    )
+    def test_a_typeless_button_is_never_a_dialog_s_submit(
+        self, inner: str, submit: str | None
+    ) -> None:
+        (form,) = extract_login_forms(_in_dialog(inner), source="s")
+        assert form.fields == {"username": "#u", "password": "#p"}
+        assert form.submit == submit
+        assert ("submit" in form.unresolved_roles) is (submit is None)
+
+    def test_a_typeless_button_still_submits_a_real_form(self) -> None:
+        html = (
+            '<form action="/login"><input id="u"><input type="password" id="p">'
+            '<button id="go">Go</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.submit == "#go"
+
+    @pytest.mark.parametrize(
+        "html",
+        [
+            '<div role="dialog"/><input id="u"><input type="password" id="p">'
+            '<input type="submit" id="go"></div>',
+            '<div role="dialog"><div class="spacer"/><input id="u"><input type="password" '
+            'id="p"></div><input type="submit" id="go"></div>',
+        ],
+        ids=["dialog-self-closing", "inner-div-self-closing"],
+    )
+    def test_a_self_closing_non_void_element_opens_as_a_browser_reads_it(self, html: str) -> None:
+        (form,) = extract_login_forms(html, source="s")
+        assert (form.fields, form.submit) == ({"username": "#u", "password": "#p"}, "#go")
+
+    def test_a_self_closing_form_still_closes_at_once(self) -> None:
+        """Unchanged for real forms: ``<form/>`` holds nothing, as before."""
+        html = (
+            '<form action="/login" method="post"/><input name="u" id="u">'
+            '<input type="password" id="p"></form>'
+        )
+        assert extract_login_forms(html, source="s") == ()
+
+    def test_a_self_closing_element_in_svg_closes_at_once(self) -> None:
+        html = (
+            '<svg><g role="dialog"/></svg><input id="u"><input type="password" id="p">'
+            '<input type="submit" id="go">'
+        )
+        assert extract_login_forms(html, source="s") == ()
+
+    @pytest.mark.parametrize(
+        ("attribute", "is_dialog"),
+        [
+            ('role="dialog presentation"', True),
+            ('role="alertdialog dialog"', True),
+            ('role=" dialog "', True),
+            ('role="presentation dialog"', False),
+            ('role="dialogue"', False),
+            ('aria-modal="TRUE"', True),
+            ('aria-modal=" true "', True),
+        ],
+    )
+    def test_role_is_read_as_a_token_list_and_aria_modal_without_case(
+        self, attribute: str, is_dialog: bool
+    ) -> None:
+        html = (
+            f'<div {attribute}><input id="u"><input type="password" id="p">'
+            '<input type="submit" id="go"></div>'
+        )
+        assert bool(_formless(html)) is is_dialog
+
+    def test_a_void_element_marked_as_a_dialog_opens_none(self) -> None:
+        html = (
+            '<img role="dialog" src="x.png"><input id="u"><input type="password" id="p">'
+            '<input type="submit" id="go">'
+        )
+        assert extract_login_forms(html, source="s") == ()
+
+    def test_thousands_of_nested_dialogs_parse_in_linear_time(self) -> None:
+        depth = 20000
+        html = (
+            '<div role="dialog"><span></span>' * depth
+            + '<input id="u"><input type="password" id="p"><input type="submit" id="go">'
+            + "</div>" * depth
+        )
+        started = time.perf_counter()
+        forms = extract_login_forms(html, source="s")
+        assert time.perf_counter() - started < 1
+        assert [form.submit for form in forms] == ["#go"]
+
+    def test_a_dialog_missing_its_own_end_tag_runs_on_past_its_cell(self) -> None:
+        """A known limit (review round 3, A12): a browser closes the dialog's
+        ``<div>`` at ``</td>``; here only a ``</div>`` closes it, so the next cell's
+        input joins the group. Its typeless button is no submit, so nothing is
+        clicked that the user did not mean."""
+        html = (
+            '<table><tr><td><div role="dialog"><input type="password" id="p"></td>'
+            '<td><input id="q" name="q"><button id="cart">Cart</button></td></tr></table>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"password": "#p", "q": "#q"}
+        assert form.submit is None

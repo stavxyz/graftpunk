@@ -1002,14 +1002,14 @@ def _script_driven_forms(entry: HAREntry, forms: tuple[LoginForm, ...]) -> list[
     """Those of *forms*, served by *entry*, with no target of their own: an empty,
     ``#``, or ``javascript:`` action, or one resolving to the page itself. Script
     decides where such a form is sent, so a credential post found by its field names
-    alone may be its post. A formless group (``LoginForm.formless``) is not one: a
-    post is credited to it only by its input names (:func:`_formless_credit`)."""
+    alone may be its post. A formless group (``LoginForm.formless``) is never one,
+    as its action is empty and its target ``("", "")``: a post is credited to it
+    only by its input names (:func:`_formless_credit`)."""
     page = _request_target(entry.request.url)
     return [
         form
         for form in forms
-        if not form.formless
-        and (form.action_target == page or form.action.lower().startswith("javascript:"))
+        if form.action_target == page or form.action.lower().startswith("javascript:")
     ]
 
 
@@ -1021,6 +1021,11 @@ def _used_forms_first(
 ) -> list[LoginForm]:
     """*forms* in the order the generator should prefer them:
 
+    0. a real form a credential post went to (by its target, or found by its field
+       names on the page it promoted), then a formless group a post was credited to
+       (:func:`_formless_credit`), then any other real form, then any other formless
+       group: a dialog login never displaces a real form, and with no formless
+       group this term orders nothing the terms below do not;
     1. one on the page that a credential post it went to promoted;
     2. the one the earliest credential post went to (a form no post went to ranks
        after every form one did); a post found by its field names alone went to
@@ -1042,18 +1047,16 @@ def _used_forms_first(
         if id(form) in page_of:
             pages_of_key.setdefault(_form_key(form), set()).add(page_of[id(form)])
 
-    def rank(form: LoginForm) -> tuple[bool, int, int, bool, int]:
+    def rank(form: LoginForm) -> tuple[int, bool, int, int, bool, int]:
         page = page_of.get(id(form))
         matching = [
             (order, post)
             for order, post in enumerate(posts)
             if _target_matches(form.action_target, post.target)
             or (post.by_field_names and id(form) in script_driven and page == post.page_step)
-            or (
-                post.formless_key is not None
-                and _form_key(form) == post.formless_key
-                and page == post.page_step
-            )
+            # Every copy of the credited group matches: the copies are one form,
+            # listed once (_unique_forms), so which copy matched orders nothing.
+            or (post.formless_key is not None and _form_key(form) == post.formless_key)
         ]
         on_its_page = any(page == post.page_step for _o, post in matching)
         # A login precedes a password change: the form the earliest post went to wins
@@ -1065,7 +1068,9 @@ def _used_forms_first(
         site_wide = bool(pages_of_key.get(_form_key(form), set()) - promoted)
         # No "not matching" term: a form no post went to has no page of its own and
         # the latest possible earliest post, so the terms below already rank it last.
+        kind = (1 if matching else 3) if form.formless else (0 if matching else 2)
         return (
+            kind,
             not on_its_page,
             earliest,
             -coverage,
@@ -1091,7 +1096,8 @@ def _formless_credit(
 ) -> tuple[int, tuple[object, ...]] | None:
     """The page and the formless group a credential post found by its field names
     alone is credited to, when no earlier page holds a real form with no target of
-    its own: among the pages recorded before the post (step below *post_step*),
+    its own: among the pages recorded before the post (step below *post_step*; only
+    a GET's page holds one, as the digest drops a formless group from a POST's HTML),
     one holding a formless group (``LoginForm.formless``) that shares at least one
     input name with the post's body (*body_names*), as a real form is matched by
     the names it covers. The group sharing the most names wins, then the page whose
@@ -1131,10 +1137,15 @@ def _used_login(
     target, the posts found by their field names alone to the first target no
     recorded form posts to (a script posting elsewhere than the form says), whether
     they promoted its page or not. A field-name-only post that promoted its page but
-    went elsewhere than that first target is not owned. With no such form, every
-    credential post and its page."""
+    went elsewhere than that first target is not owned. With no such form, or when
+    it is a formless group (a dialog's post is found by its names alone, so a later
+    password post cannot be told from the login's), every credential post and its
+    page."""
     selected = next((form for form in ranked if "password" in form.fields), None)
-    if selected is None:
+    if selected is None or selected.formless:
+        # A dialog's post is found by its field names alone, so a later password post
+        # (a re-authentication) cannot be told from the login's: every credential
+        # post stays the login's, as when no form was recorded.
         owned = set(post_steps)
     else:
         key = _form_key(selected)
@@ -1693,6 +1704,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             forms_in_entry = extract_login_forms(
                 entry.response.body, source=document_source, base=_unmasked_page(entry)
             )
+            if method != "GET":
+                # Only a page the run opened shows a dialog login: a POST's HTML (a
+                # failed attempt re-rendered, a search result) is never its page, its
+                # url, or a second page making it site-wide.
+                forms_in_entry = tuple(form for form in forms_in_entry if not form.formless)
             # A logout in the chain is skipped: opening it would log out.
             opened_from = next(
                 (
@@ -1726,7 +1742,19 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         by_target = method == "POST" and _posts_to_a_login_form(post_target, login_action_targets)
         kind: ObservationKind | None = None
         fields: tuple[str, ...] = ()
-        if method == "GET" and forms_in_entry:
+        # A page holding only dialog logins that a login's redirect chain lands on (a
+        # layout carrying the modal on every page) is that chain's hop, as it was
+        # before dialogs were read, not a form page.
+        lands_a_chain = (
+            bool(forms_in_entry)
+            and all(form.formless for form in forms_in_entry)
+            and bool(credential_post_steps)
+            and step - credential_post_steps[-1] <= _LOGIN_WINDOW
+            and _continues_chain(
+                here_host, path, chain_next.get(credential_post_steps[-1], ("", ""))
+            )
+        )
+        if method == "GET" and forms_in_entry and not lands_a_chain:
             kind = "form_page"
         elif method == "POST" and (credential_hint_fields or by_target):
             # Report every body field name, not only the password-hinted
@@ -1861,7 +1889,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             chosen = max(scripted if by_field_names else [], default=None)
         credit = (
             _formless_credit(post_step, body_names, forms_on_page)
-            if by_field_names and not matching and chosen is None
+            if by_field_names and chosen is None
             else None
         )
         formless_key = None

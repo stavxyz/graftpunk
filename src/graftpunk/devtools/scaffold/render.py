@@ -674,9 +674,11 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     for role in printable_unresolved_roles(form):
         if role in form.absent_roles and form.formless and role == "submit":
             text = (
-                f"{GP_FILL_MARKER}: submit has no selector: the login dialog holds no submit "
-                'control after the password (a <button type="button"> is never taken as '
-                "one: it may be a show-password or a close button); write one by hand."
+                f"{GP_FILL_MARKER}: submit has no selector: the login dialog holds no explicit "
+                'submit after the password (an <input type="submit"> or <input type="image">, '
+                'or a <button type="submit">); outside a form a typeless or type="button" '
+                "button submits nothing and may be a show-password or a close button; write "
+                "one by hand."
             )
         elif role in form.absent_roles and form.formless:
             text = (
@@ -690,7 +692,8 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
             )
         else:
             reason = (
-                "it sits outside any form and has no id and no name unique on the recorded page"
+                "it sits outside any form, and has no id and no name that is unique on the "
+                "recorded page and holds no account value"
                 if role in form.unresolved_roles and form.formless
                 else "none picks one input of the recorded form"
                 if role in form.unresolved_roles

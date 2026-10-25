@@ -64,7 +64,8 @@ def looks_like_token_name(name: str) -> bool:
 
 @dataclass(frozen=True)
 class LoginForm:
-    """A ``<form>`` containing a password input, from a page source or an HTML response."""
+    """A ``<form>`` containing a password input, or a dialog's login controls that sit
+    in no form (``formless``), from a page source or an HTML response."""
 
     action: str
     method: str
@@ -196,30 +197,57 @@ class _DocumentParser(HTMLParser):
         self.inputs: list[_RawInput] = []
         self._current: _RawForm | None = None
         self._noscript = 0
-        # Each dialog (a <dialog>, or an element with role="dialog",
-        # role="alertdialog", or aria-modal="true"), in document order, as its lowered
-        # id and class attributes; a control's dialog indexes into it.
+        # Each dialog (a <dialog>, or an element whose role's first token is dialog
+        # or alertdialog, or with aria-modal="true"), in document order, as its
+        # lowered id and class attributes; a control's dialog indexes into it.
         self.dialog_hints: list[str] = []
         # How many elements of each tag are open, counting only that tag's own start
-        # and end tags (never a void element's, and never below zero), so an implied
-        # end tag of another element cannot move a dialog's end.
+        # and end tags. A void element never opens, and the count never falls below
+        # zero, so neither a void end tag nor a stray one counts, and an implied end
+        # tag of another element cannot move a dialog's end.
         self._open_count: dict[str, int] = {}
-        # The open dialogs, innermost last, as (tag, the tag's open count when the
-        # dialog opened, index into dialog_hints). A dialog closes when its tag's
-        # count falls below that level; one never closed runs to the end.
-        self._dialogs: list[tuple[str, int, int]] = []
+        # Per tag, the open dialogs of that tag, innermost last, as (the tag's open
+        # count when the dialog opened, index into dialog_hints). A dialog closes when
+        # its tag's count falls below that level; one never closed runs to the end.
+        self._dialog_levels: dict[str, list[tuple[int, int]]] = {}
+        # Every dialog opened and not yet seen closed, innermost last, and the ones
+        # closed: a closed one is dropped when it reaches the end of the list.
+        self._dialogs: list[int] = []
+        self._closed: set[int] = set()
+        # Inside <svg> or <math>, where "/>" closes an element; elsewhere a browser
+        # ignores it on an element that is not void.
+        self._foreign = 0
+
+    def _innermost_dialog(self) -> int | None:
+        while self._dialogs and self._dialogs[-1] in self._closed:
+            self._dialogs.pop()
+        return self._dialogs[-1] if self._dialogs else None
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        if self._foreign or tag in ("svg", "math"):
+            self.handle_endtag(tag)
+        elif tag in ("form", "noscript"):
+            # As before: a <form/> or <noscript/> holds nothing. Its open count is
+            # left alone, as a browser leaves the element open.
+            self._end_form_or_noscript(tag)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {k: (v or "") for k, v in attrs}
+        if tag in ("svg", "math"):
+            self._foreign += 1
         if tag not in _VOID_TAGS:
             level = self._open_count.get(tag, 0) + 1
             self._open_count[tag] = level
+            role = values.get("role", "").lower().split()[:1]
             if (
                 tag == "dialog"
-                or values.get("role", "").strip().lower() in ("dialog", "alertdialog")
+                or role in (["dialog"], ["alertdialog"])
                 or values.get("aria-modal", "").strip().lower() == "true"
             ):
-                self._dialogs.append((tag, level, len(self.dialog_hints)))
+                index = len(self.dialog_hints)
+                self._dialog_levels.setdefault(tag, []).append((level, index))
+                self._dialogs.append(index)
                 hints = f"{values.get('id', '')} {values.get('class', '')}".lower()
                 self.dialog_hints.append(hints)
         if tag == "noscript":
@@ -249,7 +277,7 @@ class _DocumentParser(HTMLParser):
             )
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
-            raw_input.dialog = self._dialogs[-1][2] if self._dialogs else None
+            raw_input.dialog = self._innermost_dialog()
             inside = self._current.element_id if self._current is not None else ""
             raw_input.outside_form = bool(raw_input.form_owner) and raw_input.form_owner != inside
             self.inputs.append(raw_input)
@@ -261,12 +289,17 @@ class _DocumentParser(HTMLParser):
                 self.metas.append((name, content))
 
     def handle_endtag(self, tag: str) -> None:
-        if tag not in _VOID_TAGS and self._open_count.get(tag, 0) > 0:
+        if self._open_count.get(tag, 0) > 0:
             count = self._open_count[tag] - 1
             self._open_count[tag] = count
-            self._dialogs = [
-                dialog for dialog in self._dialogs if dialog[0] != tag or count >= dialog[1]
-            ]
+            levels = self._dialog_levels.get(tag)
+            while levels and count < levels[-1][0]:
+                self._closed.add(levels.pop()[1])
+        if tag in ("svg", "math") and self._foreign:
+            self._foreign -= 1
+        self._end_form_or_noscript(tag)
+
+    def _end_form_or_noscript(self, tag: str) -> None:
         if tag == "noscript" and self._noscript:
             self._noscript -= 1
         if tag == "form" and self._current is not None:
@@ -950,10 +983,18 @@ def _login_form(
             hidden.append(raw_input.name)
 
     username_index = _username_index(inputs, password_index)
-    # Never a <button type="button">: a show-password toggle or a dialog's Close
-    # button is one, so a formless group without an explicit submit gets a GP-FILL.
+    # Outside a <form> a button submits nothing unless the page's script makes it,
+    # and a typeless or type="button" one there is as likely a show-password toggle
+    # or a Close button: a formless group takes only an explicit submit, else a
+    # GP-FILL. A form keeps its rule, where a typeless button submits.
     submit_index = next(
-        (i for i in range(password_index + 1, len(inputs)) if _is_submit(inputs[i])), None
+        (
+            i
+            for i in range(password_index + 1, len(inputs))
+            if _is_submit(inputs[i])
+            and not (formless and inputs[i].tag == "button" and not inputs[i].typed)
+        ),
+        None,
     )
     block_start = (username_index if username_index is not None else password_index) + 1
     block_end = submit_index if submit_index is not None else len(inputs)

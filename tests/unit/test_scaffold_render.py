@@ -1011,7 +1011,7 @@ class TestPluginModuleWithLoginForm:
     def test_an_unresolved_formless_submit_says_why(self) -> None:
         html = (
             '<div role="dialog"><input id="u"><input type="password" id="p">'
-            "<button>Go</button></div>"
+            '<button type="submit">Go</button></div>'
         )
         (form,) = extract_login_forms(html, source="https://myshop.example.com/")
         spec = ScaffoldSpec(
@@ -1028,10 +1028,40 @@ class TestPluginModuleWithLoginForm:
             if line.strip().startswith("#")
         )
         assert (
-            "GP-FILL: submit has no selector: it sits outside any form and has no id and no "
-            "name unique on the recorded page; write one by hand."
+            "GP-FILL: submit has no selector: it sits outside any form, and has no id and no "
+            "name that is unique on the recorded page and holds no account value; write one "
+            "by hand."
         ) in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
+
+    def test_an_unresolved_formless_field_whose_id_holds_an_account_value(self) -> None:
+        """Review round 3 (toolkit M7, superpowers M5): the input has an id and a
+        name, but both hold an account value, so neither is used."""
+        html = (
+            '<div role="dialog"><input id="acct_12345678" name="acct_12345678">'
+            '<input type="password" id="p"><input type="submit" id="go"></div>'
+        )
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/")
+        assert "username" in form.unresolved_roles
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: username has no selector: it sits outside any form, and has no id and "
+            "no name that is unique on the recorded page and holds no account value; write "
+            "one by hand."
+        ) in comment
+        assert "12345678" not in plugin_code
 
     def test_a_formless_password_alone_says_its_roles_were_not_found(self) -> None:
         html = (
@@ -1057,9 +1087,10 @@ class TestPluginModuleWithLoginForm:
             "write one by hand if the login has one."
         ) in comment
         assert (
-            "GP-FILL: submit has no selector: the login dialog holds no submit control after "
-            'the password (a <button type="button"> is never taken as one: it may be a '
-            "show-password or a close button); write one by hand."
+            "GP-FILL: submit has no selector: the login dialog holds no explicit submit after "
+            'the password (an <input type="submit"> or <input type="image">, or a <button '
+            'type="submit">); outside a form a typeless or type="button" button submits '
+            "nothing and may be a show-password or a close button; write one by hand."
         ) in comment
         assert "multi-step login" not in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
