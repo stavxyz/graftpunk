@@ -40,6 +40,10 @@ LOG = get_logger(__name__)
 MAX_RESPONSE_BODY_SIZE = 5 * 1024 * 1024  # 5MB
 # How long stop waits for request-time body fetches still in flight.
 _POST_DATA_SETTLE_TIMEOUT_S = 5.0
+# The most stop waits on each of the recorder's own awaits after that: tasks it has
+# cancelled finishing, and a DOM.disable after a late read. A page that has stopped
+# answering DevTools answers neither, and nodriver's send waits with no bound.
+_STOP_WAIT_S = 2.0
 
 # MIME type constants for body handling
 BINARY_MIME_PREFIXES = (
@@ -86,7 +90,8 @@ class _ListenerSnapshot(NamedTuple):
 
     time_ms: float
     url: str
-    html: str
+    # None for a page over DOM_SNAPSHOT_MAX_CHARS, kept as a marker.
+    html: str | None
 
 
 def _wall_time_ms(wall_time: Any) -> float | None:
@@ -102,7 +107,8 @@ def _sending_page(event: Any) -> str | None:
     """The URL of the page that sent the request of a ``Network.requestWillBeSent``
     *event*: its ``documentURL``, except for a navigation (a ``Document`` request, a
     form post), whose ``documentURL`` is the URL being loaded; then the ``Referer``
-    header, else the initiator's URL, else ``documentURL``."""
+    header, else the initiator's URL, else None (a page with a strict
+    ``Referrer-Policy``; which initiators carry a URL is unverified)."""
     resource = getattr(event, "type_", None)
     resource = getattr(resource, "value", resource)
     document_url = getattr(event, "document_url", None)
@@ -113,7 +119,12 @@ def _sending_page(event: Any) -> str | None:
         (str(value) for name, value in dict(headers).items() if name.lower() == "referer"), ""
     )
     initiator = getattr(getattr(event, "initiator", None), "url", None)
-    return referer or initiator or document_url
+    return referer or initiator or None
+
+
+def _is_navigation(event: Any) -> bool:
+    resource = getattr(event, "type_", None)
+    return getattr(resource, "value", resource) == "Document"
 
 
 def _origin(url: Any) -> tuple[str, str, int | None] | None:
@@ -1474,6 +1485,8 @@ class NodriverCaptureBackend:
         self._dom_snapshot_failures = 0
         # Pages over DOM_SNAPSHOT_MAX_CHARS, from the listener or the late read.
         self._dom_snapshot_too_large = 0
+        # Credential posts whose late DevTools read was of another page than theirs.
+        self._dom_snapshot_late_skipped = 0
         self._dom_snapshotted: set[str] = set()
         # The page's own snapshots, newest last (_on_binding_called); one a credential
         # post takes is removed, so it is given to no other post.
@@ -1669,15 +1682,23 @@ class NodriverCaptureBackend:
 
         try:
             await self._settle_request_time_fetches()
-            if self._dom_snapshot_failures or self._dom_snapshot_too_large:
+            if (
+                self._dom_snapshot_failures
+                or self._dom_snapshot_too_large
+                or self._dom_snapshot_late_skipped
+            ):
                 LOG.warning(
                     "nodriver_dom_snapshot_summary",
                     failed=self._dom_snapshot_failures,
                     attempted=self._dom_snapshot_attempts,
                     too_large=self._dom_snapshot_too_large,
+                    late_skipped=self._dom_snapshot_late_skipped,
                     hint=(
-                        "The page's DOM was not saved at these credential posts; the HAR "
-                        "is complete. Run with debug logging to see each request and why."
+                        "Of the credential posts attempted, the page's DOM was not saved "
+                        "for those failed (an error, or cancelled at stop), too_large (a "
+                        "page over 5 MB), or late_skipped (the late DevTools read was of "
+                        "another page). The HAR is complete. Run with debug logging to "
+                        "see each request and why."
                     ),
                 )
             await self._fetch_bodies_at_stop(tab)
@@ -1708,12 +1729,16 @@ class NodriverCaptureBackend:
         if not pending:
             return
         _done, still_running = await asyncio.wait(pending, timeout=_POST_DATA_SETTLE_TIMEOUT_S)
+        if not still_running:
+            return
         for task in still_running:
             task.cancel()
-        # Each cancelled task runs its own cleanup (a snapshot counts itself) first.
-        await asyncio.gather(*still_running, return_exceptions=True)
-        if still_running:
-            LOG.warning("nodriver_request_time_post_data_fetch_cancelled", count=len(still_running))
+        # Each cancelled task runs its own cleanup (a snapshot counts itself) first,
+        # for at most _STOP_WAIT_S: one stuck on a DevTools reply is left behind.
+        _done, unfinished = await asyncio.wait(still_running, timeout=_STOP_WAIT_S)
+        LOG.warning("nodriver_request_time_post_data_fetch_cancelled", count=len(still_running))
+        if unfinished:
+            LOG.warning("nodriver_request_time_tasks_unfinished", count=len(unfinished))
 
     def _mark_unfetched_response_bodies(self, reason: str) -> None:
         """Mark each response body stop will not fetch now, so none is left out unsaid.
@@ -1862,6 +1887,7 @@ class NodriverCaptureBackend:
                 "timestamp": getattr(event, "wall_time", None),
                 # The page that sent it: a DOM snapshot must come from its origin.
                 "sender_url": _sending_page(event),
+                "navigation": _is_navigation(event),
             }
             if self._record_request_bodies:
                 body = _inline_post_body(
@@ -1877,7 +1903,7 @@ class NodriverCaptureBackend:
                 )
                 if _post_data_missing(self._request_map[rid]):
                     self._request_map[rid]["_post_data_pending"] = True
-                elif body is not None and self._snapshot_due(rid, body):
+                elif body is not None and self._snapshot_due(rid, self._request_map[rid], body):
                     self._start_snapshot(rid, self._request_map[rid], body.text)
             self._extra_info.entry_created(self._request_map, rid)
             if redirect is not None:
@@ -1934,7 +1960,10 @@ class NodriverCaptureBackend:
             )
             # A body Chrome did not inline is known only now, later than the page's
             # state at the post: still the nearest moment there is.
-            if body is not None and self._snapshot_due(rid, body):
+            # The entry this task looked up when it started: a redirect reported
+            # under the same request id meanwhile has re-keyed it as a hop, and the
+            # snapshot still belongs to it.
+            if body is not None and self._snapshot_due(rid, data, body):
                 await self._snapshot_dom(tab, rid, data, body.text, self._claim_snapshot(rid, data))
         except Exception as exc:  # noqa: BLE001 - best-effort; stop_capture_async retries
             data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
@@ -1947,14 +1976,14 @@ class NodriverCaptureBackend:
         finally:
             self._post_data_tasks.discard(task)  # type: ignore[arg-type]
 
-    def _snapshot_due(self, rid: str, body: _PostBody) -> bool:
-        """Whether the request *rid* with *body* gets a DOM snapshot: snapshots are on,
-        it is a POST whose body is credential-shaped by the digest's own rule
-        (:func:`graftpunk.har.digest.is_credential_body`: a password-like field and
-        no new-password one), and none was taken for it yet."""
+    def _snapshot_due(self, rid: str, data: dict[str, Any], body: _PostBody) -> bool:
+        """Whether the request *rid*, whose own entry is *data*, with *body* gets a DOM
+        snapshot: snapshots are on, it is a POST whose body is credential-shaped by
+        the digest's own rule (:func:`graftpunk.har.digest.is_credential_body`: a
+        password-like field and no new-password one), and none was taken for it yet.
+        *data* is never looked up again by request id, which a redirect reuses."""
         if self._dom_snapshots_dir is None or body.text is None:
             return False
-        data = self._request_map.get(rid) or {}
         if str(data.get("method", "")).upper() != "POST" or rid in self._dom_snapshotted:
             return False
         from graftpunk.har.digest import is_credential_body
@@ -2044,28 +2073,34 @@ class NodriverCaptureBackend:
         except Exception as exc:  # noqa: BLE001 - a bad payload costs only itself
             LOG.debug("nodriver_dom_snapshot_payload_dropped", error=str(exc))
             return
-        if len(html) > DOM_SNAPSHOT_MAX_CHARS:
-            self._dom_snapshot_too_large += 1
-            LOG.debug("nodriver_dom_snapshot_too_large", chars=len(html), source="listener")
-            return
-        self._listener_snapshots.append(_ListenerSnapshot(float(time_ms), url, html))
+        # A page over the cap is kept as a marker with no HTML: the post that takes it
+        # is counted as too large, once, and a click no post follows costs nothing.
+        kept = html if len(html) <= DOM_SNAPSHOT_MAX_CHARS else None
+        self._listener_snapshots.append(_ListenerSnapshot(float(time_ms), url, kept))
 
-    def _sender_origin(self, data: dict[str, Any]) -> tuple[str, str, int | None] | None:
-        return _origin(data.get("sender_url") or data.get("url"))
+    @staticmethod
+    def _sender(data: dict[str, Any]) -> str | None:
+        """The URL of the page that sent the request *data*, or None for a navigation
+        that names none (no Referer, and an initiator with no URL)."""
+        if data.get("sender_url"):
+            return str(data["sender_url"])
+        return None if data.get("navigation") else data.get("url")
 
     def _take_listener_snapshot(self, data: dict[str, Any]) -> _ListenerSnapshot | None:
         """Remove and return the latest snapshot the page's listener sent no later than
         the request *data* was sent (its ``wallTime``), and no more than
         ``DOM_SNAPSHOT_MAX_AGE_MS`` before it, from the origin of the page that sent
-        it; None when none is."""
+        it; None when none is. A navigation that names no sending page
+        (:meth:`_sender`) takes the newest such snapshot from any origin: a form post
+        from a page with a strict ``Referrer-Policy``."""
         wall_ms = _wall_time_ms(data.get("timestamp"))
-        origin = self._sender_origin(data)
-        if wall_ms is None or origin is None:
+        sender = self._sender(data)
+        origin = _origin(sender) if sender is not None else None
+        if wall_ms is None or (origin is None and sender is not None):
             return None
         for snapshot in reversed(self._listener_snapshots):
-            if (
-                wall_ms - DOM_SNAPSHOT_MAX_AGE_MS <= snapshot.time_ms <= wall_ms
-                and _origin(snapshot.url) == origin
+            if wall_ms - DOM_SNAPSHOT_MAX_AGE_MS <= snapshot.time_ms <= wall_ms and (
+                sender is None or _origin(snapshot.url) == origin
             ):
                 self._listener_snapshots.remove(snapshot)
                 return snapshot
@@ -2085,8 +2120,9 @@ class NodriverCaptureBackend:
                 cdp_dom.get_outer_html(backend_node_id=document.backend_node_id), **session
             )
         finally:
+            # Bounded: this also runs when stop cancels a read the page never answered.
             with contextlib.suppress(Exception):
-                await tab.send(cdp_dom.disable(), **session)
+                await asyncio.wait_for(tab.send(cdp_dom.disable(), **session), _STOP_WAIT_S)
         return getattr(document, "document_url", None) or "", html
 
     async def _late_page(
@@ -2095,9 +2131,9 @@ class NodriverCaptureBackend:
         """The page by DevTools (:meth:`_read_dom`), for a post no listener snapshot
         was taken for: after the request left, so the page's response handler may
         have changed it. A listener snapshot that arrived while DevTools answered is
-        taken instead. None for a page over ``DOM_SNAPSHOT_MAX_CHARS`` (counted);
-        a read that fails, or a page on another origin than the one that sent the
-        post (a navigation that has committed), raises."""
+        taken instead. None, counted, for a page over ``DOM_SNAPSHOT_MAX_CHARS`` or
+        another page than the one that sent the post (by scheme, host, and path: a
+        redirect or a navigation has moved the tab on); a read that fails raises."""
         try:
             url, html = await self._read_dom(tab)
         except Exception:
@@ -2108,11 +2144,14 @@ class NodriverCaptureBackend:
         picked = self._take_listener_snapshot(data)
         if picked is not None:
             return picked
-        if _origin(url) != self._sender_origin(data):
-            raise ValueError("the page DevTools read is on another origin than the post's")
+        sender = self._sender(data)
+        if sender is None or _bare_page_url(url) != _bare_page_url(sender):
+            self._dom_snapshot_late_skipped += 1
+            LOG.debug("nodriver_dom_snapshot_late_skipped", request_id=rid)
+            return None
         if len(html) > DOM_SNAPSHOT_MAX_CHARS:
             self._dom_snapshot_too_large += 1
-            LOG.debug("nodriver_dom_snapshot_too_large", chars=len(html), source="devtools")
+            LOG.debug("nodriver_dom_snapshot_too_large", request_id=rid, chars=len(html))
             return None
         LOG.debug(
             "nodriver_dom_snapshot_late",
@@ -2147,6 +2186,10 @@ class NodriverCaptureBackend:
 
             page = picked or await self._late_page(tab, rid, data)
             if page is None:
+                return
+            if page.html is None:
+                self._dom_snapshot_too_large += 1
+                LOG.debug("nodriver_dom_snapshot_too_large", request_id=rid)
                 return
             stored = await asyncio.to_thread(
                 stored_dom_snapshot, page.html, body_text, _request_content_type(data)

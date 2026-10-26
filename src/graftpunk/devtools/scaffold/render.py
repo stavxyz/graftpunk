@@ -674,7 +674,18 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
             )
         )
     for role in printable_unresolved_roles(form):
-        if role in form.absent_roles and form.formless and role == "submit":
+        if role in form.absent_roles and form.block_bound == "alone":
+            # graftpunk.har.documents._block_login_groups found no small element
+            # around the password holding a button after it.
+            text = (
+                f"{GP_FILL_MARKER}: submit has no selector: no element of eight controls or "
+                "fewer around the password holds a button after it; write one by hand."
+                if role == "submit"
+                else f"{GP_FILL_MARKER}: {role} has no selector: no element of eight controls "
+                "or fewer around the password holds a button after it, so the login group is "
+                "the password alone; write one by hand if the login has one."
+            )
+        elif role in form.absent_roles and form.formless and role == "submit":
             text = (
                 f"{GP_FILL_MARKER}: submit has no selector: the first button after the "
                 f"password in the {group} is not an explicit submit (an "
@@ -683,14 +694,13 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
                 'type="button" button submits nothing and may be a show-password or a '
                 "close button, so a submit after it is not taken either; write one by hand."
             )
-        elif role in form.absent_roles and form.plain_block:
-            # The group's bound held no input before the password at all
-            # (graftpunk.har.documents._block_login_groups).
+        elif role in form.absent_roles and form.block_bound == "button":
+            # A password-only group (graftpunk.har.documents._block_login_groups).
             text = (
-                f"{GP_FILL_MARKER}: {role} has no selector: no element around the password "
-                "in the page's snapshot holds an input before it and a button after it, so "
-                "the login group is the password and its nearest button; write one by hand "
-                "if the login has one."
+                f"{GP_FILL_MARKER}: {role} has no selector: no element of eight controls or "
+                "fewer around the password holds a text input before it with no button "
+                "between them, so the login group is the password and the buttons after it; "
+                "write one by hand if the login has one."
             )
         elif role in form.absent_roles and form.formless:
             text = (

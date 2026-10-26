@@ -122,6 +122,12 @@ class LoginForm:
     # A formless group bounded by an ancestor element of the password rather than
     # by a dialog: read from a DOM snapshot only. Internal.
     plain_block: bool = field(default=False, metadata={"internal": True})
+    # How a plain_block group was bounded (graftpunk.har.documents._block_login_groups):
+    # "inputs", "button" (a password-only group), or "alone". Internal.
+    block_bound: str = field(default="", metadata={"internal": True})
+    # The names of the form's controls that are not hidden inputs, whatever the name
+    # holds (hidden lists only names that hold no account value). Internal.
+    visible_names: tuple[str, ...] = field(default=(), metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -922,97 +928,82 @@ def _ranked_login_groups(groups: list[tuple[str, list[_RawInput]]]) -> list[list
 # The elements that never bound a snapshot's login group: one bounded by the whole
 # page would take any input before the password as its username.
 _PAGE_ELEMENTS = frozenset({"html", "body"})
-# How many ancestors holding a button after the password one walk looks at for one
-# that also holds an input before it. A login's wrapper sits a few levels above
-# its password; the bound keeps a walk short on a deeply nested page.
-_MAX_BOUND_WALK = 32
+# The most form controls (inputs, buttons, selects, and textareas, hidden ones
+# included) an element may hold to bound a snapshot's login group: a login block is
+# small, and a page's wrapper, holding a search box, filters, or a newsletter, is not.
+_MAX_BLOCK_CONTROLS = 8
 
 
-def _block_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
-    """A DOM snapshot's login groups outside every dialog: for each password input
-    with no form owner and in no dialog, the formless controls in no dialog inside
-    the password's nearest ancestor element (never ``<html>`` or ``<body>``) that
-    holds a button-like control after the password (:func:`_is_button_like`) and a
-    text-like input before it (:func:`_is_text_like`), such as the username. The
-    snapshot is taken as the user submits, so the control they pressed is likely in
-    that element, and a show-password toggle's wrapper, which holds a button after
-    the password but no input before it, does not stop the walk. When no ancestor
-    holds both (a password-only step), the nearest one holding a button after the
-    password bounds the group; a password with no such ancestor is in no group. The
-    groups are judged and ordered as a dialog's are (:func:`_ranked_login_groups`).
+def _block_login_groups(parsed: _DocumentParser) -> list[tuple[list[_RawInput], str]]:
+    """A DOM snapshot's login groups outside every dialog, each with how it was
+    bounded. For each password input with no form owner and in no dialog, the walk
+    up its ancestors looks only at elements holding at most ``_MAX_BLOCK_CONTROLS``
+    form controls, never ``<html>`` or ``<body>``, and stops at the first larger
+    one. The group is, in this order:
 
-    Each walk up the ancestors skips the elements an earlier password's walk found
-    without a button after it: a later password has fewer controls after it, so
-    they have none for it either. Of the ancestors with a button after it, a walk
-    looks at no more than ``_MAX_BOUND_WALK``. That keeps the walks linear in the
-    page's elements however many passwords share them."""
+    - ``"inputs"``: the formless controls in no dialog inside the nearest such
+      element holding a text-like input before the password (:func:`_is_text_like`,
+      the username), a button-like control after it (:func:`_is_button_like`), and
+      no button-like control between that input and the password (an input with a
+      button of its own, a search box or a newsletter field, is something else);
+    - ``"button"``: else, those from the password on inside the nearest such element
+      holding a button-like control after it (a password-only step);
+    - ``"alone"``: else, the password by itself.
+
+    The snapshot is taken as the user submits, so the control they pressed is likely
+    near the password, and a show-password toggle's wrapper, which holds no input
+    before the password, does not stop the walk. The groups are judged and ordered
+    as a dialog's are (:func:`_ranked_login_groups`). An element holding at most
+    ``_MAX_BLOCK_CONTROLS`` controls holds at most that many passwords, so no element
+    is climbed past by more walks than that, and the walks are linear in the
+    page's length."""
     controls = [raw for raw in _formless_controls(parsed) if raw.dialog is None]
     in_group = {id(raw) for raw in controls}
-    buttons_before, fields_before = [0], [0]
+    buttons_before = [0]
+    # Per position on the page: the order of the last formless text-like input in no
+    # dialog before it, or -1.
+    last_field_before = [-1]
     for raw in parsed.inputs:
         buttons_before.append(buttons_before[-1] + _is_button_like(raw))
-        fields_before.append(fields_before[-1] + (id(raw) in in_group and _is_text_like(raw)))
-    # An element found with no button after an earlier password: the ancestor to
-    # look at instead.
-    skip_to: dict[int, int | None] = {}
-
-    def resolved(block: int | None) -> int | None:
-        path: list[int] = []
-        while block is not None and block in skip_to:
-            path.append(block)
-            block = skip_to[block]
-        for seen in path:
-            skip_to[seen] = block
-        return block
-
-    bounds: dict[int, None] = {}
+        is_field = id(raw) in in_group and _is_text_like(raw)
+        last_field_before.append(raw.order if is_field else last_field_before[-1])
+    orders = [raw.order for raw in controls]
+    found: dict[tuple[object, ...], tuple[str, list[_RawInput], str]] = {}
     for raw in controls:
         if not _is_password(raw):
             continue
-        nearest: int | None = None
-        chosen: int | None = None
-        looked = 0
-        block = resolved(raw.block)
-        while block is not None and looked < _MAX_BOUND_WALK:
+        field = last_field_before[raw.order]
+        field_usable = field >= 0 and buttons_before[raw.order] == buttons_before[field + 1]
+        with_inputs: int | None = None
+        with_button: int | None = None
+        block = raw.block
+        while block is not None:
             element = parsed.blocks[block]
             end = element.end if element.end is not None else len(parsed.inputs)
-            if (
-                element.tag in _PAGE_ELEMENTS
-                or buttons_before[end] <= buttons_before[raw.order + 1]
-            ):
-                skip_to[block] = element.parent
-                block = resolved(element.parent)
-                continue
-            looked += 1
-            nearest = block if nearest is None else nearest
-            if fields_before[raw.order] > fields_before[element.start]:
-                chosen = block
+            if end - element.start > _MAX_BLOCK_CONTROLS:
                 break
-            block = resolved(element.parent)
-        bound = chosen if chosen is not None else nearest
-        if bound is not None:
-            bounds[bound] = None
-    orders = [raw.order for raw in controls]
-    # Per position in *controls*: how many password inputs, and how many marked
-    # current-password, come before it. A group with two passwords and none marked is
-    # never a login, so it is left out before its controls are gathered.
-    passwords_before, current_before = [0], [0]
-    for raw in controls:
-        passwords_before.append(
-            passwords_before[-1] + (raw.tag == "input" and raw.input_type == "password")
-        )
-        current_before.append(current_before[-1] + (raw.autocomplete == "current-password"))
-    groups: list[tuple[str, list[_RawInput]]] = []
-    for block in bounds:
-        element = parsed.blocks[block]
-        end = element.end if element.end is not None else len(parsed.inputs)
-        first, last = bisect_left(orders, element.start), bisect_left(orders, end)
-        if passwords_before[last] - passwords_before[first] > 1 and (
-            current_before[last] == current_before[first]
-        ):
-            continue
-        groups.append((element.hints, controls[first:last]))
-    return _ranked_login_groups(groups)
+            if (
+                element.tag not in _PAGE_ELEMENTS
+                and buttons_before[end] > buttons_before[raw.order + 1]
+            ):
+                with_button = block if with_button is None else with_button
+                if field_usable and field >= element.start:
+                    with_inputs = block
+                    break
+            block = element.parent
+        chosen = with_inputs if with_inputs is not None else with_button
+        if chosen is not None:
+            kind = "inputs" if with_inputs is not None else "button"
+            element = parsed.blocks[chosen]
+            end = element.end if element.end is not None else len(parsed.inputs)
+            first = bisect_left(orders, element.start if kind == "inputs" else raw.order)
+            last = bisect_left(orders, end)
+            found.setdefault((chosen, kind), (element.hints, controls[first:last], kind))
+        else:
+            found[("alone", raw.order)] = ("", [raw], "alone")
+    kinds = {id(group): kind for _hints, group, kind in found.values()}
+    ranked = _ranked_login_groups([(hints, group) for hints, group, _kind in found.values()])
+    return [(group, kinds[id(group)]) for group in ranked]
 
 
 def extract_login_forms(
@@ -1125,9 +1116,9 @@ def extract_login_forms(
             forms.append(form)
     dialog_groups = _formless_login_groups(parsed)
     block_groups = _block_login_groups(parsed) if snapshot else []
-    for group, plain_block in [
-        *((group, False) for group in dialog_groups),
-        *((group, True) for group in block_groups),
+    for group, block_bound in [
+        *((group, "") for group in dialog_groups),
+        *block_groups,
     ]:
         form = _login_form(
             group,
@@ -1142,7 +1133,9 @@ def extract_login_forms(
             formless=True,
         )
         if form is not None:
-            forms.append(replace(form, plain_block=True) if plain_block else form)
+            forms.append(
+                replace(form, plain_block=True, block_bound=block_bound) if block_bound else form
+            )
     if snapshot:
         return tuple(replace(form, from_snapshot=True) for form in forms)
     return tuple(forms)
@@ -1280,6 +1273,7 @@ def _login_form(
         absent_roles=tuple(absent),
         action_target=action_target,
         input_names=tuple(i.name for i in inputs if i.name),
+        visible_names=tuple(i.name for i in inputs if i.name and i.input_type != "hidden"),
         signature=(
             element_id,
             tuple((i.tag, i.input_type, i.name, i.element_id) for i in inputs),

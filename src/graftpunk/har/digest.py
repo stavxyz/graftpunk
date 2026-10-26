@@ -1218,12 +1218,14 @@ def _opened_from(via: tuple[str, ...], here_host: str) -> str:
 
 def _visible_shape(form: LoginForm) -> tuple[object, ...]:
     """What a user sees of a login form, for telling a DOM snapshot's copy of a page's
-    form from the recorded page's: whether it is a form, where it posts, its visible
-    input names, and its roles. Not its hidden inputs, attributes, or ids, which a
+    form from the recorded page's: where it posts (a formless group's target is
+    ``("", "")``, which no form's is), the names of its controls that are not hidden
+    inputs (``LoginForm.visible_names``, a hidden name holding an id included among
+    the hidden), and its roles. Not its hidden inputs, attributes, or ids, which a
     page's script adds or changes after load (a device fingerprint field, an
     ``autocomplete``)."""
-    visible = sorted(set(form.input_names) - set(form.hidden))
-    return (form.formless, form.action_target, tuple(visible), tuple(sorted(form.fields)))
+    visible = tuple(sorted(set(form.visible_names)))
+    return (form.action_target, visible, tuple(sorted(form.fields)))
 
 
 def _snapshot_page_forms(

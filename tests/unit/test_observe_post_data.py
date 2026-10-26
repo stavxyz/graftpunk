@@ -1920,7 +1920,7 @@ class TestDomSnapshotAtTheCredentialPost:
     ) -> tuple[FakeTab, NodriverCaptureBackend, list[dict[str, Any]]]:
         tab = FakeTab({"21.1": body}, _always)
         tab.dom_html = dom_html
-        tab.dom_url = "https://myshop.example/account?next=%2Forders#top"
+        tab.dom_url = HOME + "?next=%2Forders#top"
         kwargs: dict[str, Any] = {"bodies_dir": tmp_path / "bodies"}
         if snapshots:
             kwargs["dom_snapshots_dir"] = tmp_path / "snapshots"
@@ -1942,7 +1942,7 @@ class TestDomSnapshotAtTheCredentialPost:
 
         request = _only_entry(backend)["request"]
         assert request["_domSnapshot"] == "snapshots/21.1.html"
-        assert request["_domSnapshotUrl"] == "https://myshop.example/account"
+        assert request["_domSnapshotUrl"] == HOME
         assert request["postData"]["text"] == _LOGIN_BODY
         stored = tmp_path / "snapshots" / "21.1.html"
         assert stat.S_IMODE(stored.stat().st_mode) == 0o600
@@ -2377,7 +2377,28 @@ class TestSnapshotFromTheIsolatedWorldListener:
         )
         assert not (tmp_path / "snapshots").exists()
         (summary,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_summary"]
-        assert summary["too_large"] == 2
+        # One post, counted once: not once per oversized payload or read.
+        assert (summary["too_large"], summary["attempted"]) == (1, 1)
+
+    @pytest.mark.asyncio
+    async def test_oversized_payloads_no_post_takes_are_not_counted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review round 2 (M6): three oversized clicks, then a post whose own page
+        is a small listener snapshot."""
+        monkeypatch.setattr(capture, "DOM_SNAPSHOT_MAX_CHARS", 1000)
+        big = _LOGIN_MODAL + "<p>" + "x" * 2000 + "</p>"
+        _tab, _backend, logs = await self._run(
+            tmp_path,
+            [
+                _binding_called(big, time_ms=_POST_MS - 900, url="https://other.example/"),
+                _binding_called(big, time_ms=_POST_MS - 800, url="https://other.example/"),
+                _binding_called(big, time_ms=_POST_MS - 700, url="https://other.example/"),
+                _binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40),
+            ],
+        )
+        assert 'id="login-modal"' in self._stored(tmp_path)
+        assert not [e for e in logs if e["event"] == "nodriver_dom_snapshot_summary"]
 
     @pytest.mark.asyncio
     async def test_the_late_read_of_another_origin_is_not_stored(self, tmp_path: Path) -> None:
@@ -2391,10 +2412,219 @@ class TestSnapshotFromTheIsolatedWorldListener:
                 dom_snapshots_dir=tmp_path / "snapshots",
             )
         assert "_domSnapshot" not in _only_entry(backend)["request"]
-        assert [e["request_id"] for e in logs if e["event"] == "nodriver_dom_snapshot_failed"] == [
-            "37.1"
+        skipped = [
+            e["request_id"] for e in logs if e["event"] == "nodriver_dom_snapshot_late_skipped"
         ]
+        assert skipped == ["37.1"]
+        (summary,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_summary"]
+        assert summary["late_skipped"] == 1
         assert "DOM.disable" in tab.dom_requests
+
+    @pytest.mark.asyncio
+    async def test_the_late_read_of_another_page_of_the_origin_is_not_stored(
+        self, tmp_path: Path
+    ) -> None:
+        """Review round 2 (M7): the post was answered 302 /account on the same origin
+        before DevTools read the page."""
+        tab = FakeTab({}, _never)
+        tab.dom_html = self._LIVE
+        tab.dom_url = "https://myshop.example/account"
+        backend = await _record(
+            tab,
+            [_will_be_sent("37.2", inline=_LOGIN_BODY, url=LOGIN)],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        assert "_domSnapshot" not in _only_entry(backend)["request"]
+
+    @pytest.mark.asyncio
+    async def test_a_navigation_post_with_no_referer_uses_its_initiator(
+        self, tmp_path: Path
+    ) -> None:
+        target = "https://auth.myshop-sso.example/session"
+        event = _will_be_sent(
+            "33.2",
+            inline="username=alice%40example.com&password=hunter2hunter2",
+            url=target,
+            document_url=target,
+            resource_type="Document",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        event.initiator.url = "https://myshop.example/login"
+        tab = FakeTab({}, _never)
+        await _record(
+            tab,
+            [
+                _binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 900),
+                _binding_called(
+                    _LOGIN_MODAL.replace('id="login-modal"', 'id="elsewhere-modal"'),
+                    time_ms=_POST_MS - 60,
+                    url="https://elsewhere.example/",
+                ),
+                event,
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        stored = (tmp_path / "snapshots" / "33.2.html").read_text()
+        assert 'id="login-modal"' in stored
+        assert "elsewhere-modal" not in stored
+        assert tab.dom_requests == []
+
+    @pytest.mark.asyncio
+    async def test_a_navigation_post_naming_no_sender_takes_the_newest_snapshot(
+        self, tmp_path: Path
+    ) -> None:
+        """Review round 2 (M12): no Referer (a strict Referrer-Policy) and an initiator
+        naming no page: the newest snapshot of any origin within the age limit."""
+        target = "https://auth.myshop-sso.example/session"
+        newest = _LOGIN_MODAL.replace('id="login-modal"', 'id="newest-modal"')
+        tab = FakeTab({}, _never)
+        await _record(
+            tab,
+            [
+                _binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 900),
+                _binding_called(newest, time_ms=_POST_MS - 60, url="https://www.myshop.example/"),
+                _will_be_sent(
+                    "33.3",
+                    inline="username=alice%40example.com&password=hunter2hunter2",
+                    url=target,
+                    document_url=target,
+                    resource_type="Document",
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                ),
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        assert 'id="newest-modal"' in (tmp_path / "snapshots" / "33.3.html").read_text()
+
+    @pytest.mark.asyncio
+    async def test_a_fetch_naming_no_sender_takes_no_other_origin(self, tmp_path: Path) -> None:
+        """The any-origin fallback is for a navigation only."""
+        tab = FakeTab({}, _never)
+        tab.dom_html = self._LIVE
+        await _record(
+            tab,
+            [
+                _binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 60, url="https://other.example/"),
+                _will_be_sent("33.4", inline=_LOGIN_BODY, url=LOGIN),
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        assert "login-modal" not in (tmp_path / "snapshots" / "33.4.html").read_text()
+
+    @pytest.mark.asyncio
+    async def test_a_post_after_stop_began_is_not_attached_and_is_counted(
+        self, tmp_path: Path
+    ) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        backend._post_data_closed = True
+        with capture_logs() as logs:
+            await tab.dispatch(_will_be_sent("41.1", inline=_LOGIN_BODY, url=LOGIN))
+            await _stop(backend, tab)
+        assert [
+            e["request_id"] for e in logs if e["event"] == "nodriver_dom_snapshot_not_attached"
+        ] == ["41.1"]
+        (summary,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_summary"]
+        assert summary["failed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_post_with_no_tab_is_not_attached_and_is_counted(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        current: list[Any] = [tab]
+        backend = NodriverCaptureBackend(
+            object(), get_tab=lambda: current[0], dom_snapshots_dir=tmp_path / "snapshots"
+        )
+        await backend.start_capture_async()
+        current[0] = None
+        with capture_logs() as logs:
+            backend._on_request(_will_be_sent("41.2", inline=_LOGIN_BODY, url=LOGIN))
+        assert [
+            e["request_id"] for e in logs if e["event"] == "nodriver_dom_snapshot_not_attached"
+        ] == ["41.2"]
+        assert backend._dom_snapshot_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_a_late_body_with_a_redirect_first_keeps_its_snapshot(
+        self, tmp_path: Path
+    ) -> None:
+        """Review round 2 (I1): the redirect lands while the body is being fetched;
+        the snapshot goes to the POST's own entry all the same."""
+
+        class GatedPostData(FakeTab):
+            gate = asyncio.Event()
+
+            async def send(self, cmd: Any, **kwargs: Any) -> Any:
+                if getattr(cmd, "__name__", "") == "get_request_post_data":
+                    await self.gate.wait()
+                return await super().send(cmd, **kwargs)
+
+        tab = GatedPostData({"42.1": _LOGIN_BODY}, _always)
+        GatedPostData.gate = asyncio.Event()
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40))
+        await tab.dispatch(_will_be_sent("42.1", url=LOGIN))
+        await tab.dispatch(_will_be_sent("42.1", url=HOME, method="GET", redirect_from=LOGIN))
+        GatedPostData.gate.set()
+        await tab.dispatch(_response_received("42.1", url=HOME))
+        await _stop(backend, tab)
+
+        post = next(e for e in backend.get_har_entries() if e["request"]["method"] == "POST")
+        assert post["request"]["_domSnapshot"] == "snapshots/42.1.html"
+        assert 'id="login-modal"' in (tmp_path / "snapshots" / "42.1.html").read_text()
+
+    @pytest.mark.asyncio
+    async def test_a_disable_the_page_never_answers_does_not_hold_the_snapshot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The read failed; the DOM.disable after it waits _STOP_WAIT_S at most, so
+        the snapshot fails and is counted then, not when stop cancels it."""
+        monkeypatch.setattr(capture, "_STOP_WAIT_S", 0.05)
+
+        class HungDisable(FakeTab):
+            async def send(self, cmd: Any, **kwargs: Any) -> Any:
+                if getattr(cmd, "__name__", "") == "disable":
+                    await asyncio.Event().wait()
+                return await super().send(cmd, **kwargs)
+
+        tab = HungDisable({}, _never)
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        with capture_logs() as logs:
+            await tab.dispatch(_will_be_sent("43.2", inline=_LOGIN_BODY, url=LOGIN))
+            await asyncio.sleep(0.3)
+        assert [e["request_id"] for e in logs if e["event"] == "nodriver_dom_snapshot_failed"] == [
+            "43.2"
+        ]
+        assert backend._post_data_tasks == set()
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_stop_returns_when_the_page_never_answers_a_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review round 2 (I1): a late read cancelled at stop sends DOM.disable, which a
+        page that stopped answering never answers either; stop gives each wait a bound."""
+        monkeypatch.setattr(capture, "_POST_DATA_SETTLE_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(capture, "_STOP_WAIT_S", 0.1)
+
+        class HungDom(FakeTab):
+            async def send(self, cmd: Any, **kwargs: Any) -> Any:
+                if getattr(cmd, "__name__", "") in ("get_document", "disable"):
+                    await asyncio.Event().wait()
+                return await super().send(cmd, **kwargs)
+
+        tab = HungDom({}, _never)
+        with capture_logs() as logs:
+            backend = await asyncio.wait_for(
+                _record(
+                    tab,
+                    [_will_be_sent("43.1", inline=_LOGIN_BODY, url=LOGIN)],
+                    dom_snapshots_dir=tmp_path / "snapshots",
+                ),
+                timeout=3,
+            )
+        assert "_domSnapshot" not in _only_entry(backend)["request"]
+        assert [e for e in logs if e["event"] == "nodriver_request_time_tasks_unfinished"]
 
     @pytest.mark.asyncio
     async def test_a_listener_snapshot_landing_during_the_read_is_preferred(

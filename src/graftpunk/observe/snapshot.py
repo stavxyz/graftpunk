@@ -8,18 +8,23 @@ tags and the few attributes a login form's selectors are made of, and the short
 text of links, buttons, and labels. Everything a page renders from its data
 (values, text, scripts, styles) is dropped, and the triggering post's own
 values are redacted from what is left.
+
+Redaction reads one attribute value or one text at a time, and the stored markup
+once more as a whole: a value the page renders across elements
+(``hun<b>ter22</b>``) is kept, a documented limit.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from html import escape
 from html.parser import HTMLParser
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 
 from graftpunk.har.digest import password_field_names
-from graftpunk.observe.run import Redaction, redact_text, text_redactor
+from graftpunk.observe.run import REDACTED, Redaction, text_redactor
 from graftpunk.session_identity import is_identifier_field
 
 __all__ = [
@@ -79,15 +84,31 @@ _VOID = frozenset(
 _URL_ATTRIBUTES = frozenset({"href", "action"})
 
 
+# What a browser's URL parser removes before reading a scheme: ASCII tab and
+# newline anywhere, and C0 control characters and spaces at either end.
+_URL_TABS_RE = re.compile(r"[\t\n\r]")
+_URL_EDGES = "".join(chr(code) for code in range(0x21))
+_SCHEME_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*):")
+# Schemes whose whole text is data or code, not a place: only the scheme is kept.
+_OPAQUE_SCHEMES = frozenset({"javascript", "data", "vbscript"})
+_PATH_PARAMS_RE = re.compile(r";[^/]*")
+
+
 def _bare_reference(value: str) -> str:
-    """*value* (an ``href`` or ``action``) without what its query or fragment holds:
-    a ``javascript:`` URL keeps only its scheme, and ``/login?next=%2F#top`` becomes
-    ``/login?``, so the digest's scoped selectors still match the live form, whose
-    action starts with that, and no token or account value the URL carried is kept."""
-    if value.strip().lower().startswith("javascript:"):
-        return "javascript:"
+    """*value* (an ``href`` or ``action``) with no query, fragment, or ``;params``
+    value: ``/login;jsessionid=AB/next?x=1#top`` becomes ``/login;/next?``, so the
+    digest's scoped selectors still match the live form, whose action starts with or
+    holds those markers. A ``javascript:``, ``data:``, or ``vbscript:`` URL keeps only
+    its scheme, read as a browser reads it (tabs and newlines removed, controls and
+    spaces trimmed, any case). The path is kept, and can hold a token or an account
+    value (a ``/reset/<token>`` link)."""
+    cleaned = _URL_TABS_RE.sub("", value).strip(_URL_EDGES)
+    scheme = _SCHEME_RE.match(cleaned)
+    if scheme and scheme.group(1).lower() in _OPAQUE_SCHEMES:
+        return scheme.group(1).lower() + ":"
     cut = min((i for i in (value.find("?"), value.find("#")) if i != -1), default=-1)
-    return value if cut == -1 else value[: cut + 1]
+    head, tail = (value, "") if cut == -1 else (value[:cut], value[cut])
+    return _PATH_PARAMS_RE.sub(";", head) + tail
 
 
 class _Sanitizer(HTMLParser):
@@ -180,10 +201,10 @@ def sanitize_dom_snapshot(html: str, redaction: Redaction | None = None) -> str:
     at most ``TEXT_LIMIT`` characters. Comments and processing instructions are
     dropped. An ``href`` or ``action`` keeps no query or fragment
     (:func:`_bare_reference`). With *redaction*, each kept value and text is
-    redacted on its decoded text by :func:`graftpunk.observe.run.text_redactor`,
-    identifiers included. Every kept value and text is then escaped again, so the
+    redacted on its decoded text (:func:`_redactor`), identifiers included. Every
+    kept value and text is then escaped again, so the
     output is markup the page did not write only where it was markup before."""
-    parser = _Sanitizer(text_redactor(redaction or Redaction()))
+    parser = _Sanitizer(_redactor(redaction or Redaction()))
     parser.feed(html)
     parser.close()
     return "".join(parser.out)
@@ -207,6 +228,44 @@ def _body_values(body_text: str | None) -> list[tuple[str, str]]:
     ]
 
 
+def _redactor(redaction: Redaction) -> Callable[[str], str]:
+    """:func:`graftpunk.observe.run.text_redactor` for *redaction*, and then each
+    identifier spelling that holds an email (``@`` or ``%40``) replaced in any letter
+    case: a page often shows an email lowercased, or as the user typed it."""
+    scrub = text_redactor(redaction)
+    emails = sorted(
+        {value for value in redaction.identifiers if "@" in value or "%40" in value.lower()},
+        key=len,
+        reverse=True,
+    )
+    if not emails:
+        return scrub
+    pattern = re.compile("|".join(re.escape(email) for email in emails), re.IGNORECASE)
+    return lambda text: pattern.sub(REDACTED, scrub(text))
+
+
+def _identifier_key(name: str) -> str:
+    """The part of a field *name* that says what it holds: the last bracketed part
+    of a Rails-style name (``user[email]`` is ``email``), else the name."""
+    parts = re.findall(r"\[([^\[\]]*)\]", name)
+    return parts[-1] if parts and parts[-1] else name
+
+
+def _spellings(value: str) -> list[str]:
+    """*value* and the spellings a page can show it in that the run's scrub does not
+    look for itself: as ``encodeURIComponent`` writes it (``'`` and ``!*()~`` left
+    raw), and each of the two HTML-escaped (``html.escape`` with and without
+    quotes)."""
+    encoded = quote(value, safe="-_.!~*'()")
+    return list(
+        dict.fromkeys(
+            spelled
+            for base in (value, encoded)
+            for spelled in (base, escape(base, quote=True), escape(base, quote=False))
+        )
+    )
+
+
 def snapshot_redaction(body_text: str | None, content_type: str = "") -> Redaction:
     """What a snapshot is scrubbed of: the triggering post's own values, its
     password-like fields' (:func:`graftpunk.har.digest.password_field_names`) as
@@ -214,27 +273,27 @@ def snapshot_redaction(body_text: str | None, content_type: str = "") -> Redacti
     (:func:`graftpunk.session_identity.is_identifier_field`, an allowlist) as
     identifiers, replaced where they stand as a whole value. Another field's value
     (``remember=1``) is left alone: replacing it everywhere would mangle the
-    markup. Each value's HTML-escaped spellings (``html.escape`` with and without
-    quotes) are added beside it, a second net under the sanitizer's own redaction of
-    decoded text."""
+    markup. A Rails-style name is read by its last bracketed part
+    (:func:`_identifier_key`). Each value's other spellings (:func:`_spellings`) are
+    added beside it, a second net under the sanitizer's own redaction of decoded
+    text."""
     password_names = set(password_field_names(body_text, content_type))
     secrets: list[str] = []
     identifiers: list[str] = []
     for name, value in _body_values(body_text):
         if not value:
             continue
-        spellings = dict.fromkeys((value, escape(value, quote=True), escape(value, quote=False)))
         if name in password_names:
-            secrets.extend(spellings)
-        elif is_identifier_field(name):
-            identifiers.extend(spellings)
+            secrets.extend(_spellings(value))
+        elif is_identifier_field(_identifier_key(name)):
+            identifiers.extend(_spellings(value))
     return Redaction(tuple(secrets), tuple(identifiers))
 
 
 def stored_dom_snapshot(html: str, body_text: str | None, content_type: str = "") -> str:
     """*html* as a run stores it: sanitized (:func:`sanitize_dom_snapshot`) with the
     triggering post's values (:func:`snapshot_redaction`) redacted from each decoded
-    value and text, then scrubbed of them once more as markup by
-    :func:`graftpunk.observe.run.redact_text`, the scrub the rest of a run uses."""
+    value and text, then scrubbed of them once more as markup (:func:`_redactor`, the
+    scrub the rest of a run uses, emails in any letter case)."""
     redaction = snapshot_redaction(body_text, content_type)
-    return redact_text(sanitize_dom_snapshot(html, redaction), redaction)
+    return _redactor(redaction)(sanitize_dom_snapshot(html, redaction))

@@ -5791,6 +5791,52 @@ class TestALoginReadFromTheDomSnapshot(_DialogDigestCase):
         assert [o.kind for o in result.login].count("form_page") == 1
         assert _SNAPSHOT_GP_FILL not in _comment_text(self._plugin(result))
 
+    def test_a_hidden_input_named_with_an_id_is_still_hidden(self, tmp_path: Path) -> None:
+        """Review round 2 (M5): a hidden input whose name holds an id is left out of
+        LoginForm.hidden, and is hidden all the same for telling copies apart."""
+        live = self._REAL.replace(
+            '<input type="password" name="password">',
+            '<input type="password" name="password">'
+            '<input type="hidden" name="fp_3f9a8c2e1b7d4a60">',
+        )
+        entries = [
+            self._get("/login", self._REAL),
+            self._snapshot_post(
+                tmp_path, "/login", live, page=f"{self._HOST}/login", body=self._CREDS
+            ),
+        ]
+        (form,) = self._run(tmp_path, entries).login_forms
+        assert not form.from_snapshot
+
+    def test_the_same_names_with_other_roles_are_another_form(self, tmp_path: Path) -> None:
+        """A typeless input the form's script turned into a checkbox is no longer a
+        field: the roles differ, so both copies are listed."""
+        recorded = self._REAL.replace(
+            "<button>Sign in</button>", '<input name="remember"><button>Sign in</button>'
+        )
+        live = recorded.replace(
+            '<input name="remember">', '<input type="checkbox" name="remember">'
+        )
+        entries = [
+            self._get("/login", recorded),
+            self._snapshot_post(
+                tmp_path, "/login", live, page=f"{self._HOST}/login", body=self._CREDS
+            ),
+        ]
+        result = self._run(tmp_path, entries)
+        assert sorted(f.from_snapshot for f in result.login_forms) == [False, True]
+
+    def test_the_same_names_posting_elsewhere_are_another_form(self, tmp_path: Path) -> None:
+        live = self._REAL.replace('action="/login"', 'action="/club/join"')
+        entries = [
+            self._get("/login", self._REAL),
+            self._snapshot_post(
+                tmp_path, "/login", live, page=f"{self._HOST}/login", body=self._CREDS
+            ),
+        ]
+        result = self._run(tmp_path, entries)
+        assert sorted(f.from_snapshot for f in result.login_forms) == [False, True]
+
     def test_a_form_with_other_inputs_on_the_same_page_is_read(self, tmp_path: Path) -> None:
         live = self._REAL.replace('name="username"', 'name="member_email"')
         entries = [
