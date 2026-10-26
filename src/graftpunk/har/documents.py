@@ -987,12 +987,14 @@ def _asks_for_a_new_password(raw: _RawInput) -> bool:
 
 def _block_login_groups(parsed: _DocumentParser) -> list[tuple[list[_RawInput], str]]:
     """A DOM snapshot's login group outside every form and dialog, with how it was
-    bounded, when the snapshot holds exactly one password input (:func:`_is_password`,
-    a text-typed one marked ``current-password`` included) with no form owner and in
-    no dialog, and that one asks for no new password (:func:`_asks_for_a_new_password`).
-    With none, or with two or more, there is none: nothing on the page tells a
-    sign-up's passwords from a login's reliably, so the login is left to a
-    ``GP-FILL``. A form's or a dialog's inputs belong to it and never count here.
+    bounded, when the snapshot holds exactly one password input (:func:`_is_password`:
+    a password input, or any input marked ``current-password``, whatever its type, a
+    hidden one included) with no form owner and in no dialog, and that one asks for
+    no new password (:func:`_asks_for_a_new_password`). With none, or with two or
+    more, there is none: nothing on the page tells a sign-up's passwords from a
+    login's reliably. With no other login form, the scaffold then writes "No login
+    form detected" with the observations and a commented-out ``login_config``. A
+    form's or a dialog's inputs belong to it and never count here.
 
     The walk up the password's ancestors looks only at elements holding at most
     ``_MAX_BLOCK_FIELDS`` text-like and password inputs with no form owner and in no
@@ -1012,9 +1014,10 @@ def _block_login_groups(parsed: _DocumentParser) -> list[tuple[list[_RawInput], 
 
     The snapshot is taken as the user submits, so the control they pressed is likely
     near the password, and a show-password toggle's wrapper, which holds no input
-    before the password, does not stop the walk. The group is judged as a dialog's
-    is (:func:`_ranked_login_groups`). One walk up one password is linear in the
-    page's length."""
+    before the password, does not stop the walk. The group needs no further
+    judging: with one password that asks for no new one, the rules a dialog's group is
+    judged by (:func:`_ranked_login_groups`) always pass it. One walk up one password
+    is linear in the page's length."""
     controls = [raw for raw in _formless_controls(parsed) if raw.dialog is None]
     passwords = [raw for raw in controls if _is_password(raw)]
     if len(passwords) != 1 or _asks_for_a_new_password(passwords[0]):
@@ -1070,7 +1073,7 @@ def _block_login_groups(parsed: _DocumentParser) -> list[tuple[list[_RawInput], 
     start = max(start, last_button_before[field] + 1) if kind == "inputs" else raw.order
     orders = [control.order for control in controls]
     group = controls[bisect_left(orders, start) : bisect_left(orders, end)]
-    return [(group, kind)] if _ranked_login_groups([(parsed.blocks[chosen].hints, group)]) else []
+    return [(group, kind)]
 
 
 def extract_login_forms(

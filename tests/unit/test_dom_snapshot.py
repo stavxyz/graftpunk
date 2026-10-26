@@ -278,13 +278,12 @@ class TestASnapshotLoginGroupOutsideAnyDialog:
             return f"<main><section>{nested}<button>Go</button></section></main>"
 
         _assert_snapshot_parses_in_linear_time(page)
-        # Every password's walk stops at an element holding several passwords, none
-        # marked current: a sign-up shape, so no password of it is a login.
+        # Many formless passwords: by the one-password rule, no plain-block group.
         assert extract_login_forms(page(200), source=_SITE, snapshot=True) == ()
 
     def test_two_formless_passwords_give_no_group_even_one_marked_current(self) -> None:
-        """The one-password rule: two formless passwords, whichever is marked, leave
-        the login to a GP-FILL."""
+        """The one-password rule: two formless passwords, whichever is marked, give no
+        plain-block group, so the scaffold writes "No login form detected"."""
         html = (
             '<div id="reauth"><input type="password" id="old" autocomplete="current-password">'
             '<input type="password" id="pin"><button type="submit" id="s">Go</button></div>'
@@ -775,8 +774,9 @@ _SIGNUP_TOGGLES = (
 class TestOnePasswordRule:
     """A snapshot gives a plain-block group only when it holds exactly one password
     outside every form and dialog, and that one asks for no new password: with two
-    or more, nothing tells a sign-up from a login reliably, so the login is left to a
-    GP-FILL. A form's or a dialog's passwords never count."""
+    or more, nothing tells a sign-up from a login reliably, so there is none, and the
+    scaffold writes "No login form detected" with a commented-out login_config. A
+    form's or a dialog's passwords never count."""
 
     @pytest.mark.parametrize(
         "page",
@@ -858,7 +858,7 @@ class TestOnePasswordRule:
         )
         assert _groups(_app(_SIGNUP_TOGGLES, step)) == []
 
-    def test_a_password_step_with_no_button_beside_a_sign_up_is_no_card(self) -> None:
+    def test_a_buttonless_password_step_beside_a_sign_up_gives_no_group(self) -> None:
         """Two formless passwords: no group."""
         step = '<div class="step"><input type="password" id="lp" name="password"></div>'
         assert _groups(_app(_SIGNUP_PLAIN, step)) == []
@@ -943,6 +943,15 @@ class TestOnePasswordRule:
                 '<input type="hidden" id="uid" name="user_id" autocomplete="username">',
                 "#em",
             ),
+            (
+                '<input type="text" id="u" name="login_id" autocomplete="username">'
+                '<input type="email" id="em" name="email">',
+                "#u",
+            ),
+            (
+                '<input type="email" id="em" name="email"><input type="text" id="usr" name="user">',
+                "#em",
+            ),
         ],
         ids=[
             "autocomplete username beats a later name hint",
@@ -950,6 +959,8 @@ class TestOnePasswordRule:
             "an email type beats an earlier name hint",
             "the last of two name hints",
             "a hidden input is never the username",
+            "autocomplete username beats an email type",
+            "an email type beats a later name hint",
         ],
     )
     def test_the_username_is_the_strongest_hint(self, before: str, expected: str) -> None:
@@ -1020,6 +1031,15 @@ class TestFormSelectorsCountedOnce:
 
 class TestSnapshotParseGrowth:
     """A snapshot's parse is linear in the page's length, whatever its shape."""
+
+    def test_one_password_deep_in_nested_elements(self) -> None:
+        """The one password's walk climbs every ancestor: timed, so it stays linear."""
+
+        def page(depth: int) -> str:
+            nested = "<div>" * depth + '<input type="password"><button>Go</button>'
+            return f"<main>{nested}{'</div>' * depth}</main>"
+
+        _assert_snapshot_parses_in_linear_time(page)
 
     def test_deeply_nested_inputs_marked_current_password(self) -> None:
         """Review round 4 (toolkit M2): an input the role rules take for a password

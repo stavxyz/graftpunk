@@ -678,34 +678,38 @@ again: the same target, the same visible input names, and the same roles is the
 same form, whatever hidden inputs or attributes the page's script added after
 load. In a snapshot, and only there, a password outside every form and every
 dialog also makes a login group, when it is the snapshot's only one: exactly one
-input the role rules take for a password (a text-typed one marked
-`current-password` included) with no form owner and in no dialog, asking for no
-new password. With two or more such passwords there is no such group, since
-nothing on the page tells a sign-up's passwords from a login's reliably, and the
-login is left to a `GP-FILL`; a form's or a dialog's inputs belong to it and
-never count. The group is bounded by an ancestor element holding at most four
-such text-like and password inputs (buttons, checkboxes, radios, and hidden
-inputs do not count), never `<html>` or `<body>`: a login block asks for a
-username and a password, and a page's wrapper asks for more. The group is the
-controls inside the nearest such element that holds a username-like input before
-the password (a `username` or `email` autocomplete, an email type, or a name or
-id holding `user`, `email`, `login`, or `account`), a button-like control after
-it, and no button-like control between that input and the password, starting
-after the last button-like control before that input (an input with a button of
-its own, such as a search box, belongs to something else); else, from the
-password on, those inside the nearest such element holding a button-like control
-after the password, a password-only group; else the password alone. Only a
-username-like input is ever its username, the one with the strongest hint (a
-`username` autocomplete, then an `email` autocomplete or an email type, then a
-name or id), the last of equal ones before the password: a text input with no
-hint after the username is an extra field, one with no hinted input before it is
-left out, and with none the username is a `GP-FILL`. The snapshot is taken as
-the user submits, so the control they pressed is likely near the password, and a
-show-password toggle's wrapper, which holds no input before the password, does
-not stop the walk. A password-only group or a password alone gets a `GP-FILL`
-for each missing role saying which it was. In recorded HTML such an element is
-as likely the page's layout. The step built from a form read from a snapshot
-carries a `GP-FILL` saying a click may open the form. In a `<form>`, each
+input the role rules take for a password (a password input, or any input marked
+`current-password`, whatever its type, a hidden one included) with no form owner
+and in no dialog, asking for no new password. With two or more such passwords
+there is no such group, since nothing on the page tells a sign-up's passwords
+from a login's reliably, and with no other login form the scaffold writes "No
+login form detected" with the observations and a commented-out `login_config`
+for the author to fill in; a form's or a dialog's inputs belong to it and never
+count. The group is bounded by an ancestor element holding at most four such
+text-like and password inputs (buttons, checkboxes, radios, and hidden inputs do
+not count), never `<html>` or `<body>`: a login block asks for a username and a
+password, and a page's wrapper asks for more. The group is the controls inside
+the nearest such element that holds a username-like input before the password (a
+`username` or `email` autocomplete, an email type, or a name or id holding
+`user`, `email`, `login`, or `account`), a button-like control after it, and no
+button-like control between that input and the password, starting after the last
+button-like control before that input (an input with a button of its own, such
+as a search box, belongs to something else); else, from the password on, those
+inside the nearest such element holding a button-like control after the
+password, a password-only group; else the password alone. Only a username-like
+input is ever its username, the one with the strongest hint (a `username`
+autocomplete, then an `email` autocomplete or an email type, then a name or id),
+the last of equal ones before the password. The group's other text-like inputs
+after the username (with none, after the password) up to the first button-like
+control after the password are extra fields, hinted or not; those before the
+username are left out, and with no username-like input the username is a
+`GP-FILL`. The snapshot is taken as the user submits, so the control they
+pressed is likely near the password, and a show-password toggle's wrapper, which
+holds no input before the password, does not stop the walk. A password-only
+group or a password alone gets a `GP-FILL` for each missing role saying which it
+was. In recorded HTML such an element is as likely the page's layout. The step
+built from a form read from a snapshot carries a `GP-FILL` saying a click may
+open the form. In a `<form>`, each
 input is selected by its id, else its name (when no other control inside any
 form with the same action shares it: a header mini-login and the main form can
 post to one action), else its type (the same way) (`input:not([type])` for a
