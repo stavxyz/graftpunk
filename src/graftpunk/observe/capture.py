@@ -21,6 +21,7 @@ from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
 from graftpunk.har.parser import cookie_header_pairs
+from graftpunk.har.selectors import MAX_SELECTOR_LENGTH, bounded_selector
 from graftpunk.logging import get_logger
 
 try:
@@ -92,15 +93,22 @@ INTERACTION_ORIGINS = 8
 # How far before a credential post its interactions reach: the user clicked the
 # opener, then typed a username and a password.
 LOGIN_INTERACTION_WINDOW_MS = 120_000
+# The longest selector the recorder keeps (graftpunk.har.selectors): a longer one
+# is kept as None, so neither memory nor holds_an_id's run time grows with a
+# page's ids.
+MAX_STORED_SELECTOR = MAX_SELECTOR_LENGTH
 
 
 class _Interaction(NamedTuple):
     """A click or focus move the page's listener sent: its kind, its selector (None
-    when the page had no unique one), and when (the page's ``Date.now()``)."""
+    when the page had no unique one, or it was over ``MAX_STORED_SELECTOR``
+    characters), when (the page's ``Date.now()``), and whether the page saw a click
+    inside the login itself."""
 
     kind: str
     selector: str | None
     time_ms: float
+    in_login: bool = False
 
 
 class _ListenerSnapshot(NamedTuple):
@@ -168,8 +176,15 @@ def _origin_only(event: Any) -> bool:
 
 
 def _is_navigation(event: Any) -> bool:
+    return _resource_type(event) == "Document"
+
+
+def _resource_type(event: Any) -> str | None:
+    """A ``Network.requestWillBeSent`` *event*'s resource type (``Document``,
+    ``XHR``, ``Fetch``, ...), or None when it has none."""
     resource = getattr(event, "type_", None)
-    return getattr(resource, "value", resource) == "Document"
+    resource = getattr(resource, "value", resource)
+    return resource if isinstance(resource, str) else None
 
 
 def _origin(url: Any) -> tuple[str, str, int | None] | None:
@@ -1094,6 +1109,11 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
         # _postDataFile is): the file under the run, and the page's bare URL.
         entry["request"]["_domSnapshot"] = request_data["_dom_snapshot"]
         entry["request"]["_domSnapshotUrl"] = request_data.get("_dom_snapshot_url", "")
+    if isinstance(request_data.get("resource_type"), str):
+        # Chrome's resource type for the request (HAR 1.2 custom field): "Document"
+        # is a navigation, the digest's test for a page load. The Sec-Fetch headers
+        # say the same only to a secure origin, and only when ExtraInfo arrived.
+        entry["request"]["_resourceType"] = request_data["resource_type"]
     if request_data.get("_login_interactions"):
         # The clicks and focus moves before a credential post (HAR 1.2 custom field):
         # kind, selector, and msBefore, oldest first; no URL and no absolute time.
@@ -1258,6 +1278,7 @@ class SeleniumCaptureBackend:
                     "post_data": None,
                     "has_post_data": request.get("hasPostData", False),
                     "timestamp": params.get("wallTime"),
+                    "resource_type": params.get("type"),
                 }
                 if self._record_request_bodies:
                     _keep_post_data(
@@ -1943,6 +1964,7 @@ class NodriverCaptureBackend:
                 # The page that sent it: a DOM snapshot must come from its origin.
                 "sender_url": _sending_page(event),
                 "navigation": _is_navigation(event),
+                "resource_type": _resource_type(event),
                 "sender_origin_only": _origin_only(event),
             }
             if self._record_request_bodies:
@@ -2076,7 +2098,14 @@ class NodriverCaptureBackend:
             selector = each.selector
             if selector is not None and selector_holds_an_id(selector):
                 selector = None
-            kept.append({"kind": each.kind, "selector": selector, "msBefore": round(before)})
+            stored: dict[str, Any] = {
+                "kind": each.kind,
+                "selector": selector,
+                "msBefore": round(before),
+            }
+            if each.in_login:
+                stored["inLogin"] = True
+            kept.append(stored)
         if kept:
             data["_login_interactions"] = kept
 
@@ -2172,7 +2201,9 @@ class NodriverCaptureBackend:
         ``INTERACTION_BUFFER`` of its page's origin. A payload of another shape (a
         kind other than ``click`` or ``focus``, a selector that is neither a string
         nor null, a URL with no origin, a time that is not a finite number) raises
-        ValueError, which the caller logs and drops."""
+        ValueError, which the caller logs and drops. A selector over
+        ``MAX_STORED_SELECTOR`` characters is kept as None, and ``inLogin`` counts
+        only when it is ``true``."""
         kind, selector, url, time_ms = (
             payload.get("kind"),
             payload.get("selector"),
@@ -2196,7 +2227,14 @@ class NodriverCaptureBackend:
                 del self._interactions[next(iter(self._interactions))]
         # Re-inserted, so the dict's order is the order origins were last heard from.
         self._interactions[origin] = events
-        events.append(_Interaction(kind, selector or None, float(time_ms)))
+        events.append(
+            _Interaction(
+                kind,
+                bounded_selector(selector),
+                float(time_ms),
+                in_login=payload.get("inLogin") is True,
+            )
+        )
 
     @staticmethod
     def _sender(data: dict[str, Any]) -> str | None:

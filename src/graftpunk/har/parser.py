@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from graftpunk.har.selectors import bounded_selector
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -35,11 +36,14 @@ class LoginInteraction:
     """A click or a focus move the page's listener recorded before a credential post
     (``request._loginInteractions``, #267): its kind, the element's selector (None
     when the page had no unique one, or it held an account value), and how many
-    milliseconds before the post it happened."""
+    milliseconds before the post it happened. ``in_login`` marks a click the page
+    saw inside the login itself (on a field's label, or in a container holding a
+    shown password input), which is never the click that opened it."""
 
     kind: str
     selector: str | None
     ms_before: float
+    in_login: bool = False
 
 
 @dataclass
@@ -84,6 +88,9 @@ class HARRequest:
     # The clicks and focus moves gp observe recorded before a credential post, oldest
     # first (request._loginInteractions); an item of another shape is skipped.
     login_interactions: tuple[LoginInteraction, ...] = ()
+    # The request's CDP resource type as the recorder saw it (request._resourceType):
+    # "Document" for a navigation. None when the HAR does not say.
+    resource_type: str | None = None
 
 
 @dataclass
@@ -317,7 +324,8 @@ def _login_interactions(raw: Any) -> tuple[LoginInteraction, ...]:
     """``request._loginInteractions`` as :class:`LoginInteraction` items, oldest first
     (the largest ``msBefore`` first). An item that is not an object with a known
     ``kind``, a string or null ``selector``, and a finite, non-negative ``msBefore``
-    is skipped."""
+    is skipped; a selector over ``graftpunk.har.selectors.MAX_SELECTOR_LENGTH``
+    characters is read as None, and ``inLogin`` counts only when it is ``true``."""
     if not isinstance(raw, list):
         return ()
     kept: list[LoginInteraction] = []
@@ -334,7 +342,14 @@ def _login_interactions(raw: Any) -> tuple[LoginInteraction, ...]:
             or before < 0
         ):
             continue
-        kept.append(LoginInteraction(kind, selector or None, float(before)))
+        kept.append(
+            LoginInteraction(
+                kind,
+                bounded_selector(selector),
+                float(before),
+                in_login=item.get("inLogin") is True,
+            )
+        )
     return tuple(sorted(kept, key=lambda each: -each.ms_before))
 
 
@@ -381,6 +396,7 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
     else:
         snapshot_file = None
     snapshot_url = request_data.get("_domSnapshotUrl")
+    resource_type = request_data.get("_resourceType")
 
     return HARRequest(
         method=request_data.get("method", "GET"),
@@ -402,6 +418,7 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         dom_snapshot=snapshot,
         dom_snapshot_url=snapshot_url if isinstance(snapshot_url, str) else None,
         login_interactions=_login_interactions(request_data.get("_loginInteractions")),
+        resource_type=resource_type if isinstance(resource_type, str) else None,
     )
 
 

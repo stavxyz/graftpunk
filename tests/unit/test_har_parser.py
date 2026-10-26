@@ -969,3 +969,31 @@ class TestDomSnapshotFields:
         assert entry.request.login_interactions == ()
         plain = HARRequest(method="GET", url="https://myshop.example/", headers={}, cookies=[])
         assert plain.login_interactions == ()
+
+    def test_the_in_login_flag_and_the_selector_cap(self, tmp_path: Path) -> None:
+        """Review round 1: a click flagged inside the login, and a selector over 256
+        characters read as none."""
+        har = self._har(
+            tmp_path,
+            {
+                "_loginInteractions": [
+                    {"kind": "click", "selector": "#a" + "b" * 255, "msBefore": 30},
+                    {"kind": "click", "selector": "#a" + "b" * 254, "msBefore": 20},
+                    {"kind": "click", "selector": "#lbl", "msBefore": 10, "inLogin": True},
+                    {"kind": "click", "selector": "#x", "msBefore": 5, "inLogin": "yes"},
+                ]
+            },
+        )
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.login_interactions == (
+            LoginInteraction("click", None, 30.0),
+            LoginInteraction("click", "#a" + "b" * 254, 20.0),
+            LoginInteraction("click", "#lbl", 10.0, in_login=True),
+            LoginInteraction("click", "#x", 5.0),
+        )
+
+    def test_the_resource_type_is_read(self, tmp_path: Path) -> None:
+        (entry,) = parse_har_file(self._har(tmp_path, {"_resourceType": "Document"})).entries
+        assert entry.request.resource_type == "Document"
+        (other,) = parse_har_file(self._har(tmp_path, {"_resourceType": 7})).entries
+        assert other.request.resource_type is None

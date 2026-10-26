@@ -654,9 +654,10 @@ def _login_page_url(form: LoginForm, base_url: str) -> str | None:
 
 # Selenium refuses a step's wait_for, so the click that opens a login form is followed
 # by this pause instead (seconds). A modal's open animation takes a fraction of a
-# second, and a script that fetches the form's markup on the click a little more; two
-# seconds covers both on an ordinary connection and costs little against the
-# login's timeout. The comment above the step says to raise it.
+# second, and a script that fetches the form's markup on the click (a fetch is no
+# navigation, so the digest keeps such an opener) a little more; two seconds covers
+# both on an ordinary connection and costs little against the login's timeout. The
+# comment above the step says to raise it.
 _OPENER_DELAY_S = 2.0
 
 
@@ -682,7 +683,7 @@ def _render_opener_step(form: LoginForm, backend: str, *, indent: int) -> list[s
             wrapped_comment_lines(
                 "Selenium runs no step wait_for, so the click that opens the login form is "
                 "followed by a fixed delay instead; raise it if the form takes longer to "
-                "appear.",
+                "appear, as one whose markup the page fetches on the click can.",
                 indent=indent,
             )
         )

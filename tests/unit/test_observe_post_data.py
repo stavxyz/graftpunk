@@ -3166,3 +3166,135 @@ class TestLoginInteractionsAtTheCredentialPost:
             "click", "#signin-link", 5000.0
         )
         assert len(entry.request.login_interactions) == 4
+
+
+class TestLoginInteractionsReviewRound1:
+    """Review round 1 of #267 part 3: the in-login flag, the selector cap, the origin
+    order, an escaped id holding an account value, and each entry's resource type."""
+
+    async def _stored(self, tmp_path: Path, before: list[Any]) -> Any:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        backend = await _record(
+            tab,
+            [*before, _will_be_sent("51.1", inline=_LOGIN_BODY, url=LOGIN)],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        return _only_entry(backend)["request"].get("_loginInteractions")
+
+    @pytest.mark.asyncio
+    async def test_a_click_flagged_inside_the_login_keeps_its_flag(self, tmp_path: Path) -> None:
+        stored = await self._stored(
+            tmp_path,
+            [
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 900, inLogin=False),
+                _interaction("click", "#email-label", time_ms=_POST_MS - 800, inLogin=True),
+                _interaction("focus", "#m-email", time_ms=_POST_MS - 700),
+            ],
+        )
+        assert stored == [
+            {"kind": "click", "selector": "#signin-link", "msBefore": 900},
+            {"kind": "click", "selector": "#email-label", "msBefore": 800, "inLogin": True},
+            {"kind": "focus", "selector": "#m-email", "msBefore": 700},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_selector_over_256_characters_is_stored_as_none_unread(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.har import selectors
+        from graftpunk.observe.capture import MAX_STORED_SELECTOR
+
+        assert MAX_STORED_SELECTOR == 256
+        seen: list[int] = []
+        real = selectors.holds_an_id
+
+        def counting(text: str) -> bool:
+            seen.append(len(text))
+            return real(text)
+
+        monkeypatch.setattr(selectors, "holds_an_id", counting)
+        longest = "#" + "a" * 255
+        stored = await self._stored(
+            tmp_path,
+            [
+                _interaction("click", "#" + "a" * 256, time_ms=_POST_MS - 900),
+                _interaction("click", longest, time_ms=_POST_MS - 800),
+            ],
+        )
+        assert [each["selector"] for each in stored] == [None, longest]
+        assert seen
+        assert max(seen) <= 256
+
+    @pytest.mark.asyncio
+    async def test_an_escaped_id_holding_an_account_value_is_dropped(self, tmp_path: Path) -> None:
+        """Only the unescaped id reads 40912873: the raw text has no digit run."""
+        escaped = "#\\34 \\30 \\39 \\31 \\32 \\38 \\37 \\33"
+        stored = await self._stored(
+            tmp_path, [_interaction("click", escaped, time_ms=_POST_MS - 900)]
+        )
+        assert stored == [{"kind": "click", "selector": None, "msBefore": 900}]
+
+    @pytest.mark.asyncio
+    async def test_the_origin_heard_from_last_is_kept(self, tmp_path: Path) -> None:
+        from graftpunk.observe.capture import INTERACTION_ORIGINS
+
+        others = [
+            _interaction("click", "#x", time_ms=_POST_MS - 500, url=f"https://o{n}.example/")
+            for n in range(INTERACTION_ORIGINS)
+        ]
+        stored = await self._stored(
+            tmp_path,
+            [
+                _interaction("click", "#first", time_ms=_POST_MS - 900),
+                *others[:-2],
+                # Heard from again: no longer the least recent.
+                _interaction("click", "#again", time_ms=_POST_MS - 400),
+                *others[-2:],
+            ],
+        )
+        assert [each["selector"] for each in stored] == ["#first", "#again"]
+
+    @pytest.mark.asyncio
+    async def test_each_entry_carries_its_resource_type(self) -> None:
+        tab = FakeTab({}, _never)
+        backend = await _record(
+            tab,
+            [
+                _will_be_sent("52.1", url=HOME, method="GET", resource_type="Document"),
+                _will_be_sent("52.2", url=SEARCH, method="GET", resource_type="XHR"),
+            ],
+        )
+        types = [e["request"].get("_resourceType") for e in backend.get_har_entries()]
+        assert types == ["Document", "XHR"]
+
+
+def test_selenium_entries_carry_their_resource_type_too() -> None:
+    def perf(method: str, params: dict[str, Any]) -> dict[str, str]:
+        return {"message": json.dumps({"message": {"method": method, "params": params}})}
+
+    request = {"url": HOME, "method": "GET", "headers": {}}
+    log = [
+        perf(
+            "Network.requestWillBeSent",
+            {"requestId": "9.2", "request": request, "wallTime": 1.0, "type": "Document"},
+        ),
+        perf(
+            "Network.responseReceived",
+            {
+                "requestId": "9.2",
+                "response": {"status": 200, "headers": {}, "mimeType": "text/html"},
+            },
+        ),
+    ]
+
+    class Driver:
+        def get_log(self, kind: str) -> list[dict[str, str]]:
+            return log if kind == "performance" else []
+
+        def execute_cdp_cmd(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            return {"body": "<p></p>", "base64Encoded": False}
+
+    backend = SeleniumCaptureBackend(Driver())
+    backend.stop_capture()
+    assert _only_entry(backend)["request"]["_resourceType"] == "Document"

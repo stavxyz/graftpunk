@@ -44,7 +44,7 @@ from graftpunk.har.paths import (
     reads_as_words,
     template_path,
 )
-from graftpunk.har.selectors import selector_holds_an_id, selector_keys
+from graftpunk.har.selectors import bounded_selector, selector_holds_an_id, selector_keys
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -1146,12 +1146,16 @@ def _login_opener(
 
     The opener is the last click before the first focus on one of the form's field
     selectors (the recorded ones and their unscoped forms, compared by
-    :func:`graftpunk.har.selectors.selector_keys`), when its selector picks none of
-    the form's fields and not its submit, and no page of the run loaded (*page_loads*,
-    the times of the GETs answered with HTML) between the click and that focus: a
-    click that loaded a page is a link to the form's page, not an opener. A click
-    the recording kept no selector for, or one whose selector holds an account
-    value, is ``("", True)``: there was an opener and nothing names it."""
+    :func:`graftpunk.har.selectors.selector_keys`), leaving out a click the page saw
+    inside the login (``LoginInteraction.in_login``: a field's label, or a container
+    holding a shown password input), when its selector picks none of the form's
+    fields and not its submit, and no navigation of the run (*page_loads*, see
+    :func:`_is_page_load`) started between the click and that focus, both ends
+    included: a click that loaded a page is a link to the form's page, not an
+    opener. A click the recording kept no selector for, one over
+    ``MAX_SELECTOR_LENGTH`` characters, or one whose selector holds an account value
+    is ``("", True)``: there was an opener and nothing names it. A focus whose
+    selector is over that length is not read."""
     roles: set[tuple[str, ...]] = set()
     for selector in (*form.fields.values(), *form.unscoped_fields.values()):
         roles |= selector_keys(selector)
@@ -1163,24 +1167,47 @@ def _login_opener(
         (
             at
             for at, event in enumerate(interactions)
-            if event.kind == "focus" and event.selector and selector_keys(event.selector) & roles
+            if event.kind == "focus"
+            and (focused := bounded_selector(event.selector)) is not None
+            and selector_keys(focused) & roles
         ),
         None,
     )
     if first_focus is None:
         return None
-    click = next((e for e in reversed(interactions[:first_focus]) if e.kind == "click"), None)
+    click = next(
+        (e for e in reversed(interactions[:first_focus]) if e.kind == "click" and not e.in_login),
+        None,
+    )
     if click is None:
         return None
-    if click.selector and selector_keys(click.selector) & controls:
+    clicked = bounded_selector(click.selector)
+    if clicked is not None and selector_keys(clicked) & controls:
         return None
     clicked_at = post_at - timedelta(milliseconds=click.ms_before)
     focused_at = post_at - timedelta(milliseconds=interactions[first_focus].ms_before)
     if any(clicked_at <= loaded <= focused_at for loaded in page_loads):
         return None
-    if not click.selector or selector_holds_an_id(click.selector):
+    if clicked is None or selector_holds_an_id(clicked):
         return "", True
-    return click.selector, False
+    return clicked, False
+
+
+def _is_page_load(entry: HAREntry, method: str, content_type: str) -> bool:
+    """Whether *entry* is a navigation: by the recorder's ``_resourceType``
+    (``Document``) when the HAR has it; else by ``Sec-Fetch-Mode: navigate`` or
+    ``Sec-Fetch-Dest`` ``document`` or ``iframe``, which Chrome sends only to a
+    secure origin; else, for a HAR with neither, a GET answered 2xx with HTML (which
+    takes an HTML fragment a script fetched for one too). An HTML fragment fetched
+    by script on a click is no page load, so a modal whose markup is fetched keeps
+    its opener."""
+    if entry.request.resource_type is not None:
+        return entry.request.resource_type == "Document"
+    headers = {name.lower(): value.strip().lower() for name, value in entry.request.headers.items()}
+    mode, dest = headers.get("sec-fetch-mode"), headers.get("sec-fetch-dest")
+    if mode or dest:
+        return mode == "navigate" or dest in ("document", "iframe")
+    return method == "GET" and "html" in content_type and 200 <= entry.response.status < 300
 
 
 def _path_segments(url: str) -> int:
@@ -1772,7 +1799,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # Beside each of posts: when it was sent, and the clicks and focus moves gp
     # observe recorded before it (request._loginInteractions).
     post_interactions: list[tuple[datetime, tuple[LoginInteraction, ...]]] = []
-    # When each in-scope GET answered with an HTML page was sent: a page load.
+    # When each in-scope navigation (_is_page_load) was sent: a page load.
     page_loads: list[datetime] = []
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
@@ -1908,7 +1935,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if method == "GET" and entry.response.status in _REDIRECT_STATUSES:
             redirected_via[_redirect_target(entry)] = (*via, url)
         content_type = (entry.response.content_type or "").lower()
-        if method == "GET" and "html" in content_type and 200 <= entry.response.status < 300:
+        if _is_page_load(entry, method, content_type):
             page_loads.append(entry.timestamp)
         forms_in_entry: tuple[LoginForm, ...] = ()
         if "html" in content_type and entry.response.body:
@@ -2149,6 +2176,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if post.page_step is None or not interactions:
             continue
         for form in forms_on_page.get(post.page_step, []):
+            # Only a login read from a DOM snapshot or from a dialog can be behind a
+            # click: a real <form> in the HTML the page served is the login as it
+            # loads, and a click before it (a consent banner) need not come back at
+            # replay.
+            if not (form.from_snapshot or form.formless):
+                continue
             key = _form_key(form)
             found = (
                 None if key in openers else _login_opener(form, interactions, post_at, page_loads)

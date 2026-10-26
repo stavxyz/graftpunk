@@ -14,11 +14,38 @@ import re
 
 from graftpunk.har.paths import holds_an_id
 
-__all__ = ["css_unescape", "selector_holds_an_id", "selector_keys"]
+__all__ = [
+    "MAX_SELECTOR_LENGTH",
+    "bounded_selector",
+    "css_unescape",
+    "selector_holds_an_id",
+    "selector_keys",
+]
+
+# The longest recorded selector any reader keeps. The page listener spells an id or
+# a name of at most 128 characters, so its selectors fit; a longer one came from
+# elsewhere, and holds_an_id's run time grows faster than its input's length.
+MAX_SELECTOR_LENGTH = 256
+
+
+def bounded_selector(selector: object) -> str | None:
+    """*selector* when it is a non-empty string of at most ``MAX_SELECTOR_LENGTH``
+    characters, else None. Every reader of a recorded selector applies it before
+    :func:`selector_holds_an_id` or :func:`selector_keys` sees the selector."""
+    if not isinstance(selector, str) or not selector or len(selector) > MAX_SELECTOR_LENGTH:
+        return None
+    return selector
+
 
 _ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6}) ?|\\(.)", re.DOTALL)
 _HEX_ESCAPE_RE = re.compile(r"[0-9a-fA-F]{1,6} ?")
-_ID_RE = re.compile(r"#((?:\\[0-9a-fA-F]{1,6} ?|\\.|[\w-]|[^\x00-\x7f])+)", re.DOTALL)
+# Each alternative starts differently, and a hex escape takes all the hex digits it
+# can (six, or fewer followed by no hex digit), so a failing match never backtracks
+# into another split of the same text: matching is linear in its length.
+_ID_RE = re.compile(
+    r"#((?:\\(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{1,5}(?![0-9a-fA-F])) ?"
+    r"|\\[^0-9a-fA-F\n]|[A-Za-z0-9_-]|[^\x00-\x7f])+)"
+)
 _QUOTED_RE = re.compile(r'"((?:\\.|[^"\\])*)"', re.DOTALL)
 _ID_ATTRIBUTE_RE = re.compile(r'\[id="((?:\\.|[^"\\])*)"\]', re.DOTALL)
 _NAME_ATTRIBUTE_RE = re.compile(r'([A-Za-z][\w-]*)\[name="((?:\\.|[^"\\])*)"\]', re.DOTALL)

@@ -8,6 +8,7 @@ import json
 import random
 import re
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -32,6 +33,7 @@ from graftpunk.har.digest import (
     LoginObservation,
     ObservationKind,
     _form_state,
+    _login_opener,
     _parse_body,
     _with_login_flow,
     body_params,
@@ -41,7 +43,8 @@ from graftpunk.har.digest import (
     flagged_reasons_of,
     redacted_names_of,
 )
-from graftpunk.har.parser import parse_har_file
+from graftpunk.har.documents import LoginForm
+from graftpunk.har.parser import LoginInteraction, parse_har_file
 from graftpunk.har.paths import reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from tests.unit.guide_harness import REPO_ROOT
@@ -5973,7 +5976,8 @@ class TestALoginReadFromTheDomSnapshot(_DialogDigestCase):
 
 _OPENER_SELENIUM_COMMENT = (
     "Selenium runs no step wait_for, so the click that opens the login form is followed "
-    "by a fixed delay instead; raise it if the form takes longer to appear."
+    "by a fixed delay instead; raise it if the form takes longer to appear, as one whose "
+    "markup the page fetches on the click can."
 )
 _OPENER_UNRESOLVED_GP_FILL = (
     "GP-FILL: a click opened this form before its first field was focused, and the "
@@ -6172,3 +6176,166 @@ class TestTheClickThatOpensTheLogin(_DialogDigestCase):
             steps = code[code.index("steps=[") + len("steps=[") : code.index("        ],")]
             built = eval(f"[{steps}]", {"LoginStep": LoginStep})  # noqa: S307 - our own render
             assert [step.submit for step in built] == ["#signin", "#m-go"]
+
+
+class TestTheOpenerReviewRound1(TestTheClickThatOpensTheLogin):
+    """Review round 1 of #267 part 3: clicks flagged inside the login, what counts as
+    a page load, the first post, recorded-HTML forms, and the selector cap."""
+
+    @staticmethod
+    def _flag(entries: list[dict], index: int) -> list[dict]:
+        entries[-1]["request"]["_loginInteractions"][index]["inLogin"] = True
+        return entries
+
+    def _load(self, at: str, **kwargs: Any) -> dict:
+        """A GET answered with HTML at *at* (seconds past 10:00:00)."""
+        status = kwargs.pop("status", 200)
+        entry = self._get(
+            "/account", "<main>account</main>", started=f"2026-09-10T10:00:{at}Z", status=status
+        )
+        if "kind" in kwargs:
+            entry["request"]["_resourceType"] = kwargs["kind"]
+        for name, value in kwargs.get("headers", {}).items():
+            entry["request"]["headers"].append({"name": name, "value": value})
+        return entry
+
+    def test_a_click_flagged_inside_the_login_is_skipped(self, tmp_path: Path) -> None:
+        steps = (("click", "#signin", 5000), ("click", "#email-label", 4000), *self._OPENED[1:])
+        entries = self._flag(self._entries(tmp_path, steps), 1)
+        assert self._form(tmp_path, entries).opener == "#signin"
+
+    def test_a_flagged_click_alone_gives_no_opener(self, tmp_path: Path) -> None:
+        steps = (("click", "#email-label", 4000), *self._OPENED[1:])
+        entries = self._flag(self._entries(tmp_path, steps), 0)
+        form = self._form(tmp_path, entries)
+        assert (form.opener, form.opener_unresolved) == ("", False)
+
+    def test_an_html_fragment_fetched_on_the_click_is_no_page_load(self, tmp_path: Path) -> None:
+        fragment = self._load("06.000", kind="XHR")
+        assert self._form(tmp_path, self._entries(tmp_path, between=[fragment])).opener == (
+            "#signin"
+        )
+
+    def test_a_document_request_is_a_page_load(self, tmp_path: Path) -> None:
+        loaded = self._load("06.000", kind="Document")
+        assert self._form(tmp_path, self._entries(tmp_path, between=[loaded])).opener == ""
+
+    def test_a_document_answered_404_is_a_page_load_too(self, tmp_path: Path) -> None:
+        loaded = self._load("06.000", kind="Document", status=404)
+        assert self._form(tmp_path, self._entries(tmp_path, between=[loaded])).opener == ""
+
+    def test_without_a_type_sec_fetch_mode_decides(self, tmp_path: Path) -> None:
+        cors = self._load("06.000", headers={"Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"})
+        assert self._form(tmp_path, self._entries(tmp_path, between=[cors])).opener == "#signin"
+        nav = self._load("06.000", headers={"Sec-Fetch-Mode": "navigate"})
+        assert self._form(tmp_path, self._entries(tmp_path, between=[nav])).opener == ""
+
+    def test_with_neither_a_non_2xx_html_get_is_no_page_load(self, tmp_path: Path) -> None:
+        missing = self._load("06.000", status=404)
+        assert self._form(tmp_path, self._entries(tmp_path, between=[missing])).opener == (
+            "#signin"
+        )
+
+    @pytest.mark.parametrize(
+        ("at", "opener"),
+        [
+            ("04.999", "#signin"),  # 1 ms before the click
+            ("05.000", ""),  # at the click
+            ("07.000", ""),  # at the first focus
+            ("07.001", "#signin"),  # 1 ms after it
+        ],
+    )
+    def test_the_page_load_window_includes_both_ends(
+        self, tmp_path: Path, at: str, opener: str
+    ) -> None:
+        loaded = self._load(at, kind="Document")
+        assert self._form(tmp_path, self._entries(tmp_path, between=[loaded])).opener == opener
+
+    def test_the_first_credential_post_gives_the_opener(self, tmp_path: Path) -> None:
+        entries = self._entries(tmp_path)
+        again = json.loads(json.dumps(entries[-1]))
+        again["startedDateTime"] = "2026-09-10T10:00:30.000Z"
+        again["request"]["_loginInteractions"][0]["selector"] = "#retry"
+        result = self._run(tmp_path, [*entries, again])
+        assert [form.opener for form in result.login_forms] == ["#signin"]
+
+    def test_a_real_form_from_recorded_html_never_gets_an_opener(self, tmp_path: Path) -> None:
+        """A consent banner clicked on a plain login page, then the form's field."""
+        post = self._post(
+            "/login",
+            {"username": "alice", "password": "hunter2hunter2"},
+            started=self._POST_AT,
+        )
+        post["request"]["_loginInteractions"] = [
+            {"kind": "click", "selector": "#accept-cookies", "msBefore": 5000},
+            {"kind": "focus", "selector": 'input[name="username"]', "msBefore": 3000},
+        ]
+        result = self._run(tmp_path, [self._get("/login", self._REAL, started=self._PAGE_AT), post])
+        (form,) = result.login_forms
+        assert not form.formless
+        assert (form.opener, form.opener_unresolved) == ("", False)
+        assert self._plugin_on(result, "nodriver").count("LoginStep(") == 1
+
+
+class TestLoginOpenerRule:
+    """``_login_opener`` read directly: unscoped fields, the selector cap, and an
+    escaped id holding an account value."""
+
+    _AT = datetime(2026, 9, 10, 10, 0, 10, tzinfo=UTC)
+
+    @staticmethod
+    def _form(**kwargs: Any) -> LoginForm:
+        return LoginForm(
+            action="",
+            method="",
+            fields=kwargs.pop("fields", {"username": 'input[type="email"]'}),
+            submit=None,
+            hidden=(),
+            source="https://myshop.example.com/",
+            **kwargs,
+        )
+
+    def test_a_field_reached_only_through_its_unscoped_selector(self) -> None:
+        form = self._form(unscoped_fields={"username": "#m-email"})
+        steps = (
+            LoginInteraction("click", "#signin", 5000.0),
+            LoginInteraction("focus", "#m-email", 3000.0),
+        )
+        assert _login_opener(form, steps, self._AT, []) == ("#signin", False)
+        assert _login_opener(self._form(), steps, self._AT, []) is None
+
+    def test_a_selector_over_256_characters_is_unresolved_unread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.har import selectors
+
+        seen: list[int] = []
+        real = selectors.holds_an_id
+
+        def counting(text: str) -> bool:
+            seen.append(len(text))
+            return real(text)
+
+        monkeypatch.setattr(selectors, "holds_an_id", counting)
+        form = self._form(fields={"username": "#m-email"})
+        huge = "#" + "a" * 300
+        steps = (
+            LoginInteraction("click", huge, 5000.0),
+            LoginInteraction("focus", "#m-email", 3000.0),
+        )
+        assert _login_opener(form, steps, self._AT, []) == ("", True)
+        long_focus = (
+            LoginInteraction("click", "#signin", 5000.0),
+            LoginInteraction("focus", "#m-email" + " " * 300, 3000.0),
+        )
+        assert _login_opener(form, long_focus, self._AT, []) is None
+        assert all(length <= 256 for length in seen)
+
+    def test_an_escaped_id_holding_an_account_value_is_unresolved(self) -> None:
+        form = self._form(fields={"username": "#m-email"})
+        escaped = "#\\34 \\30 \\39 \\31 \\32 \\38 \\37 \\33"
+        steps = (
+            LoginInteraction("click", escaped, 5000.0),
+            LoginInteraction("focus", "#m-email", 3000.0),
+        )
+        assert _login_opener(form, steps, self._AT, []) == ("", True)

@@ -70,3 +70,17 @@ class TestSelectorHoldsAnId:
     )
     def test_an_ordinary_selector_is_kept(self, selector: str) -> None:
         assert not selector_holds_an_id(selector)
+
+
+class TestLinearMatching:
+    def test_many_escapes_that_do_not_match_finish_at_once(self) -> None:
+        """Review round 1 (M6): overlapping escape alternatives backtracked
+        exponentially when the match failed (0.146 s at 13 escapes, about 3x a step)."""
+        import time
+
+        crafted = "#" + "\\31" * 60 + "!"
+        started = time.perf_counter()
+        keys = selector_keys(crafted)
+        assert time.perf_counter() - started < 0.5
+        assert keys == {("text", crafted)}
+        assert selector_keys("#\\31 \\32 3") == {("id", "123")}
