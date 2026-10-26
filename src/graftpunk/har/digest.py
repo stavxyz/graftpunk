@@ -67,6 +67,8 @@ __all__ = [
     "TokenKind",
     "body_params",
     "digest",
+    "is_credential_body",
+    "password_field_names",
     "endpoint_template",
     "FLAGGED_REASONS",
     "FlaggedReason",
@@ -695,7 +697,14 @@ def _parse_body_keys(entry: HAREntry) -> tuple[dict[str, str], BodyKind, set[str
 
     A JSON array or scalar is still a JSON body; it just has no field names.
     """
-    post_data = entry.request.post_data
+    return _parse_body_text(entry.request.post_data, _declared_request_content_type(entry))
+
+
+def _parse_body_text(
+    post_data: str | None, declared: str
+) -> tuple[dict[str, str], BodyKind, set[str]]:
+    """:func:`_parse_body_keys` on a body's text and the media type its request
+    declared (lowered, without parameters; empty when it declared none)."""
     if not post_data:
         return {}, "none", set()
 
@@ -709,7 +718,6 @@ def _parse_body_keys(entry: HAREntry) -> tuple[dict[str, str], BodyKind, set[str
             return types, "json", dropped
         return {}, "json", set()
 
-    declared = _declared_request_content_type(entry)
     if declared and declared != _FORM_CONTENT_TYPE:
         return {}, "none", set()
     if "=" not in post_data:
@@ -958,8 +966,13 @@ def _request_target(url: str) -> tuple[str, str]:
 def _unmasked_page(entry: HAREntry) -> str:
     """*entry*'s URL as scheme, host, and path with no email masked: the base a form
     on the page resolves its action against. Never printed."""
+    return _unmasked_url(entry.request.url)
+
+
+def _unmasked_url(url: str) -> str:
+    """:func:`_unmasked_page` for a page's URL."""
     try:
-        parts = urlparse(entry.request.url)
+        parts = urlparse(url)
     except ValueError:
         return ""
     return urlunparse((parts.scheme, bare_host(parts.netloc), bare_path(parts.path), "", "", ""))
@@ -998,14 +1011,14 @@ class _CredentialPost:
     formless_key: tuple[object, ...] | None = None
 
 
-def _script_driven_forms(entry: HAREntry, forms: tuple[LoginForm, ...]) -> list[LoginForm]:
-    """Those of *forms*, served by *entry*, with no target of their own: an empty,
-    ``#``, or ``javascript:`` action, or one resolving to the page itself. Script
-    decides where such a form is sent, so a credential post found by its field names
-    alone may be its post. A formless group (``LoginForm.formless``) is never one,
-    as its action is empty and its target ``("", "")``: a post is credited to it
-    only by its input names (:func:`_formless_credit`)."""
-    page = _request_target(entry.request.url)
+def _script_driven_forms(page_url: str, forms: tuple[LoginForm, ...]) -> list[LoginForm]:
+    """Those of *forms*, on the page at *page_url*, with no target of their own: an
+    empty, ``#``, or ``javascript:`` action, or one resolving to the page itself.
+    Script decides where such a form is sent, so a credential post found by its field
+    names alone may be its post. A formless group (``LoginForm.formless``) is never
+    one, as its action is empty and its target ``("", "")``: a post is credited to
+    it only by its input names (:func:`_formless_credit`)."""
+    page = _request_target(page_url)
     return [
         form
         for form in forms
@@ -1189,10 +1202,72 @@ def _used_login(
     return owned, owned_pages
 
 
+def _opened_from(via: tuple[str, ...], here_host: str) -> str:
+    """The last GET of a redirect chain *via* on another host than *here_host* that is
+    not a logout (opening one would log out): where a form on the chain's page is
+    opened (``LoginForm.opened_from``). Empty when there is none."""
+    return next(
+        (
+            hop
+            for hop in reversed(via)
+            if _host_of(hop) != here_host and not _LOGOUT_URL_REGEX.search(urlparse(hop).path)
+        ),
+        "",
+    )
+
+
+def _visible_shape(form: LoginForm) -> tuple[object, ...]:
+    """What a user sees of a login form, for telling a DOM snapshot's copy of a page's
+    form from the recorded page's: where it posts (a formless group's target is
+    ``("", "")``, which no form's is), the names of its controls that are not hidden
+    inputs (``LoginForm.visible_names``, a hidden name holding an id included among
+    the hidden), and its roles. Not its hidden inputs, attributes, or ids, which a
+    page's script adds or changes after load (a device fingerprint field, an
+    ``autocomplete``)."""
+    visible = tuple(sorted(set(form.visible_names)))
+    return (form.action_target, visible, tuple(sorted(form.fields)))
+
+
+def _snapshot_page_forms(
+    html: str,
+    page_url: str,
+    recorded_on_page: dict[tuple[str, str], set[tuple[object, ...]]],
+    redirected_via: dict[tuple[str, str], tuple[str, ...]],
+) -> tuple[str, tuple[LoginForm, ...]]:
+    """The page a credential post's DOM snapshot shows (``request._domSnapshot``), as
+    its URL the way the digest keeps one, and its login forms
+    (:func:`graftpunk.har.documents.extract_login_forms` with ``snapshot``): each
+    with that URL as its ``source``, and without the forms a recorded GET of the
+    same page already held (by :func:`_visible_shape`), so a recorded copy is never
+    doubled and never takes the snapshot's ``GP-FILL``. Empty when
+    *page_url* is not an http or https URL."""
+    try:
+        if urlparse(page_url).scheme.lower() not in _HTTP_SCHEMES:
+            return "", ()
+        source = _normal_url(bare_url(page_url))
+    except ValueError:
+        return "", ()
+    here = urlparse(source)
+    page = (normal_host(here.scheme, here.netloc), here.path or "/")
+    shown = recorded_on_page.get(page, set())
+    forms = tuple(
+        form
+        for form in extract_login_forms(
+            html, source=source, base=_unmasked_url(page_url), snapshot=True
+        )
+        if _visible_shape(form) not in shown
+    )
+    opened_from = _opened_from(redirected_via.get(page, ()), page[0])
+    if opened_from:
+        forms = tuple(replace(form, opened_from=opened_from) for form in forms)
+    return source, forms
+
+
 def _unique_forms(forms: list[LoginForm]) -> list[LoginForm]:
     """*forms* with a form recorded again (the same site-wide form on several pages)
     kept once, at its first position, as the copy whose selectors resolve best
-    (fewest unresolved roles; the first of those)."""
+    (fewest unresolved roles; then one from a recorded page over one from a DOM
+    snapshot, whose step says a click may open it; the first of those)."""
     best: dict[tuple[object, ...], LoginForm] = {}
     order: list[tuple[object, ...]] = []
     for form in forms:
@@ -1200,17 +1275,45 @@ def _unique_forms(forms: list[LoginForm]) -> list[LoginForm]:
         if key not in best:
             order.append(key)
             best[key] = form
-        elif len(form.unresolved_roles) < len(best[key].unresolved_roles):
+        elif (len(form.unresolved_roles), form.from_snapshot) < (
+            len(best[key].unresolved_roles),
+            best[key].from_snapshot,
+        ):
             best[key] = form
     return [best[key] for key in order]
 
 
 def _has_password_field(entry: HAREntry) -> list[str]:
     """Field names on a POST whose body has a password-like field."""
-    field_types = body_params(entry)
-    return [
-        name for name in field_types if any(hint in name.lower() for hint in PASSWORD_NAME_HINTS)
-    ]
+    return _password_like(body_params(entry))
+
+
+def _password_like(names: Iterable[str]) -> list[str]:
+    return [name for name in names if any(hint in name.lower() for hint in PASSWORD_NAME_HINTS)]
+
+
+def _asks_for_a_new_password(names: Iterable[str]) -> bool:
+    return any(looks_like_new_password_name(name) for name in names)
+
+
+def password_field_names(body_text: str | None, content_type: str = "") -> list[str]:
+    """The password-like field names (a ``PASSWORD_NAME_HINTS`` name) of a request
+    body, read as the digest reads a POST's body (:func:`body_params`) from its text
+    and the request's ``Content-Type``. The one rule for a credential post's fields:
+    the digest reads a recorded POST with it, and the recorder reads a request's body
+    with it while the request is in flight (the DOM snapshot of #267)."""
+    declared = content_type.split(";")[0].strip().lower()
+    types, _kind, _dropped = _parse_body_text(body_text, declared)
+    return _password_like(types)
+
+
+def is_credential_body(body_text: str | None, content_type: str = "") -> bool:
+    """Whether a POST body makes its request a credential post by its field names: it
+    has a password-like field (:func:`password_field_names`) and none asks for a new
+    password (``new_password``, ``password_confirm``: a sign-up or a password
+    change)."""
+    names = password_field_names(body_text, content_type)
+    return bool(names) and not _asks_for_a_new_password(names)
 
 
 def _count_ids(names: set[str]) -> int:
@@ -1621,6 +1724,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # Where a GET's redirect sent the client (host and path), to the URLs of the GETs
     # of that redirect chain so far, in order.
     redirected_via: dict[tuple[str, str], tuple[str, ...]] = {}
+    # The forms (by _visible_shape) each recorded GET page held, by host and path: a
+    # DOM snapshot of that page adds only the forms its recorded HTML lacked.
+    recorded_on_page: dict[tuple[str, str], set[tuple[object, ...]]] = {}
     credential_post_steps: list[int] = []
     # The credential post a redirect or set-cookie observation followed, by step:
     # only a hop that continues that post's redirect chain.
@@ -1662,6 +1768,53 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             LOG.warning("digest_body_file_missing", url=bare_url(entry.request.url))
             continue
 
+        method = entry.request.method.upper()
+        credential_hint_fields = _has_password_field(entry) if method == "POST" else []
+        # Kept before the new-password exclusion below: a POST carrying any password
+        # field is never a redirect hop of another post.
+        carries_a_password = bool(credential_hint_fields)
+        # A body asking for a new password is a password change or a sign-up, never
+        # a login found by its field names.
+        if _asks_for_a_new_password(credential_hint_fields):
+            credential_hint_fields = []
+        post_target = _request_target(entry.request.url) if method == "POST" else ("", "")
+        snapshot_html = entry.request.dom_snapshot if method == "POST" else None
+        if snapshot_html is not None and (
+            credential_hint_fields or _posts_to_a_login_form(post_target, login_action_targets)
+        ):
+            # The page the credential post was sent from, as the recorder saved it
+            # (#267): read as a GET page one step before the post, so the post finds
+            # its forms the way it finds a recorded page's.
+            page_url = entry.request.dom_snapshot_url or ""
+            snapshot_source, snapshot_forms = _snapshot_page_forms(
+                snapshot_html, page_url, recorded_on_page, redirected_via
+            )
+            if snapshot_forms:
+                step += 1
+                login_forms.extend(snapshot_forms)
+                page_of.update((id(form), step) for form in snapshot_forms)
+                scripted_here = _script_driven_forms(page_url, snapshot_forms)
+                script_driven.update(id(form) for form in scripted_here)
+                pending.append(
+                    (
+                        step,
+                        None,
+                        LoginObservation(
+                            order=0,
+                            method="GET",
+                            url=snapshot_source,
+                            status=200,
+                            kind="form_page",
+                            fields=(),
+                        ),
+                        {form.action_target for form in snapshot_forms},
+                        bool(scripted_here),
+                    )
+                )
+                login_action_targets.update(
+                    form.action_target for form in snapshot_forms if form.action_target[1]
+                )
+
         step += 1
         # Path only: every URL the digest keeps goes through paths.bare_url, so
         # no query, fragment, ;params, or userinfo reaches an example, a
@@ -1670,7 +1823,6 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         # and the endpoint it belongs to name one host.
         url = _normal_url(bare_url(entry.request.url))
         path = urlparse(url).path or "/"
-        method = entry.request.method.upper()
         raw_template, _ = template_path(path)
         key = (method, raw_template)
         acc = accumulators.setdefault(key, _EndpointAccumulator(host=host))
@@ -1711,36 +1863,24 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 # failed attempt re-rendered, a search result) is never its page, its
                 # url, or a second page making it site-wide.
                 forms_in_entry = tuple(form for form in forms_in_entry if not form.formless)
-            # A logout in the chain is skipped: opening it would log out.
-            opened_from = next(
-                (
-                    hop
-                    for hop in reversed(via)
-                    if _host_of(hop) != here_host
-                    and not _LOGOUT_URL_REGEX.search(urlparse(hop).path)
-                ),
-                "",
-            )
+            opened_from = _opened_from(via, here_host)
             if opened_from:
                 forms_in_entry = tuple(
                     replace(form, opened_from=opened_from) for form in forms_in_entry
                 )
             login_forms.extend(forms_in_entry)
             page_of.update((id(form), step) for form in forms_in_entry)
-            script_driven.update(id(form) for form in _script_driven_forms(entry, forms_in_entry))
+            if method == "GET":
+                recorded_on_page.setdefault((here_host, path), set()).update(
+                    _visible_shape(form) for form in forms_in_entry
+                )
+            script_driven.update(
+                id(form) for form in _script_driven_forms(entry.request.url, forms_in_entry)
+            )
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
                 token_key = (candidate.kind, candidate.name)
                 token_seen.setdefault(token_key, []).extend(candidate.seen_on)
 
-        credential_hint_fields = _has_password_field(entry) if method == "POST" else []
-        # Kept before the new-password exclusion below: a POST carrying any password
-        # field is never a redirect hop of another post.
-        carries_a_password = bool(credential_hint_fields)
-        # A body asking for a new password is a password change or a sign-up, never
-        # a login found by its field names.
-        if any(looks_like_new_password_name(name) for name in credential_hint_fields):
-            credential_hint_fields = []
-        post_target = _request_target(entry.request.url) if method == "POST" else ("", "")
         by_target = method == "POST" and _posts_to_a_login_form(post_target, login_action_targets)
         kind: ObservationKind | None = None
         fields: tuple[str, ...] = ()
@@ -1819,7 +1959,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                         redirect_to=_redirect_target_path(entry),
                     ),
                     {form.action_target for form in forms_in_entry},
-                    bool(_script_driven_forms(entry, forms_in_entry)),
+                    bool(_script_driven_forms(entry.request.url, forms_in_entry)),
                 )
             )
             if kind == "credential_post":

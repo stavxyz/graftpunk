@@ -1098,6 +1098,118 @@ class TestPluginModuleWithLoginForm:
         assert "multi-step login" not in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
 
+    @staticmethod
+    def _snapshot_plugin(html: str) -> str:
+        (form,) = extract_login_forms(html, source="https://myshop.example.com/", snapshot=True)
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        return render(spec)["src/graftpunk_myshop/plugin.py"]
+
+    def test_a_login_beside_a_formless_sign_up_is_left_to_the_author(self) -> None:
+        """The one-password rule: three formless passwords give no plain-block group,
+        so the scaffold writes no LoginStep with a selector from either block, only
+        the observations comment and a commented-out login_config to fill in."""
+        html = (
+            '<html><body><div id="app"><div class="login">'
+            '<input type="text" name="identifier" id="li">'
+            '<input type="password" name="password" id="lp">'
+            '<button type="button" id="signin">Sign in</button></div>'
+            '<div class="signup"><input type="email" name="signup_email" id="se">'
+            '<input type="password" name="signup_password" id="sp" autocomplete="new-password">'
+            '<input type="password" name="password_confirm" id="sc" '
+            'autocomplete="new-password"><button type="button">Create account</button></div>'
+            "</div></body></html>"
+        )
+        forms = extract_login_forms(html, source="https://myshop.example.com/", snapshot=True)
+        assert forms == ()
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=forms),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "# No login form detected." in plugin_code
+        assert "#se" not in plugin_code
+        assert "#lp" not in plugin_code
+
+    def test_a_form_read_from_a_dom_snapshot_says_a_click_may_open_it(self) -> None:
+        """#267 part 2: the step carries the GP-FILL, right above it."""
+        plugin_code = self._snapshot_plugin(
+            '<div class="login"><input type="email" id="u" name="email">'
+            '<input type="password" id="p"><button type="submit" id="go">Go</button></div>'
+        )
+        lines = [line.strip() for line in plugin_code.splitlines()]
+        step = lines.index("LoginStep(")
+        above = " ".join(line.lstrip("#").strip() for line in lines[step - 2 : step])
+        assert above == (
+            "GP-FILL: read from the page at the moment of the credential post; if a click "
+            "opens this form, add a click-only LoginStep before this one."
+        )
+        assert 'url="/",' in plugin_code
+
+    def test_a_snapshot_group_outside_a_dialog_is_not_called_a_dialog(self) -> None:
+        plugin_code = self._snapshot_plugin(
+            '<div class="pw"><input type="password" id="p">'
+            '<button type="button" id="eye">Show</button></div>'
+        )
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert "dialog" not in comment
+        assert (
+            "GP-FILL: username has no selector: no element holding four text or password "
+            "inputs or fewer around the password holds a username-like input before it "
+            "with no button between them, so the login group is the password and the "
+            "buttons after it; write one by hand if the login has one."
+        ) in comment
+        assert (
+            "GP-FILL: submit has no selector: the first button after the password in the "
+            "login group is not an explicit submit" in comment
+        )
+
+    def test_a_snapshot_password_alone_says_so_for_both_roles(self) -> None:
+        plugin_code = self._snapshot_plugin('<div><input type="password" id="p"></div>')
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: username has no selector: no element holding four text or password "
+            "inputs or fewer around the password, other than <html> or <body>, holds a "
+            "button after it, so the login group is the password alone; write one by hand "
+            "if the login has one."
+        ) in comment
+        assert (
+            "GP-FILL: submit has no selector: no element holding four text or password "
+            "inputs or fewer around the password, other than <html> or <body>, holds a "
+            "button after it; write one by hand."
+        ) in comment
+
+    def test_a_form_from_recorded_html_carries_no_snapshot_comment(self) -> None:
+        (form,) = extract_login_forms(
+            '<div role="dialog"><input id="u"><input type="password" id="p">'
+            '<button type="submit" id="go">Go</button></div>',
+            source="https://myshop.example.com/",
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,)),
+        )
+        assert "moment of the credential post" not in render(spec)["src/graftpunk_myshop/plugin.py"]
+
     @pytest.mark.parametrize(
         "inner",
         [

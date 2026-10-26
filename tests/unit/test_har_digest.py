@@ -5637,3 +5637,334 @@ class TestDialogCreditRound5(_DialogDigestCase):
         assert not any(o.login_flow for o in pages)
         assert self._flags(result)[("GET", "/")] is False
         assert "def root(" in self._plugin(result)
+
+
+_SNAPSHOT_GP_FILL = (
+    "GP-FILL: read from the page at the moment of the credential post; if a click opens "
+    "this form, add a click-only LoginStep before this one."
+)
+
+
+def _comment_text(code: str) -> str:
+    return " ".join(
+        line.strip().lstrip("#").strip()
+        for line in code.splitlines()
+        if line.strip().startswith("#")
+    )
+
+
+class TestALoginReadFromTheDomSnapshot(_DialogDigestCase):
+    """A credential post's ``request._domSnapshot`` (#267, part 2): the live page at
+    the moment the post was sent, read as a GET page just before the post."""
+
+    _SHELL = '<header><a href="#" id="signin">Sign in</a></header><div id="app"></div>'
+    # The modal the page's script rendered after the click, as the recorder stores it.
+    _DIV_MODAL = (
+        '<html><head><script></script></head><body><header><a href="#" id="signin">Sign in'
+        '</a></header><div id="app"><div class="modal" id="login-modal">'
+        '<input type="email" id="m-email" name="email">'
+        '<input type="password" id="m-pw" name="password">'
+        '<button type="submit" id="m-go">Sign in</button></div></div></body></html>'
+    )
+
+    def _snapshot_post(
+        self,
+        run: Path,
+        path: str,
+        html: str,
+        name: str = "9.1",
+        *,
+        page: str | None = None,
+        body: dict | None = None,
+    ) -> dict:
+        (run / "snapshots").mkdir(exist_ok=True)
+        (run / "snapshots" / f"{name}.html").write_text(html)
+        post = self._post(path, body or self._BODY)
+        post["request"]["_domSnapshot"] = f"snapshots/{name}.html"
+        post["request"]["_domSnapshotUrl"] = page or f"{self._HOST}/"
+        return post
+
+    def test_a_script_rendered_modal_gives_a_login_form_with_its_page(self, tmp_path: Path) -> None:
+        entries = [
+            self._get("/", self._SHELL),
+            self._snapshot_post(tmp_path, "/api/auth/login/", self._DIV_MODAL),
+            _entry("GET", f"{self._HOST}/api/account/", body='{"name": "x"}'),
+        ]
+        result = self._run(tmp_path, entries)
+
+        (form,) = result.login_forms
+        assert form.from_snapshot
+        assert form.source == f"{self._HOST}/"
+        assert form.fields == {"username": "#m-email", "password": "#m-pw"}
+        assert form.submit == "#m-go"
+        flow = [(o.method, urlparse(o.url).path, o.kind) for o in result.login if o.login_flow]
+        assert flow == [("GET", "/", "form_page"), ("POST", "/api/auth/login/", "credential_post")]
+        code = self._plugin(result)
+        assert 'url="/",' in code
+        assert '"password": "#m-pw"' in code
+        assert _SNAPSHOT_GP_FILL in _comment_text(code)
+
+    def test_without_the_snapshot_the_same_run_has_no_login_form(self, tmp_path: Path) -> None:
+        post = self._snapshot_post(tmp_path, "/api/auth/login/", self._DIV_MODAL)
+        del post["request"]["_domSnapshot"]
+        result = self._run(tmp_path, [self._get("/", self._SHELL), post])
+        assert result.login_forms == ()
+
+    def test_an_actionless_form_in_the_snapshot_is_credited_too(self, tmp_path: Path) -> None:
+        html = self._DIV_MODAL.replace('<div class="modal"', '<form class="modal"').replace(
+            "</button></div>", "</button></form>"
+        )
+        entries = [
+            self._get("/", self._SHELL),
+            self._snapshot_post(tmp_path, "/api/auth/login/", html),
+        ]
+        result = self._run(tmp_path, entries)
+
+        (form,) = result.login_forms
+        assert not form.formless
+        assert form.from_snapshot
+        assert [o.login_flow for o in result.login if o.kind == "credential_post"] == [True]
+        # The post promoted the snapshot's page through its script-driven form.
+        pages = [urlparse(o.url).path for o in result.login if o.kind == "form_page"]
+        assert pages == ["/"]
+        assert 'url="/",' in self._plugin(result)
+
+    def test_a_snapshot_does_not_displace_a_real_form_recorded_elsewhere(
+        self, tmp_path: Path
+    ) -> None:
+        """The real /login form the post went to stays the login; the snapshot's
+        site-wide modal is listed after it."""
+        body = {"username": "alice", "password": "hunter2hunter2"}
+        entries = [
+            self._get("/login", self._REAL),
+            self._snapshot_post(tmp_path, "/login", self._DIV_MODAL),
+        ]
+        entries[1]["request"]["postData"]["text"] = json.dumps(body)
+        result = self._run(tmp_path, entries)
+
+        first = result.login_forms[0]
+        assert not first.formless
+        assert not first.from_snapshot
+        assert first.source == f"{self._HOST}/login"
+        assert [f.from_snapshot for f in result.login_forms] == [False, True]
+        code = self._plugin(result)
+        assert 'url="/login",' in code
+        assert _SNAPSHOT_GP_FILL not in _comment_text(code)
+
+    def test_the_recorded_copy_of_a_form_wins_over_its_snapshot_copy(self, tmp_path: Path) -> None:
+        body = {"username": "alice", "password": "hunter2hunter2"}
+        entries = [
+            self._get("/login", self._REAL),
+            self._snapshot_post(tmp_path, "/login", f"<html><body>{self._REAL}</body></html>"),
+        ]
+        entries[1]["request"]["postData"]["text"] = json.dumps(body)
+        entries[1]["request"]["_domSnapshotUrl"] = f"{self._HOST}/login"
+        result = self._run(tmp_path, entries)
+
+        (form,) = result.login_forms
+        assert not form.from_snapshot
+        assert _SNAPSHOT_GP_FILL not in _comment_text(self._plugin(result))
+        # The snapshot added no page: the recorded GET is the one form page.
+        assert [o.kind for o in result.login].count("form_page") == 1
+
+    _CREDS = {"username": "alice", "password": "hunter2hunter2"}
+
+    def test_a_form_the_page_s_script_added_a_hidden_input_to_is_listed_once(
+        self, tmp_path: Path
+    ) -> None:
+        """Review M6: the same inputs and roles on the same page is the same form,
+        whatever hidden inputs or attributes the page's script added."""
+        live = self._REAL.replace(
+            '<input type="password" name="password">',
+            '<input type="password" name="password" autocomplete="current-password">'
+            '<input type="hidden" name="device_fp">',
+        )
+        entries = [
+            self._get("/login", self._REAL),
+            self._snapshot_post(
+                tmp_path, "/login", live, page=f"{self._HOST}/login", body=self._CREDS
+            ),
+        ]
+        result = self._run(tmp_path, entries)
+        (form,) = result.login_forms
+        assert not form.from_snapshot
+        assert [o.kind for o in result.login].count("form_page") == 1
+        assert _SNAPSHOT_GP_FILL not in _comment_text(self._plugin(result))
+
+    def test_a_hidden_input_named_with_an_id_is_still_hidden(self, tmp_path: Path) -> None:
+        """Review round 2 (M5): a hidden input whose name holds an id is left out of
+        LoginForm.hidden, and is hidden all the same for telling copies apart."""
+        live = self._REAL.replace(
+            '<input type="password" name="password">',
+            '<input type="password" name="password">'
+            '<input type="hidden" name="fp_3f9a8c2e1b7d4a60">',
+        )
+        entries = [
+            self._get("/login", self._REAL),
+            self._snapshot_post(
+                tmp_path, "/login", live, page=f"{self._HOST}/login", body=self._CREDS
+            ),
+        ]
+        (form,) = self._run(tmp_path, entries).login_forms
+        assert not form.from_snapshot
+
+    def test_the_same_names_with_other_roles_are_another_form(self, tmp_path: Path) -> None:
+        """A typeless input the form's script turned into a checkbox is no longer a
+        field: the roles differ, so both copies are listed."""
+        recorded = self._REAL.replace(
+            "<button>Sign in</button>", '<input name="remember"><button>Sign in</button>'
+        )
+        live = recorded.replace(
+            '<input name="remember">', '<input type="checkbox" name="remember">'
+        )
+        entries = [
+            self._get("/login", recorded),
+            self._snapshot_post(
+                tmp_path, "/login", live, page=f"{self._HOST}/login", body=self._CREDS
+            ),
+        ]
+        result = self._run(tmp_path, entries)
+        assert sorted(f.from_snapshot for f in result.login_forms) == [False, True]
+
+    def test_the_same_names_posting_elsewhere_are_another_form(self, tmp_path: Path) -> None:
+        live = self._REAL.replace('action="/login"', 'action="/club/join"')
+        entries = [
+            self._get("/login", self._REAL),
+            self._snapshot_post(
+                tmp_path, "/login", live, page=f"{self._HOST}/login", body=self._CREDS
+            ),
+        ]
+        result = self._run(tmp_path, entries)
+        assert sorted(f.from_snapshot for f in result.login_forms) == [False, True]
+
+    def test_a_form_with_other_inputs_on_the_same_page_is_read(self, tmp_path: Path) -> None:
+        live = self._REAL.replace('name="username"', 'name="member_email"')
+        entries = [
+            self._get("/login", self._REAL),
+            self._snapshot_post(
+                tmp_path,
+                "/login",
+                live,
+                page=f"{self._HOST}/login",
+                body={"member_email": "alice", "password": "hunter2hunter2"},
+            ),
+        ]
+        result = self._run(tmp_path, entries)
+        assert [f.from_snapshot for f in result.login_forms].count(True) == 1
+
+    def test_the_same_form_on_another_page_keeps_the_recorded_copy(self, tmp_path: Path) -> None:
+        """The tie-break of _unique_forms: a snapshot of / holding /login's form."""
+        entries = [
+            self._get("/login", self._REAL),
+            self._snapshot_post(tmp_path, "/login", self._REAL, body=self._CREDS),
+        ]
+        result = self._run(tmp_path, entries)
+        (form,) = result.login_forms
+        assert not form.from_snapshot
+        assert form.source == f"{self._HOST}/login"
+
+    def test_a_snapshot_page_reached_by_a_cross_host_redirect_opens_from_the_app(
+        self, tmp_path: Path
+    ) -> None:
+        idp = "https://id.myshop.example.com"
+        app_login = f"{self._HOST}/login"
+        redirect = _entry(
+            "GET",
+            app_login,
+            status=302,
+            content_type="text/html",
+            body="",
+            response_headers={"Location": f"{idp}/authorize"},
+        )
+        redirect["response"]["redirectURL"] = f"{idp}/authorize"
+        shell = _entry("GET", f"{idp}/authorize", content_type="text/html", body=self._SHELL)
+        post = self._snapshot_post(tmp_path, "/x", self._DIV_MODAL, page=f"{idp}/authorize")
+        post["request"]["url"] = f"{idp}/authorize/login"
+        result = self._run(tmp_path, [redirect, shell, post])
+        (form,) = result.login_forms
+        assert form.from_snapshot
+        assert form.opened_from == app_login
+
+    def test_the_snapshot_page_is_its_own_step(self, tmp_path: Path) -> None:
+        """The snapshot's page is not the page recorded just before it."""
+        other = (
+            '<form action="/club/join" method="post"><input type="text" name="member">'
+            '<input type="password" name="secret"><button>Join</button></form>'
+        )
+        entries = [
+            self._get("/club", other),
+            self._snapshot_post(tmp_path, "/api/auth/login/", self._DIV_MODAL),
+        ]
+        result = self._run(tmp_path, entries)
+        flagged = {(o.method, urlparse(o.url).path): o.login_flow for o in result.login}
+        assert flagged.get(("GET", "/club")) in (None, False)
+        assert flagged[("GET", "/")] is True
+
+    def test_a_snapshot_with_no_http_url_is_not_read(self, tmp_path: Path) -> None:
+        post = self._snapshot_post(
+            tmp_path, "/api/auth/login/", self._DIV_MODAL, page="about:blank"
+        )
+        result = self._run(tmp_path, [self._get("/", self._SHELL), post])
+        assert result.login_forms == ()
+        assert [o.kind for o in result.login] == ["credential_post"]
+
+    def test_only_a_recorded_get_makes_a_snapshot_form_a_copy(self, tmp_path: Path) -> None:
+        """A POST's HTML response at the same path is not the page the user saw."""
+        search = _entry(
+            "POST",
+            f"{self._HOST}/login",
+            content_type="text/html",
+            body=self._REAL,
+            post_data=json.dumps({"q": "shoes"}),
+        )
+        entries = [
+            search,
+            self._snapshot_post(
+                tmp_path,
+                "/login",
+                f"<html><body>{self._REAL}</body></html>",
+                page=f"{self._HOST}/login",
+                body=self._CREDS,
+            ),
+        ]
+        result = self._run(tmp_path, entries)
+        assert [o.kind for o in result.login if o.kind == "form_page"] == ["form_page"]
+
+    def test_a_snapshot_form_s_action_marks_a_later_post_to_it(self, tmp_path: Path) -> None:
+        """Read as a GET page, the snapshot's form makes a later POST to its action a
+        credential post whatever its fields are named, as a recorded page's does."""
+        form = (
+            '<form action="/session" method="post"><input type="text" name="username">'
+            '<input type="password" name="password"><button>Go</button></form>'
+        )
+        entries = [
+            self._get("/", self._SHELL),
+            self._snapshot_post(tmp_path, "/session", form, body=self._CREDS),
+            self._post("/session", {"otp": "123456"}),
+        ]
+        result = self._run(tmp_path, entries)
+        assert [o.kind for o in result.login if o.method == "POST"] == [
+            "credential_post",
+            "credential_post",
+        ]
+
+    def test_a_snapshot_on_a_post_that_is_no_credential_post_is_not_read(
+        self, tmp_path: Path
+    ) -> None:
+        post = self._snapshot_post(tmp_path, "/api/search", self._DIV_MODAL)
+        post["request"]["postData"]["text"] = json.dumps({"query": "alice"})
+        result = self._run(tmp_path, [self._get("/", self._SHELL), post])
+        assert result.login_forms == ()
+        assert result.login == ()
+
+    def test_a_snapshot_in_a_post_s_html_response_rule_does_not_apply(self, tmp_path: Path) -> None:
+        """The snapshot is the page the post was sent from, so its dialog counts
+        even though the entry is a POST."""
+        modal = self._DIV_MODAL.replace('class="modal"', 'class="modal" role="dialog"')
+        result = self._run(
+            tmp_path,
+            [self._get("/", self._SHELL), self._snapshot_post(tmp_path, "/api/auth", modal)],
+        )
+        (form,) = result.login_forms
+        assert form.formless
+        assert not form.plain_block

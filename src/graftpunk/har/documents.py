@@ -9,8 +9,10 @@ HAR entry, so this module knows nothing about HAR (plugin tooling spec,
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from bisect import bisect_left
+from collections import Counter
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field, replace
 from html.parser import HTMLParser
 from typing import Literal
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
@@ -115,6 +117,18 @@ class LoginForm:
     # method are empty, its action_target is ("", ""), and the digest credits a
     # credential post to it only by its input names. Internal.
     formless: bool = field(default=False, metadata={"internal": True})
+    # Read from a DOM snapshot the recorder took at a credential post (the live page
+    # as the user submitted it), not from a recorded HTML response. Internal.
+    from_snapshot: bool = field(default=False, metadata={"internal": True})
+    # A formless group bounded by an ancestor element of the password rather than
+    # by a dialog: read from a DOM snapshot only. Internal.
+    plain_block: bool = field(default=False, metadata={"internal": True})
+    # How a plain_block group was bounded (graftpunk.har.documents._block_login_groups):
+    # "inputs", "button" (a password-only group), or "alone". Internal.
+    block_bound: str = field(default="", metadata={"internal": True})
+    # The names of the form's controls that are not hidden inputs, whatever the name
+    # holds (hidden lists only names that hold no account value). Internal.
+    visible_names: tuple[str, ...] = field(default=(), metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -152,6 +166,22 @@ class _RawInput:
     # The innermost dialog this control sits in, as its index in
     # _DocumentParser.dialog_hints, or None: what bounds a formless login group.
     dialog: int | None = None
+    # The innermost element this control sits in, as its index in
+    # _DocumentParser.blocks, or None; tracked for a DOM snapshot only.
+    block: int | None = None
+
+
+@dataclass
+class _Block:
+    """An element of a DOM snapshot, for bounding a login group outside any dialog:
+    its tag, its lowered id and class, the element it sits in, and the controls
+    inside it, as the range [start, end) of _DocumentParser.inputs."""
+
+    tag: str
+    hints: str
+    parent: int | None
+    start: int
+    end: int | None = None
 
 
 @dataclass
@@ -188,8 +218,16 @@ class _DocumentParser(HTMLParser):
     """Collects every ``<form>`` (with its inputs) and every ``<meta>`` in one pass,
     and the dialog each control sits in."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, track_blocks: bool = False) -> None:
         super().__init__(convert_charrefs=True)
+        # For a DOM snapshot, which the browser serialized with every element
+        # closed: each element as a _Block, and the open ones, innermost last, with
+        # how many of each tag are open, so an end tag pops to its own element and a
+        # stray one pops nothing.
+        self._track_blocks = track_blocks
+        self.blocks: list[_Block] = []
+        self._block_stack: list[int] = []
+        self._block_open: dict[str, int] = {}
         self.forms: list[_RawForm] = []
         self.metas: list[tuple[str, str]] = []
         # Every input, button, select, and textarea on the page, in a form or not, in
@@ -280,6 +318,7 @@ class _DocumentParser(HTMLParser):
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
             raw_input.dialog = self._innermost_dialog()
+            raw_input.block = self._block_stack[-1] if self._block_stack else None
             inside = self._current.element_id if self._current is not None else ""
             raw_input.outside_form = bool(raw_input.form_owner) and raw_input.form_owner != inside
             self.inputs.append(raw_input)
@@ -289,8 +328,27 @@ class _DocumentParser(HTMLParser):
             name, content = values.get("name"), values.get("content")
             if name and content:
                 self.metas.append((name, content))
+        if self._track_blocks and tag not in _VOID_TAGS:
+            parent = self._block_stack[-1] if self._block_stack else None
+            hints = f"{values.get('id', '')} {values.get('class', '')}".lower()
+            self._block_stack.append(len(self.blocks))
+            self.blocks.append(_Block(tag, hints, parent, start=len(self.inputs)))
+            self._block_open[tag] = self._block_open.get(tag, 0) + 1
+
+    def _close_blocks(self, tag: str) -> None:
+        """Close the open elements down to the innermost *tag*, when one is open."""
+        if not self._block_open.get(tag):
+            return
+        while self._block_stack:
+            block = self.blocks[self._block_stack.pop()]
+            block.end = len(self.inputs)
+            self._block_open[block.tag] -= 1
+            if block.tag == tag:
+                return
 
     def handle_endtag(self, tag: str) -> None:
+        if self._track_blocks:
+            self._close_blocks(tag)
         if self._open_count.get(tag, 0) > 0:
             count = self._open_count[tag] - 1
             self._open_count[tag] = count
@@ -309,11 +367,13 @@ class _DocumentParser(HTMLParser):
             self._current = None
 
 
-def _parse(html: str) -> _DocumentParser:
-    parser = _DocumentParser()
+def _parse(html: str, *, track_blocks: bool = False) -> _DocumentParser:
+    parser = _DocumentParser(track_blocks=track_blocks)
     parser.feed(html)
     if parser._current is not None:  # an unclosed <form>: keep what was seen
         parser.forms.append(parser._current)
+    for index in parser._block_stack:  # elements still open run to the end
+        parser.blocks[index].end = len(parser.inputs)
     # A control with form="id" belongs to that form wherever it sits on the page.
     owners = {form.element_id: form for form in parser.forms if form.element_id}
     for raw_input in parser.inputs:
@@ -414,10 +474,34 @@ def _type_selectors(raw: _RawInput) -> tuple[str, ...]:
     return (f"{raw.tag}:not([type])", f'{raw.tag}[type="{_css_string(raw.input_type)}"]')
 
 
-def _same_type(raw: _RawInput, other: _RawInput) -> bool:
-    """Whether a type selector for *raw* would also pick *other*: same tag and same
-    type, a typeless element counted as its default type."""
-    return other.tag == raw.tag and other.input_type == raw.input_type
+@dataclass
+class _Counts:
+    """How many of a set of controls share a tag and name, or a tag and type (what a
+    type selector picks: a typeless element counted as its default type), and the
+    same for each ``form`` attribute's
+    controls: counted once, so checking that a selector picks one control is a
+    lookup, not a pass over the page."""
+
+    by_name: Counter[tuple[str, str]] = field(default_factory=Counter)
+    by_type: Counter[tuple[str, str]] = field(default_factory=Counter)
+    by_owner_name: Counter[tuple[str, str, str]] = field(default_factory=Counter)
+    by_owner_type: Counter[tuple[str, str, str]] = field(default_factory=Counter)
+
+    @classmethod
+    def of(cls, controls: Iterable[_RawInput]) -> _Counts:
+        counts = cls()
+        for raw in controls:
+            counts.by_name[(raw.tag, raw.name)] += 1
+            counts.by_type[(raw.tag, raw.input_type)] += 1
+            counts.by_owner_name[(raw.form_owner, raw.tag, raw.name)] += 1
+            counts.by_owner_type[(raw.form_owner, raw.tag, raw.input_type)] += 1
+        return counts
+
+    def named(self, raw: _RawInput) -> int:
+        return self.by_name[(raw.tag, raw.name)]
+
+    def typed(self, raw: _RawInput) -> int:
+        return self.by_type[(raw.tag, raw.input_type)]
 
 
 def _id_selector(raw: _RawInput) -> str | None:
@@ -445,8 +529,8 @@ def _scoped(suffixes: tuple[str, ...], form_scopes: tuple[str, ...]) -> str:
 def _selectors_for(
     raw: _RawInput,
     form_scopes: tuple[str, ...],
-    contained: list[_RawInput],
-    page_inputs: list[_RawInput],
+    contained: _Counts,
+    page_inputs: _Counts,
 ) -> tuple[str | None, str | None]:
     """One input's selector as recorded, and the one safe to print without the
     form scope; each None when there is none.
@@ -468,42 +552,35 @@ def _selectors_for(
     if raw.outside_form:
         return _outside_selector(raw, page_inputs)
     by_name = _name_selector(raw)
-    if by_name is not None and (
-        sum(1 for other in contained if other.tag == raw.tag and other.name == raw.name) > 1
-    ):
+    if by_name is not None and contained.named(raw) > 1:
         # A name two inputs of the form share picks the first of them, which may
         # not be this one: fall back as for any selector that is not unique.
         by_name = None
     unscoped = None
-    if by_name is not None and (
-        sum(1 for other in page_inputs if other.tag == raw.tag and other.name == raw.name) == 1
-    ):
+    if by_name is not None and page_inputs.named(raw) == 1:
         unscoped = by_name
     if not form_scopes:
         return (unscoped, unscoped) if by_name is not None else (None, None)
     if by_name is not None:
         return _scoped((by_name,), form_scopes), unscoped
-    if sum(1 for other in contained if _same_type(raw, other)) > 1:
+    if contained.typed(raw) > 1:
         return None, None
     return _scoped(_type_selectors(raw), form_scopes), None
 
 
-def _outside_selector(
-    raw: _RawInput, page_inputs: list[_RawInput]
-) -> tuple[str | None, str | None]:
+def _outside_selector(raw: _RawInput, page_inputs: _Counts) -> tuple[str | None, str | None]:
     """The selector of a control outside the form its ``form`` attribute names:
     ``tag[form="id"][name="..."]``, else ``tag[form="id"][type="..."]`` (with
     ``:not([type])`` for a typeless one), each only when it picks this one control
     on the page, else none. It spells no action, so it prints as it is."""
     owner = f'[form="{_css_string(raw.form_owner)}"]'
-    siblings = [other for other in page_inputs if other.form_owner == raw.form_owner]
     by_name = _name_selector(raw)
     if by_name is not None and (
-        sum(1 for other in siblings if other.tag == raw.tag and other.name == raw.name) == 1
+        page_inputs.by_owner_name[(raw.form_owner, raw.tag, raw.name)] == 1
     ):
         selector = f'{raw.tag}{owner}[name="{_css_string(raw.name)}"]'
         return selector, selector
-    if sum(1 for other in siblings if _same_type(raw, other)) == 1:
+    if page_inputs.by_owner_type[(raw.form_owner, raw.tag, raw.input_type)] == 1:
         suffixes = tuple(
             suffix.replace(raw.tag, f"{raw.tag}{owner}", 1) for suffix in _type_selectors(raw)
         )
@@ -583,6 +660,14 @@ def _is_submit(raw: _RawInput) -> bool:
     """An ``<input type="submit">``, an ``<input type="image">``, or a submitting
     ``<button>`` (typeless included)."""
     return raw.input_type == "submit" or (raw.tag == "input" and raw.input_type == "image")
+
+
+def _is_button_like(raw: _RawInput) -> bool:
+    """Any ``<button>``, or a submit, image, button, or reset input: what a user
+    presses, and what ends a formless group's fields."""
+    return raw.tag == "button" or (
+        raw.tag == "input" and raw.input_type in ("submit", "image", "button", "reset")
+    )
 
 
 def _has_username_hint(raw: _RawInput) -> bool:
@@ -764,9 +849,7 @@ def form_action_targets(html: str, base: str) -> dict[tuple[str, str], frozenset
     return targets
 
 
-def _formless_selectors(
-    raw: _RawInput, page_inputs: list[_RawInput]
-) -> tuple[str | None, str | None]:
+def _formless_selectors(raw: _RawInput, page_inputs: _Counts) -> tuple[str | None, str | None]:
     """The selector of a control outside every form, recorded and unscoped alike:
     its id selector, else its tag and ``name`` selector when no other input on the
     page (*page_inputs*) has that tag and name, else none. No form scope can pick it,
@@ -775,9 +858,7 @@ def _formless_selectors(
     if by_id is not None:
         return by_id, by_id
     by_name = _name_selector(raw)
-    if by_name is not None and (
-        sum(1 for other in page_inputs if other.tag == raw.tag and other.name == raw.name) == 1
-    ):
+    if by_name is not None and page_inputs.named(raw) == 1:
         return by_name, by_name
     return None, None
 
@@ -823,15 +904,23 @@ def _formless_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
     for raw in _formless_controls(parsed):
         if raw.dialog is not None:
             by_dialog.setdefault(raw.dialog, []).append(raw)
+    return _ranked_login_groups(
+        [(parsed.dialog_hints[dialog], group) for dialog, group in by_dialog.items()]
+    )
 
-    def sign_up_named(dialog: int, group: list[_RawInput]) -> bool:
+
+def _ranked_login_groups(groups: list[tuple[str, list[_RawInput]]]) -> list[list[_RawInput]]:
+    """The formless *groups* (each with its bounding element's lowered id and class)
+    that are a login, judged and ordered as :func:`_formless_login_groups` states."""
+
+    def sign_up_named(hints: str, group: list[_RawInput]) -> bool:
         words = " ".join(f"{raw.element_id} {raw.name}" for raw in group).lower()
-        words += " " + parsed.dialog_hints[dialog]
+        words += " " + hints
         return any(hint in words for hint in _SIGN_UP_HINTS)
 
     kept = [
-        (dialog, group)
-        for dialog, group in by_dialog.items()
+        (hints, group)
+        for hints, group in groups
         if _password_index(group) is not None
         and not _is_change_password(group)
         and not _is_registration(group)
@@ -847,11 +936,148 @@ def _formless_login_groups(parsed: _DocumentParser) -> list[list[_RawInput]]:
             pair[1][0].order,
         )
     )
-    return [group for _dialog, group in kept]
+    return [group for _hints, group in kept]
+
+
+# The elements that never bound a snapshot's login group: one bounded by the whole
+# page would take any input before the password as its username.
+_PAGE_ELEMENTS = frozenset({"html", "body"})
+# The most text-like and password inputs with no form owner and in no dialog an
+# element may hold to bound a snapshot's login group (buttons, checkboxes, radios,
+# and hidden inputs do not count, and neither do a form's or a dialog's own): a login
+# block asks for a username and a password, and a page's wrapper, holding a search
+# box, a newsletter field, or a sign-up beside the login, asks for more.
+_MAX_BLOCK_FIELDS = 4
+
+
+def _counts_as_field(raw: _RawInput) -> bool:
+    """A text-like input, or one the role rules take for a password (a
+    ``current-password`` autocomplete included, :func:`_is_password`)."""
+    return _is_text_like(raw) or _is_password(raw)
+
+
+def _username_hinted(raw: _RawInput) -> bool:
+    """A text-like input the digest's username rule names: a ``username`` or
+    ``email`` autocomplete, an email type, or a name or id holding a username hint
+    (``user``, ``email``, ``login``, ``account``)."""
+    if _has_username_hint(raw):
+        return True
+    lowered = raw.element_id.lower()
+    return any(hint in lowered for hint in _USERNAME_HINTS)
+
+
+def _username_hint_strength(raw: _RawInput) -> int:
+    """How strongly a username-like input (:func:`_username_hinted`) says it is the
+    username: a ``username`` autocomplete, then an ``email`` autocomplete or an
+    email type, then a name or id hint."""
+    if raw.autocomplete == "username":
+        return 3
+    if raw.autocomplete == "email" or raw.input_type == "email":
+        return 2
+    return 1
+
+
+def _asks_for_a_new_password(raw: _RawInput) -> bool:
+    return _is_password(raw) and (
+        raw.autocomplete == "new-password"
+        or looks_like_new_password_name(raw.name)
+        or looks_like_new_password_name(raw.element_id)
+    )
+
+
+def _block_login_groups(parsed: _DocumentParser) -> list[tuple[list[_RawInput], str]]:
+    """A DOM snapshot's login group outside every form and dialog, with how it was
+    bounded, when the snapshot holds exactly one password input (:func:`_is_password`:
+    a password input, or any input marked ``current-password``, whatever its type, a
+    hidden one included) with no form owner and in no dialog, and that one asks for
+    no new password (:func:`_asks_for_a_new_password`). With none, or with two or
+    more, there is none: nothing on the page tells a sign-up's passwords from a
+    login's reliably. With no other login form, the scaffold then writes "No login
+    form detected" with the observations and a commented-out ``login_config``. A
+    form's or a dialog's inputs belong to it and never count here.
+
+    The walk up the password's ancestors looks only at elements holding at most
+    ``_MAX_BLOCK_FIELDS`` text-like and password inputs with no form owner and in no
+    dialog, never ``<html>`` or ``<body>``, and stops at the first larger one. The
+    group is, in this order:
+
+    - ``"inputs"``: the controls with no form owner and in no dialog inside the
+      nearest such element holding a username-like input before the password
+      (:func:`_username_hinted`), a button-like control after it
+      (:func:`_is_button_like`), and no button-like control between that input and
+      the password, starting after the last button-like control before that input
+      (an input with a button of its own, a search box or a newsletter field, is
+      something else);
+    - ``"button"``: else, those from the password on inside the nearest such element
+      holding a button-like control after it (a password-only step);
+    - ``"alone"``: else, the password by itself.
+
+    The snapshot is taken as the user submits, so the control they pressed is likely
+    near the password, and a show-password toggle's wrapper, which holds no input
+    before the password, does not stop the walk. The group needs no further
+    judging: with one password that asks for no new one, the rules a dialog's group is
+    judged by (:func:`_ranked_login_groups`) always pass it. One walk up one password
+    is linear in the page's length."""
+    controls = [raw for raw in _formless_controls(parsed) if raw.dialog is None]
+    passwords = [raw for raw in controls if _is_password(raw)]
+    if len(passwords) != 1 or _asks_for_a_new_password(passwords[0]):
+        return []
+    (raw,) = passwords
+    in_group = {id(control) for control in controls}
+    # Prefix counts over the page: buttons anywhere (any button is one the user may
+    # have pressed), fields of the controls above only.
+    buttons_before, fields_before = [0], [0]
+    # The order of the last username-like input, and of the last button-like
+    # control, before each position; -1 for none.
+    last_field_before, last_button_before = [-1], [-1]
+    for control in parsed.inputs:
+        button = _is_button_like(control)
+        counted = id(control) in in_group
+        buttons_before.append(buttons_before[-1] + button)
+        fields_before.append(fields_before[-1] + (counted and _counts_as_field(control)))
+        is_field = counted and _is_text_like(control) and _username_hinted(control)
+        last_field_before.append(control.order if is_field else last_field_before[-1])
+        last_button_before.append(control.order if button else last_button_before[-1])
+
+    def span(block: int) -> tuple[int, int]:
+        element = parsed.blocks[block]
+        return element.start, element.end if element.end is not None else len(parsed.inputs)
+
+    field = last_field_before[raw.order]
+    field_usable = field >= 0 and buttons_before[raw.order] == buttons_before[field + 1]
+    with_inputs: int | None = None
+    with_button: int | None = None
+    block = raw.block
+    while block is not None:
+        start, end = span(block)
+        if fields_before[end] - fields_before[start] > _MAX_BLOCK_FIELDS:
+            break
+        if (
+            parsed.blocks[block].tag not in _PAGE_ELEMENTS
+            and buttons_before[end] > buttons_before[raw.order + 1]
+        ):
+            with_button = block if with_button is None else with_button
+            if field_usable and field >= start:
+                with_inputs = block
+                break
+        block = parsed.blocks[block].parent
+    chosen = with_inputs if with_inputs is not None else with_button
+    if chosen is None:
+        # One password that asks for no new one: the rules a dialog's group is
+        # judged by (_ranked_login_groups) always pass it.
+        return [([raw], "alone")]
+    kind = "inputs" if with_inputs is not None else "button"
+    start, end = span(chosen)
+    # An "inputs" group starts after the last button before its username, a
+    # "button" group at the password.
+    start = max(start, last_button_before[field] + 1) if kind == "inputs" else raw.order
+    orders = [control.order for control in controls]
+    group = controls[bisect_left(orders, start) : bisect_left(orders, end)]
+    return [(group, kind)]
 
 
 def extract_login_forms(
-    html: str, source: str, *, base: str | None = None
+    html: str, source: str, *, base: str | None = None, snapshot: bool = False
 ) -> tuple[LoginForm, ...]:
     """Every login ``<form>`` in *html*: one with a password input that is neither a
     change-password form (:func:`_is_change_password`, never kept) nor a
@@ -890,8 +1116,18 @@ def extract_login_forms(
     (:func:`_formless_selectors`), its ``action`` and ``method`` are empty (no
     browser submits it, a script sends it with a method of its own), its
     ``action_target`` is ``("", "")``, and ``formless`` is set.
+
+    With *snapshot*, *html* is a DOM snapshot the recorder took at a credential post
+    (the page as the user submitted it), every form it gives has ``from_snapshot``
+    set, and it gives one more kind of group, listed last: a password outside every
+    form and every dialog, grouped with the controls of a small element around it as
+    :func:`_block_login_groups` states, with ``plain_block`` set and ``block_bound``
+    naming how it was bounded (``"inputs"``, ``"button"``, or ``"alone"``). That
+    widening is for a snapshot only: in a recorded HTML response such a block is as
+    likely a page's layout as a login, and nothing says the user pressed a button
+    there.
     """
-    parsed = _parse(html)
+    parsed = _parse(html, track_blocks=snapshot)
     candidates = [
         raw
         for raw in parsed.forms
@@ -906,6 +1142,18 @@ def extract_login_forms(
         # form); a lone form with a confirmation password is a registration form.
         logins = [raw for raw in candidates if len(_password_inputs(raw.inputs)) == 1]
     forms: list[LoginForm] = []
+    page_counts = _Counts.of(parsed.inputs)
+    # The controls each form physically contains, and each form's bare action, read
+    # once: a scope's counts are built once per action, however many forms share it.
+    contained_in: dict[int, list[_RawInput]] = {}
+    for control in parsed.inputs:
+        if control.container is not None:
+            contained_in.setdefault(id(control.container), []).append(control)
+    bare_actions = {id(other): _bare_action(other) for other in parsed.forms}
+    forms_by_action: dict[str | None, list[_RawForm]] = {}
+    for other in parsed.forms:
+        forms_by_action.setdefault(bare_actions[id(other)], []).append(other)
+    scope_counts: dict[str | None, _Counts] = {}
     for raw in logins:
         try:
             action = bare_url(raw.action)
@@ -928,18 +1176,23 @@ def extract_login_forms(
         # A scoped selector matches every form with this action (a header mini-login
         # and the main form can share one), so uniqueness is counted across the
         # controls inside all of them.
-        same_scope = {
-            id(other) for other in parsed.forms if other is raw or _bare_action(other) == action
-        }
-        contained = [
-            control
-            for control in parsed.inputs
-            if control.container is not None and id(control.container) in same_scope
-        ]
+        if not scopes:
+            # No form scope (an action that could not be split, or one masked): a
+            # selector is printed only when the page holds no other control it
+            # picks, so the page's counts decide, and the scope's could add nothing.
+            contained = page_counts
+        else:
+            if action not in scope_counts:
+                scope_counts[action] = _Counts.of(
+                    control
+                    for other in forms_by_action.get(action, [])
+                    for control in contained_in.get(id(other), [])
+                )
+            contained = scope_counts[action]
         form = _login_form(
             raw.inputs,
             lambda control, scopes=scopes, contained=contained: _selectors_for(
-                control, scopes, contained, parsed.inputs
+                control, scopes, contained, page_counts
             ),
             action=action,
             method=raw.method,
@@ -949,10 +1202,15 @@ def extract_login_forms(
         )
         if form is not None:
             forms.append(form)
-    for group in _formless_login_groups(parsed):
+    dialog_groups = _formless_login_groups(parsed)
+    block_groups = _block_login_groups(parsed) if snapshot else []
+    for group, block_bound in [
+        *((group, "") for group in dialog_groups),
+        *block_groups,
+    ]:
         form = _login_form(
             group,
-            lambda control: _formless_selectors(control, parsed.inputs),
+            lambda control: _formless_selectors(control, page_counts),
             action="",
             method="",
             source=source,
@@ -961,9 +1219,14 @@ def extract_login_forms(
             # signatures apart even when the controls are the same.
             element_id=None,
             formless=True,
+            hinted_username=bool(block_bound),
         )
         if form is not None:
-            forms.append(form)
+            forms.append(
+                replace(form, plain_block=True, block_bound=block_bound) if block_bound else form
+            )
+    if snapshot:
+        return tuple(replace(form, from_snapshot=True) for form in forms)
     return tuple(forms)
 
 
@@ -977,6 +1240,7 @@ def _login_form(
     action_target: tuple[str, str],
     element_id: str | None,
     formless: bool = False,
+    hinted_username: bool = False,
 ) -> LoginForm | None:
     """The :class:`LoginForm` the controls *inputs* make, by the role rules
     :func:`extract_login_forms` states, each selector from *selectors_for* (the
@@ -1004,15 +1268,7 @@ def _login_form(
         # submit after a typeless "Sign in" is never taken, and a toggle right after
         # the password ends the fields there (a GP-FILL over a wrong selector).
         block_end = next(
-            (
-                i
-                for i in range(password_index + 1, len(inputs))
-                if inputs[i].tag == "button"
-                or (
-                    inputs[i].tag == "input"
-                    and inputs[i].input_type in ("submit", "image", "button", "reset")
-                )
-            ),
+            (i for i in range(password_index + 1, len(inputs)) if _is_button_like(inputs[i])),
             len(inputs),
         )
         submit_index = (
@@ -1031,7 +1287,19 @@ def _login_form(
         block_end = submit_index if submit_index is not None else len(inputs)
     # A form's username is looked for among all its controls, as before; a dialog's
     # only within its field block.
-    username_index = _username_index(inputs, password_index, block_end if formless else None)
+    if hinted_username:
+        # A snapshot's plain block: only an input a username hint names is the
+        # username (graftpunk.har.documents._block_login_groups bounds the group by
+        # one), never an unhinted one beside it.
+        hinted = [
+            (_username_hint_strength(inputs[index]), index)
+            for index in range(password_index)
+            if _is_text_like(inputs[index]) and _username_hinted(inputs[index])
+        ]
+        # The strongest hint, and of equal ones the last before the password.
+        username_index = max(hinted)[1] if hinted else None
+    else:
+        username_index = _username_index(inputs, password_index, block_end if formless else None)
     block_start = (username_index if username_index is not None else password_index) + 1
     roles: list[tuple[str, _RawInput]] = []
     if username_index is not None:
@@ -1107,6 +1375,7 @@ def _login_form(
         absent_roles=tuple(absent),
         action_target=action_target,
         input_names=tuple(i.name for i in inputs if i.name),
+        visible_names=tuple(i.name for i in inputs if i.name and i.input_type != "hidden"),
         signature=(
             element_id,
             tuple((i.tag, i.input_type, i.name, i.element_id) for i in inputs),

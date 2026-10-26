@@ -402,6 +402,48 @@ class TestObserveGoInteractiveFlag:
         assert "--interactive" in output
 
 
+class TestSetupObserveSessionTakesDomSnapshots:
+    @pytest.mark.asyncio
+    async def test_gp_observe_turns_the_snapshot_on_in_the_run_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """#267 part 2: only gp observe's own setup passes a snapshots directory; the
+        capture factory every other recorder uses never does."""
+        import inspect
+
+        from graftpunk.cli.observe_browser import setup_observe_session
+        from graftpunk.observe.capture import create_capture_backend
+
+        mock_tab = MagicMock()
+        mock_browser = MagicMock()
+        mock_browser.main_tab = mock_tab
+        mock_browser.get = AsyncMock(return_value=mock_tab)
+        mock_backend = MagicMock()
+        mock_backend.start_capture_async = AsyncMock()
+
+        async def fake_nodriver_start(**kwargs: object) -> MagicMock:
+            return mock_browser
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = fake_nodriver_start
+        mock_storage = MagicMock()
+        mock_storage.run_dir = tmp_path / "run"
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
+            ) as backend_cls,
+            patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
+        ):
+            await setup_observe_session(
+                "test-ns", "https://example.com", 1024, headless=True, session_name=None
+            )
+
+        assert backend_cls.call_args.kwargs["dom_snapshots_dir"] == tmp_path / "run" / "snapshots"
+        assert "dom_snapshots_dir" not in inspect.signature(create_capture_backend).parameters
+
+
 class TestSetupObserveSessionSigintIsolation:
     """Verify that Chrome is isolated from SIGINT during nodriver.start()."""
 

@@ -200,6 +200,9 @@ async def setup_observe_session(
             get_tab=lambda: tab,
             bodies_dir=bodies_dir,
             max_body_size=max_body_size,
+            # The page's DOM at each credential-shaped POST: a login modal a script
+            # renders is in no recorded HTML response (#267).
+            dom_snapshots_dir=storage.run_dir / "snapshots",
         )
         await backend.start_capture_async()
 

@@ -56,6 +56,14 @@ class HARRequest:
     post_data_binary: bool = False
     # The body's size in bytes as the recorder wrote it (request._postDataSize).
     post_data_size: int | None = None
+    # The page's DOM as the request was sent, which gp observe saves for a
+    # credential-shaped POST (request._domSnapshot, relative to the HAR's
+    # directory): the reference, kept only when it names a file under that
+    # directory, and the file's text when it is UTF-8. dom_snapshot_url is the page
+    # it was taken on (request._domSnapshotUrl).
+    dom_snapshot_file: str | None = None
+    dom_snapshot: str | None = None
+    dom_snapshot_url: str | None = None
 
 
 @dataclass
@@ -317,6 +325,17 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
     size = request_data.get("_postDataSize")
     omitted = request_data.get("_postDataOmitted")
     omitted_reason = omitted.get("reason") if isinstance(omitted, dict) else None
+    snapshot_file = request_data.get("_domSnapshot")
+    snapshot: str | None = None
+    if isinstance(snapshot_file, str):
+        # The same refusal as a request body file's: a reference that leaves the
+        # HAR's directory, or a file that is missing or not text, is not read.
+        snapshot, readable = _request_body_file(snapshot_file, base_dir)
+        if not readable:
+            snapshot_file = None
+    else:
+        snapshot_file = None
+    snapshot_url = request_data.get("_domSnapshotUrl")
 
     return HARRequest(
         method=request_data.get("method", "GET"),
@@ -334,6 +353,9 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         post_data_file=post_data_file,
         post_data_binary=post_data_binary,
         post_data_size=size if isinstance(size, int) and not isinstance(size, bool) else None,
+        dom_snapshot_file=snapshot_file,
+        dom_snapshot=snapshot,
+        dom_snapshot_url=snapshot_url if isinstance(snapshot_url, str) else None,
     )
 
 
