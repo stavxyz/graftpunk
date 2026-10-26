@@ -561,6 +561,21 @@ _PAGE = {
                             "key": "wrap-label",
                             "children": [{"tag": "input", "attrs": {"name": "q"}}],
                         },
+                        # A checkbox-toggle opener (a CSS-only modal), and a radio's label.
+                        {"tag": "label", "attrs": {"for": "toggle"}, "key": "toggle-label"},
+                        {"tag": "input", "attrs": {"type": "checkbox", "id": "toggle"}},
+                        {
+                            "tag": "label",
+                            "key": "radio-label",
+                            "children": [{"tag": "input", "attrs": {"type": "RADIO", "name": "r"}}],
+                        },
+                        {
+                            "tag": "label",
+                            "key": "search-label",
+                            "children": [
+                                {"tag": "input", "attrs": {"type": "Search", "name": "s"}}
+                            ],
+                        },
                         {"tag": "button", "attrs": {"name": 'a"b\\c\nd\re'}, "key": "odd-name"},
                         {"tag": "button", "attrs": {"id": "x" * 129}, "key": "long-id"},
                         {"tag": "button", "attrs": {"id": "y" * 128}, "key": "max-id"},
@@ -779,6 +794,19 @@ class TestInteractionEvents:
             False,
             True,
         ]
+
+    def test_a_label_for_a_checkbox_or_a_radio_is_not_flagged(self, tmp_path: Path) -> None:
+        """A checkbox-toggle opener stays a candidate; a text-like field's label does
+        not, whatever the case of its type."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "toggle-label"},
+                {"type": "click", "target": "radio-label"},
+                {"type": "click", "target": "search-label"},
+            ],
+        )
+        assert [call["inLogin"] for call in result["calls"]] == [False, False, True]
 
     def test_a_name_with_quotes_backslashes_and_line_breaks_is_escaped(
         self, tmp_path: Path

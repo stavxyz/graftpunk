@@ -20,15 +20,20 @@ innermost element; and a ``focusin`` when its target is an ``input``, ``select``
 or ``textarea``. Each sends ``{"type": "interaction", "kind": "click" | "focus",
 "selector", "url", "time"}``, a click also ``inLogin``: a selector computed in the
 page or null, the document URL, ``Date.now()``, and whether the click was inside
-the login (on a ``label`` whose control is an input, select, or textarea, or on
-an element that, or one of whose :data:`LOGIN_CONTAINER_LEVELS` nearest
-ancestors short of ``<body>``, holds a shown password input). The selector is
+the login (on a ``label`` whose control is a field a person types into: a
+``select``, a ``textarea``, or an ``input`` of type ``text``, ``email``, ``tel``,
+``url``, ``search``, ``password``, or ``number``, or of no type, never a checkbox
+or a radio, which a CSS-only modal's opener can be; or on an element that, or
+one of whose :data:`LOGIN_CONTAINER_LEVELS` nearest ancestors short of
+``<body>``, holds a shown password input). The selector is
 ``#id`` (spelled with ``CSS.escape``) when no other element of the document has
 that id, else ``tag[name="..."]`` when that picks one element, else the shortest
 path of at most :data:`STRUCTURAL_DEPTH` ``tag:nth-of-type(n)`` steps joined by
 `` > `` that picks one element, else null; an id or a name over
-:data:`MAX_SELECTOR_NAME` characters is not used, and a selector that fails to
-compute is null, the event still sent. An element in a shadow tree has no
+:data:`MAX_SELECTOR_NAME` characters is not used, so such an element falls
+through to the next rule (a name, else the structural path, which spells only tag
+names and positions), and a selector that fails to compute is null, the event
+still sent. An element in a shadow tree has no
 selector the document can use. No text, no value, and no attribute beyond the id
 or name a selector spells is sent; at most :data:`MAX_INTERACTIONS_PER_SECOND`
 are sent in any one second, a sliding window on the monotonic
@@ -165,10 +170,19 @@ LISTENER_SCRIPT = (
   // A click inside the login: on a label for a field, or on an element whose own
   // container (it or an ancestor within __LOGIN_LEVELS__ levels, short of <body>)
   // holds a shown password input as it is clicked.
+  // A field a person types into: a label for a checkbox or a radio (a CSS-only
+  // modal's toggle) may be the opener itself.
+  const textLike = (control) => {
+    const tag = String(control.localName);
+    if (tag === "select" || tag === "textarea") return true;
+    if (tag !== "input") return false;
+    const type = String(control.getAttribute("type") || "").toLowerCase();
+    return /^(|text|email|tel|url|search|password|number)$/.test(type);
+  };
   const insideLogin = (element) => {
     const label = typeof element.closest === "function" ? element.closest("label") : null;
     const control = label ? label.control : null;
-    if (control && /^(input|select|textarea)$/.test(String(control.localName))) return true;
+    if (control && textLike(control)) return true;
     let node = element;
     for (let level = 0; level <= __LOGIN_LEVELS__ && isElement(node); level++) {
       if (/^(body|html)$/.test(String(node.localName))) break;
