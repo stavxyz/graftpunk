@@ -1110,6 +1110,23 @@ class TestPluginModuleWithLoginForm:
         )
         return render(spec)["src/graftpunk_myshop/plugin.py"]
 
+    def test_an_unhinted_login_beside_a_sign_up_gives_a_login_step(self) -> None:
+        """Review round 4 (superpowers I1): the sign-up block is refused, not the
+        login beside it."""
+        plugin_code = self._snapshot_plugin(
+            '<html><body><div id="app"><div class="login">'
+            '<input type="text" name="identifier" id="li">'
+            '<input type="password" name="password" id="lp">'
+            '<button type="button" id="signin">Sign in</button></div>'
+            '<div class="signup"><input type="email" name="signup_email" id="se">'
+            '<input type="password" name="signup_password" id="sp" autocomplete="new-password">'
+            '<input type="password" name="password_confirm" id="sc" '
+            'autocomplete="new-password"><button type="button">Create account</button></div>'
+            "</div></body></html>"
+        )
+        assert "login_config = LoginConfig(" in plugin_code
+        assert '"password": "#lp"' in plugin_code
+
     def test_a_form_read_from_a_dom_snapshot_says_a_click_may_open_it(self) -> None:
         """#267 part 2: the step carries the GP-FILL, right above it."""
         plugin_code = self._snapshot_plugin(

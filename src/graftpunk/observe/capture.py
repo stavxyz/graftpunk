@@ -130,8 +130,11 @@ def _referer(event: Any) -> str:
 
 def _origin_only(event: Any) -> bool:
     """Whether a navigation's sending page is known only as an origin: its Referer
-    has no path and no query (Chrome's default ``strict-origin-when-cross-origin``
-    sends a cross-origin form post's Referer so, measured on 2026-10-24)."""
+    has no path at all, or is ``/`` with no query on a request to another origin.
+    Chrome's default ``strict-origin-when-cross-origin`` sends a cross-origin form
+    post's Referer as the origin and ``/`` (measured on 2026-10-24: ``Referer:
+    http://127.0.0.1:8767/`` from ``/form.html``), and a same-origin one whole, so a
+    ``/`` Referer on a same-origin request is the page ``/`` itself."""
     referer = _referer(event)
     if not _is_navigation(event) or not referer:
         return False
@@ -139,7 +142,10 @@ def _origin_only(event: Any) -> bool:
         parts = urllib.parse.urlsplit(referer)
     except ValueError:
         return False
-    return parts.path in ("", "/") and not parts.query
+    if parts.query or parts.path not in ("", "/"):
+        return False
+    request_url = getattr(getattr(event, "request", None), "url", None)
+    return parts.path == "" or _origin(referer) != _origin(request_url)
 
 
 def _is_navigation(event: Any) -> bool:

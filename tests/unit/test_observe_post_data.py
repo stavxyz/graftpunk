@@ -2577,7 +2577,7 @@ class TestSnapshotFromTheIsolatedWorldListener:
     async def test_a_disable_the_page_never_answers_does_not_hold_the_snapshot(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The read failed; the DOM.disable after it waits _STOP_WAIT_S at most, so
+        """The read failed; the DOM.disable after it waits _DOM_DISABLE_WAIT_S at most, so
         the snapshot fails and is counted then, not when stop cancels it."""
         monkeypatch.setattr(capture, "_DOM_DISABLE_WAIT_S", 0.05)
 
@@ -2712,8 +2712,9 @@ class TestSnapshotFromTheIsolatedWorldListener:
         assert summary["late_skipped"] == 1
 
     @staticmethod
-    def _navigation(rid: str, *, referer: str | None) -> Any:
-        target = "https://auth.myshop-sso.example/session"
+    def _navigation(
+        rid: str, *, referer: str | None, target: str = "https://auth.myshop-sso.example/session"
+    ) -> Any:
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         if referer is not None:
             headers["Referer"] = referer
@@ -2725,6 +2726,93 @@ class TestSnapshotFromTheIsolatedWorldListener:
             resource_type="Document",
             headers=headers,
         )
+
+    async def _late(self, tmp_path: Path, event: Any, dom_url: str) -> tuple[Any, list]:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        tab.dom_url = dom_url
+        with capture_logs() as logs:
+            backend = await _record(tab, [event], dom_snapshots_dir=tmp_path / "snapshots")
+        return _only_entry(backend)["request"], logs
+
+    @pytest.mark.asyncio
+    async def test_a_same_origin_post_from_the_root_page_requires_that_page(
+        self, tmp_path: Path
+    ) -> None:
+        """Review round 4 (superpowers M2): a Referer of "/" on a same-origin post is
+        the page "/", which Chrome sends whole to its own origin."""
+        event = self._navigation(
+            "46.1", referer="https://myshop.example/", target="https://myshop.example/session"
+        )
+        request, logs = await self._late(tmp_path, event, "https://myshop.example/account")
+        assert "_domSnapshot" not in request
+        assert [
+            e["reason"] for e in logs if e["event"] == "nodriver_dom_snapshot_late_skipped"
+        ] == ["another_page"]
+
+    @pytest.mark.asyncio
+    async def test_a_referer_with_no_path_at_all_is_origin_only(self, tmp_path: Path) -> None:
+        event = self._navigation(
+            "46.2", referer="https://myshop.example", target="https://myshop.example/session"
+        )
+        request, _logs = await self._late(tmp_path, event, "https://myshop.example/signin")
+        assert request["_domSnapshot"] == "snapshots/46.2.html"
+
+    @pytest.mark.asyncio
+    async def test_a_referer_with_a_query_is_a_page(self, tmp_path: Path) -> None:
+        event = self._navigation("46.3", referer="https://myshop.example/?next=1")
+        request, _logs = await self._late(tmp_path, event, "https://myshop.example/signin")
+        assert "_domSnapshot" not in request
+
+    @pytest.mark.asyncio
+    async def test_only_a_navigation_s_referer_can_be_origin_only(self, tmp_path: Path) -> None:
+        event = _will_be_sent(
+            "46.4",
+            inline=_LOGIN_BODY,
+            url="https://auth.myshop-sso.example/session",
+            document_url="https://myshop.example/login",
+            headers={"Referer": "https://myshop.example/"},
+        )
+        request, _logs = await self._late(tmp_path, event, "https://myshop.example/account")
+        assert "_domSnapshot" not in request
+
+    @pytest.mark.asyncio
+    async def test_a_no_sender_navigation_takes_a_snapshot_landing_before_its_task(
+        self, tmp_path: Path
+    ) -> None:
+        """Review round 4 (M15/M10): the listener's snapshot can arrive after the
+        request is seen and before the task runs."""
+        tab = FakeTab({}, _never)
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        with capture_logs() as logs:
+            # No snapshot when the request is seen, so the task falls to the late path.
+            await tab.dispatch(self._navigation("46.5", referer=None), settle=False)
+            await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40))
+            await _stop(backend, tab)
+        assert 'id="login-modal"' in (tmp_path / "snapshots" / "46.5.html").read_text()
+        assert not [e for e in logs if e["event"] == "nodriver_dom_snapshot_late_skipped"]
+
+    @pytest.mark.asyncio
+    async def test_a_navigation_s_referer_wins_over_its_initiator(self, tmp_path: Path) -> None:
+        event = self._navigation("46.6", referer="https://myshop.example/signin")
+        event.initiator.url = "https://elsewhere.example/"
+        tab = FakeTab({}, _never)
+        await _record(
+            tab,
+            [
+                _binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 900),
+                _binding_called(
+                    _LOGIN_MODAL.replace('id="login-modal"', 'id="elsewhere-modal"'),
+                    time_ms=_POST_MS - 60,
+                    url="https://elsewhere.example/",
+                ),
+                event,
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        stored = (tmp_path / "snapshots" / "46.6.html").read_text()
+        assert 'id="login-modal"' in stored
+        assert "elsewhere-modal" not in stored
 
     @pytest.mark.asyncio
     async def test_a_sending_page_with_no_origin_takes_no_snapshot(self, tmp_path: Path) -> None:
