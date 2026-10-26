@@ -2907,3 +2907,262 @@ class TestSnapshotFromTheIsolatedWorldListener:
         ] == ["40.1"]
         (summary,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_summary"]
         assert summary["failed"] == 1
+
+
+def _interaction(
+    kind: str, selector: str | None, *, time_ms: float, url: str = LOGIN, **extra: Any
+) -> Any:
+    from graftpunk.observe.dom_listener import BINDING_NAME, INTERACTION_TYPE
+
+    payload = {
+        "type": INTERACTION_TYPE,
+        "kind": kind,
+        "selector": selector,
+        "url": url,
+        "time": time_ms,
+        **extra,
+    }
+    return parse_json_event(
+        {
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": BINDING_NAME,
+                "payload": json.dumps(payload),
+                "executionContextId": 7,
+            },
+        }
+    )
+
+
+class TestLoginInteractionsAtTheCredentialPost:
+    """The clicks and focus moves the page's listener sent (#267, part 3) are stored
+    on the credential post they came before, as ``request._loginInteractions``."""
+
+    # A click on the header link, the user filling the modal, and the submit click.
+    _OPENED = (
+        ("click", "#signin-link", 5000),
+        ("focus", "#m-email", 3000),
+        ("focus", 'input[name="password"]', 2000),
+        ("click", "#m-go", 40),
+    )
+
+    def _events(self, steps: tuple[tuple[str, str | None, int], ...] = _OPENED) -> list[Any]:
+        return [
+            _interaction(kind, selector, time_ms=_POST_MS - before)
+            for kind, selector, before in steps
+        ]
+
+    async def _run(
+        self, tmp_path: Path, before: list[Any], *, snapshots: bool = True, after: Any = ()
+    ) -> NodriverCaptureBackend:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        kwargs: dict[str, Any] = {}
+        if snapshots:
+            kwargs["dom_snapshots_dir"] = tmp_path / "snapshots"
+        return await _record(
+            tab,
+            [*before, _will_be_sent("41.1", inline=_LOGIN_BODY, url=LOGIN), *after],
+            **kwargs,
+        )
+
+    @staticmethod
+    def _stored(backend: NodriverCaptureBackend, method: str = "POST") -> Any:
+        entry = next(e for e in backend.get_har_entries() if e["request"]["method"] == method)
+        return entry["request"].get("_loginInteractions")
+
+    @pytest.mark.asyncio
+    async def test_the_events_before_the_post_are_stored_oldest_first(self, tmp_path: Path) -> None:
+        backend = await self._run(tmp_path, self._events())
+        assert self._stored(backend) == [
+            {"kind": "click", "selector": "#signin-link", "msBefore": 5000},
+            {"kind": "focus", "selector": "#m-email", "msBefore": 3000},
+            {"kind": "focus", "selector": 'input[name="password"]', "msBefore": 2000},
+            {"kind": "click", "selector": "#m-go", "msBefore": 40},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_url_and_no_absolute_time_is_stored(self, tmp_path: Path) -> None:
+        backend = await self._run(tmp_path, self._events())
+        assert self._stored(backend)
+        stored = json.dumps(self._stored(backend))
+        assert LOGIN not in stored
+        assert str(_POST_MS)[:6] not in stored
+
+    @pytest.mark.asyncio
+    async def test_only_the_last_120_seconds_and_nothing_after_the_post(
+        self, tmp_path: Path
+    ) -> None:
+        from graftpunk.observe.capture import LOGIN_INTERACTION_WINDOW_MS
+
+        assert LOGIN_INTERACTION_WINDOW_MS == 120_000
+        backend = await self._run(
+            tmp_path,
+            [
+                _interaction("click", "#too-old", time_ms=_POST_MS - 120_001),
+                _interaction("click", "#just-in", time_ms=_POST_MS - 120_000),
+                _interaction("click", "#at-the-post", time_ms=_POST_MS),
+                _interaction("click", "#after", time_ms=_POST_MS + 1),
+            ],
+        )
+        assert [e["selector"] for e in self._stored(backend)] == ["#just-in", "#at-the-post"]
+
+    @pytest.mark.asyncio
+    async def test_only_the_sending_page_s_origin(self, tmp_path: Path) -> None:
+        backend = await self._run(
+            tmp_path,
+            [
+                _interaction(
+                    "click", "#ad", time_ms=_POST_MS - 900, url="https://ads.example.net/"
+                ),
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 800),
+                _interaction(
+                    "click",
+                    "#other-port",
+                    time_ms=_POST_MS - 700,
+                    url="https://myshop.example:8443/",
+                ),
+            ],
+        )
+        assert [e["selector"] for e in self._stored(backend)] == ["#signin-link"]
+
+    @pytest.mark.asyncio
+    async def test_the_last_32_per_origin_are_kept(self, tmp_path: Path) -> None:
+        from graftpunk.observe.capture import INTERACTION_BUFFER
+
+        assert INTERACTION_BUFFER == 32
+        own = [_interaction("click", f"#c{n}", time_ms=_POST_MS - 1000 + n) for n in range(40)]
+        # Another origin's events fill their own buffer, not this one's.
+        other = [
+            _interaction("click", "#x", time_ms=_POST_MS - 10, url="https://other.example/")
+            for _ in range(40)
+        ]
+        backend = await self._run(tmp_path, [*own, *other])
+        assert [e["selector"] for e in self._stored(backend)] == [f"#c{n}" for n in range(8, 40)]
+
+    @pytest.mark.asyncio
+    async def test_the_number_of_origins_kept_is_bounded(self, tmp_path: Path) -> None:
+        from graftpunk.observe.capture import INTERACTION_ORIGINS
+
+        backend = await self._run(
+            tmp_path,
+            [
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 900),
+                *(
+                    _interaction("click", "#x", time_ms=_POST_MS - 10, url=f"https://o{n}.example/")
+                    for n in range(INTERACTION_ORIGINS)
+                ),
+            ],
+        )
+        assert self._stored(backend) is None
+
+    @pytest.mark.asyncio
+    async def test_a_selector_holding_an_account_value_is_dropped(self, tmp_path: Path) -> None:
+        backend = await self._run(
+            tmp_path,
+            [
+                _interaction("click", "#user_40912873", time_ms=_POST_MS - 900),
+                _interaction("focus", 'input[name="alice@example.com"]', time_ms=_POST_MS - 800),
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 700),
+            ],
+        )
+        assert self._stored(backend) == [
+            {"kind": "click", "selector": None, "msBefore": 900},
+            {"kind": "focus", "selector": None, "msBefore": 800},
+            {"kind": "click", "selector": "#signin-link", "msBefore": 700},
+        ]
+        stored = json.dumps(self._stored(backend))
+        assert "40912873" not in stored
+        assert "alice" not in stored
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_interaction_is_dropped(self, tmp_path: Path) -> None:
+        backend = await self._run(
+            tmp_path,
+            [
+                _interaction("scroll", "#a", time_ms=_POST_MS - 900),
+                _interaction("click", 7, time_ms=_POST_MS - 900),  # type: ignore[arg-type]
+                _interaction("click", "#b", time_ms="soon"),  # type: ignore[arg-type]
+                _interaction("click", "#c", time_ms=_POST_MS - 900, url=None),  # type: ignore[arg-type]
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 800),
+            ],
+        )
+        assert [e["selector"] for e in self._stored(backend)] == ["#signin-link"]
+
+    @pytest.mark.asyncio
+    async def test_an_interaction_is_never_taken_for_a_snapshot(self, tmp_path: Path) -> None:
+        backend = await self._run(tmp_path, self._events())
+        # No listener snapshot came, so the page was read by DevTools; the
+        # interactions did not stand in for one.
+        assert _only_entry(backend)["request"]["_domSnapshot"] == "snapshots/41.1.html"
+        assert 'id="login-modal"' in (tmp_path / "snapshots" / "41.1.html").read_text()
+
+    @pytest.mark.asyncio
+    async def test_only_a_credential_post_gets_them(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        backend = await _record(
+            tab,
+            [
+                *self._events(),
+                _will_be_sent("42.1", inline=BODY, url=SEARCH),
+                _will_be_sent("42.2", url=HOME, method="GET"),
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        for entry in backend.get_har_entries():
+            assert "_loginInteractions" not in entry["request"]
+
+    @pytest.mark.asyncio
+    async def test_each_credential_post_gets_the_events_before_it(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        first = _will_be_sent("43.1", inline=_LOGIN_BODY, url=LOGIN)
+        second = _will_be_sent("43.2", inline=_LOGIN_BODY, url=LOGIN)
+        second.wall_time = (_POST_MS + 10_000) / 1000
+        backend = await _record(
+            tab,
+            [
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 900),
+                first,
+                _interaction("click", "#retry", time_ms=_POST_MS + 5_000),
+                second,
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        stored = [
+            [i["selector"] for i in e["request"]["_loginInteractions"]]
+            for e in backend.get_har_entries()
+        ]
+        assert stored == [["#signin-link"], ["#signin-link", "#retry"]]
+
+    @pytest.mark.asyncio
+    async def test_without_the_observe_flag_nothing_is_stored(self, tmp_path: Path) -> None:
+        backend = await self._run(tmp_path, self._events(), snapshots=False)
+        assert self._stored(backend) is None
+        assert backend._interactions == {}
+
+    @pytest.mark.asyncio
+    async def test_a_saved_run_reads_them_back(self, tmp_path: Path) -> None:
+        from graftpunk.har.parser import LoginInteraction, parse_har_file
+        from graftpunk.observe.run import save_observe_run
+        from graftpunk.observe.storage import ObserveStorage
+
+        storage = ObserveStorage(tmp_path, "myshop", "r1")
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        backend = NodriverCaptureBackend(
+            object(),
+            get_tab=lambda: tab,
+            bodies_dir=storage.run_dir / "bodies",
+            dom_snapshots_dir=storage.run_dir / "snapshots",
+        )
+        await backend.start_capture_async()
+        for event in [*self._events(), _will_be_sent("44.1", inline=_LOGIN_BODY, url=LOGIN)]:
+            await tab.dispatch(event)
+        await save_observe_run(storage, backend, "observe-go")
+
+        (entry,) = parse_har_file(storage.run_dir / "network.har").entries
+        assert entry.request.login_interactions[0] == LoginInteraction(
+            "click", "#signin-link", 5000.0
+        )
+        assert len(entry.request.login_interactions) == 4

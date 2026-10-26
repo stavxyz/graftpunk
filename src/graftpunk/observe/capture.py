@@ -84,6 +84,23 @@ DOM_SNAPSHOT_MAX_AGE_MS = 30_000
 # The largest page HTML a snapshot keeps, in characters; a larger one is skipped and
 # counted, as sanitizing it would hold the recorder for seconds.
 DOM_SNAPSHOT_MAX_CHARS = 5 * 1024 * 1024
+# The clicks and focus moves (graftpunk.observe.dom_listener) the recorder keeps per
+# page origin, newest last, and how many origins: an opening click and the fields
+# the user then filled are a handful, and a long session costs no more than this.
+INTERACTION_BUFFER = 32
+INTERACTION_ORIGINS = 8
+# How far before a credential post its interactions reach: the user clicked the
+# opener, then typed a username and a password.
+LOGIN_INTERACTION_WINDOW_MS = 120_000
+
+
+class _Interaction(NamedTuple):
+    """A click or focus move the page's listener sent: its kind, its selector (None
+    when the page had no unique one), and when (the page's ``Date.now()``)."""
+
+    kind: str
+    selector: str | None
+    time_ms: float
 
 
 class _ListenerSnapshot(NamedTuple):
@@ -1077,6 +1094,10 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
         # _postDataFile is): the file under the run, and the page's bare URL.
         entry["request"]["_domSnapshot"] = request_data["_dom_snapshot"]
         entry["request"]["_domSnapshotUrl"] = request_data.get("_dom_snapshot_url", "")
+    if request_data.get("_login_interactions"):
+        # The clicks and focus moves before a credential post (HAR 1.2 custom field):
+        # kind, selector, and msBefore, oldest first; no URL and no absolute time.
+        entry["request"]["_loginInteractions"] = list(request_data["_login_interactions"])
     return entry
 
 
@@ -1520,6 +1541,9 @@ class NodriverCaptureBackend:
         # The page's own snapshots, newest last (_on_binding_called); one a credential
         # post takes is removed, so it is given to no other post.
         self._listener_snapshots: deque[_ListenerSnapshot] = deque(maxlen=DOM_SNAPSHOT_BUFFER)
+        # The page's clicks and focus moves by page origin, newest last; the origin
+        # least recently heard from goes first past INTERACTION_ORIGINS.
+        self._interactions: dict[tuple[str, str, int | None], deque[_Interaction]] = {}
         # False for a capture whose HAR is never written (the login engine's
         # header-only capture): no request body is kept, fetched or logged about.
         self._record_request_bodies = record_request_bodies
@@ -2027,7 +2051,34 @@ class NodriverCaptureBackend:
         listener snapshot that is its (:meth:`_take_listener_snapshot`), if any."""
         self._dom_snapshotted.add(rid)
         self._dom_snapshot_attempts += 1
+        self._attach_interactions(data)
         return self._take_listener_snapshot(data)
+
+    def _attach_interactions(self, data: dict[str, Any]) -> None:
+        """Store on the credential post *data* the clicks and focus moves its sending
+        page's origin sent within ``LOGIN_INTERACTION_WINDOW_MS`` before it (no later
+        than its ``wallTime``), oldest first, as kind, selector, and milliseconds
+        before the post. A selector that holds an account value
+        (:func:`graftpunk.har.selectors.selector_holds_an_id`) is stored as None. A
+        post whose sending page is unknown, or whose time is, gets none."""
+        from graftpunk.har.selectors import selector_holds_an_id
+
+        wall_ms = _wall_time_ms(data.get("timestamp"))
+        sender = self._sender(data)
+        origin = _origin(sender) if sender is not None else None
+        if wall_ms is None or origin is None:
+            return
+        kept = []
+        for each in sorted(self._interactions.get(origin, ()), key=lambda event: event.time_ms):
+            before = wall_ms - each.time_ms
+            if not 0 <= before <= LOGIN_INTERACTION_WINDOW_MS:
+                continue
+            selector = each.selector
+            if selector is not None and selector_holds_an_id(selector):
+                selector = None
+            kept.append({"kind": each.kind, "selector": selector, "msBefore": round(before)})
+        if kept:
+            data["_login_interactions"] = kept
 
     def _start_snapshot(self, rid: str, data: dict[str, Any], body_text: str | None) -> None:
         """Bind a snapshot to the credential post *rid*'s own entry *data* now, while the
@@ -2088,14 +2139,18 @@ class NodriverCaptureBackend:
         that is not the listener's (``html``, ``url``, ``time``), is dropped, and a
         page over ``DOM_SNAPSHOT_MAX_CHARS`` is kept as a marker without its HTML (a
         post that takes it is counted as too large; one no post takes costs nothing).
-        Nothing is parsed here: nodriver calls this inline while it reads the
-        browser's messages."""
-        from graftpunk.observe.dom_listener import BINDING_NAME
+        A payload whose ``type`` is ``interaction`` is a click or a focus move instead
+        (:meth:`_keep_interaction`). Nothing is parsed here: nodriver calls this
+        inline while it reads the browser's messages."""
+        from graftpunk.observe.dom_listener import BINDING_NAME, INTERACTION_TYPE
 
         if getattr(event, "name", None) != BINDING_NAME:
             return
         try:
             payload = json.loads(getattr(event, "payload", ""))
+            if isinstance(payload, dict) and payload.get("type") == INTERACTION_TYPE:
+                self._keep_interaction(payload)
+                return
             html, url, time_ms = payload["html"], payload["url"], payload["time"]
             if (
                 not isinstance(html, str)
@@ -2111,6 +2166,37 @@ class NodriverCaptureBackend:
         # is counted as too large, once, and a click no post follows costs nothing.
         kept = html if len(html) <= DOM_SNAPSHOT_MAX_CHARS else None
         self._listener_snapshots.append(_ListenerSnapshot(float(time_ms), url, kept))
+
+    def _keep_interaction(self, payload: dict[str, Any]) -> None:
+        """Keep a click or focus move the page's listener sent, among the last
+        ``INTERACTION_BUFFER`` of its page's origin. A payload of another shape (a
+        kind other than ``click`` or ``focus``, a selector that is neither a string
+        nor null, a URL with no origin, a time that is not a finite number) raises
+        ValueError, which the caller logs and drops."""
+        kind, selector, url, time_ms = (
+            payload.get("kind"),
+            payload.get("selector"),
+            payload.get("url"),
+            payload.get("time"),
+        )
+        origin = _origin(url)
+        if (
+            kind not in ("click", "focus")
+            or not (selector is None or isinstance(selector, str))
+            or origin is None
+            or isinstance(time_ms, bool)
+            or not isinstance(time_ms, int | float)
+            or not math.isfinite(time_ms)
+        ):
+            raise ValueError("not a listener interaction")
+        events = self._interactions.pop(origin, None)
+        if events is None:
+            events = deque(maxlen=INTERACTION_BUFFER)
+            while len(self._interactions) >= INTERACTION_ORIGINS:
+                del self._interactions[next(iter(self._interactions))]
+        # Re-inserted, so the dict's order is the order origins were last heard from.
+        self._interactions[origin] = events
+        events.append(_Interaction(kind, selector or None, float(time_ms)))
 
     @staticmethod
     def _sender(data: dict[str, Any]) -> str | None:

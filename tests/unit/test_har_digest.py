@@ -4993,6 +4993,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
                 "neutral_roles": [],
                 "submit": "#login-submit",
                 "unresolved_roles": [],
+                "opener": None,
             }
         ]
         code = self._plugin(result)
@@ -5968,3 +5969,206 @@ class TestALoginReadFromTheDomSnapshot(_DialogDigestCase):
         (form,) = result.login_forms
         assert form.formless
         assert not form.plain_block
+
+
+_OPENER_SELENIUM_COMMENT = (
+    "Selenium runs no step wait_for, so the click that opens the login form is followed "
+    "by a fixed delay instead; raise it if the form takes longer to appear."
+)
+_OPENER_UNRESOLVED_GP_FILL = (
+    "GP-FILL: a click opened this form before its first field was focused, and the "
+    "recording kept no selector for what was clicked (nothing picked it alone on the "
+    "page, or its id or name held an account value); add a click-only LoginStep for "
+    "it before this one."
+)
+
+
+class TestTheClickThatOpensTheLogin(_DialogDigestCase):
+    """``request._loginInteractions`` (#267, part 3): the last click before the first
+    focus on one of the login form's fields opened it, when it is none of the form's
+    own controls and no page loaded between them."""
+
+    # The page's script renders the modal after a click on the header link.
+    _SHELL = '<header><a href="#" id="signin">Sign in</a></header><div id="app"></div>'
+    _DIV_MODAL = TestALoginReadFromTheDomSnapshot._DIV_MODAL
+    # The post is sent ten seconds after the page loaded.
+    _PAGE_AT = "2026-09-10T10:00:00.000Z"
+    _POST_AT = "2026-09-10T10:00:10.000Z"
+    _OPENED = (
+        ("click", "#signin", 5000),
+        ("focus", "#m-email", 3000),
+        ("focus", "#m-pw", 2000),
+        ("click", "#m-go", 40),
+    )
+
+    def _entries(
+        self,
+        run: Path,
+        steps: tuple[tuple[str, str | None, int], ...] = _OPENED,
+        *,
+        snapshot: bool = True,
+        between: list[dict] | None = None,
+    ) -> list[dict]:
+        if snapshot:
+            (run / "snapshots").mkdir(exist_ok=True)
+            (run / "snapshots" / "9.1.html").write_text(self._DIV_MODAL)
+        post = self._post("/api/auth/login/", self._BODY, started=self._POST_AT)
+        if snapshot:
+            post["request"]["_domSnapshot"] = "snapshots/9.1.html"
+            post["request"]["_domSnapshotUrl"] = f"{self._HOST}/"
+        post["request"]["_loginInteractions"] = [
+            {"kind": kind, "selector": selector, "msBefore": before}
+            for kind, selector, before in steps
+        ]
+        return [self._get("/", self._SHELL, started=self._PAGE_AT), *(between or []), post]
+
+    def _form(self, tmp_path: Path, entries: list[dict]):  # noqa: ANN202
+        (form,) = self._run(tmp_path, entries).login_forms
+        return form
+
+    @staticmethod
+    def _projected(result) -> list:  # noqa: ANN001
+        return [
+            form["opener"] for form in json.loads(render_endpoints_json(result))["login"]["forms"]
+        ]
+
+    @staticmethod
+    def _plugin_on(result, backend: str) -> str:  # noqa: ANN001
+        return render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend=backend,  # type: ignore[arg-type]
+                base_url="https://myshop.example.com",
+                digest=result,
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+
+    def test_the_click_before_the_first_field_is_the_opener(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, self._entries(tmp_path))
+        (form,) = result.login_forms
+        assert form.opener == "#signin"
+        assert not form.opener_unresolved
+        assert self._projected(result) == ["#signin"]
+
+    def test_a_focus_elsewhere_first_does_not_count(self, tmp_path: Path) -> None:
+        """A search box focused before the login opened is no login field."""
+        steps = (("focus", "#search", 9000), *self._OPENED)
+        assert self._form(tmp_path, self._entries(tmp_path, steps)).opener == "#signin"
+
+    def test_the_last_click_before_the_first_field_wins(self, tmp_path: Path) -> None:
+        steps = (("click", "#menu", 7000), *self._OPENED)
+        assert self._form(tmp_path, self._entries(tmp_path, steps)).opener == "#signin"
+
+    def test_a_field_spelled_another_way_is_still_the_field(self, tmp_path: Path) -> None:
+        steps = (("click", "#signin", 5000), ("focus", '[id="m-pw"]', 2000))
+        assert self._form(tmp_path, self._entries(tmp_path, steps)).opener == "#signin"
+
+    def test_a_click_on_the_form_s_own_submit_is_no_opener(self, tmp_path: Path) -> None:
+        steps = (("click", "#signin", 5000), ("click", "#m-go", 4000), *self._OPENED[1:])
+        form = self._form(tmp_path, self._entries(tmp_path, steps))
+        assert form.opener == ""
+        assert not form.opener_unresolved
+
+    def test_a_click_on_one_of_the_form_s_fields_is_no_opener(self, tmp_path: Path) -> None:
+        steps = (("click", '[id="m-email"]', 4000), *self._OPENED[1:])
+        assert self._form(tmp_path, self._entries(tmp_path, steps)).opener == ""
+
+    def test_a_click_after_the_first_focus_is_no_opener(self, tmp_path: Path) -> None:
+        steps = (("focus", "#m-email", 3000), ("click", "#signin", 2500), ("click", "#m-go", 40))
+        assert self._form(tmp_path, self._entries(tmp_path, steps)).opener == ""
+
+    def test_no_focus_on_a_field_gives_no_opener(self, tmp_path: Path) -> None:
+        steps = (("click", "#signin", 5000), ("focus", "#search", 3000))
+        assert self._form(tmp_path, self._entries(tmp_path, steps)).opener == ""
+
+    def test_a_page_loaded_between_the_click_and_the_focus_gives_no_opener(
+        self, tmp_path: Path
+    ) -> None:
+        """The click navigated: the form is on the page it opened, not behind a click."""
+        loaded = self._get("/account", "<main>account</main>", started="2026-09-10T10:00:06.000Z")
+        form = self._form(tmp_path, self._entries(tmp_path, between=[loaded]))
+        assert form.opener == ""
+
+    def test_a_page_loaded_before_the_click_does_not_count(self, tmp_path: Path) -> None:
+        loaded = self._get("/help", "<main>help</main>", started="2026-09-10T10:00:04.000Z")
+        assert self._form(tmp_path, self._entries(tmp_path, between=[loaded])).opener == "#signin"
+
+    def test_a_json_fetch_between_them_is_no_page_load(self, tmp_path: Path) -> None:
+        fetched = _entry("GET", f"{self._HOST}/api/config", started="2026-09-10T10:00:06.000Z")
+        assert self._form(tmp_path, self._entries(tmp_path, between=[fetched])).opener == "#signin"
+
+    def test_no_interactions_gives_no_opener_whatever_the_markup(self, tmp_path: Path) -> None:
+        """The header's href="#" link is in the markup; it is never taken from there."""
+        result = self._run(tmp_path, self._entries(tmp_path, ()))
+        (form,) = result.login_forms
+        assert (form.opener, form.opener_unresolved) == ("", False)
+        assert self._projected(result) == [None]
+        assert _SNAPSHOT_GP_FILL in _comment_text(self._plugin(result))
+
+    def test_a_click_with_no_selector_is_an_unresolved_opener(self, tmp_path: Path) -> None:
+        steps = (("click", None, 5000), *self._OPENED[1:])
+        result = self._run(tmp_path, self._entries(tmp_path, steps))
+        (form,) = result.login_forms
+        assert (form.opener, form.opener_unresolved) == ("", True)
+        assert self._projected(result) == [None]
+        code = self._plugin(result)
+        comments = _comment_text(code)
+        assert _OPENER_UNRESOLVED_GP_FILL in comments
+        assert _SNAPSHOT_GP_FILL not in comments
+        assert code.count("LoginStep(") == 1
+
+    def test_a_selector_holding_an_account_value_is_unresolved(self, tmp_path: Path) -> None:
+        """A hand-edited HAR: the recorder would have stored no selector."""
+        steps = (("click", "#user_40912873", 5000), *self._OPENED[1:])
+        form = self._form(tmp_path, self._entries(tmp_path, steps))
+        assert (form.opener, form.opener_unresolved) == ("", True)
+
+    def test_a_form_from_recorded_html_takes_its_opener_too(self, tmp_path: Path) -> None:
+        """A hidden modal shipped in the page's HTML, opened by a click."""
+        page = '<header><a href="#" id="signin">Sign in</a></header>' + self._MODAL
+        entries = self._entries(tmp_path, snapshot=False)
+        entries[0] = self._get("/", page, started=self._PAGE_AT)
+        result = self._run(tmp_path, entries)
+        (form,) = result.login_forms
+        assert not form.from_snapshot
+        assert form.opener == "#signin"
+
+    def test_nodriver_gets_a_click_step_then_the_form_waiting_for_its_field(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run(tmp_path, self._entries(tmp_path))
+        code = self._plugin_on(result, "nodriver")
+        assert code.count("LoginStep(") == 2
+        steps = code[code.index("steps=[") : code.index("        ],")]
+        first, second = steps.split("LoginStep(")[1:]
+        assert first.split() == ['submit="#signin",', "),"]
+        assert '"username": "#m-email",' in second
+        assert 'submit="#m-go",' in second
+        assert 'wait_for="#m-email",' in second
+        assert "delay=" not in code
+        comments = _comment_text(code)
+        assert _SNAPSHOT_GP_FILL not in comments
+        assert _OPENER_SELENIUM_COMMENT not in comments
+        assert 'url="/",' in code
+
+    def test_selenium_gets_a_delay_after_the_click_and_says_why(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, self._entries(tmp_path))
+        code = self._plugin_on(result, "selenium")
+        assert code.count("LoginStep(") == 2
+        steps = code[code.index("steps=[") : code.index("        ],")]
+        first, second = steps.split("LoginStep(")[1:]
+        assert first.split() == ['submit="#signin",', "delay=2.0,", "),"]
+        assert "wait_for" not in second
+        assert _OPENER_SELENIUM_COMMENT in _comment_text(code)
+        assert _SNAPSHOT_GP_FILL not in _comment_text(code)
+
+    def test_the_generated_steps_are_valid_login_steps(self, tmp_path: Path) -> None:
+        from graftpunk.plugins.cli_plugin import LoginStep
+
+        result = self._run(tmp_path, self._entries(tmp_path))
+        for backend in ("nodriver", "selenium"):
+            code = self._plugin_on(result, backend)
+            steps = code[code.index("steps=[") + len("steps=[") : code.index("        ],")]
+            built = eval(f"[{steps}]", {"LoginStep": LoginStep})  # noqa: S307 - our own render
+            assert [step.submit for step in built] == ["#signin", "#m-go"]

@@ -17,7 +17,10 @@ import pytest
 from graftpunk.observe.dom_listener import (
     BINDING_NAME,
     DEBOUNCE_MS,
+    INTERACTION_TYPE,
     LISTENER_SCRIPT,
+    MAX_INTERACTIONS_PER_SECOND,
+    STRUCTURAL_DEPTH,
     WORLD_NAME,
 )
 
@@ -142,11 +145,13 @@ class TestTheScriptStructure:
 
 @needs_node
 class TestTheScriptInAFakePage:
-    def test_capture_phase_listeners_for_the_three_events(self, tmp_path: Path) -> None:
+    def test_capture_phase_listeners_for_snapshots_and_interactions(self, tmp_path: Path) -> None:
         result = _run(tmp_path, passwords=["x"], fire=[])
         assert result["threw"] is None
         assert sorted(each["type"] for each in result["listeners"]) == [
             "click",
+            "click",
+            "focusin",
             "keydown",
             "submit",
         ]
@@ -202,3 +207,483 @@ class TestTheScriptInAFakePage:
         result = _run(tmp_path, passwords=["x"], fire=[{"type": "click"}], throw_on_serialize=True)
         assert result["calls"] == []
         assert result["events"] == [{"prevented": False, "stopped": False, "escaped": None}]
+
+
+# A fake page with an element tree for the interaction events (#267, part 3):
+# elements with tags, attributes, text, and values, a selector engine for the
+# selectors the listener writes (tag, #id with CSS escapes, [attr="value"],
+# :nth-of-type(n), descendant and child combinators, and comma lists), and
+# CSS.escape as the CSSOM spec defines it. Each fired event names its target by a
+# harness-only key, never an attribute.
+_DOM_HARNESS = r"""
+const config = JSON.parse(process.argv[2]);
+const listeners = [];
+const calls = [];
+let now = 1700000000000;
+Date.now = () => now;
+
+function cssEscape(value) {
+  const s = String(value);
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0) { out += "\uFFFD"; continue; }
+    if ((c >= 1 && c <= 31) || c === 127 || (i === 0 && c >= 48 && c <= 57)
+        || (i === 1 && c >= 48 && c <= 57 && s.charCodeAt(0) === 45)) {
+      out += "\\" + c.toString(16) + " ";
+      continue;
+    }
+    if (i === 0 && c === 45 && s.length === 1) { out += "\\-"; continue; }
+    if (c >= 128 || c === 45 || c === 95 || (c >= 48 && c <= 57)
+        || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)) {
+      out += s[i];
+      continue;
+    }
+    out += "\\" + s[i];
+  }
+  return out;
+}
+function cssUnescape(s) {
+  return s.replace(/\\([0-9a-fA-F]{1,6}) ?|\\([\s\S])/g,
+    (m, hex, ch) => hex ? String.fromCodePoint(parseInt(hex, 16)) : ch);
+}
+
+function splitTop(text, separators) {
+  const parts = [];
+  let depth = 0, quote = null, start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\") {
+      // An escape: one character, or up to six hex digits and one optional space.
+      const hex = text.slice(i + 1).match(/^[0-9a-fA-F]{1,6} ?/);
+      i += hex ? hex[0].length : 1;
+      continue;
+    }
+    if (quote) { if (ch === quote) quote = null; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === "[" || ch === "(") depth++;
+    else if (ch === "]" || ch === ")") depth--;
+    else if (depth === 0 && separators.includes(ch)) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+function parseCompound(text) {
+  const tests = [];
+  let rest = text.trim();
+  if (!rest) throw new Error("empty compound");
+  while (rest) {
+    let m;
+    if ((m = rest.match(/^[a-zA-Z][\w-]*/))) {
+      const tag = m[0].toLowerCase();
+      tests.push((el) => el.localName === tag);
+    } else if ((m = rest.match(/^#((?:\\[0-9a-fA-F]{1,6} ?|\\[\s\S]|[\w-]|[^\x00-\x7f])+)/))) {
+      const id = cssUnescape(m[1]);
+      tests.push((el) => el.getAttribute("id") === id);
+    } else if ((m = rest.match(/^\[([\w-]+)(?:=("((?:\\[\s\S]|[^"\\])*)"|[\w-]+))?( i)?\]/))) {
+      const name = m[1];
+      const value = m[3] !== undefined ? cssUnescape(m[3]) : m[2];
+      const fold = Boolean(m[4]);
+      tests.push((el) => {
+        const got = el.getAttribute(name);
+        if (got === null) return false;
+        if (value === undefined) return true;
+        return fold ? got.toLowerCase() === value.toLowerCase() : got === value;
+      });
+    } else if ((m = rest.match(/^:nth-of-type\((\d+)\)/))) {
+      const n = Number(m[1]);
+      tests.push((el) => {
+        let index = 1;
+        for (let s = el.previousElementSibling; s; s = s.previousElementSibling) {
+          if (s.localName === el.localName) index++;
+        }
+        return index === n;
+      });
+    } else {
+      throw new Error("unsupported selector: " + rest);
+    }
+    rest = rest.slice(m[0].length);
+  }
+  return (el) => tests.every((t) => t(el));
+}
+function parseComplex(text) {
+  const steps = [];
+  for (const part of splitTop(text.replace(/\s*>\s*/g, " > ").trim(), [" "])) {
+    if (part === ">") steps.push(">");
+    else if (part) {
+      if (steps.length && typeof steps[steps.length - 1] === "function") steps.push(" ");
+      steps.push(parseCompound(part));
+    }
+  }
+  return (el) => {
+    const go = (node, i) => {
+      if (!steps[i](node)) return false;
+      if (i === 0) return true;
+      const comb = steps[i - 1];
+      if (comb === ">") return Boolean(node.parentElement) && go(node.parentElement, i - 2);
+      for (let a = node.parentElement; a; a = a.parentElement) if (go(a, i - 2)) return true;
+      return false;
+    };
+    return go(el, steps.length - 1);
+  };
+}
+function matcher(selector) {
+  if (config.throwOnQuery) throw new Error("query boom");
+  const alternatives = splitTop(selector, [","]).map((p) => parseComplex(p));
+  return (el) => alternatives.some((m) => m(el));
+}
+
+const all = [];
+const byKey = {};
+function build(spec, parent) {
+  const el = {
+    nodeType: 1,
+    localName: spec.tag,
+    attrs: spec.attrs || {},
+    value: spec.value === undefined ? "" : spec.value,
+    textContent: spec.text || "",
+    parentElement: parent,
+    children: [],
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+    },
+    get previousElementSibling() {
+      if (!this.parentElement) return null;
+      const siblings = this.parentElement.children;
+      const i = siblings.indexOf(this);
+      return i > 0 ? siblings[i - 1] : null;
+    },
+    closest(selector) {
+      const match = matcher(selector);
+      for (let node = this; node; node = node.parentElement) if (match(node)) return node;
+      return null;
+    },
+    matches(selector) { return matcher(selector)(this); },
+  };
+  all.push(el);
+  if (spec.key) byKey[spec.key] = el;
+  for (const child of spec.children || []) el.children.push(build(child, el));
+  return el;
+}
+const root = build(config.dom, null);
+Object.defineProperty(root, "outerHTML", { get: () => "<html></html>" });
+globalThis.document = {
+  URL: "https://myshop.example/?next=%2F",
+  documentElement: root,
+  querySelectorAll(selector) {
+    const match = matcher(selector);
+    return all.filter((el) => match(el));
+  },
+};
+if (!config.noCss) globalThis.CSS = { escape: cssEscape };
+globalThis.window = globalThis;
+globalThis.addEventListener = (type, handler, options) => {
+  listeners.push({ type, handler, options });
+};
+if (config.binding) {
+  globalThis[config.bindingName] = (payload) => {
+    if (typeof payload !== "string") throw new Error("binding takes a string");
+    calls.push(JSON.parse(payload));
+  };
+}
+let threw = null;
+try {
+  require("vm").runInThisContext(config.script);
+} catch (error) {
+  threw = String(error);
+}
+const events = [];
+for (const fired of config.fire) {
+  for (let r = 0; r < (fired.repeat || 1); r++) {
+    now += fired.after || 0;
+    const event = {
+      type: fired.type,
+      target: fired.target === undefined ? undefined : byKey[fired.target],
+      prevented: false,
+      stopped: false,
+      preventDefault() { this.prevented = true; },
+      stopPropagation() { this.stopped = true; },
+      stopImmediatePropagation() { this.stopped = true; },
+    };
+    let escaped = null;
+    for (const l of listeners.filter((l) => l.type === fired.type)) {
+      try { l.handler(event); } catch (error) { escaped = String(error); }
+    }
+    events.push({ prevented: event.prevented, stopped: event.stopped, escaped });
+  }
+}
+// The snapshot listener sends the page on a click while the password holds a
+// value; those calls carry no type and are reported apart.
+console.log(JSON.stringify({
+  threw,
+  calls: calls.filter((call) => call.type !== undefined),
+  snapshots: calls.filter((call) => call.type === undefined).length,
+  events,
+}));
+"""
+
+
+def _deep(key: str) -> dict:
+    """A button four divs down: the same structure twice is not told apart by a path
+    of four levels."""
+    node: dict = {"tag": "button", "text": "Open", "key": key}
+    for _ in range(4):
+        node = {"tag": "div", "children": [node]}
+    return node
+
+
+# A page: a header with a sign-in link (its text inside a span), a dialog with a
+# formless login, and two lookalike subtrees.
+_PAGE = {
+    "tag": "html",
+    "children": [
+        {
+            "tag": "body",
+            "children": [
+                {
+                    "tag": "header",
+                    "children": [
+                        {"tag": "a", "attrs": {"href": "/"}, "text": "Home", "key": "home"},
+                        {
+                            "tag": "a",
+                            "attrs": {"href": "#", "id": "signin-link"},
+                            "key": "signin",
+                            "children": [{"tag": "span", "text": "Sign in", "key": "signin-text"}],
+                        },
+                        {"tag": "a", "attrs": {"href": "#"}, "text": "Help", "key": "help"},
+                    ],
+                },
+                {
+                    "tag": "div",
+                    "attrs": {"role": "dialog", "class": "modal"},
+                    "children": [
+                        {
+                            "tag": "input",
+                            "attrs": {"type": "email", "id": "m-email", "name": "email"},
+                            "value": "alice@example.com",
+                            "key": "email",
+                        },
+                        {
+                            "tag": "input",
+                            "attrs": {"type": "password", "name": "password"},
+                            "value": "hunter2hunter2",
+                            "key": "password",
+                        },
+                        {
+                            "tag": "label",
+                            "attrs": {"id": "1st:remember"},
+                            "text": "Remember me",
+                            "key": "label",
+                        },
+                        {"tag": "summary", "text": "More", "key": "summary"},
+                        {
+                            "tag": "div",
+                            "attrs": {"role": "button", "id": "dup"},
+                            "text": "Close",
+                            "key": "close",
+                        },
+                        {
+                            "tag": "button",
+                            "attrs": {"id": "dup", "name": "go", "type": "submit"},
+                            "text": "Sign in",
+                            "key": "go",
+                        },
+                        {"tag": "p", "text": "plain text", "key": "plain"},
+                        {"tag": "select", "attrs": {"id": "country"}, "key": "select"},
+                        {"tag": "textarea", "attrs": {"name": "note"}, "key": "textarea"},
+                    ],
+                },
+                {"tag": "section", "children": [_deep("deep1")]},
+                {"tag": "section", "children": [_deep("deep2")]},
+            ],
+        }
+    ],
+}
+
+_UNCHANGED = {"prevented": False, "stopped": False, "escaped": None}
+
+
+def _run_dom(
+    tmp_path: Path,
+    fire: list[dict],
+    *,
+    binding: bool = True,
+    no_css: bool = False,
+    throw_on_query: bool = False,
+) -> dict:
+    harness = tmp_path / "dom_harness.js"
+    harness.write_text(_DOM_HARNESS)
+    config = {
+        "script": LISTENER_SCRIPT,
+        "bindingName": BINDING_NAME,
+        "binding": binding,
+        "fire": fire,
+        "dom": _PAGE,
+        "noCss": no_css,
+        "throwOnQuery": throw_on_query,
+    }
+    assert NODE is not None
+    out = subprocess.run(  # noqa: S603 - node from PATH, our own harness
+        [NODE, str(harness), json.dumps(config)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return json.loads(out.stdout)
+
+
+def _sent(result: dict) -> list[tuple[str, str | None]]:
+    return [(call["kind"], call["selector"]) for call in result["calls"]]
+
+
+class TestTheInteractionConstants:
+    def test_the_payload_type_the_rate_and_the_depth_are_fixed(self) -> None:
+        assert INTERACTION_TYPE == "interaction"
+        assert MAX_INTERACTIONS_PER_SECOND == 20
+        assert STRUCTURAL_DEPTH == 4
+        assert f'"{INTERACTION_TYPE}"' in LISTENER_SCRIPT
+
+
+@needs_node
+class TestInteractionEvents:
+    """The clicks and focus moves the listener sends (#267, part 3): a selector, the
+    document URL, and the time, never text or a value."""
+
+    def test_a_click_sends_its_unique_id(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "signin"}])
+        (call,) = result["calls"]
+        assert call == {
+            "type": "interaction",
+            "kind": "click",
+            "selector": "#signin-link",
+            "url": "https://myshop.example/?next=%2F",
+            "time": 1700000000000,
+        }
+        assert result["events"] == [_UNCHANGED]
+
+    def test_a_click_inside_a_link_is_the_link_s(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "signin-text"}])
+        assert _sent(result) == [("click", "#signin-link")]
+
+    def test_an_id_that_needs_escaping_is_escaped(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "label"}])
+        assert _sent(result) == [("click", "#\\31 st\\:remember")]
+
+    def test_a_shared_id_falls_to_a_unique_name(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "go"}])
+        assert _sent(result) == [("click", 'button[name="go"]')]
+
+    def test_no_id_and_no_name_gives_a_short_structural_path(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path, [{"type": "click", "target": "help"}, {"type": "click", "target": "summary"}]
+        )
+        assert _sent(result) == [
+            ("click", "a:nth-of-type(3)"),
+            ("click", "summary:nth-of-type(1)"),
+        ]
+
+    def test_a_shared_id_with_no_name_falls_to_the_path(self, tmp_path: Path) -> None:
+        """The role=button div: its id is shared, and it has no name."""
+        result = _run_dom(tmp_path, [{"type": "click", "target": "close"}])
+        assert _sent(result) == [
+            ("click", "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1)")
+        ]
+
+    def test_nothing_unique_within_four_levels_sends_no_selector(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "deep1"}])
+        assert _sent(result) == [("click", None)]
+
+    def test_without_css_escape_an_id_is_not_used(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "signin"}], no_css=True)
+        assert _sent(result) == [("click", "a:nth-of-type(2)")]
+
+    def test_a_click_on_no_control_sends_nothing(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "plain"},
+                {"type": "click", "target": "email"},
+                {"type": "click"},
+            ],
+        )
+        assert result["calls"] == []
+        assert result["events"] == [_UNCHANGED] * 3
+
+    def test_focus_on_a_field_sends_it(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "focusin", "target": "email"},
+                {"type": "focusin", "target": "password", "after": 300},
+                {"type": "focusin", "target": "select", "after": 1},
+                {"type": "focusin", "target": "textarea", "after": 1},
+                {"type": "focusin", "target": "go", "after": 1},
+                {"type": "focusin", "target": "signin", "after": 1},
+            ],
+        )
+        assert _sent(result) == [
+            ("focus", "#m-email"),
+            ("focus", 'input[name="password"]'),
+            ("focus", "#country"),
+            ("focus", 'textarea[name="note"]'),
+        ]
+        assert [call["time"] for call in result["calls"]][:2] == [1700000000000, 1700000000300]
+
+    def test_no_text_and_no_value_is_sent(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "signin-text"},
+                {"type": "focusin", "target": "email"},
+                {"type": "focusin", "target": "password"},
+                {"type": "click", "target": "go"},
+            ],
+        )
+        assert len(result["calls"]) == 4
+        sent = json.dumps(result["calls"])
+        for secret in ("alice@example.com", "hunter2hunter2", "Sign in", "Remember", "href"):
+            assert secret not in sent
+        assert {frozenset(call) for call in result["calls"]} == {
+            frozenset({"type", "kind", "selector", "url", "time"})
+        }
+
+    def test_at_most_the_rate_per_second(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "signin", "repeat": MAX_INTERACTIONS_PER_SECOND + 5},
+                {"type": "focusin", "target": "email", "after": 999},
+                {"type": "focusin", "target": "email", "after": 1},
+            ],
+        )
+        assert _sent(result) == [("click", "#signin-link")] * MAX_INTERACTIONS_PER_SECOND + [
+            ("focus", "#m-email")
+        ]
+
+    def test_without_the_binding_nothing_is_sent_or_thrown(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "signin"}, {"type": "focusin", "target": "email"}],
+            binding=False,
+        )
+        assert result["threw"] is None
+        assert result["calls"] == []
+        assert result["events"] == [_UNCHANGED] * 2
+
+    def test_a_failure_never_reaches_the_page(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "signin"},
+                {"type": "focusin", "target": "email"},
+                {"type": "focusin"},
+            ],
+            throw_on_query=True,
+        )
+        assert result["threw"] is None
+        assert result["calls"] == []
+        assert result["events"] == [_UNCHANGED] * 3

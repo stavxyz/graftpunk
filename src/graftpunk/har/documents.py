@@ -129,6 +129,13 @@ class LoginForm:
     # The names of the form's controls that are not hidden inputs, whatever the name
     # holds (hidden lists only names that hold no account value). Internal.
     visible_names: tuple[str, ...] = field(default=(), metadata={"internal": True})
+    # The selector of the click that opened this form, read from what gp observe
+    # recorded before the credential post (graftpunk.har.digest, #267); empty when no
+    # click qualified. Set by the digest, never from markup. Internal.
+    opener: str = field(default="", metadata={"internal": True})
+    # A click qualified but the recording kept no selector for it (none picked it
+    # alone, or it held an account value). Set by the digest. Internal.
+    opener_unresolved: bool = field(default=False, metadata={"internal": True})
 
 
 @dataclass(frozen=True)

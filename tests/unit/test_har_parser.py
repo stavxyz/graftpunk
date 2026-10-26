@@ -15,6 +15,7 @@ from graftpunk.har.parser import (
     HARParseResult,
     HARRequest,
     HARResponse,
+    LoginInteraction,
     ParseError,
     _parse_response,
     _set_cookie_lines,
@@ -910,3 +911,61 @@ class TestDomSnapshotFields:
 
         plain = HARRequest(method="GET", url="https://myshop.example/", headers={}, cookies=[])
         assert (plain.dom_snapshot, plain.dom_snapshot_url) == (None, None)
+
+    def test_the_login_interactions_are_read_oldest_first(self, tmp_path: Path) -> None:
+        """``request._loginInteractions`` (#267, part 3): kind, selector, msBefore."""
+        har = self._har(
+            tmp_path,
+            {
+                "_loginInteractions": [
+                    {"kind": "click", "selector": "#signin-link", "msBefore": 5000},
+                    {"kind": "focus", "selector": "#m-email", "msBefore": 3000.5},
+                    {"kind": "click", "selector": None, "msBefore": 40},
+                ]
+            },
+        )
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.login_interactions == (
+            LoginInteraction("click", "#signin-link", 5000.0),
+            LoginInteraction("focus", "#m-email", 3000.5),
+            LoginInteraction("click", None, 40.0),
+        )
+
+    def test_they_are_put_oldest_first_whatever_the_file_order(self, tmp_path: Path) -> None:
+        har = self._har(
+            tmp_path,
+            {
+                "_loginInteractions": [
+                    {"kind": "focus", "selector": "#m-email", "msBefore": 10},
+                    {"kind": "click", "selector": "#signin-link", "msBefore": 900},
+                ]
+            },
+        )
+        (entry,) = parse_har_file(har).entries
+        assert [i.kind for i in entry.request.login_interactions] == ["click", "focus"]
+
+    def test_a_malformed_interaction_is_skipped(self, tmp_path: Path) -> None:
+        har = self._har(
+            tmp_path,
+            {
+                "_loginInteractions": [
+                    {"kind": "scroll", "selector": "#a", "msBefore": 1},
+                    {"kind": "click", "selector": 7, "msBefore": 1},
+                    {"kind": "click", "selector": "#a", "msBefore": -1},
+                    {"kind": "click", "selector": "#a", "msBefore": True},
+                    {"kind": "click", "selector": "#a", "msBefore": float("inf")},
+                    {"kind": "click", "selector": "#a"},
+                    "click",
+                    {"kind": "focus", "msBefore": 2},
+                ]
+            },
+        )
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.login_interactions == (LoginInteraction("focus", None, 2.0),)
+
+    def test_no_interactions_or_a_wrong_shape_reads_as_none(self, tmp_path: Path) -> None:
+        har = self._har(tmp_path, {"_loginInteractions": {"kind": "click"}})
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.login_interactions == ()
+        plain = HARRequest(method="GET", url="https://myshop.example/", headers={}, cookies=[])
+        assert plain.login_interactions == ()

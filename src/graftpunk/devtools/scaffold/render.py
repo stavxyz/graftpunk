@@ -489,7 +489,16 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
             "login reaches too."
         )
     lines = ["    login_config = LoginConfig(", "        steps=["]
-    lines.extend(_render_login_step(form, indent=len(L3)))
+    lines.extend(_render_opener_step(form, spec.backend, indent=len(L3)))
+    lines.extend(
+        _render_login_step(
+            form,
+            indent=len(L3),
+            wait_for=_first_field_selector(form)
+            if form.opener and spec.backend == "nodriver"
+            else "",
+        )
+    )
     lines.append("        ],")
     login_url = _login_page_url(form, spec.base_url)
     if login_url is None:
@@ -643,11 +652,54 @@ def _login_page_url(form: LoginForm, base_url: str) -> str | None:
     return page
 
 
-def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
+# Selenium refuses a step's wait_for, so the click that opens a login form is followed
+# by this pause instead (seconds). A modal's open animation takes a fraction of a
+# second, and a script that fetches the form's markup on the click a little more; two
+# seconds covers both on an ordinary connection and costs little against the
+# login's timeout. The comment above the step says to raise it.
+_OPENER_DELAY_S = 2.0
+
+
+def _first_field_selector(form: LoginForm) -> str:
+    """The printable selector of *form*'s first field, in the form's own role order
+    (the username before the password), for the step after its opener to wait for;
+    empty when none is printable."""
+    printed, _submit = printable_selectors(form)
+    return next((printed[role] for role in form.fields if printed.get(role)), "") or ""
+
+
+def _render_opener_step(form: LoginForm, backend: str, *, indent: int) -> list[str]:
+    """The click-only ``LoginStep`` that opens *form*, when the recording found the
+    click (``LoginForm.opener``): under Selenium, which refuses a step ``wait_for``,
+    with a pause after the click and a comment saying why. Nothing otherwise; an
+    opener the recording kept no selector for is a ``GP-FILL`` on the form's step."""
+    if not form.opener:
+        return []
+    pad = " " * indent
+    lines: list[str] = []
+    if backend == "selenium":
+        lines.extend(
+            wrapped_comment_lines(
+                "Selenium runs no step wait_for, so the click that opens the login form is "
+                "followed by a fixed delay instead; raise it if the form takes longer to "
+                "appear.",
+                indent=indent,
+            )
+        )
+    lines.append(f"{pad}LoginStep(")
+    lines.extend(literal_lines(form.opener, indent=indent + INDENT_STEP, prefix="submit="))
+    if backend == "selenium":
+        lines.append(f"{pad}{' ' * INDENT_STEP}delay={_OPENER_DELAY_S},")
+    lines.append(f"{pad}),")
+    return lines
+
+
+def _render_login_step(form: LoginForm, *, indent: int, wait_for: str = "") -> list[str]:
     """A generated ``LoginStep(...)``, exploded one keyword argument per line so a
     long selector cannot push the whole call over the generated width. Selectors
     are the ones ``printable_selectors`` allows: unscoped when the form's action
-    holds an id, and a ``GP-FILL`` where one cannot be."""
+    holds an id, and a ``GP-FILL`` where one cannot be. *wait_for*, when given, is the
+    selector the step waits for first (the form's first field, after its opener)."""
     pad = " " * indent
     fields, submit = printable_selectors(form)
     submit_value = submit or f"{GP_FILL_MARKER}: submit selector"
@@ -728,7 +780,17 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
             )
             text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand."
         lines.extend(wrapped_comment_lines(text, indent=indent))
-    if form.from_snapshot:
+    if form.opener_unresolved:
+        lines.extend(
+            wrapped_comment_lines(
+                f"{GP_FILL_MARKER}: a click opened this form before its first field was "
+                "focused, and the recording kept no selector for what was clicked (nothing "
+                "picked it alone on the page, or its id or name held an account value); add a "
+                "click-only LoginStep for it before this one.",
+                indent=indent,
+            )
+        )
+    elif form.from_snapshot and not form.opener:
         # No recorded HTML held this form: the page's script rendered it, often
         # after a click the recording does not know.
         lines.extend(
@@ -741,6 +803,8 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     lines.append(f"{pad}LoginStep(")
     lines.extend(_exploded_literal_dict_lines(entries, indent=indent + INDENT_STEP))
     lines.extend(literal_lines(submit_value, indent=indent + INDENT_STEP, prefix="submit="))
+    if wait_for:
+        lines.extend(literal_lines(wait_for, indent=indent + INDENT_STEP, prefix="wait_for="))
     lines.append(f"{pad}),")
     return lines
 

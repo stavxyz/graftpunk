@@ -13,6 +13,7 @@ import re
 import string
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, get_args
 from urllib.parse import parse_qs, unquote, unquote_plus, urljoin, urlparse, urlunparse
@@ -29,7 +30,7 @@ from graftpunk.har.documents import (
     looks_like_token_name,
 )
 from graftpunk.har.naming import capture_text, fixture_rank, normalize_media_type
-from graftpunk.har.parser import HAREntry, parse_har_file
+from graftpunk.har.parser import HAREntry, LoginInteraction, parse_har_file
 from graftpunk.har.paths import (
     bare_host,
     bare_path,
@@ -43,6 +44,7 @@ from graftpunk.har.paths import (
     reads_as_words,
     template_path,
 )
+from graftpunk.har.selectors import selector_holds_an_id, selector_keys
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -1132,6 +1134,55 @@ def _formless_credit(
     return at, _form_key(form)
 
 
+def _login_opener(
+    form: LoginForm,
+    interactions: tuple[LoginInteraction, ...],
+    post_at: datetime,
+    page_loads: list[datetime],
+) -> tuple[str, bool] | None:
+    """The click that opened *form*, from the *interactions* recorded before its
+    credential post (sent at *post_at*), as ``(selector, unresolved)``; None when no
+    click qualifies.
+
+    The opener is the last click before the first focus on one of the form's field
+    selectors (the recorded ones and their unscoped forms, compared by
+    :func:`graftpunk.har.selectors.selector_keys`), when its selector picks none of
+    the form's fields and not its submit, and no page of the run loaded (*page_loads*,
+    the times of the GETs answered with HTML) between the click and that focus: a
+    click that loaded a page is a link to the form's page, not an opener. A click
+    the recording kept no selector for, or one whose selector holds an account
+    value, is ``("", True)``: there was an opener and nothing names it."""
+    roles: set[tuple[str, ...]] = set()
+    for selector in (*form.fields.values(), *form.unscoped_fields.values()):
+        roles |= selector_keys(selector)
+    controls = set(roles)
+    for selector in (form.submit, form.unscoped_submit):
+        if selector:
+            controls |= selector_keys(selector)
+    first_focus = next(
+        (
+            at
+            for at, event in enumerate(interactions)
+            if event.kind == "focus" and event.selector and selector_keys(event.selector) & roles
+        ),
+        None,
+    )
+    if first_focus is None:
+        return None
+    click = next((e for e in reversed(interactions[:first_focus]) if e.kind == "click"), None)
+    if click is None:
+        return None
+    if click.selector and selector_keys(click.selector) & controls:
+        return None
+    clicked_at = post_at - timedelta(milliseconds=click.ms_before)
+    focused_at = post_at - timedelta(milliseconds=interactions[first_focus].ms_before)
+    if any(clicked_at <= loaded <= focused_at for loaded in page_loads):
+        return None
+    if not click.selector or selector_holds_an_id(click.selector):
+        return "", True
+    return click.selector, False
+
+
 def _path_segments(url: str) -> int:
     """How many non-empty path segments *url* has."""
     return len([segment for segment in urlparse(url).path.split("/") if segment])
@@ -1718,6 +1769,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # Each credential post: its step, its target, its body names, and whether it was
     # found by its field names alone (no recorded form's target matched it).
     posts: list[tuple[int, tuple[str, str], frozenset[str], bool]] = []
+    # Beside each of posts: when it was sent, and the clicks and focus moves gp
+    # observe recorded before it (request._loginInteractions).
+    post_interactions: list[tuple[datetime, tuple[LoginInteraction, ...]]] = []
+    # When each in-scope GET answered with an HTML page was sent: a page load.
+    page_loads: list[datetime] = []
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
     script_driven: set[int] = set()
@@ -1852,6 +1908,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if method == "GET" and entry.response.status in _REDIRECT_STATUSES:
             redirected_via[_redirect_target(entry)] = (*via, url)
         content_type = (entry.response.content_type or "").lower()
+        if method == "GET" and "html" in content_type and 200 <= entry.response.status < 300:
+            page_loads.append(entry.timestamp)
         forms_in_entry: tuple[LoginForm, ...] = ()
         if "html" in content_type and entry.response.body:
             document_source = url
@@ -1968,6 +2026,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 # 200 starts no chain, whatever its page holds.
                 chain_next[step] = _redirect_target(entry)
                 posts.append((step, post_target, frozenset(body_params(entry)), not by_target))
+                post_interactions.append((entry.timestamp, entry.request.login_interactions))
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must
         # not make that POST, or a later one to the same page, the credential post.
@@ -2083,6 +2142,25 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     owned_posts, owned_pages = _used_login(
         ranked_forms, login_forms, page_of, [step for step, *_rest in posts], credential_posts
     )
+    # Each form on a page a credential post was credited to takes its opener from
+    # the first such post that gives one (_login_opener).
+    openers: dict[tuple[object, ...], tuple[str, bool]] = {}
+    for (post_at, interactions), post in zip(post_interactions, credential_posts, strict=True):
+        if post.page_step is None or not interactions:
+            continue
+        for form in forms_on_page.get(post.page_step, []):
+            key = _form_key(form)
+            found = (
+                None if key in openers else _login_opener(form, interactions, post_at, page_loads)
+            )
+            if found is not None:
+                openers[key] = found
+    ranked_forms = [
+        replace(form, opener=found[0], opener_unresolved=found[1])
+        if (found := openers.get(_form_key(form))) is not None
+        else form
+        for form in ranked_forms
+    ]
     # A page a post was credited to only through a formless group shown on several
     # pages is a content page showing a site-wide modal, so its GET keeps its command.
     owned_pages -= {

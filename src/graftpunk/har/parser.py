@@ -9,6 +9,7 @@ HAR format specification: http://www.softwareishard.com/blog/har-12-spec/
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -23,6 +24,22 @@ LOG = get_logger(__name__)
 
 class HARParseError(Exception):
     """Raised when HAR file cannot be parsed."""
+
+
+# The interaction kinds gp observe's page listener records (graftpunk.observe.dom_listener).
+_INTERACTION_KINDS = frozenset({"click", "focus"})
+
+
+@dataclass(frozen=True)
+class LoginInteraction:
+    """A click or a focus move the page's listener recorded before a credential post
+    (``request._loginInteractions``, #267): its kind, the element's selector (None
+    when the page had no unique one, or it held an account value), and how many
+    milliseconds before the post it happened."""
+
+    kind: str
+    selector: str | None
+    ms_before: float
 
 
 @dataclass
@@ -64,6 +81,9 @@ class HARRequest:
     dom_snapshot_file: str | None = None
     dom_snapshot: str | None = None
     dom_snapshot_url: str | None = None
+    # The clicks and focus moves gp observe recorded before a credential post, oldest
+    # first (request._loginInteractions); an item of another shape is skipped.
+    login_interactions: tuple[LoginInteraction, ...] = ()
 
 
 @dataclass
@@ -293,6 +313,31 @@ def _request_body_file(ref: str, base_dir: Path | None) -> tuple[str | None, boo
         return None, True
 
 
+def _login_interactions(raw: Any) -> tuple[LoginInteraction, ...]:
+    """``request._loginInteractions`` as :class:`LoginInteraction` items, oldest first
+    (the largest ``msBefore`` first). An item that is not an object with a known
+    ``kind``, a string or null ``selector``, and a finite, non-negative ``msBefore``
+    is skipped."""
+    if not isinstance(raw, list):
+        return ()
+    kept: list[LoginInteraction] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        kind, selector, before = item.get("kind"), item.get("selector"), item.get("msBefore")
+        if (
+            kind not in _INTERACTION_KINDS
+            or not (selector is None or isinstance(selector, str))
+            or isinstance(before, bool)
+            or not isinstance(before, int | float)
+            or not math.isfinite(before)
+            or before < 0
+        ):
+            continue
+        kept.append(LoginInteraction(kind, selector or None, float(before)))
+    return tuple(sorted(kept, key=lambda each: -each.ms_before))
+
+
 def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -> HARRequest:
     """Parse request section of HAR entry.
 
@@ -356,6 +401,7 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         dom_snapshot_file=snapshot_file,
         dom_snapshot=snapshot,
         dom_snapshot_url=snapshot_url if isinstance(snapshot_url, str) else None,
+        login_interactions=_login_interactions(request_data.get("_loginInteractions")),
     )
 
 
