@@ -2579,7 +2579,7 @@ class TestSnapshotFromTheIsolatedWorldListener:
     ) -> None:
         """The read failed; the DOM.disable after it waits _STOP_WAIT_S at most, so
         the snapshot fails and is counted then, not when stop cancels it."""
-        monkeypatch.setattr(capture, "_STOP_WAIT_S", 0.05)
+        monkeypatch.setattr(capture, "_DOM_DISABLE_WAIT_S", 0.05)
 
         class HungDisable(FakeTab):
             async def send(self, cmd: Any, **kwargs: Any) -> Any:
@@ -2602,10 +2602,13 @@ class TestSnapshotFromTheIsolatedWorldListener:
     async def test_stop_returns_when_the_page_never_answers_a_read(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Review round 2 (I1): a late read cancelled at stop sends DOM.disable, which a
-        page that stopped answering never answers either; stop gives each wait a bound."""
+        """Review round 2 (I1) and round 3 (M2): a late read cancelled at stop sends
+        DOM.disable, which a page that stopped answering never answers either. Stop
+        waits longer for the cancelled task than DOM.disable waits, so the task counts
+        itself before the summary. The bounds are scaled down from 5 s, 3 s, and 2 s."""
         monkeypatch.setattr(capture, "_POST_DATA_SETTLE_TIMEOUT_S", 0.05)
-        monkeypatch.setattr(capture, "_STOP_WAIT_S", 0.1)
+        monkeypatch.setattr(capture, "_STOP_WAIT_S", 0.3)
+        monkeypatch.setattr(capture, "_DOM_DISABLE_WAIT_S", 0.1)
 
         class HungDom(FakeTab):
             async def send(self, cmd: Any, **kwargs: Any) -> Any:
@@ -2624,7 +2627,140 @@ class TestSnapshotFromTheIsolatedWorldListener:
                 timeout=3,
             )
         assert "_domSnapshot" not in _only_entry(backend)["request"]
-        assert [e for e in logs if e["event"] == "nodriver_request_time_tasks_unfinished"]
+        assert not [e for e in logs if e["event"] == "nodriver_request_time_tasks_unfinished"]
+        (summary,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_summary"]
+        assert (summary["failed"], summary["attempted"]) == (1, 1)
+        events = [e["event"] for e in logs]
+        assert events.index("nodriver_dom_snapshot_cancelled") < events.index(
+            "nodriver_dom_snapshot_summary"
+        )
+
+    def test_the_cancelled_task_wait_outlasts_the_disable_wait(self) -> None:
+        assert capture._STOP_WAIT_S > capture._DOM_DISABLE_WAIT_S
+
+    @pytest.mark.asyncio
+    async def test_a_task_that_outlives_stop_s_wait_is_named_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(capture, "_POST_DATA_SETTLE_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(capture, "_STOP_WAIT_S", 0.05)
+
+        async def stubborn() -> None:
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.3)
+
+        tab = FakeTab({}, _never)
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        task = asyncio.ensure_future(stubborn())
+        backend._post_data_tasks.add(task)
+        with capture_logs() as logs:
+            await _stop(backend, tab)
+        unfinished = [e for e in logs if e["event"] == "nodriver_request_time_tasks_unfinished"]
+        assert [e["count"] for e in unfinished] == [1]
+        task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_an_origin_only_referer_accepts_a_late_read_of_that_origin(
+        self, tmp_path: Path
+    ) -> None:
+        """Review round 3 (M1): a cross-origin form post's Referer is the form page's
+        origin only, so any page of that origin is the sending page."""
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        tab.dom_url = "https://myshop.example/signin"
+        backend = await _record(
+            tab,
+            [self._navigation("44.1", referer="https://myshop.example/")],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        assert _only_entry(backend)["request"]["_domSnapshot"] == "snapshots/44.1.html"
+
+    @pytest.mark.asyncio
+    async def test_a_full_referer_requires_its_own_page(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        tab.dom_url = "https://myshop.example/account"
+        with capture_logs() as logs:
+            backend = await _record(
+                tab,
+                [self._navigation("44.2", referer="https://myshop.example/signin")],
+                dom_snapshots_dir=tmp_path / "snapshots",
+            )
+        assert "_domSnapshot" not in _only_entry(backend)["request"]
+        (skip,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_late_skipped"]
+        assert skip["reason"] == "another_page"
+
+    @pytest.mark.asyncio
+    async def test_no_sending_page_skips_the_late_read_entirely(self, tmp_path: Path) -> None:
+        """Review round 3 (superpowers M6): nothing to compare a read with, so none is
+        sent to a tab that is navigating."""
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        with capture_logs() as logs:
+            backend = await _record(
+                tab,
+                [self._navigation("44.3", referer=None)],
+                dom_snapshots_dir=tmp_path / "snapshots",
+            )
+        assert "_domSnapshot" not in _only_entry(backend)["request"]
+        assert tab.dom_requests == []
+        (skip,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_late_skipped"]
+        assert skip["reason"] == "no_sending_page"
+        (summary,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_summary"]
+        assert summary["late_skipped"] == 1
+
+    @staticmethod
+    def _navigation(rid: str, *, referer: str | None) -> Any:
+        target = "https://auth.myshop-sso.example/session"
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        if referer is not None:
+            headers["Referer"] = referer
+        return _will_be_sent(
+            rid,
+            inline="username=alice%40example.com&password=hunter2hunter2",
+            url=target,
+            document_url=target,
+            resource_type="Document",
+            headers=headers,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_sending_page_with_no_origin_takes_no_snapshot(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40, url="about:blank"))
+        await tab.dispatch(
+            _will_be_sent("45.1", inline=_LOGIN_BODY, url=LOGIN, document_url="about:blank")
+        )
+        await _stop(backend, tab)
+        assert len(backend._listener_snapshots) == 1
+        assert not (tmp_path / "snapshots").exists()
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_page_is_a_marker_the_post_takes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The post takes the marker: no late read of a page that may have changed."""
+        monkeypatch.setattr(capture, "DOM_SNAPSHOT_MAX_CHARS", 1000)
+        big = _LOGIN_MODAL + "<p>" + "x" * 2000 + "</p>"
+        tab, _backend, logs = await self._run(
+            tmp_path, [_binding_called(big, time_ms=_POST_MS - 40)], live=_LOGIN_MODAL
+        )
+        assert not (tmp_path / "snapshots").exists()
+        assert tab.dom_requests == []
+        (summary,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_summary"]
+        assert summary["too_large"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_page_of_exactly_the_cap_is_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        exact = _LOGIN_MODAL + "<p></p>"
+        monkeypatch.setattr(capture, "DOM_SNAPSHOT_MAX_CHARS", len(exact))
+        await self._run(tmp_path, [_binding_called(exact, time_ms=_POST_MS - 40)])
+        assert 'id="login-modal"' in self._stored(tmp_path)
 
     @pytest.mark.asyncio
     async def test_a_listener_snapshot_landing_during_the_read_is_preferred(

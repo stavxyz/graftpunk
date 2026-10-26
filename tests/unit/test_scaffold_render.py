@@ -1137,10 +1137,10 @@ class TestPluginModuleWithLoginForm:
         )
         assert "dialog" not in comment
         assert (
-            "GP-FILL: username has no selector: no element of eight controls or fewer "
-            "around the password holds a text input before it with no button between "
-            "them, so the login group is the password and the buttons after it; write one "
-            "by hand if the login has one."
+            "GP-FILL: username has no selector: no element holding four text or password "
+            "inputs or fewer around the password holds a username-like input before it "
+            "with no button between them, so the login group is the password and the "
+            "buttons after it; write one by hand if the login has one."
         ) in comment
         assert (
             "GP-FILL: submit has no selector: the first button after the password in the "
@@ -1155,13 +1155,15 @@ class TestPluginModuleWithLoginForm:
             if line.strip().startswith("#")
         )
         assert (
-            "GP-FILL: username has no selector: no element of eight controls or fewer "
-            "around the password holds a button after it, so the login group is the "
-            "password alone; write one by hand if the login has one."
+            "GP-FILL: username has no selector: no element holding four text or password "
+            "inputs or fewer around the password, other than <html> or <body>, holds a "
+            "button after it, so the login group is the password alone; write one by hand "
+            "if the login has one."
         ) in comment
         assert (
-            "GP-FILL: submit has no selector: no element of eight controls or fewer around "
-            "the password holds a button after it; write one by hand."
+            "GP-FILL: submit has no selector: no element holding four text or password "
+            "inputs or fewer around the password, other than <html> or <body>, holds a "
+            "button after it; write one by hand."
         ) in comment
 
     def test_a_form_from_recorded_html_carries_no_snapshot_comment(self) -> None:

@@ -199,11 +199,13 @@ def sanitize_dom_snapshot(html: str, redaction: Redaction | None = None) -> str:
     a ``<textarea>``'s text dropped, and any other text dropped unless it sits in an
     ``a``, ``button``, ``label``, ``summary``, ``legend``, or ``option``, which keeps
     at most ``TEXT_LIMIT`` characters. Comments and processing instructions are
-    dropped. An ``href`` or ``action`` keeps no query or fragment
+    dropped. An ``href`` or ``action`` keeps no query, fragment, or ``;params``
+    value, and a ``javascript:``, ``data:``, or ``vbscript:`` URL only its scheme
     (:func:`_bare_reference`). With *redaction*, each kept value and text is
-    redacted on its decoded text (:func:`_redactor`), identifiers included. Every
-    kept value and text is then escaped again, so the
-    output is markup the page did not write only where it was markup before."""
+    redacted on its decoded text (:func:`_redactor`, an email in any letter case),
+    before the text budget cuts it, identifiers included. Every kept value and text
+    is then escaped again, so the output is markup the page did not write only
+    where it was markup before."""
     parser = _Sanitizer(_redactor(redaction or Redaction()))
     parser.feed(html)
     parser.close()

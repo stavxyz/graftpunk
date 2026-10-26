@@ -40,10 +40,13 @@ LOG = get_logger(__name__)
 MAX_RESPONSE_BODY_SIZE = 5 * 1024 * 1024  # 5MB
 # How long stop waits for request-time body fetches still in flight.
 _POST_DATA_SETTLE_TIMEOUT_S = 5.0
-# The most stop waits on each of the recorder's own awaits after that: tasks it has
-# cancelled finishing, and a DOM.disable after a late read. A page that has stopped
-# answering DevTools answers neither, and nodriver's send waits with no bound.
-_STOP_WAIT_S = 2.0
+# The most stop then waits for the tasks it has cancelled to finish, and the most a
+# late read waits for its DOM.disable, which a page that has stopped answering
+# DevTools never answers (nodriver's send waits with no bound). The task's wait is
+# the shorter, so a snapshot cancelled on such a page counts itself before stop
+# logs its summary.
+_STOP_WAIT_S = 3.0
+_DOM_DISABLE_WAIT_S = 2.0
 
 # MIME type constants for body handling
 BINARY_MIME_PREFIXES = (
@@ -114,12 +117,29 @@ def _sending_page(event: Any) -> str | None:
     document_url = getattr(event, "document_url", None)
     if resource != "Document":
         return document_url
+    initiator = getattr(getattr(event, "initiator", None), "url", None)
+    return _referer(event) or initiator or None
+
+
+def _referer(event: Any) -> str:
     headers = getattr(getattr(event, "request", None), "headers", None) or {}
-    referer = next(
+    return next(
         (str(value) for name, value in dict(headers).items() if name.lower() == "referer"), ""
     )
-    initiator = getattr(getattr(event, "initiator", None), "url", None)
-    return referer or initiator or None
+
+
+def _origin_only(event: Any) -> bool:
+    """Whether a navigation's sending page is known only as an origin: its Referer
+    has no path and no query (Chrome's default ``strict-origin-when-cross-origin``
+    sends a cross-origin form post's Referer so, measured on 2026-10-24)."""
+    referer = _referer(event)
+    if not _is_navigation(event) or not referer:
+        return False
+    try:
+        parts = urllib.parse.urlsplit(referer)
+    except ValueError:
+        return False
+    return parts.path in ("", "/") and not parts.query
 
 
 def _is_navigation(event: Any) -> bool:
@@ -1483,7 +1503,8 @@ class NodriverCaptureBackend:
         self._dom_snapshots_dir = dom_snapshots_dir if record_request_bodies else None
         self._dom_snapshot_attempts = 0
         self._dom_snapshot_failures = 0
-        # Pages over DOM_SNAPSHOT_MAX_CHARS, from the listener or the late read.
+        # Credential posts whose page was over DOM_SNAPSHOT_MAX_CHARS (a listener
+        # snapshot's marker, or the late read).
         self._dom_snapshot_too_large = 0
         # Credential posts whose late DevTools read was of another page than theirs.
         self._dom_snapshot_late_skipped = 0
@@ -1696,9 +1717,11 @@ class NodriverCaptureBackend:
                     hint=(
                         "Of the credential posts attempted, the page's DOM was not saved "
                         "for those failed (an error, or cancelled at stop), too_large (a "
-                        "page over 5 MB), or late_skipped (the late DevTools read was of "
-                        "another page). The HAR is complete. Run with debug logging to "
-                        "see each request and why."
+                        "page over 5 MB), or late_skipped (no listener snapshot, and the "
+                        "late DevTools read was of another page than the one that sent "
+                        "the post, or no sending page was known, so none was read). The "
+                        "HAR is complete. Run with debug logging to see each request and "
+                        "why."
                     ),
                 )
             await self._fetch_bodies_at_stop(tab)
@@ -1888,6 +1911,7 @@ class NodriverCaptureBackend:
                 # The page that sent it: a DOM snapshot must come from its origin.
                 "sender_url": _sending_page(event),
                 "navigation": _is_navigation(event),
+                "sender_origin_only": _origin_only(event),
             }
             if self._record_request_bodies:
                 body = _inline_post_body(
@@ -2054,8 +2078,10 @@ class NodriverCaptureBackend:
         """Keep a DOM snapshot the page's listener sent, as the page serialized it,
         among the last ``DOM_SNAPSHOT_BUFFER``. A call to another binding, or a payload
         that is not the listener's (``html``, ``url``, ``time``), is dropped, and a
-        page over ``DOM_SNAPSHOT_MAX_CHARS`` is skipped and counted. Nothing is parsed
-        here: nodriver calls this inline while it reads the browser's messages."""
+        page over ``DOM_SNAPSHOT_MAX_CHARS`` is kept as a marker without its HTML (a
+        post that takes it is counted as too large; one no post takes costs nothing).
+        Nothing is parsed here: nodriver calls this inline while it reads the
+        browser's messages."""
         from graftpunk.observe.dom_listener import BINDING_NAME
 
         if getattr(event, "name", None) != BINDING_NAME:
@@ -2122,7 +2148,7 @@ class NodriverCaptureBackend:
         finally:
             # Bounded: this also runs when stop cancels a read the page never answered.
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(tab.send(cdp_dom.disable(), **session), _STOP_WAIT_S)
+                await asyncio.wait_for(tab.send(cdp_dom.disable(), **session), _DOM_DISABLE_WAIT_S)
         return getattr(document, "document_url", None) or "", html
 
     async def _late_page(
@@ -2132,8 +2158,21 @@ class NodriverCaptureBackend:
         was taken for: after the request left, so the page's response handler may
         have changed it. A listener snapshot that arrived while DevTools answered is
         taken instead. None, counted, for a page over ``DOM_SNAPSHOT_MAX_CHARS`` or
-        another page than the one that sent the post (by scheme, host, and path: a
-        redirect or a navigation has moved the tab on); a read that fails raises."""
+        another page than the one that sent the post: by scheme, host, and path (a
+        redirect or a navigation has moved the tab on), or by origin when the sending
+        page is known only as one (an origin-only Referer). With no sending page known
+        nothing is read, as there is nothing to check the read against: the post is
+        counted as late-skipped. A read that fails raises."""
+        sender = self._sender(data)
+        if sender is None:
+            picked = self._take_listener_snapshot(data)
+            if picked is not None:
+                return picked
+            self._dom_snapshot_late_skipped += 1
+            LOG.debug(
+                "nodriver_dom_snapshot_late_skipped", request_id=rid, reason="no_sending_page"
+            )
+            return None
         try:
             url, html = await self._read_dom(tab)
         except Exception:
@@ -2144,10 +2183,14 @@ class NodriverCaptureBackend:
         picked = self._take_listener_snapshot(data)
         if picked is not None:
             return picked
-        sender = self._sender(data)
-        if sender is None or _bare_page_url(url) != _bare_page_url(sender):
+        same_page = (
+            _origin(url) == _origin(sender)
+            if data.get("sender_origin_only")
+            else _bare_page_url(url) == _bare_page_url(sender)
+        )
+        if not same_page:
             self._dom_snapshot_late_skipped += 1
-            LOG.debug("nodriver_dom_snapshot_late_skipped", request_id=rid)
+            LOG.debug("nodriver_dom_snapshot_late_skipped", request_id=rid, reason="another_page")
             return None
         if len(html) > DOM_SNAPSHOT_MAX_CHARS:
             self._dom_snapshot_too_large += 1

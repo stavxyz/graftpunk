@@ -676,14 +676,17 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     for role in printable_unresolved_roles(form):
         if role in form.absent_roles and form.block_bound == "alone":
             # graftpunk.har.documents._block_login_groups found no small element
-            # around the password holding a button after it.
+            # around the password, other than <html> or <body>, holding a button
+            # after it.
+            around = (
+                "no element holding four text or password inputs or fewer around the "
+                "password, other than <html> or <body>, holds a button after it"
+            )
             text = (
-                f"{GP_FILL_MARKER}: submit has no selector: no element of eight controls or "
-                "fewer around the password holds a button after it; write one by hand."
+                f"{GP_FILL_MARKER}: submit has no selector: {around}; write one by hand."
                 if role == "submit"
-                else f"{GP_FILL_MARKER}: {role} has no selector: no element of eight controls "
-                "or fewer around the password holds a button after it, so the login group is "
-                "the password alone; write one by hand if the login has one."
+                else f"{GP_FILL_MARKER}: {role} has no selector: {around}, so the login group "
+                "is the password alone; write one by hand if the login has one."
             )
         elif role in form.absent_roles and form.formless and role == "submit":
             text = (
@@ -697,10 +700,10 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
         elif role in form.absent_roles and form.block_bound == "button":
             # A password-only group (graftpunk.har.documents._block_login_groups).
             text = (
-                f"{GP_FILL_MARKER}: {role} has no selector: no element of eight controls or "
-                "fewer around the password holds a text input before it with no button "
-                "between them, so the login group is the password and the buttons after it; "
-                "write one by hand if the login has one."
+                f"{GP_FILL_MARKER}: {role} has no selector: no element holding four text or "
+                "password inputs or fewer around the password holds a username-like input "
+                "before it with no button between them, so the login group is the password "
+                "and the buttons after it; write one by hand if the login has one."
             )
         elif role in form.absent_roles and form.formless:
             text = (
