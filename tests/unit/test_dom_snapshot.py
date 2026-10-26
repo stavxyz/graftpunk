@@ -548,11 +548,23 @@ class TestSanitizerGuards:
 
 
 def _snapshot_parse_seconds(html: str) -> float:
+    """The parse's CPU time, the best of three with the cyclic collector off: wall
+    time on a busy runner, or a collection landing in one run, is not the parse."""
+    import gc
     import time
 
-    started = time.perf_counter()
-    extract_login_forms(html, source=_SITE, snapshot=True)
-    return time.perf_counter() - started
+    best = float("inf")
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        for _ in range(3):
+            started = time.process_time()
+            extract_login_forms(html, source=_SITE, snapshot=True)
+            best = min(best, time.process_time() - started)
+    finally:
+        if collecting:
+            gc.enable()
+    return best
 
 
 def _assert_snapshot_parses_in_linear_time(page: Callable[[int], str]) -> None:
@@ -561,6 +573,46 @@ def _assert_snapshot_parses_in_linear_time(page: Callable[[int], str]) -> None:
     small = _snapshot_parse_seconds(page(1000))
     large = _snapshot_parse_seconds(page(4000))
     assert large < 8 * small + 0.05, f"1000: {small:.3f}s, 4000: {large:.3f}s"
+
+
+class TestSnapshotParseGrowth:
+    """A snapshot's parse is linear in the page's length, whatever its shape."""
+
+    def test_a_wide_page_of_login_blocks(self) -> None:
+        block = (
+            '<div class="row"><div><input type="text"><input type="password">'
+            "<button>Go</button></div></div>"
+        )
+        _assert_snapshot_parses_in_linear_time(lambda n: f"<main>{block * n}</main>")
+
+    def test_a_wide_page_whose_blocks_share_input_names(self) -> None:
+        """Each name is checked for uniqueness against counts taken once."""
+        block = (
+            '<div class="row"><div><input type="text" name="username">'
+            '<input type="password" name="password"><button>Go</button></div></div>'
+        )
+        _assert_snapshot_parses_in_linear_time(lambda n: f"<main>{block * n}</main>")
+
+    def test_a_wide_page_of_uniquely_named_blocks(self) -> None:
+        _assert_snapshot_parses_in_linear_time(
+            lambda n: (
+                "<main>"
+                + "".join(
+                    f'<div class="row"><div><input type="text" name="u{i}">'
+                    f'<input type="password" name="p{i}"><button>Go</button></div></div>'
+                    for i in range(n)
+                )
+                + "</main>"
+            )
+        )
+
+    def test_a_page_of_many_login_forms_sharing_one_action(self) -> None:
+        """Forms sharing an action are counted together once, not once per form."""
+        form = (
+            '<form action="/login" method="post"><input name="username">'
+            '<input type="password" name="password"><button>Go</button></form>'
+        )
+        _assert_snapshot_parses_in_linear_time(lambda n: f"<main>{form * n}</main>")
 
 
 class TestRedactionSpellings:

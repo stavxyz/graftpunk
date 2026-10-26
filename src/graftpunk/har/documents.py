@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from html.parser import HTMLParser
 from typing import Literal
@@ -473,10 +474,34 @@ def _type_selectors(raw: _RawInput) -> tuple[str, ...]:
     return (f"{raw.tag}:not([type])", f'{raw.tag}[type="{_css_string(raw.input_type)}"]')
 
 
-def _same_type(raw: _RawInput, other: _RawInput) -> bool:
-    """Whether a type selector for *raw* would also pick *other*: same tag and same
-    type, a typeless element counted as its default type."""
-    return other.tag == raw.tag and other.input_type == raw.input_type
+@dataclass
+class _Counts:
+    """How many of a set of controls share a tag and name, or a tag and type (what a
+    type selector picks: a typeless element counted as its default type), and the
+    same for each ``form`` attribute's
+    controls: counted once, so checking that a selector picks one control is a
+    lookup, not a pass over the page."""
+
+    by_name: Counter[tuple[str, str]] = field(default_factory=Counter)
+    by_type: Counter[tuple[str, str]] = field(default_factory=Counter)
+    by_owner_name: Counter[tuple[str, str, str]] = field(default_factory=Counter)
+    by_owner_type: Counter[tuple[str, str, str]] = field(default_factory=Counter)
+
+    @classmethod
+    def of(cls, controls: Iterable[_RawInput]) -> _Counts:
+        counts = cls()
+        for raw in controls:
+            counts.by_name[(raw.tag, raw.name)] += 1
+            counts.by_type[(raw.tag, raw.input_type)] += 1
+            counts.by_owner_name[(raw.form_owner, raw.tag, raw.name)] += 1
+            counts.by_owner_type[(raw.form_owner, raw.tag, raw.input_type)] += 1
+        return counts
+
+    def named(self, raw: _RawInput) -> int:
+        return self.by_name[(raw.tag, raw.name)]
+
+    def typed(self, raw: _RawInput) -> int:
+        return self.by_type[(raw.tag, raw.input_type)]
 
 
 def _id_selector(raw: _RawInput) -> str | None:
@@ -504,8 +529,8 @@ def _scoped(suffixes: tuple[str, ...], form_scopes: tuple[str, ...]) -> str:
 def _selectors_for(
     raw: _RawInput,
     form_scopes: tuple[str, ...],
-    contained: list[_RawInput],
-    page_inputs: list[_RawInput],
+    contained: _Counts,
+    page_inputs: _Counts,
 ) -> tuple[str | None, str | None]:
     """One input's selector as recorded, and the one safe to print without the
     form scope; each None when there is none.
@@ -527,42 +552,35 @@ def _selectors_for(
     if raw.outside_form:
         return _outside_selector(raw, page_inputs)
     by_name = _name_selector(raw)
-    if by_name is not None and (
-        sum(1 for other in contained if other.tag == raw.tag and other.name == raw.name) > 1
-    ):
+    if by_name is not None and contained.named(raw) > 1:
         # A name two inputs of the form share picks the first of them, which may
         # not be this one: fall back as for any selector that is not unique.
         by_name = None
     unscoped = None
-    if by_name is not None and (
-        sum(1 for other in page_inputs if other.tag == raw.tag and other.name == raw.name) == 1
-    ):
+    if by_name is not None and page_inputs.named(raw) == 1:
         unscoped = by_name
     if not form_scopes:
         return (unscoped, unscoped) if by_name is not None else (None, None)
     if by_name is not None:
         return _scoped((by_name,), form_scopes), unscoped
-    if sum(1 for other in contained if _same_type(raw, other)) > 1:
+    if contained.typed(raw) > 1:
         return None, None
     return _scoped(_type_selectors(raw), form_scopes), None
 
 
-def _outside_selector(
-    raw: _RawInput, page_inputs: list[_RawInput]
-) -> tuple[str | None, str | None]:
+def _outside_selector(raw: _RawInput, page_inputs: _Counts) -> tuple[str | None, str | None]:
     """The selector of a control outside the form its ``form`` attribute names:
     ``tag[form="id"][name="..."]``, else ``tag[form="id"][type="..."]`` (with
     ``:not([type])`` for a typeless one), each only when it picks this one control
     on the page, else none. It spells no action, so it prints as it is."""
     owner = f'[form="{_css_string(raw.form_owner)}"]'
-    siblings = [other for other in page_inputs if other.form_owner == raw.form_owner]
     by_name = _name_selector(raw)
     if by_name is not None and (
-        sum(1 for other in siblings if other.tag == raw.tag and other.name == raw.name) == 1
+        page_inputs.by_owner_name[(raw.form_owner, raw.tag, raw.name)] == 1
     ):
         selector = f'{raw.tag}{owner}[name="{_css_string(raw.name)}"]'
         return selector, selector
-    if sum(1 for other in siblings if _same_type(raw, other)) == 1:
+    if page_inputs.by_owner_type[(raw.form_owner, raw.tag, raw.input_type)] == 1:
         suffixes = tuple(
             suffix.replace(raw.tag, f"{raw.tag}{owner}", 1) for suffix in _type_selectors(raw)
         )
@@ -831,9 +849,7 @@ def form_action_targets(html: str, base: str) -> dict[tuple[str, str], frozenset
     return targets
 
 
-def _formless_selectors(
-    raw: _RawInput, page_inputs: list[_RawInput]
-) -> tuple[str | None, str | None]:
+def _formless_selectors(raw: _RawInput, page_inputs: _Counts) -> tuple[str | None, str | None]:
     """The selector of a control outside every form, recorded and unscoped alike:
     its id selector, else its tag and ``name`` selector when no other input on the
     page (*page_inputs*) has that tag and name, else none. No form scope can pick it,
@@ -842,9 +858,7 @@ def _formless_selectors(
     if by_id is not None:
         return by_id, by_id
     by_name = _name_selector(raw)
-    if by_name is not None and (
-        sum(1 for other in page_inputs if other.tag == raw.tag and other.name == raw.name) == 1
-    ):
+    if by_name is not None and page_inputs.named(raw) == 1:
         return by_name, by_name
     return None, None
 
@@ -1071,6 +1085,18 @@ def extract_login_forms(
         # form); a lone form with a confirmation password is a registration form.
         logins = [raw for raw in candidates if len(_password_inputs(raw.inputs)) == 1]
     forms: list[LoginForm] = []
+    page_counts = _Counts.of(parsed.inputs)
+    # The controls each form physically contains, and each form's bare action, read
+    # once: a scope's counts are built once per action, however many forms share it.
+    contained_in: dict[int, list[_RawInput]] = {}
+    for control in parsed.inputs:
+        if control.container is not None:
+            contained_in.setdefault(id(control.container), []).append(control)
+    bare_actions = {id(other): _bare_action(other) for other in parsed.forms}
+    forms_by_action: dict[str | None, list[_RawForm]] = {}
+    for other in parsed.forms:
+        forms_by_action.setdefault(bare_actions[id(other)], []).append(other)
+    scope_counts: dict[str | None, _Counts] = {}
     for raw in logins:
         try:
             action = bare_url(raw.action)
@@ -1093,18 +1119,25 @@ def extract_login_forms(
         # A scoped selector matches every form with this action (a header mini-login
         # and the main form can share one), so uniqueness is counted across the
         # controls inside all of them.
-        same_scope = {
-            id(other) for other in parsed.forms if other is raw or _bare_action(other) == action
-        }
-        contained = [
-            control
-            for control in parsed.inputs
-            if control.container is not None and id(control.container) in same_scope
-        ]
+        if bare_actions[id(raw)] == action:
+            if action not in scope_counts:
+                scope_counts[action] = _Counts.of(
+                    control
+                    for other in forms_by_action.get(action, [])
+                    for control in contained_in.get(id(other), [])
+                )
+            contained = scope_counts[action]
+        else:
+            # An action that could not be split: this form and those whose bare
+            # action reads the same, counted for it alone.
+            same_scope = [*forms_by_action.get(action, []), raw]
+            contained = _Counts.of(
+                control for other in same_scope for control in contained_in.get(id(other), [])
+            )
         form = _login_form(
             raw.inputs,
             lambda control, scopes=scopes, contained=contained: _selectors_for(
-                control, scopes, contained, parsed.inputs
+                control, scopes, contained, page_counts
             ),
             action=action,
             method=raw.method,
@@ -1122,7 +1155,7 @@ def extract_login_forms(
     ]:
         form = _login_form(
             group,
-            lambda control: _formless_selectors(control, parsed.inputs),
+            lambda control: _formless_selectors(control, page_counts),
             action="",
             method="",
             source=source,
