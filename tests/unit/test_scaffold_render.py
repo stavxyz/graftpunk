@@ -1110,10 +1110,11 @@ class TestPluginModuleWithLoginForm:
         )
         return render(spec)["src/graftpunk_myshop/plugin.py"]
 
-    def test_an_unhinted_login_beside_a_sign_up_gives_a_login_step(self) -> None:
-        """Review round 4 (superpowers I1): the sign-up block is refused, not the
-        login beside it."""
-        plugin_code = self._snapshot_plugin(
+    def test_a_login_beside_a_formless_sign_up_is_left_to_the_author(self) -> None:
+        """The one-password rule: three formless passwords give no plain-block group,
+        so the scaffold writes no LoginStep with a selector from either block, only
+        the observations comment and a commented-out login_config to fill in."""
+        html = (
             '<html><body><div id="app"><div class="login">'
             '<input type="text" name="identifier" id="li">'
             '<input type="password" name="password" id="lp">'
@@ -1124,8 +1125,19 @@ class TestPluginModuleWithLoginForm:
             'autocomplete="new-password"><button type="button">Create account</button></div>'
             "</div></body></html>"
         )
-        assert "login_config = LoginConfig(" in plugin_code
-        assert '"password": "#lp"' in plugin_code
+        forms = extract_login_forms(html, source="https://myshop.example.com/", snapshot=True)
+        assert forms == ()
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=forms),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "# No login form detected." in plugin_code
+        assert "#se" not in plugin_code
+        assert "#lp" not in plugin_code
 
     def test_a_form_read_from_a_dom_snapshot_says_a_click_may_open_it(self) -> None:
         """#267 part 2: the step carries the GP-FILL, right above it."""

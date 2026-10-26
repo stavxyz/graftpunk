@@ -134,7 +134,9 @@ def _origin_only(event: Any) -> bool:
     Chrome's default ``strict-origin-when-cross-origin`` sends a cross-origin form
     post's Referer as the origin and ``/`` (measured on 2026-10-24: ``Referer:
     http://127.0.0.1:8767/`` from ``/form.html``), and a same-origin one whole, so a
-    ``/`` Referer on a same-origin request is the page ``/`` itself."""
+    ``/`` Referer on a same-origin request is taken as the page ``/``. A page whose
+    ``Referrer-Policy`` is ``origin`` or ``strict-origin`` sends ``/`` to its own
+    origin too; its late read of any other page is then skipped, a safe loss."""
     referer = _referer(event)
     if not _is_navigation(event) or not referer:
         return False

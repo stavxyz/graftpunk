@@ -270,8 +270,8 @@ class TestASnapshotLoginGroupOutsideAnyDialog:
         assert form.from_snapshot
 
     def test_many_nested_passwords_parse_in_linear_time(self) -> None:
-        """A walk stops at the first ancestor holding more than four text or password
-        inputs, so no element is climbed past by more than four passwords."""
+        """Many formless passwords: no group, by the one-password rule, and the parse
+        stays linear."""
 
         def page(depth: int) -> str:
             nested = '<div><input type="password">' * depth + "</div>" * depth
@@ -282,13 +282,14 @@ class TestASnapshotLoginGroupOutsideAnyDialog:
         # marked current: a sign-up shape, so no password of it is a login.
         assert extract_login_forms(page(200), source=_SITE, snapshot=True) == ()
 
-    def test_two_passwords_one_marked_current_give_one_group(self) -> None:
+    def test_two_formless_passwords_give_no_group_even_one_marked_current(self) -> None:
+        """The one-password rule: two formless passwords, whichever is marked, leave
+        the login to a GP-FILL."""
         html = (
             '<div id="reauth"><input type="password" id="old" autocomplete="current-password">'
             '<input type="password" id="pin"><button type="submit" id="s">Go</button></div>'
         )
-        (form,) = extract_login_forms(html, source=_SITE, snapshot=True)
-        assert form.fields == {"password": "#old"}
+        assert extract_login_forms(html, source=_SITE, snapshot=True) == ()
 
     def test_a_real_form_in_a_snapshot_is_read_as_a_form(self) -> None:
         html = (
@@ -422,9 +423,9 @@ class TestASnapshotLoginGroupOutsideAnyDialog:
         (form,) = extract_login_forms(f"<main>{html}</main>", source=_SITE, snapshot=True)
         assert form.fields == {"username": "#u", "password": "#p"}
 
-    def test_a_sign_up_block_before_a_login_card_gives_only_the_login(self) -> None:
-        """Review round 3 (I1): the sign-up block's walk stops at the block, which
-        holds two passwords and none marked current, so neither is a login."""
+    def test_a_sign_up_block_before_a_login_card_gives_no_plain_block_group(self) -> None:
+        """Review round 3 (I1): three formless passwords, so no plain-block group;
+        never the sign-up's password as the login's."""
         signup = (
             '<div class="signup"><input type="text" name="first_name" id="fn">'
             '<input type="text" name="last_name" id="ln">'
@@ -437,12 +438,10 @@ class TestASnapshotLoginGroupOutsideAnyDialog:
         )
         providers = "".join(f'<button type="button">Continue with P{i}</button>' for i in range(4))
         html = f"<main>{signup}{self._CARD.format(extra=providers)}</main>"
-        forms = extract_login_forms(html, source=_SITE, snapshot=True)
-        assert [form.fields for form in forms] == [{"username": "#u", "password": "#p"}]
+        assert extract_login_forms(html, source=_SITE, snapshot=True) == ()
 
     def test_a_sign_up_block_with_show_toggles_gives_none(self) -> None:
-        """Review round 3 (toolkit M3): the confirm field's group starts at it, but the
-        element bounding it holds the first password too."""
+        """Review round 3 (toolkit M3): two formless passwords, so no group."""
         html = (
             '<main><div class="signup"><input type="email" id="em" name="email">'
             '<input type="password" id="np1" name="pass1"><button type="button">Show</button>'
@@ -456,7 +455,7 @@ class TestASnapshotLoginGroupOutsideAnyDialog:
         assert extract_login_forms(html, source=_SITE, snapshot=True) == ()
 
     def test_a_change_password_block_gives_none(self) -> None:
-        """The current password is marked, but the block also asks for a new one."""
+        """Two formless passwords, one asking for a new one: no group."""
         html = (
             '<main><div class="change"><input type="password" id="old" '
             'autocomplete="current-password"><input type="password" id="np" '
@@ -465,8 +464,7 @@ class TestASnapshotLoginGroupOutsideAnyDialog:
         assert extract_login_forms(html, source=_SITE, snapshot=True) == ()
 
     def test_a_large_settings_block_asking_for_a_new_password_gives_none(self) -> None:
-        """The walk stops at the settings block, which asks for a new password: the
-        marked current password in it is no login either."""
+        """Two formless passwords: no group, whichever is marked current."""
         html = (
             '<main><div class="settings"><input type="text" name="name">'
             '<input type="email" name="email"><input type="tel" name="phone">'
@@ -646,8 +644,7 @@ class TestSanitizerGuards:
         assert out.count("***REDACTED***") == 2
 
     def test_nested_logins_each_with_their_own_block_parse_in_linear_time(self) -> None:
-        """Each block bounds its own password, and no walk climbs past an element
-        holding more than four text or password inputs."""
+        """Many formless passwords: no group, and the parse stays linear."""
 
         def page(depth: int) -> str:
             html = '<div><input type="text"><input type="password"><button>Go</button>' * depth
@@ -775,11 +772,11 @@ _SIGNUP_TOGGLES = (
 )
 
 
-class TestSignUpRefusalRound4:
-    """Review round 4: the sign-up refusal counts only formless passwords in no
-    dialog, and is judged on the nearest ancestor holding another password. Each
-    expectation is what 83f03be1 gave, except where its username had no hint, which
-    the hint rule now leaves to a GP-FILL."""
+class TestOnePasswordRule:
+    """A snapshot gives a plain-block group only when it holds exactly one password
+    outside every form and dialog, and that one asks for no new password: with two
+    or more, nothing tells a sign-up from a login reliably, so the login is left to a
+    GP-FILL. A form's or a dialog's passwords never count."""
 
     @pytest.mark.parametrize(
         "page",
@@ -790,8 +787,8 @@ class TestSignUpRefusalRound4:
         ],
         ids=["login, then sign-up", "sign-up, then login", "login, then plain sign-up"],
     )
-    def test_an_unhinted_login_beside_a_sign_up_keeps_its_password(self, page: str) -> None:
-        assert _groups(page) == [({"password": "#lp"}, "button")]
+    def test_a_login_beside_a_formless_sign_up_gives_no_group(self, page: str) -> None:
+        assert _groups(page) == []
 
     def test_a_password_step_beside_a_sign_up_form_keeps_its_password(self) -> None:
         assert _groups(_app(_PW_STEP, _NEWS, _FORM_SIGNUP)) == [({"password": "#lp"}, "button")]
@@ -850,27 +847,24 @@ class TestSignUpRefusalRound4:
         assert ({"username": "#u", "password": "#p"}, "inputs") in _groups(html)
 
     def test_a_sign_up_whose_passwords_each_have_a_show_toggle_gives_none(self) -> None:
-        """Review round 4 (superpowers M1): the confirm field's wrapper holds one
-        password, but its sign-up block holds two, none marked current."""
+        """Review round 4 (superpowers M1): two formless passwords, so no group."""
         assert _groups(_app(_SIGNUP_TOGGLES)) == []
 
-    def test_a_password_step_beside_a_toggled_sign_up_still_wins(self) -> None:
+    def test_a_password_step_beside_a_toggled_sign_up_gives_no_group(self) -> None:
         step = (
             '<div class="step">'
             + _pw("password", "lp")
             + '<button type="button" id="go">Continue</button></div>'
         )
-        assert _groups(_app(_SIGNUP_TOGGLES, step)) == [({"password": "#lp"}, "button")]
+        assert _groups(_app(_SIGNUP_TOGGLES, step)) == []
 
     def test_a_password_step_with_no_button_beside_a_sign_up_is_no_card(self) -> None:
-        """A card of its own holds a button after its password."""
+        """Two formless passwords: no group."""
         step = '<div class="step"><input type="password" id="lp" name="password"></div>'
         assert _groups(_app(_SIGNUP_PLAIN, step)) == []
 
     def test_a_sign_up_with_one_bare_and_one_wrapped_password_gives_none(self) -> None:
-        """A password sitting directly in the sign-up block counts as a child of its
-        own, so the wrapped confirm field is not the block's only single-password
-        child."""
+        """Two formless passwords: no group."""
         html = _app(
             '<div class="signup"><input type="password" id="p1" name="pass1">'
             + _pw("pass2", "p2")
@@ -878,15 +872,94 @@ class TestSignUpRefusalRound4:
         )
         assert _groups(html) == []
 
-    def test_a_hinted_login_beside_a_toggled_sign_up_keeps_its_username(self) -> None:
+    def test_a_hinted_login_beside_a_toggled_sign_up_gives_no_group(self) -> None:
         login = (
             '<div class="login"><input type="email" name="email" id="le">'
             + _pw("password", "lp")
             + '<button type="button" id="go">Sign in</button></div>'
         )
-        assert _groups(_app(_SIGNUP_TOGGLES, login)) == [
-            ({"username": "#le", "password": "#lp"}, "inputs")
-        ]
+        assert _groups(_app(_SIGNUP_TOGGLES, login)) == []
+
+    def test_a_one_password_sign_up_beside_an_unhinted_login_gives_no_group(self) -> None:
+        """Review round 5 (both I1): never the sign-up's email and password."""
+        signup = (
+            '<div class="signup"><input type="email" name="signup_email" id="se">'
+            '<input type="password" name="signup_password" id="sp">'
+            '<button type="button">Create account</button></div>'
+        )
+        assert _groups(_app(_LOGIN_UNHINTED, signup)) == []
+
+    def test_a_text_typed_current_password_counts_as_the_one_password(self) -> None:
+        """A page that shows the password switches it to type=text; the role rules
+        still take it for a password, so it is the page's one password."""
+        shown = (
+            '<div class="login"><input type="email" name="email" id="u">'
+            '<input type="text" name="password" id="p" autocomplete="current-password">'
+            '<button type="submit" id="go">Sign in</button></div>'
+        )
+        assert _groups(_app(shown)) == [({"username": "#u", "password": "#p"}, "inputs")]
+        beside = shown + '<div class="x"><input type="password" id="q"></div>'
+        assert _groups(_app(beside)) == []
+
+    def test_a_new_password_in_a_form_or_dialog_is_not_counted(self) -> None:
+        login = (
+            '<div class="login"><input type="email" name="email" id="u">'
+            '<input type="password" name="password" id="p">'
+            '<button type="submit" id="go">Sign in</button></div>'
+        )
+        reset = (
+            '<form action="/reset"><input type="password" name="new_password">'
+            "<button>Save</button></form>"
+            '<dialog><input type="password" name="new_password"><button>Save</button></dialog>'
+        )
+        groups = [group for group in _groups(_app(login, reset)) if group[1] != "dialog"]
+        assert groups == [({"username": "#u", "password": "#p"}, "inputs")]
+
+    @pytest.mark.parametrize(
+        ("before", "expected"),
+        [
+            (
+                '<input type="text" id="u" name="login_id" autocomplete="username">'
+                '<input type="text" id="pin" name="account_pin">',
+                "#u",
+            ),
+            (
+                '<input type="text" id="u" name="login_id" autocomplete="email">'
+                '<input type="text" id="uc" name="user_code">',
+                "#u",
+            ),
+            (
+                '<input type="text" id="acct" name="account_no">'
+                '<input type="email" id="em" name="email">',
+                "#em",
+            ),
+            (
+                '<input type="text" id="acct" name="account_no">'
+                '<input type="text" id="usr" name="user">',
+                "#usr",
+            ),
+            (
+                '<input type="email" id="em" name="email">'
+                '<input type="hidden" id="uid" name="user_id" autocomplete="username">',
+                "#em",
+            ),
+        ],
+        ids=[
+            "autocomplete username beats a later name hint",
+            "autocomplete email beats a later name hint",
+            "an email type beats an earlier name hint",
+            "the last of two name hints",
+            "a hidden input is never the username",
+        ],
+    )
+    def test_the_username_is_the_strongest_hint(self, before: str, expected: str) -> None:
+        """Review round 5 (toolkit M1, superpowers M10, M11)."""
+        html = _app(
+            f'<div class="card">{before}<input type="password" id="pw" name="password">'
+            '<button type="submit" id="go">Sign in</button></div>'
+        )
+        ((fields, _bound),) = _groups(html)
+        assert fields["username"] == expected
 
     def test_the_username_role_takes_only_a_hinted_input(self) -> None:
         """Review round 4 (toolkit M1): the hint, ids included, picks the username;

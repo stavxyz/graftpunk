@@ -966,6 +966,17 @@ def _username_hinted(raw: _RawInput) -> bool:
     return any(hint in lowered for hint in _USERNAME_HINTS)
 
 
+def _username_hint_strength(raw: _RawInput) -> int:
+    """How strongly a username-like input (:func:`_username_hinted`) says it is the
+    username: a ``username`` autocomplete, then an ``email`` autocomplete or an
+    email type, then a name or id hint."""
+    if raw.autocomplete == "username":
+        return 3
+    if raw.autocomplete == "email" or raw.input_type == "email":
+        return 2
+    return 1
+
+
 def _asks_for_a_new_password(raw: _RawInput) -> bool:
     return _is_password(raw) and (
         raw.autocomplete == "new-password"
@@ -975,152 +986,91 @@ def _asks_for_a_new_password(raw: _RawInput) -> bool:
 
 
 def _block_login_groups(parsed: _DocumentParser) -> list[tuple[list[_RawInput], str]]:
-    """A DOM snapshot's login groups outside every dialog, each with how it was
-    bounded. Only the controls with no form owner and in no dialog count here: a
-    form's or a dialog's inputs belong to it and are judged by its own rules. For
-    each such password input (:func:`_is_password`), the walk up its ancestors looks
-    only at elements holding at most ``_MAX_BLOCK_FIELDS`` text-like and password
-    inputs, never ``<html>`` or ``<body>``, and stops at the first larger one. The
+    """A DOM snapshot's login group outside every form and dialog, with how it was
+    bounded, when the snapshot holds exactly one password input (:func:`_is_password`,
+    a text-typed one marked ``current-password`` included) with no form owner and in
+    no dialog, and that one asks for no new password (:func:`_asks_for_a_new_password`).
+    With none, or with two or more, there is none: nothing on the page tells a
+    sign-up's passwords from a login's reliably, so the login is left to a
+    ``GP-FILL``. A form's or a dialog's inputs belong to it and never count here.
+
+    The walk up the password's ancestors looks only at elements holding at most
+    ``_MAX_BLOCK_FIELDS`` text-like and password inputs with no form owner and in no
+    dialog, never ``<html>`` or ``<body>``, and stops at the first larger one. The
     group is, in this order:
 
-    - ``"inputs"``: the controls inside the nearest such element holding a
-      username-like input before the password (:func:`_username_hinted`), a
-      button-like control after it (:func:`_is_button_like`), and no button-like
-      control between that input and the password, starting after the last
-      button-like control before that input (an input with a button of its own, a
-      search box or a newsletter field, is something else);
+    - ``"inputs"``: the controls with no form owner and in no dialog inside the
+      nearest such element holding a username-like input before the password
+      (:func:`_username_hinted`), a button-like control after it
+      (:func:`_is_button_like`), and no button-like control between that input and
+      the password, starting after the last button-like control before that input
+      (an input with a button of its own, a search box or a newsletter field, is
+      something else);
     - ``"button"``: else, those from the password on inside the nearest such element
       holding a button-like control after it (a password-only step);
     - ``"alone"``: else, the password by itself.
 
-    A password asking for a new password (:func:`_asks_for_a_new_password`) never
-    gets a group. Another gets none when the nearest ancestor holding another
-    password, P, is a sign-up or a password change (two passwords and none marked
-    ``current-password``, or one asking for a new password), unless this password's
-    own child of P is a card of its own: it holds a button-like control after the
-    password and either a username-like input before it or is the only child of P
-    holding a single password (a password-only step beside a sign-up block). A
-    password sitting directly in P, or in a wrapper beside the other passwords' own
-    wrappers (a sign-up whose passwords each have a Show toggle), gets none.
-
     The snapshot is taken as the user submits, so the control they pressed is likely
     near the password, and a show-password toggle's wrapper, which holds no input
-    before the password, does not stop the walk. The groups are judged and ordered
-    as a dialog's are (:func:`_ranked_login_groups`). An element holding at most
-    ``_MAX_BLOCK_FIELDS`` such inputs holds at most that many passwords, so no element
-    is climbed past by more walks than that, and the elements below P hold one
-    password each, so the walks are linear in the page's length."""
+    before the password, does not stop the walk. The group is judged as a dialog's
+    is (:func:`_ranked_login_groups`). One walk up one password is linear in the
+    page's length."""
     controls = [raw for raw in _formless_controls(parsed) if raw.dialog is None]
-    in_group = {id(raw) for raw in controls}
-    # Prefix counts over the page, of the controls above only (buttons excepted:
-    # any button is one the user may have pressed), each judged in O(1) per element.
+    passwords = [raw for raw in controls if _is_password(raw)]
+    if len(passwords) != 1 or _asks_for_a_new_password(passwords[0]):
+        return []
+    (raw,) = passwords
+    in_group = {id(control) for control in controls}
+    # Prefix counts over the page: buttons anywhere (any button is one the user may
+    # have pressed), fields of the controls above only.
     buttons_before, fields_before = [0], [0]
-    passwords_before, current_before, new_before = [0], [0], [0]
     # The order of the last username-like input, and of the last button-like
     # control, before each position; -1 for none.
     last_field_before, last_button_before = [-1], [-1]
-    for raw in parsed.inputs:
-        button = _is_button_like(raw)
-        counted = id(raw) in in_group
-        password = counted and _is_password(raw)
+    for control in parsed.inputs:
+        button = _is_button_like(control)
+        counted = id(control) in in_group
         buttons_before.append(buttons_before[-1] + button)
-        fields_before.append(fields_before[-1] + (counted and _counts_as_field(raw)))
-        passwords_before.append(passwords_before[-1] + password)
-        current_before.append(
-            current_before[-1] + (password and raw.autocomplete == "current-password")
-        )
-        new_before.append(new_before[-1] + (counted and _asks_for_a_new_password(raw)))
-        is_field = counted and _is_text_like(raw) and _username_hinted(raw)
-        last_field_before.append(raw.order if is_field else last_field_before[-1])
-        last_button_before.append(raw.order if button else last_button_before[-1])
+        fields_before.append(fields_before[-1] + (counted and _counts_as_field(control)))
+        is_field = counted and _is_text_like(control) and _username_hinted(control)
+        last_field_before.append(control.order if is_field else last_field_before[-1])
+        last_button_before.append(control.order if button else last_button_before[-1])
 
     def span(block: int) -> tuple[int, int]:
         element = parsed.blocks[block]
         return element.start, element.end if element.end is not None else len(parsed.inputs)
 
-    def passwords_in(block: int) -> int:
+    field = last_field_before[raw.order]
+    field_usable = field >= 0 and buttons_before[raw.order] == buttons_before[field + 1]
+    with_inputs: int | None = None
+    with_button: int | None = None
+    block = raw.block
+    while block is not None:
         start, end = span(block)
-        return passwords_before[end] - passwords_before[start]
-
-    def signs_up(block: int) -> bool:
-        start, end = span(block)
-        current = current_before[end] - current_before[start]
-        return (passwords_in(block) > 1 and not current) or new_before[end] > new_before[start]
-
-    children: dict[int, list[int]] = {}
-    for index, element in enumerate(parsed.blocks):
-        if element.parent is not None:
-            children.setdefault(element.parent, []).append(index)
-    lone: dict[int, int] = {}
-
-    def lone_children(block: int) -> int:
-        """How many of *block*'s children hold exactly one password, counting a
-        password sitting directly in it as a child of its own."""
-        if block not in lone:
-            kids = children.get(block, [])
-            in_kids = sum(passwords_in(kid) for kid in kids)
-            lone[block] = sum(1 for kid in kids if passwords_in(kid) == 1) + (
-                passwords_in(block) - in_kids
-            )
-        return lone[block]
-
-    def in_a_sign_up(raw: _RawInput) -> bool:
-        child: int | None = None
-        block = raw.block
-        while block is not None:
-            if passwords_in(block) > 1:
-                if not signs_up(block):
-                    return False
-                if child is None:
-                    return True
-                start, end = span(child)
-                button_after = buttons_before[end] > buttons_before[raw.order + 1]
-                hinted_before = last_field_before[raw.order] >= start
-                return not (button_after and (hinted_before or lone_children(block) == 1))
-            child, block = block, parsed.blocks[block].parent
-        return False
-
-    orders = [raw.order for raw in controls]
-    found: dict[tuple[object, ...], tuple[str, list[_RawInput], str]] = {}
-    for raw in controls:
-        if not _is_password(raw) or _asks_for_a_new_password(raw) or in_a_sign_up(raw):
-            continue
-        field = last_field_before[raw.order]
-        field_usable = field >= 0 and buttons_before[raw.order] == buttons_before[field + 1]
-        with_inputs: int | None = None
-        with_button: int | None = None
-        block = raw.block
-        while block is not None:
-            start, end = span(block)
-            if fields_before[end] - fields_before[start] > _MAX_BLOCK_FIELDS:
+        if fields_before[end] - fields_before[start] > _MAX_BLOCK_FIELDS:
+            break
+        if (
+            parsed.blocks[block].tag not in _PAGE_ELEMENTS
+            and buttons_before[end] > buttons_before[raw.order + 1]
+        ):
+            with_button = block if with_button is None else with_button
+            if field_usable and field >= start:
+                with_inputs = block
                 break
-            if (
-                parsed.blocks[block].tag not in _PAGE_ELEMENTS
-                and buttons_before[end] > buttons_before[raw.order + 1]
-            ):
-                with_button = block if with_button is None else with_button
-                if field_usable and field >= start:
-                    with_inputs = block
-                    break
-            block = parsed.blocks[block].parent
-        chosen = with_inputs if with_inputs is not None else with_button
-        if chosen is not None:
-            kind = "inputs" if with_inputs is not None else "button"
-            start, end = span(chosen)
-            # An "inputs" group starts after the last button before its username, a
-            # "button" group at the password.
-            start = max(start, last_button_before[field] + 1) if kind == "inputs" else raw.order
-            first, last = bisect_left(orders, start), bisect_left(orders, end)
-            # One group per bound: a later password of the same element is in the
-            # first one's group.
-            found.setdefault(
-                (chosen, kind), (parsed.blocks[chosen].hints, controls[first:last], kind)
-            )
-        else:
-            found[("alone", raw.order)] = ("", [raw], "alone")
-    kinds = {id(group): kind for _hints, group, kind in found.values()}
-    ranked = _ranked_login_groups([(hints, group) for hints, group, _kind in found.values()])
-    return [(group, kinds[id(group)]) for group in ranked]
+        block = parsed.blocks[block].parent
+    chosen = with_inputs if with_inputs is not None else with_button
+    if chosen is None:
+        # One password that asks for no new one: the rules a dialog's group is
+        # judged by (_ranked_login_groups) always pass it.
+        return [([raw], "alone")]
+    kind = "inputs" if with_inputs is not None else "button"
+    start, end = span(chosen)
+    # An "inputs" group starts after the last button before its username, a
+    # "button" group at the password.
+    start = max(start, last_button_before[field] + 1) if kind == "inputs" else raw.order
+    orders = [control.order for control in controls]
+    group = controls[bisect_left(orders, start) : bisect_left(orders, end)]
+    return [(group, kind)] if _ranked_login_groups([(parsed.blocks[chosen].hints, group)]) else []
 
 
 def extract_login_forms(
@@ -1339,11 +1289,12 @@ def _login_form(
         # username (graftpunk.har.documents._block_login_groups bounds the group by
         # one), never an unhinted one beside it.
         hinted = [
-            index
+            (_username_hint_strength(inputs[index]), index)
             for index in range(password_index)
             if _is_text_like(inputs[index]) and _username_hinted(inputs[index])
         ]
-        username_index = hinted[-1] if hinted else None
+        # The strongest hint, and of equal ones the last before the password.
+        username_index = max(hinted)[1] if hinted else None
     else:
         username_index = _username_index(inputs, password_index, block_end if formless else None)
     block_start = (username_index if username_index is not None else password_index) + 1
