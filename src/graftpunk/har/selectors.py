@@ -22,9 +22,11 @@ __all__ = [
     "selector_keys",
 ]
 
-# The longest recorded selector any reader keeps. The page listener spells an id or
-# a name of at most 128 characters, so its selectors fit; a longer one came from
-# elsewhere, and holds_an_id's run time grows faster than its input's length.
+# The longest recorded selector any reader keeps, as holds_an_id's run time grows
+# faster than its input's length. The page listener spells an id or a name of at
+# most 128 characters, so its selectors almost always fit; one that does not (an id
+# or name full of characters CSS escapes, or a path of long custom tag names) is
+# read as no selector, which leaves the opener unresolved.
 MAX_SELECTOR_LENGTH = 256
 
 

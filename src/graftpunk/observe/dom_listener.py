@@ -10,35 +10,42 @@ a password input holds a value it sends ``document.documentElement.outerHTML``,
 the document URL, and ``Date.now()`` through a binding. The recorder keeps the
 last few and gives a credential post the latest one taken before it.
 
-The same script reports the user's clicks and focus moves, so the digest can
-find the click that opened a login (part 3 of #267). Every trusted ``click`` is
-reported (one a script made with ``element.click()`` is not), as the nearest
-``a``, ``button``, ``input`` of type ``button``, ``submit``, ``image``, or
-``reset``, ``[role=button]``, or ``summary`` on the event's composed path (so a
-click in an open shadow tree is the inner element's, not its host's), else the
-innermost element; and a ``focusin`` when its target is an ``input``, ``select``,
-or ``textarea``. Each sends ``{"type": "interaction", "kind": "click" | "focus",
-"selector", "url", "time"}``, a click also ``inLogin``: a selector computed in the
-page or null, the document URL, ``Date.now()``, and whether the click was inside
-the login (on a ``label`` whose control is a field a person types into: a
-``select``, a ``textarea``, or an ``input`` of type ``text``, ``email``, ``tel``,
-``url``, ``search``, ``password``, or ``number``, or of no type, never a checkbox
-or a radio, which a CSS-only modal's opener can be; or on an element that, or
-one of whose :data:`LOGIN_CONTAINER_LEVELS` nearest ancestors short of
-``<body>``, holds a shown password input). The selector is
-``#id`` (spelled with ``CSS.escape``) when no other element of the document has
-that id, else ``tag[name="..."]`` when that picks one element, else the shortest
-path of at most :data:`STRUCTURAL_DEPTH` ``tag:nth-of-type(n)`` steps joined by
-`` > `` that picks one element, else null; an id or a name over
-:data:`MAX_SELECTOR_NAME` characters is not used, so such an element falls
-through to the next rule (a name, else the structural path, which spells only tag
-names and positions), and a selector that fails to compute is null, the event
-still sent. An element in a shadow tree has no
-selector the document can use. No text, no value, and no attribute beyond the id
-or name a selector spells is sent; at most :data:`MAX_INTERACTIONS_PER_SECOND`
-are sent in any one second, a sliding window on the monotonic
-``performance.now()``, so a page that synthesizes events cannot flood the
-recorder. A snapshot's payload carries no ``type``.
+The same script reports the user's clicks and focus moves, so the digest can find
+the click that opened a login (part 3 of #267), and with each click the page's
+state at it. Every trusted ``click`` is reported (one a script made with
+``element.click()`` is not), and a ``focusin`` when its target is an ``input``,
+``select``, or ``textarea``. Each sends ``{"type": "interaction", "kind": "click"
+| "focus", "selector", "url", "time"}``: a selector computed in the page or null,
+the document URL, and ``Date.now()``. A click also sends four booleans:
+``control``, whether a control is on the event's composed path (the nearest ``a``,
+``button``, ``input`` of type ``button``, ``submit``, ``image``, or ``reset``,
+``[role=button]``, or ``summary``, inside an open shadow tree too, whose selector
+is the click's; a click on anything else has a null selector); ``inLogin``,
+whether it was inside the login (on a ``label`` whose control is a field a person
+types into: a ``select``, a ``textarea``, or an ``input`` of type ``text``,
+``email``, ``tel``, ``url``, ``search``, ``password``, or ``number``, or of no
+type, never a checkbox or a radio, which a CSS-only modal's opener can be; or on
+an element that, or one of whose :data:`LOGIN_CONTAINER_LEVELS` nearest ancestors
+short of ``<body>``, holds a shown password input); ``inDialog``, whether an
+element on the composed path is a ``<dialog>``, has a ``role`` whose first token
+is ``dialog`` or ``alertdialog``, or has ``aria-modal="true"``; and ``pwShown``,
+whether any password input on the page (type ``password``, or marked
+``current-password``) is shown. Shown is ``checkVisibility`` with its opacity and
+visibility checks when the browser has it, else a layout box, a computed
+``visibility`` that is not ``hidden``, and no element from the input up with
+opacity 0. The selector is ``#id`` (spelled with ``CSS.escape``) when no other
+element of the document has that id, else ``tag[name="..."]`` when that picks one
+element, else the shortest path of at most :data:`STRUCTURAL_DEPTH`
+``tag:nth-of-type(n)`` steps joined by `` > `` that picks one element, else null;
+an id or a name over :data:`MAX_SELECTOR_NAME` characters is not used, so such an
+element falls through to the next rule (a name, else the structural path, which
+spells only tag names and positions), and a selector that fails to compute is
+null, the event still sent. An element in a shadow tree has no selector the
+document can use. No text, no value, and no attribute beyond the id or name a
+selector spells is sent; at most :data:`MAX_INTERACTIONS_PER_SECOND` are sent in
+any one second, a sliding window on the monotonic ``performance.now()``, so a page
+that synthesizes events cannot flood the recorder. A snapshot's payload carries no
+``type``.
 
 The script runs in its own world (``WORLD_NAME``), where the binding lives, so
 the page's scripts see neither; isolated worlds share the DOM, so its listener
@@ -146,30 +153,53 @@ LISTENER_SCRIPT = (
     "a, button, input[type=button i], input[type=submit i], input[type=image i], " +
     "input[type=reset i], [role=button], summary";
   const isElement = (node) => Boolean(node) && node.nodeType === 1;
-  // The clicked element: the nearest control on the event's composed path (inside
-  // an open shadow tree too, not only its host), else the innermost element.
-  const clicked = (event) => {
-    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+  const pathOf = (event) =>
+    typeof event.composedPath === "function" ? event.composedPath() : [event.target];
+  // The nearest control on the event's composed path (inside an open shadow tree
+  // too, not only its host), or null.
+  const controlOf = (path) => {
     for (const node of path) {
       if (isElement(node) && typeof node.matches === "function" && node.matches(controls)) {
         return node;
       }
     }
-    const inner = path.find(isElement);
-    return inner || (isElement(event.target) ? event.target : null);
+    return null;
   };
-  // A shown password input under *node*: a hidden modal's is not the login yet.
-  const holdsPassword = (node) => {
-    for (const input of node.querySelectorAll('input[type="password" i]')) {
-      if (typeof input.getClientRects !== "function" || input.getClientRects().length) {
-        return true;
-      }
+  // Whether an element on the path is a dialog: a <dialog>, a role whose first
+  // token is dialog or alertdialog, or aria-modal="true".
+  const inDialogOf = (path) =>
+    path.some((node) => {
+      if (!isElement(node) || typeof node.getAttribute !== "function") return false;
+      if (String(node.localName) === "dialog") return true;
+      const role = String(node.getAttribute("role") || "").trim().toLowerCase().split(/\\s+/)[0];
+      if (role === "dialog" || role === "alertdialog") return true;
+      return String(node.getAttribute("aria-modal") || "").trim().toLowerCase() === "true";
+    });
+  // Whether a person sees *el*: checkVisibility with opacity and visibility when
+  // the browser has it; else a layout box, visibility not hidden, and no element
+  // from it up with opacity 0.
+  const shown = (el) => {
+    if (typeof el.checkVisibility === "function") {
+      return el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
     }
-    return false;
+    if (typeof el.getClientRects === "function" && !el.getClientRects().length) return false;
+    if (typeof globalThis.getComputedStyle !== "function") return true;
+    if (globalThis.getComputedStyle(el).visibility === "hidden") return false;
+    for (let node = el; isElement(node); node = node.parentElement) {
+      if (parseFloat(globalThis.getComputedStyle(node).opacity) === 0) return false;
+    }
+    return true;
   };
-  // A click inside the login: on a label for a field, or on an element whose own
-  // container (it or an ancestor within __LOGIN_LEVELS__ levels, short of <body>)
-  // holds a shown password input as it is clicked.
+  // The password inputs under *root*: type password, or marked current-password.
+  const passwords = (root) => {
+    const found = Array.from(root.querySelectorAll('input[type="password" i]'));
+    for (const input of root.querySelectorAll("input[autocomplete]")) {
+      const tokens = String(input.getAttribute("autocomplete")).toLowerCase().split(/\\s+/);
+      if (tokens.includes("current-password") && !found.includes(input)) found.push(input);
+    }
+    return found;
+  };
+  const holdsPassword = (root) => passwords(root).some(shown);
   // A field a person types into: a label for a checkbox or a radio (a CSS-only
   // modal's toggle) may be the opener itself.
   const textLike = (control) => {
@@ -179,6 +209,9 @@ LISTENER_SCRIPT = (
     const type = String(control.getAttribute("type") || "").toLowerCase();
     return /^(|text|email|tel|url|search|password|number)$/.test(type);
   };
+  // A click inside the login: on a label for a field a person types into, or on an
+  // element whose own container (it or an ancestor within __LOGIN_LEVELS__ levels,
+  // short of <body>) holds a shown password input as it is clicked.
   const insideLogin = (element) => {
     const label = typeof element.closest === "function" ? element.closest("label") : null;
     const control = label ? label.control : null;
@@ -190,6 +223,14 @@ LISTENER_SCRIPT = (
       node = node.parentElement;
     }
     return false;
+  };
+  // Each part of a click's state is computed on its own: one that fails is false.
+  const attempt = (compute) => {
+    try {
+      return compute() === true;
+    } catch (error) {
+      return false;
+    }
   };
   const clock = () =>
     globalThis.performance && typeof globalThis.performance.now === "function"
@@ -203,11 +244,17 @@ LISTENER_SCRIPT = (
       const send = globalThis[name];
       if (typeof send !== "function") return;
       let element = null;
+      let path = null;
+      let control = null;
       let kind = null;
       if (event.type === "click") {
         // A click a script made (element.click()) is no person's.
         if (!event.isTrusted) return;
-        element = clicked(event);
+        path = pathOf(event);
+        control = controlOf(path);
+        // The element clicked: the control, else the innermost element (for the
+        // flags only: a click on no control has no selector).
+        element = control || path.find(isElement) || null;
         kind = "click";
       } else if (
         isElement(event.target) &&
@@ -221,9 +268,10 @@ LISTENER_SCRIPT = (
       while (recent.length && at - recent[0] >= 1000) recent.shift();
       if (recent.length >= __RATE__) return;
       recent.push(at);
+      const target = kind === "click" ? control : element;
       let selector = null;
       try {
-        selector = selectorOf(element);
+        selector = target ? selectorOf(target) : null;
       } catch (error) {
         selector = null;
       }
@@ -235,13 +283,10 @@ LISTENER_SCRIPT = (
         time: Date.now(),
       };
       if (kind === "click") {
-        let inLogin = false;
-        try {
-          inLogin = insideLogin(element);
-        } catch (error) {
-          inLogin = false;
-        }
-        payload.inLogin = inLogin;
+        payload.control = Boolean(control);
+        payload.inLogin = attempt(() => insideLogin(element));
+        payload.inDialog = attempt(() => inDialogOf(path));
+        payload.pwShown = attempt(() => holdsPassword(document));
       }
       send(JSON.stringify(payload));
     } catch (error) {

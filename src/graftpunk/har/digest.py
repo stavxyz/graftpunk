@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, get_args
+from typing import Any, Literal, NamedTuple, get_args
 from urllib.parse import parse_qs, unquote, unquote_plus, urljoin, urlparse, urlunparse
 
 from graftpunk.har.documents import (
@@ -1134,28 +1134,41 @@ def _formless_credit(
     return at, _form_key(form)
 
 
+class _Opener(NamedTuple):
+    """What the clicks before a form's credential post say opened it: the opener's
+    selector, or empty with the reason (``note``) the candidate click is not one;
+    ``clicked`` is the candidate's selector when it is safe to print."""
+
+    selector: str
+    note: str
+    clicked: str
+
+
 def _login_opener(
     form: LoginForm,
     interactions: tuple[LoginInteraction, ...],
     post_at: datetime,
     page_loads: list[datetime],
-) -> tuple[str, bool] | None:
+) -> _Opener | None:
     """The click that opened *form*, from the *interactions* recorded before its
-    credential post (sent at *post_at*), as ``(selector, unresolved)``; None when no
-    click qualifies.
+    credential post (sent at *post_at*), decided from the page's state at that click;
+    None when no click is a candidate.
 
-    The opener is the last click before the first focus on one of the form's field
+    The candidate is the last click before the first focus on one of the form's field
     selectors (the recorded ones and their unscoped forms, compared by
     :func:`graftpunk.har.selectors.selector_keys`), leaving out a click the page saw
-    inside the login (``LoginInteraction.in_login``: a field's label, or a container
-    holding a shown password input), when its selector picks none of the form's
-    fields and not its submit, and no navigation of the run (*page_loads*, see
-    :func:`_is_page_load`) started between the click and that focus, both ends
-    included: a click that loaded a page is a link to the form's page, not an
-    opener. A click the recording kept no selector for, one over
-    ``MAX_SELECTOR_LENGTH`` characters, or one whose selector holds an account value
-    is ``("", True)``: there was an opener and nothing names it. A focus whose
-    selector is over that length is not read."""
+    inside the login (``LoginInteraction.in_login``). There is none when that click's
+    selector picks one of the form's fields or its submit, or a navigation of the run
+    (*page_loads*, see :func:`_is_page_load`) started between the click and that
+    focus, both ends included: a click that loaded a page is a link to the form's
+    page. The candidate is the opener only when it was on a control and has a usable
+    selector (at most ``MAX_SELECTOR_LENGTH`` characters, holding no account value),
+    was not inside a dialog, and no password input was shown on the page as it was
+    clicked; else its note says the first that failed, in this order: ``pw_shown`` (a
+    password already on screen: the click did not open the login, as on a consent
+    banner or beside an inline sign-up), ``in_dialog`` (the login may take more than
+    one click), ``not_control``, and ``no_selector``. A focus whose selector is over
+    that length is not read."""
     roles: set[tuple[str, ...]] = set()
     for selector in (*form.fields.values(), *form.unscoped_fields.values()):
         roles |= selector_keys(selector)
@@ -1188,9 +1201,16 @@ def _login_opener(
     focused_at = post_at - timedelta(milliseconds=interactions[first_focus].ms_before)
     if any(clicked_at <= loaded <= focused_at for loaded in page_loads):
         return None
-    if clicked is None or selector_holds_an_id(clicked):
-        return "", True
-    return clicked, False
+    printable = clicked if clicked is not None and not selector_holds_an_id(clicked) else ""
+    for note, failed in (
+        ("pw_shown", click.pw_shown),
+        ("in_dialog", click.in_dialog),
+        ("not_control", not click.control),
+        ("no_selector", not printable),
+    ):
+        if failed:
+            return _Opener("", note, printable)
+    return _Opener(printable, "", printable)
 
 
 def _is_page_load(entry: HAREntry, method: str, content_type: str) -> bool:
@@ -2171,16 +2191,16 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     )
     # Each form on a page a credential post was credited to takes its opener from
     # the first such post that gives one (_login_opener).
-    openers: dict[tuple[object, ...], tuple[str, bool]] = {}
+    openers: dict[tuple[object, ...], _Opener] = {}
     for (post_at, interactions), post in zip(post_interactions, credential_posts, strict=True):
         if post.page_step is None or not interactions:
             continue
         for form in forms_on_page.get(post.page_step, []):
-            # Only a login read from a DOM snapshot or from a dialog can be behind a
-            # click: a real <form> in the HTML the page served is the login as it
-            # loads, and a click before it (a consent banner) need not come back at
-            # replay.
-            if not (form.from_snapshot or form.formless):
+            # Only a login a click can open: a formless group (a dialog's, or a
+            # snapshot's), or a real <form> inside a dialog-marked element. Any other
+            # real <form> is the login as its page shows it, and a click before it
+            # (a consent banner) need not come back at replay.
+            if not (form.formless or form.in_dialog):
                 continue
             key = _form_key(form)
             found = (
@@ -2189,7 +2209,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             if found is not None:
                 openers[key] = found
     ranked_forms = [
-        replace(form, opener=found[0], opener_unresolved=found[1])
+        replace(form, opener=found.selector, opener_note=found.note, opener_clicked=found.clicked)
         if (found := openers.get(_form_key(form))) is not None
         else form
         for form in ranked_forms

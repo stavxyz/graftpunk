@@ -129,13 +129,22 @@ class LoginForm:
     # The names of the form's controls that are not hidden inputs, whatever the name
     # holds (hidden lists only names that hold no account value). Internal.
     visible_names: tuple[str, ...] = field(default=(), metadata={"internal": True})
+    # The password input of a real <form> sits inside a dialog-marked element (a
+    # <dialog>, a role whose first token is dialog or alertdialog, or aria-modal
+    # "true"), as a formless dialog group's controls do: such a form can be behind
+    # a click. Internal.
+    in_dialog: bool = field(default=False, metadata={"internal": True})
     # The selector of the click that opened this form, read from what gp observe
     # recorded before the credential post (graftpunk.har.digest, #267); empty when no
     # click qualified. Set by the digest, never from markup. Internal.
     opener: str = field(default="", metadata={"internal": True})
-    # A click qualified but the recording kept no selector for it (none picked it
-    # alone, or it held an account value). Set by the digest. Internal.
-    opener_unresolved: bool = field(default=False, metadata={"internal": True})
+    # Why the last click before the form's first field is not its opener, when one
+    # was recorded: "pw_shown", "in_dialog", "not_control", or "no_selector"
+    # (graftpunk.har.digest._login_opener); empty otherwise. Internal.
+    opener_note: str = field(default="", metadata={"internal": True})
+    # That click's selector when it is safe to print (bounded, holding no account
+    # value), else empty. Internal.
+    opener_clicked: str = field(default="", metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -1208,7 +1217,10 @@ def extract_login_forms(
             element_id=raw.element_id,
         )
         if form is not None:
-            forms.append(form)
+            in_dialog = any(
+                control.dialog is not None for control in raw.inputs if _is_password(control)
+            )
+            forms.append(replace(form, in_dialog=in_dialog) if in_dialog else form)
     dialog_groups = _formless_login_groups(parsed)
     block_groups = _block_login_groups(parsed) if snapshot else []
     for group, block_bound in [
@@ -1230,7 +1242,9 @@ def extract_login_forms(
         )
         if form is not None:
             forms.append(
-                replace(form, plain_block=True, block_bound=block_bound) if block_bound else form
+                replace(form, plain_block=True, block_bound=block_bound)
+                if block_bound
+                else replace(form, in_dialog=True)
             )
     if snapshot:
         return tuple(replace(form, from_snapshot=True) for form in forms)

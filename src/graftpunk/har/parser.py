@@ -44,6 +44,12 @@ class LoginInteraction:
     selector: str | None
     ms_before: float
     in_login: bool = False
+    # A click's state as the page saw it: on a control (a link, a button, a
+    # button-like input, [role=button], or summary), inside a dialog, and with a
+    # password input shown on the page. Each True only when the HAR says true.
+    control: bool = False
+    in_dialog: bool = False
+    pw_shown: bool = False
 
 
 @dataclass
@@ -348,6 +354,9 @@ def _login_interactions(raw: Any) -> tuple[LoginInteraction, ...]:
                 bounded_selector(selector),
                 float(before),
                 in_login=item.get("inLogin") is True,
+                control=item.get("control") is True,
+                in_dialog=item.get("inDialog") is True,
+                pw_shown=item.get("pwShown") is True,
             )
         )
     return tuple(sorted(kept, key=lambda each: -each.ms_before))

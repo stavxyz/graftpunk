@@ -5979,12 +5979,30 @@ _OPENER_SELENIUM_COMMENT = (
     "by a fixed delay instead; raise it if the form takes longer to appear, as one whose "
     "markup the page fetches on the click can."
 )
-_OPENER_UNRESOLVED_GP_FILL = (
-    "GP-FILL: a click opened this form before its first field was focused, and the "
-    "recording kept no selector for what was clicked (nothing picked it alone on the "
-    "page, or its id or name held an account value); add a click-only LoginStep for "
-    "it before this one."
-)
+# Why a click before the form's first field was not made its opener step.
+_OPENER_REASONS = {
+    "pw_shown": "a password input was already shown when it was clicked, so it did not "
+    "open this login",
+    "in_dialog": "it was inside a dialog, and the login may take more than one click",
+    "not_control": "it was not on a button or a link",
+    "no_selector": "the recording kept no usable selector for it (none picked it alone "
+    "on the page, it sits in a shadow tree, its selector was too long, or its id or "
+    "name held an account value)",
+}
+
+
+def _opener_note(reason: str, clicked: str = "") -> str:
+    on = f" (on {clicked})" if clicked else ""
+    return (
+        f"GP-FILL: a click before this form's first field may have opened it{on}, but it "
+        f"was not made a step: {_OPENER_REASONS[reason]}; add a click-only LoginStep for "
+        "it before this one if the login needs one."
+    )
+
+
+# The state the listener sends with a click: a control, not in a dialog, no password
+# shown; a test step's fourth item overrides it.
+_CLICK = {"control": True, "inDialog": False, "pwShown": False}
 
 
 class TestTheClickThatOpensTheLogin(_DialogDigestCase):
@@ -6008,7 +6026,7 @@ class TestTheClickThatOpensTheLogin(_DialogDigestCase):
     def _entries(
         self,
         run: Path,
-        steps: tuple[tuple[str, str | None, int], ...] = _OPENED,
+        steps: tuple[tuple, ...] = _OPENED,
         *,
         snapshot: bool = True,
         between: list[dict] | None = None,
@@ -6021,8 +6039,13 @@ class TestTheClickThatOpensTheLogin(_DialogDigestCase):
             post["request"]["_domSnapshot"] = "snapshots/9.1.html"
             post["request"]["_domSnapshotUrl"] = f"{self._HOST}/"
         post["request"]["_loginInteractions"] = [
-            {"kind": kind, "selector": selector, "msBefore": before}
-            for kind, selector, before in steps
+            {
+                "kind": step[0],
+                "selector": step[1],
+                "msBefore": step[2],
+                **((_CLICK | (step[3] if len(step) > 3 else {})) if step[0] == "click" else {}),
+            }
+            for step in steps
         ]
         return [self._get("/", self._SHELL, started=self._PAGE_AT), *(between or []), post]
 
@@ -6052,7 +6075,7 @@ class TestTheClickThatOpensTheLogin(_DialogDigestCase):
         result = self._run(tmp_path, self._entries(tmp_path))
         (form,) = result.login_forms
         assert form.opener == "#signin"
-        assert not form.opener_unresolved
+        assert form.opener_note == ""
         assert self._projected(result) == ["#signin"]
 
     def test_a_focus_elsewhere_first_does_not_count(self, tmp_path: Path) -> None:
@@ -6072,7 +6095,7 @@ class TestTheClickThatOpensTheLogin(_DialogDigestCase):
         steps = (("click", "#signin", 5000), ("click", "#m-go", 4000), *self._OPENED[1:])
         form = self._form(tmp_path, self._entries(tmp_path, steps))
         assert form.opener == ""
-        assert not form.opener_unresolved
+        assert form.opener_note == ""
 
     def test_a_click_on_one_of_the_form_s_fields_is_no_opener(self, tmp_path: Path) -> None:
         steps = (("click", '[id="m-email"]', 4000), *self._OPENED[1:])
@@ -6106,7 +6129,7 @@ class TestTheClickThatOpensTheLogin(_DialogDigestCase):
         """The header's href="#" link is in the markup; it is never taken from there."""
         result = self._run(tmp_path, self._entries(tmp_path, ()))
         (form,) = result.login_forms
-        assert (form.opener, form.opener_unresolved) == ("", False)
+        assert (form.opener, form.opener_note) == ("", "")
         assert self._projected(result) == [None]
         assert _SNAPSHOT_GP_FILL in _comment_text(self._plugin(result))
 
@@ -6114,11 +6137,11 @@ class TestTheClickThatOpensTheLogin(_DialogDigestCase):
         steps = (("click", None, 5000), *self._OPENED[1:])
         result = self._run(tmp_path, self._entries(tmp_path, steps))
         (form,) = result.login_forms
-        assert (form.opener, form.opener_unresolved) == ("", True)
+        assert (form.opener, form.opener_note) == ("", "no_selector")
         assert self._projected(result) == [None]
         code = self._plugin(result)
         comments = _comment_text(code)
-        assert _OPENER_UNRESOLVED_GP_FILL in comments
+        assert _opener_note("no_selector") in comments
         assert _SNAPSHOT_GP_FILL not in comments
         assert code.count("LoginStep(") == 1
 
@@ -6126,7 +6149,7 @@ class TestTheClickThatOpensTheLogin(_DialogDigestCase):
         """A hand-edited HAR: the recorder would have stored no selector."""
         steps = (("click", "#user_40912873", 5000), *self._OPENED[1:])
         form = self._form(tmp_path, self._entries(tmp_path, steps))
-        assert (form.opener, form.opener_unresolved) == ("", True)
+        assert (form.opener, form.opener_note) == ("", "no_selector")
 
     def test_a_form_from_recorded_html_takes_its_opener_too(self, tmp_path: Path) -> None:
         """A hidden modal shipped in the page's HTML, opened by a click."""
@@ -6208,7 +6231,7 @@ class TestTheOpenerReviewRound1(TestTheClickThatOpensTheLogin):
         steps = (("click", "#email-label", 4000), *self._OPENED[1:])
         entries = self._flag(self._entries(tmp_path, steps), 0)
         form = self._form(tmp_path, entries)
-        assert (form.opener, form.opener_unresolved) == ("", False)
+        assert (form.opener, form.opener_note) == ("", "")
 
     def test_an_html_fragment_fetched_on_the_click_is_no_page_load(self, tmp_path: Path) -> None:
         fragment = self._load("06.000", kind="XHR")
@@ -6267,13 +6290,13 @@ class TestTheOpenerReviewRound1(TestTheClickThatOpensTheLogin):
             started=self._POST_AT,
         )
         post["request"]["_loginInteractions"] = [
-            {"kind": "click", "selector": "#accept-cookies", "msBefore": 5000},
+            {"kind": "click", "selector": "#accept-cookies", "msBefore": 5000, **_CLICK},
             {"kind": "focus", "selector": 'input[name="username"]', "msBefore": 3000},
         ]
         result = self._run(tmp_path, [self._get("/login", self._REAL, started=self._PAGE_AT), post])
         (form,) = result.login_forms
         assert not form.formless
-        assert (form.opener, form.opener_unresolved) == ("", False)
+        assert (form.opener, form.opener_note) == ("", "")
         assert self._plugin_on(result, "nodriver").count("LoginStep(") == 1
 
 
@@ -6298,44 +6321,205 @@ class TestLoginOpenerRule:
     def test_a_field_reached_only_through_its_unscoped_selector(self) -> None:
         form = self._form(unscoped_fields={"username": "#m-email"})
         steps = (
-            LoginInteraction("click", "#signin", 5000.0),
+            LoginInteraction("click", "#signin", 5000.0, control=True),
             LoginInteraction("focus", "#m-email", 3000.0),
         )
-        assert _login_opener(form, steps, self._AT, []) == ("#signin", False)
+        assert _login_opener(form, steps, self._AT, [])[:2] == ("#signin", "")
         assert _login_opener(self._form(), steps, self._AT, []) is None
 
-    def test_a_selector_over_256_characters_is_unresolved_unread(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from graftpunk.har import selectors
+    def test_a_megabyte_selector_is_unresolved_at_once(self) -> None:
+        """Before the cap, a long id took the account-value check minutes."""
+        import time
 
-        seen: list[int] = []
-        real = selectors.holds_an_id
-
-        def counting(text: str) -> bool:
-            seen.append(len(text))
-            return real(text)
-
-        monkeypatch.setattr(selectors, "holds_an_id", counting)
         form = self._form(fields={"username": "#m-email"})
-        huge = "#" + "a" * 300
+        huge = "#" + "a" * 1_000_000
+        started = time.perf_counter()
         steps = (
-            LoginInteraction("click", huge, 5000.0),
+            LoginInteraction("click", huge, 5000.0, control=True),
             LoginInteraction("focus", "#m-email", 3000.0),
         )
-        assert _login_opener(form, steps, self._AT, []) == ("", True)
+        assert _login_opener(form, steps, self._AT, [])[:2] == ("", "no_selector")
         long_focus = (
-            LoginInteraction("click", "#signin", 5000.0),
-            LoginInteraction("focus", "#m-email" + " " * 300, 3000.0),
+            LoginInteraction("click", "#signin", 5000.0, control=True),
+            LoginInteraction("focus", "#m-email" + " " * 1_000_000, 3000.0),
         )
         assert _login_opener(form, long_focus, self._AT, []) is None
-        assert all(length <= 256 for length in seen)
+        assert time.perf_counter() - started < 1
 
     def test_an_escaped_id_holding_an_account_value_is_unresolved(self) -> None:
         form = self._form(fields={"username": "#m-email"})
         escaped = "#\\34 \\30 \\39 \\31 \\32 \\38 \\37 \\33"
         steps = (
-            LoginInteraction("click", escaped, 5000.0),
+            LoginInteraction("click", escaped, 5000.0, control=True),
             LoginInteraction("focus", "#m-email", 3000.0),
         )
-        assert _login_opener(form, steps, self._AT, []) == ("", True)
+        assert _login_opener(form, steps, self._AT, [])[:2] == ("", "no_selector")
+
+
+class TestTheOpenerFromTheClickState(TestTheClickThatOpensTheLogin):
+    """Review round 2 of #267 part 3: the opener is decided from the page's state at
+    the click (control, inDialog, pwShown), for an eligible form only."""
+
+    _IN_DIALOG_FORM = (
+        '<form><input type="email" id="m-email" name="email">'
+        '<input type="password" id="m-pw" name="password">'
+        '<button type="submit" id="m-go">Sign in</button></form>'
+    )
+    _HEADER = '<header><a href="#" id="signin">Sign in</a></header>'
+
+    def _served(self, tmp_path: Path, wrapper: str, steps: tuple = ()) -> Any:
+        """A run whose served page holds the login form inside *wrapper* (a format
+        string with one {} for the form), with no snapshot."""
+        entries = self._entries(tmp_path, steps or self._OPENED, snapshot=False)
+        page = self._HEADER + wrapper.format(self._IN_DIALOG_FORM)
+        entries[0] = self._get("/", page, started=self._PAGE_AT)
+        return self._run(tmp_path, entries)
+
+    def _snapshotted(self, tmp_path: Path, html: str, steps: tuple = ()) -> Any:
+        entries = self._entries(tmp_path, steps or self._OPENED)
+        (tmp_path / "snapshots" / "9.1.html").write_text(
+            f"<html><body>{self._HEADER}{html}</body></html>"
+        )
+        return self._run(tmp_path, entries)
+
+    def _comments(self, result: Any) -> str:
+        return _comment_text(self._plugin(result))
+
+    @pytest.mark.parametrize(
+        "wrapper",
+        [
+            '<div role="dialog" style="display:none">{}</div>',
+            "<dialog>{}</dialog>",
+            '<div class="modal" aria-modal="true" hidden>{}</div>',
+        ],
+    )
+    def test_a_served_form_inside_a_dialog_takes_its_opener(
+        self, tmp_path: Path, wrapper: str
+    ) -> None:
+        """The design's case A: a hidden modal's real form in the served HTML."""
+        result = self._served(tmp_path, wrapper)
+        (form,) = result.login_forms
+        assert not form.formless
+        assert form.in_dialog
+        assert form.opener == "#signin"
+        assert self._plugin(result).count("LoginStep(") == 2
+
+    def test_a_served_form_hidden_but_not_marked_a_dialog_gets_none(self, tmp_path: Path) -> None:
+        result = self._served(tmp_path, '<div class="modal" hidden>{}</div>')
+        (form,) = result.login_forms
+        assert (form.in_dialog, form.opener, form.opener_note) == (False, "", "")
+        assert self._plugin(result).count("LoginStep(") == 1
+
+    def test_a_snapshot_form_inside_a_dialog_takes_its_opener(self, tmp_path: Path) -> None:
+        result = self._snapshotted(tmp_path, f'<div role="dialog">{self._IN_DIALOG_FORM}</div>')
+        (form,) = result.login_forms
+        assert (form.from_snapshot, form.formless, form.in_dialog) == (True, False, True)
+        assert form.opener == "#signin"
+
+    def test_a_snapshot_form_outside_a_dialog_gets_none(self, tmp_path: Path) -> None:
+        """A script-rendered login page clicked through a consent banner: its real form
+        is the page itself, so no click opened it."""
+        steps = (
+            ("click", "#accept-cookies", 5000, {"pwShown": True}),
+            *self._OPENED[1:],
+        )
+        result = self._snapshotted(tmp_path, f"<main>{self._IN_DIALOG_FORM}</main>", steps)
+        (form,) = result.login_forms
+        assert (form.opener, form.opener_note) == ("", "")
+        comments = self._comments(result)
+        assert _SNAPSHOT_GP_FILL in comments
+        assert "accept-cookies" not in comments
+        assert self._plugin(result).count("LoginStep(") == 1
+
+    def test_a_click_inside_a_dialog_is_named_and_not_a_step(self, tmp_path: Path) -> None:
+        """Sign in, then "Continue with email" in the modal: the second click alone
+        cannot run, so neither is a step."""
+        steps = (
+            ("click", "#signin", 6000),
+            ("click", "#use-email", 5000, {"inDialog": True}),
+            *self._OPENED[1:],
+        )
+        result = self._run(tmp_path, self._entries(tmp_path, steps))
+        (form,) = result.login_forms
+        assert (form.opener, form.opener_note, form.opener_clicked) == (
+            "",
+            "in_dialog",
+            "#use-email",
+        )
+        comments = self._comments(result)
+        assert _opener_note("in_dialog", "#use-email") in comments
+        assert _SNAPSHOT_GP_FILL not in comments
+        assert self._plugin(result).count("LoginStep(") == 1
+
+    def test_a_click_on_a_modal_s_heading_is_named_without_a_selector(self, tmp_path: Path) -> None:
+        steps = (
+            ("click", "#signin", 6000),
+            ("click", None, 5000, {"control": False, "inDialog": True}),
+            *self._OPENED[1:],
+        )
+        result = self._run(tmp_path, self._entries(tmp_path, steps))
+        assert _opener_note("in_dialog") in self._comments(result)
+
+    def test_a_click_while_a_password_was_shown_did_not_open_the_login(
+        self, tmp_path: Path
+    ) -> None:
+        """An inline sign-up's password beside the header: the real opener is flagged
+        inside the login, and the cookie click before it is no opener either."""
+        steps = (
+            ("click", "#accept", 7000, {"pwShown": True}),
+            ("click", "#signin", 6000, {"pwShown": True, "inLogin": True}),
+            *self._OPENED[1:],
+        )
+        result = self._run(tmp_path, self._entries(tmp_path, steps))
+        (form,) = result.login_forms
+        assert (form.opener, form.opener_note) == ("", "pw_shown")
+        assert _opener_note("pw_shown", "#accept") in self._comments(result)
+
+    def test_a_password_shown_outranks_the_other_reasons(self, tmp_path: Path) -> None:
+        steps = (
+            ("click", None, 5000, {"control": False, "inDialog": True, "pwShown": True}),
+            *self._OPENED[1:],
+        )
+        assert self._form(tmp_path, self._entries(tmp_path, steps)).opener_note == "pw_shown"
+
+    def test_a_click_on_no_control_is_named_as_such(self, tmp_path: Path) -> None:
+        steps = (("click", None, 5000, {"control": False}), *self._OPENED[1:])
+        result = self._run(tmp_path, self._entries(tmp_path, steps))
+        assert result.login_forms[0].opener_note == "not_control"
+        assert _opener_note("not_control") in self._comments(result)
+
+    def test_an_empty_selector_is_no_usable_selector(self, tmp_path: Path) -> None:
+        steps = (("click", "", 5000), *self._OPENED[1:])
+        assert self._form(tmp_path, self._entries(tmp_path, steps)).opener_note == "no_selector"
+
+    def test_a_selector_holding_an_account_value_is_never_printed(self, tmp_path: Path) -> None:
+        steps = (("click", "#user_40912873", 5000, {"inDialog": True}), *self._OPENED[1:])
+        result = self._run(tmp_path, self._entries(tmp_path, steps))
+        assert result.login_forms[0].opener_note == "in_dialog"
+        assert "40912873" not in self._plugin(result)
+
+    def test_a_megabyte_selector_in_a_har_is_unresolved_at_once(self, tmp_path: Path) -> None:
+        import time
+
+        steps = (("click", "#" + "a" * 1_000_000, 5000), *self._OPENED[1:])
+        entries = self._entries(tmp_path, steps)
+        started = time.perf_counter()
+        (form,) = self._run(tmp_path, entries).login_forms
+        assert time.perf_counter() - started < 5
+        assert (form.opener, form.opener_note) == ("", "no_selector")
+
+    @pytest.mark.parametrize(
+        ("headers", "opener"),
+        [
+            ({"Sec-Fetch-Dest": "document"}, ""),
+            ({"Sec-Fetch-Dest": "iframe"}, ""),
+            ({"Sec-Fetch-Mode": " Navigate "}, ""),
+            ({"Sec-Fetch-Dest": "empty"}, "#signin"),
+        ],
+    )
+    def test_sec_fetch_dest_and_mode_decide_without_a_type(
+        self, tmp_path: Path, headers: dict, opener: str
+    ) -> None:
+        loaded = self._get("/account", "<main>a</main>", started="2026-09-10T10:00:06.000Z")
+        loaded["request"]["headers"].extend({"name": k, "value": v} for k, v in headers.items())
+        assert self._form(tmp_path, self._entries(tmp_path, between=[loaded])).opener == opener

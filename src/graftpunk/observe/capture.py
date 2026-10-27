@@ -109,6 +109,11 @@ class _Interaction(NamedTuple):
     selector: str | None
     time_ms: float
     in_login: bool = False
+    # A click's state at the click (graftpunk.observe.dom_listener): on a control,
+    # inside a dialog, a password input shown on the page.
+    control: bool = False
+    in_dialog: bool = False
+    pw_shown: bool = False
 
 
 class _ListenerSnapshot(NamedTuple):
@@ -2103,6 +2108,10 @@ class NodriverCaptureBackend:
                 "selector": selector,
                 "msBefore": round(before),
             }
+            if each.kind == "click":
+                stored["control"] = each.control
+                stored["inDialog"] = each.in_dialog
+                stored["pwShown"] = each.pw_shown
             if each.in_login:
                 stored["inLogin"] = True
             kept.append(stored)
@@ -2203,7 +2212,8 @@ class NodriverCaptureBackend:
         nor null, a URL with no origin, a time that is not a finite number) raises
         ValueError, which the caller logs and drops. A selector over
         ``MAX_STORED_SELECTOR`` characters is kept as None, and ``inLogin`` counts
-        only when it is ``true``."""
+        only when it is ``true``. A click whose ``control``, ``inDialog``, or
+        ``pwShown`` is not a boolean is of another shape too."""
         kind, selector, url, time_ms = (
             payload.get("kind"),
             payload.get("selector"),
@@ -2220,6 +2230,9 @@ class NodriverCaptureBackend:
             or not math.isfinite(time_ms)
         ):
             raise ValueError("not a listener interaction")
+        state = [payload.get(key) for key in ("control", "inDialog", "pwShown")]
+        if kind == "click" and not all(isinstance(value, bool) for value in state):
+            raise ValueError("not a listener click")
         events = self._interactions.pop(origin, None)
         if events is None:
             events = deque(maxlen=INTERACTION_BUFFER)
@@ -2233,6 +2246,9 @@ class NodriverCaptureBackend:
                 bounded_selector(selector),
                 float(time_ms),
                 in_login=payload.get("inLogin") is True,
+                control=state[0] is True,
+                in_dialog=state[1] is True,
+                pw_shown=state[2] is True,
             )
         )
 

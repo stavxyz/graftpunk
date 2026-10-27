@@ -661,6 +661,19 @@ def _login_page_url(form: LoginForm, base_url: str) -> str | None:
 _OPENER_DELAY_S = 2.0
 
 
+# Why the last click before a form's first field was not made its opener step, by
+# LoginForm.opener_note (graftpunk.har.digest._login_opener).
+_OPENER_REASONS = {
+    "pw_shown": "a password input was already shown when it was clicked, so it did not "
+    "open this login",
+    "in_dialog": "it was inside a dialog, and the login may take more than one click",
+    "not_control": "it was not on a button or a link",
+    "no_selector": "the recording kept no usable selector for it (none picked it alone on "
+    "the page, it sits in a shadow tree, its selector was too long, or its id or name "
+    "held an account value)",
+}
+
+
 def _first_field_selector(form: LoginForm) -> str:
     """The printable selector of *form*'s first field, in the form's own role order
     (the username before the password), for the step after its opener to wait for;
@@ -781,13 +794,13 @@ def _render_login_step(form: LoginForm, *, indent: int, wait_for: str = "") -> l
             )
             text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand."
         lines.extend(wrapped_comment_lines(text, indent=indent))
-    if form.opener_unresolved:
+    if form.opener_note:
+        on = f" (on {form.opener_clicked})" if form.opener_clicked else ""
         lines.extend(
             wrapped_comment_lines(
-                f"{GP_FILL_MARKER}: a click opened this form before its first field was "
-                "focused, and the recording kept no selector for what was clicked (nothing "
-                "picked it alone on the page, or its id or name held an account value); add a "
-                "click-only LoginStep for it before this one.",
+                f"{GP_FILL_MARKER}: a click before this form's first field may have opened "
+                f"it{on}, but it was not made a step: {_OPENER_REASONS[form.opener_note]}; add "
+                "a click-only LoginStep for it before this one if the login needs one.",
                 indent=indent,
             )
         )

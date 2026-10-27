@@ -997,3 +997,34 @@ class TestDomSnapshotFields:
         assert entry.request.resource_type == "Document"
         (other,) = parse_har_file(self._har(tmp_path, {"_resourceType": 7})).entries
         assert other.request.resource_type is None
+
+    def test_a_click_s_state_is_read_only_when_true(self, tmp_path: Path) -> None:
+        """Review round 2: control, inDialog, and pwShown, each a boolean."""
+        har = self._har(
+            tmp_path,
+            {
+                "_loginInteractions": [
+                    {
+                        "kind": "click",
+                        "selector": "#a",
+                        "msBefore": 30,
+                        "control": True,
+                        "inDialog": True,
+                        "pwShown": True,
+                    },
+                    {
+                        "kind": "click",
+                        "selector": "",
+                        "msBefore": 20,
+                        "control": "yes",
+                        "inDialog": 1,
+                        "pwShown": "true",
+                    },
+                ]
+            },
+        )
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.login_interactions == (
+            LoginInteraction("click", "#a", 30.0, control=True, in_dialog=True, pw_shown=True),
+            LoginInteraction("click", None, 20.0),
+        )

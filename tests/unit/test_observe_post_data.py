@@ -2909,6 +2909,10 @@ class TestSnapshotFromTheIsolatedWorldListener:
         assert summary["failed"] == 1
 
 
+# The state the listener sends with a click, as the recorder stores it.
+_CLICK_STATE = {"control": True, "inDialog": False, "pwShown": False}
+
+
 def _interaction(
     kind: str, selector: str | None, *, time_ms: float, url: str = LOGIN, **extra: Any
 ) -> Any:
@@ -2920,6 +2924,9 @@ def _interaction(
         "selector": selector,
         "url": url,
         "time": time_ms,
+        # A click carries the page's state at it (review round 2): a control, not in
+        # a dialog, no password shown, unless the test says otherwise.
+        **(_CLICK_STATE if kind == "click" else {}),
         **extra,
     }
     return parse_json_event(
@@ -2975,10 +2982,10 @@ class TestLoginInteractionsAtTheCredentialPost:
     async def test_the_events_before_the_post_are_stored_oldest_first(self, tmp_path: Path) -> None:
         backend = await self._run(tmp_path, self._events())
         assert self._stored(backend) == [
-            {"kind": "click", "selector": "#signin-link", "msBefore": 5000},
+            {"kind": "click", "selector": "#signin-link", "msBefore": 5000, **_CLICK_STATE},
             {"kind": "focus", "selector": "#m-email", "msBefore": 3000},
             {"kind": "focus", "selector": 'input[name="password"]', "msBefore": 2000},
-            {"kind": "click", "selector": "#m-go", "msBefore": 40},
+            {"kind": "click", "selector": "#m-go", "msBefore": 40, **_CLICK_STATE},
         ]
 
     @pytest.mark.asyncio
@@ -3067,9 +3074,9 @@ class TestLoginInteractionsAtTheCredentialPost:
             ],
         )
         assert self._stored(backend) == [
-            {"kind": "click", "selector": None, "msBefore": 900},
+            {"kind": "click", "selector": None, "msBefore": 900, **_CLICK_STATE},
             {"kind": "focus", "selector": None, "msBefore": 800},
-            {"kind": "click", "selector": "#signin-link", "msBefore": 700},
+            {"kind": "click", "selector": "#signin-link", "msBefore": 700, **_CLICK_STATE},
         ]
         stored = json.dumps(self._stored(backend))
         assert "40912873" not in stored
@@ -3163,7 +3170,7 @@ class TestLoginInteractionsAtTheCredentialPost:
 
         (entry,) = parse_har_file(storage.run_dir / "network.har").entries
         assert entry.request.login_interactions[0] == LoginInteraction(
-            "click", "#signin-link", 5000.0
+            "click", "#signin-link", 5000.0, control=True
         )
         assert len(entry.request.login_interactions) == 4
 
@@ -3193,38 +3200,89 @@ class TestLoginInteractionsReviewRound1:
             ],
         )
         assert stored == [
-            {"kind": "click", "selector": "#signin-link", "msBefore": 900},
-            {"kind": "click", "selector": "#email-label", "msBefore": 800, "inLogin": True},
+            {"kind": "click", "selector": "#signin-link", "msBefore": 900, **_CLICK_STATE},
+            {
+                "kind": "click",
+                "selector": "#email-label",
+                "msBefore": 800,
+                "inLogin": True,
+                **_CLICK_STATE,
+            },
             {"kind": "focus", "selector": "#m-email", "msBefore": 700},
         ]
 
     @pytest.mark.asyncio
-    async def test_a_selector_over_256_characters_is_stored_as_none_unread(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    async def test_a_selector_over_256_characters_is_stored_as_none_at_once(
+        self, tmp_path: Path
     ) -> None:
-        from graftpunk.har import selectors
+        """A megabyte id took the account-value check minutes before the cap."""
+        import time
+
         from graftpunk.observe.capture import MAX_STORED_SELECTOR
 
         assert MAX_STORED_SELECTOR == 256
-        seen: list[int] = []
-        real = selectors.holds_an_id
-
-        def counting(text: str) -> bool:
-            seen.append(len(text))
-            return real(text)
-
-        monkeypatch.setattr(selectors, "holds_an_id", counting)
         longest = "#" + "a" * 255
+        started = time.perf_counter()
         stored = await self._stored(
             tmp_path,
             [
-                _interaction("click", "#" + "a" * 256, time_ms=_POST_MS - 900),
+                _interaction("click", "#" + "a" * 1_000_000, time_ms=_POST_MS - 900),
+                _interaction("click", "#" + "a" * 256, time_ms=_POST_MS - 850),
                 _interaction("click", longest, time_ms=_POST_MS - 800),
             ],
         )
-        assert [each["selector"] for each in stored] == [None, longest]
-        assert seen
-        assert max(seen) <= 256
+        assert time.perf_counter() - started < 5
+        assert [each["selector"] for each in stored] == [None, None, longest]
+
+    @pytest.mark.asyncio
+    async def test_a_click_s_state_is_stored_as_sent(self, tmp_path: Path) -> None:
+        stored = await self._stored(
+            tmp_path,
+            [
+                _interaction(
+                    "click",
+                    None,
+                    time_ms=_POST_MS - 900,
+                    control=False,
+                    inDialog=True,
+                    pwShown=True,
+                ),
+                _interaction("focus", "#m-email", time_ms=_POST_MS - 800),
+            ],
+        )
+        assert stored == [
+            {
+                "kind": "click",
+                "selector": None,
+                "msBefore": 900,
+                "control": False,
+                "inDialog": True,
+                "pwShown": True,
+            },
+            {"kind": "focus", "selector": "#m-email", "msBefore": 800},
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["control", "inDialog", "pwShown"])
+    async def test_a_click_whose_state_is_not_boolean_is_dropped(
+        self, tmp_path: Path, field: str
+    ) -> None:
+        stored = await self._stored(
+            tmp_path,
+            [
+                _interaction("click", "#bad", time_ms=_POST_MS - 900, **{field: "yes"}),
+                _interaction("click", "#missing", time_ms=_POST_MS - 850, **{field: None}),
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 800),
+            ],
+        )
+        assert [each["selector"] for each in stored] == ["#signin-link"]
+
+    @pytest.mark.asyncio
+    async def test_an_in_login_that_is_not_true_is_not_stored(self, tmp_path: Path) -> None:
+        stored = await self._stored(
+            tmp_path, [_interaction("click", "#x", time_ms=_POST_MS - 900, inLogin="yes")]
+        )
+        assert stored == [{"kind": "click", "selector": "#x", "msBefore": 900, **_CLICK_STATE}]
 
     @pytest.mark.asyncio
     async def test_an_escaped_id_holding_an_account_value_is_dropped(self, tmp_path: Path) -> None:
@@ -3233,7 +3291,7 @@ class TestLoginInteractionsReviewRound1:
         stored = await self._stored(
             tmp_path, [_interaction("click", escaped, time_ms=_POST_MS - 900)]
         )
-        assert stored == [{"kind": "click", "selector": None, "msBefore": 900}]
+        assert stored == [{"kind": "click", "selector": None, "msBefore": 900, **_CLICK_STATE}]
 
     @pytest.mark.asyncio
     async def test_the_origin_heard_from_last_is_kept(self, tmp_path: Path) -> None:
