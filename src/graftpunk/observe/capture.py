@@ -2238,6 +2238,7 @@ class NodriverCaptureBackend:
         if (
             kind not in ("click", "focus")
             or not (selector is None or isinstance(selector, str))
+            or not isinstance(url, str)
             or origin is None
             or isinstance(time_ms, bool)
             or not isinstance(time_ms, int | float)
