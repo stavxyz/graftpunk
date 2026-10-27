@@ -97,23 +97,27 @@ LOGIN_INTERACTION_WINDOW_MS = 120_000
 # is kept as None, so neither memory nor holds_an_id's run time grows with a
 # page's ids.
 MAX_STORED_SELECTOR = MAX_SELECTOR_LENGTH
+# The most shown fields stored with a click, the listener's own limit.
+MAX_SHOWN_FIELDS = 16
 
 
 class _Interaction(NamedTuple):
     """A click or focus move the page's listener sent: its kind, its selector (None
     when the page had no unique one, or it was over ``MAX_STORED_SELECTOR``
-    characters), when (the page's ``Date.now()``), and whether the page saw a click
-    inside the login itself."""
+    characters), when (the page's ``Date.now()``), the page's path (no query or
+    fragment), and whether the page saw a click inside the login itself."""
 
     kind: str
     selector: str | None
     time_ms: float
+    path: str = "/"
     in_login: bool = False
     # A click's state at the click (graftpunk.observe.dom_listener): on a control,
-    # inside a dialog, a password input shown on the page.
+    # inside a dialog, a control the last click did not show, and the fields shown.
     control: bool = False
     in_dialog: bool = False
-    pw_shown: bool = False
+    revealed: bool = False
+    shown_fields: tuple[str | None, ...] = ()
 
 
 class _ListenerSnapshot(NamedTuple):
@@ -2111,7 +2115,15 @@ class NodriverCaptureBackend:
             if each.kind == "click":
                 stored["control"] = each.control
                 stored["inDialog"] = each.in_dialog
-                stored["pwShown"] = each.pw_shown
+                stored["revealed"] = each.revealed
+                # Only the fields a reader can use: bounded, holding no account
+                # value, and at most the listener's count.
+                stored["shownFields"] = [
+                    field
+                    for field in each.shown_fields
+                    if field is not None and not selector_holds_an_id(field)
+                ][:MAX_SHOWN_FIELDS]
+            stored["path"] = each.path
             if each.in_login:
                 stored["inLogin"] = True
             kept.append(stored)
@@ -2213,7 +2225,9 @@ class NodriverCaptureBackend:
         ValueError, which the caller logs and drops. A selector over
         ``MAX_STORED_SELECTOR`` characters is kept as None, and ``inLogin`` counts
         only when it is ``true``. A click whose ``control``, ``inDialog``, or
-        ``pwShown`` is not a boolean is of another shape too."""
+        ``revealed`` is not a boolean, or whose ``shownFields`` is not a list, is of
+        another shape too; an item of ``shownFields`` that is not a string is
+        skipped. The page's path is read from the URL, which is not kept."""
         kind, selector, url, time_ms = (
             payload.get("kind"),
             payload.get("selector"),
@@ -2230,9 +2244,15 @@ class NodriverCaptureBackend:
             or not math.isfinite(time_ms)
         ):
             raise ValueError("not a listener interaction")
-        state = [payload.get(key) for key in ("control", "inDialog", "pwShown")]
-        if kind == "click" and not all(isinstance(value, bool) for value in state):
+        state = [payload.get(key) for key in ("control", "inDialog", "revealed")]
+        fields = payload.get("shownFields")
+        if kind == "click" and (
+            not all(isinstance(value, bool) for value in state) or not isinstance(fields, list)
+        ):
             raise ValueError("not a listener click")
+        shown = tuple(bounded_selector(field) for field in fields or () if isinstance(field, str))[
+            : MAX_SHOWN_FIELDS * 4
+        ]
         events = self._interactions.pop(origin, None)
         if events is None:
             events = deque(maxlen=INTERACTION_BUFFER)
@@ -2245,10 +2265,12 @@ class NodriverCaptureBackend:
                 kind,
                 bounded_selector(selector),
                 float(time_ms),
+                path=urllib.parse.urlsplit(url).path or "/",
                 in_login=payload.get("inLogin") is True,
                 control=state[0] is True,
                 in_dialog=state[1] is True,
-                pw_shown=state[2] is True,
+                revealed=state[2] is True,
+                shown_fields=shown,
             )
         )
 

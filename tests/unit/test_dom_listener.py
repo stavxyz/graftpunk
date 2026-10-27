@@ -358,7 +358,16 @@ function build(spec, parent, shadowHost = null) {
     // Set on the top elements of a shadow tree: their parent is the shadow root.
     shadowHost: shadowHost,
     inShadow: Boolean(shadowHost) || Boolean(parent && parent.inShadow),
-    hidden: Boolean(spec.hidden) || Boolean(parent && parent.hidden),
+    ownHidden: Boolean(spec.hidden),
+    get hidden() {
+      const above = this.parentElement || this.shadowHost;
+      return this.ownHidden || Boolean(above && above.hidden);
+    },
+    rect: spec.rect || [10, 10, 100, 20],
+    getBoundingClientRect() {
+      const [left, top, width, height] = this.hidden ? [0, 0, 0, 0] : this.rect;
+      return { left, top, width, height, right: left + width, bottom: top + height };
+    },
     style: spec.style || {},
     visibility: (spec.style && spec.style.visibility) || (parent ? parent.visibility : "visible"),
     faded: (spec.style && spec.style.opacity === "0") || Boolean(parent && parent.faded),
@@ -423,6 +432,8 @@ globalThis.document = {
 };
 if (!config.noCss) globalThis.CSS = { escape: cssEscape };
 globalThis.window = globalThis;
+globalThis.innerWidth = 1000;
+globalThis.innerHeight = 800;
 globalThis.getComputedStyle = (el) => ({
   visibility: el.visibility,
   opacity: el.style.opacity === undefined ? "1" : el.style.opacity,
@@ -447,6 +458,8 @@ for (const fired of config.fire) {
   for (let r = 0; r < (fired.repeat || 1); r++) {
     now += (fired.after || 0) + (fired.wall || 0);
     mono += fired.after || 0;
+    // A page script showed an element (a menu, a modal) since the last event.
+    if (fired.show !== undefined) byKey[fired.show].ownHidden = false;
     const inner = fired.target === undefined ? undefined : byKey[fired.target];
     const event = {
       type: fired.type,
@@ -701,6 +714,12 @@ _STATE_PAGE = {
                     "children": [_nest(1, "in-alert")],
                 },
                 {"tag": "div", "attrs": {"aria-modal": "TRUE"}, "children": [_nest(2, "in-modal")]},
+                # Only a role's first token counts, as the digest's parser reads it.
+                {
+                    "tag": "div",
+                    "attrs": {"role": "presentation dialog"},
+                    "children": [_nest(1, "in-second-token")],
+                },
                 {
                     "tag": "form",
                     "children": [
@@ -755,6 +774,77 @@ _LEVELS_PAGE = {
         }
     ],
 }
+
+
+def _field(key: str, **attrs: str) -> dict:
+    return {"tag": "input", "attrs": {"id": key, **attrs}, "key": key}
+
+
+# What a click revealed: a collapsed menu shown after a click on its button, a
+# modal shown after a click on the header link, and fields a person can or cannot
+# see at a click.
+_REVEAL_PAGE = {
+    "tag": "html",
+    "children": [
+        {
+            "tag": "body",
+            "children": [
+                {
+                    "tag": "header",
+                    "children": [
+                        {"tag": "button", "attrs": {"id": "accept"}, "key": "accept"},
+                        {"tag": "button", "attrs": {"id": "menu"}, "key": "menu"},
+                        {"tag": "a", "attrs": {"id": "signin"}, "key": "signin"},
+                        {
+                            "tag": "nav",
+                            "hidden": True,
+                            "key": "nav",
+                            "children": [
+                                {"tag": "a", "attrs": {"id": "nav-signin"}, "key": "nav-signin"}
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "tag": "main",
+                    "children": [
+                        _field("email", type="email"),
+                        _field("plain"),
+                        _field("pw-current", type="text", autocomplete="current-password"),
+                        _field("check", type="checkbox"),
+                        {"tag": "select", "attrs": {"id": "pick"}},
+                        {"tag": "textarea", "attrs": {"id": "note"}},
+                        {
+                            "tag": "div",
+                            "attrs": {"aria-hidden": "TRUE"},
+                            "children": [_field("aria", type="text")],
+                        },
+                        {"tag": "div", "attrs": {"inert": ""}, "children": [_field("inert")]},
+                        {
+                            "tag": "input",
+                            "attrs": {"id": "honeypot", "type": "password"},
+                            "rect": [-9999, 10, 100, 20],
+                        },
+                        {"tag": "input", "attrs": {"id": "flat"}, "rect": [10, 10, 0, 20]},
+                        {"tag": "input", "attrs": {"id": "below"}, "rect": [10, 900, 100, 20]},
+                    ],
+                },
+                {
+                    "tag": "div",
+                    "hidden": True,
+                    "key": "modal",
+                    "children": [
+                        _field("m-email", type="email"),
+                        _field("m-pw", type="password"),
+                        {"tag": "button", "attrs": {"id": "use-email"}, "key": "use-email"},
+                    ],
+                },
+            ],
+        }
+    ],
+}
+
+_REVEAL_SHOWN = ["#email", "#plain", "#pw-current", "#pick", "#note"]
 
 _UNCHANGED = {"prevented": False, "stopped": False, "escaped": None}
 
@@ -823,9 +913,12 @@ class TestInteractionEvents:
             "control": True,
             "inLogin": False,
             "inDialog": False,
-            # The page's dialog shows a password input as the link is clicked.
-            "pwShown": True,
+            # The page's first click: nothing was shown at an earlier one.
+            "revealed": False,
+            # The fields shown as the link is clicked, the dialog's among them.
+            "shownFields": call["shownFields"],
         }
+        assert {"#m-email", 'input[name="password"]', "#country"} <= set(call["shownFields"])
         assert result["events"] == [_UNCHANGED]
 
     def test_a_click_inside_a_link_is_the_link_s(self, tmp_path: Path) -> None:
@@ -1036,7 +1129,8 @@ class TestInteractionEvents:
                     "control",
                     "inLogin",
                     "inDialog",
-                    "pwShown",
+                    "revealed",
+                    "shownFields",
                 }
             ),
         }
@@ -1097,7 +1191,11 @@ class TestInteractionEvents:
             check_visibility=check_visibility,
         )
         (call,) = result["calls"]
-        assert (call["pwShown"], call["inLogin"], call["inDialog"]) == (False, False, False)
+        assert (call["shownFields"], call["inLogin"], call["inDialog"]) == (
+            ["#n", "#s"],
+            False,
+            False,
+        )
 
     def test_a_shown_current_password_input_counts(self, tmp_path: Path) -> None:
         page = json.loads(json.dumps(_STATE_PAGE))
@@ -1105,7 +1203,7 @@ class TestInteractionEvents:
             {"tag": "input", "attrs": {"type": "text", "autocomplete": "Current-Password"}}
         )
         result = _run_dom(tmp_path, [{"type": "click", "target": "open"}], dom=page)
-        assert result["calls"][0]["pwShown"] is True
+        assert "body:nth-of-type(1) > input:nth-of-type(1)" in result["calls"][0]["shownFields"]
 
     def test_a_click_inside_a_dialog_says_so(self, tmp_path: Path) -> None:
         result = _run_dom(
@@ -1116,10 +1214,65 @@ class TestInteractionEvents:
                 {"type": "click", "target": "in-alert"},
                 {"type": "click", "target": "in-modal"},
                 {"type": "click", "target": "open"},
+                {"type": "click", "target": "in-second-token"},
             ],
             dom=_STATE_PAGE,
         )
-        assert [call["inDialog"] for call in result["calls"]] == [True, True, True, True, False]
+        assert [call["inDialog"] for call in result["calls"]] == [
+            True,
+            True,
+            True,
+            True,
+            False,
+            False,
+        ]
+
+    def test_a_click_sends_the_fields_a_person_sees(self, tmp_path: Path) -> None:
+        """Text-like, password, select, and textarea fields with a box in the viewport,
+        not under aria-hidden or inert, and not a checkbox; no pwShown any more."""
+        result = _run_dom(tmp_path, [{"type": "click", "target": "accept"}], dom=_REVEAL_PAGE)
+        (call,) = result["calls"]
+        assert call["shownFields"] == _REVEAL_SHOWN
+        assert "pwShown" not in call
+
+    def test_at_most_sixteen_fields_are_sent(self, tmp_path: Path) -> None:
+        page = json.loads(json.dumps(_REVEAL_PAGE))
+        page["children"][0]["children"][1]["children"] = [_field(f"f{n}") for n in range(20)]
+        result = _run_dom(tmp_path, [{"type": "click", "target": "accept"}], dom=page)
+        assert result["calls"][0]["shownFields"] == [f"#f{n}" for n in range(16)]
+
+    def test_a_control_shown_at_the_last_click_was_not_revealed(self, tmp_path: Path) -> None:
+        """A cookie banner's button, then the header link: the link was on the page."""
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "accept"}, {"type": "click", "target": "signin"}],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, False]
+
+    def test_a_control_a_click_showed_was_revealed(self, tmp_path: Path) -> None:
+        """A collapsed menu's link, and a button in the modal the link opened."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "menu"},
+                {"type": "click", "target": "nav-signin", "show": "nav"},
+                {"type": "click", "target": "use-email", "show": "modal"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, True, True]
+        # The modal's fields are shown at the third click, not at the first.
+        assert "#m-email" not in result["calls"][0]["shownFields"]
+        assert {"#m-email", "#m-pw"} <= set(result["calls"][2]["shownFields"])
+
+    def test_a_name_holding_a_nul_is_escaped(self, tmp_path: Path) -> None:
+        page = json.loads(json.dumps(_REVEAL_PAGE))
+        page["children"][0]["children"].append(
+            {"tag": "button", "attrs": {"name": "a\u0000b"}, "key": "nul"}
+        )
+        result = _run_dom(tmp_path, [{"type": "click", "target": "nul"}], dom=page)
+        assert result["calls"][0]["selector"] == 'button[name="a\\0 b"]'
 
     def test_forty_attempts_in_two_milliseconds_send_twenty(self, tmp_path: Path) -> None:
         """A sliding window: one event, then a burst straddling the second after it.

@@ -999,7 +999,8 @@ class TestDomSnapshotFields:
         assert other.request.resource_type is None
 
     def test_a_click_s_state_is_read_only_when_true(self, tmp_path: Path) -> None:
-        """Review round 2: control, inDialog, and pwShown, each a boolean."""
+        """Review rounds 2 and 3: control, inDialog, and revealed, each a boolean; the
+        shown fields, bounded; and the page's path."""
         har = self._har(
             tmp_path,
             {
@@ -1009,8 +1010,15 @@ class TestDomSnapshotFields:
                         "selector": "#a",
                         "msBefore": 30,
                         "control": True,
-                        "inDialog": True,
-                        "pwShown": True,
+                        "inDialog": False,
+                        "revealed": True,
+                        "shownFields": [
+                            "#m-email",
+                            "#" + "a" * 300,
+                            7,
+                            *[f"#f{n}" for n in range(20)],
+                        ],
+                        "path": "/login",
                     },
                     {
                         "kind": "click",
@@ -1018,13 +1026,23 @@ class TestDomSnapshotFields:
                         "msBefore": 20,
                         "control": "yes",
                         "inDialog": 1,
-                        "pwShown": "true",
+                        "revealed": "true",
+                        "shownFields": "#m-email",
+                        "path": 7,
                     },
                 ]
             },
         )
         (entry,) = parse_har_file(har).entries
         assert entry.request.login_interactions == (
-            LoginInteraction("click", "#a", 30.0, control=True, in_dialog=True, pw_shown=True),
+            LoginInteraction(
+                "click",
+                "#a",
+                30.0,
+                control=True,
+                revealed=True,
+                shown_fields=("#m-email", *[f"#f{n}" for n in range(15)]),
+                path="/login",
+            ),
             LoginInteraction("click", None, 20.0),
         )

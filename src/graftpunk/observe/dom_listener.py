@@ -11,31 +11,36 @@ the document URL, and ``Date.now()`` through a binding. The recorder keeps the
 last few and gives a credential post the latest one taken before it.
 
 The same script reports the user's clicks and focus moves, so the digest can find
-the click that opened a login (part 3 of #267), and with each click the page's
-state at it. Every trusted ``click`` is reported (one a script made with
+the click that opened a login (part 3 of #267), and with each click what it
+revealed. Every trusted ``click`` is reported (one a script made with
 ``element.click()`` is not), and a ``focusin`` when its target is an ``input``,
 ``select``, or ``textarea``. Each sends ``{"type": "interaction", "kind": "click"
 | "focus", "selector", "url", "time"}``: a selector computed in the page or null,
-the document URL, and ``Date.now()``. A click also sends four booleans:
-``control``, whether a control is on the event's composed path (the nearest ``a``,
-``button``, ``input`` of type ``button``, ``submit``, ``image``, or ``reset``,
-``[role=button]``, or ``summary``, inside an open shadow tree too, whose selector
-is the click's; a click on anything else has a null selector); ``inLogin``,
-whether it was inside the login (on a ``label`` whose control is a field a person
-types into: a ``select``, a ``textarea``, or an ``input`` of type ``text``,
-``email``, ``tel``, ``url``, ``search``, ``password``, or ``number``, or of no
-type, never a checkbox or a radio, which a CSS-only modal's opener can be; or on
-an element that, or one of whose :data:`LOGIN_CONTAINER_LEVELS` nearest ancestors
-short of ``<body>``, holds a shown password input); ``inDialog``, whether an
-element on the composed path is a ``<dialog>``, has a ``role`` whose first token
-is ``dialog`` or ``alertdialog``, or has ``aria-modal="true"``; and ``pwShown``,
-whether any password input on the page (type ``password``, or marked
-``current-password``) is shown. Shown is ``checkVisibility`` with its opacity and
-visibility checks when the browser has it, else a layout box, a computed
-``visibility`` that is not ``hidden``, and no element from the input up with
-opacity 0. The selector is ``#id`` (spelled with ``CSS.escape``) when no other
-element of the document has that id, else ``tag[name="..."]`` when that picks one
-element, else the shortest path of at most :data:`STRUCTURAL_DEPTH`
+the document URL, and ``Date.now()``. A click also sends ``control``, whether a
+control is on the event's composed path (the nearest ``a``, ``button``, ``input``
+of type ``button``, ``submit``, ``image``, or ``reset``, ``[role=button]``, or
+``summary``, inside an open shadow tree too, whose selector is the click's; a
+click on anything else has a null selector); ``inLogin``, whether it was inside
+the login (on a ``label`` whose control is a field a person types into: a
+``select``, a ``textarea``, or an ``input`` of type ``text``, ``email``, ``tel``,
+``url``, ``search``, ``password``, or ``number``, or of no type; or on an element
+that, or one of whose :data:`LOGIN_CONTAINER_LEVELS` nearest ancestors short of
+``<body>``, holds a shown password input); ``inDialog``, whether an element on the
+composed path is a ``<dialog>``, has a ``role`` whose first token is ``dialog`` or
+``alertdialog``, or has ``aria-modal="true"``; ``revealed``, whether the clicked
+control was not drawn at the previous trusted click on this page (the first click
+of a page is not); and ``shownFields``, the selectors of up to
+:data:`MAX_SHOWN_FIELDS` fields shown on the page (text-like and password inputs,
+inputs marked ``current-password``, selects, and textareas). Drawn is
+``checkVisibility`` with its opacity and visibility checks when the browser has
+it, else a layout box, a computed ``visibility`` that is not ``hidden``, and no
+element from it up with opacity 0, and not under ``aria-hidden="true"`` or
+``inert``; a field is shown when it is drawn and its box has an area inside the
+viewport, so a field moved off screen is not, while a control scrolled out of view
+still counts as drawn. The selector is ``#id`` (spelled with ``CSS.escape``) when
+no other element of the document has that id, else ``tag[name="..."]`` when that
+picks one element (every control character in the name as its hex escape, a NUL
+included), else the shortest path of at most :data:`STRUCTURAL_DEPTH`
 ``tag:nth-of-type(n)`` steps joined by `` > `` that picks one element, else null;
 an id or a name over :data:`MAX_SELECTOR_NAME` characters is not used, so such an
 element falls through to the next rule (a name, else the structural path, which
@@ -44,8 +49,8 @@ null, the event still sent. An element in a shadow tree has no selector the
 document can use. No text, no value, and no attribute beyond the id or name a
 selector spells is sent; at most :data:`MAX_INTERACTIONS_PER_SECOND` are sent in
 any one second, a sliding window on the monotonic ``performance.now()``, so a page
-that synthesizes events cannot flood the recorder. A snapshot's payload carries no
-``type``.
+that synthesizes events cannot flood the recorder, and the page's controls are
+listed only on those clicks. A snapshot's payload carries no ``type``.
 
 The script runs in its own world (``WORLD_NAME``), where the binding lives, so
 the page's scripts see neither; isolated worlds share the DOM, so its listener
@@ -65,6 +70,7 @@ __all__ = [
     "LOGIN_CONTAINER_LEVELS",
     "MAX_INTERACTIONS_PER_SECOND",
     "MAX_SELECTOR_NAME",
+    "MAX_SHOWN_FIELDS",
     "STRUCTURAL_DEPTH",
     "WORLD_NAME",
 ]
@@ -85,6 +91,8 @@ STRUCTURAL_DEPTH = 4
 MAX_SELECTOR_NAME = 128
 # How many ancestors of a clicked element are looked at for a shown password input.
 LOGIN_CONTAINER_LEVELS = 6
+# The most shown fields a click lists: a login shows two or three.
+MAX_SHOWN_FIELDS = 16
 
 LISTENER_SCRIPT = (
     """(() => {
@@ -118,8 +126,8 @@ LISTENER_SCRIPT = (
     value
       .replace(/\\\\/g, "\\\\\\\\")
       .replace(/"/g, '\\\\"')
-      .replace(/\\n/g, "\\\\a ")
-      .replace(/\\r/g, "\\\\d ") +
+      // Every control character as its hex escape: a newline is "\\a ", a NUL "\\0 ".
+      .replace(/[\\x00-\\x1f\\x7f]/g, (c) => "\\\\" + c.charCodeAt(0).toString(16) + " ") +
     '"';
   const selectorOf = (element) => {
     const tag = String(element.localName);
@@ -175,10 +183,14 @@ LISTENER_SCRIPT = (
       if (role === "dialog" || role === "alertdialog") return true;
       return String(node.getAttribute("aria-modal") || "").trim().toLowerCase() === "true";
     });
-  // Whether a person sees *el*: checkVisibility with opacity and visibility when
-  // the browser has it; else a layout box, visibility not hidden, and no element
-  // from it up with opacity 0.
-  const shown = (el) => {
+  // Whether the page draws *el* for a person: checkVisibility with opacity and
+  // visibility when the browser has it, else a layout box, visibility not hidden,
+  // and no element from it up with opacity 0; and not under aria-hidden="true" or
+  // inert.
+  const drawn = (el) => {
+    if (typeof el.closest === "function" && el.closest('[aria-hidden="true" i], [inert]')) {
+      return false;
+    }
     if (typeof el.checkVisibility === "function") {
       return el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
     }
@@ -190,6 +202,23 @@ LISTENER_SCRIPT = (
     }
     return true;
   };
+  // Drawn, with a box of some area inside the viewport: a field moved off screen (a
+  // honeypot, a closed drawer) is not shown.
+  const shown = (el) => {
+    if (!drawn(el)) return false;
+    if (typeof el.getBoundingClientRect !== "function") return true;
+    const box = el.getBoundingClientRect();
+    const width = globalThis.innerWidth;
+    const height = globalThis.innerHeight;
+    return (
+      box.width > 0 &&
+      box.height > 0 &&
+      box.right > 0 &&
+      box.bottom > 0 &&
+      (typeof width !== "number" || box.left < width) &&
+      (typeof height !== "number" || box.top < height)
+    );
+  };
   // The password inputs under *root*: type password, or marked current-password.
   const passwords = (root) => {
     const found = Array.from(root.querySelectorAll('input[type="password" i]'));
@@ -200,8 +229,38 @@ LISTENER_SCRIPT = (
     return found;
   };
   const holdsPassword = (root) => passwords(root).some(shown);
-  // A field a person types into: a label for a checkbox or a radio (a CSS-only
-  // modal's toggle) may be the opener itself.
+  // A field a person fills in: a select, a textarea, a text-like input (below), or
+  // an input marked current-password.
+  const fieldLike = (el) => {
+    if (textLike(el)) return true;
+    const tokens = String(el.getAttribute("autocomplete") || "").toLowerCase().split(/\\s+/);
+    return String(el.localName) === "input" && tokens.includes("current-password");
+  };
+  // The selectors of the first __MAX_FIELDS__ fields shown on the page.
+  const shownFields = () => {
+    const found = [];
+    for (const el of document.querySelectorAll("input, select, textarea")) {
+      if (found.length >= __MAX_FIELDS__) break;
+      if (!fieldLike(el) || !shown(el)) continue;
+      let selector = null;
+      try {
+        selector = selectorOf(el);
+      } catch (error) {
+        selector = null;
+      }
+      if (selector) found.push(selector);
+    }
+    return found;
+  };
+  // The controls drawn at the last trusted click on this page (scrolling does not
+  // hide one, so the viewport does not count here), or null before the first.
+  let drawnControls = null;
+  const revealedAndRemember = (control) => {
+    const revealed = Boolean(control) && drawnControls !== null && !drawnControls.has(control);
+    drawnControls = new WeakSet(Array.from(document.querySelectorAll(controls)).filter(drawn));
+    return revealed;
+  };
+  // A field a person types into; a checkbox, a radio, or a button is not one.
   const textLike = (control) => {
     const tag = String(control.localName);
     if (tag === "select" || tag === "textarea") return true;
@@ -286,7 +345,14 @@ LISTENER_SCRIPT = (
         payload.control = Boolean(control);
         payload.inLogin = attempt(() => insideLogin(element));
         payload.inDialog = attempt(() => inDialogOf(path));
-        payload.pwShown = attempt(() => holdsPassword(document));
+        payload.revealed = attempt(() => revealedAndRemember(control));
+        let fields = [];
+        try {
+          fields = shownFields();
+        } catch (error) {
+          fields = [];
+        }
+        payload.shownFields = fields;
       }
       send(JSON.stringify(payload));
     } catch (error) {
@@ -311,4 +377,5 @@ LISTENER_SCRIPT = (
     .replace("__TYPE__", INTERACTION_TYPE)
     .replace("__MAX_NAME__", str(MAX_SELECTOR_NAME))
     .replace("__LOGIN_LEVELS__", str(LOGIN_CONTAINER_LEVELS))
+    .replace("__MAX_FIELDS__", str(MAX_SHOWN_FIELDS))
 )

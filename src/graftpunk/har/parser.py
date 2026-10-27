@@ -45,11 +45,17 @@ class LoginInteraction:
     ms_before: float
     in_login: bool = False
     # A click's state as the page saw it: on a control (a link, a button, a
-    # button-like input, [role=button], or summary), inside a dialog, and with a
-    # password input shown on the page. Each True only when the HAR says true.
+    # button-like input, [role=button], or summary), inside a dialog, and on a
+    # control the click before it did not show. Each True only when the HAR says
+    # true.
     control: bool = False
     in_dialog: bool = False
-    pw_shown: bool = False
+    revealed: bool = False
+    # The selectors of the fields shown on the page at a click, at most
+    # MAX_SHOWN_FIELDS, each within MAX_SELECTOR_LENGTH.
+    shown_fields: tuple[str, ...] = ()
+    # The page's path when it happened (no query or fragment), or None.
+    path: str | None = None
 
 
 @dataclass
@@ -326,6 +332,19 @@ def _request_body_file(ref: str, base_dir: Path | None) -> tuple[str | None, boo
         return None, True
 
 
+# The most shown fields a click's record keeps, as the recorder writes them.
+MAX_SHOWN_FIELDS = 16
+
+
+def _shown_fields(raw: Any) -> tuple[str, ...]:
+    """A click's ``shownFields``: the strings within ``MAX_SELECTOR_LENGTH``, at most
+    ``MAX_SHOWN_FIELDS``; nothing when it is not a list."""
+    if not isinstance(raw, list):
+        return ()
+    kept = (bounded_selector(field) for field in raw)
+    return tuple(field for field in kept if field is not None)[:MAX_SHOWN_FIELDS]
+
+
 def _login_interactions(raw: Any) -> tuple[LoginInteraction, ...]:
     """``request._loginInteractions`` as :class:`LoginInteraction` items, oldest first
     (the largest ``msBefore`` first). An item that is not an object with a known
@@ -356,7 +375,9 @@ def _login_interactions(raw: Any) -> tuple[LoginInteraction, ...]:
                 in_login=item.get("inLogin") is True,
                 control=item.get("control") is True,
                 in_dialog=item.get("inDialog") is True,
-                pw_shown=item.get("pwShown") is True,
+                revealed=item.get("revealed") is True,
+                shown_fields=_shown_fields(item.get("shownFields")),
+                path=item.get("path") if isinstance(item.get("path"), str) else None,
             )
         )
     return tuple(sorted(kept, key=lambda each: -each.ms_before))

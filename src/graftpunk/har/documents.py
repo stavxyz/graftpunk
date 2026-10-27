@@ -129,22 +129,25 @@ class LoginForm:
     # The names of the form's controls that are not hidden inputs, whatever the name
     # holds (hidden lists only names that hold no account value). Internal.
     visible_names: tuple[str, ...] = field(default=(), metadata={"internal": True})
-    # The password input of a real <form> sits inside a dialog-marked element (a
-    # <dialog>, a role whose first token is dialog or alertdialog, or aria-modal
-    # "true"), as a formless dialog group's controls do: such a form can be behind
-    # a click. Internal.
+    # The form's password input sits inside a dialog-marked element (a <dialog>, a
+    # role whose first token is dialog or alertdialog, or aria-modal "true"): a real
+    # <form> in one, or a formless dialog group. The digest also sets it on a
+    # recorded <form> whose snapshot copy is marked. Such a form can be behind a
+    # click. Internal.
     in_dialog: bool = field(default=False, metadata={"internal": True})
     # The selector of the click that opened this form, read from what gp observe
     # recorded before the credential post (graftpunk.har.digest, #267); empty when no
     # click qualified. Set by the digest, never from markup. Internal.
     opener: str = field(default="", metadata={"internal": True})
     # Why the last click before the form's first field is not its opener, when one
-    # was recorded: "pw_shown", "in_dialog", "not_control", or "no_selector"
-    # (graftpunk.har.digest._login_opener); empty otherwise. Internal.
+    # was recorded: "field_shown", "route_changed", "earlier_step", "in_dialog",
+    # "revealed", or "no_selector" (graftpunk.har.digest._login_opener); empty
+    # otherwise. Internal.
     opener_note: str = field(default="", metadata={"internal": True})
-    # That click's selector when it is safe to print (bounded, holding no account
-    # value), else empty. Internal.
+    # That click's selector, and the control click's before it, when it is safe to
+    # print (bounded, holding no account value), else empty. Internal.
     opener_clicked: str = field(default="", metadata={"internal": True})
+    opener_before: str = field(default="", metadata={"internal": True})
 
 
 @dataclass(frozen=True)

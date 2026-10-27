@@ -2910,7 +2910,10 @@ class TestSnapshotFromTheIsolatedWorldListener:
 
 
 # The state the listener sends with a click, as the recorder stores it.
-_CLICK_STATE = {"control": True, "inDialog": False, "pwShown": False}
+_CLICK_STATE = {"control": True, "inDialog": False, "revealed": False, "shownFields": []}
+# As the recorder stores a click and a focus from LOGIN: with the page's path.
+_STORED_CLICK = {**_CLICK_STATE, "path": "/login"}
+_STORED_FOCUS = {"path": "/login"}
 
 
 def _interaction(
@@ -2982,10 +2985,15 @@ class TestLoginInteractionsAtTheCredentialPost:
     async def test_the_events_before_the_post_are_stored_oldest_first(self, tmp_path: Path) -> None:
         backend = await self._run(tmp_path, self._events())
         assert self._stored(backend) == [
-            {"kind": "click", "selector": "#signin-link", "msBefore": 5000, **_CLICK_STATE},
-            {"kind": "focus", "selector": "#m-email", "msBefore": 3000},
-            {"kind": "focus", "selector": 'input[name="password"]', "msBefore": 2000},
-            {"kind": "click", "selector": "#m-go", "msBefore": 40, **_CLICK_STATE},
+            {"kind": "click", "selector": "#signin-link", "msBefore": 5000, **_STORED_CLICK},
+            {"kind": "focus", "selector": "#m-email", "msBefore": 3000, **_STORED_FOCUS},
+            {
+                "kind": "focus",
+                "selector": 'input[name="password"]',
+                "msBefore": 2000,
+                **_STORED_FOCUS,
+            },
+            {"kind": "click", "selector": "#m-go", "msBefore": 40, **_STORED_CLICK},
         ]
 
     @pytest.mark.asyncio
@@ -3074,9 +3082,9 @@ class TestLoginInteractionsAtTheCredentialPost:
             ],
         )
         assert self._stored(backend) == [
-            {"kind": "click", "selector": None, "msBefore": 900, **_CLICK_STATE},
-            {"kind": "focus", "selector": None, "msBefore": 800},
-            {"kind": "click", "selector": "#signin-link", "msBefore": 700, **_CLICK_STATE},
+            {"kind": "click", "selector": None, "msBefore": 900, **_STORED_CLICK},
+            {"kind": "focus", "selector": None, "msBefore": 800, **_STORED_FOCUS},
+            {"kind": "click", "selector": "#signin-link", "msBefore": 700, **_STORED_CLICK},
         ]
         stored = json.dumps(self._stored(backend))
         assert "40912873" not in stored
@@ -3170,7 +3178,7 @@ class TestLoginInteractionsAtTheCredentialPost:
 
         (entry,) = parse_har_file(storage.run_dir / "network.har").entries
         assert entry.request.login_interactions[0] == LoginInteraction(
-            "click", "#signin-link", 5000.0, control=True
+            "click", "#signin-link", 5000.0, control=True, path="/login"
         )
         assert len(entry.request.login_interactions) == 4
 
@@ -3200,15 +3208,15 @@ class TestLoginInteractionsReviewRound1:
             ],
         )
         assert stored == [
-            {"kind": "click", "selector": "#signin-link", "msBefore": 900, **_CLICK_STATE},
+            {"kind": "click", "selector": "#signin-link", "msBefore": 900, **_STORED_CLICK},
             {
                 "kind": "click",
                 "selector": "#email-label",
                 "msBefore": 800,
                 "inLogin": True,
-                **_CLICK_STATE,
+                **_STORED_CLICK,
             },
-            {"kind": "focus", "selector": "#m-email", "msBefore": 700},
+            {"kind": "focus", "selector": "#m-email", "msBefore": 700, **_STORED_FOCUS},
         ]
 
     @pytest.mark.asyncio
@@ -3245,9 +3253,20 @@ class TestLoginInteractionsReviewRound1:
                     time_ms=_POST_MS - 900,
                     control=False,
                     inDialog=True,
-                    pwShown=True,
+                    revealed=False,
+                    shownFields=["#m-email", "#user_40912873", "#" + "a" * 300, 7],
                 ),
-                _interaction("focus", "#m-email", time_ms=_POST_MS - 800),
+                _interaction(
+                    "click",
+                    "#next",
+                    time_ms=_POST_MS - 850,
+                    url=LOGIN + "?step=2#top",
+                    control=True,
+                    inDialog=False,
+                    revealed=True,
+                    shownFields=[f"#f{n}" for n in range(20)],
+                ),
+                _interaction("focus", "#m-email", time_ms=_POST_MS - 800, url=HOME),
             ],
         )
         assert stored == [
@@ -3257,13 +3276,27 @@ class TestLoginInteractionsReviewRound1:
                 "msBefore": 900,
                 "control": False,
                 "inDialog": True,
-                "pwShown": True,
+                "revealed": False,
+                # The id-holding and the over-long selectors are left out, and a
+                # non-string is not a selector.
+                "shownFields": ["#m-email"],
+                "path": "/login",
             },
-            {"kind": "focus", "selector": "#m-email", "msBefore": 800},
+            {
+                "kind": "click",
+                "selector": "#next",
+                "msBefore": 850,
+                "control": True,
+                "inDialog": False,
+                "revealed": True,
+                "shownFields": [f"#f{n}" for n in range(16)],
+                "path": "/login",
+            },
+            {"kind": "focus", "selector": "#m-email", "msBefore": 800, "path": "/"},
         ]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("field", ["control", "inDialog", "pwShown"])
+    @pytest.mark.parametrize("field", ["control", "inDialog", "revealed", "shownFields"])
     async def test_a_click_whose_state_is_not_boolean_is_dropped(
         self, tmp_path: Path, field: str
     ) -> None:
@@ -3282,7 +3315,7 @@ class TestLoginInteractionsReviewRound1:
         stored = await self._stored(
             tmp_path, [_interaction("click", "#x", time_ms=_POST_MS - 900, inLogin="yes")]
         )
-        assert stored == [{"kind": "click", "selector": "#x", "msBefore": 900, **_CLICK_STATE}]
+        assert stored == [{"kind": "click", "selector": "#x", "msBefore": 900, **_STORED_CLICK}]
 
     @pytest.mark.asyncio
     async def test_an_escaped_id_holding_an_account_value_is_dropped(self, tmp_path: Path) -> None:
@@ -3291,7 +3324,7 @@ class TestLoginInteractionsReviewRound1:
         stored = await self._stored(
             tmp_path, [_interaction("click", escaped, time_ms=_POST_MS - 900)]
         )
-        assert stored == [{"kind": "click", "selector": None, "msBefore": 900, **_CLICK_STATE}]
+        assert stored == [{"kind": "click", "selector": None, "msBefore": 900, **_STORED_CLICK}]
 
     @pytest.mark.asyncio
     async def test_the_origin_heard_from_last_is_kept(self, tmp_path: Path) -> None:

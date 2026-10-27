@@ -1137,11 +1137,20 @@ def _formless_credit(
 class _Opener(NamedTuple):
     """What the clicks before a form's credential post say opened it: the opener's
     selector, or empty with the reason (``note``) the candidate click is not one;
-    ``clicked`` is the candidate's selector when it is safe to print."""
+    ``clicked`` is the candidate's selector and ``before`` the control click before
+    it, each when it is safe to print."""
 
     selector: str
     note: str
     clicked: str
+    before: str = ""
+
+
+def _printable_selector(selector: str | None) -> str:
+    """*selector* when it is usable and safe to print: within ``MAX_SELECTOR_LENGTH``
+    and holding no account value; else empty."""
+    bounded = bounded_selector(selector)
+    return bounded if bounded is not None and not selector_holds_an_id(bounded) else ""
 
 
 def _login_opener(
@@ -1151,24 +1160,29 @@ def _login_opener(
     page_loads: list[datetime],
 ) -> _Opener | None:
     """The click that opened *form*, from the *interactions* recorded before its
-    credential post (sent at *post_at*), decided from the page's state at that click;
-    None when no click is a candidate.
+    credential post (sent at *post_at*), decided from what that click revealed; None
+    when no click is a candidate.
 
-    The candidate is the last click before the first focus on one of the form's field
-    selectors (the recorded ones and their unscoped forms, compared by
-    :func:`graftpunk.har.selectors.selector_keys`), leaving out a click the page saw
-    inside the login (``LoginInteraction.in_login``). There is none when that click's
-    selector picks one of the form's fields or its submit, or a navigation of the run
-    (*page_loads*, see :func:`_is_page_load`) started between the click and that
-    focus, both ends included: a click that loaded a page is a link to the form's
-    page. The candidate is the opener only when it was on a control and has a usable
-    selector (at most ``MAX_SELECTOR_LENGTH`` characters, holding no account value),
-    was not inside a dialog, and no password input was shown on the page as it was
-    clicked; else its note says the first that failed, in this order: ``pw_shown`` (a
-    password already on screen: the click did not open the login, as on a consent
-    banner or beside an inline sign-up), ``in_dialog`` (the login may take more than
-    one click), ``not_control``, and ``no_selector``. A focus whose selector is over
-    that length is not read."""
+    The candidate is the last click on a control before the first focus on one of the
+    form's field selectors (the recorded ones and their unscoped forms, compared by
+    :func:`graftpunk.har.selectors.selector_keys`). A click on no control (a heading,
+    a backdrop, a label) opened nothing and is passed over, and so is a click the page
+    saw inside the login (``in_login``) on a control the click before it revealed (a
+    tab or a show-password button of the opened login); a flagged click on a control
+    that was already on the page is still a candidate. There is no candidate when the
+    one found picks one of the form's fields or its submit, or a navigation of the run
+    (*page_loads*, see :func:`_is_page_load`) started between it and that focus, both
+    ends included: a click that loaded a page is a link to the form's page.
+
+    The candidate is the opener only when each of these holds, its note the first
+    that does not: ``field_shown``, none of the form's fields was among the fields
+    shown at it (the login was already on screen); ``route_changed``, its page path
+    is the first focus's (when both are known); ``earlier_step``, for a form with no
+    username, no field was focused before it (the login has an earlier step);
+    ``in_dialog``, it was not inside a dialog; ``revealed``, the click before it
+    showed it (the login takes more than one click); and ``no_selector``, it has a
+    usable selector. A focus or a shown field whose selector is over
+    ``MAX_SELECTOR_LENGTH`` characters is not read."""
     roles: set[tuple[str, ...]] = set()
     for selector in (*form.fields.values(), *form.unscoped_fields.values()):
         roles |= selector_keys(selector)
@@ -1176,41 +1190,69 @@ def _login_opener(
     for selector in (form.submit, form.unscoped_submit):
         if selector:
             controls |= selector_keys(selector)
+
+    def names_a_field(selector: str | None) -> bool:
+        bounded = bounded_selector(selector)
+        return bounded is not None and bool(selector_keys(bounded) & roles)
+
     first_focus = next(
         (
             at
             for at, event in enumerate(interactions)
-            if event.kind == "focus"
-            and (focused := bounded_selector(event.selector)) is not None
-            and selector_keys(focused) & roles
+            if event.kind == "focus" and names_a_field(event.selector)
         ),
         None,
     )
     if first_focus is None:
         return None
-    click = next(
-        (e for e in reversed(interactions[:first_focus]) if e.kind == "click" and not e.in_login),
+    at = next(
+        (
+            at
+            for at in range(first_focus - 1, -1, -1)
+            if interactions[at].kind == "click"
+            and interactions[at].control
+            and not (interactions[at].in_login and interactions[at].revealed)
+        ),
         None,
     )
-    if click is None:
+    if at is None:
         return None
+    click = interactions[at]
     clicked = bounded_selector(click.selector)
     if clicked is not None and selector_keys(clicked) & controls:
         return None
     clicked_at = post_at - timedelta(milliseconds=click.ms_before)
-    focused_at = post_at - timedelta(milliseconds=interactions[first_focus].ms_before)
+    focus = interactions[first_focus]
+    focused_at = post_at - timedelta(milliseconds=focus.ms_before)
     if any(clicked_at <= loaded <= focused_at for loaded in page_loads):
         return None
-    printable = clicked if clicked is not None and not selector_holds_an_id(clicked) else ""
+    printable = _printable_selector(clicked)
+    before = next(
+        (
+            _printable_selector(event.selector)
+            for event in reversed(interactions[:at])
+            if event.kind == "click" and event.control
+        ),
+        "",
+    )
     for note, failed in (
-        ("pw_shown", click.pw_shown),
+        ("field_shown", any(names_a_field(shown) for shown in click.shown_fields)),
+        (
+            "route_changed",
+            click.path is not None and focus.path is not None and click.path != focus.path,
+        ),
+        (
+            "earlier_step",
+            "username" not in form.fields
+            and any(event.kind == "focus" for event in interactions[:at]),
+        ),
         ("in_dialog", click.in_dialog),
-        ("not_control", not click.control),
+        ("revealed", click.revealed),
         ("no_selector", not printable),
     ):
         if failed:
-            return _Opener("", note, printable)
-    return _Opener(printable, "", printable)
+            return _Opener("", note, printable, before)
+    return _Opener(printable, "", printable, before)
 
 
 def _is_page_load(entry: HAREntry, method: str, content_type: str) -> bool:
@@ -1331,14 +1373,17 @@ def _snapshot_page_forms(
     page_url: str,
     recorded_on_page: dict[tuple[str, str], set[tuple[object, ...]]],
     redirected_via: dict[tuple[str, str], tuple[str, ...]],
+    dialog_shapes: set[tuple[tuple[str, str], tuple[object, ...]]] | None = None,
 ) -> tuple[str, tuple[LoginForm, ...]]:
     """The page a credential post's DOM snapshot shows (``request._domSnapshot``), as
     its URL the way the digest keeps one, and its login forms
     (:func:`graftpunk.har.documents.extract_login_forms` with ``snapshot``): each
     with that URL as its ``source``, and without the forms a recorded GET of the
     same page already held (by :func:`_visible_shape`), so a recorded copy is never
-    doubled and never takes the snapshot's ``GP-FILL``. Empty when
-    *page_url* is not an http or https URL."""
+    doubled and never takes the snapshot's ``GP-FILL``. A left-out copy the snapshot
+    shows inside a dialog-marked element (a server-rendered modal its script marks as
+    one when it opens) adds its page and shape to *dialog_shapes*, so the recorded
+    copy takes ``in_dialog``. Empty when *page_url* is not an http or https URL."""
     try:
         if urlparse(page_url).scheme.lower() not in _HTTP_SCHEMES:
             return "", ()
@@ -1348,13 +1393,14 @@ def _snapshot_page_forms(
     here = urlparse(source)
     page = (normal_host(here.scheme, here.netloc), here.path or "/")
     shown = recorded_on_page.get(page, set())
-    forms = tuple(
-        form
-        for form in extract_login_forms(
-            html, source=source, base=_unmasked_url(page_url), snapshot=True
+    read = extract_login_forms(html, source=source, base=_unmasked_url(page_url), snapshot=True)
+    forms = tuple(form for form in read if _visible_shape(form) not in shown)
+    if dialog_shapes is not None:
+        dialog_shapes.update(
+            (page, _visible_shape(form))
+            for form in read
+            if form.in_dialog and _visible_shape(form) in shown
         )
-        if _visible_shape(form) not in shown
-    )
     opened_from = _opened_from(redirected_via.get(page, ()), page[0])
     if opened_from:
         forms = tuple(replace(form, opened_from=opened_from) for form in forms)
@@ -1821,6 +1867,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     post_interactions: list[tuple[datetime, tuple[LoginInteraction, ...]]] = []
     # When each in-scope navigation (_is_page_load) was sent: a page load.
     page_loads: list[datetime] = []
+    # The (page, visible shape) of each recorded form a snapshot showed inside a
+    # dialog-marked element (_snapshot_page_forms).
+    dialog_shapes: set[tuple[tuple[str, str], tuple[object, ...]]] = set()
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
     script_driven: set[int] = set()
@@ -1890,7 +1939,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # its forms the way it finds a recorded page's.
             page_url = entry.request.dom_snapshot_url or ""
             snapshot_source, snapshot_forms = _snapshot_page_forms(
-                snapshot_html, page_url, recorded_on_page, redirected_via
+                snapshot_html, page_url, recorded_on_page, redirected_via, dialog_shapes
             )
             if snapshot_forms:
                 step += 1
@@ -2189,8 +2238,18 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     owned_posts, owned_pages = _used_login(
         ranked_forms, login_forms, page_of, [step for step, *_rest in posts], credential_posts
     )
+
     # Each form on a page a credential post was credited to takes its opener from
     # the first such post that gives one (_login_opener).
+    def _marked_by_a_snapshot(form: LoginForm) -> bool:
+        try:
+            here = urlparse(form.source)
+        except ValueError:
+            return False
+        page = (normal_host(here.scheme, here.netloc), here.path or "/")
+        return (page, _visible_shape(form)) in dialog_shapes
+
+    marked_keys = {_form_key(form) for form in login_forms if _marked_by_a_snapshot(form)}
     openers: dict[tuple[object, ...], _Opener] = {}
     for (post_at, interactions), post in zip(post_interactions, credential_posts, strict=True):
         if post.page_step is None or not interactions:
@@ -2200,7 +2259,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # snapshot's), or a real <form> inside a dialog-marked element. Any other
             # real <form> is the login as its page shows it, and a click before it
             # (a consent banner) need not come back at replay.
-            if not (form.formless or form.in_dialog):
+            if not (form.formless or form.in_dialog or _marked_by_a_snapshot(form)):
                 continue
             key = _form_key(form)
             found = (
@@ -2209,7 +2268,17 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             if found is not None:
                 openers[key] = found
     ranked_forms = [
-        replace(form, opener=found.selector, opener_note=found.note, opener_clicked=found.clicked)
+        replace(form, in_dialog=True) if _form_key(form) in marked_keys else form
+        for form in ranked_forms
+    ]
+    ranked_forms = [
+        replace(
+            form,
+            opener=found.selector,
+            opener_note=found.note,
+            opener_clicked=found.clicked,
+            opener_before=found.before,
+        )
         if (found := openers.get(_form_key(form))) is not None
         else form
         for form in ranked_forms
