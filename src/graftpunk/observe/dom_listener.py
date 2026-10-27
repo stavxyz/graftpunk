@@ -10,9 +10,9 @@ a password input holds a value it sends ``document.documentElement.outerHTML``,
 the document URL, and ``Date.now()`` through a binding. The recorder keeps the
 last few and gives a credential post the latest one taken before it.
 
-The same script reports the user's clicks and focus moves, so the digest can find
-the click that opened a login (part 3 of #267), and with each click what it
-revealed. Every trusted ``click`` is reported (one a script made with
+The same script reports the user's clicks and focus moves, so the digest can
+suggest the click that opened a login (part 3 of #267), and with each click what
+it revealed. Every trusted ``click`` is reported (one a script made with
 ``element.click()`` is not), and a ``focusin`` when its target is an ``input``,
 ``select``, or ``textarea``. Each sends ``{"type": "interaction", "kind": "click"
 | "focus", "selector", "url", "time"}``: a selector computed in the page or null,
@@ -28,29 +28,35 @@ that, or one of whose :data:`LOGIN_CONTAINER_LEVELS` nearest ancestors short of
 ``<body>``, holds a shown password input); ``inDialog``, whether an element on the
 composed path is a ``<dialog>``, has a ``role`` whose first token is ``dialog`` or
 ``alertdialog``, or has ``aria-modal="true"``; ``revealed``, whether the clicked
-control was not drawn at the previous trusted click on this page (the first click
-of a page is not); and ``shownFields``, the selectors of up to
+control was not among the first :data:`MAX_DRAWN_CONTROLS` controls drawn when the
+page was last read: at its load, at its last trusted press (``pointerdown``)
+before this click's own, or at its last trusted click with no press (a
+keyboard's), whichever came last, so a menu that opens on its trigger's press
+reveals its items; and ``shownFields``, the selectors of up to
 :data:`MAX_SHOWN_FIELDS` fields shown on the page (text-like and password inputs,
 inputs marked ``current-password``, selects, and textareas). Drawn is
 ``checkVisibility`` with its opacity and visibility checks when the browser has
 it, else a layout box, a computed ``visibility`` that is not ``hidden``, and no
 element from it up with opacity 0, and not under ``aria-hidden="true"`` or
-``inert``; a field is shown when it is drawn and its box has an area inside the
-viewport, so a field moved off screen is not, while a control scrolled out of view
-still counts as drawn. The selector is ``#id`` (spelled with ``CSS.escape``) when
-no other element of the document has that id, else ``tag[name="..."]`` when that
-picks one element (every control character in the name as its hex escape, a NUL
-included), else the shortest path of at most :data:`STRUCTURAL_DEPTH`
+``inert``; a field is shown when it is drawn and its box has an area that is not
+above the page or left or right of the viewport, so a field below the fold counts
+and one moved off screen does not, while a control scrolled out of view still
+counts as drawn. The selector is ``#id`` (spelled with ``CSS.escape``) when no
+other element of the document has that id, else ``tag[name="..."]`` when that
+picks one element (every control character in the name, a NUL included, as its hex
+escape), else the shortest path of at most :data:`STRUCTURAL_DEPTH`
 ``tag:nth-of-type(n)`` steps joined by `` > `` that picks one element, else null;
 an id or a name over :data:`MAX_SELECTOR_NAME` characters is not used, so such an
 element falls through to the next rule (a name, else the structural path, which
 spells only tag names and positions), and a selector that fails to compute is
-null, the event still sent. An element in a shadow tree has no selector the
-document can use. No text, no value, and no attribute beyond the id or name a
-selector spells is sent; at most :data:`MAX_INTERACTIONS_PER_SECOND` are sent in
-any one second, a sliding window on the monotonic ``performance.now()``, so a page
-that synthesizes events cannot flood the recorder, and the page's controls are
-listed only on those clicks. A snapshot's payload carries no ``type``.
+null, the event still sent. An element in a shadow tree has no selector, since a
+document selector would pick another element. No text, no value, and no attribute
+beyond the id or name a selector spells is sent; at most
+:data:`MAX_INTERACTIONS_PER_SECOND` are sent in any one second, a sliding window
+on the monotonic ``performance.now()``, so a page that synthesizes events cannot
+flood the recorder; the page's controls are listed only at load and on trusted
+presses and clicks, at most :data:`MAX_DRAWN_CONTROLS` of them, so a page with
+more costs no more per click. A snapshot's payload carries no ``type``.
 
 The script runs in its own world (``WORLD_NAME``), where the binding lives, so
 the page's scripts see neither; isolated worlds share the DOM, so its listener
@@ -62,12 +68,15 @@ attribute; the recorder's sanitizer drops every ``value`` attribute either way.
 
 from __future__ import annotations
 
+from graftpunk.har.selectors import MAX_SHOWN_FIELDS
+
 __all__ = [
     "BINDING_NAME",
     "DEBOUNCE_MS",
     "INTERACTION_TYPE",
     "LISTENER_SCRIPT",
     "LOGIN_CONTAINER_LEVELS",
+    "MAX_DRAWN_CONTROLS",
     "MAX_INTERACTIONS_PER_SECOND",
     "MAX_SELECTOR_NAME",
     "MAX_SHOWN_FIELDS",
@@ -91,8 +100,9 @@ STRUCTURAL_DEPTH = 4
 MAX_SELECTOR_NAME = 128
 # How many ancestors of a clicked element are looked at for a shown password input.
 LOGIN_CONTAINER_LEVELS = 6
-# The most shown fields a click lists: a login shows two or three.
-MAX_SHOWN_FIELDS = 16
+# The most controls a click remembers, in document order: a page with more costs
+# no more per click, and a control past them reads as revealed.
+MAX_DRAWN_CONTROLS = 2000
 
 LISTENER_SCRIPT = (
     """(() => {
@@ -130,6 +140,10 @@ LISTENER_SCRIPT = (
       .replace(/[\\x00-\\x1f\\x7f]/g, (c) => "\\\\" + c.charCodeAt(0).toString(16) + " ") +
     '"';
   const selectorOf = (element) => {
+    // An element in a shadow tree: a document selector would pick another element.
+    if (typeof element.getRootNode === "function" && element.getRootNode() !== document) {
+      return null;
+    }
     const tag = String(element.localName);
     const id = element.getAttribute("id");
     const escape = globalThis.CSS && globalThis.CSS.escape;
@@ -209,14 +223,14 @@ LISTENER_SCRIPT = (
     if (typeof el.getBoundingClientRect !== "function") return true;
     const box = el.getBoundingClientRect();
     const width = globalThis.innerWidth;
-    const height = globalThis.innerHeight;
+    // Below the fold counts: a person scrolls to it. Above the page, or left or
+    // right of the viewport, does not.
     return (
       box.width > 0 &&
       box.height > 0 &&
       box.right > 0 &&
       box.bottom > 0 &&
-      (typeof width !== "number" || box.left < width) &&
-      (typeof height !== "number" || box.top < height)
+      (typeof width !== "number" || box.left < width)
     );
   };
   // The password inputs under *root*: type password, or marked current-password.
@@ -252,12 +266,38 @@ LISTENER_SCRIPT = (
     }
     return found;
   };
-  // The controls drawn at the last trusted click on this page (scrolling does not
-  // hide one, so the viewport does not count here), or null before the first.
+  // The first __MAX_CONTROLS__ controls drawn on the page now (scrolling does not hide
+  // one, so the viewport does not count here).
+  const drawnNow = () =>
+    new WeakSet(
+      Array.from(document.querySelectorAll(controls)).slice(0, __MAX_CONTROLS__).filter(drawn)
+    );
+  // The controls drawn at the page's load, at its last trusted press, or at its last
+  // trusted click with no press before it (a keyboard's), whichever came last; null
+  // before any. A click is compared with the set taken before its own press, since a
+  // menu that opens on the press of its trigger draws its items by the trigger's
+  // click.
   let drawnControls = null;
+  let beforePress = null;
+  let pressed = false;
+  const remember = () => {
+    try {
+      drawnControls = drawnNow();
+    } catch (error) {
+      // Keep the last set: a control then reads as revealed, never the reverse.
+    }
+  };
+  const onPress = (event) => {
+    if (!event.isTrusted) return;
+    beforePress = drawnControls;
+    pressed = true;
+    remember();
+  };
   const revealedAndRemember = (control) => {
-    const revealed = Boolean(control) && drawnControls !== null && !drawnControls.has(control);
-    drawnControls = new WeakSet(Array.from(document.querySelectorAll(controls)).filter(drawn));
+    const compared = pressed ? beforePress : drawnControls;
+    const revealed = Boolean(control) && compared !== null && !compared.has(control);
+    if (!pressed) remember();
+    pressed = false;
     return revealed;
   };
   // A field a person types into; a checkbox, a radio, or a button is not one.
@@ -366,6 +406,10 @@ LISTENER_SCRIPT = (
     for (const type of ["click", "focusin"]) {
       window.addEventListener(type, interaction, { capture: true, passive: true });
     }
+    window.addEventListener("pointerdown", onPress, { capture: true, passive: true });
+    // The page as it loaded: a first click on a control a hover drew is revealed.
+    if (document.readyState === "complete") remember();
+    else window.addEventListener("load", remember, { capture: true, passive: true });
   } catch (error) {
     // As above.
   }
@@ -378,4 +422,5 @@ LISTENER_SCRIPT = (
     .replace("__MAX_NAME__", str(MAX_SELECTOR_NAME))
     .replace("__LOGIN_LEVELS__", str(LOGIN_CONTAINER_LEVELS))
     .replace("__MAX_FIELDS__", str(MAX_SHOWN_FIELDS))
+    .replace("__MAX_CONTROLS__", str(MAX_DRAWN_CONTROLS))
 )

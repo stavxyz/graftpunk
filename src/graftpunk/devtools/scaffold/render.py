@@ -489,13 +489,13 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
             "login reaches too."
         )
     lines = ["    login_config = LoginConfig(", "        steps=["]
-    lines.extend(_render_opener_step(form, spec.backend, indent=len(L3)))
+    lines.extend(_render_opener_suggestion(form, spec.backend, indent=len(L3)))
     lines.extend(
         _render_login_step(
             form,
             indent=len(L3),
-            wait_for=_first_field_selector(form)
-            if form.opener and spec.backend == "nodriver"
+            commented_wait_for=_first_field_selector(form)
+            if form.opener_candidate and spec.backend == "nodriver"
             else "",
         )
     )
@@ -652,30 +652,12 @@ def _login_page_url(form: LoginForm, base_url: str) -> str | None:
     return page
 
 
-# Selenium refuses a step's wait_for, so the click that opens a login form is followed
-# by this pause instead (seconds). A modal's open animation takes a fraction of a
-# second, and a script that fetches the form's markup on the click (a fetch is no
-# navigation, so the digest keeps such an opener) a little more; two seconds covers
-# both on an ordinary connection and costs little against the login's timeout. The
-# comment above the step says to raise it.
+# Selenium refuses a step's wait_for, so a suggested opener step is followed by this
+# pause instead (seconds). A modal's open animation takes a fraction of a second,
+# and a script that fetches the form's markup on the click a little more; two
+# seconds covers both on an ordinary connection and costs little against the
+# login's timeout. The comment above the step says to raise it.
 _OPENER_DELAY_S = 2.0
-
-
-# Why the last click before a form's first field was not made its opener step, by
-# LoginForm.opener_note (graftpunk.har.digest._login_opener).
-_OPENER_REASONS = {
-    "field_shown": "One of this form's fields was already on screen when it was clicked, "
-    "so it did not open this form.",
-    "route_changed": "The page's address changed after it, so the form is on the page "
-    "that click led to.",
-    "earlier_step": "A field was focused before it, so the login has a step before this form.",
-    "in_dialog": "It was inside a dialog, so the login may take more than one click.",
-    "revealed": "It appeared only after the click before it{before}, so the login may "
-    "take more than one click.",
-    "no_selector": "The recording kept no usable selector for it. None picked it alone on "
-    "the page, it sits in a shadow tree, its selector was too long, or its id or name "
-    "held an account value.",
-}
 
 
 def _comment_safe(selector: str) -> str:
@@ -696,38 +678,64 @@ def _first_field_selector(form: LoginForm) -> str:
     return next((printed[role] for role in form.fields if printed.get(role)), "") or ""
 
 
-def _render_opener_step(form: LoginForm, backend: str, *, indent: int) -> list[str]:
-    """The click-only ``LoginStep`` that opens *form*, when the recording found the
-    click (``LoginForm.opener``): under Selenium, which refuses a step ``wait_for``,
-    with a pause after the click and a comment saying why. Nothing otherwise; an
-    opener the recording kept no selector for is a ``GP-FILL`` on the form's step."""
-    if not form.opener:
+def _commented(lines: list[str], *, indent: int) -> list[str]:
+    """*lines* of generated code commented out at *indent*, so removing ``# `` from
+    each gives them back exactly."""
+    return [f"{line[:indent]}# {line[indent:]}" for line in lines]
+
+
+def _render_opener_suggestion(form: LoginForm, backend: str, *, indent: int) -> list[str]:
+    """The click the recording suggests opened *form* (``LoginForm.opener_candidate``),
+    as a ``GP-FILL`` and a click-only ``LoginStep`` commented out: a single recording
+    does not tell reliably which click opened a login, so the author confirms it by
+    uncommenting the step (and, under nodriver, the form step's ``wait_for``). Under
+    Selenium, which refuses a step ``wait_for``, the commented step pauses after the
+    click instead, and a comment says why. Nothing when there is no suggestion."""
+    if not form.opener_candidate:
         return []
     pad = " " * indent
-    lines: list[str] = []
+    waits = backend == "nodriver" and bool(_first_field_selector(form))
+    tail = (
+        "uncomment the LoginStep below and the wait_for line in the step after it."
+        if waits
+        else "uncomment the LoginStep below."
+    )
+    lines = wrapped_comment_lines(
+        f"{GP_FILL_MARKER}: the recording's last click before this form's first field was "
+        f'on "{_comment_safe(form.opener_candidate)}". If that click opens this form, {tail}',
+        indent=indent,
+    )
     if backend == "selenium":
         lines.extend(
             wrapped_comment_lines(
-                "Selenium runs no step wait_for, so the click that opens the login form is "
-                "followed by a fixed delay instead; raise it if the form takes longer to "
-                "appear, as one whose markup the page fetches on the click can.",
+                "Selenium runs no step wait_for, so this step pauses after the click "
+                "instead; raise the delay if the form takes longer to appear, as one whose "
+                "markup the page fetches on the click can.",
                 indent=indent,
             )
         )
-    lines.append(f"{pad}LoginStep(")
-    lines.extend(literal_lines(form.opener, indent=indent + INDENT_STEP, prefix="submit="))
+    step = [f"{pad}LoginStep("]
+    # Escaped as a comment is, so a commented line holds no line separator; each
+    # escape is one a Python string literal reads back as the same character.
+    step.extend(
+        _comment_safe(line)
+        for line in literal_lines(
+            form.opener_candidate, indent=indent + INDENT_STEP, prefix="submit="
+        )
+    )
     if backend == "selenium":
-        lines.append(f"{pad}{' ' * INDENT_STEP}delay={_OPENER_DELAY_S},")
-    lines.append(f"{pad}),")
-    return lines
+        step.append(f"{pad}{' ' * INDENT_STEP}delay={_OPENER_DELAY_S},")
+    step.append(f"{pad}),")
+    return [*lines, *_commented(step, indent=indent)]
 
 
-def _render_login_step(form: LoginForm, *, indent: int, wait_for: str = "") -> list[str]:
+def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str = "") -> list[str]:
     """A generated ``LoginStep(...)``, exploded one keyword argument per line so a
     long selector cannot push the whole call over the generated width. Selectors
     are the ones ``printable_selectors`` allows: unscoped when the form's action
-    holds an id, and a ``GP-FILL`` where one cannot be. *wait_for*, when given, is the
-    selector the step waits for first (the form's first field, after its opener)."""
+    holds an id, and a ``GP-FILL`` where one cannot be. *commented_wait_for*, when
+    given, is a ``wait_for`` line commented out (the form's first field, for the
+    suggested opener step above it)."""
     pad = " " * indent
     fields, submit = printable_selectors(form)
     submit_value = submit or f"{GP_FILL_MARKER}: submit selector"
@@ -808,19 +816,7 @@ def _render_login_step(form: LoginForm, *, indent: int, wait_for: str = "") -> l
             )
             text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand."
         lines.extend(wrapped_comment_lines(text, indent=indent))
-    if form.opener_note:
-        on = f" (on {_comment_safe(form.opener_clicked)})" if form.opener_clicked else ""
-        before = f" (on {_comment_safe(form.opener_before)})" if form.opener_before else ""
-        why = _OPENER_REASONS[form.opener_note].format(before=before)
-        lines.extend(
-            wrapped_comment_lines(
-                f"{GP_FILL_MARKER}: the last click before this form's first field{on} was not "
-                f"made a step. {why} If a click opens this form, add a click-only LoginStep "
-                "before this one.",
-                indent=indent,
-            )
-        )
-    elif form.from_snapshot and not form.opener:
+    if form.from_snapshot and not form.opener_candidate:
         # No recorded HTML held this form: the page's script rendered it, often
         # after a click the recording does not know.
         lines.extend(
@@ -833,8 +829,9 @@ def _render_login_step(form: LoginForm, *, indent: int, wait_for: str = "") -> l
     lines.append(f"{pad}LoginStep(")
     lines.extend(_exploded_literal_dict_lines(entries, indent=indent + INDENT_STEP))
     lines.extend(literal_lines(submit_value, indent=indent + INDENT_STEP, prefix="submit="))
-    if wait_for:
-        lines.extend(literal_lines(wait_for, indent=indent + INDENT_STEP, prefix="wait_for="))
+    if commented_wait_for:
+        wait = literal_lines(commented_wait_for, indent=indent + INDENT_STEP, prefix="wait_for=")
+        lines.extend(_commented(wait, indent=indent + INDENT_STEP))
     lines.append(f"{pad}),")
     return lines
 

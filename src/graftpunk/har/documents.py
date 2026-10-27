@@ -135,19 +135,11 @@ class LoginForm:
     # recorded <form> whose snapshot copy is marked. Such a form can be behind a
     # click. Internal.
     in_dialog: bool = field(default=False, metadata={"internal": True})
-    # The selector of the click that opened this form, read from what gp observe
-    # recorded before the credential post (graftpunk.har.digest, #267); empty when no
-    # click qualified. Set by the digest, never from markup. Internal.
-    opener: str = field(default="", metadata={"internal": True})
-    # Why the last click before the form's first field is not its opener, when one
-    # was recorded: "field_shown", "route_changed", "earlier_step", "in_dialog",
-    # "revealed", or "no_selector" (graftpunk.har.digest._login_opener); empty
-    # otherwise. Internal.
-    opener_note: str = field(default="", metadata={"internal": True})
-    # That click's selector, and the control click's before it, when it is safe to
-    # print (bounded, holding no account value), else empty. Internal.
-    opener_clicked: str = field(default="", metadata={"internal": True})
-    opener_before: str = field(default="", metadata={"internal": True})
+    # The selector of the click the recording suggests opened this form, from what
+    # gp observe recorded before the credential post (graftpunk.har.digest, #267);
+    # empty when none qualifies. Never from markup, and only ever a suggestion the
+    # generator writes commented out. Set by the digest. Internal.
+    opener_candidate: str = field(default="", metadata={"internal": True})
 
 
 @dataclass(frozen=True)

@@ -19,6 +19,7 @@ from graftpunk.observe.dom_listener import (
     DEBOUNCE_MS,
     INTERACTION_TYPE,
     LISTENER_SCRIPT,
+    MAX_DRAWN_CONTROLS,
     MAX_INTERACTIONS_PER_SECOND,
     STRUCTURAL_DEPTH,
     WORLD_NAME,
@@ -153,6 +154,8 @@ class TestTheScriptInAFakePage:
             "click",
             "focusin",
             "keydown",
+            "load",
+            "pointerdown",
             "submit",
         ]
         assert all(each["options"]["capture"] is True for each in result["listeners"])
@@ -377,6 +380,11 @@ function build(spec, parent, shadowHost = null) {
       return descendants(this).filter((each) => match(each));
     },
     getClientRects() { return this.hidden ? [] : [{}]; },
+    getRootNode() {
+      let node = this;
+      while (node.parentElement) node = node.parentElement;
+      return node.shadowHost ? { host: node.shadowHost } : globalThis.document;
+    },
     checkVisibility: config.noCheckVisibility ? undefined : function (options) {
       if (this.hidden) return false;
       if (options && options.visibilityProperty && this.visibility === "hidden") return false;
@@ -795,6 +803,13 @@ _REVEAL_PAGE = {
                         {"tag": "button", "attrs": {"id": "accept"}, "key": "accept"},
                         {"tag": "button", "attrs": {"id": "menu"}, "key": "menu"},
                         {"tag": "a", "attrs": {"id": "signin"}, "key": "signin"},
+                        # Scrolled out of view at a click: still drawn.
+                        {
+                            "tag": "a",
+                            "attrs": {"id": "far"},
+                            "key": "far",
+                            "rect": [10, 3000, 100, 20],
+                        },
                         {
                             "tag": "nav",
                             "hidden": True,
@@ -827,6 +842,9 @@ _REVEAL_PAGE = {
                         },
                         {"tag": "input", "attrs": {"id": "flat"}, "rect": [10, 10, 0, 20]},
                         {"tag": "input", "attrs": {"id": "below"}, "rect": [10, 900, 100, 20]},
+                        {"tag": "input", "attrs": {"id": "thin"}, "rect": [10, 10, 100, 0]},
+                        {"tag": "input", "attrs": {"id": "above"}, "rect": [10, -100, 100, 20]},
+                        {"tag": "input", "attrs": {"id": "right"}, "rect": [1200, 10, 100, 20]},
                     ],
                 },
                 {
@@ -844,7 +862,8 @@ _REVEAL_PAGE = {
     ],
 }
 
-_REVEAL_SHOWN = ["#email", "#plain", "#pw-current", "#pick", "#note"]
+# A field below the fold counts: a person scrolls to it.
+_REVEAL_SHOWN = ["#email", "#plain", "#pw-current", "#pick", "#note", "#below"]
 
 _UNCHANGED = {"prevented": False, "stopped": False, "escaped": None}
 
@@ -1273,6 +1292,153 @@ class TestInteractionEvents:
         )
         result = _run_dom(tmp_path, [{"type": "click", "target": "nul"}], dom=page)
         assert result["calls"][0]["selector"] == 'button[name="a\\0 b"]'
+
+    def test_a_control_scrolled_out_of_view_was_not_revealed(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "accept"}, {"type": "click", "target": "far"}],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, False]
+
+    def test_each_click_compares_with_the_click_before_it(self, tmp_path: Path) -> None:
+        """A link the second click's page showed is revealed at the third, and one
+        drawn since the third is not revealed at the fourth."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "accept"},
+                {"type": "click", "target": "menu"},
+                {"type": "click", "target": "nav-signin", "show": "nav"},
+                {"type": "click", "target": "nav-signin"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, False, True, False]
+
+    def test_a_click_on_no_control_also_takes_the_page_s_controls(self, tmp_path: Path) -> None:
+        """A div that opens a menu: the link it showed is revealed at the next click."""
+        page = json.loads(json.dumps(_REVEAL_PAGE))
+        page["children"][0]["children"][0]["children"].append(
+            {"tag": "div", "key": "div-menu", "text": "Account"}
+        )
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "div-menu"},
+                {"type": "click", "target": "nav-signin", "show": "nav"},
+            ],
+            dom=page,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, True]
+
+    def test_a_password_off_screen_does_not_put_a_click_inside_the_login(
+        self, tmp_path: Path
+    ) -> None:
+        page = {
+            "tag": "html",
+            "children": [
+                {
+                    "tag": "body",
+                    "children": [
+                        {
+                            "tag": "div",
+                            "children": [
+                                {"tag": "a", "attrs": {"id": "go"}, "key": "go"},
+                                {
+                                    "tag": "input",
+                                    "attrs": {"type": "password"},
+                                    "rect": [-9999, 10, 100, 20],
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        result = _run_dom(tmp_path, [{"type": "click", "target": "go"}], dom=page)
+        assert result["calls"][0]["inLogin"] is False
+
+    def test_a_control_in_a_shadow_tree_never_gets_a_document_selector(
+        self, tmp_path: Path
+    ) -> None:
+        """Its structural path would be unique in the document and pick another
+        element there."""
+        page = {
+            "tag": "html",
+            "children": [
+                {
+                    "tag": "body",
+                    "children": [
+                        {"tag": "button", "attrs": {"name": "x"}, "key": "light"},
+                        {
+                            "tag": "signin-button",
+                            "key": "host",
+                            "shadow": [{"tag": "button", "key": "inner"}],
+                        },
+                    ],
+                }
+            ],
+        }
+        result = _run_dom(
+            tmp_path, [{"type": "click", "target": "inner", "retarget": "host"}], dom=page
+        )
+        assert [(c["selector"], c["control"]) for c in result["calls"]] == [(None, True)]
+
+    def test_at_most_the_first_controls_are_remembered(self, tmp_path: Path) -> None:
+        """Past the cap a control reads as revealed: the page's cost per click is
+        bounded."""
+        page = json.loads(json.dumps(_REVEAL_PAGE))
+        page["children"][0]["children"].append(
+            {
+                "tag": "section",
+                "children": [
+                    {"tag": "a", "attrs": {"id": f"l{n}"}, "key": f"l{n}"}
+                    for n in range(MAX_DRAWN_CONTROLS)
+                ],
+            }
+        )
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "accept"},
+                {"type": "click", "target": "l10"},
+                {"type": "click", "target": f"l{MAX_DRAWN_CONTROLS - 1}"},
+            ],
+            dom=page,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, False, True]
+
+    def test_a_control_not_drawn_at_page_load_is_revealed_at_the_first_click(
+        self, tmp_path: Path
+    ) -> None:
+        """A hover-opened menu's link clicked first: the page as it loaded did not
+        draw it."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "load"},
+                {"type": "click", "target": "nav-signin", "show": "nav"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [True]
+
+    def test_a_menu_opened_on_pointerdown_reveals_its_item(self, tmp_path: Path) -> None:
+        """The menu is drawn by the trigger's click, but not at the trigger's press,
+        which the item's click is compared with."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "load"},
+                {"type": "pointerdown", "target": "menu"},
+                {"type": "click", "target": "menu", "show": "nav"},
+                {"type": "pointerdown", "target": "nav-signin"},
+                {"type": "click", "target": "nav-signin"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, True]
 
     def test_forty_attempts_in_two_milliseconds_send_twenty(self, tmp_path: Path) -> None:
         """A sliding window: one event, then a burst straddling the second after it.

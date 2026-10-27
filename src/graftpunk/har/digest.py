@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, get_args
+from typing import Any, Literal, get_args
 from urllib.parse import parse_qs, unquote, unquote_plus, urljoin, urlparse, urlunparse
 
 from graftpunk.har.documents import (
@@ -1134,18 +1134,6 @@ def _formless_credit(
     return at, _form_key(form)
 
 
-class _Opener(NamedTuple):
-    """What the clicks before a form's credential post say opened it: the opener's
-    selector, or empty with the reason (``note``) the candidate click is not one;
-    ``clicked`` is the candidate's selector and ``before`` the control click before
-    it, each when it is safe to print."""
-
-    selector: str
-    note: str
-    clicked: str
-    before: str = ""
-
-
 def _printable_selector(selector: str | None) -> str:
     """*selector* when it is usable and safe to print: within ``MAX_SELECTOR_LENGTH``
     and holding no account value; else empty."""
@@ -1158,31 +1146,26 @@ def _login_opener(
     interactions: tuple[LoginInteraction, ...],
     post_at: datetime,
     page_loads: list[datetime],
-) -> _Opener | None:
-    """The click that opened *form*, from the *interactions* recorded before its
-    credential post (sent at *post_at*), decided from what that click revealed; None
-    when no click is a candidate.
+) -> str | None:
+    """The click the recording suggests opened *form*: a selector from the
+    *interactions* recorded before its credential post (sent at *post_at*), or None.
+    It is only ever a suggestion: a single recording does not tell reliably which
+    click opened a login, so the generator writes it commented out for the author to
+    confirm.
 
-    The candidate is the last click on a control before the first focus on one of the
-    form's field selectors (the recorded ones and their unscoped forms, compared by
-    :func:`graftpunk.har.selectors.selector_keys`). A click on no control (a heading,
-    a backdrop, a label) opened nothing and is passed over, and so is a click the page
-    saw inside the login (``in_login``) on a control the click before it revealed (a
-    tab or a show-password button of the opened login); a flagged click on a control
-    that was already on the page is still a candidate. There is no candidate when the
-    one found picks one of the form's fields or its submit, or a navigation of the run
-    (*page_loads*, see :func:`_is_page_load`) started between it and that focus, both
-    ends included: a click that loaded a page is a link to the form's page.
-
-    The candidate is the opener only when each of these holds, its note the first
-    that does not: ``field_shown``, none of the form's fields was among the fields
-    shown at it (the login was already on screen); ``route_changed``, its page path
-    is the first focus's (when both are known); ``earlier_step``, for a form with no
-    username, no field was focused before it (the login has an earlier step);
-    ``in_dialog``, it was not inside a dialog; ``revealed``, the click before it
-    showed it (the login takes more than one click); and ``no_selector``, it has a
-    usable selector. A focus or a shown field whose selector is over
-    ``MAX_SELECTOR_LENGTH`` characters is not read."""
+    The candidate is the last click on a control (``control``), not flagged inside
+    the login (``in_login``), before the first focus on one of the form's field
+    selectors (the recorded ones and their unscoped forms, compared by
+    :func:`graftpunk.har.selectors.selector_keys`). There is no suggestion when there
+    is no candidate, or when it picks one of the form's fields or its submit; a
+    navigation of the run (*page_loads*, see :func:`_is_page_load`) started between it
+    and that focus, both ends included; one of the form's fields was among the fields
+    shown at it (the login was already on screen); its page path differs from the
+    first focus's (when both are known); the form has no username and a field was
+    focused before it, or a field was shown at it (the login has an earlier step); it
+    was inside a dialog; the click before it revealed it; or it has no usable
+    selector (over ``MAX_SELECTOR_LENGTH`` characters, or holding an account value). A
+    focus or a shown field whose selector is over that length is not read."""
     roles: set[tuple[str, ...]] = set()
     for selector in (*form.fields.values(), *form.unscoped_fields.values()):
         roles |= selector_keys(selector)
@@ -1211,48 +1194,30 @@ def _login_opener(
             for at in range(first_focus - 1, -1, -1)
             if interactions[at].kind == "click"
             and interactions[at].control
-            and not (interactions[at].in_login and interactions[at].revealed)
+            and not interactions[at].in_login
         ),
         None,
     )
     if at is None:
         return None
     click = interactions[at]
-    clicked = bounded_selector(click.selector)
-    if clicked is not None and selector_keys(clicked) & controls:
-        return None
-    clicked_at = post_at - timedelta(milliseconds=click.ms_before)
     focus = interactions[first_focus]
+    clicked = bounded_selector(click.selector)
+    clicked_at = post_at - timedelta(milliseconds=click.ms_before)
     focused_at = post_at - timedelta(milliseconds=focus.ms_before)
-    if any(clicked_at <= loaded <= focused_at for loaded in page_loads):
-        return None
-    printable = _printable_selector(clicked)
-    before = next(
-        (
-            _printable_selector(event.selector)
-            for event in reversed(interactions[:at])
-            if event.kind == "click" and event.control
-        ),
-        "",
+    no_username = "username" not in form.fields
+    disqualified = (
+        (clicked is not None and bool(selector_keys(clicked) & controls))
+        or any(clicked_at <= loaded <= focused_at for loaded in page_loads)
+        or any(names_a_field(shown) for shown in click.shown_fields)
+        or (click.path is not None and focus.path is not None and click.path != focus.path)
+        or (no_username and any(event.kind == "focus" for event in interactions[:at]))
+        or (no_username and bool(click.shown_fields))
+        or click.in_dialog
+        or click.revealed
     )
-    for note, failed in (
-        ("field_shown", any(names_a_field(shown) for shown in click.shown_fields)),
-        (
-            "route_changed",
-            click.path is not None and focus.path is not None and click.path != focus.path,
-        ),
-        (
-            "earlier_step",
-            "username" not in form.fields
-            and any(event.kind == "focus" for event in interactions[:at]),
-        ),
-        ("in_dialog", click.in_dialog),
-        ("revealed", click.revealed),
-        ("no_selector", not printable),
-    ):
-        if failed:
-            return _Opener("", note, printable, before)
-    return _Opener(printable, "", printable, before)
+    printable = _printable_selector(clicked)
+    return None if disqualified or not printable else printable
 
 
 def _is_page_load(entry: HAREntry, method: str, content_type: str) -> bool:
@@ -2250,7 +2215,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         return (page, _visible_shape(form)) in dialog_shapes
 
     marked_keys = {_form_key(form) for form in login_forms if _marked_by_a_snapshot(form)}
-    openers: dict[tuple[object, ...], _Opener] = {}
+    openers: dict[tuple[object, ...], str] = {}
     for (post_at, interactions), post in zip(post_interactions, credential_posts, strict=True):
         if post.page_step is None or not interactions:
             continue
@@ -2272,14 +2237,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         for form in ranked_forms
     ]
     ranked_forms = [
-        replace(
-            form,
-            opener=found.selector,
-            opener_note=found.note,
-            opener_clicked=found.clicked,
-            opener_before=found.before,
-        )
-        if (found := openers.get(_form_key(form))) is not None
+        replace(form, opener_candidate=openers[_form_key(form)])
+        if _form_key(form) in openers
         else form
         for form in ranked_forms
     ]

@@ -16,6 +16,7 @@ from graftpunk.har.paths import holds_an_id
 
 __all__ = [
     "MAX_SELECTOR_LENGTH",
+    "MAX_SHOWN_FIELDS",
     "bounded_selector",
     "css_unescape",
     "selector_holds_an_id",
@@ -28,6 +29,9 @@ __all__ = [
 # or name full of characters CSS escapes, or a path of long custom tag names) is
 # read as no selector, which leaves the opener unresolved.
 MAX_SELECTOR_LENGTH = 256
+# The most shown fields a click lists (graftpunk.observe.dom_listener) and any reader
+# keeps: a login shows two or three.
+MAX_SHOWN_FIELDS = 16
 
 
 def bounded_selector(selector: object) -> str | None:

@@ -21,7 +21,8 @@ from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
 from graftpunk.har.parser import cookie_header_pairs
-from graftpunk.har.selectors import MAX_SELECTOR_LENGTH, bounded_selector
+from graftpunk.har.paths import bare_path, holds_an_id
+from graftpunk.har.selectors import MAX_SELECTOR_LENGTH, MAX_SHOWN_FIELDS, bounded_selector
 from graftpunk.logging import get_logger
 
 try:
@@ -97,8 +98,6 @@ LOGIN_INTERACTION_WINDOW_MS = 120_000
 # is kept as None, so neither memory nor holds_an_id's run time grows with a
 # page's ids.
 MAX_STORED_SELECTOR = MAX_SELECTOR_LENGTH
-# The most shown fields stored with a click, the listener's own limit.
-MAX_SHOWN_FIELDS = 16
 
 
 class _Interaction(NamedTuple):
@@ -182,6 +181,16 @@ def _origin_only(event: Any) -> bool:
         return False
     request_url = getattr(getattr(event, "request", None), "url", None)
     return parts.path == "" or _origin(referer) != _origin(request_url)
+
+
+def _page_path(url: str) -> str:
+    """The page path an interaction is stored with: *url*'s path with no query,
+    fragment, or ``;params`` (graftpunk.har.paths.bare_path), and each segment that
+    holds an account value (graftpunk.har.paths.holds_an_id) as ``{id}``."""
+    path = bare_path(urllib.parse.urlsplit(url).path) or "/"
+    return "/".join(
+        "{id}" if segment and holds_an_id(segment) else segment for segment in path.split("/")
+    )
 
 
 def _is_navigation(event: Any) -> bool:
@@ -1124,8 +1133,9 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
         # say the same only to a secure origin, and only when ExtraInfo arrived.
         entry["request"]["_resourceType"] = request_data["resource_type"]
     if request_data.get("_login_interactions"):
-        # The clicks and focus moves before a credential post (HAR 1.2 custom field):
-        # kind, selector, and msBefore, oldest first; no URL and no absolute time.
+        # The clicks and focus moves before a credential post (HAR 1.2 custom field),
+        # oldest first, as _attach_interactions stores them; no URL and no absolute
+        # time.
         entry["request"]["_loginInteractions"] = list(request_data["_login_interactions"])
     return entry
 
@@ -2088,8 +2098,11 @@ class NodriverCaptureBackend:
     def _attach_interactions(self, data: dict[str, Any]) -> None:
         """Store on the credential post *data* the clicks and focus moves its sending
         page's origin sent within ``LOGIN_INTERACTION_WINDOW_MS`` before it (no later
-        than its ``wallTime``), oldest first, as kind, selector, and milliseconds
-        before the post. A selector that holds an account value
+        than its ``wallTime``), oldest first: each as ``kind``, ``selector``,
+        ``msBefore`` (milliseconds before the post), and ``path`` (:func:`_page_path`);
+        a click also as ``control``, ``inDialog``, ``revealed``, and ``shownFields`` (at
+        most ``MAX_SHOWN_FIELDS``, each holding no account value), and ``inLogin:
+        true`` when the page flagged it. A selector that holds an account value
         (:func:`graftpunk.har.selectors.selector_holds_an_id`) is stored as None. A
         post whose sending page is unknown, or whose time is, gets none."""
         from graftpunk.har.selectors import selector_holds_an_id
@@ -2251,6 +2264,8 @@ class NodriverCaptureBackend:
             not all(isinstance(value, bool) for value in state) or not isinstance(fields, list)
         ):
             raise ValueError("not a listener click")
+        # Room for the selectors the account-value filter drops when a post takes
+        # them, so the kept ones can still reach MAX_SHOWN_FIELDS; bounded all the same.
         shown = tuple(bounded_selector(field) for field in fields or () if isinstance(field, str))[
             : MAX_SHOWN_FIELDS * 4
         ]
@@ -2266,7 +2281,7 @@ class NodriverCaptureBackend:
                 kind,
                 bounded_selector(selector),
                 float(time_ms),
-                path=urllib.parse.urlsplit(url).path or "/",
+                path=_page_path(url),
                 in_login=payload.get("inLogin") is True,
                 control=state[0] is True,
                 in_dialog=state[1] is True,

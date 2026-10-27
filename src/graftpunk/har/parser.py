@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from graftpunk.har.selectors import bounded_selector
+from graftpunk.har.selectors import MAX_SHOWN_FIELDS, bounded_selector
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -330,10 +330,6 @@ def _request_body_file(ref: str, base_dir: Path | None) -> tuple[str | None, boo
         return raw.decode("utf-8"), True
     except UnicodeDecodeError:
         return None, True
-
-
-# The most shown fields a click's record keeps, as the recorder writes them.
-MAX_SHOWN_FIELDS = 16
 
 
 def _shown_fields(raw: Any) -> tuple[str, ...]:

@@ -231,8 +231,9 @@ def _projected_form(form: LoginForm) -> dict[str, Any]:
     Otherwise both are printed as recorded. The submit selector follows the same
     rule; ``neutral_roles`` are the placeholder role keys (``field_N``), and
     ``unresolved_roles`` the roles the printed step has no selector for
-    (:func:`graftpunk.har.documents.printable_unresolved_roles`). ``opener`` is the
-    selector of the click that opened the form (``LoginForm.opener``) or null."""
+    (:func:`graftpunk.har.documents.printable_unresolved_roles`). ``opener_candidate``
+    is the selector of the click the recording suggests opened the form
+    (``LoginForm.opener_candidate``) or null."""
     action = templated_url(form.action) if templates_a_segment(form.action) else form.action
     selectors, submit = printable_selectors(form)
     # A selector that cannot be unscoped is left out, never printed scoped.
@@ -243,9 +244,9 @@ def _projected_form(form: LoginForm) -> dict[str, Any]:
         "submit": submit,
         "neutral_roles": list(form.neutral_roles),
         "unresolved_roles": list(printable_unresolved_roles(form)),
-        # The click that opened the form, as gp observe recorded it; null when none
-        # did, or when the recording kept no selector for it.
-        "opener": form.opener or None,
+        # The click the recording suggests opened the form; null when none
+        # qualifies. Only a suggestion: a generated login never clicks it.
+        "opener_candidate": form.opener_candidate or None,
     }
 
 

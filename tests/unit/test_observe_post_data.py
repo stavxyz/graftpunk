@@ -3389,3 +3389,44 @@ def test_selenium_entries_carry_their_resource_type_too() -> None:
     backend = SeleniumCaptureBackend(Driver())
     backend.stop_capture()
     assert _only_entry(backend)["request"]["_resourceType"] == "Document"
+
+
+class TestTheStoredPagePath:
+    """Review round 4: the path holds no ``;params`` and no segment holding an account
+    value."""
+
+    @pytest.mark.asyncio
+    async def test_params_are_dropped_and_an_account_segment_is_templated(
+        self, tmp_path: Path
+    ) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        backend = await _record(
+            tab,
+            [
+                _interaction(
+                    "click",
+                    "#signin-link",
+                    time_ms=_POST_MS - 900,
+                    url="https://myshop.example/accounts/40912873/login;jsessionid=AB12?x=1",
+                ),
+                _will_be_sent("61.1", inline=_LOGIN_BODY, url=LOGIN),
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        (stored,) = _only_entry(backend)["request"]["_loginInteractions"]
+        assert stored["path"] == "/accounts/{id}/login"
+        assert "jsessionid" not in json.dumps(stored)
+        assert "40912873" not in json.dumps(stored)
+
+    def test_the_shown_field_limit_is_one_constant(self) -> None:
+        from graftpunk.har import parser, selectors
+        from graftpunk.observe import capture as recorder
+        from graftpunk.observe import dom_listener
+
+        assert (
+            recorder.MAX_SHOWN_FIELDS
+            is parser.MAX_SHOWN_FIELDS
+            is dom_listener.MAX_SHOWN_FIELDS
+            is selectors.MAX_SHOWN_FIELDS
+        )
