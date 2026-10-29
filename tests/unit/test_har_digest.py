@@ -5981,34 +5981,40 @@ _OPENER_SELENIUM_COMMENT = (
 )
 
 
-def _suggestion(selector: str, backend: str = "nodriver") -> str:
-    """The comment a generated login carries for a suggested opener."""
+def _suggestion(selector: str, *, waits: bool = True) -> str:
+    """The comment a generated login carries for a suggested opener; *waits* when the
+    form's step holds a commented wait_for (nodriver, with a printable first field)."""
     tail = (
-        "uncomment the LoginStep below and the wait_for line in the step after it."
-        if backend == "nodriver"
+        "uncomment the LoginStep below and the commented wait_for in the step after it."
+        if waits
         else "uncomment the LoginStep below."
     )
     return (
-        "GP-FILL: the recording's last click before this form's first field was on "
-        f'"{selector}". If that click opens this form, {tail}'
+        f'GP-FILL: a click recorded before this form\'s first field was on "{selector}". '
+        f"If that click opens this form, {tail} If it does not, find the control that "
+        "opens it and add a click-only LoginStep with its selector."
     )
 
 
 def _uncommented(code: str) -> str:
     """*code* with the suggested opener step and its wait uncommented, as an author
-    who confirmed it would leave it."""
-    lines = code.split("\n")
+    who confirmed it would leave it: each commented block from its opening line to the
+    ``# ),`` at the same indent."""
     out: list[str] = []
-    in_step = False
-    for line in lines:
+    closing_pad: str | None = None
+    for line in code.split("\n"):
         stripped = line.lstrip()
         pad = line[: len(line) - len(stripped)]
-        if stripped.startswith("# LoginStep("):
-            in_step = True
-        if in_step or stripped.startswith("# wait_for="):
+        opens = stripped.startswith("# LoginStep(") or stripped.startswith("# wait_for=")
+        if closing_pad is None and opens:
             out.append(pad + stripped[2:])
-            if stripped == "# ),":
-                in_step = False
+            if stripped.endswith("("):
+                closing_pad = pad
+            continue
+        if closing_pad is not None and pad.startswith(closing_pad) and stripped.startswith("#"):
+            out.append(pad + stripped[2:])
+            if pad == closing_pad and stripped.startswith("# )"):
+                closing_pad = None
             continue
         out.append(line)
     return "\n".join(out)
@@ -6140,7 +6146,8 @@ class TestTheRecordingSuggestsTheOpener(_OpenerCase):
         result = self._run(tmp_path, self._entries(tmp_path))
         code = self._plugin_on(result, "nodriver")
         assert _suggestion("#signin") in _comment_text(code)
-        assert _SNAPSHOT_GP_FILL not in _comment_text(code)
+        # The snapshot's comment stays: the suggestion may be wrong.
+        assert _SNAPSHOT_GP_FILL in _comment_text(code)
         # As generated, the one-step login it was before.
         (step,) = self._steps(code)
         assert (step.submit, step.wait_for) == ("#m-go", "")
@@ -6155,7 +6162,7 @@ class TestTheRecordingSuggestsTheOpener(_OpenerCase):
         result = self._run(tmp_path, self._entries(tmp_path))
         code = self._plugin_on(result, "selenium")
         comments = _comment_text(code)
-        assert _suggestion("#signin", "selenium") in comments
+        assert _suggestion("#signin", waits=False) in comments
         assert _OPENER_SELENIUM_COMMENT in comments
         assert "wait_for=" not in code
         (step,) = self._steps(code)
@@ -6185,6 +6192,9 @@ class TestTheRecordingSuggestsTheOpener(_OpenerCase):
             compile(code, "plugin.py", "exec")
             assert "\x00" not in code
             assert "\\u2028" in _comment_text(code)
+            # Escaped in the commented step too, not only in the GP-FILL.
+            assert "\u2028" not in code
+            assert "\x85" not in code
             confirmed = _uncommented(code)
             compile(confirmed, "plugin.py", "exec")
             assert self._steps(confirmed)[0].submit == odd
@@ -6204,12 +6214,17 @@ class TestWhichClickIsSuggested(_OpenerCase):
         steps = (("click", "#signin", 5000), ("focus", '[id="m-pw"]', 2000))
         assert self._candidate(tmp_path, steps) == "#signin"
 
-    def test_a_click_on_no_control_is_passed_over(self, tmp_path: Path) -> None:
+    def test_a_click_on_no_control_after_it_means_no_suggestion(self, tmp_path: Path) -> None:
+        """A consent button, then a div opener: the div may be what opened the login."""
         steps = (
-            ("click", "#signin", 6000),
+            ("click", "#accept", 6000),
             ("click", None, 5000, {"control": False}),
             *self._OPENED[1:],
         )
+        assert self._candidate(tmp_path, steps) == ""
+
+    def test_a_click_on_no_control_before_it_does_not_count(self, tmp_path: Path) -> None:
+        steps = (("click", None, 7000, {"control": False}), *self._OPENED)
         assert self._candidate(tmp_path, steps) == "#signin"
 
     def test_a_click_flagged_inside_the_login_is_passed_over(self, tmp_path: Path) -> None:
@@ -6506,3 +6521,70 @@ class TestLoginOpenerRule:
             LoginInteraction("focus", "#m-email" + " " * 1_000_000, 3000.0),
         )
         assert _login_opener(form, steps, self._AT, []) is None
+
+
+class TestTheCommentedStepFitsTheGeneratedProject(_OpenerCase):
+    """Review round 5: the commented opener step and wait_for wrap as real step
+    arguments do, so the generated project passes its own ruff check, and compile
+    commented and uncommented."""
+
+    @staticmethod
+    def _spec(result, opener: str, first: str = ""):  # noqa: ANN001, ANN205
+        form = dataclasses.replace(result.login_forms[0], opener_candidate=opener)
+        if first:
+            form = dataclasses.replace(
+                form, fields={"username": first, "password": "#m-pw"}, unscoped_fields={}
+            )
+        return dataclasses.replace(result, login_forms=(form,))
+
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            "#" + "a" * 69,
+            "#" + "b" * 99,
+            "#" + "c" * 299,
+            "div:nth-of-type(1) > " * 10 + "a:nth-of-type(3)",
+            "#\u00e9" * 40,
+        ],
+    )
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    def test_any_length_is_ruff_clean_and_reads_back(
+        self, tmp_path: Path, selector: str, backend: str
+    ) -> None:
+        from tests.unit import test_scaffold_render as rendered
+
+        result = self._run(tmp_path, self._entries(tmp_path))
+        first = "#" + "u" * 90
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend=backend,  # type: ignore[arg-type]
+            base_url="https://myshop.example.com",
+            digest=self._spec(result, selector, first),
+        )
+        files = render(spec)
+        checker = rendered.TestRenderedTreeIsRuffClean()
+        tree = checker._write_tree(tmp_path / "tree", files)
+        checker._assert_ruff_clean(tree, "check")
+        code = files["src/graftpunk_myshop/plugin.py"]
+        compile(code, "plugin.py", "exec")
+        confirmed = _uncommented(code)
+        compile(confirmed, "plugin.py", "exec")
+        opener, form_step = self._steps(confirmed)
+        assert opener.submit == selector
+        assert form_step.wait_for == (first if backend == "nodriver" else "")
+
+    def test_no_printable_first_field_means_no_wait(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, self._entries(tmp_path))
+        # An action holding an id: a scoped selector cannot be printed unscoped.
+        form = dataclasses.replace(
+            result.login_forms[0],
+            action="/accounts/40912873/login",
+            fields={"password": 'form[action="/x"] input[name="password"]'},
+            unscoped_fields={},
+            opener_candidate="#signin",
+        )
+        spec = dataclasses.replace(result, login_forms=(form,))
+        code = self._plugin_on(spec, "nodriver")
+        assert _suggestion("#signin", waits=False) in _comment_text(code)
+        assert "# wait_for" not in code

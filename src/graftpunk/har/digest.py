@@ -1157,13 +1157,16 @@ def _login_opener(
     the login (``in_login``), before the first focus on one of the form's field
     selectors (the recorded ones and their unscoped forms, compared by
     :func:`graftpunk.har.selectors.selector_keys`). There is no suggestion when there
-    is no candidate, or when it picks one of the form's fields or its submit; a
+    is no candidate, or when it picks one of the form's fields or its submit; a click
+    on no control came after it and before that focus (a ``div`` or a menu item may
+    have opened the login); a
     navigation of the run (*page_loads*, see :func:`_is_page_load`) started between it
     and that focus, both ends included; one of the form's fields was among the fields
     shown at it (the login was already on screen); its page path differs from the
     first focus's (when both are known); the form has no username and a field was
     focused before it, or a field was shown at it (the login has an earlier step); it
-    was inside a dialog; the click before it revealed it; or it has no usable
+    was inside a dialog; it was not drawn when the page was last read before it
+    (``revealed``); or it has no usable
     selector (over ``MAX_SELECTOR_LENGTH`` characters, or holding an account value). A
     focus or a shown field whose selector is over that length is not read."""
     roles: set[tuple[str, ...]] = set()
@@ -1208,6 +1211,12 @@ def _login_opener(
     no_username = "username" not in form.fields
     disqualified = (
         (clicked is not None and bool(selector_keys(clicked) & controls))
+        # A click on no control after it (a div or a menu item with a handler) may be
+        # what opened the login.
+        or any(
+            event.kind == "click" and not event.control
+            for event in interactions[at + 1 : first_focus]
+        )
         or any(clicked_at <= loaded <= focused_at for loaded in page_loads)
         or any(names_a_field(shown) for shown in click.shown_fields)
         or (click.path is not None and focus.path is not None and click.path != focus.path)

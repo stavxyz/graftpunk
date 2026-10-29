@@ -3430,3 +3430,47 @@ class TestTheStoredPagePath:
             is dom_listener.MAX_SHOWN_FIELDS
             is selectors.MAX_SHOWN_FIELDS
         )
+
+
+class TestRecorderBoundsRound5:
+    """Review round 5: a path segment of any length costs the recorder nothing, and the
+    shown fields an account-value filter drops leave room for the rest."""
+
+    def test_a_long_path_segment_is_an_id_and_costs_no_more(self) -> None:
+        """Ten times the segment, not much more time: no scan grows with it."""
+        import time
+
+        from graftpunk.observe.capture import _page_path
+
+        def timed(n: int) -> float:
+            started = time.perf_counter()
+            # Cut at 1,024 characters first, so the segment is the rest of the path.
+            assert _page_path("https://myshop.example/a/" + "x" * n + "/login") == "/a/{id}"
+            return time.perf_counter() - started
+
+        timed(10_000)
+        small = min(timed(10_000) for _ in range(3))
+        large = min(timed(100_000) for _ in range(3))
+        assert large < max(small * 20, 0.05)
+
+    def test_a_path_over_the_cap_is_cut_first(self) -> None:
+        from graftpunk.observe.capture import _page_path
+
+        path = _page_path("https://myshop.example/" + "/".join(["seg"] * 600))
+        assert len(path) <= 1024
+
+    @pytest.mark.asyncio
+    async def test_dropped_fields_leave_room_for_the_rest(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        fields = [f"#user_4091287{n}" for n in range(8)] + [f"#f{n}" for n in range(12)]
+        backend = await _record(
+            tab,
+            [
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 900, shownFields=fields),
+                _will_be_sent("71.1", inline=_LOGIN_BODY, url=LOGIN),
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        (stored,) = _only_entry(backend)["request"]["_loginInteractions"]
+        assert stored["shownFields"] == [f"#f{n}" for n in range(12)]

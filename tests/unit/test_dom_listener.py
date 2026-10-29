@@ -431,6 +431,7 @@ const root = build(config.dom, null);
 Object.defineProperty(root, "outerHTML", { get: () => "<html></html>" });
 globalThis.document = {
   URL: "https://myshop.example/?next=%2F",
+  readyState: config.readyState || "loading",
   documentElement: root,
   querySelectorAll(selector) {
     if (config.throwOnDocumentQuery) throw new Error("document query boom");
@@ -878,6 +879,7 @@ def _run_dom(
     throw_on_document_query: bool = False,
     dom: dict | None = None,
     check_visibility: bool = True,
+    ready_state: str = "loading",
 ) -> dict:
     harness = tmp_path / "dom_harness.js"
     harness.write_text(_DOM_HARNESS)
@@ -888,6 +890,7 @@ def _run_dom(
         "fire": fire,
         "dom": dom or _PAGE,
         "noCheckVisibility": not check_visibility,
+        "readyState": ready_state,
         "noCss": no_css,
         "throwOnQuery": throw_on_query,
         "throwOnDocumentQuery": throw_on_document_query,
@@ -1433,6 +1436,34 @@ class TestInteractionEvents:
                 {"type": "load"},
                 {"type": "pointerdown", "target": "menu"},
                 {"type": "click", "target": "menu", "show": "nav"},
+                {"type": "pointerdown", "target": "nav-signin"},
+                {"type": "click", "target": "nav-signin"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, True]
+
+    def test_a_page_already_loaded_is_read_at_once(self, tmp_path: Path) -> None:
+        """Installed into a page that finished loading: no load event comes, so the
+        page is read as the listener starts."""
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "nav-signin", "show": "nav"}],
+            dom=_REVEAL_PAGE,
+            ready_state="complete",
+        )
+        assert [call["revealed"] for call in result["calls"]] == [True]
+
+    def test_a_press_a_script_made_is_ignored(self, tmp_path: Path) -> None:
+        """A synthetic pointerdown after the menu opened does not replace the set the
+        item's click is compared with."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "load"},
+                {"type": "pointerdown", "target": "menu"},
+                {"type": "click", "target": "menu", "show": "nav"},
+                {"type": "pointerdown", "target": "nav-signin", "untrusted": True},
                 {"type": "pointerdown", "target": "nav-signin"},
                 {"type": "click", "target": "nav-signin"},
             ],

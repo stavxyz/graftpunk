@@ -678,12 +678,6 @@ def _first_field_selector(form: LoginForm) -> str:
     return next((printed[role] for role in form.fields if printed.get(role)), "") or ""
 
 
-def _commented(lines: list[str], *, indent: int) -> list[str]:
-    """*lines* of generated code commented out at *indent*, so removing ``# `` from
-    each gives them back exactly."""
-    return [f"{line[:indent]}# {line[indent:]}" for line in lines]
-
-
 def _render_opener_suggestion(form: LoginForm, backend: str, *, indent: int) -> list[str]:
     """The click the recording suggests opened *form* (``LoginForm.opener_candidate``),
     as a ``GP-FILL`` and a click-only ``LoginStep`` commented out: a single recording
@@ -696,13 +690,15 @@ def _render_opener_suggestion(form: LoginForm, backend: str, *, indent: int) -> 
     pad = " " * indent
     waits = backend == "nodriver" and bool(_first_field_selector(form))
     tail = (
-        "uncomment the LoginStep below and the wait_for line in the step after it."
+        "uncomment the LoginStep below and the commented wait_for in the step after it."
         if waits
         else "uncomment the LoginStep below."
     )
     lines = wrapped_comment_lines(
-        f"{GP_FILL_MARKER}: the recording's last click before this form's first field was "
-        f'on "{_comment_safe(form.opener_candidate)}". If that click opens this form, {tail}',
+        f"{GP_FILL_MARKER}: a click recorded before this form's first field was on "
+        f'"{_comment_safe(form.opener_candidate)}". If that click opens this form, {tail} '
+        "If it does not, find the control that opens it and add a click-only LoginStep "
+        "with its selector.",
         indent=indent,
     )
     if backend == "selenium":
@@ -714,19 +710,63 @@ def _render_opener_suggestion(form: LoginForm, backend: str, *, indent: int) -> 
                 indent=indent,
             )
         )
-    step = [f"{pad}LoginStep("]
-    # Escaped as a comment is, so a commented line holds no line separator; each
-    # escape is one a Python string literal reads back as the same character.
-    step.extend(
-        _comment_safe(line)
-        for line in literal_lines(
-            form.opener_candidate, indent=indent + INDENT_STEP, prefix="submit="
+    lines.append(f"{pad}# LoginStep(")
+    lines.extend(
+        _commented_literal_lines(
+            form.opener_candidate, indent=indent, inner=INDENT_STEP, prefix="submit="
         )
     )
     if backend == "selenium":
-        step.append(f"{pad}{' ' * INDENT_STEP}delay={_OPENER_DELAY_S},")
-    step.append(f"{pad}),")
-    return [*lines, *_commented(step, indent=indent)]
+        lines.append(f"{pad}# {' ' * INDENT_STEP}delay={_OPENER_DELAY_S},")
+    lines.append(f"{pad}# ),")
+    return lines
+
+
+def _escaped_char(char: str) -> str:
+    """*char* as it is spelled inside a double-quoted Python string literal, ASCII
+    only: printable ASCII as itself (a quote and a backslash escaped), anything else
+    as its ``\\x``, ``\\u``, or ``\\U`` escape, which the literal reads back as the
+    same character."""
+    if char in ('"', "\\"):
+        return "\\" + char
+    if " " <= char <= "~":
+        return char
+    code = ord(char)
+    if code < 0x100:
+        return f"\\x{code:02x}"
+    if code < 0x10000:
+        return f"\\u{code:04x}"
+    return f"\\U{code:08x}"
+
+
+def _commented_literal_lines(value: str, *, indent: int, inner: int, prefix: str) -> list[str]:
+    """A ``{prefix}"{value}",`` keyword argument, commented out at *indent* with the
+    argument *inner* columns further in, so removing ``# `` from each line gives a
+    valid argument back: one line when it fits the generated width, else the value as
+    an implicit string concatenation inside parentheses, one chunk a line, as
+    :func:`graftpunk.devtools.scaffold.pysrc.literal_lines` wraps a real argument.
+    The value is ASCII-escaped (:func:`_escaped_char`), so a commented line holds no
+    line separator, and a chunk never splits an escape. A line that still cannot fit
+    ends with ``# noqa: E501``."""
+    pad = f"{' ' * indent}# {' ' * inner}"
+    units = [_escaped_char(char) for char in value]
+    single = f'{pad}{prefix}"{"".join(units)}",'
+    if len(single) <= GENERATED_LINE_LENGTH:
+        return [single]
+    chunk_pad = f"{pad}{' ' * INDENT_STEP}"
+    budget = GENERATED_LINE_LENGTH - len(chunk_pad) - 2
+    chunks: list[str] = []
+    chunk = ""
+    for unit in units:
+        if chunk and len(chunk) + len(unit) > budget:
+            chunks.append(chunk)
+            chunk = ""
+        chunk += unit
+    chunks.append(chunk)
+    lines = [f"{pad}{prefix}(", *(f'{chunk_pad}"{chunk}"' for chunk in chunks), f"{pad}),"]
+    return [
+        line if len(line) <= GENERATED_LINE_LENGTH else f"{line}  # noqa: E501" for line in lines
+    ]
 
 
 def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str = "") -> list[str]:
@@ -816,7 +856,7 @@ def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str 
             )
             text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand."
         lines.extend(wrapped_comment_lines(text, indent=indent))
-    if form.from_snapshot and not form.opener_candidate:
+    if form.from_snapshot:
         # No recorded HTML held this form: the page's script rendered it, often
         # after a click the recording does not know.
         lines.extend(
@@ -830,8 +870,11 @@ def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str 
     lines.extend(_exploded_literal_dict_lines(entries, indent=indent + INDENT_STEP))
     lines.extend(literal_lines(submit_value, indent=indent + INDENT_STEP, prefix="submit="))
     if commented_wait_for:
-        wait = literal_lines(commented_wait_for, indent=indent + INDENT_STEP, prefix="wait_for=")
-        lines.extend(_commented(wait, indent=indent + INDENT_STEP))
+        lines.extend(
+            _commented_literal_lines(
+                commented_wait_for, indent=indent + INDENT_STEP, inner=0, prefix="wait_for="
+            )
+        )
     lines.append(f"{pad}),")
     return lines
 

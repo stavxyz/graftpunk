@@ -183,13 +183,26 @@ def _origin_only(event: Any) -> bool:
     return parts.path == "" or _origin(referer) != _origin(request_url)
 
 
+# The longest page path kept, cut before it is read, and the longest segment read as
+# a name; a longer one is stored as {id}.
+_MAX_PAGE_PATH = 1024
+_MAX_PATH_SEGMENT = 128
+
+
 def _page_path(url: str) -> str:
     """The page path an interaction is stored with: *url*'s path with no query,
-    fragment, or ``;params`` (graftpunk.har.paths.bare_path), and each segment that
-    holds an account value (graftpunk.har.paths.holds_an_id) as ``{id}``."""
-    path = bare_path(urllib.parse.urlsplit(url).path) or "/"
+    fragment, or ``;params`` (graftpunk.har.paths.bare_path), cut at
+    ``_MAX_PAGE_PATH`` characters, and each segment that is over
+    ``_MAX_PATH_SEGMENT`` characters or holds an account value
+    (graftpunk.har.paths.holds_an_id) as ``{id}``."""
+    path = bare_path(urllib.parse.urlsplit(url).path[:_MAX_PAGE_PATH]) or "/"
+    # A segment over the selector cap is an id unread: holds_an_id's run time grows
+    # faster than its input's length, and this runs inline in nodriver's reader.
     return "/".join(
-        "{id}" if segment and holds_an_id(segment) else segment for segment in path.split("/")
+        "{id}"
+        if len(segment) > _MAX_PATH_SEGMENT or (segment and holds_an_id(segment))
+        else segment
+        for segment in path.split("/")
     )
 
 

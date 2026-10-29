@@ -38,20 +38,20 @@ inputs marked ``current-password``, selects, and textareas). Drawn is
 ``checkVisibility`` with its opacity and visibility checks when the browser has
 it, else a layout box, a computed ``visibility`` that is not ``hidden``, and no
 element from it up with opacity 0, and not under ``aria-hidden="true"`` or
-``inert``; a field is shown when it is drawn and its box has an area that is not
-above the page or left or right of the viewport, so a field below the fold counts
-and one moved off screen does not, while a control scrolled out of view still
-counts as drawn. The selector is ``#id`` (spelled with ``CSS.escape``) when no
-other element of the document has that id, else ``tag[name="..."]`` when that
-picks one element (every control character in the name, a NUL included, as its hex
-escape), else the shortest path of at most :data:`STRUCTURAL_DEPTH`
-``tag:nth-of-type(n)`` steps joined by `` > `` that picks one element, else null;
-an id or a name over :data:`MAX_SELECTOR_NAME` characters is not used, so such an
-element falls through to the next rule (a name, else the structural path, which
-spells only tag names and positions), and a selector that fails to compute is
-null, the event still sent. An element in a shadow tree has no selector, since a
-document selector would pick another element. No text, no value, and no attribute
-beyond the id or name a selector spells is sent; at most
+``inert``; a field is shown when it is drawn and its box has an area, ends below
+the top of the viewport, and is not left or right of it, so a field below the fold
+counts and one scrolled past or moved off screen does not, while a control
+scrolled out of view still counts as drawn. The selector is ``#id`` (spelled with
+``CSS.escape``) when no other element of the document has that id, else
+``tag[name="..."]`` when that picks one element (every control character in the
+name, a NUL included, as its hex escape), else the shortest path of at most
+:data:`STRUCTURAL_DEPTH` ``tag:nth-of-type(n)`` steps joined by `` > `` that picks
+one element, else null; an id or a name over :data:`MAX_SELECTOR_NAME` characters
+is not used, so such an element falls through to the next rule (a name, else the
+structural path, which spells only tag names and positions), and a selector that
+fails to compute is null, the event still sent. An element in a shadow tree has no
+selector, since a document selector would pick another element. No text, no value,
+and no attribute beyond the id or name a selector spells is sent; at most
 :data:`MAX_INTERACTIONS_PER_SECOND` are sent in any one second, a sliding window
 on the monotonic ``performance.now()``, so a page that synthesizes events cannot
 flood the recorder; the page's controls are listed only at load and on trusted
