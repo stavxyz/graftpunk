@@ -489,7 +489,16 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
             "login reaches too."
         )
     lines = ["    login_config = LoginConfig(", "        steps=["]
-    lines.extend(_render_login_step(form, indent=len(L3)))
+    lines.extend(_render_opener_suggestion(form, spec.backend, indent=len(L3)))
+    lines.extend(
+        _render_login_step(
+            form,
+            indent=len(L3),
+            commented_wait_for=_first_field_selector(form)
+            if form.opener_candidate and spec.backend == "nodriver"
+            else "",
+        )
+    )
     lines.append("        ],")
     login_url = _login_page_url(form, spec.base_url)
     if login_url is None:
@@ -643,11 +652,130 @@ def _login_page_url(form: LoginForm, base_url: str) -> str | None:
     return page
 
 
-def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
+# Selenium refuses a step's wait_for, so a suggested opener step is followed by this
+# pause instead (seconds). A modal's open animation takes a fraction of a second,
+# and a script that fetches the form's markup on the click a little more; two
+# seconds covers both on an ordinary connection and costs little against the
+# login's timeout. The comment above the step says to raise it.
+_OPENER_DELAY_S = 2.0
+
+
+def _comment_safe(selector: str) -> str:
+    """*selector* as a comment may hold it: every character that is not printable
+    ASCII (a NUL, a line separator, a next-line) as its Python escape, so the
+    generated file always compiles and the comment stays one line."""
+    return "".join(
+        char if " " <= char <= "~" else char.encode("unicode_escape").decode("ascii")
+        for char in selector
+    )
+
+
+def _first_field_selector(form: LoginForm) -> str:
+    """The printable selector of *form*'s first field, in the form's own role order
+    (the username before the password), for the step after its opener to wait for;
+    empty when none is printable."""
+    printed, _submit = printable_selectors(form)
+    return next((printed[role] for role in form.fields if printed.get(role)), "") or ""
+
+
+def _render_opener_suggestion(form: LoginForm, backend: str, *, indent: int) -> list[str]:
+    """The click the recording suggests opened *form* (``LoginForm.opener_candidate``),
+    as a ``GP-FILL`` and a click-only ``LoginStep`` commented out: a single recording
+    does not tell reliably which click opened a login, so the author confirms it by
+    uncommenting the step (and, under nodriver, the form step's ``wait_for``). Under
+    Selenium, which refuses a step ``wait_for``, the commented step pauses after the
+    click instead, and a comment says why. Nothing when there is no suggestion."""
+    if not form.opener_candidate:
+        return []
+    pad = " " * indent
+    waits = backend == "nodriver" and bool(_first_field_selector(form))
+    tail = (
+        "uncomment the LoginStep below and the commented wait_for in the step after it."
+        if waits
+        else "uncomment the LoginStep below."
+    )
+    lines = wrapped_comment_lines(
+        f"{GP_FILL_MARKER}: a click recorded before this form's first field was on "
+        f'"{_comment_safe(form.opener_candidate)}". If that click opens this form, {tail} '
+        "If it does not, find the control that opens it and add a click-only LoginStep "
+        "with its selector.",
+        indent=indent,
+    )
+    if backend == "selenium":
+        lines.extend(
+            wrapped_comment_lines(
+                "Selenium runs no step wait_for, so this step pauses after the click "
+                "instead; raise the delay if the form takes longer to appear, as one whose "
+                "markup the page fetches on the click can.",
+                indent=indent,
+            )
+        )
+    lines.append(f"{pad}# LoginStep(")
+    lines.extend(
+        _commented_literal_lines(
+            form.opener_candidate, indent=indent, inner=INDENT_STEP, prefix="submit="
+        )
+    )
+    if backend == "selenium":
+        lines.append(f"{pad}# {' ' * INDENT_STEP}delay={_OPENER_DELAY_S},")
+    lines.append(f"{pad}# ),")
+    return lines
+
+
+def _escaped_char(char: str) -> str:
+    """*char* as it is spelled inside a double-quoted Python string literal, ASCII
+    only: printable ASCII as itself (a quote and a backslash escaped), anything else
+    as its ``\\x``, ``\\u``, or ``\\U`` escape, which the literal reads back as the
+    same character."""
+    if char in ('"', "\\"):
+        return "\\" + char
+    if " " <= char <= "~":
+        return char
+    code = ord(char)
+    if code < 0x100:
+        return f"\\x{code:02x}"
+    if code < 0x10000:
+        return f"\\u{code:04x}"
+    return f"\\U{code:08x}"
+
+
+def _commented_literal_lines(value: str, *, indent: int, inner: int, prefix: str) -> list[str]:
+    """A ``{prefix}"{value}",`` keyword argument, commented out at *indent* with the
+    argument *inner* columns further in, so removing ``# `` from each line gives a
+    valid argument back: one line when it fits the generated width, else the value as
+    an implicit string concatenation inside parentheses, one chunk a line, as
+    :func:`graftpunk.devtools.scaffold.pysrc.literal_lines` wraps a real argument.
+    The value is ASCII-escaped (:func:`_escaped_char`), so a commented line holds no
+    line separator, and a chunk never splits an escape. A line that still cannot fit
+    ends with ``# noqa: E501``."""
+    pad = f"{' ' * indent}# {' ' * inner}"
+    units = [_escaped_char(char) for char in value]
+    single = f'{pad}{prefix}"{"".join(units)}",'
+    if len(single) <= GENERATED_LINE_LENGTH:
+        return [single]
+    chunk_pad = f"{pad}{' ' * INDENT_STEP}"
+    budget = GENERATED_LINE_LENGTH - len(chunk_pad) - 2
+    chunks: list[str] = []
+    chunk = ""
+    for unit in units:
+        if chunk and len(chunk) + len(unit) > budget:
+            chunks.append(chunk)
+            chunk = ""
+        chunk += unit
+    chunks.append(chunk)
+    lines = [f"{pad}{prefix}(", *(f'{chunk_pad}"{chunk}"' for chunk in chunks), f"{pad}),"]
+    return [
+        line if len(line) <= GENERATED_LINE_LENGTH else f"{line}  # noqa: E501" for line in lines
+    ]
+
+
+def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str = "") -> list[str]:
     """A generated ``LoginStep(...)``, exploded one keyword argument per line so a
     long selector cannot push the whole call over the generated width. Selectors
     are the ones ``printable_selectors`` allows: unscoped when the form's action
-    holds an id, and a ``GP-FILL`` where one cannot be."""
+    holds an id, and a ``GP-FILL`` where one cannot be. *commented_wait_for*, when
+    given, is a ``wait_for`` line commented out (the form's first field, for the
+    suggested opener step above it)."""
     pad = " " * indent
     fields, submit = printable_selectors(form)
     submit_value = submit or f"{GP_FILL_MARKER}: submit selector"
@@ -741,6 +869,12 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     lines.append(f"{pad}LoginStep(")
     lines.extend(_exploded_literal_dict_lines(entries, indent=indent + INDENT_STEP))
     lines.extend(literal_lines(submit_value, indent=indent + INDENT_STEP, prefix="submit="))
+    if commented_wait_for:
+        lines.extend(
+            _commented_literal_lines(
+                commented_wait_for, indent=indent + INDENT_STEP, inner=0, prefix="wait_for="
+            )
+        )
     lines.append(f"{pad}),")
     return lines
 

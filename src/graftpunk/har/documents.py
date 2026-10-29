@@ -129,6 +129,17 @@ class LoginForm:
     # The names of the form's controls that are not hidden inputs, whatever the name
     # holds (hidden lists only names that hold no account value). Internal.
     visible_names: tuple[str, ...] = field(default=(), metadata={"internal": True})
+    # The form's password input sits inside a dialog-marked element (a <dialog>, a
+    # role whose first token is dialog or alertdialog, or aria-modal "true"): a real
+    # <form> in one, or a formless dialog group. The digest also sets it on a
+    # recorded <form> whose snapshot copy is marked. Such a form can be behind a
+    # click. Internal.
+    in_dialog: bool = field(default=False, metadata={"internal": True})
+    # The selector of the click the recording suggests opened this form, from what
+    # gp observe recorded before the credential post (graftpunk.har.digest, #267);
+    # empty when none qualifies. Never from markup, and only ever a suggestion the
+    # generator writes commented out. Set by the digest. Internal.
+    opener_candidate: str = field(default="", metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -1201,7 +1212,10 @@ def extract_login_forms(
             element_id=raw.element_id,
         )
         if form is not None:
-            forms.append(form)
+            in_dialog = any(
+                control.dialog is not None for control in raw.inputs if _is_password(control)
+            )
+            forms.append(replace(form, in_dialog=in_dialog) if in_dialog else form)
     dialog_groups = _formless_login_groups(parsed)
     block_groups = _block_login_groups(parsed) if snapshot else []
     for group, block_bound in [
@@ -1223,7 +1237,9 @@ def extract_login_forms(
         )
         if form is not None:
             forms.append(
-                replace(form, plain_block=True, block_bound=block_bound) if block_bound else form
+                replace(form, plain_block=True, block_bound=block_bound)
+                if block_bound
+                else replace(form, in_dialog=True)
             )
     if snapshot:
         return tuple(replace(form, from_snapshot=True) for form in forms)

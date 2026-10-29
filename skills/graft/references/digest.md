@@ -68,17 +68,21 @@ never predicts the call.
 The `login` summary tells a plain form from a redirect. `auth_urls` lists only
 the login's own observations, each of kind `form_page`, `credential_post`,
 `redirect` (a hop of the credential post's redirect chain), or `set_cookie`. A
-plain form shows a `form_page` and a `credential_post` on the primary host. A
-login whose form or post is on another host points to an identity provider
-(guide: Identity-provider redirects). An empty `forms` entry while a credential
-post exists means no login form was recorded (a script-driven login, or a
-recording that missed the form page); confirm the shape with the user. Confirm
-the login shape with the user only when that summary leaves it open, and ask it
-as its own question right after the keep, rename, or drop answer, before the
-scaffold step.
+plain form shows a `form_page` and a `credential_post` on the primary host; a
+form or post on another host points to an identity provider (guide:
+Identity-provider redirects). `forms` also lists a modal login outside any
+`<form>`, from a recorded page or the run's `snapshots/`. For a form with an
+`opener_candidate`, ask "did clicking <it> open the login?": on yes, strip the
+leading `# ` from its commented click step and `wait_for` lines and delete the
+click's `GP-FILL` lines; on no, for a `tag:nth-of-type` path the user cannot
+place, or for a `GP-FILL` that says a click may open the form, ask which control
+opens it and add a click-only `LoginStep`. No `forms` beside a credential post
+means no login form was recorded. Confirm the login shape only when the summary
+leaves it open, alone, after the keep, rename, or drop answer, before scaffolding.
 
 `forms` holds each login form's `action`, its `fields` selectors by role, its
-`submit` selector, `neutral_roles`, and `unresolved_roles`. Name every
+`submit` selector, `neutral_roles`, `unresolved_roles`, and `opener_candidate` (the
+selector of the click the recording suggests opened the form, or null). Name every
 unresolved role in the proposal: the generated login config carries a `GP-FILL`
 for each, which the implement step fills from the login form's field names the
 HAR reader prints for the login page (`references/har.md`), or, when the

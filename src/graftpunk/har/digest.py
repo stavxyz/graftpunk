@@ -13,6 +13,7 @@ import re
 import string
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, get_args
 from urllib.parse import parse_qs, unquote, unquote_plus, urljoin, urlparse, urlunparse
@@ -29,7 +30,7 @@ from graftpunk.har.documents import (
     looks_like_token_name,
 )
 from graftpunk.har.naming import capture_text, fixture_rank, normalize_media_type
-from graftpunk.har.parser import HAREntry, parse_har_file
+from graftpunk.har.parser import HAREntry, LoginInteraction, parse_har_file
 from graftpunk.har.paths import (
     bare_host,
     bare_path,
@@ -43,6 +44,7 @@ from graftpunk.har.paths import (
     reads_as_words,
     template_path,
 )
+from graftpunk.har.selectors import bounded_selector, selector_holds_an_id, selector_keys
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -1132,6 +1134,118 @@ def _formless_credit(
     return at, _form_key(form)
 
 
+def _printable_selector(selector: str | None) -> str:
+    """*selector* when it is usable and safe to print: within ``MAX_SELECTOR_LENGTH``
+    and holding no account value; else empty."""
+    bounded = bounded_selector(selector)
+    return bounded if bounded is not None and not selector_holds_an_id(bounded) else ""
+
+
+def _login_opener(
+    form: LoginForm,
+    interactions: tuple[LoginInteraction, ...],
+    post_at: datetime,
+    page_loads: list[datetime],
+) -> str | None:
+    """The click the recording suggests opened *form*: a selector from the
+    *interactions* recorded before its credential post (sent at *post_at*), or None.
+    It is only ever a suggestion: a single recording does not tell reliably which
+    click opened a login, so the generator writes it commented out for the author to
+    confirm.
+
+    The candidate is the last click on a control (``control``), not flagged inside
+    the login (``in_login``), before the first focus on one of the form's field
+    selectors (the recorded ones and their unscoped forms, compared by
+    :func:`graftpunk.har.selectors.selector_keys`). There is no suggestion when there
+    is no candidate, or when it picks one of the form's fields or its submit; a click
+    on no control came after it and before that focus (a ``div`` or a menu item may
+    have opened the login); a
+    navigation of the run (*page_loads*, see :func:`_is_page_load`) started between it
+    and that focus, both ends included; one of the form's fields was among the fields
+    shown at it (the login was already on screen); its page path differs from the
+    first focus's (when both are known); the form has no username and a field was
+    focused before it, or a field was shown at it (the login has an earlier step); it
+    was inside a dialog; it was not drawn when the page was last read before it
+    (``revealed``); or it has no usable
+    selector (over ``MAX_SELECTOR_LENGTH`` characters, or holding an account value). A
+    focus or a shown field whose selector is over that length is not read."""
+    roles: set[tuple[str, ...]] = set()
+    for selector in (*form.fields.values(), *form.unscoped_fields.values()):
+        roles |= selector_keys(selector)
+    controls = set(roles)
+    for selector in (form.submit, form.unscoped_submit):
+        if selector:
+            controls |= selector_keys(selector)
+
+    def names_a_field(selector: str | None) -> bool:
+        bounded = bounded_selector(selector)
+        return bounded is not None and bool(selector_keys(bounded) & roles)
+
+    first_focus = next(
+        (
+            at
+            for at, event in enumerate(interactions)
+            if event.kind == "focus" and names_a_field(event.selector)
+        ),
+        None,
+    )
+    if first_focus is None:
+        return None
+    at = next(
+        (
+            at
+            for at in range(first_focus - 1, -1, -1)
+            if interactions[at].kind == "click"
+            and interactions[at].control
+            and not interactions[at].in_login
+        ),
+        None,
+    )
+    if at is None:
+        return None
+    click = interactions[at]
+    focus = interactions[first_focus]
+    clicked = bounded_selector(click.selector)
+    clicked_at = post_at - timedelta(milliseconds=click.ms_before)
+    focused_at = post_at - timedelta(milliseconds=focus.ms_before)
+    no_username = "username" not in form.fields
+    disqualified = (
+        (clicked is not None and bool(selector_keys(clicked) & controls))
+        # A click on no control after it (a div or a menu item with a handler) may be
+        # what opened the login.
+        or any(
+            event.kind == "click" and not event.control
+            for event in interactions[at + 1 : first_focus]
+        )
+        or any(clicked_at <= loaded <= focused_at for loaded in page_loads)
+        or any(names_a_field(shown) for shown in click.shown_fields)
+        or (click.path is not None and focus.path is not None and click.path != focus.path)
+        or (no_username and any(event.kind == "focus" for event in interactions[:at]))
+        or (no_username and bool(click.shown_fields))
+        or click.in_dialog
+        or click.revealed
+    )
+    printable = _printable_selector(clicked)
+    return None if disqualified or not printable else printable
+
+
+def _is_page_load(entry: HAREntry, method: str, content_type: str) -> bool:
+    """Whether *entry* is a navigation: by the recorder's ``_resourceType``
+    (``Document``) when the HAR has it; else by ``Sec-Fetch-Mode: navigate`` or
+    ``Sec-Fetch-Dest`` ``document`` or ``iframe``, which Chrome sends only to a
+    secure origin; else, for a HAR with neither, a GET answered 2xx with HTML (which
+    takes an HTML fragment a script fetched for one too). An HTML fragment fetched
+    by script on a click is no page load, so a modal whose markup is fetched keeps
+    its opener."""
+    if entry.request.resource_type is not None:
+        return entry.request.resource_type == "Document"
+    headers = {name.lower(): value.strip().lower() for name, value in entry.request.headers.items()}
+    mode, dest = headers.get("sec-fetch-mode"), headers.get("sec-fetch-dest")
+    if mode or dest:
+        return mode == "navigate" or dest in ("document", "iframe")
+    return method == "GET" and "html" in content_type and 200 <= entry.response.status < 300
+
+
 def _path_segments(url: str) -> int:
     """How many non-empty path segments *url* has."""
     return len([segment for segment in urlparse(url).path.split("/") if segment])
@@ -1233,14 +1347,17 @@ def _snapshot_page_forms(
     page_url: str,
     recorded_on_page: dict[tuple[str, str], set[tuple[object, ...]]],
     redirected_via: dict[tuple[str, str], tuple[str, ...]],
+    dialog_shapes: set[tuple[tuple[str, str], tuple[object, ...]]] | None = None,
 ) -> tuple[str, tuple[LoginForm, ...]]:
     """The page a credential post's DOM snapshot shows (``request._domSnapshot``), as
     its URL the way the digest keeps one, and its login forms
     (:func:`graftpunk.har.documents.extract_login_forms` with ``snapshot``): each
     with that URL as its ``source``, and without the forms a recorded GET of the
     same page already held (by :func:`_visible_shape`), so a recorded copy is never
-    doubled and never takes the snapshot's ``GP-FILL``. Empty when
-    *page_url* is not an http or https URL."""
+    doubled and never takes the snapshot's ``GP-FILL``. A left-out copy the snapshot
+    shows inside a dialog-marked element (a server-rendered modal its script marks as
+    one when it opens) adds its page and shape to *dialog_shapes*, so the recorded
+    copy takes ``in_dialog``. Empty when *page_url* is not an http or https URL."""
     try:
         if urlparse(page_url).scheme.lower() not in _HTTP_SCHEMES:
             return "", ()
@@ -1250,13 +1367,14 @@ def _snapshot_page_forms(
     here = urlparse(source)
     page = (normal_host(here.scheme, here.netloc), here.path or "/")
     shown = recorded_on_page.get(page, set())
-    forms = tuple(
-        form
-        for form in extract_login_forms(
-            html, source=source, base=_unmasked_url(page_url), snapshot=True
+    read = extract_login_forms(html, source=source, base=_unmasked_url(page_url), snapshot=True)
+    forms = tuple(form for form in read if _visible_shape(form) not in shown)
+    if dialog_shapes is not None:
+        dialog_shapes.update(
+            (page, _visible_shape(form))
+            for form in read
+            if form.in_dialog and _visible_shape(form) in shown
         )
-        if _visible_shape(form) not in shown
-    )
     opened_from = _opened_from(redirected_via.get(page, ()), page[0])
     if opened_from:
         forms = tuple(replace(form, opened_from=opened_from) for form in forms)
@@ -1718,6 +1836,14 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # Each credential post: its step, its target, its body names, and whether it was
     # found by its field names alone (no recorded form's target matched it).
     posts: list[tuple[int, tuple[str, str], frozenset[str], bool]] = []
+    # Beside each of posts: when it was sent, and the clicks and focus moves gp
+    # observe recorded before it (request._loginInteractions).
+    post_interactions: list[tuple[datetime, tuple[LoginInteraction, ...]]] = []
+    # When each in-scope navigation (_is_page_load) was sent: a page load.
+    page_loads: list[datetime] = []
+    # The (page, visible shape) of each recorded form a snapshot showed inside a
+    # dialog-marked element (_snapshot_page_forms).
+    dialog_shapes: set[tuple[tuple[str, str], tuple[object, ...]]] = set()
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
     script_driven: set[int] = set()
@@ -1787,7 +1913,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # its forms the way it finds a recorded page's.
             page_url = entry.request.dom_snapshot_url or ""
             snapshot_source, snapshot_forms = _snapshot_page_forms(
-                snapshot_html, page_url, recorded_on_page, redirected_via
+                snapshot_html, page_url, recorded_on_page, redirected_via, dialog_shapes
             )
             if snapshot_forms:
                 step += 1
@@ -1852,6 +1978,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if method == "GET" and entry.response.status in _REDIRECT_STATUSES:
             redirected_via[_redirect_target(entry)] = (*via, url)
         content_type = (entry.response.content_type or "").lower()
+        if _is_page_load(entry, method, content_type):
+            page_loads.append(entry.timestamp)
         forms_in_entry: tuple[LoginForm, ...] = ()
         if "html" in content_type and entry.response.body:
             document_source = url
@@ -1968,6 +2096,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 # 200 starts no chain, whatever its page holds.
                 chain_next[step] = _redirect_target(entry)
                 posts.append((step, post_target, frozenset(body_params(entry)), not by_target))
+                post_interactions.append((entry.timestamp, entry.request.login_interactions))
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must
         # not make that POST, or a later one to the same page, the credential post.
@@ -2083,6 +2212,45 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     owned_posts, owned_pages = _used_login(
         ranked_forms, login_forms, page_of, [step for step, *_rest in posts], credential_posts
     )
+
+    # Each form on a page a credential post was credited to takes its opener from
+    # the first such post that gives one (_login_opener).
+    def _marked_by_a_snapshot(form: LoginForm) -> bool:
+        try:
+            here = urlparse(form.source)
+        except ValueError:
+            return False
+        page = (normal_host(here.scheme, here.netloc), here.path or "/")
+        return (page, _visible_shape(form)) in dialog_shapes
+
+    marked_keys = {_form_key(form) for form in login_forms if _marked_by_a_snapshot(form)}
+    openers: dict[tuple[object, ...], str] = {}
+    for (post_at, interactions), post in zip(post_interactions, credential_posts, strict=True):
+        if post.page_step is None or not interactions:
+            continue
+        for form in forms_on_page.get(post.page_step, []):
+            # Only a login a click can open: a formless group (a dialog's, or a
+            # snapshot's), or a real <form> inside a dialog-marked element. Any other
+            # real <form> is the login as its page shows it, and a click before it
+            # (a consent banner) need not come back at replay.
+            if not (form.formless or form.in_dialog or _marked_by_a_snapshot(form)):
+                continue
+            key = _form_key(form)
+            found = (
+                None if key in openers else _login_opener(form, interactions, post_at, page_loads)
+            )
+            if found is not None:
+                openers[key] = found
+    ranked_forms = [
+        replace(form, in_dialog=True) if _form_key(form) in marked_keys else form
+        for form in ranked_forms
+    ]
+    ranked_forms = [
+        replace(form, opener_candidate=openers[_form_key(form)])
+        if _form_key(form) in openers
+        else form
+        for form in ranked_forms
+    ]
     # A page a post was credited to only through a formless group shown on several
     # pages is a content page showing a site-wide modal, so its GET keeps its command.
     owned_pages -= {

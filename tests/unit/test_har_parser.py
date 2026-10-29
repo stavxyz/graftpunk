@@ -15,6 +15,7 @@ from graftpunk.har.parser import (
     HARParseResult,
     HARRequest,
     HARResponse,
+    LoginInteraction,
     ParseError,
     _parse_response,
     _set_cookie_lines,
@@ -910,3 +911,138 @@ class TestDomSnapshotFields:
 
         plain = HARRequest(method="GET", url="https://myshop.example/", headers={}, cookies=[])
         assert (plain.dom_snapshot, plain.dom_snapshot_url) == (None, None)
+
+    def test_the_login_interactions_are_read_oldest_first(self, tmp_path: Path) -> None:
+        """``request._loginInteractions`` (#267, part 3): kind, selector, msBefore."""
+        har = self._har(
+            tmp_path,
+            {
+                "_loginInteractions": [
+                    {"kind": "click", "selector": "#signin-link", "msBefore": 5000},
+                    {"kind": "focus", "selector": "#m-email", "msBefore": 3000.5},
+                    {"kind": "click", "selector": None, "msBefore": 40},
+                ]
+            },
+        )
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.login_interactions == (
+            LoginInteraction("click", "#signin-link", 5000.0),
+            LoginInteraction("focus", "#m-email", 3000.5),
+            LoginInteraction("click", None, 40.0),
+        )
+
+    def test_they_are_put_oldest_first_whatever_the_file_order(self, tmp_path: Path) -> None:
+        har = self._har(
+            tmp_path,
+            {
+                "_loginInteractions": [
+                    {"kind": "focus", "selector": "#m-email", "msBefore": 10},
+                    {"kind": "click", "selector": "#signin-link", "msBefore": 900},
+                ]
+            },
+        )
+        (entry,) = parse_har_file(har).entries
+        assert [i.kind for i in entry.request.login_interactions] == ["click", "focus"]
+
+    def test_a_malformed_interaction_is_skipped(self, tmp_path: Path) -> None:
+        har = self._har(
+            tmp_path,
+            {
+                "_loginInteractions": [
+                    {"kind": "scroll", "selector": "#a", "msBefore": 1},
+                    {"kind": "click", "selector": 7, "msBefore": 1},
+                    {"kind": "click", "selector": "#a", "msBefore": -1},
+                    {"kind": "click", "selector": "#a", "msBefore": True},
+                    {"kind": "click", "selector": "#a", "msBefore": float("inf")},
+                    {"kind": "click", "selector": "#a"},
+                    "click",
+                    {"kind": "focus", "msBefore": 2},
+                ]
+            },
+        )
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.login_interactions == (LoginInteraction("focus", None, 2.0),)
+
+    def test_no_interactions_or_a_wrong_shape_reads_as_none(self, tmp_path: Path) -> None:
+        har = self._har(tmp_path, {"_loginInteractions": {"kind": "click"}})
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.login_interactions == ()
+        plain = HARRequest(method="GET", url="https://myshop.example/", headers={}, cookies=[])
+        assert plain.login_interactions == ()
+
+    def test_the_in_login_flag_and_the_selector_cap(self, tmp_path: Path) -> None:
+        """Review round 1: a click flagged inside the login, and a selector over 256
+        characters read as none."""
+        har = self._har(
+            tmp_path,
+            {
+                "_loginInteractions": [
+                    {"kind": "click", "selector": "#a" + "b" * 255, "msBefore": 30},
+                    {"kind": "click", "selector": "#a" + "b" * 254, "msBefore": 20},
+                    {"kind": "click", "selector": "#lbl", "msBefore": 10, "inLogin": True},
+                    {"kind": "click", "selector": "#x", "msBefore": 5, "inLogin": "yes"},
+                ]
+            },
+        )
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.login_interactions == (
+            LoginInteraction("click", None, 30.0),
+            LoginInteraction("click", "#a" + "b" * 254, 20.0),
+            LoginInteraction("click", "#lbl", 10.0, in_login=True),
+            LoginInteraction("click", "#x", 5.0),
+        )
+
+    def test_the_resource_type_is_read(self, tmp_path: Path) -> None:
+        (entry,) = parse_har_file(self._har(tmp_path, {"_resourceType": "Document"})).entries
+        assert entry.request.resource_type == "Document"
+        (other,) = parse_har_file(self._har(tmp_path, {"_resourceType": 7})).entries
+        assert other.request.resource_type is None
+
+    def test_a_click_s_state_is_read_only_when_true(self, tmp_path: Path) -> None:
+        """Review rounds 2 and 3: control, inDialog, and revealed, each a boolean; the
+        shown fields, bounded; and the page's path."""
+        har = self._har(
+            tmp_path,
+            {
+                "_loginInteractions": [
+                    {
+                        "kind": "click",
+                        "selector": "#a",
+                        "msBefore": 30,
+                        "control": True,
+                        "inDialog": False,
+                        "revealed": True,
+                        "shownFields": [
+                            "#m-email",
+                            "#" + "a" * 300,
+                            7,
+                            *[f"#f{n}" for n in range(20)],
+                        ],
+                        "path": "/login",
+                    },
+                    {
+                        "kind": "click",
+                        "selector": "",
+                        "msBefore": 20,
+                        "control": "yes",
+                        "inDialog": 1,
+                        "revealed": "true",
+                        "shownFields": "#m-email",
+                        "path": 7,
+                    },
+                ]
+            },
+        )
+        (entry,) = parse_har_file(har).entries
+        assert entry.request.login_interactions == (
+            LoginInteraction(
+                "click",
+                "#a",
+                30.0,
+                control=True,
+                revealed=True,
+                shown_fields=("#m-email", *[f"#f{n}" for n in range(15)]),
+                path="/login",
+            ),
+            LoginInteraction("click", None, 20.0),
+        )

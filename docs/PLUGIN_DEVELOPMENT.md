@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.27.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.28.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -215,9 +215,21 @@ Runs live under `~/.local/share/graftpunk/observe/<name>/<run id>/`, where
 `<name>` is the session when you named one and the name inferred from the host
 otherwise. A run holds `network.har` plus whatever else that run captured:
 `bodies/` for request and response bodies too large to inline in the HAR or
-not text,
+not text, `snapshots/` for the page's DOM at each credential post, read by a
+listener gp observe installs in an isolated world of the page as you click or
+press Enter (values, scripts, and most text dropped, link and form URLs cut to
+their path, and the post's own values redacted, though not one the page renders
+across elements; see
+[HOW_IT_WORKS.md](HOW_IT_WORKS.md#interactive-mode-gp-observe-interactive)),
 `page-source.html`, `screenshots/`, `console.jsonl`, `events.jsonl`, and
-`metadata.json`.
+`metadata.json`. The same listener reports your clicks and focus moves, and each
+credential post's HAR entry keeps those of the two minutes before it as
+`request._loginInteractions`: a kind, a selector the page computed (an id or a
+name it spells, or a short `tag:nth-of-type(n)` path), the milliseconds before
+the post, the page's path, and for a click what it revealed (whether it was on a
+button or a link, inside the login, inside a dialog, or on a control the click
+before it showed, and the selectors of the fields shown on the page), never text
+or a value, with a selector that holds an account value stored as null.
 
 ```bash
 gp observe list           # every session and its runs
@@ -371,21 +383,155 @@ one password marked `new-password` is kept (the attribute misused on a login
 form), and a password-plus-PIN form is a login form; a change-password form (a
 `current-password` input, a new password, and no username-like input) is not a
 login form at all; a stale-session check still counts any form with a password
-input as a login page. Each input is selected by its id, else its name (when no
-other control inside any form with the same action shares it: a header
-mini-login and the main form can post to one action), else its type (the same
-way) (`input:not([type])` for a typeless input), and an id or a name that holds
-an account value is never used; a name that holds one, or no name, gets a
-neutral role key (`field_1`, never a name another input of the form has) and a
-`GP-FILL` naming which of the two it was. A selector by type is used only when
-it picks one input of the form, and is never printed without the form scope:
-when the form's action holds an id the printed selectors drop the scope, so only
-an id selector, or a name no other input on the page shares, is printed. A form
-whose action is empty or only a fragment (`#`, `#login`) is scoped to match
-that, and one whose action names another scheme than `http` or `https` has no
-path to template: it keeps its scope and is printed as written
-(`javascript:void(0)`), unless its text holds an id or a token by the path rule
-(`javascript:go(12345678)`) or an email anywhere
+input as a login page (a `<form>`; inputs outside one do not count there). These
+rules are judged on the page's forms alone, so nothing outside a form changes
+what a form gives. A login modal that a script sends, whose inputs sit in no
+`<form>`, is read only when it is marked as a dialog: a `<dialog>`, or an
+element whose `role` starts with the token `dialog` or `alertdialog`, or with
+`aria-modal` `true` (in any case). The controls with no form owner (in no
+`<form>` and with no `form` attribute, or with a `form` attribute naming no form
+on the page) inside one dialog, and not inside a dialog nested in it, make one
+more login form, listed after the page's forms. A dialog ends at the end tag
+that closes its own element, counting only the start and end tags of its own tag
+name, so an unclosed `<p>` or `<li>` or a stray end tag of another element
+cannot move it; a self-closing `<div .../>` opens as a browser reads it, outside
+`<svg>` and `<math>`; and parsing stays linear in the page's length, however
+many dialogs are open. The limit: a dialog element missing its own end tag runs
+on to the end of the page, where a browser closes it with the element around it,
+so controls after it join its group. The rules above judge its controls (with
+its username lookup, extra fields, and submit search ending at its first
+button-like control after the password, below), and a dialog with no password,
+with a sign-up or password-change shape, or with two password inputs and none
+marked `current-password` gives none. Its submit is an explicit one after the
+password: an `<input type="submit">` or `<input type="image">`, or a `<button
+type="submit">`. Outside a form a typeless or `type="button"` button submits
+nothing and may be a show-password or a close button, so it is never the submit,
+and a modal whose sign-in is one gets a `GP-FILL` for its submit, as it does for
+a missing username. Its username lookup, its extra fields, and the search for
+its submit all end at the first button-like control after the password (any
+`<button>`, or a submit, image, button, or reset input): that control is the
+submit when it is an explicit one, and otherwise the submit is a `GP-FILL`; a
+username found nowhere before it is a `GP-FILL` too. So a hidden reset panel's
+input and its submit after a typeless "Sign in" are never taken, and a
+show-password toggle or a Close button right after the password ends the fields
+there, so an input after it (a one-time code) is left out and the submit is a
+`GP-FILL`: a `GP-FILL` is the safer failure than a wrong selector. Each of its
+inputs is selected by its id, else by a name no other input on the page shares,
+else it is unresolved; a control inside `<noscript>` is left out; its `action`
+and `method` are empty; and several such dialogs are listed with one holding a
+`current-password` input first, then one whose id or class and whose controls'
+ids and names do not name a sign-up (`signup`, `register`, `create`, `join`, and
+the like), then in document order. Only a page the run opened with a GET, the
+saved page source, or a DOM snapshot (below) shows a dialog login: one in a
+POST's HTML response (a failed attempt re-rendered, a search result) is not
+read. In recorded HTML, a password outside every form and every dialog gives no
+login form: a login built from inputs in a plain `<div>` is not found there, and
+neither is a modal that a script renders only after a click, which is in no
+recorded HTML response and is in the page source saved when the recording stops
+only if it is still open then. `gp observe go` and `gp observe interactive` save
+that page too: when the page sends a POST whose body makes it a credential post
+by its field names (below), the recorder saves the page's DOM as the user sent
+it as `snapshots/<request id>.html`, and the digest reads it as a page the run
+opened with a GET, at the URL it was taken on, just before that post, so these
+rules and the ones below apply to it unchanged. A form that a recorded GET of
+the same page (by host and path) already held is not read from the snapshot
+again: the same target, the same visible input names, and the same roles is the
+same form, whatever hidden inputs or attributes the page's script added after
+load. In a snapshot, and only there, a password outside every form and every
+dialog also makes a login group, when it is the snapshot's only one: exactly one
+input the role rules take for a password (a password input, or any input marked
+`current-password`, whatever its type, a hidden one included) with no form owner
+and in no dialog, asking for no new password. With two or more such passwords
+there is no such group, since nothing on the page tells a sign-up's passwords
+from a login's reliably, and with no other login form the scaffold writes "No
+login form detected" with the observations and a commented-out `login_config`
+for the author to fill in; a form's or a dialog's inputs belong to it and never
+count. The group is bounded by an ancestor element holding at most four such
+text-like and password inputs (buttons, checkboxes, radios, and hidden inputs do
+not count), never `<html>` or `<body>`: a login block asks for a username and a
+password, and a page's wrapper asks for more. The group is the controls inside
+the nearest such element that holds a username-like input before the password (a
+`username` or `email` autocomplete, an email type, or a name or id holding
+`user`, `email`, `login`, or `account`), a button-like control after it, and no
+button-like control between that input and the password, starting after the last
+button-like control before that input (an input with a button of its own, such
+as a search box, belongs to something else); else, from the password on, those
+inside the nearest such element holding a button-like control after the
+password, a password-only group; else the password alone. Only a username-like
+input is ever its username, the one with the strongest hint (a `username`
+autocomplete, then an `email` autocomplete or an email type, then a name or id),
+the last of equal ones before the password. The group's other text-like inputs
+after the username (with none, after the password) up to the first button-like
+control after the password are extra fields, hinted or not; those before the
+username are left out, and with no username-like input the username is a
+`GP-FILL`. The snapshot is taken as the user submits, so the control they
+pressed is likely near the password, and a show-password toggle's wrapper, which
+holds no input before the password, does not stop the walk. A password-only
+group or a password alone gets a `GP-FILL` for each missing role saying which it
+was. In recorded HTML such an element is as likely the page's layout. The click
+that opened a login form is only ever suggested, never generated as a step: a
+single recording does not tell reliably which click opened a login (a consent
+banner, a hover or press-opened menu, a sign-up-first modal, and an autofilled
+username each make the last click before the login a wrong one). The suggestion
+comes from the clicks and focus moves `gp observe interactive` keeps before the
+form's credential post (`request._loginInteractions`), never from the page's
+markup, and only for a login a click can open: a formless group (a dialog's, or
+a snapshot's), or a real `<form>` whose password input sits inside a
+dialog-marked element (a `<dialog>`, a `role` whose first token is `dialog` or
+`alertdialog`, or `aria-modal="true"`), in the HTML the page served or in a
+snapshot of the page; a served form whose snapshot copy on the same page is so
+marked (a modal its script marks as a dialog when it opens) counts too. Any
+other real `<form>` is the login as its page shows it. The candidate is the last
+click on a control, not flagged inside the login, before the first focus on one
+of the form's field selectors (the recorded ones and their unscoped forms; an id
+spelled `#id` or `[id="..."]`, and a `tag[name="..."]`, compare equal whatever
+scope comes before them). There is no suggestion when there is no candidate, or
+when it picks one of the form's fields or its submit; a click on no control came
+after it and before that focus (a `div` or a menu item with a handler may have
+opened the login); a navigation of the run started between the click and that
+focus, both ends included (a request whose `_resourceType` is `Document`; in a
+HAR without it, one sent with `Sec-Fetch-Mode: navigate` or `Sec-Fetch-Dest`
+`document` or `iframe`; in a HAR with neither, a GET answered 2xx with HTML; an
+HTML fragment a script fetched on the click is no navigation); one of the form's
+fields was among the fields shown at it; its page path differs from the first
+focus's; the form has no username and a field was focused before the click or
+shown at it; the click was inside a dialog or its control was not drawn when the
+page was last read before it (`revealed`); or it has no usable selector. A field
+the page could select only by a structural path (no id, and a name another input
+on the page shares) matches none of the form's selectors, so that form gets no
+suggestion. `--endpoints-json` prints the suggestion as the form's
+`opener_candidate`, null when there is none. The generated login is the one-step
+login it would be without it: above the form's step, a `GP-FILL` says a click
+recorded before the form's first field was on that selector, to uncomment the
+click-only `LoginStep` written commented out below it if that click opens the
+form, and, if it does not, to find the control that does and add a click-only
+`LoginStep` with its selector; under nodriver the form's step has a commented
+`wait_for` naming its first field, and under Selenium, which refuses a step
+`wait_for`, the commented step pauses 2 seconds after the click (`delay`), with
+a comment saying to raise it if the form takes longer to appear. The author, or
+the graft skill after asking the user whether that click opens the login,
+confirms it by uncommenting those lines. A selector in a comment has every
+character that is not printable ASCII escaped, and in the commented step and
+`wait_for` it is a Python string literal escaped to ASCII the same way and
+wrapped as a real argument is (an implicit string concatenation, one chunk a
+line), so the generated project passes its own `ruff check` and compiles
+commented or not. The step built from a form read from a snapshot carries a
+`GP-FILL` saying a click may open the form, with a suggestion or without. In a
+`<form>`, each
+input is selected by its id, else its name (when no other control inside any
+form with the same action shares it: a header mini-login and the main form can
+post to one action), else its type (the same way) (`input:not([type])` for a
+typeless input), and an id or a name that holds an account value is never used;
+a name that holds one, or no name, gets a neutral role key (`field_1`, never a
+name another input of the form has) and a `GP-FILL` naming which of the two it
+was. A selector by type is used only when it picks one input of the form, and is
+never printed without the form scope: when the form's action holds an id the
+printed selectors drop the scope, so only an id selector, or a name no other
+input on the page shares, is printed. A form whose action is empty or only a
+fragment (`#`, `#login`) is scoped to match that, and one whose action names
+another scheme than `http` or `https` has no path to template: it keeps its
+scope and is printed as written (`javascript:void(0)`), unless its text holds an
+id or a token by the path rule (`javascript:go(12345678)`) or an email anywhere
 (`javascript:go('alice@example.com', 'ref')`), when it is printed as
 `javascript:{id}` and its selectors lose the scope. A role left without a
 selector is listed in `LoginForm.unresolved_roles` and the projection's
@@ -406,22 +552,47 @@ however many assets lie between; a post found by its field names alone (no
 recorded form, a saved page source's included, posts where it went) promotes
 only the nearest page whose form does not post where the credential post went
 (an empty, `#`, or `javascript:` action, or one naming the page itself), and no
-page when every earlier form posts somewhere real. A POST whose body asks for a
-new password (`new_password`, `password_confirm`) is never a credential post by
-its field names. Every other page carrying a login form is an ordinary page and
-keeps its stub. The same form on several pages is one form, told by its
-structure (its element id and each control's tag, type, name, and id), and is
-kept as the copy whose selectors resolve best. Among the forms, one a credential
-post went to is listed first; among those, the one on the page that post
-promoted, then the one the earliest credential post went to (a login precedes a
-password change; a post found by its field names alone went to the form with no
-target of its own on the page it promoted, so a script login's form ranks ahead
-of a later form posting to its own page, such as a change-email form), then the
-one whose control names cover the most of the post's body, then one that sits on
-no page a credential post did not promote (a site-wide header form ranks below
-the main form), then the one with fewer unresolved roles, so the generator's
-`login_config` is built from the form the recording used. Only that login is the
-login flow: its promoted page; the credential posts that went to its form, or,
+page when every earlier form posts somewhere real. When no earlier page holds
+such a form, a post found by its field names alone is credited instead to an
+earlier page holding a dialog login (above) that shares at least one input name
+with the post's body: the dialog sharing the most names, then the page whose
+path has the fewest segments (`/` when it was recorded), then the earliest
+recorded. A dialog whose inputs have no names is never credited. No dialog is
+credited at all when a real login form recorded anywhere in the run (a saved
+page source's included) shares a visible input name with any credential post of
+the run; a hidden input, such as a site-wide CSRF field, is no shared name. In
+such a run the login, the login flow, and `login_config` are as before dialogs
+were read: a post that is not credited to a dialog goes to whatever the rules
+above give, often no form, and the real form is the login by ranking; the dialog
+is still listed in `forms`. When the credited dialog is on more than one
+recorded page, counted by host and path, so a reload or a landing back on the
+page keeps one page (a login modal shown site-wide), no page's GET is part of
+the login flow, since none of them is a login page. A real form a credential
+post went to ranks above any dialog a post was credited to, and with no dialog
+credited a real form ranks above a dialog; a credited dialog ranks above a real
+form that no post went to, which then shares no visible name with any credential
+post. When a dialog is the login, every credential post is part of it, as when
+no form was recorded, since a later password post cannot be told apart from the
+login's; and a page holding only dialogs that a login's redirect chain lands on
+stays a hop of that chain. `login_config.url` opens the page of the copy of the
+form the generator uses, which for a form on several pages is the copy whose
+selectors resolve best (below), not always the page the post was credited to. A
+POST whose body asks for a new password (`new_password`, `password_confirm`) is
+never a credential post by its field names. Every other page carrying a login
+form is an ordinary page and keeps its stub. The same form on several pages is
+one form, told by its structure (its element id and each control's tag, type,
+name, and id), and is kept as the copy whose selectors resolve best. Among the
+forms, one a credential post went to is listed first; among those, the one on
+the page that post promoted, then the one the earliest credential post went to
+(a login precedes a password change; a post found by its field names alone went
+to the form with no target of its own on the page it promoted, so a script
+login's form ranks ahead of a later form posting to its own page, such as a
+change-email form), then the one whose control names cover the most of the
+post's body, then one that sits on no page a credential post did not promote (a
+site-wide header form ranks below the main form), then the one with fewer
+unresolved roles, so the generator's `login_config` is built from the form the
+recording used. Only that login is the login flow: its promoted page; the
+credential posts that went to its form, or,
 when none did, the posts found by their field names alone to the first target no
 recorded form posts to (a script posting elsewhere than the form says); and each
 hop of those posts' redirect chains, a request to where the previous hop sent
@@ -1508,6 +1679,21 @@ login_config = LoginConfig(
 
 A step needs at least one of `fields` or `submit`, so a click-only step (a
 "Continue" button with nothing to type) is just `LoginStep(submit="#continue")`.
+A login form that a click opens, such as a modal behind a header "Sign in" link,
+is a click-only step for that link before the form's step. `gp plugin new`
+suggests it and never writes it as a step: when a `gp observe interactive`
+recording caught a click that may have opened the login (the digest's
+`opener_candidate`, given only for a formless login group or a real `<form>`
+inside a dialog-marked element), the form's step carries a `GP-FILL` naming that
+click and a click-only `LoginStep` for it commented out above it, with a
+commented `wait_for` for the form's first field on nodriver and a 2-second
+`delay` in the commented step under Selenium. Uncomment those lines once you
+have checked that the click opens the login; a single recording does not tell
+reliably which click did. If it does not, delete them, find the control that
+opens the login, and add a click-only `LoginStep` with its selector. A form read
+from a snapshot also carries a `GP-FILL` saying a click may open it, with a
+suggestion or without; otherwise nothing marks it, and you add the step by
+hand.
 
 `LoginConfig` fields:
 

@@ -269,7 +269,7 @@ _ENDPOINT_V1 = {
 }
 _LOGIN_V1 = {"auth_urls", "forms"}
 _AUTH_URL_V1 = {"method", "url", "kind"}
-_FORM_V1 = {"action", "fields", "submit", "neutral_roles", "unresolved_roles"}
+_FORM_V1 = {"action", "fields", "submit", "neutral_roles", "unresolved_roles", "opener_candidate"}
 
 
 _PLANTED_RESET_SEGMENT = "reset-7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
@@ -442,6 +442,7 @@ class TestEndpointsProjection:
                 "submit": None,
                 "neutral_roles": [],
                 "unresolved_roles": [],
+                "opener_candidate": None,
             }
         ]
 
@@ -466,6 +467,7 @@ class TestEndpointsProjection:
                 "submit": None,
                 "neutral_roles": [],
                 "unresolved_roles": ["username"],
+                "opener_candidate": None,
             }
         ]
 
@@ -512,6 +514,7 @@ class TestEndpointsProjection:
             "submit": None,
             "neutral_roles": [],
             "unresolved_roles": [],
+            "opener_candidate": None,
         }
         assert _PLANTED_RESET_SEGMENT not in render_endpoints_json(result)
 

@@ -9,6 +9,7 @@ HAR format specification: http://www.softwareishard.com/blog/har-12-spec/
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from graftpunk.har.selectors import MAX_SHOWN_FIELDS, bounded_selector
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -23,6 +25,37 @@ LOG = get_logger(__name__)
 
 class HARParseError(Exception):
     """Raised when HAR file cannot be parsed."""
+
+
+# The interaction kinds gp observe's page listener records (graftpunk.observe.dom_listener).
+_INTERACTION_KINDS = frozenset({"click", "focus"})
+
+
+@dataclass(frozen=True)
+class LoginInteraction:
+    """A click or a focus move the page's listener recorded before a credential post
+    (``request._loginInteractions``, #267): its kind, the element's selector (None
+    when the page had no unique one, or it held an account value), and how many
+    milliseconds before the post it happened. ``in_login`` marks a click the page
+    saw inside the login itself (on a field's label, or in a container holding a
+    shown password input), which is never the click that opened it."""
+
+    kind: str
+    selector: str | None
+    ms_before: float
+    in_login: bool = False
+    # A click's state as the page saw it: on a control (a link, a button, a
+    # button-like input, [role=button], or summary), inside a dialog, and on a
+    # control the click before it did not show. Each True only when the HAR says
+    # true.
+    control: bool = False
+    in_dialog: bool = False
+    revealed: bool = False
+    # The selectors of the fields shown on the page at a click, at most
+    # MAX_SHOWN_FIELDS, each within MAX_SELECTOR_LENGTH.
+    shown_fields: tuple[str, ...] = ()
+    # The page's path when it happened (no query or fragment), or None.
+    path: str | None = None
 
 
 @dataclass
@@ -64,6 +97,12 @@ class HARRequest:
     dom_snapshot_file: str | None = None
     dom_snapshot: str | None = None
     dom_snapshot_url: str | None = None
+    # The clicks and focus moves gp observe recorded before a credential post, oldest
+    # first (request._loginInteractions); an item of another shape is skipped.
+    login_interactions: tuple[LoginInteraction, ...] = ()
+    # The request's CDP resource type as the recorder saw it (request._resourceType):
+    # "Document" for a navigation. None when the HAR does not say.
+    resource_type: str | None = None
 
 
 @dataclass
@@ -293,6 +332,53 @@ def _request_body_file(ref: str, base_dir: Path | None) -> tuple[str | None, boo
         return None, True
 
 
+def _shown_fields(raw: Any) -> tuple[str, ...]:
+    """A click's ``shownFields``: the strings within ``MAX_SELECTOR_LENGTH``, at most
+    ``MAX_SHOWN_FIELDS``; nothing when it is not a list."""
+    if not isinstance(raw, list):
+        return ()
+    kept = (bounded_selector(field) for field in raw)
+    return tuple(field for field in kept if field is not None)[:MAX_SHOWN_FIELDS]
+
+
+def _login_interactions(raw: Any) -> tuple[LoginInteraction, ...]:
+    """``request._loginInteractions`` as :class:`LoginInteraction` items, oldest first
+    (the largest ``msBefore`` first). An item that is not an object with a known
+    ``kind``, a string or null ``selector``, and a finite, non-negative ``msBefore``
+    is skipped; a selector over ``graftpunk.har.selectors.MAX_SELECTOR_LENGTH``
+    characters is read as None, and ``inLogin`` counts only when it is ``true``."""
+    if not isinstance(raw, list):
+        return ()
+    kept: list[LoginInteraction] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        kind, selector, before = item.get("kind"), item.get("selector"), item.get("msBefore")
+        if (
+            kind not in _INTERACTION_KINDS
+            or not (selector is None or isinstance(selector, str))
+            or isinstance(before, bool)
+            or not isinstance(before, int | float)
+            or not math.isfinite(before)
+            or before < 0
+        ):
+            continue
+        kept.append(
+            LoginInteraction(
+                kind,
+                bounded_selector(selector),
+                float(before),
+                in_login=item.get("inLogin") is True,
+                control=item.get("control") is True,
+                in_dialog=item.get("inDialog") is True,
+                revealed=item.get("revealed") is True,
+                shown_fields=_shown_fields(item.get("shownFields")),
+                path=item.get("path") if isinstance(item.get("path"), str) else None,
+            )
+        )
+    return tuple(sorted(kept, key=lambda each: -each.ms_before))
+
+
 def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -> HARRequest:
     """Parse request section of HAR entry.
 
@@ -336,6 +422,7 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
     else:
         snapshot_file = None
     snapshot_url = request_data.get("_domSnapshotUrl")
+    resource_type = request_data.get("_resourceType")
 
     return HARRequest(
         method=request_data.get("method", "GET"),
@@ -356,6 +443,8 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         dom_snapshot_file=snapshot_file,
         dom_snapshot=snapshot,
         dom_snapshot_url=snapshot_url if isinstance(snapshot_url, str) else None,
+        login_interactions=_login_interactions(request_data.get("_loginInteractions")),
+        resource_type=resource_type if isinstance(resource_type, str) else None,
     )
 
 

@@ -21,6 +21,8 @@ from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
 from graftpunk.har.parser import cookie_header_pairs
+from graftpunk.har.paths import bare_path, holds_an_id
+from graftpunk.har.selectors import MAX_SELECTOR_LENGTH, MAX_SHOWN_FIELDS, bounded_selector
 from graftpunk.logging import get_logger
 
 try:
@@ -84,6 +86,37 @@ DOM_SNAPSHOT_MAX_AGE_MS = 30_000
 # The largest page HTML a snapshot keeps, in characters; a larger one is skipped and
 # counted, as sanitizing it would hold the recorder for seconds.
 DOM_SNAPSHOT_MAX_CHARS = 5 * 1024 * 1024
+# The clicks and focus moves (graftpunk.observe.dom_listener) the recorder keeps per
+# page origin, newest last, and how many origins: an opening click and the fields
+# the user then filled are a handful, and a long session costs no more than this.
+INTERACTION_BUFFER = 32
+INTERACTION_ORIGINS = 8
+# How far before a credential post its interactions reach: the user clicked the
+# opener, then typed a username and a password.
+LOGIN_INTERACTION_WINDOW_MS = 120_000
+# The longest selector the recorder keeps (graftpunk.har.selectors): a longer one
+# is kept as None, so neither memory nor holds_an_id's run time grows with a
+# page's ids.
+MAX_STORED_SELECTOR = MAX_SELECTOR_LENGTH
+
+
+class _Interaction(NamedTuple):
+    """A click or focus move the page's listener sent: its kind, its selector (None
+    when the page had no unique one, or it was over ``MAX_STORED_SELECTOR``
+    characters), when (the page's ``Date.now()``), the page's path (no query or
+    fragment), and whether the page saw a click inside the login itself."""
+
+    kind: str
+    selector: str | None
+    time_ms: float
+    path: str = "/"
+    in_login: bool = False
+    # A click's state at the click (graftpunk.observe.dom_listener): on a control,
+    # inside a dialog, a control the last click did not show, and the fields shown.
+    control: bool = False
+    in_dialog: bool = False
+    revealed: bool = False
+    shown_fields: tuple[str | None, ...] = ()
 
 
 class _ListenerSnapshot(NamedTuple):
@@ -150,9 +183,39 @@ def _origin_only(event: Any) -> bool:
     return parts.path == "" or _origin(referer) != _origin(request_url)
 
 
+# The longest page path kept, cut before it is read, and the longest segment read as
+# a name; a longer one is stored as {id}.
+_MAX_PAGE_PATH = 1024
+_MAX_PATH_SEGMENT = 128
+
+
+def _page_path(url: str) -> str:
+    """The page path an interaction is stored with: *url*'s path with no query,
+    fragment, or ``;params`` (graftpunk.har.paths.bare_path), cut at
+    ``_MAX_PAGE_PATH`` characters, and each segment that is over
+    ``_MAX_PATH_SEGMENT`` characters or holds an account value
+    (graftpunk.har.paths.holds_an_id) as ``{id}``."""
+    path = bare_path(urllib.parse.urlsplit(url).path[:_MAX_PAGE_PATH]) or "/"
+    # A segment over the selector cap is an id unread: holds_an_id's run time grows
+    # faster than its input's length, and this runs inline in nodriver's reader.
+    return "/".join(
+        "{id}"
+        if len(segment) > _MAX_PATH_SEGMENT or (segment and holds_an_id(segment))
+        else segment
+        for segment in path.split("/")
+    )
+
+
 def _is_navigation(event: Any) -> bool:
+    return _resource_type(event) == "Document"
+
+
+def _resource_type(event: Any) -> str | None:
+    """A ``Network.requestWillBeSent`` *event*'s resource type (``Document``,
+    ``XHR``, ``Fetch``, ...), or None when it has none."""
     resource = getattr(event, "type_", None)
-    return getattr(resource, "value", resource) == "Document"
+    resource = getattr(resource, "value", resource)
+    return resource if isinstance(resource, str) else None
 
 
 def _origin(url: Any) -> tuple[str, str, int | None] | None:
@@ -1077,6 +1140,16 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
         # _postDataFile is): the file under the run, and the page's bare URL.
         entry["request"]["_domSnapshot"] = request_data["_dom_snapshot"]
         entry["request"]["_domSnapshotUrl"] = request_data.get("_dom_snapshot_url", "")
+    if isinstance(request_data.get("resource_type"), str):
+        # Chrome's resource type for the request (HAR 1.2 custom field): "Document"
+        # is a navigation, the digest's test for a page load. The Sec-Fetch headers
+        # say the same only to a secure origin, and only when ExtraInfo arrived.
+        entry["request"]["_resourceType"] = request_data["resource_type"]
+    if request_data.get("_login_interactions"):
+        # The clicks and focus moves before a credential post (HAR 1.2 custom field),
+        # oldest first, as _attach_interactions stores them; no URL and no absolute
+        # time.
+        entry["request"]["_loginInteractions"] = list(request_data["_login_interactions"])
     return entry
 
 
@@ -1237,6 +1310,7 @@ class SeleniumCaptureBackend:
                     "post_data": None,
                     "has_post_data": request.get("hasPostData", False),
                     "timestamp": params.get("wallTime"),
+                    "resource_type": params.get("type"),
                 }
                 if self._record_request_bodies:
                     _keep_post_data(
@@ -1520,6 +1594,9 @@ class NodriverCaptureBackend:
         # The page's own snapshots, newest last (_on_binding_called); one a credential
         # post takes is removed, so it is given to no other post.
         self._listener_snapshots: deque[_ListenerSnapshot] = deque(maxlen=DOM_SNAPSHOT_BUFFER)
+        # The page's clicks and focus moves by page origin, newest last; the origin
+        # least recently heard from goes first past INTERACTION_ORIGINS.
+        self._interactions: dict[tuple[str, str, int | None], deque[_Interaction]] = {}
         # False for a capture whose HAR is never written (the login engine's
         # header-only capture): no request body is kept, fetched or logged about.
         self._record_request_bodies = record_request_bodies
@@ -1919,6 +1996,7 @@ class NodriverCaptureBackend:
                 # The page that sent it: a DOM snapshot must come from its origin.
                 "sender_url": _sending_page(event),
                 "navigation": _is_navigation(event),
+                "resource_type": _resource_type(event),
                 "sender_origin_only": _origin_only(event),
             }
             if self._record_request_bodies:
@@ -2027,7 +2105,56 @@ class NodriverCaptureBackend:
         listener snapshot that is its (:meth:`_take_listener_snapshot`), if any."""
         self._dom_snapshotted.add(rid)
         self._dom_snapshot_attempts += 1
+        self._attach_interactions(data)
         return self._take_listener_snapshot(data)
+
+    def _attach_interactions(self, data: dict[str, Any]) -> None:
+        """Store on the credential post *data* the clicks and focus moves its sending
+        page's origin sent within ``LOGIN_INTERACTION_WINDOW_MS`` before it (no later
+        than its ``wallTime``), oldest first: each as ``kind``, ``selector``,
+        ``msBefore`` (milliseconds before the post), and ``path`` (:func:`_page_path`);
+        a click also as ``control``, ``inDialog``, ``revealed``, and ``shownFields`` (at
+        most ``MAX_SHOWN_FIELDS``, each holding no account value), and ``inLogin:
+        true`` when the page flagged it. A selector that holds an account value
+        (:func:`graftpunk.har.selectors.selector_holds_an_id`) is stored as None. A
+        post whose sending page is unknown, or whose time is, gets none."""
+        from graftpunk.har.selectors import selector_holds_an_id
+
+        wall_ms = _wall_time_ms(data.get("timestamp"))
+        sender = self._sender(data)
+        origin = _origin(sender) if sender is not None else None
+        if wall_ms is None or origin is None:
+            return
+        kept = []
+        for each in sorted(self._interactions.get(origin, ()), key=lambda event: event.time_ms):
+            before = wall_ms - each.time_ms
+            if not 0 <= before <= LOGIN_INTERACTION_WINDOW_MS:
+                continue
+            selector = each.selector
+            if selector is not None and selector_holds_an_id(selector):
+                selector = None
+            stored: dict[str, Any] = {
+                "kind": each.kind,
+                "selector": selector,
+                "msBefore": round(before),
+            }
+            if each.kind == "click":
+                stored["control"] = each.control
+                stored["inDialog"] = each.in_dialog
+                stored["revealed"] = each.revealed
+                # Only the fields a reader can use: bounded, holding no account
+                # value, and at most the listener's count.
+                stored["shownFields"] = [
+                    field
+                    for field in each.shown_fields
+                    if field is not None and not selector_holds_an_id(field)
+                ][:MAX_SHOWN_FIELDS]
+            stored["path"] = each.path
+            if each.in_login:
+                stored["inLogin"] = True
+            kept.append(stored)
+        if kept:
+            data["_login_interactions"] = kept
 
     def _start_snapshot(self, rid: str, data: dict[str, Any], body_text: str | None) -> None:
         """Bind a snapshot to the credential post *rid*'s own entry *data* now, while the
@@ -2088,14 +2215,18 @@ class NodriverCaptureBackend:
         that is not the listener's (``html``, ``url``, ``time``), is dropped, and a
         page over ``DOM_SNAPSHOT_MAX_CHARS`` is kept as a marker without its HTML (a
         post that takes it is counted as too large; one no post takes costs nothing).
-        Nothing is parsed here: nodriver calls this inline while it reads the
-        browser's messages."""
-        from graftpunk.observe.dom_listener import BINDING_NAME
+        A payload whose ``type`` is ``interaction`` is a click or a focus move instead
+        (:meth:`_keep_interaction`). Nothing is parsed here: nodriver calls this
+        inline while it reads the browser's messages."""
+        from graftpunk.observe.dom_listener import BINDING_NAME, INTERACTION_TYPE
 
         if getattr(event, "name", None) != BINDING_NAME:
             return
         try:
             payload = json.loads(getattr(event, "payload", ""))
+            if isinstance(payload, dict) and payload.get("type") == INTERACTION_TYPE:
+                self._keep_interaction(payload)
+                return
             html, url, time_ms = payload["html"], payload["url"], payload["time"]
             if (
                 not isinstance(html, str)
@@ -2111,6 +2242,66 @@ class NodriverCaptureBackend:
         # is counted as too large, once, and a click no post follows costs nothing.
         kept = html if len(html) <= DOM_SNAPSHOT_MAX_CHARS else None
         self._listener_snapshots.append(_ListenerSnapshot(float(time_ms), url, kept))
+
+    def _keep_interaction(self, payload: dict[str, Any]) -> None:
+        """Keep a click or focus move the page's listener sent, among the last
+        ``INTERACTION_BUFFER`` of its page's origin. A payload of another shape (a
+        kind other than ``click`` or ``focus``, a selector that is neither a string
+        nor null, a URL with no origin, a time that is not a finite number) raises
+        ValueError, which the caller logs and drops. A selector over
+        ``MAX_STORED_SELECTOR`` characters is kept as None, and ``inLogin`` counts
+        only when it is ``true``. A click whose ``control``, ``inDialog``, or
+        ``revealed`` is not a boolean, or whose ``shownFields`` is not a list, is of
+        another shape too; an item of ``shownFields`` that is not a string is
+        skipped. The page's path is read from the URL, which is not kept."""
+        kind, selector, url, time_ms = (
+            payload.get("kind"),
+            payload.get("selector"),
+            payload.get("url"),
+            payload.get("time"),
+        )
+        origin = _origin(url)
+        if (
+            kind not in ("click", "focus")
+            or not (selector is None or isinstance(selector, str))
+            or not isinstance(url, str)
+            or origin is None
+            or isinstance(time_ms, bool)
+            or not isinstance(time_ms, int | float)
+            or not math.isfinite(time_ms)
+        ):
+            raise ValueError("not a listener interaction")
+        state = [payload.get(key) for key in ("control", "inDialog", "revealed")]
+        fields = payload.get("shownFields")
+        if kind == "click" and (
+            not all(isinstance(value, bool) for value in state) or not isinstance(fields, list)
+        ):
+            raise ValueError("not a listener click")
+        # Room for the selectors the account-value filter drops when a post takes
+        # them, so the kept ones can still reach MAX_SHOWN_FIELDS; bounded all the same.
+        shown = tuple(bounded_selector(field) for field in fields or () if isinstance(field, str))[
+            : MAX_SHOWN_FIELDS * 4
+        ]
+        events = self._interactions.pop(origin, None)
+        if events is None:
+            events = deque(maxlen=INTERACTION_BUFFER)
+            while len(self._interactions) >= INTERACTION_ORIGINS:
+                del self._interactions[next(iter(self._interactions))]
+        # Re-inserted, so the dict's order is the order origins were last heard from.
+        self._interactions[origin] = events
+        events.append(
+            _Interaction(
+                kind,
+                bounded_selector(selector),
+                float(time_ms),
+                path=_page_path(url),
+                in_login=payload.get("inLogin") is True,
+                control=state[0] is True,
+                in_dialog=state[1] is True,
+                revealed=state[2] is True,
+                shown_fields=shown,
+            )
+        )
 
     @staticmethod
     def _sender(data: dict[str, Any]) -> str | None:

@@ -17,7 +17,11 @@ import pytest
 from graftpunk.observe.dom_listener import (
     BINDING_NAME,
     DEBOUNCE_MS,
+    INTERACTION_TYPE,
     LISTENER_SCRIPT,
+    MAX_DRAWN_CONTROLS,
+    MAX_INTERACTIONS_PER_SECOND,
+    STRUCTURAL_DEPTH,
     WORLD_NAME,
 )
 
@@ -142,12 +146,16 @@ class TestTheScriptStructure:
 
 @needs_node
 class TestTheScriptInAFakePage:
-    def test_capture_phase_listeners_for_the_three_events(self, tmp_path: Path) -> None:
+    def test_capture_phase_listeners_for_snapshots_and_interactions(self, tmp_path: Path) -> None:
         result = _run(tmp_path, passwords=["x"], fire=[])
         assert result["threw"] is None
         assert sorted(each["type"] for each in result["listeners"]) == [
             "click",
+            "click",
+            "focusin",
             "keydown",
+            "load",
+            "pointerdown",
             "submit",
         ]
         assert all(each["options"]["capture"] is True for each in result["listeners"])
@@ -202,3 +210,1342 @@ class TestTheScriptInAFakePage:
         result = _run(tmp_path, passwords=["x"], fire=[{"type": "click"}], throw_on_serialize=True)
         assert result["calls"] == []
         assert result["events"] == [{"prevented": False, "stopped": False, "escaped": None}]
+
+
+# A fake page with an element tree for the interaction events (#267, part 3):
+# elements with tags, attributes, text, and values, a selector engine for the
+# selectors the listener writes (tag, #id with CSS escapes, [attr="value"],
+# :nth-of-type(n), descendant and child combinators, and comma lists), and
+# CSS.escape as the CSSOM spec defines it. Each fired event names its target by a
+# harness-only key, never an attribute.
+_DOM_HARNESS = r"""
+const config = JSON.parse(process.argv[2]);
+const listeners = [];
+const calls = [];
+let now = 1700000000000;
+Date.now = () => now;
+// The monotonic clock, apart from the wall clock so a test can step the wall back.
+let mono = 5000;
+globalThis.performance = { now: () => mono };
+
+function cssEscape(value) {
+  const s = String(value);
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0) { out += "\uFFFD"; continue; }
+    if ((c >= 1 && c <= 31) || c === 127 || (i === 0 && c >= 48 && c <= 57)
+        || (i === 1 && c >= 48 && c <= 57 && s.charCodeAt(0) === 45)) {
+      out += "\\" + c.toString(16) + " ";
+      continue;
+    }
+    if (i === 0 && c === 45 && s.length === 1) { out += "\\-"; continue; }
+    if (c >= 128 || c === 45 || c === 95 || (c >= 48 && c <= 57)
+        || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)) {
+      out += s[i];
+      continue;
+    }
+    out += "\\" + s[i];
+  }
+  return out;
+}
+function cssUnescape(s) {
+  return s.replace(/\\([0-9a-fA-F]{1,6}) ?|\\([\s\S])/g,
+    (m, hex, ch) => hex ? String.fromCodePoint(parseInt(hex, 16)) : ch);
+}
+
+function splitTop(text, separators) {
+  const parts = [];
+  let depth = 0, quote = null, start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\") {
+      // An escape: one character, or up to six hex digits and one optional space.
+      const hex = text.slice(i + 1).match(/^[0-9a-fA-F]{1,6} ?/);
+      i += hex ? hex[0].length : 1;
+      continue;
+    }
+    if (quote) { if (ch === quote) quote = null; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === "[" || ch === "(") depth++;
+    else if (ch === "]" || ch === ")") depth--;
+    else if (depth === 0 && separators.includes(ch)) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+function parseCompound(text) {
+  const tests = [];
+  let rest = text.trim();
+  if (!rest) throw new Error("empty compound");
+  while (rest) {
+    let m;
+    if ((m = rest.match(/^[a-zA-Z][\w-]*/))) {
+      const tag = m[0].toLowerCase();
+      tests.push((el) => el.localName === tag);
+    } else if ((m = rest.match(/^#((?:\\[0-9a-fA-F]{1,6} ?|\\[\s\S]|[\w-]|[^\x00-\x7f])+)/))) {
+      const id = cssUnescape(m[1]);
+      tests.push((el) => el.getAttribute("id") === id);
+    } else if ((m = rest.match(/^\[([\w-]+)(?:=("((?:\\[\s\S]|[^"\\])*)"|[\w-]+))?( i)?\]/))) {
+      const name = m[1];
+      const value = m[3] !== undefined ? cssUnescape(m[3]) : m[2];
+      const fold = Boolean(m[4]);
+      tests.push((el) => {
+        const got = el.getAttribute(name);
+        if (got === null) return false;
+        if (value === undefined) return true;
+        return fold ? got.toLowerCase() === value.toLowerCase() : got === value;
+      });
+    } else if ((m = rest.match(/^:nth-of-type\((\d+)\)/))) {
+      const n = Number(m[1]);
+      tests.push((el) => {
+        let index = 1;
+        for (let s = el.previousElementSibling; s; s = s.previousElementSibling) {
+          if (s.localName === el.localName) index++;
+        }
+        return index === n;
+      });
+    } else {
+      throw new Error("unsupported selector: " + rest);
+    }
+    rest = rest.slice(m[0].length);
+  }
+  return (el) => tests.every((t) => t(el));
+}
+function parseComplex(text) {
+  const steps = [];
+  for (const part of splitTop(text.replace(/\s*>\s*/g, " > ").trim(), [" "])) {
+    if (part === ">") steps.push(">");
+    else if (part) {
+      if (steps.length && typeof steps[steps.length - 1] === "function") steps.push(" ");
+      steps.push(parseCompound(part));
+    }
+  }
+  return (el) => {
+    const go = (node, i) => {
+      if (!steps[i](node)) return false;
+      if (i === 0) return true;
+      const comb = steps[i - 1];
+      if (comb === ">") return Boolean(node.parentElement) && go(node.parentElement, i - 2);
+      for (let a = node.parentElement; a; a = a.parentElement) if (go(a, i - 2)) return true;
+      return false;
+    };
+    return go(el, steps.length - 1);
+  };
+}
+function matcher(selector) {
+  if (config.throwOnQuery) throw new Error("query boom");
+  const alternatives = splitTop(selector, [","]).map((p) => parseComplex(p));
+  return (el) => alternatives.some((m) => m(el));
+}
+
+const all = [];
+const byKey = {};
+// The element and every element under it, its shadow trees left out.
+function descendants(el) {
+  const found = [];
+  for (const child of el.children) found.push(child, ...descendants(child));
+  return found;
+}
+function build(spec, parent, shadowHost = null) {
+  const el = {
+    nodeType: 1,
+    localName: spec.tag,
+    attrs: spec.attrs || {},
+    value: spec.value === undefined ? "" : spec.value,
+    textContent: spec.text || "",
+    parentElement: parent,
+    // Set on the top elements of a shadow tree: their parent is the shadow root.
+    shadowHost: shadowHost,
+    inShadow: Boolean(shadowHost) || Boolean(parent && parent.inShadow),
+    ownHidden: Boolean(spec.hidden),
+    get hidden() {
+      const above = this.parentElement || this.shadowHost;
+      return this.ownHidden || Boolean(above && above.hidden);
+    },
+    rect: spec.rect || [10, 10, 100, 20],
+    getBoundingClientRect() {
+      const [left, top, width, height] = this.hidden ? [0, 0, 0, 0] : this.rect;
+      return { left, top, width, height, right: left + width, bottom: top + height };
+    },
+    style: spec.style || {},
+    visibility: (spec.style && spec.style.visibility) || (parent ? parent.visibility : "visible"),
+    faded: (spec.style && spec.style.opacity === "0") || Boolean(parent && parent.faded),
+    children: [],
+    querySelectorAll(selector) {
+      const match = matcher(selector);
+      return descendants(this).filter((each) => match(each));
+    },
+    getClientRects() { return this.hidden ? [] : [{}]; },
+    getRootNode() {
+      let node = this;
+      while (node.parentElement) node = node.parentElement;
+      return node.shadowHost ? { host: node.shadowHost } : globalThis.document;
+    },
+    checkVisibility: config.noCheckVisibility ? undefined : function (options) {
+      if (this.hidden) return false;
+      if (options && options.visibilityProperty && this.visibility === "hidden") return false;
+      if (options && options.opacityProperty && this.faded) return false;
+      return true;
+    },
+    get control() {
+      if (this.localName !== "label") return undefined;
+      const target = this.getAttribute("for");
+      if (target !== null) return all.find((each) => each.getAttribute("id") === target) || null;
+      return descendants(this).find((each) =>
+        ["input", "select", "textarea"].includes(each.localName)) || null;
+    },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+    },
+    get previousElementSibling() {
+      if (!this.parentElement) return null;
+      const siblings = this.parentElement.children;
+      const i = siblings.indexOf(this);
+      return i > 0 ? siblings[i - 1] : null;
+    },
+    closest(selector) {
+      const match = matcher(selector);
+      for (let node = this; node; node = node.parentElement) if (match(node)) return node;
+      return null;
+    },
+    matches(selector) { return matcher(selector)(this); },
+  };
+  if (!el.inShadow) all.push(el);
+  if (spec.key) byKey[spec.key] = el;
+  for (const child of spec.children || []) el.children.push(build(child, el));
+  // A shadow tree's elements are reached only through composedPath().
+  for (const child of spec.shadow || []) build(child, null, el);
+  return el;
+}
+function composedPath(inner) {
+  const path = [];
+  for (let node = inner; node; node = node.parentElement || node.shadowHost) path.push(node);
+  path.push({ nodeType: 9 });
+  return path;
+}
+const root = build(config.dom, null);
+Object.defineProperty(root, "outerHTML", { get: () => "<html></html>" });
+globalThis.document = {
+  URL: config.documentUrl || "https://myshop.example/?next=%2F",
+  readyState: config.readyState || "loading",
+  documentElement: root,
+  querySelectorAll(selector) {
+    if (config.throwOnDocumentQuery) throw new Error("document query boom");
+    const match = matcher(selector);
+    return all.filter((el) => match(el));
+  },
+};
+if (!config.noCss) globalThis.CSS = { escape: cssEscape };
+globalThis.window = globalThis;
+globalThis.innerWidth = 1000;
+globalThis.innerHeight = 800;
+globalThis.getComputedStyle = (el) => ({
+  visibility: el.visibility,
+  opacity: el.style.opacity === undefined ? "1" : el.style.opacity,
+});
+globalThis.addEventListener = (type, handler, options) => {
+  listeners.push({ type, handler, options });
+};
+if (config.binding) {
+  globalThis[config.bindingName] = (payload) => {
+    if (typeof payload !== "string") throw new Error("binding takes a string");
+    calls.push(JSON.parse(payload));
+  };
+}
+let threw = null;
+try {
+  require("vm").runInThisContext(config.script);
+} catch (error) {
+  threw = String(error);
+}
+const events = [];
+for (const fired of config.fire) {
+  for (let r = 0; r < (fired.repeat || 1); r++) {
+    now += (fired.after || 0) + (fired.wall || 0);
+    mono += fired.after || 0;
+    // A page script showed an element (a menu, a modal) since the last event.
+    if (fired.show !== undefined) byKey[fired.show].ownHidden = false;
+    const inner = fired.target === undefined ? undefined : byKey[fired.target];
+    const event = {
+      type: fired.type,
+      // A click a page script synthesizes (element.click()) is not trusted.
+      isTrusted: !fired.untrusted,
+      // At a window listener a click inside a shadow tree is retargeted to its host.
+      target: fired.retarget === undefined ? inner : byKey[fired.retarget],
+      composedPath() { return inner ? composedPath(inner) : []; },
+      prevented: false,
+      stopped: false,
+      preventDefault() { this.prevented = true; },
+      stopPropagation() { this.stopped = true; },
+      stopImmediatePropagation() { this.stopped = true; },
+    };
+    let escaped = null;
+    for (const l of listeners.filter((l) => l.type === fired.type)) {
+      try { l.handler(event); } catch (error) { escaped = String(error); }
+    }
+    events.push({ prevented: event.prevented, stopped: event.stopped, escaped });
+  }
+}
+// The snapshot listener sends the page on a click while the password holds a
+// value; those calls carry no type and are reported apart.
+console.log(JSON.stringify({
+  threw,
+  calls: calls.filter((call) => call.type !== undefined),
+  snapshots: calls.filter((call) => call.type === undefined).length,
+  events,
+}));
+"""
+
+
+def _chain(top: str, divs: int, key: str) -> dict:
+    """A button under *divs* divs under a *top* element."""
+    node: dict = {"tag": "button", "text": "Go", **({"key": key} if key else {})}
+    for _ in range(divs):
+        node = {"tag": "div", "children": [node]}
+    return {"tag": top, "children": [node]}
+
+
+def _deep(key: str) -> dict:
+    """A button four divs down: the same structure twice is not told apart by a path
+    of four levels."""
+    node: dict = {"tag": "button", "text": "Open", "key": key}
+    for _ in range(4):
+        node = {"tag": "div", "children": [node]}
+    return node
+
+
+# A page: a header with a sign-in link (its text inside a span), a dialog with a
+# formless login, and two lookalike subtrees.
+_PAGE = {
+    "tag": "html",
+    "children": [
+        {
+            "tag": "body",
+            "children": [
+                {
+                    "tag": "header",
+                    "children": [
+                        {"tag": "a", "attrs": {"href": "/"}, "text": "Home", "key": "home"},
+                        {
+                            "tag": "a",
+                            "attrs": {"href": "#", "id": "signin-link"},
+                            "key": "signin",
+                            "children": [{"tag": "span", "text": "Sign in", "key": "signin-text"}],
+                        },
+                        {"tag": "a", "attrs": {"href": "#"}, "text": "Help", "key": "help"},
+                    ],
+                },
+                {
+                    "tag": "div",
+                    "attrs": {"role": "dialog", "class": "modal"},
+                    "children": [
+                        {
+                            "tag": "input",
+                            "attrs": {"type": "email", "id": "m-email", "name": "email"},
+                            "value": "alice@example.com",
+                            "key": "email",
+                        },
+                        {
+                            "tag": "input",
+                            "attrs": {"type": "password", "name": "password"},
+                            "value": "hunter2hunter2",
+                            "key": "password",
+                        },
+                        {
+                            "tag": "button",
+                            "attrs": {"id": "1st:remember"},
+                            "text": "Remember me",
+                            "key": "label",
+                        },
+                        {"tag": "summary", "text": "More", "key": "summary"},
+                        {
+                            "tag": "div",
+                            "attrs": {"role": "button", "id": "dup"},
+                            "text": "Close",
+                            "key": "close",
+                        },
+                        {
+                            "tag": "button",
+                            "attrs": {"id": "dup", "name": "go", "type": "submit"},
+                            "text": "Sign in",
+                            "key": "go",
+                        },
+                        {"tag": "p", "text": "plain text", "key": "plain"},
+                        {"tag": "select", "attrs": {"id": "country"}, "key": "select"},
+                        {"tag": "textarea", "attrs": {"name": "note"}, "key": "textarea"},
+                    ],
+                },
+                {"tag": "section", "children": [_deep("deep1")]},
+                {"tag": "section", "children": [_deep("deep2")]},
+                {
+                    "tag": "nav",
+                    "children": [
+                        {"tag": "input", "attrs": {"type": "button"}, "key": "input-button"},
+                        {
+                            "tag": "div",
+                            "attrs": {"class": "opener"},
+                            "children": [{"tag": "span", "text": "Log in", "key": "div-opener"}],
+                        },
+                        {"tag": "label", "attrs": {"for": "m-email"}, "key": "far-label"},
+                        {
+                            "tag": "label",
+                            "key": "wrap-label",
+                            "children": [{"tag": "input", "attrs": {"name": "q"}}],
+                        },
+                        # A checkbox-toggle opener (a CSS-only modal), and a radio's label.
+                        {"tag": "label", "attrs": {"for": "toggle"}, "key": "toggle-label"},
+                        {"tag": "input", "attrs": {"type": "checkbox", "id": "toggle"}},
+                        {
+                            "tag": "label",
+                            "key": "radio-label",
+                            "children": [{"tag": "input", "attrs": {"type": "RADIO", "name": "r"}}],
+                        },
+                        {
+                            "tag": "label",
+                            "key": "search-label",
+                            "children": [
+                                {"tag": "input", "attrs": {"type": "Search", "name": "s"}}
+                            ],
+                        },
+                        {"tag": "button", "attrs": {"name": 'a"b\\c\nd\re'}, "key": "odd-name"},
+                        {"tag": "button", "attrs": {"id": "x" * 129}, "key": "long-id"},
+                        {"tag": "button", "attrs": {"id": "y" * 128}, "key": "max-id"},
+                        {"tag": "select", "attrs": {"name": "n" * 129}, "key": "long-name"},
+                        {"tag": "textarea", "attrs": {"name": "m" * 128}, "key": "max-name"},
+                        {
+                            "tag": "signin-button",
+                            "key": "host",
+                            "shadow": [
+                                {"tag": "button", "attrs": {"id": "inner"}, "key": "inner"},
+                                {"tag": "span", "text": "Sign in", "key": "shadow-text"},
+                            ],
+                        },
+                    ],
+                },
+                # Unique at four levels: the twin differs at the fourth element up.
+                {"tag": "aside", "children": [_chain("p", 2, "depth-4")]},
+                {"tag": "aside", "children": [_chain("span", 2, "")]},
+                # Unique only at five levels: the twins differ at the fifth element up.
+                _chain("article", 3, "depth-5"),
+                _chain("article", 3, ""),
+                {
+                    "tag": "main",
+                    "children": [
+                        {
+                            "tag": "header",
+                            "children": [
+                                {"tag": "a", "attrs": {"id": "by-hidden"}, "key": "by-hidden"}
+                            ],
+                        },
+                        {
+                            "tag": "div",
+                            "hidden": True,
+                            "children": [
+                                {"tag": "input", "attrs": {"type": "password", "name": "pw2"}}
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "tag": "main",
+                    "children": [
+                        {
+                            "tag": "header",
+                            "children": [
+                                {"tag": "a", "attrs": {"id": "by-shown"}, "key": "by-shown"}
+                            ],
+                        },
+                        {
+                            "tag": "div",
+                            "children": [
+                                {"tag": "input", "attrs": {"type": "password", "name": "pw3"}}
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    ],
+}
+
+
+def _nest(levels: int, key: str) -> dict:
+    """A button under *levels* - 1 divs, so its *levels*-th ancestor is the element
+    this sits in."""
+    node: dict = {"tag": "button", "attrs": {"id": key}, "key": key}
+    for _ in range(levels - 1):
+        node = {"tag": "div", "children": [node]}
+    return node
+
+
+# The page's state at a click: no password shown anywhere, each modal hidden a
+# different way, dialogs of each kind, and controls of each input type.
+_STATE_PAGE = {
+    "tag": "html",
+    "children": [
+        {
+            "tag": "body",
+            "children": [
+                {
+                    "tag": "div",
+                    "attrs": {"id": "page"},
+                    "children": [
+                        {
+                            "tag": "header",
+                            "children": [{"tag": "a", "attrs": {"id": "open"}, "key": "open"}],
+                        },
+                        {
+                            "tag": "div",
+                            "hidden": True,
+                            "children": [{"tag": "input", "attrs": {"type": "password"}}],
+                        },
+                        {
+                            "tag": "div",
+                            "style": {"visibility": "hidden"},
+                            "children": [{"tag": "input", "attrs": {"type": "PASSWORD"}}],
+                        },
+                        {
+                            "tag": "div",
+                            "style": {"opacity": "0"},
+                            "children": [{"tag": "input", "attrs": {"type": "password"}}],
+                        },
+                    ],
+                },
+                {"tag": "dialog", "children": [_nest(1, "in-dialog")]},
+                {"tag": "div", "attrs": {"role": "dialog main"}, "children": [_nest(1, "in-role")]},
+                {
+                    "tag": "div",
+                    "attrs": {"role": "alertdialog"},
+                    "children": [_nest(1, "in-alert")],
+                },
+                {"tag": "div", "attrs": {"aria-modal": "TRUE"}, "children": [_nest(2, "in-modal")]},
+                # Only a role's first token counts, as the digest's parser reads it.
+                {
+                    "tag": "div",
+                    "attrs": {"role": "presentation dialog"},
+                    "children": [_nest(1, "in-second-token")],
+                },
+                {
+                    "tag": "form",
+                    "children": [
+                        {"tag": "label", "attrs": {"for": "n"}, "key": "number-label"},
+                        {"tag": "input", "attrs": {"type": "number", "id": "n"}},
+                        {"tag": "label", "attrs": {"for": "s"}, "key": "select-label"},
+                        {"tag": "select", "attrs": {"id": "s"}},
+                        {
+                            "tag": "span",
+                            "children": [
+                                {
+                                    "tag": "input",
+                                    "attrs": {"type": "Reset", "id": "reset"},
+                                    "key": "reset",
+                                }
+                            ],
+                        },
+                        {
+                            "tag": "input",
+                            "attrs": {"type": "SUBMIT", "id": "submit"},
+                            "key": "submit",
+                        },
+                    ],
+                },
+            ],
+        }
+    ],
+}
+
+# A shown password beside a button six, then seven, levels below.
+_LEVELS_PAGE = {
+    "tag": "html",
+    "children": [
+        {
+            "tag": "body",
+            "children": [
+                {
+                    "tag": "section",
+                    "children": [
+                        {"tag": "input", "attrs": {"type": "password", "name": "a"}},
+                        _nest(6, "six"),
+                    ],
+                },
+                {
+                    "tag": "section",
+                    "children": [
+                        {"tag": "input", "attrs": {"type": "password", "name": "b"}},
+                        _nest(7, "seven"),
+                    ],
+                },
+            ],
+        }
+    ],
+}
+
+
+def _field(key: str, **attrs: str) -> dict:
+    return {"tag": "input", "attrs": {"id": key, **attrs}, "key": key}
+
+
+# What a click revealed: a collapsed menu shown after a click on its button, a
+# modal shown after a click on the header link, and fields a person can or cannot
+# see at a click.
+_REVEAL_PAGE = {
+    "tag": "html",
+    "children": [
+        {
+            "tag": "body",
+            "children": [
+                {
+                    "tag": "header",
+                    "children": [
+                        {"tag": "button", "attrs": {"id": "accept"}, "key": "accept"},
+                        {"tag": "button", "attrs": {"id": "menu"}, "key": "menu"},
+                        {"tag": "a", "attrs": {"id": "signin"}, "key": "signin"},
+                        # Scrolled out of view at a click: still drawn.
+                        {
+                            "tag": "a",
+                            "attrs": {"id": "far"},
+                            "key": "far",
+                            "rect": [10, 3000, 100, 20],
+                        },
+                        {
+                            "tag": "nav",
+                            "hidden": True,
+                            "key": "nav",
+                            "children": [
+                                {"tag": "a", "attrs": {"id": "nav-signin"}, "key": "nav-signin"}
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "tag": "main",
+                    "children": [
+                        _field("email", type="email"),
+                        _field("plain"),
+                        _field("pw-current", type="text", autocomplete="current-password"),
+                        _field("check", type="checkbox"),
+                        {"tag": "select", "attrs": {"id": "pick"}},
+                        {"tag": "textarea", "attrs": {"id": "note"}},
+                        {
+                            "tag": "div",
+                            "attrs": {"aria-hidden": "TRUE"},
+                            "children": [_field("aria", type="text")],
+                        },
+                        {"tag": "div", "attrs": {"inert": ""}, "children": [_field("inert")]},
+                        {
+                            "tag": "input",
+                            "attrs": {"id": "honeypot", "type": "password"},
+                            "rect": [-9999, 10, 100, 20],
+                        },
+                        {"tag": "input", "attrs": {"id": "flat"}, "rect": [10, 10, 0, 20]},
+                        {"tag": "input", "attrs": {"id": "below"}, "rect": [10, 900, 100, 20]},
+                        {"tag": "input", "attrs": {"id": "thin"}, "rect": [10, 10, 100, 0]},
+                        {"tag": "input", "attrs": {"id": "above"}, "rect": [10, -100, 100, 20]},
+                        {"tag": "input", "attrs": {"id": "right"}, "rect": [1200, 10, 100, 20]},
+                    ],
+                },
+                {
+                    "tag": "div",
+                    "hidden": True,
+                    "key": "modal",
+                    "children": [
+                        _field("m-email", type="email"),
+                        _field("m-pw", type="password"),
+                        {"tag": "button", "attrs": {"id": "use-email"}, "key": "use-email"},
+                    ],
+                },
+            ],
+        }
+    ],
+}
+
+# A field below the fold counts: a person scrolls to it.
+_REVEAL_SHOWN = ["#email", "#plain", "#pw-current", "#pick", "#note", "#below"]
+
+_UNCHANGED = {"prevented": False, "stopped": False, "escaped": None}
+
+
+def _run_dom(
+    tmp_path: Path,
+    fire: list[dict],
+    *,
+    binding: bool = True,
+    no_css: bool = False,
+    throw_on_query: bool = False,
+    throw_on_document_query: bool = False,
+    dom: dict | None = None,
+    check_visibility: bool = True,
+    ready_state: str = "loading",
+    document_url: str = "",
+) -> dict:
+    harness = tmp_path / "dom_harness.js"
+    harness.write_text(_DOM_HARNESS)
+    config = {
+        "script": LISTENER_SCRIPT,
+        "bindingName": BINDING_NAME,
+        "binding": binding,
+        "fire": fire,
+        "dom": dom or _PAGE,
+        "noCheckVisibility": not check_visibility,
+        "readyState": ready_state,
+        "documentUrl": document_url,
+        "noCss": no_css,
+        "throwOnQuery": throw_on_query,
+        "throwOnDocumentQuery": throw_on_document_query,
+    }
+    assert NODE is not None
+    out = subprocess.run(  # noqa: S603 - node from PATH, our own harness
+        [NODE, str(harness), json.dumps(config)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return json.loads(out.stdout)
+
+
+def _sent(result: dict) -> list[tuple[str, str | None]]:
+    return [(call["kind"], call["selector"]) for call in result["calls"]]
+
+
+class TestTheInteractionConstants:
+    def test_the_payload_type_the_rate_and_the_depth_are_fixed(self) -> None:
+        assert INTERACTION_TYPE == "interaction"
+        assert MAX_INTERACTIONS_PER_SECOND == 20
+        assert STRUCTURAL_DEPTH == 4
+        assert f'"{INTERACTION_TYPE}"' in LISTENER_SCRIPT
+
+
+@needs_node
+class TestInteractionEvents:
+    """The clicks and focus moves the listener sends (#267, part 3): a selector, the
+    document URL, and the time, never text or a value."""
+
+    def test_a_click_sends_its_unique_id(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "signin"}])
+        (call,) = result["calls"]
+        assert call == {
+            "type": "interaction",
+            "kind": "click",
+            "selector": "#signin-link",
+            # The page's origin and path: no query or fragment crosses the binding.
+            "url": "https://myshop.example/",
+            "time": 1700000000000,
+            "control": True,
+            "inLogin": False,
+            "inDialog": False,
+            # The page's first click: nothing was shown at an earlier one.
+            "revealed": False,
+            # The fields shown as the link is clicked, the dialog's among them.
+            "shownFields": call["shownFields"],
+        }
+        assert {"#m-email", 'input[name="password"]', "#country"} <= set(call["shownFields"])
+        assert result["events"] == [_UNCHANGED]
+
+    def test_a_click_inside_a_link_is_the_link_s(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "signin-text"}])
+        assert _sent(result) == [("click", "#signin-link")]
+
+    def test_an_id_that_needs_escaping_is_escaped(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "label"}])
+        assert _sent(result) == [("click", "#\\31 st\\:remember")]
+
+    def test_a_shared_id_falls_to_a_unique_name(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "go"}])
+        assert _sent(result) == [("click", 'button[name="go"]')]
+
+    def test_no_id_and_no_name_gives_a_short_structural_path(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path, [{"type": "click", "target": "help"}, {"type": "click", "target": "summary"}]
+        )
+        assert _sent(result) == [
+            ("click", "a:nth-of-type(3)"),
+            ("click", "summary:nth-of-type(1)"),
+        ]
+
+    def test_a_shared_id_with_no_name_falls_to_the_path(self, tmp_path: Path) -> None:
+        """The role=button div: its id is shared, and it has no name."""
+        result = _run_dom(tmp_path, [{"type": "click", "target": "close"}])
+        assert _sent(result) == [
+            ("click", "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1)")
+        ]
+
+    def test_nothing_unique_within_four_levels_sends_no_selector(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "deep1"}])
+        assert _sent(result) == [("click", None)]
+
+    def test_without_css_escape_an_id_is_not_used(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "signin"}], no_css=True)
+        assert _sent(result) == [("click", "a:nth-of-type(2)")]
+
+    def test_a_click_on_no_control_is_sent_with_no_selector(self, tmp_path: Path) -> None:
+        """Review round 2: a click on anything but a control is reported, so an earlier
+        click cannot stand in for it, but as no control and with no selector."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "div-opener"},
+                {"type": "click", "target": "email"},
+                {"type": "click"},
+            ],
+        )
+        assert [(c["selector"], c["control"]) for c in result["calls"]] == [
+            (None, False),
+            (None, False),
+        ]
+        assert result["events"] == [_UNCHANGED] * 3
+
+    def test_a_button_input_is_a_control(self, tmp_path: Path) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "input-button"}])
+        assert _sent(result) == [("click", "nav:nth-of-type(1) > input:nth-of-type(1)")]
+
+    def test_a_click_a_script_made_is_dropped_and_its_focus_kept(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "signin", "untrusted": True},
+                {"type": "focusin", "target": "email", "untrusted": True},
+            ],
+        )
+        assert _sent(result) == [("focus", "#m-email")]
+
+    def test_a_click_in_a_shadow_tree_is_the_inner_element_s(self, tmp_path: Path) -> None:
+        """The inner button is the clicked control; the document cannot select it, so
+        the selector is null (an unresolved opener, never the host)."""
+        result = _run_dom(tmp_path, [{"type": "click", "target": "inner", "retarget": "host"}])
+        assert _sent(result) == [("click", None)]
+        assert result["calls"][0]["control"] is True
+
+    def test_a_non_control_in_a_shadow_tree_is_no_control_and_not_the_host(
+        self, tmp_path: Path
+    ) -> None:
+        result = _run_dom(
+            tmp_path, [{"type": "click", "target": "shadow-text", "retarget": "host"}]
+        )
+        assert [(c["selector"], c["control"]) for c in result["calls"]] == [(None, False)]
+
+    def test_a_click_inside_the_login_is_flagged(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "signin"},
+                {"type": "click", "target": "go"},
+                {"type": "click", "target": "far-label"},
+                {"type": "click", "target": "wrap-label"},
+                {"type": "click", "target": "input-button"},
+                {"type": "click", "target": "by-hidden"},
+                {"type": "click", "target": "by-shown"},
+            ],
+        )
+        assert [call["inLogin"] for call in result["calls"]] == [
+            False,
+            True,
+            True,
+            True,
+            False,
+            False,
+            True,
+        ]
+
+    def test_a_label_for_a_checkbox_or_a_radio_is_not_flagged(self, tmp_path: Path) -> None:
+        """A checkbox-toggle opener stays a candidate; a text-like field's label does
+        not, whatever the case of its type."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "toggle-label"},
+                {"type": "click", "target": "radio-label"},
+                {"type": "click", "target": "search-label"},
+            ],
+        )
+        assert [call["inLogin"] for call in result["calls"]] == [False, False, True]
+
+    def test_a_name_with_quotes_backslashes_and_line_breaks_is_escaped(
+        self, tmp_path: Path
+    ) -> None:
+        result = _run_dom(tmp_path, [{"type": "click", "target": "odd-name"}])
+        assert _sent(result) == [("click", 'button[name="a\\"b\\\\c\\a d\\d e"]')]
+
+    def test_an_id_or_a_name_over_128_characters_is_not_used(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "long-id"},
+                {"type": "click", "target": "max-id"},
+                {"type": "focusin", "target": "long-name"},
+                {"type": "focusin", "target": "max-name"},
+            ],
+        )
+        assert _sent(result) == [
+            ("click", "nav:nth-of-type(1) > button:nth-of-type(2)"),
+            ("click", "#" + "y" * 128),
+            ("focus", "nav:nth-of-type(1) > select:nth-of-type(1)"),
+            ("focus", 'textarea[name="' + "m" * 128 + '"]'),
+        ]
+
+    def test_a_path_of_exactly_four_steps_is_used_and_five_is_not(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "depth-4"}, {"type": "click", "target": "depth-5"}],
+        )
+        assert _sent(result) == [
+            (
+                "click",
+                "p:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1)"
+                " > button:nth-of-type(1)",
+            ),
+            ("click", None),
+        ]
+
+    def test_a_failing_selector_sends_the_event_with_none(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path, [{"type": "click", "target": "signin"}], throw_on_document_query=True
+        )
+        assert _sent(result) == [("click", None)]
+        assert result["events"] == [_UNCHANGED]
+
+    def test_focus_on_a_field_sends_it(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "focusin", "target": "email"},
+                {"type": "focusin", "target": "password", "after": 300},
+                {"type": "focusin", "target": "select", "after": 1},
+                {"type": "focusin", "target": "textarea", "after": 1},
+                {"type": "focusin", "target": "go", "after": 1},
+                {"type": "focusin", "target": "signin", "after": 1},
+            ],
+        )
+        assert _sent(result) == [
+            ("focus", "#m-email"),
+            ("focus", 'input[name="password"]'),
+            ("focus", "#country"),
+            ("focus", 'textarea[name="note"]'),
+        ]
+        assert [call["time"] for call in result["calls"]][:2] == [1700000000000, 1700000000300]
+
+    def test_no_text_and_no_value_is_sent(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "signin-text"},
+                {"type": "focusin", "target": "email"},
+                {"type": "focusin", "target": "password"},
+                {"type": "click", "target": "go"},
+            ],
+        )
+        assert len(result["calls"]) == 4
+        sent = json.dumps(result["calls"])
+        for secret in ("alice@example.com", "hunter2hunter2", "Sign in", "Remember", "href"):
+            assert secret not in sent
+        assert {frozenset(call) for call in result["calls"]} == {
+            frozenset({"type", "kind", "selector", "url", "time"}),
+            frozenset(
+                {
+                    "type",
+                    "kind",
+                    "selector",
+                    "url",
+                    "time",
+                    "control",
+                    "inLogin",
+                    "inDialog",
+                    "revealed",
+                    "shownFields",
+                }
+            ),
+        }
+
+    def test_at_most_the_rate_per_second(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "signin", "repeat": MAX_INTERACTIONS_PER_SECOND + 5},
+                {"type": "focusin", "target": "email", "after": 999},
+                {"type": "focusin", "target": "email", "after": 1},
+            ],
+        )
+        assert _sent(result) == [("click", "#signin-link")] * MAX_INTERACTIONS_PER_SECOND + [
+            ("focus", "#m-email")
+        ]
+
+    def test_a_label_for_a_number_or_a_select_is_flagged(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "number-label"},
+                {"type": "click", "target": "select-label"},
+            ],
+            dom=_STATE_PAGE,
+        )
+        assert [call["inLogin"] for call in result["calls"]] == [True, True]
+
+    def test_reset_and_upper_case_submit_inputs_are_controls(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "reset"}, {"type": "click", "target": "submit"}],
+            dom=_STATE_PAGE,
+        )
+        assert [(c["selector"], c["control"]) for c in result["calls"]] == [
+            ("#reset", True),
+            ("#submit", True),
+        ]
+
+    def test_a_password_six_levels_up_flags_and_seven_does_not(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "six"}, {"type": "click", "target": "seven"}],
+            dom=_LEVELS_PAGE,
+        )
+        assert [call["inLogin"] for call in result["calls"]] == [True, False]
+
+    @pytest.mark.parametrize("check_visibility", [True, False])
+    def test_a_password_is_shown_only_when_seen(
+        self, tmp_path: Path, check_visibility: bool
+    ) -> None:
+        """Hidden by display, visibility, or opacity, a modal's password is not shown;
+        the link next to it is neither inside the login nor clicked with one shown."""
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "open"}],
+            dom=_STATE_PAGE,
+            check_visibility=check_visibility,
+        )
+        (call,) = result["calls"]
+        assert (call["shownFields"], call["inLogin"], call["inDialog"]) == (
+            ["#n", "#s"],
+            False,
+            False,
+        )
+
+    def test_a_shown_current_password_input_counts(self, tmp_path: Path) -> None:
+        page = json.loads(json.dumps(_STATE_PAGE))
+        page["children"][0]["children"].append(
+            {"tag": "input", "attrs": {"type": "text", "autocomplete": "Current-Password"}}
+        )
+        result = _run_dom(tmp_path, [{"type": "click", "target": "open"}], dom=page)
+        assert "body:nth-of-type(1) > input:nth-of-type(1)" in result["calls"][0]["shownFields"]
+
+    def test_a_click_inside_a_dialog_says_so(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "in-dialog"},
+                {"type": "click", "target": "in-role"},
+                {"type": "click", "target": "in-alert"},
+                {"type": "click", "target": "in-modal"},
+                {"type": "click", "target": "open"},
+                {"type": "click", "target": "in-second-token"},
+            ],
+            dom=_STATE_PAGE,
+        )
+        assert [call["inDialog"] for call in result["calls"]] == [
+            True,
+            True,
+            True,
+            True,
+            False,
+            False,
+        ]
+
+    def test_a_click_sends_the_fields_a_person_sees(self, tmp_path: Path) -> None:
+        """Text-like, password, select, and textarea fields with a box in the viewport,
+        not under aria-hidden or inert, and not a checkbox; no pwShown any more."""
+        result = _run_dom(tmp_path, [{"type": "click", "target": "accept"}], dom=_REVEAL_PAGE)
+        (call,) = result["calls"]
+        assert call["shownFields"] == _REVEAL_SHOWN
+        assert "pwShown" not in call
+
+    def test_at_most_sixteen_fields_are_sent(self, tmp_path: Path) -> None:
+        page = json.loads(json.dumps(_REVEAL_PAGE))
+        page["children"][0]["children"][1]["children"] = [_field(f"f{n}") for n in range(20)]
+        result = _run_dom(tmp_path, [{"type": "click", "target": "accept"}], dom=page)
+        assert result["calls"][0]["shownFields"] == [f"#f{n}" for n in range(16)]
+
+    def test_a_control_shown_at_the_last_click_was_not_revealed(self, tmp_path: Path) -> None:
+        """A cookie banner's button, then the header link: the link was on the page."""
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "accept"}, {"type": "click", "target": "signin"}],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, False]
+
+    def test_a_control_a_click_showed_was_revealed(self, tmp_path: Path) -> None:
+        """A collapsed menu's link, and a button in the modal the link opened."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "menu"},
+                {"type": "click", "target": "nav-signin", "show": "nav"},
+                {"type": "click", "target": "use-email", "show": "modal"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, True, True]
+        # The modal's fields are shown at the third click, not at the first.
+        assert "#m-email" not in result["calls"][0]["shownFields"]
+        assert {"#m-email", "#m-pw"} <= set(result["calls"][2]["shownFields"])
+
+    def test_a_name_holding_a_nul_is_escaped(self, tmp_path: Path) -> None:
+        page = json.loads(json.dumps(_REVEAL_PAGE))
+        page["children"][0]["children"].append(
+            {"tag": "button", "attrs": {"name": "a\u0000b"}, "key": "nul"}
+        )
+        result = _run_dom(tmp_path, [{"type": "click", "target": "nul"}], dom=page)
+        assert result["calls"][0]["selector"] == 'button[name="a\\0 b"]'
+
+    def test_a_control_scrolled_out_of_view_was_not_revealed(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "accept"}, {"type": "click", "target": "far"}],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, False]
+
+    def test_each_click_compares_with_the_click_before_it(self, tmp_path: Path) -> None:
+        """A link the second click's page showed is revealed at the third, and one
+        drawn since the third is not revealed at the fourth."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "accept"},
+                {"type": "click", "target": "menu"},
+                {"type": "click", "target": "nav-signin", "show": "nav"},
+                {"type": "click", "target": "nav-signin"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, False, True, False]
+
+    def test_a_click_on_no_control_also_takes_the_page_s_controls(self, tmp_path: Path) -> None:
+        """A div that opens a menu: the link it showed is revealed at the next click."""
+        page = json.loads(json.dumps(_REVEAL_PAGE))
+        page["children"][0]["children"][0]["children"].append(
+            {"tag": "div", "key": "div-menu", "text": "Account"}
+        )
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "div-menu"},
+                {"type": "click", "target": "nav-signin", "show": "nav"},
+            ],
+            dom=page,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, True]
+
+    def test_a_password_off_screen_does_not_put_a_click_inside_the_login(
+        self, tmp_path: Path
+    ) -> None:
+        page = {
+            "tag": "html",
+            "children": [
+                {
+                    "tag": "body",
+                    "children": [
+                        {
+                            "tag": "div",
+                            "children": [
+                                {"tag": "a", "attrs": {"id": "go"}, "key": "go"},
+                                {
+                                    "tag": "input",
+                                    "attrs": {"type": "password"},
+                                    "rect": [-9999, 10, 100, 20],
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        result = _run_dom(tmp_path, [{"type": "click", "target": "go"}], dom=page)
+        assert result["calls"][0]["inLogin"] is False
+
+    def test_a_control_in_a_shadow_tree_never_gets_a_document_selector(
+        self, tmp_path: Path
+    ) -> None:
+        """Its structural path would be unique in the document and pick another
+        element there."""
+        page = {
+            "tag": "html",
+            "children": [
+                {
+                    "tag": "body",
+                    "children": [
+                        {"tag": "button", "attrs": {"name": "x"}, "key": "light"},
+                        {
+                            "tag": "signin-button",
+                            "key": "host",
+                            "shadow": [{"tag": "button", "key": "inner"}],
+                        },
+                    ],
+                }
+            ],
+        }
+        result = _run_dom(
+            tmp_path, [{"type": "click", "target": "inner", "retarget": "host"}], dom=page
+        )
+        assert [(c["selector"], c["control"]) for c in result["calls"]] == [(None, True)]
+
+    def test_at_most_the_first_controls_are_remembered(self, tmp_path: Path) -> None:
+        """Past the cap a control reads as revealed: the page's cost per click is
+        bounded."""
+        page = json.loads(json.dumps(_REVEAL_PAGE))
+        page["children"][0]["children"].append(
+            {
+                "tag": "section",
+                "children": [
+                    {"tag": "a", "attrs": {"id": f"l{n}"}, "key": f"l{n}"}
+                    for n in range(MAX_DRAWN_CONTROLS)
+                ],
+            }
+        )
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "accept"},
+                {"type": "click", "target": "l10"},
+                {"type": "click", "target": f"l{MAX_DRAWN_CONTROLS - 1}"},
+            ],
+            dom=page,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, False, True]
+
+    def test_a_control_not_drawn_at_page_load_is_revealed_at_the_first_click(
+        self, tmp_path: Path
+    ) -> None:
+        """A hover-opened menu's link clicked first: the page as it loaded did not
+        draw it."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "load"},
+                {"type": "click", "target": "nav-signin", "show": "nav"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [True]
+
+    def test_a_menu_opened_on_pointerdown_reveals_its_item(self, tmp_path: Path) -> None:
+        """The menu is drawn by the trigger's click, but not at the trigger's press,
+        which the item's click is compared with."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "load"},
+                {"type": "pointerdown", "target": "menu"},
+                {"type": "click", "target": "menu", "show": "nav"},
+                {"type": "pointerdown", "target": "nav-signin"},
+                {"type": "click", "target": "nav-signin"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, True]
+
+    def test_a_page_already_loaded_is_read_at_once(self, tmp_path: Path) -> None:
+        """Installed into a page that finished loading: no load event comes, so the
+        page is read as the listener starts."""
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "nav-signin", "show": "nav"}],
+            dom=_REVEAL_PAGE,
+            ready_state="complete",
+        )
+        assert [call["revealed"] for call in result["calls"]] == [True]
+
+    def test_a_press_a_script_made_is_ignored(self, tmp_path: Path) -> None:
+        """A synthetic pointerdown after the menu opened does not replace the set the
+        item's click is compared with."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "load"},
+                {"type": "pointerdown", "target": "menu"},
+                {"type": "click", "target": "menu", "show": "nav"},
+                {"type": "pointerdown", "target": "nav-signin", "untrusted": True},
+                {"type": "pointerdown", "target": "nav-signin"},
+                {"type": "click", "target": "nav-signin"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, True]
+
+    def test_no_query_or_fragment_is_sent(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "signin"}, {"type": "focusin", "target": "email"}],
+            document_url="https://myshop.example/account/login?token=abc123&next=%2F#state=xyz",
+        )
+        assert [call["url"] for call in result["calls"]] == [
+            "https://myshop.example/account/login"
+        ] * 2
+        assert "abc123" not in json.dumps(result["calls"])
+
+    def test_a_keyboard_click_after_a_pointer_click_compares_with_the_last_press(
+        self, tmp_path: Path
+    ) -> None:
+        """The menu's press drew the link; Enter on it then is not revealed."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "load"},
+                {"type": "pointerdown", "target": "menu", "show": "nav"},
+                {"type": "click", "target": "menu"},
+                {"type": "click", "target": "nav-signin"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, False]
+
+    def test_forty_attempts_in_two_milliseconds_send_twenty(self, tmp_path: Path) -> None:
+        """A sliding window: one event, then a burst straddling the second after it.
+        A window reset each second would let 39 of the burst through."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "signin"},
+                {"type": "click", "target": "signin", "after": 999},
+                {"type": "click", "target": "signin", "after": 0.05, "repeat": 39},
+            ],
+        )
+        assert len(result["calls"]) == MAX_INTERACTIONS_PER_SECOND + 1
+
+    def test_a_wall_clock_set_back_does_not_stop_the_events(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "signin", "repeat": MAX_INTERACTIONS_PER_SECOND},
+                {"type": "focusin", "target": "email", "after": 1000, "wall": -100_000},
+            ],
+        )
+        assert _sent(result)[-1] == ("focus", "#m-email")
+
+    def test_without_the_binding_nothing_is_sent_or_thrown(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "signin"}, {"type": "focusin", "target": "email"}],
+            binding=False,
+        )
+        assert result["threw"] is None
+        assert result["calls"] == []
+        assert result["events"] == [_UNCHANGED] * 2
+
+    def test_a_failure_never_reaches_the_page(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "click", "target": "signin"},
+                {"type": "focusin", "target": "email"},
+                {"type": "focusin"},
+            ],
+            throw_on_query=True,
+        )
+        assert result["threw"] is None
+        # The click fails finding its control and is dropped; the focus fails only
+        # its selector, so it is sent with none (review round 1, M5).
+        assert _sent(result) == [("focus", None)]
+        assert result["events"] == [_UNCHANGED] * 3

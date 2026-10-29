@@ -2113,3 +2113,32 @@ def test_the_literal_name_username_fallback_stops_at_a_dialog_s_first_button() -
     assert dialog.absent_roles[0] == "username"
     (form,) = extract_login_forms(f'<form action="/login">{controls}</form>', source="s")
     assert form.fields["username"] == "#u"
+
+
+class TestARealFormInsideADialog:
+    """``LoginForm.in_dialog`` (#267, part 3): a real form's password input inside a
+    dialog-marked element, whatever its other controls sit in."""
+
+    def test_the_password_inside_a_dialog_marks_the_form(self) -> None:
+        html = (
+            '<div role="dialog"><form><input name="email">'
+            '<input type="password" name="password"></form></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.in_dialog
+
+    def test_another_control_inside_a_dialog_does_not(self) -> None:
+        html = (
+            '<form><div role="dialog"><input name="email"></div>'
+            '<input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert not form.in_dialog
+
+    def test_a_dialog_s_second_role_token_does_not(self) -> None:
+        html = (
+            '<div role="presentation dialog"><form><input name="email">'
+            '<input type="password" name="password"></form></div>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert not form.in_dialog

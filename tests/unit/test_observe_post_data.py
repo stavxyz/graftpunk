@@ -2907,3 +2907,570 @@ class TestSnapshotFromTheIsolatedWorldListener:
         ] == ["40.1"]
         (summary,) = [e for e in logs if e["event"] == "nodriver_dom_snapshot_summary"]
         assert summary["failed"] == 1
+
+
+# The state the listener sends with a click, as the recorder stores it.
+_CLICK_STATE = {"control": True, "inDialog": False, "revealed": False, "shownFields": []}
+# As the recorder stores a click and a focus from LOGIN: with the page's path.
+_STORED_CLICK = {**_CLICK_STATE, "path": "/login"}
+_STORED_FOCUS = {"path": "/login"}
+
+
+def _interaction(
+    kind: str, selector: str | None, *, time_ms: float, url: str = LOGIN, **extra: Any
+) -> Any:
+    from graftpunk.observe.dom_listener import BINDING_NAME, INTERACTION_TYPE
+
+    payload = {
+        "type": INTERACTION_TYPE,
+        "kind": kind,
+        "selector": selector,
+        "url": url,
+        "time": time_ms,
+        # A click carries the page's state at it (review round 2): a control, not in
+        # a dialog, no password shown, unless the test says otherwise.
+        **(_CLICK_STATE if kind == "click" else {}),
+        **extra,
+    }
+    return parse_json_event(
+        {
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": BINDING_NAME,
+                "payload": json.dumps(payload),
+                "executionContextId": 7,
+            },
+        }
+    )
+
+
+class TestLoginInteractionsAtTheCredentialPost:
+    """The clicks and focus moves the page's listener sent (#267, part 3) are stored
+    on the credential post they came before, as ``request._loginInteractions``."""
+
+    # A click on the header link, the user filling the modal, and the submit click.
+    _OPENED = (
+        ("click", "#signin-link", 5000),
+        ("focus", "#m-email", 3000),
+        ("focus", 'input[name="password"]', 2000),
+        ("click", "#m-go", 40),
+    )
+
+    def _events(self, steps: tuple[tuple[str, str | None, int], ...] = _OPENED) -> list[Any]:
+        return [
+            _interaction(kind, selector, time_ms=_POST_MS - before)
+            for kind, selector, before in steps
+        ]
+
+    async def _run(
+        self, tmp_path: Path, before: list[Any], *, snapshots: bool = True, after: Any = ()
+    ) -> NodriverCaptureBackend:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        kwargs: dict[str, Any] = {}
+        if snapshots:
+            kwargs["dom_snapshots_dir"] = tmp_path / "snapshots"
+        return await _record(
+            tab,
+            [*before, _will_be_sent("41.1", inline=_LOGIN_BODY, url=LOGIN), *after],
+            **kwargs,
+        )
+
+    @staticmethod
+    def _stored(backend: NodriverCaptureBackend, method: str = "POST") -> Any:
+        entry = next(e for e in backend.get_har_entries() if e["request"]["method"] == method)
+        return entry["request"].get("_loginInteractions")
+
+    @pytest.mark.asyncio
+    async def test_the_events_before_the_post_are_stored_oldest_first(self, tmp_path: Path) -> None:
+        backend = await self._run(tmp_path, self._events())
+        assert self._stored(backend) == [
+            {"kind": "click", "selector": "#signin-link", "msBefore": 5000, **_STORED_CLICK},
+            {"kind": "focus", "selector": "#m-email", "msBefore": 3000, **_STORED_FOCUS},
+            {
+                "kind": "focus",
+                "selector": 'input[name="password"]',
+                "msBefore": 2000,
+                **_STORED_FOCUS,
+            },
+            {"kind": "click", "selector": "#m-go", "msBefore": 40, **_STORED_CLICK},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_url_and_no_absolute_time_is_stored(self, tmp_path: Path) -> None:
+        backend = await self._run(tmp_path, self._events())
+        assert self._stored(backend)
+        stored = json.dumps(self._stored(backend))
+        assert LOGIN not in stored
+        assert str(_POST_MS)[:6] not in stored
+
+    @pytest.mark.asyncio
+    async def test_only_the_last_120_seconds_and_nothing_after_the_post(
+        self, tmp_path: Path
+    ) -> None:
+        from graftpunk.observe.capture import LOGIN_INTERACTION_WINDOW_MS
+
+        assert LOGIN_INTERACTION_WINDOW_MS == 120_000
+        backend = await self._run(
+            tmp_path,
+            [
+                _interaction("click", "#too-old", time_ms=_POST_MS - 120_001),
+                _interaction("click", "#just-in", time_ms=_POST_MS - 120_000),
+                _interaction("click", "#at-the-post", time_ms=_POST_MS),
+                _interaction("click", "#after", time_ms=_POST_MS + 1),
+            ],
+        )
+        assert [e["selector"] for e in self._stored(backend)] == ["#just-in", "#at-the-post"]
+
+    @pytest.mark.asyncio
+    async def test_only_the_sending_page_s_origin(self, tmp_path: Path) -> None:
+        backend = await self._run(
+            tmp_path,
+            [
+                _interaction(
+                    "click", "#ad", time_ms=_POST_MS - 900, url="https://ads.example.net/"
+                ),
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 800),
+                _interaction(
+                    "click",
+                    "#other-port",
+                    time_ms=_POST_MS - 700,
+                    url="https://myshop.example:8443/",
+                ),
+            ],
+        )
+        assert [e["selector"] for e in self._stored(backend)] == ["#signin-link"]
+
+    @pytest.mark.asyncio
+    async def test_the_last_32_per_origin_are_kept(self, tmp_path: Path) -> None:
+        from graftpunk.observe.capture import INTERACTION_BUFFER
+
+        assert INTERACTION_BUFFER == 32
+        own = [_interaction("click", f"#c{n}", time_ms=_POST_MS - 1000 + n) for n in range(40)]
+        # Another origin's events fill their own buffer, not this one's.
+        other = [
+            _interaction("click", "#x", time_ms=_POST_MS - 10, url="https://other.example/")
+            for _ in range(40)
+        ]
+        backend = await self._run(tmp_path, [*own, *other])
+        assert [e["selector"] for e in self._stored(backend)] == [f"#c{n}" for n in range(8, 40)]
+
+    @pytest.mark.asyncio
+    async def test_the_number_of_origins_kept_is_bounded(self, tmp_path: Path) -> None:
+        from graftpunk.observe.capture import INTERACTION_ORIGINS
+
+        backend = await self._run(
+            tmp_path,
+            [
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 900),
+                *(
+                    _interaction("click", "#x", time_ms=_POST_MS - 10, url=f"https://o{n}.example/")
+                    for n in range(INTERACTION_ORIGINS)
+                ),
+            ],
+        )
+        assert self._stored(backend) is None
+
+    @pytest.mark.asyncio
+    async def test_a_selector_holding_an_account_value_is_dropped(self, tmp_path: Path) -> None:
+        backend = await self._run(
+            tmp_path,
+            [
+                _interaction("click", "#user_40912873", time_ms=_POST_MS - 900),
+                _interaction("focus", 'input[name="alice@example.com"]', time_ms=_POST_MS - 800),
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 700),
+            ],
+        )
+        assert self._stored(backend) == [
+            {"kind": "click", "selector": None, "msBefore": 900, **_STORED_CLICK},
+            {"kind": "focus", "selector": None, "msBefore": 800, **_STORED_FOCUS},
+            {"kind": "click", "selector": "#signin-link", "msBefore": 700, **_STORED_CLICK},
+        ]
+        stored = json.dumps(self._stored(backend))
+        assert "40912873" not in stored
+        assert "alice" not in stored
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_interaction_is_dropped(self, tmp_path: Path) -> None:
+        backend = await self._run(
+            tmp_path,
+            [
+                _interaction("scroll", "#a", time_ms=_POST_MS - 900),
+                _interaction("click", 7, time_ms=_POST_MS - 900),  # type: ignore[arg-type]
+                _interaction("click", "#b", time_ms="soon"),  # type: ignore[arg-type]
+                _interaction("click", "#c", time_ms=_POST_MS - 900, url=None),  # type: ignore[arg-type]
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 800),
+            ],
+        )
+        assert [e["selector"] for e in self._stored(backend)] == ["#signin-link"]
+
+    @pytest.mark.asyncio
+    async def test_an_interaction_is_never_taken_for_a_snapshot(self, tmp_path: Path) -> None:
+        backend = await self._run(tmp_path, self._events())
+        # No listener snapshot came, so the page was read by DevTools; the
+        # interactions did not stand in for one.
+        assert _only_entry(backend)["request"]["_domSnapshot"] == "snapshots/41.1.html"
+        assert 'id="login-modal"' in (tmp_path / "snapshots" / "41.1.html").read_text()
+
+    @pytest.mark.asyncio
+    async def test_only_a_credential_post_gets_them(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        backend = await _record(
+            tab,
+            [
+                *self._events(),
+                _will_be_sent("42.1", inline=BODY, url=SEARCH),
+                _will_be_sent("42.2", url=HOME, method="GET"),
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        for entry in backend.get_har_entries():
+            assert "_loginInteractions" not in entry["request"]
+
+    @pytest.mark.asyncio
+    async def test_each_credential_post_gets_the_events_before_it(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        first = _will_be_sent("43.1", inline=_LOGIN_BODY, url=LOGIN)
+        second = _will_be_sent("43.2", inline=_LOGIN_BODY, url=LOGIN)
+        second.wall_time = (_POST_MS + 10_000) / 1000
+        backend = await _record(
+            tab,
+            [
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 900),
+                first,
+                _interaction("click", "#retry", time_ms=_POST_MS + 5_000),
+                second,
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        stored = [
+            [i["selector"] for i in e["request"]["_loginInteractions"]]
+            for e in backend.get_har_entries()
+        ]
+        assert stored == [["#signin-link"], ["#signin-link", "#retry"]]
+
+    @pytest.mark.asyncio
+    async def test_without_the_observe_flag_nothing_is_stored(self, tmp_path: Path) -> None:
+        backend = await self._run(tmp_path, self._events(), snapshots=False)
+        assert self._stored(backend) is None
+        assert backend._interactions == {}
+
+    @pytest.mark.asyncio
+    async def test_a_saved_run_reads_them_back(self, tmp_path: Path) -> None:
+        from graftpunk.har.parser import LoginInteraction, parse_har_file
+        from graftpunk.observe.run import save_observe_run
+        from graftpunk.observe.storage import ObserveStorage
+
+        storage = ObserveStorage(tmp_path, "myshop", "r1")
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        backend = NodriverCaptureBackend(
+            object(),
+            get_tab=lambda: tab,
+            bodies_dir=storage.run_dir / "bodies",
+            dom_snapshots_dir=storage.run_dir / "snapshots",
+        )
+        await backend.start_capture_async()
+        for event in [*self._events(), _will_be_sent("44.1", inline=_LOGIN_BODY, url=LOGIN)]:
+            await tab.dispatch(event)
+        await save_observe_run(storage, backend, "observe-go")
+
+        (entry,) = parse_har_file(storage.run_dir / "network.har").entries
+        assert entry.request.login_interactions[0] == LoginInteraction(
+            "click", "#signin-link", 5000.0, control=True, path="/login"
+        )
+        assert len(entry.request.login_interactions) == 4
+
+
+class TestLoginInteractionsReviewRound1:
+    """Review round 1 of #267 part 3: the in-login flag, the selector cap, the origin
+    order, an escaped id holding an account value, and each entry's resource type."""
+
+    async def _stored(self, tmp_path: Path, before: list[Any]) -> Any:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        backend = await _record(
+            tab,
+            [*before, _will_be_sent("51.1", inline=_LOGIN_BODY, url=LOGIN)],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        return _only_entry(backend)["request"].get("_loginInteractions")
+
+    @pytest.mark.asyncio
+    async def test_a_click_flagged_inside_the_login_keeps_its_flag(self, tmp_path: Path) -> None:
+        stored = await self._stored(
+            tmp_path,
+            [
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 900, inLogin=False),
+                _interaction("click", "#email-label", time_ms=_POST_MS - 800, inLogin=True),
+                _interaction("focus", "#m-email", time_ms=_POST_MS - 700),
+            ],
+        )
+        assert stored == [
+            {"kind": "click", "selector": "#signin-link", "msBefore": 900, **_STORED_CLICK},
+            {
+                "kind": "click",
+                "selector": "#email-label",
+                "msBefore": 800,
+                "inLogin": True,
+                **_STORED_CLICK,
+            },
+            {"kind": "focus", "selector": "#m-email", "msBefore": 700, **_STORED_FOCUS},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_selector_over_256_characters_is_stored_as_none_at_once(
+        self, tmp_path: Path
+    ) -> None:
+        """A megabyte id took the account-value check minutes before the cap."""
+        import time
+
+        from graftpunk.observe.capture import MAX_STORED_SELECTOR
+
+        assert MAX_STORED_SELECTOR == 256
+        longest = "#" + "a" * 255
+        started = time.perf_counter()
+        stored = await self._stored(
+            tmp_path,
+            [
+                _interaction("click", "#" + "a" * 1_000_000, time_ms=_POST_MS - 900),
+                _interaction("click", "#" + "a" * 256, time_ms=_POST_MS - 850),
+                _interaction("click", longest, time_ms=_POST_MS - 800),
+            ],
+        )
+        assert time.perf_counter() - started < 5
+        assert [each["selector"] for each in stored] == [None, None, longest]
+
+    @pytest.mark.asyncio
+    async def test_a_click_s_state_is_stored_as_sent(self, tmp_path: Path) -> None:
+        stored = await self._stored(
+            tmp_path,
+            [
+                _interaction(
+                    "click",
+                    None,
+                    time_ms=_POST_MS - 900,
+                    control=False,
+                    inDialog=True,
+                    revealed=False,
+                    shownFields=["#m-email", "#user_40912873", "#" + "a" * 300, 7],
+                ),
+                _interaction(
+                    "click",
+                    "#next",
+                    time_ms=_POST_MS - 850,
+                    url=LOGIN + "?step=2#top",
+                    control=True,
+                    inDialog=False,
+                    revealed=True,
+                    shownFields=[f"#f{n}" for n in range(20)],
+                ),
+                _interaction("focus", "#m-email", time_ms=_POST_MS - 800, url=HOME),
+            ],
+        )
+        assert stored == [
+            {
+                "kind": "click",
+                "selector": None,
+                "msBefore": 900,
+                "control": False,
+                "inDialog": True,
+                "revealed": False,
+                # The id-holding and the over-long selectors are left out, and a
+                # non-string is not a selector.
+                "shownFields": ["#m-email"],
+                "path": "/login",
+            },
+            {
+                "kind": "click",
+                "selector": "#next",
+                "msBefore": 850,
+                "control": True,
+                "inDialog": False,
+                "revealed": True,
+                "shownFields": [f"#f{n}" for n in range(16)],
+                "path": "/login",
+            },
+            {"kind": "focus", "selector": "#m-email", "msBefore": 800, "path": "/"},
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["control", "inDialog", "revealed", "shownFields"])
+    async def test_a_click_whose_state_is_not_boolean_is_dropped(
+        self, tmp_path: Path, field: str
+    ) -> None:
+        stored = await self._stored(
+            tmp_path,
+            [
+                _interaction("click", "#bad", time_ms=_POST_MS - 900, **{field: "yes"}),
+                _interaction("click", "#missing", time_ms=_POST_MS - 850, **{field: None}),
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 800),
+            ],
+        )
+        assert [each["selector"] for each in stored] == ["#signin-link"]
+
+    @pytest.mark.asyncio
+    async def test_an_in_login_that_is_not_true_is_not_stored(self, tmp_path: Path) -> None:
+        stored = await self._stored(
+            tmp_path, [_interaction("click", "#x", time_ms=_POST_MS - 900, inLogin="yes")]
+        )
+        assert stored == [{"kind": "click", "selector": "#x", "msBefore": 900, **_STORED_CLICK}]
+
+    @pytest.mark.asyncio
+    async def test_an_escaped_id_holding_an_account_value_is_dropped(self, tmp_path: Path) -> None:
+        """Only the unescaped id reads 40912873: the raw text has no digit run."""
+        escaped = "#\\34 \\30 \\39 \\31 \\32 \\38 \\37 \\33"
+        stored = await self._stored(
+            tmp_path, [_interaction("click", escaped, time_ms=_POST_MS - 900)]
+        )
+        assert stored == [{"kind": "click", "selector": None, "msBefore": 900, **_STORED_CLICK}]
+
+    @pytest.mark.asyncio
+    async def test_the_origin_heard_from_last_is_kept(self, tmp_path: Path) -> None:
+        from graftpunk.observe.capture import INTERACTION_ORIGINS
+
+        others = [
+            _interaction("click", "#x", time_ms=_POST_MS - 500, url=f"https://o{n}.example/")
+            for n in range(INTERACTION_ORIGINS)
+        ]
+        stored = await self._stored(
+            tmp_path,
+            [
+                _interaction("click", "#first", time_ms=_POST_MS - 900),
+                *others[:-2],
+                # Heard from again: no longer the least recent.
+                _interaction("click", "#again", time_ms=_POST_MS - 400),
+                *others[-2:],
+            ],
+        )
+        assert [each["selector"] for each in stored] == ["#first", "#again"]
+
+    @pytest.mark.asyncio
+    async def test_each_entry_carries_its_resource_type(self) -> None:
+        tab = FakeTab({}, _never)
+        backend = await _record(
+            tab,
+            [
+                _will_be_sent("52.1", url=HOME, method="GET", resource_type="Document"),
+                _will_be_sent("52.2", url=SEARCH, method="GET", resource_type="XHR"),
+            ],
+        )
+        types = [e["request"].get("_resourceType") for e in backend.get_har_entries()]
+        assert types == ["Document", "XHR"]
+
+
+def test_selenium_entries_carry_their_resource_type_too() -> None:
+    def perf(method: str, params: dict[str, Any]) -> dict[str, str]:
+        return {"message": json.dumps({"message": {"method": method, "params": params}})}
+
+    request = {"url": HOME, "method": "GET", "headers": {}}
+    log = [
+        perf(
+            "Network.requestWillBeSent",
+            {"requestId": "9.2", "request": request, "wallTime": 1.0, "type": "Document"},
+        ),
+        perf(
+            "Network.responseReceived",
+            {
+                "requestId": "9.2",
+                "response": {"status": 200, "headers": {}, "mimeType": "text/html"},
+            },
+        ),
+    ]
+
+    class Driver:
+        def get_log(self, kind: str) -> list[dict[str, str]]:
+            return log if kind == "performance" else []
+
+        def execute_cdp_cmd(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            return {"body": "<p></p>", "base64Encoded": False}
+
+    backend = SeleniumCaptureBackend(Driver())
+    backend.stop_capture()
+    assert _only_entry(backend)["request"]["_resourceType"] == "Document"
+
+
+class TestTheStoredPagePath:
+    """Review round 4: the path holds no ``;params`` and no segment holding an account
+    value."""
+
+    @pytest.mark.asyncio
+    async def test_params_are_dropped_and_an_account_segment_is_templated(
+        self, tmp_path: Path
+    ) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        backend = await _record(
+            tab,
+            [
+                _interaction(
+                    "click",
+                    "#signin-link",
+                    time_ms=_POST_MS - 900,
+                    url="https://myshop.example/accounts/40912873/login;jsessionid=AB12?x=1",
+                ),
+                _will_be_sent("61.1", inline=_LOGIN_BODY, url=LOGIN),
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        (stored,) = _only_entry(backend)["request"]["_loginInteractions"]
+        assert stored["path"] == "/accounts/{id}/login"
+        assert "jsessionid" not in json.dumps(stored)
+        assert "40912873" not in json.dumps(stored)
+
+    def test_the_shown_field_limit_is_one_constant(self) -> None:
+        from graftpunk.har import parser, selectors
+        from graftpunk.observe import capture as recorder
+        from graftpunk.observe import dom_listener
+
+        assert (
+            recorder.MAX_SHOWN_FIELDS
+            is parser.MAX_SHOWN_FIELDS
+            is dom_listener.MAX_SHOWN_FIELDS
+            is selectors.MAX_SHOWN_FIELDS
+        )
+
+
+class TestRecorderBoundsRound5:
+    """Review round 5: a path segment of any length costs the recorder nothing, and the
+    shown fields an account-value filter drops leave room for the rest."""
+
+    def test_a_long_path_segment_is_an_id_and_costs_no_more(self) -> None:
+        """Ten times the segment, not much more time: no scan grows with it."""
+        import time
+
+        from graftpunk.observe.capture import _page_path
+
+        def timed(n: int) -> float:
+            started = time.perf_counter()
+            # Cut at 1,024 characters first, so the segment is the rest of the path.
+            assert _page_path("https://myshop.example/a/" + "x" * n + "/login") == "/a/{id}"
+            return time.perf_counter() - started
+
+        timed(10_000)
+        small = min(timed(10_000) for _ in range(3))
+        large = min(timed(100_000) for _ in range(3))
+        assert large < max(small * 20, 0.05)
+
+    def test_a_path_over_the_cap_is_cut_first(self) -> None:
+        from graftpunk.observe.capture import _page_path
+
+        path = _page_path("https://myshop.example/" + "/".join(["seg"] * 600))
+        assert len(path) <= 1024
+
+    @pytest.mark.asyncio
+    async def test_dropped_fields_leave_room_for_the_rest(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LOGIN_MODAL
+        fields = [f"#user_4091287{n}" for n in range(8)] + [f"#f{n}" for n in range(12)]
+        backend = await _record(
+            tab,
+            [
+                _interaction("click", "#signin-link", time_ms=_POST_MS - 900, shownFields=fields),
+                _will_be_sent("71.1", inline=_LOGIN_BODY, url=LOGIN),
+            ],
+            dom_snapshots_dir=tmp_path / "snapshots",
+        )
+        (stored,) = _only_entry(backend)["request"]["_loginInteractions"]
+        assert stored["shownFields"] == [f"#f{n}" for n in range(12)]
