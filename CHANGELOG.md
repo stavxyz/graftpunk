@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading
+
+1. **A declarative login whose `success` element is already on the page before a submit now logs a warning, `login_success_present_before_submit`, naming the selector** (#268). Such a selector passes the wait's first check before the login happens, so the cached session can be the one from before the login, even with wrong credentials; until now nothing said so. It is a warning only, at most once a login: the login goes on exactly as before, and a plugin that logs in today still does. The engine probes for the element once just before each submit, so a plugin with `success` set makes one more element lookup per submit. To silence it, choose a `success` element that appears only after login.
+2. **`gp observe digest --endpoints-json`'s `login` block gains a `success_candidates` key** (#268): a list of selectors the recording suggests for `LoginConfig.success`, best first, empty when there are none (always for a run that recorded no login). The key is added within schema 1, as schema 1 allows; the test that pins schema 1's `login` field set (`tests/unit/test_har_report.py`) now includes it, so a reader that compares the block's keys with an exact set sees one more. `gp observe digest --json` carries it too, as `success_candidates`. A scaffold made again from a run with suggestions carries them commented out; one made from a run without any is unchanged.
+
+### Added
+
+- **The digest suggests `success` selectors from a recording, and `gp plugin new` writes them commented out** (#268). For a run that recorded a credential post, an element on a logged-in page of the run (`page-source.html`, or a page loaded after the credential post, when it holds no login form) and on none of its logged-out pages (each recorded page holding a login form, each credential post's DOM snapshot, and each page loaded before the login) is a candidate, as `#id` or `tag.token` over a plain CSS identifier that selects exactly one element on the logged-in page. A name that looks generated (a CSS-module or CSS-in-JS class, a part mixing letters and digits, a run of three or more digits), that names a logged-out state, or that holds an account value is never suggested, nor an element that renders nothing. At most three are kept, a name holding `logged`, `account`, `signout`, `logout`, `user`, `profile`, or `avatar` (or a link to a logout URL) first, then an id before a class. Only selectors are emitted, never text. Because one recording cannot show that an element is absent from the login page the engine opens on a fresh visit, the live `success` is never set: the generated `login_config` carries a `GP-FILL` saying the recording suggests a success selector, to check it appears only after login on a fresh visit to the login URL, then to uncomment one, followed by each as a commented `success="..."` line, escaped and wrapped so the generated project passes its own `ruff check` and compiles commented or not. New API: `graftpunk.har.login_signals.success_candidates` and `RunDigest.success_candidates`.
+- **The login engine warns when `success` is already on the page before a submit** (#268): see Upgrading, item 1. New API: `graftpunk.plugins.login_settle.success_shown_before_submit_nodriver` and `success_shown_before_submit_selenium`.
+
 ## [1.28.0] - 2026-10-29
 
 This is a minor release. Three changes reach a program on the first run after the upgrade:
