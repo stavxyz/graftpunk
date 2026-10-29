@@ -29,8 +29,9 @@ ID as `gp observe list` prints them (it prints the names, not the directory).
 Resolve `~` to the user's home directory: the HAR reader, Read, and Grep each
 get the absolute path, which is `<har>` in `references/commands.md`. Beside the
 HAR, `bodies/` holds every body, sent or received, that was too big for the HAR
-or binary, and `page-source.html` the page that was open when the recording
-stopped.
+or binary, `snapshots/` the page as it was at each credential post (the digest
+reads a login form from it), and `page-source.html` the page that was open when
+the recording stopped.
 
 ## The HAR reader
 
