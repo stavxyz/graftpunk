@@ -6588,3 +6588,226 @@ class TestTheCommentedStepFitsTheGeneratedProject(_OpenerCase):
         code = self._plugin_on(spec, "nodriver")
         assert _suggestion("#signin", waits=False) in _comment_text(code)
         assert "# wait_for" not in code
+
+
+_SUCCESS_GP_FILL = (
+    "GP-FILL: the recording suggests a success selector: an element on the logged-in page "
+    "and on no recorded login page. Check that it appears only after login on a fresh "
+    "visit to the login URL, then uncomment one:"
+)
+
+# The login_config main (008f2aa0) generates for a run with no logged-in page.
+_LOGIN_CONFIG_ON_MAIN = """\
+    login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={
+                    "password": "#password",
+                    "username": "#email",
+                },
+                submit="#go",
+            ),
+        ],
+        url="/login",
+        failure="GP-FILL: text on the page indicating login failure",
+        # GP-FILL: success, a CSS selector for an element that is on the page this login lands on
+        #   and not on the login form itself.
+        # GP-FILL: success_url, a glob matched against the whole URL this login lands on, e.g.
+        #   */dashboard*. This run observed no redirect after the credential post.
+    )
+"""
+
+
+def _uncommented_success(code: str, which: int) -> str:
+    """*code* with the *which*-th suggested ``success`` argument uncommented, as an
+    author who confirmed it would leave it: its ``# success=`` line, and, when it is
+    wrapped, every commented line to its ``# ),``."""
+    out: list[str] = []
+    seen = -1
+    open_block = False
+    for line in code.split("\n"):
+        stripped = line.lstrip()
+        pad = line[: len(line) - len(stripped)]
+        if stripped.startswith("# success="):
+            seen += 1
+            if seen == which:
+                out.append(pad + stripped[2:])
+                open_block = stripped.endswith("(")
+                continue
+        elif open_block and stripped.startswith("#"):
+            out.append(pad + stripped[2:])
+            open_block = not stripped.startswith("# )")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+class TestTheRecordingSuggestsASuccessSelector:
+    """#268, part 1: elements on the run's logged-in page and on no recorded copy of
+    the login page, suggested for ``success`` and never written live."""
+
+    _HOST = "https://myshop.example.com"
+    _LOGIN = (
+        "<html><body><header><nav class='site-nav'></nav></header><main>"
+        "<form action='/session' method='post'><input type='email' id='email' name='email'>"
+        "<input type='password' id='password' name='password'><button id='go'>Sign in</button>"
+        "</form></main></body></html>"
+    )
+    _LANDED = (
+        "<html><body><header><nav class='site-nav'><div id='account-menu'>"
+        "<a class='signout-link' href='/bye'>Sign out</a></div></nav></header>"
+        "<main><p>Orders</p></main></body></html>"
+    )
+    _CREDS = {"email": "alice@example.com", "password": "hunter2hunter2"}
+
+    def _entries(
+        self, run: Path, *, snapshot: str = "", after: str = "", home: str = ""
+    ) -> list[dict]:
+        post = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data=json.dumps(self._CREDS),
+            started="2026-09-10T10:00:05.000Z",
+        )
+        if snapshot:
+            (run / "snapshots").mkdir(exist_ok=True)
+            (run / "snapshots" / "9.1.html").write_text(snapshot)
+            post["request"]["_domSnapshot"] = "snapshots/9.1.html"
+            post["request"]["_domSnapshotUrl"] = f"{self._HOST}/login"
+        entries = [
+            _entry("GET", f"{self._HOST}/login", content_type="text/html", body=self._LOGIN),
+            post,
+        ]
+        if home:
+            visited = _entry("GET", f"{self._HOST}/", content_type="text/html", body=home)
+            visited["request"]["_resourceType"] = "Document"
+            entries.insert(0, visited)
+        if after:
+            landed = _entry(
+                "GET",
+                f"{self._HOST}/account",
+                content_type="text/html",
+                body=after,
+                started="2026-09-10T10:00:06.000Z",
+            )
+            landed["request"]["_resourceType"] = "Document"
+            entries.append(landed)
+        return entries
+
+    def _run(  # noqa: ANN202
+        self,
+        run: Path,
+        *,
+        page_source: str = "",
+        snapshot: str = "",
+        after: str = "",
+        home: str = "",
+    ):
+        har = _write_har(run, self._entries(run, snapshot=snapshot, after=after, home=home))
+        source = None
+        if page_source:
+            source = run / "page-source.html"
+            source.write_text(page_source)
+        return digest(DigestSource(har_path=har, page_source=source))
+
+    @staticmethod
+    def _files(result, backend: str) -> dict[str, str]:  # noqa: ANN001
+        return render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend=backend,  # type: ignore[arg-type]
+                base_url="https://myshop.example.com",
+                digest=result,
+            )
+        )
+
+    @staticmethod
+    def _login_config(code: str):  # noqa: ANN205
+        from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep
+
+        start = code.index("LoginConfig(")
+        end = code.index("\n    )\n", start) + 6
+        namespace = {"LoginConfig": LoginConfig, "LoginStep": LoginStep}
+        return eval(code[start:end], namespace)  # noqa: S307 - our own render
+
+    def test_the_page_source_at_stop_gives_the_suggestions(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, page_source=self._LANDED)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+        payload = json.loads(render_endpoints_json(result))
+        assert payload["login"]["success_candidates"] == ["#account-menu", "a.signout-link"]
+
+    def test_a_page_loaded_after_the_post_gives_the_suggestions(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, after=self._LANDED)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+
+    def test_the_snapshot_at_the_post_is_a_login_copy(self, tmp_path: Path) -> None:
+        snapshot = self._LOGIN.replace("<main>", "<main><div id='account-menu'></div>")
+        result = self._run(tmp_path, page_source=self._LANDED, snapshot=snapshot)
+        assert result.success_candidates == ("a.signout-link",)
+
+    def test_a_page_loaded_before_the_login_is_a_logged_out_page(self, tmp_path: Path) -> None:
+        """An element the home page showed before the login marks no logged-in state,
+        though the login page itself lacks it."""
+        home = "<html><body><div id='account-menu'></div></body></html>"
+        result = self._run(tmp_path, page_source=self._LANDED, home=home)
+        assert result.success_candidates == ("a.signout-link",)
+
+    def test_a_page_source_holding_a_login_form_gives_nothing(self, tmp_path: Path) -> None:
+        stopped = self._LANDED.replace("<main>", "<main>" + self._LOGIN)
+        assert self._run(tmp_path, page_source=stopped).success_candidates == ()
+
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    def test_no_logged_in_page_gives_nothing_and_main_s_output(
+        self, tmp_path: Path, backend: str
+    ) -> None:
+        result = self._run(tmp_path)
+        assert result.success_candidates == ()
+        assert json.loads(render_endpoints_json(result))["login"]["success_candidates"] == []
+        code = self._files(result, backend)["src/graftpunk_myshop/plugin.py"]
+        assert _LOGIN_CONFIG_ON_MAIN in code
+        assert "# success=" not in code
+
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    def test_the_generator_writes_them_commented_and_success_stays_unset(
+        self, tmp_path: Path, backend: str
+    ) -> None:
+        from tests.unit import test_scaffold_render as rendered
+
+        files = self._files(self._run(tmp_path, page_source=self._LANDED), backend)
+        code = files["src/graftpunk_myshop/plugin.py"]
+        assert _SUCCESS_GP_FILL in _comment_text(code)
+        assert '        # success="a.signout-link",' in code
+        assert '        # success="#account-menu",' in code
+        compile(code, "plugin.py", "exec")
+        assert self._login_config(code).success == ""
+        checker = rendered.TestRenderedTreeIsRuffClean()
+        checker._assert_tree_is_clean(checker._write_tree(tmp_path / "tree", files))
+        for which, selector in enumerate(("#account-menu", "a.signout-link")):
+            confirmed = _uncommented_success(code, which)
+            compile(confirmed, "plugin.py", "exec")
+            assert self._login_config(confirmed).success == selector
+
+    @pytest.mark.parametrize(
+        "selector", ["#" + "a" * 69, "#" + "b" * 99, "#" + "c" * 250, '#a\x00b c\x85d"e']
+    )
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    def test_any_selector_is_ruff_clean_and_reads_back(
+        self, tmp_path: Path, selector: str, backend: str
+    ) -> None:
+        """Escaped and wrapped as the commented opener step is, so the generated
+        project passes its own ruff check and compiles commented and uncommented."""
+        from tests.unit import test_scaffold_render as rendered
+
+        result = dataclasses.replace(
+            self._run(tmp_path, page_source=self._LANDED), success_candidates=(selector,)
+        )
+        files = self._files(result, backend)
+        checker = rendered.TestRenderedTreeIsRuffClean()
+        checker._assert_ruff_clean(checker._write_tree(tmp_path / "tree", files), "check")
+        code = files["src/graftpunk_myshop/plugin.py"]
+        compile(code, "plugin.py", "exec")
+        assert self._login_config(code).success == ""
+        confirmed = _uncommented_success(code, 0)
+        compile(confirmed, "plugin.py", "exec")
+        assert self._login_config(confirmed).success == selector

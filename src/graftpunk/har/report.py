@@ -305,6 +305,9 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
                 if o.login_flow
             ],
             "forms": [_projected_form(form) for form in d.login_forms],
+            # Selectors the recording suggests for LoginConfig.success, best first;
+            # never text. Only suggestions: a generated login never sets one.
+            "success_candidates": list(d.success_candidates),
         },
     }
 

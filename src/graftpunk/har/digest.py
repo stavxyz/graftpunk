@@ -29,6 +29,7 @@ from graftpunk.har.documents import (
     looks_like_new_password_name,
     looks_like_token_name,
 )
+from graftpunk.har.login_signals import success_candidates
 from graftpunk.har.naming import capture_text, fixture_rank, normalize_media_type
 from graftpunk.har.parser import HAREntry, LoginInteraction, parse_har_file
 from graftpunk.har.paths import (
@@ -410,6 +411,11 @@ class RunDigest:
     # (graftpunk.har.paths.holds_an_id). The names are written in no form.
     cookie_names_dropped_as_ids: int = 0
     token_names_dropped_as_ids: int = 0
+    # Selectors the recording suggests for LoginConfig.success: an element on a
+    # logged-in page of the run and on none of its logged-out pages
+    # (graftpunk.har.login_signals.success_candidates). Suggestions only: the
+    # generator writes them commented out.
+    success_candidates: tuple[str, ...] = ()
 
 
 def _scope_root(primary_host: str) -> str:
@@ -1844,6 +1850,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # The (page, visible shape) of each recorded form a snapshot showed inside a
     # dialog-marked element (_snapshot_page_forms).
     dialog_shapes: set[tuple[tuple[str, str], tuple[object, ...]]] = set()
+    # For the suggested success selectors (graftpunk.har.login_signals): every page
+    # the run saw logged out (a page holding a login form, a credential post's DOM
+    # snapshot, any page loaded before the first credential post), and every page
+    # loaded after one that holds no login form.
+    logged_out_pages: list[str] = []
+    logged_in_pages: list[str] = []
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
     script_driven: set[int] = set()
@@ -1912,6 +1924,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # (#267): read as a GET page one step before the post, so the post finds
             # its forms the way it finds a recorded page's.
             page_url = entry.request.dom_snapshot_url or ""
+            logged_out_pages.append(snapshot_html)
             snapshot_source, snapshot_forms = _snapshot_page_forms(
                 snapshot_html, page_url, recorded_on_page, redirected_via, dialog_shapes
             )
@@ -2008,6 +2021,16 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
                 token_key = (candidate.kind, candidate.name)
                 token_seen.setdefault(token_key, []).extend(candidate.seen_on)
+            if method == "GET" and forms_in_entry:
+                logged_out_pages.append(entry.response.body)
+            elif (
+                method == "GET"
+                and 200 <= entry.response.status < 300
+                and _is_page_load(entry, method, content_type)
+            ):
+                (logged_in_pages if credential_post_steps else logged_out_pages).append(
+                    entry.response.body
+                )
 
         by_target = method == "POST" and _posts_to_a_login_form(post_target, login_action_targets)
         kind: ObservationKind | None = None
@@ -2201,6 +2224,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     promoted = {post.page_step for post in credential_posts}
 
     if source.page_source is not None and source.page_source.is_file():
+        # A run stopped on a page holding a login form stopped logged out, or on
+        # another login.
+        (logged_out_pages if page_forms else logged_in_pages).append(page_html)
         page_label = str(source.page_source)
         login_forms.extend(page_forms)
         for candidate in extract_token_candidates(page_html, source=page_label):
@@ -2358,6 +2384,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         collapsed_templates=collapse_map,
         cookie_names_dropped_as_ids=len(id_cookie_names),
         token_names_dropped_as_ids=len(id_token_names),
+        # Only for a run that recorded a login.
+        success_candidates=success_candidates(logged_out_pages, logged_in_pages)
+        if credential_post_steps
+        else (),
     )
 
 
