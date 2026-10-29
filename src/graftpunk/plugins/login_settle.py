@@ -517,6 +517,74 @@ def driver_url(driver: Any) -> str:
     return url if isinstance(url, str) else ""
 
 
+def _warn_success_before_submit(*, site_name: str, selector: str, backend: str) -> None:
+    """Warn that the ``success`` element is on the page before the login submits."""
+    LOG.warning(
+        "login_success_present_before_submit",
+        plugin=site_name,
+        selector=selector,
+        backend=backend,
+        hint=(
+            f"LoginConfig.success '{selector}' is already on the page before the login "
+            "submits, so the login may report success before it happens, even with "
+            "wrong credentials. Choose an element that appears only after login."
+        ),
+    )
+
+
+async def success_shown_before_submit_nodriver(
+    tab: Any,  # nodriver.Tab
+    *,
+    selector: str,
+    site_name: str,
+) -> bool:
+    """Probe *selector*, the plugin's ``success``, once just before a submit, and warn
+    when it is already there: a ``success`` element on the login page passes the
+    wait's first tick before the login happens, and nothing else would say so (#268).
+
+    A warning only, never a failure, so a plugin that logs in today still does. A
+    probe that cannot be answered (a selector the browser rejects, a page mid-load)
+    reads as not found. True when it warned."""
+    if not selector:
+        return False
+    try:
+        found = await tab.query_selector(selector) is not None
+    except Exception as exc:  # broad by design: the probe is advisory, the login goes on
+        LOG.debug(
+            "login_success_probe_failed", plugin=site_name, error=str(exc), backend="nodriver"
+        )
+        return False
+    if found:
+        _warn_success_before_submit(site_name=site_name, selector=selector, backend="nodriver")
+    return found
+
+
+def success_shown_before_submit_selenium(
+    driver: Any,  # selenium WebDriver
+    *,
+    selector: str,
+    site_name: str,
+) -> bool:
+    """The selenium twin of :func:`success_shown_before_submit_nodriver`. A selector
+    the browser rejects is not raised here: the wait after the submit raises it as it
+    always did."""
+    if not selector:
+        return False
+    from selenium.common.exceptions import NoSuchElementException
+
+    try:
+        driver.find_element("css selector", selector)
+    except NoSuchElementException:
+        return False
+    except Exception as exc:  # broad by design: the probe is advisory, the login goes on
+        LOG.debug(
+            "login_success_probe_failed", plugin=site_name, error=str(exc), backend="selenium"
+        )
+        return False
+    _warn_success_before_submit(site_name=site_name, selector=selector, backend="selenium")
+    return True
+
+
 class _TickReading(NamedTuple):
     """One poll tick: what the page said, where it was, what was found.
 

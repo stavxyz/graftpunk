@@ -4502,3 +4502,193 @@ class TestResolveUrl:
 
         assert _resolve_url("https://api.x.com", "http://login.x.com/") == "http://login.x.com/"
         assert _resolve_url("https://api.x.com", "HTTPS://login.x.com/a") == "HTTPS://login.x.com/a"
+
+
+def _two_step(backend: str) -> SitePlugin:
+    """A two-submit login (username, then password) with a success element."""
+
+    class TwoStep(SitePlugin):
+        site_name = f"twostep{backend}"
+        session_name = f"twostep{backend}"
+        help_text = "Two Step"
+        base_url = "https://example.com"
+        login_config = LoginConfig(
+            steps=[
+                LoginStep(fields={"username": "#user"}, submit="#next"),
+                LoginStep(fields={"password": "#pass"}, submit="#submit"),
+            ],
+            url="/login",
+            success=".dashboard",
+            timeout=5.0,
+            settle=0.0,
+        )
+
+    TwoStep.backend = backend  # type: ignore[assignment]
+    return TwoStep()
+
+
+_PRESENT_BEFORE_SUBMIT = "login_success_present_before_submit"
+
+
+def _present_warnings(mock_log: MagicMock) -> list[dict[str, Any]]:
+    return [
+        dict(call[1])
+        for call in mock_log.warning.call_args_list
+        if call[0][0] == _PRESENT_BEFORE_SUBMIT
+    ]
+
+
+class TestSuccessAlreadyPresentBeforeSubmit:
+    """#268: a ``success`` element already on the page before the submit would pass
+    the login on its first tick, before the login happens. The engine probes it once
+    before each submit and warns; the login itself goes exactly as it did."""
+
+    @pytest.mark.asyncio
+    async def test_nodriver_warns_once_when_present(self) -> None:
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _nodriver_session_for(tab)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert "cookies" in tab.events
+        warning = _warning_kwargs(mock_log, _PRESENT_BEFORE_SUBMIT)
+        assert warning["selector"] == ".dashboard"
+        assert warning["plugin"] == "ndpoll"
+        assert "before" in warning["hint"]
+
+    @pytest.mark.asyncio
+    async def test_nodriver_is_silent_when_absent(self) -> None:
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(success_selector=".dashboard", success_from=3)
+        mock_bs, _instance = _nodriver_session_for(tab)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert tab.tick == 3
+        assert _present_warnings(mock_log) == []
+
+    @pytest.mark.asyncio
+    async def test_nodriver_warns_once_across_two_submits(self) -> None:
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _nodriver_session_for(tab)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(_two_step("nodriver"))(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert len(_present_warnings(mock_log)) == 1
+
+    @pytest.mark.asyncio
+    async def test_nodriver_probe_that_fails_changes_nothing(self) -> None:
+        """A probe that raises is no warning and no error: the poll reads as before."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class _FailingProbeTab(_ScriptedNodriverTab):
+            async def query_selector(self, selector: str) -> Any:
+                if selector == self._success_selector and "tick:1" not in self.events:
+                    raise RuntimeError("Could not find node with given id")
+                return await super().query_selector(selector)
+
+        tab = _FailingProbeTab(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _nodriver_session_for(tab)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert _present_warnings(mock_log) == []
+
+    def test_selenium_warns_once_when_present(self) -> None:
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _selenium_session_for(driver)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert "cookies" in driver.events
+        warning = _warning_kwargs(mock_log, _PRESENT_BEFORE_SUBMIT)
+        assert warning["selector"] == ".dashboard"
+        assert warning["plugin"] == "selpoll"
+
+    def test_selenium_is_silent_when_absent(self) -> None:
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(success_selector=".dashboard", success_from=3)
+        mock_bs, _instance = _selenium_session_for(driver)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert driver.tick == 3
+        assert _present_warnings(mock_log) == []
+
+    def test_selenium_warns_once_across_two_submits(self) -> None:
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _selenium_session_for(driver)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = generate_login_method(_two_step("selenium"))(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert len(_present_warnings(mock_log)) == 1
+
+    def test_selenium_invalid_selector_fails_as_it_did(self) -> None:
+        """The probe swallows the browser's rejection; the poll still ends the login
+        with the error it always raised."""
+        from selenium.common.exceptions import InvalidSelectorException
+
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class _BadSelectorDriver(_ScriptedSeleniumDriver):
+            def find_element(self, by: str, value: str) -> MagicMock:
+                if value == self._success_selector:
+                    raise InvalidSelectorException(value)
+                return super().find_element(by, value)
+
+        driver = _BadSelectorDriver(success_selector=".dashboard")
+        mock_bs, _instance = _selenium_session_for(driver)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+            pytest.raises(PluginError, match="not a valid CSS selector"),
+        ):
+            generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert _present_warnings(mock_log) == []

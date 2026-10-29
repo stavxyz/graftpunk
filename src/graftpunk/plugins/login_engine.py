@@ -33,6 +33,8 @@ from graftpunk.plugins.login_ready import (
 from graftpunk.plugins.login_settle import (
     driver_url,
     note_login_url,
+    success_shown_before_submit_nodriver,
+    success_shown_before_submit_selenium,
     tab_url,
     wait_for_login_outcome_nodriver,
     wait_for_login_outcome_selenium,
@@ -856,6 +858,7 @@ async def _run_nodriver_steps(
     # URL could ever differ from it.
     pre_submit_url = ""
     submit_clicked = False
+    warned_success = False
     # Execute each step in sequence: wait_for -> fill fields -> submit -> delay
     for step_idx, step in enumerate(plugin.login_config.steps, start=1):
         # Step-level wait_for: wait for element before this step
@@ -904,6 +907,11 @@ async def _run_nodriver_steps(
                         f"using selector '{step.submit}'. "
                         "Check your plugin's login step configuration."
                     )
+                # Once per login: a success element already on the page would pass
+                # the wait before the login happens.
+                warned_success = warned_success or await success_shown_before_submit_nodriver(
+                    tab, selector=plugin.login_config.success, site_name=plugin.site_name
+                )
                 pre_submit_url = tab_url(tab)
                 submit_clicked = True
                 await submit.element.click()
@@ -1129,6 +1137,7 @@ def _run_selenium_steps(
     # reason (see the comment there).
     pre_submit_url = ""
     submit_clicked = False
+    warned_success = False
     # Execute each step in sequence
     for step_idx, step in enumerate(plugin.login_config.steps, start=1):
         # Step-level wait_for is not supported for selenium
@@ -1174,6 +1183,10 @@ def _run_selenium_steps(
                     context=f"Step {step_idx}: submit",
                     site_name=plugin.site_name,
                 ).element
+                # Once per login, as in the nodriver body.
+                warned_success = warned_success or success_shown_before_submit_selenium(
+                    session.driver, selector=plugin.login_config.success, site_name=plugin.site_name
+                )
                 pre_submit_url = driver_url(session.driver)
                 submit_clicked = True
                 submit_el.click()
