@@ -430,7 +430,7 @@ function composedPath(inner) {
 const root = build(config.dom, null);
 Object.defineProperty(root, "outerHTML", { get: () => "<html></html>" });
 globalThis.document = {
-  URL: "https://myshop.example/?next=%2F",
+  URL: config.documentUrl || "https://myshop.example/?next=%2F",
   readyState: config.readyState || "loading",
   documentElement: root,
   querySelectorAll(selector) {
@@ -880,6 +880,7 @@ def _run_dom(
     dom: dict | None = None,
     check_visibility: bool = True,
     ready_state: str = "loading",
+    document_url: str = "",
 ) -> dict:
     harness = tmp_path / "dom_harness.js"
     harness.write_text(_DOM_HARNESS)
@@ -891,6 +892,7 @@ def _run_dom(
         "dom": dom or _PAGE,
         "noCheckVisibility": not check_visibility,
         "readyState": ready_state,
+        "documentUrl": document_url,
         "noCss": no_css,
         "throwOnQuery": throw_on_query,
         "throwOnDocumentQuery": throw_on_document_query,
@@ -930,7 +932,8 @@ class TestInteractionEvents:
             "type": "interaction",
             "kind": "click",
             "selector": "#signin-link",
-            "url": "https://myshop.example/?next=%2F",
+            # The page's origin and path: no query or fragment crosses the binding.
+            "url": "https://myshop.example/",
             "time": 1700000000000,
             "control": True,
             "inLogin": False,
@@ -1470,6 +1473,33 @@ class TestInteractionEvents:
             dom=_REVEAL_PAGE,
         )
         assert [call["revealed"] for call in result["calls"]] == [False, True]
+
+    def test_no_query_or_fragment_is_sent(self, tmp_path: Path) -> None:
+        result = _run_dom(
+            tmp_path,
+            [{"type": "click", "target": "signin"}, {"type": "focusin", "target": "email"}],
+            document_url="https://myshop.example/account/login?token=abc123&next=%2F#state=xyz",
+        )
+        assert [call["url"] for call in result["calls"]] == [
+            "https://myshop.example/account/login"
+        ] * 2
+        assert "abc123" not in json.dumps(result["calls"])
+
+    def test_a_keyboard_click_after_a_pointer_click_compares_with_the_last_press(
+        self, tmp_path: Path
+    ) -> None:
+        """The menu's press drew the link; Enter on it then is not revealed."""
+        result = _run_dom(
+            tmp_path,
+            [
+                {"type": "load"},
+                {"type": "pointerdown", "target": "menu", "show": "nav"},
+                {"type": "click", "target": "menu"},
+                {"type": "click", "target": "nav-signin"},
+            ],
+            dom=_REVEAL_PAGE,
+        )
+        assert [call["revealed"] for call in result["calls"]] == [False, False]
 
     def test_forty_attempts_in_two_milliseconds_send_twenty(self, tmp_path: Path) -> None:
         """A sliding window: one event, then a burst straddling the second after it.

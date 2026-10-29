@@ -16,19 +16,20 @@ it revealed. Every trusted ``click`` is reported (one a script made with
 ``element.click()`` is not), and a ``focusin`` when its target is an ``input``,
 ``select``, or ``textarea``. Each sends ``{"type": "interaction", "kind": "click"
 | "focus", "selector", "url", "time"}``: a selector computed in the page or null,
-the document URL, and ``Date.now()``. A click also sends ``control``, whether a
-control is on the event's composed path (the nearest ``a``, ``button``, ``input``
-of type ``button``, ``submit``, ``image``, or ``reset``, ``[role=button]``, or
-``summary``, inside an open shadow tree too, whose selector is the click's; a
-click on anything else has a null selector); ``inLogin``, whether it was inside
-the login (on a ``label`` whose control is a field a person types into: a
-``select``, a ``textarea``, or an ``input`` of type ``text``, ``email``, ``tel``,
-``url``, ``search``, ``password``, or ``number``, or of no type; or on an element
-that, or one of whose :data:`LOGIN_CONTAINER_LEVELS` nearest ancestors short of
-``<body>``, holds a shown password input); ``inDialog``, whether an element on the
-composed path is a ``<dialog>``, has a ``role`` whose first token is ``dialog`` or
-``alertdialog``, or has ``aria-modal="true"``; ``revealed``, whether the clicked
-control was not among the first :data:`MAX_DRAWN_CONTROLS` controls drawn when the
+the page's origin and path (no query or fragment), and ``Date.now()``. A click
+also sends ``control``, whether a control is on the event's composed path (the
+nearest ``a``, ``button``, ``input`` of type ``button``, ``submit``, ``image``, or
+``reset``, ``[role=button]``, or ``summary``, inside an open shadow tree too,
+whose selector is the click's; a click on anything else has a null selector);
+``inLogin``, whether it was inside the login (on a ``label`` whose control is a
+field a person types into: a ``select``, a ``textarea``, or an ``input`` of type
+``text``, ``email``, ``tel``, ``url``, ``search``, ``password``, or ``number``, or
+of no type; or on an element that, or one of whose :data:`LOGIN_CONTAINER_LEVELS`
+nearest ancestors short of ``<body>``, holds a shown password input);
+``inDialog``, whether an element on the composed path is a ``<dialog>``, has a
+``role`` whose first token is ``dialog`` or ``alertdialog``, or has
+``aria-modal="true"``; ``revealed``, whether the clicked control was not drawn,
+among the first :data:`MAX_DRAWN_CONTROLS` controls in document order, when the
 page was last read: at its load, at its last trusted press (``pointerdown``)
 before this click's own, or at its last trusted click with no press (a
 keyboard's), whichever came last, so a menu that opens on its trigger's press
@@ -55,8 +56,9 @@ and no attribute beyond the id or name a selector spells is sent; at most
 :data:`MAX_INTERACTIONS_PER_SECOND` are sent in any one second, a sliding window
 on the monotonic ``performance.now()``, so a page that synthesizes events cannot
 flood the recorder; the page's controls are listed only at load and on trusted
-presses and clicks, at most :data:`MAX_DRAWN_CONTROLS` of them, so a page with
-more costs no more per click. A snapshot's payload carries no ``type``.
+presses and clicks, the first :data:`MAX_DRAWN_CONTROLS` in document order, hidden
+or not, so a page with more costs no more per click. A snapshot's payload carries
+no ``type``.
 
 The script runs in its own world (``WORLD_NAME``), where the binding lives, so
 the page's scripts see neither; isolated worlds share the DOM, so its listener
@@ -216,8 +218,9 @@ LISTENER_SCRIPT = (
     }
     return true;
   };
-  // Drawn, with a box of some area inside the viewport: a field moved off screen (a
-  // honeypot, a closed drawer) is not shown.
+  // Drawn, with a box that has an area, ends below the top of the viewport, and is
+  // not left or right of it: a field below the fold is shown, and one scrolled past or
+  // moved off screen (a honeypot, a closed drawer) is not.
   const shown = (el) => {
     if (!drawn(el)) return false;
     if (typeof el.getBoundingClientRect !== "function") return true;
@@ -266,8 +269,9 @@ LISTENER_SCRIPT = (
     }
     return found;
   };
-  // The first __MAX_CONTROLS__ controls drawn on the page now (scrolling does not hide
-  // one, so the viewport does not count here).
+  // The drawn controls among the first __MAX_CONTROLS__ on the page in document order,
+  // now: a hidden control uses up the cap too, and a drawn one past it is left out
+  // (scrolling does not hide one, so the viewport does not count here).
   const drawnNow = () =>
     new WeakSet(
       Array.from(document.querySelectorAll(controls)).slice(0, __MAX_CONTROLS__).filter(drawn)
@@ -331,6 +335,16 @@ LISTENER_SCRIPT = (
       return false;
     }
   };
+  // The page's origin and path: no query or fragment (a token can sit in either)
+  // crosses the binding with an interaction.
+  const pageUrl = () => {
+    try {
+      const url = new URL(String(document.URL));
+      return url.origin + url.pathname;
+    } catch (error) {
+      return "";
+    }
+  };
   const clock = () =>
     globalThis.performance && typeof globalThis.performance.now === "function"
       ? globalThis.performance.now()
@@ -378,7 +392,7 @@ LISTENER_SCRIPT = (
         type: "__TYPE__",
         kind: kind,
         selector: selector,
-        url: String(document.URL),
+        url: pageUrl(),
         time: Date.now(),
       };
       if (kind === "click") {
