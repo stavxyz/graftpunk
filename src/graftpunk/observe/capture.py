@@ -2644,7 +2644,17 @@ class NodriverCaptureBackend:
         when it already has (a body known only after the response). *body_text* is
         kept for the read's redaction until then: dropped when the read is scheduled,
         when the request fails (:meth:`_on_loading_failed`), or at stop, and never
-        kept for a post seen after stop."""
+        kept for a post seen after stop. A post whose body is not read by its field
+        names (:func:`graftpunk.har.digest.post_account_values` gives ``None``: XML, a
+        JSON value under no name, a value nested past the JSON parser's limit, no
+        body) gets no read, and so no file and no link: what to redact from it is not
+        known, and the digest suggests nothing for such a run anyway. That is one
+        debug line."""
+        from graftpunk.har.digest import post_account_values
+
+        if post_account_values(body_text, _request_content_type(data)) is None:
+            LOG.debug("nodriver_dom_after_read_skipped", request_id=rid, reason="unreadable_body")
+            return
         if "response" in data:
             self._start_after_read(rid, data, body_text)
         elif not self._after_reads_closed and self._dom_snapshots_dir is not None:

@@ -26,6 +26,7 @@ from nodriver.cdp.util import parse_json_event
 from nodriver.core.connection import ProtocolException
 from structlog.testing import capture_logs
 
+from graftpunk.har.digest import is_credential_body, post_account_values
 from graftpunk.observe import capture
 from graftpunk.observe.capture import NodriverCaptureBackend, SeleniumCaptureBackend
 
@@ -3780,6 +3781,33 @@ class TestTheReadAfterTheCredentialPost:
         assert request["_domSnapshot"] == "snapshots/80.1.html"
         skipped = [e for e in logs if e["event"] == "nodriver_dom_after_read_skipped"]
         assert [(e["log_level"], e["request_id"]) for e in skipped] == [("debug", "80.1")] * 2
+
+    @pytest.mark.asyncio
+    async def test_a_post_whose_values_cannot_be_read_by_name_gets_no_read(
+        self, tmp_path: Path
+    ) -> None:
+        """#330: a credential post whose body is not read by its field names (here a
+        value holding JSON nested past the parser's limit) gets no after-read, since
+        what to redact from it is not known; the snapshot at the post is still taken."""
+        deep = "[" * 100_000 + "]" * 100_000
+        body = json.dumps({"username": "jsmith", "password": "hunter2hunter2", "state": deep})
+        assert is_credential_body(body, "application/json")
+        assert post_account_values(body, "application/json") is None
+        with capture_logs() as logs:
+            tab, backend, clock, reads = await self._login(tmp_path, body=body)
+            await clock.advance(60, backend)
+            await _stop(backend, tab)
+
+        assert reads == []
+        assert backend._after_read_tasks == set()
+        assert not self._after(tmp_path).exists()
+        request = _only_entry(backend)["request"]
+        assert "_domAfter" not in request
+        assert request["_domSnapshot"] == "snapshots/80.1.html"
+        skipped = [e for e in logs if e["event"] == "nodriver_dom_after_read_skipped"]
+        assert [(e["log_level"], e["request_id"], e["reason"]) for e in skipped] == [
+            ("debug", "80.1", "unreadable_body")
+        ]
 
     @pytest.mark.asyncio
     async def test_a_second_read_that_fails_keeps_the_first(self, tmp_path: Path) -> None:
