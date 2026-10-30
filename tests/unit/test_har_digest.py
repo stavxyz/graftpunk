@@ -7129,7 +7129,7 @@ class TestTheRecordingSuggestsASuccessSelector:
         assert result.success_candidates == ("#account-menu", "a.signout-link", "div.plan-user")
         har = _write_har(tmp_path, [self._credential_post(payload)], "one.har")
         (entry,) = parse_har_file(har).entries
-        assert sorted(_account_values(entry, frozenset())) == ["hunter_two", "jsmith"]
+        assert sorted(_account_values(entry, frozenset()) or ()) == ["hunter_two", "jsmith"]
 
     def test_any_value_written_as_an_email_is_not_suggested(self, tmp_path: Path) -> None:
         payload = {"id": "jsmith@example.com", "pass": "x"}
@@ -7510,12 +7510,20 @@ class TestTheRecordingSuggestsASuccessSelector:
             ("username=a&username=jsmith&password=x", "application/x-www-form-urlencoded"),
             # An email inside a longer value of a field that is no identifier.
             (
-                json.dumps({"username": "x9", "note": "Alice <jsmith@example.com>", "pw": "x"}),
+                json.dumps({"username": "x9q", "note": "Alice <jsmith@example.com>", "pw": "x"}),
                 "application/json",
             ),
             # No identifier field: every value but a token's.
             ("uid=jsmith&pwd=x", "application/x-www-form-urlencoded"),
             ("name=jsmith&pass=xyzzy", "application/x-www-form-urlencoded"),
+            # An identifier field whose value could not be the username (empty, a
+            # submit button's own name, too short, a boolean word) leaves every
+            # value an account value.
+            ("email=&uid=jsmith&pwd=x", "application/x-www-form-urlencoded"),
+            ("uid=jsmith&pwd=x&login=Login", "application/x-www-form-urlencoded"),
+            ("uid=jsmith&pwd=x&account=1", "application/x-www-form-urlencoded"),
+            ("uid=jsmith&pwd=x&account=true", "application/x-www-form-urlencoded"),
+            (json.dumps({"uid": "jsmith", "password": "x", "user": ""}), "application/json"),
         ],
     )
     def test_an_account_value_is_not_suggested(
@@ -7527,7 +7535,10 @@ class TestTheRecordingSuggestsASuccessSelector:
         ("body", "content_type"),
         [
             # An identifier qualified, so another field's value is no account value.
-            (json.dumps({"username": "x9", "plan": "jsmith", "password": "x"}), "application/json"),
+            (
+                json.dumps({"username": "x9q", "plan": "jsmith", "password": "x"}),
+                "application/json",
+            ),
             # No identifier field, and the only other value is a token's.
             ("pwd=hunter-two&_token=jsmith", "application/x-www-form-urlencoded"),
         ],
@@ -7587,20 +7598,46 @@ class TestTheRecordingSuggestsASuccessSelector:
             value = {"a": value}
         assert _scalar_values({"username": value}) == [(("username", *["a"] * 5_000), "jsmith")]
 
-    def test_a_body_too_deep_for_the_json_parser_does_not_fail_the_digest(
+    def test_a_body_too_deep_for_the_json_parser_suggests_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """How deep json.loads goes before RecursionError depends on the Python
         version and the platform's stack (3.11 stops near 1,000; 3.14 on Linux read
-        100,000), so the parser's refusal is stood in for."""
+        100,000), so the parser's refusal is stood in for. The body reads as no
+        values, so the guard cannot see the username, and nothing is suggested."""
         body = json.dumps({"username": {"a": "jsmith"}, "password": "x"})
+        loads = json.loads
 
-        def too_deep(_text: str) -> object:
-            raise RecursionError("maximum recursion depth exceeded")
+        def too_deep(text: str | bytes, *args: Any, **kwargs: Any) -> object:
+            if text == body:
+                raise RecursionError("maximum recursion depth exceeded")
+            return loads(text, *args, **kwargs)
 
         with monkeypatch.context() as patch:
             patch.setattr(json, "loads", too_deep)
             assert body_values(body, "application/json") == []
+            result = self._valued_run(tmp_path, body, "application/json")
+        assert result.login
+        assert result.success_candidates == ()
+        # A body the parser may or may not refuse here: either way the digest
+        # finishes, and the username is never suggested.
         depth = 100_000
         deep = '{"username": ' + '{"a": ' * depth + '"jsmith"' + "}" * depth + "}"
-        self._valued_run(tmp_path, deep, "application/json")
+        real = self._valued_run(tmp_path / "real", deep, "application/json")
+        assert "#greeting-jsmith" not in real.success_candidates
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<login><user>jsmith</user><pass>hunter-two</pass></login>",
+            '<?xml version="1.0"?><login><user>jsmith</user><pass>hunter-two</pass></login>',
+        ],
+    )
+    def test_a_credential_body_read_by_no_field_name_suggests_nothing(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """XML: the second body holds an "=", so parse_qs reads a value from it, but
+        by no field name, and the username inside it is no account value."""
+        result = self._valued_run(tmp_path, body, "application/xml")
+        assert result.login
+        assert result.success_candidates == ()

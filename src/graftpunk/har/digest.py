@@ -29,7 +29,11 @@ from graftpunk.har.documents import (
     looks_like_new_password_name,
     looks_like_token_name,
 )
-from graftpunk.har.login_signals import is_login_step_post, success_candidates
+from graftpunk.har.login_signals import (
+    could_be_an_account_value,
+    is_login_step_post,
+    success_candidates,
+)
 from graftpunk.har.naming import capture_text, fixture_rank, normalize_media_type
 from graftpunk.har.parser import HAREntry, LoginInteraction, parse_har_file
 from graftpunk.har.paths import (
@@ -70,6 +74,7 @@ __all__ = [
     "TokenCandidate",
     "TokenKind",
     "body_params",
+    "body_values",
     "digest",
     "is_credential_body",
     "password_field_names",
@@ -800,20 +805,50 @@ def body_values(post_data: str | None, content_type: str = "") -> list[tuple[tup
     included. The one reader of a credential post's values, for the digest's
     suggestions (:func:`_account_values`) and the recorder's snapshot redaction
     (:func:`graftpunk.observe.snapshot.snapshot_redaction`). JSON is walked without
-    recursion; a body nested past the JSON parser's own limit reads as no values."""
+    recursion; a body nested past the JSON parser's own limit reads as no values.
+
+    Values feed redaction and the leak guard, so this reads more than
+    :func:`body_params`: a form-shaped body whatever type it declared (text/plain,
+    or multipart/form-data with no parts), and, as the snapshot redaction always
+    did, any body holding ``=`` that is not JSON by ``parse_qs`` even when no key
+    reads as a field name (:func:`_read_body_values`)."""
+    return _read_body_values(post_data, content_type)[0]
+
+
+def _read_body_values(
+    post_data: str | None, content_type: str
+) -> tuple[list[tuple[tuple[str, ...], str]], bool]:
+    """:func:`body_values`, and whether the body was read by its field names: as
+    JSON, as multipart parts, or as a form with a key spelled like a field name. A
+    body read only by ``parse_qs`` with no such key (XML with an attribute, prose
+    with an ``=``) gives the values ``parse_qs`` finds, but not by field name."""
     declared = content_type.split(";")[0].strip().lower()
     kind, parsed = _decoded_body(post_data, declared)
     if kind == "none" and post_data and declared == _MULTIPART_CONTENT_TYPE:
-        return _multipart_values(post_data, content_type)
+        parts = _multipart_values(post_data, content_type)
+        if parts:
+            return parts, True
     if kind == "none":
-        # Values feed redaction and the leak guard, so a form-shaped body read as a
-        # form whatever type it declared (text/plain), which body_params does not.
         kind, parsed = _decoded_body(post_data, "")
     if kind == "form":
-        return [((name,), value) for name, values in parsed.items() for value in values]
-    if kind == "none":
-        return []
-    return _scalar_values(parsed)
+        return [((name,), value) for name, values in parsed.items() for value in values], True
+    if kind == "json":
+        return _scalar_values(parsed), True
+    if post_data and "=" in post_data and not _is_json(post_data):
+        loose = parse_qs(post_data, keep_blank_values=True)
+        return [((name,), value) for name, values in loose.items() for value in values], False
+    return [], False
+
+
+def _is_json(text: str) -> bool:
+    """Whether *text* is JSON, a body too deep for the parser counted as JSON."""
+    try:
+        json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    except RecursionError:
+        return True
+    return True
 
 
 def _scalar_values(parsed: object) -> list[tuple[tuple[str, ...], str]]:
@@ -1370,7 +1405,7 @@ def _is_top_level_page_load(entry: HAREntry, method: str, content_type: str) -> 
 _EMAIL_IN_VALUE_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
 
-def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str]:
+def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str] | None:
     """The values of credential post *entry* (read by :func:`body_values`) that no
     suggested name may hold, for :func:`graftpunk.har.login_signals.success_candidates`:
     the password field's (a name with a :data:`PASSWORD_NAME_HINTS` hint); the
@@ -1379,16 +1414,31 @@ def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str
     :func:`graftpunk.session_identity.is_identifier_field` accepts, by any name on
     the way to a nested value; and each email address inside any value. When no
     field is a username by those rules, every value is one, but a token field's
-    (:func:`graftpunk.har.documents.looks_like_token_name`). Held in memory only,
-    never written."""
-    values = body_values(entry.request.post_data, _request_content_type(entry))
+    (:func:`graftpunk.har.documents.looks_like_token_name`). A field counts as the
+    username only when its value could name an account
+    (:func:`graftpunk.har.login_signals.could_be_an_account_value`) and is not one
+    of the names leading to it, case aside (``email=``, ``login=Login``, and
+    ``account=1`` leave every value an account value).
 
-    def names_a_username(path: tuple[str, ...]) -> bool:
+    ``None`` when the body holds something but is not read by its field names
+    (:func:`_read_body_values`: nested past the JSON parser's limit, XML, or any
+    other shape), so the guard cannot see the username, and nothing may be
+    suggested. Held in memory only, never written."""
+    post_data = entry.request.post_data
+    values, by_names = _read_body_values(post_data, _request_content_type(entry))
+    if post_data and post_data.strip() and not (values and by_names):
+        return None
+
+    def names_a_username(path: tuple[str, ...], value: str) -> bool:
+        if not could_be_an_account_value(value) or value.strip().lower() in {
+            name.lower() for name in path
+        }:
+            return False
         return any(
             name in username_names or is_identifier_field(identifier_key(name)) for name in path
         )
 
-    usernames = [value for path, value in values if names_a_username(path)]
+    usernames = [value for path, value in values if names_a_username(path, value)]
     if not usernames:
         usernames = [
             value for path, value in values if not any(looks_like_token_name(name) for name in path)
@@ -2554,6 +2604,13 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if not holds_an_id(name)
     )
     id_token_names = {key for key in token_seen if holds_an_id(key[1])}
+    # One credential post whose body the guard cannot read (None) suggests nothing.
+    read_values = [_account_values(entry, username_names) for entry in credential_entries]
+    account_values = (
+        None
+        if any(values is None for values in read_values)
+        else [value for values in read_values if values is not None for value in values]
+    )
 
     return RunDigest(
         source=source,
@@ -2576,13 +2633,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             after_post_pages[-1],
             earlier=after_post_pages[:-1],
             submitted_a_step=submitted_a_step,
-            account_values=[
-                value
-                for entry in credential_entries
-                for value in _account_values(entry, username_names)
-            ],
+            account_values=account_values,
         )
-        if credential_post_steps and after_post_pages
+        if credential_post_steps and after_post_pages and account_values is not None
         else (),
     )
 

@@ -132,10 +132,34 @@ class TestRedaction:
         """Round 3 (#325): the snapshot reads the post's values with the digest's
         reader, so an identifier under a nested JSON name is redacted; reading the
         top level only, the snapshot kept it."""
-        body = json.dumps({"user": {"email": _EMAIL}, "password": _PASSWORD})
+        # "profile" is no identifier, so the email is found by its nearest name.
+        body = json.dumps({"profile": {"email": _EMAIL}, "password": _PASSWORD})
         assert _EMAIL in snapshot_redaction(body, "application/json").identifiers
         out = stored_dom_snapshot(f"<button>Not {_EMAIL}?</button>", body, "application/json")
         assert _EMAIL not in out
+
+    def test_an_identifier_in_a_json_list_is_redacted(self) -> None:
+        body = json.dumps({"username": ["alice"], "password": _PASSWORD})
+        assert snapshot_redaction(body, "application/json").identifiers == ("alice",)
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            # A form body declared multipart/form-data, holding no parts.
+            ("user_name=alice&login_password=pa55word", "multipart/form-data; boundary=XyZ"),
+            ("user_name=alice&login_password=pa55word", "multipart/form-data"),
+            # Keys no field name is spelled like, read by parse_qs all the same.
+            ("[user_name]=alice&1[x]=y", "application/x-www-form-urlencoded"),
+        ],
+    )
+    def test_a_body_read_as_main_read_it_is_still_redacted(
+        self, body: str, content_type: str
+    ) -> None:
+        """Main's snapshot reader took parse_qs of any non-JSON body holding "=";
+        the shared reader (#325) must not read less."""
+        assert "alice" in snapshot_redaction(body, content_type).identifiers
+        out = stored_dom_snapshot('<a href="/u/alice" id="alice">x</a>', body, content_type)
+        assert "alice" not in out
 
     def test_a_multipart_identifier_is_redacted(self) -> None:
         body = (
