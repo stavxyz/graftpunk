@@ -866,58 +866,72 @@ failure text is the backstop for a wrong call this produces.
 
 For `success`, a run that recorded a credential post can suggest selectors
 (`graftpunk.har.login_signals`, #268). They come from the final logged-in page:
-`page-source.html` when it holds no login form, else the last page loaded after a
-credential post that holds none. A page loaded here is a 2xx GET that is a
+`page-source.html` when it holds no login form, else the last page loaded after
+a credential post that holds none. A page loaded here is a 2xx GET that is a
 navigation by the rule above and is not a frame's document. A document counts as
 a frame's by every signal the recording holds: a `Sec-Fetch-Dest` of `iframe`,
 `frame`, `embed`, or `object`, or a `_resourceType` other than `Document`. A
 frame's document recorded as `Document` with no `Sec-Fetch-Dest` cannot be told
-apart and counts as a page; Chrome sends that header only to a secure origin, and
-the recorder has it only when Chrome reported the request's extra info. The
-steps of the login are the leading run of the pages loaded after the post. A page
-there is a step when it holds a login form, has an input with
+apart and counts as a page; Chrome sends that header only to a secure origin,
+and the recorder has it only when Chrome reported the request's extra info. The
+steps of the login are the leading run of the pages loaded after the post. A
+page there is a step when it holds a login form, has an input with
 `autocomplete="one-time-code"`, or the browser submitted a step-shaped form from
 it: a top-level document POST, sent between its load and the next page load,
-whose body has a field name or whose URL path has a segment holding a word `otp`,
-`totp`, `mfa`, `2fa`, `twofactor`, `code`, `verify`, `verification`,
-`challenge`, `remember`, `trust`, `kmsi`, `stay`, `signin`, `login`, `auth`,
-`sso`, or `consent` (`graftpunk.har.login_signals.is_login_step_post`). The first
+whose body has a field name, or whose URL path has a segment, holding a word
+`otp`, `totp`, `mfa`, `2fa`, `twofactor`, `verify`, `verification`, `challenge`,
+`trust`, `kmsi`, `stay`, `signin`, `login`, `auth`, `sso`, or `consent`, or that
+is `code` alone or `remember` with only `me`, `device`, `browser`, `computer`,
+or `login` beside it (`remember_me`), so `postal_code`, `currencyCode`, and
+`remember_filters` are not step names
+(`graftpunk.har.login_signals.is_login_step_post`). A field named like a CSRF
+token (`graftpunk.har.documents.looks_like_token_name`, such as ASP.NET's
+`__RequestVerificationToken` or `auth_token`) is not read, since a framework
+puts one in every form, and a POST to a path with a `logout`, `log-out`,
+`signout`, or `sign-out` segment (`/auth/logout`) is never a step. The first
 page that is not a step ends the run, and it and every later page are logged-in
 pages, whatever forms they post or inputs they hold: a search, an add to cart, a
 2FA settings page, or a logout form. When every page after the post is a step,
-the final one included, nothing is suggested. A step is a logged-out page, as are
-every response holding a login form (a POST's re-rendered failed attempt and a
-login page loaded again after the post included), each credential post's DOM
-snapshot, and each page loaded before the first credential post. A document POST
-is known by the same navigation rule, so in a HAR with neither `_resourceType`
-nor `Sec-Fetch` headers a form submission is not seen. An MFA page whose code a
-script sends, with no one-time-code input and no step-shaped form, cannot be told
-from a logged-in page by a recording either. It counts as logged in, so an element
-it shares with the landing page can be suggested; the fresh-visit check does not
-catch that, and a login that reports success on the MFA page fails on its first
-real call. A suggestion is `#id`, or `tag.token` for a plain tag (no namespace
-prefix, ASCII only) outside `svg` and `math` and other than `image` (which the
-HTML parser turns into `img`), over a plain CSS identifier, that selects exactly
-one element on the final page and none on any logged-out page. The matcher
-follows a browser's parser where the two could differ (the first of a duplicated
-attribute wins, class tokens split on ASCII whitespace only), and it counts ids
-and class tokens without case on every page, as a quirks-mode document matches
-them; in a standards-mode document that only rejects more, so a kept selector,
-written in its element's own case, holds in both. It counts each id and each tag
-and class pair once a page, so its cost grows with the page's size. An element
-that renders nothing (in the head, a script, a template's or a noscript's
-content; `<template/>` opens a template, as in a browser) is never one. Neither
-is a name that looks generated (not a plain identifier; a CSS-module class such
-as `Header_loggedIn__x7Q2a` or `Header-module__loggedIn___abcDE`; any `___`; a
-`_<word>_<5 characters>` class; a `css-`, `sc-`, `jsx-`, `emotion-`, `svelte-`,
-or `styled-` class; a run of three or more digits; a part of four or more
-characters mixing letters and digits; or an account value by
-`graftpunk.har.paths.holds_an_id`). The word rules below read a name's words,
-split at case changes and at `-`, `_`, `.`, and digits, each word alone or two
-adjacent words joined, so `sign-out` holds `signout` and `designing-panel` holds
-no `signin`. A single lowercase compound such as `signupnow` or `guestuser` is
-one word, and so is not rejected by the words inside it. A name is never one when it says signed out, signing in, or a guest
-(a word `loggedout`, `signedout`, `login`, `signin`, `signup`, `guest`, or
+the final one included, nothing is suggested. A step is a logged-out page, as
+are every response holding a login form (a POST's re-rendered failed attempt and
+a login page loaded again after the post included), each credential post's DOM
+snapshot, and each page loaded before the first credential post. That holds
+after the landing too: a page there holding a login form (a change-email form
+asking for the current password, a "confirm your password" page) is logged out,
+and an element it shares with the landing is not suggested; this errs toward
+fewer suggestions. A document POST is known by the same navigation rule, so in a
+HAR with neither `_resourceType` nor `Sec-Fetch` headers a form submission is
+not seen. Three kinds of step with no one-time-code input cannot be told from a
+logged-in page by a recording either: an MFA step whose code a script sends; one
+whose form posts only field names and a path with no step word (`pin=`,
+`passcode=` to `/session/second-factor`); and a step the run stopped on without
+submitting it (a "stay signed in" page with only a button). Each counts as
+logged in, so an element it shares with the landing page can be suggested; the
+fresh-visit check does not catch that, and a login that reports success on such
+a step fails on its first real call. A suggestion is `#id`, or `tag.token` for a
+plain tag (no namespace prefix, ASCII only) outside `svg` and `math` and other
+than `image` (which the HTML parser turns into `img`), over a plain CSS
+identifier, that selects exactly one element on the final page and none on any
+logged-out page. The matcher follows a browser's parser where the two could
+differ (the first of a duplicated attribute wins, class tokens split on ASCII
+whitespace only), and it counts ids and class tokens without case on every page,
+as a quirks-mode document matches them; in a standards-mode document that only
+rejects more, so a kept selector, written in its element's own case, holds in
+both. It counts each id and each tag and class pair once a page, so its cost
+grows with the page's size. An element that renders nothing (in the head, a
+script, a template's or a noscript's content; `<template/>` opens a template, as
+in a browser) is never one. Neither is a name that looks generated (not a plain
+identifier; a CSS-module class such as `Header_loggedIn__x7Q2a` or
+`Header-module__loggedIn___abcDE`; any `___`; a `_<word>_<5 characters>` class;
+a `css-`, `sc-`, `jsx-`, `emotion-`, `svelte-`, or `styled-` class; a run of
+three or more digits; a part of four or more characters mixing letters and
+digits; or an account value by `graftpunk.har.paths.holds_an_id`). The word
+rules below read a name's words, split at case changes and at `-`, `_`, `.`, and
+digits, each word alone or two adjacent words joined, so `sign-out` holds
+`signout` and `designing-panel` holds no `signin`. A single lowercase compound
+such as `signupnow` or `guestuser` is one word, and so is not rejected by the
+words inside it. A name is never one when it says signed out, signing in, or a
+guest (a word `loggedout`, `signedout`, `login`, `signin`, `signup`, `guest`, or
 `anonymous`), nor when it has a sign-out word (`signout`, `logout`) on anything
 but a link, a button, or a form. Nor is a name holding an account value of a
 credential post: the password field's value; the value of the field a recorded
@@ -925,32 +939,40 @@ login form takes as its username and of every field
 `graftpunk.session_identity.is_identifier_field` accepts (a Rails-style name by
 its last bracketed part), under that name at any depth of a JSON body; every
 email address inside any value; and, when no field is a username by those rules,
-every value but a token field's. Each value and an email's local part is
-compared lower-cased with whitespace, `-`, `_`, and `.` removed, at least three
-characters, and not a boolean word. The values are read by
-`graftpunk.har.digest.body_values` from a JSON body at any depth (walked without
-recursion), a form body, or a `multipart/form-data` body's text parts (split on
-the boundary its `Content-Type` names, else on the body's first non-blank line),
-and stay in memory. The recorder's snapshot redaction reads a credential post
-with the same reader. Suggestions rank first by being on every
-logged-in page the run loaded (the header the engine sees on the landing page,
-rather than a page the user browsed to), then by a name with a word `logged`,
-`account`, `signout`, `logout`, `user`, `profile`, or `avatar` (or a link or form
-whose target has a `logout`, `log-out`, `signout`, or `sign-out` path segment),
-then an id before a class, then document order, and at most three are
-kept. `--endpoints-json` prints them as `login.success_candidates`, a list that is
-empty when there are none. The tests check each suggestion against lxml and
-cssselect where those can tell. A recording cannot show that an element is absent
-from the login page the engine opens on a fresh visit, which can differ from the
-page recorded (a modal on the home page in the recording, `/login` in
-`LoginConfig.url`), so the generator never sets `success` from one: with
-suggestions it replaces the `success` `GP-FILL` with one saying the recording
-suggests a selector on the logged-in page and on no recorded login page, to check
-that it appears only after login on a fresh visit to the login URL and then
-uncomment one suggestion (all of its lines), followed by each as a commented
-`success="..."` argument, escaped and wrapped as the commented opener step is (a
-long one spans several commented lines).
-Without suggestions the generated `login_config` is the one it was before.
+every value but a token field's. A field counts as the username only when its
+value has at least three characters, is not a boolean word, and is not its own
+name, case aside, so `email=`, `login=Login`, and `account=1` leave every value
+an account value. Each value and an email's local part is compared lower-cased
+with whitespace, `-`, `_`, and `.` removed, at least three characters, and not a
+boolean word. The values are read by `graftpunk.har.digest.body_values` from a
+JSON body at any depth (walked without recursion), a form body, or a
+`multipart/form-data` body's text parts (split on the boundary its
+`Content-Type` names, else on the body's first non-blank line), and stay in
+memory. A credential post with a body that reader does not read by its field
+names (nested past the JSON parser's limit, XML, or any other shape) hides its
+username from this guard, so the run suggests nothing. The recorder's snapshot
+redaction reads a credential post with the same reader, which also reads a
+form-shaped body whatever type it declares and, as the snapshot's own reader did
+before it, any other body holding `=` that is not JSON by `parse_qs`.
+Suggestions rank first by being on every logged-in page the run loaded (the
+header the engine sees on the landing page, rather than a page the user browsed
+to), then by a name with a word `logged`, `account`, `signout`, `logout`,
+`user`, `profile`, or `avatar` (or a link or form whose target has a `logout`,
+`log-out`, `signout`, or `sign-out` path segment), then an id before a class,
+then document order, and at most three are kept. `--endpoints-json` prints them
+as `login.success_candidates`, a list that is empty when there are none. The
+tests check each suggestion against lxml and cssselect where those can tell. A
+recording cannot show that an element is absent from the login page the engine
+opens on a fresh visit, which can differ from the page recorded (a modal on the
+home page in the recording, `/login` in `LoginConfig.url`), so the generator
+never sets `success` from one: with suggestions it replaces the `success`
+`GP-FILL` with one saying the recording suggests a selector on the logged-in
+page and on no recorded login page, to check that it appears only after login on
+a fresh visit to the login URL and then uncomment one suggestion (all of its
+lines), followed by each as a commented `success="..."` argument, escaped and
+wrapped as the commented opener step is (a long one spans several commented
+lines). Without suggestions the generated `login_config` is the one it was
+before.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
