@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.31.1] - 2026-10-30
+
+This is a patch release. `gp observe go` and `gp observe interactive` now start Chrome in a session of its own, so the Ctrl+C typed in a terminal to stop `gp observe interactive` reaches only graftpunk, which saves the screenshot, the page source and the HAR before it stops Chrome. In 1.31.0 the keypress also killed Chrome, and the run kept only `network.har`. Nothing else changes: the plugin login engine and browser token extraction launch Chrome as before, and the format of a run's files and of the digest is unchanged.
+
+### Upgrading
+
+1. **A Chrome started by `gp observe` is no longer in the terminal's process group** (#333). A signal sent to `gp observe`'s process group (`kill -- -<pgid>`) no longer reaches its Chrome directly. graftpunk's SIGTERM and SIGHUP handlers end it, and a Chrome left behind by a `kill -9` of `gp observe` is ended by the next graftpunk browser launch, as before. A program that ran `gp observe` and relied on a group signal to end Chrome with it should signal `gp observe` itself.
+2. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
 ### Fixed
 
 - **A Ctrl+C typed in a terminal to stop `gp observe interactive` no longer kills Chrome before the run is saved** (#333). The terminal sends Ctrl+C to its whole foreground process group, and nodriver started Chrome in Python's group, so Chrome exited with the keypress. The run then saved only `network.har`, said the browser had disconnected and the screenshot and page source were unavailable, and had no `page-source.html` or `screenshots/` (a body still being fetched was marked `fetch_failed`). Ignoring SIGINT around the launch, which graftpunk already did, did not keep Chrome alive. `gp observe go` and `gp observe interactive` now start Chrome in a session of its own (nodriver has no option for this, so `graftpunk.browser_launch.chrome_in_own_session()` adds `start_new_session=True` to nodriver's one launch call for the length of `nodriver.start`), and a Ctrl+C reaches only Python, which saves the screenshot, the page source and the HAR and then stops Chrome. The plugin login engine and browser token extraction launch Chrome as before. In exchange, a signal sent to `gp observe`'s process group no longer reaches its Chrome directly: graftpunk's SIGTERM and SIGHUP handlers end it, and a Chrome left behind by a `kill -9` of `gp observe` is ended by the next graftpunk browser launch, as every orphan carrying graftpunk's owner marker is. New API: `chrome_in_own_session` in `graftpunk.browser_launch`.
