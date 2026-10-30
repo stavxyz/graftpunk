@@ -133,7 +133,9 @@ _SWAPPED = (
     f"<html><body>{_SIGNED_IN_HEADER}<main id='dashboard'><h1 class='welcome'>Welcome"
     "</h1></main></body></html>"
 )
-_HELP_ARTICLE = "<main id='help-article' class='article'><section id='account-faq'></section></main>"
+_HELP_ARTICLE = (
+    "<main id='help-article' class='article'><section id='account-faq'></section></main>"
+)
 
 
 class TestTheAfterReadNarrowsTheSuggestions:
@@ -202,9 +204,7 @@ class TestTheAfterReadNarrowsTheSuggestions:
             "#welcome",
         )
 
-    def test_an_undetected_mfa_page_in_the_read_gives_no_mfa_selector(
-        self, tmp_path: Path
-    ) -> None:
+    def test_an_undetected_mfa_page_in_the_read_gives_no_mfa_selector(self, tmp_path: Path) -> None:
         """The read caught an MFA page no rule knows for a step, and no step POST
         followed it in the HAR (a push approval): the run stopped on the landing page,
         which shares nothing with the MFA page outside the logged-out header."""
