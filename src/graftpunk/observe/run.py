@@ -488,6 +488,8 @@ async def save_observe_run(
 
     ``backend.stop_capture_async()`` runs after the screenshot/page-source
     grab so the late body fetch happens while the browser is still alive.
+    Before that grab, the backend's reads after a credential post (when it
+    has them, ``close_after_reads``) are cancelled and waited for.
     Each write is guarded on its own so one failure (a full disk, an
     unserialisable body) cannot take the others down or mask the exception
     the caller may be unwinding. Progress lines go to ``console`` (a rich
@@ -518,6 +520,16 @@ async def save_observe_run(
             say(f"[red]{name} failed:[/red] {exc}")
             return None
 
+    # The reads the recorder takes after a credential post: none may land after
+    # stop, nor read the page while the page source is read.
+    close_after_reads = getattr(backend, "close_after_reads", None)
+    if close_after_reads is not None:
+        try:
+            await close_after_reads()
+        except Exception as exc:  # noqa: BLE001 - the stop below closes them again
+            LOG.error(
+                "observe_close_after_reads_failed", error=str(exc), exc_type=type(exc).__name__
+            )
     screenshot_data = await backend.take_screenshot()
     page_source = await backend.get_page_source()
 

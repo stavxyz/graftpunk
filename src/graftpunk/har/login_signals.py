@@ -51,7 +51,10 @@ from graftpunk.har.selectors import bounded_selector
 
 __all__ = [
     "MAX_SUCCESS_CANDIDATES",
+    "account_needles",
+    "asks_for_a_code",
     "could_be_an_account_value",
+    "holds_an_account_value",
     "is_login_step_post",
     "success_candidates",
 ]
@@ -345,7 +348,14 @@ def _read(html: str) -> _Page:
     return page
 
 
-def _needles(values: Iterable[str]) -> frozenset[str]:
+def asks_for_a_code(html: str) -> bool:
+    """Whether *html* has an input asking for a one-time code
+    (``autocomplete="one-time-code"``): a step of a login, the rule
+    :func:`success_candidates` applies to each page after the credential post."""
+    return _read(html).asks_for_a_code
+
+
+def account_needles(values: Iterable[str]) -> frozenset[str]:
     """The credential post's *values*, and an email's local part, as a name is
     compared with them: lower-cased with ``-``, ``_``, ``.``, and whitespace
     removed (:func:`_compact`), leaving out a short one or a boolean word. Comparing the
@@ -390,8 +400,16 @@ def _usable(name: str, element: _Element, needles: frozenset[str]) -> bool:
         return False
     if _says_signed_out(name, element):
         return False
+    return not holds_an_account_value(name, needles)
+
+
+def holds_an_account_value(name: str, needles: frozenset[str]) -> bool:
+    """Whether *name*, compared as :func:`_compact` writes it, holds one of *needles*
+    (:func:`account_needles`) anywhere: the rule that keeps a name off the success
+    suggestions, and that the recorder's read of the page after a credential post
+    redacts by (:func:`graftpunk.observe.snapshot.stored_dom_snapshot`)."""
     compact = _compact(name)
-    return not any(needle in compact for needle in needles)
+    return any(needle in compact for needle in needles)
 
 
 def _selectors(
@@ -419,6 +437,7 @@ def success_candidates(
     earlier: Sequence[str] = (),
     submitted_a_step: Collection[int] = (),
     account_values: Iterable[str] = (),
+    also_on: str | None = None,
 ) -> tuple[str, ...]:
     """Up to :data:`MAX_SUCCESS_CANDIDATES` selectors for an element on the final
     logged-in page and on no logged-out page: each selects exactly one element of
@@ -451,7 +470,15 @@ def success_candidates(
     ``logged``, ``account``, ``signout``, ``logout``, ``user``, ``profile``, or
     ``avatar``, or a link or form whose target has a ``logout``, ``log-out``,
     ``signout``, or ``sign-out`` path segment; then an id before a class; then
-    document order. Only selectors are returned, never text or attribute values."""
+    document order. Only selectors are returned, never text or attribute values.
+
+    With *also_on* (the page the recorder read a few seconds after the credential
+    post, :func:`graftpunk.har.digest._after_read`), a selector must also select an
+    element there: of the selectors chosen without it, those it also holds are kept,
+    and a place one leaves goes only to the next ranked selector it holds whose name
+    has one of the words above or that is a link or form with a logout target, so a
+    generic element the read shares (a toast container on a push-approval page) is
+    never promoted."""
     if not logged_in:
         return ()
     after_post = [_read(html) for html in (*earlier, logged_in)]
@@ -468,8 +495,11 @@ def success_candidates(
     final = after_post[-1]
     others = [_read(html) for html in logged_out] + after_post[:landing]
     also_logged_in = after_post[landing:-1]
-    needles = _needles(account_values)
+    needles = account_needles(account_values)
+    after_read = _read(also_on) if also_on is not None else None
     ranked: dict[str, tuple[int, int, int, int]] = {}
+    # The selectors that also select an element on the after-read.
+    on_read: set[str] = set()
     seen: set[str] = set()
     for order, element in enumerate(final.elements):
         if element.inert or element.tag in _NOT_RENDERED:
@@ -484,6 +514,8 @@ def success_candidates(
                 or any(page.count(key) for page in others)
             ):
                 continue
+            if after_read is None or after_read.count(key):
+                on_read.add(selector)
             everywhere = all(page.count(key) for page in also_logged_in)
             keyword = _holds_word(name, _KEYWORDS) or _targets_logout(element)
             ranked[selector] = (
@@ -492,4 +524,17 @@ def success_candidates(
                 0 if is_id else 1,
                 order,
             )
-    return tuple(sorted(ranked, key=ranked.__getitem__)[:MAX_SUCCESS_CANDIDATES])
+    ordered = sorted(ranked, key=ranked.__getitem__)
+    if after_read is None:
+        return tuple(ordered[:MAX_SUCCESS_CANDIDATES])
+    # The after-read narrows: of the selectors chosen without it, those it also
+    # holds; a place one leaves is taken only by a selector with a login marker
+    # (a keyword, or a logout target), never by any element the two pages share.
+    chosen = ordered[:MAX_SUCCESS_CANDIDATES]
+    kept = [selector for selector in chosen if selector in on_read]
+    refill = [
+        selector
+        for selector in ordered[MAX_SUCCESS_CANDIDATES:]
+        if selector in on_read and ranked[selector][1] == 0
+    ]
+    return tuple(sorted([*kept, *refill], key=ranked.__getitem__)[:MAX_SUCCESS_CANDIDATES])

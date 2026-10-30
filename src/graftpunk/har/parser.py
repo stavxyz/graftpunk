@@ -97,6 +97,11 @@ class HARRequest:
     dom_snapshot_file: str | None = None
     dom_snapshot: str | None = None
     dom_snapshot_url: str | None = None
+    # The page gp observe read a few seconds after a credential post's response,
+    # structure only (request._domAfter, relative to the HAR's directory): the
+    # reference and the file's text, read as dom_snapshot is.
+    dom_after_file: str | None = None
+    dom_after: str | None = None
     # The clicks and focus moves gp observe recorded before a credential post, oldest
     # first (request._loginInteractions); an item of another shape is skipped.
     login_interactions: tuple[LoginInteraction, ...] = ()
@@ -422,6 +427,14 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
     else:
         snapshot_file = None
     snapshot_url = request_data.get("_domSnapshotUrl")
+    after_file = request_data.get("_domAfter")
+    after: str | None = None
+    if isinstance(after_file, str):
+        after, readable = _request_body_file(after_file, base_dir)
+        if not readable:
+            after_file = None
+    else:
+        after_file = None
     resource_type = request_data.get("_resourceType")
 
     return HARRequest(
@@ -443,6 +456,8 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         dom_snapshot_file=snapshot_file,
         dom_snapshot=snapshot,
         dom_snapshot_url=snapshot_url if isinstance(snapshot_url, str) else None,
+        dom_after_file=after_file,
+        dom_after=after,
         login_interactions=_login_interactions(request_data.get("_loginInteractions")),
         resource_type=resource_type if isinstance(resource_type, str) else None,
     )
