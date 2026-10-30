@@ -44,6 +44,7 @@ from graftpunk.har.digest import (
     endpoint_template,
     flagged_names_of,
     flagged_reasons_of,
+    post_every_value,
     redacted_names_of,
 )
 from graftpunk.har.documents import LoginForm
@@ -7964,3 +7965,55 @@ class TestTheRecordingSuggestsASuccessSelector:
             result = self._valued_run(tmp_path, body, "application/x-www-form-urlencoded")
         assert result.login
         assert result.success_candidates == ()
+
+
+class TestPostEveryValue:
+    """``post_every_value``: every value of a credential post but one under a token
+    field's name, which the after-read redacts (#330)."""
+
+    def test_a_value_under_a_token_name_anywhere_on_its_path_is_left_out(self) -> None:
+        body = json.dumps(
+            {
+                "email": "alice@example.com",
+                "password": "hunter22secret",
+                "csrf": {"v": "panelwide"},
+                "profile": {"v": "northwind"},
+            }
+        )
+        assert post_every_value(body, "application/json") == [
+            "alice@example.com",
+            "hunter22secret",
+            "northwind",
+        ]
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            ('"jsmith"', "application/json"),
+            ('["jsmith", "hunter2hunter2"]', "application/json"),
+            ("<login><username>jsmith</username></login>", "application/xml"),
+            (None, ""),
+        ],
+        ids=["json-string", "json-list", "xml", "no-body"],
+    )
+    def test_a_body_not_read_by_field_names_gives_nothing(
+        self, body: str | None, content_type: str
+    ) -> None:
+        assert post_every_value(body, content_type) == []
+
+    def test_a_value_nested_past_the_parser_s_limit_gives_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """How deep json.loads goes depends on the Python version and the platform's
+        stack, so the parser's refusal of the inner value is stood in for."""
+        deep = "[[[1]]]"
+        body = json.dumps({"username": "jsmith", "password": "hunter2hunter2", "state": deep})
+        loads = json.loads
+
+        def too_deep(text: str | bytes, *args: Any, **kwargs: Any) -> object:
+            if text == deep:
+                raise RecursionError("maximum recursion depth exceeded")
+            return loads(text, *args, **kwargs)
+
+        monkeypatch.setattr(json, "loads", too_deep)
+        assert post_every_value(body, "application/json") == []
