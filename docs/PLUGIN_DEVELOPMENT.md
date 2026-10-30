@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.29.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.30.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -220,8 +220,10 @@ listener gp observe installs in an isolated world of the page as you click or
 press Enter (values, scripts, and most text dropped, link and form URLs cut to
 their path, and the post's own values redacted, though not one the page renders
 across elements; see
-[HOW_IT_WORKS.md](HOW_IT_WORKS.md#interactive-mode-gp-observe-interactive)),
-`page-source.html`, `screenshots/`, `console.jsonl`, `events.jsonl`, and
+[HOW_IT_WORKS.md](HOW_IT_WORKS.md#interactive-mode-gp-observe-interactive))
+and for the page read a few seconds after that post's response (structure only,
+with no text at all), `page-source.html`, `screenshots/`, `console.jsonl`,
+`events.jsonl`, and
 `metadata.json`. The same listener reports your clicks and focus moves, and each
 credential post's HAR entry keeps those of the two minutes before it as
 `request._loginInteractions`: a kind, a selector the page computed (an id or a
@@ -1752,7 +1754,9 @@ and pick one that appears only after login.
 **A selector the recording suggests is a suggestion.** When a recording holds a
 logged-in page (`page-source.html` at stop, or a page loaded after the
 credential post), `gp plugin new` may write up to three `success` selectors
-under a `GP-FILL`, each commented out:
+(only those also on the page `gp observe` read a few seconds after the last
+credential post's response, when it has that read and the read shows no login
+step) under a `GP-FILL`, each commented out:
 
 ```python
         # GP-FILL: the recording suggests a success selector: an element on the logged-in page and
@@ -1789,7 +1793,8 @@ suggestions, when the run recorded no credential post, never got past the
 login's steps (an MFA page, say), or holds a credential post whose username the
 digest cannot read: a body the recording does not hold as text, or one it does
 not read by field names (XML, a JSON value under no name, a body nested too
-deep to parse).
+deep to parse). It is also empty when no suggestion is on the page read after
+the last credential post.
 
 A recording cannot see three kinds of login step that have no one-time-code
 input: an MFA step whose code a script sends; one whose form posts only field

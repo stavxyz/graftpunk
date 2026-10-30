@@ -30,8 +30,11 @@ Resolve `~` to the user's home directory: the HAR reader, Read, and Grep each
 get the absolute path, which is `<har>` in `references/commands.md`. Beside the
 HAR, `bodies/` holds every body, sent or received, that was too big for the HAR
 or binary, `snapshots/` the page as it was at each credential post (the digest
-reads a login form from it), and `page-source.html` the page that was open when
-the recording stopped.
+reads a login form from it) and, as `<request id>.after.html`, a structure-only
+read of the page taken shortly after the response to that post (unless the last
+post's shows a login step, the digest keeps only the `success` suggestions it
+also holds), and
+`page-source.html` the page that was open when the recording stopped.
 
 ## The HAR reader
 
