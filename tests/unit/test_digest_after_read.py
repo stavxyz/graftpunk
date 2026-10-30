@@ -213,6 +213,47 @@ class TestTheAfterReadNarrowsTheSuggestions:
         assert plain.success_candidates == ("#account-menu", "a.signout-link", "#welcome")
         assert _digest(tmp_path, entries, _LANDING).success_candidates == ()
 
+    def test_a_push_approval_page_promotes_no_shared_element(self, tmp_path: Path) -> None:
+        """Toolkit round 2 I2: the read caught a push-approval page (no one-time-code
+        input, no step POST, only a GET poll) that shares a generic toast container
+        with the landing page. None of 1.29.0's three is on the read, and the shared
+        container has no login marker, so nothing takes their places."""
+        push = (
+            "<html><body><main><div id='push-wait'><p>Approve the sign-in on your phone</p>"
+            "<div id='toast-root'></div></div></main></body></html>"
+        )
+        landing = (
+            "<html><body><header><nav class='site-nav'><div id='account-menu'>"
+            "<a class='signout-link' href='/bye'>Sign out</a></div></nav></header>"
+            "<main><div id='welcome'></div><div id='toast-root'></div></main></body></html>"
+        )
+        poll = _entry(
+            "GET",
+            f"{_HOST}/api/push/status",
+            content_type="application/json",
+            body="{}",
+            started="2026-09-10T10:00:20.000Z",
+        )
+        entries = [_get("/login", _LOGIN), _post(tmp_path, "9.1", after=_after(push)), poll]
+        plain = _digest(tmp_path / "plain", _without_after(entries), landing)
+        assert plain.success_candidates == ("#account-menu", "a.signout-link", "#welcome")
+        assert _digest(tmp_path, entries, landing).success_candidates == ()
+
+    def test_a_selector_the_read_holds_twice_is_kept(self, tmp_path: Path) -> None:
+        """The read only has to hold the element; the once-only rule is the final
+        page's."""
+        twice = _LANDING.replace(
+            "<a class='signout-link' href='/bye'>Sign out</a>",
+            "<a class='signout-link' href='/bye'>Sign out</a>"
+            "<a class='signout-link' href='/bye'>Sign out</a>",
+        )
+        entries = [_get("/login", _LOGIN), _post(tmp_path, "9.1", after=_after(twice))]
+        assert _digest(tmp_path, entries, _LANDING).success_candidates == (
+            "#account-menu",
+            "a.signout-link",
+            "#welcome",
+        )
+
     def test_a_step_sent_by_fetch_after_the_post_falls_back(self, tmp_path: Path) -> None:
         """The reviewers' SPA MFA: the code is verified by a fetch POST after the
         credential post, so the read may show that step and is not used."""

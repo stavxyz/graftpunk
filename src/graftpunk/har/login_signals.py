@@ -464,7 +464,11 @@ def success_candidates(
 
     With *also_on* (the page the recorder read a few seconds after the credential
     post, :func:`graftpunk.har.digest._after_read`), a selector must also select an
-    element there; it narrows the candidates and changes no other rule."""
+    element there: of the selectors chosen without it, those it also holds are kept,
+    and a place one leaves goes only to the next ranked selector it holds whose name
+    has one of the words above or that is a link or form with a logout target, so a
+    generic element the read shares (a toast container on a push-approval page) is
+    never promoted."""
     if not logged_in:
         return ()
     after_post = [_read(html) for html in (*earlier, logged_in)]
@@ -484,6 +488,8 @@ def success_candidates(
     needles = _needles(account_values)
     after_read = _read(also_on) if also_on is not None else None
     ranked: dict[str, tuple[int, int, int, int]] = {}
+    # The selectors that also select an element on the after-read.
+    on_read: set[str] = set()
     seen: set[str] = set()
     for order, element in enumerate(final.elements):
         if element.inert or element.tag in _NOT_RENDERED:
@@ -496,9 +502,10 @@ def success_candidates(
                 bounded_selector(selector) is None
                 or final.count(key) != 1
                 or any(page.count(key) for page in others)
-                or (after_read is not None and not after_read.count(key))
             ):
                 continue
+            if after_read is None or after_read.count(key):
+                on_read.add(selector)
             everywhere = all(page.count(key) for page in also_logged_in)
             keyword = _holds_word(name, _KEYWORDS) or _targets_logout(element)
             ranked[selector] = (
@@ -507,4 +514,17 @@ def success_candidates(
                 0 if is_id else 1,
                 order,
             )
-    return tuple(sorted(ranked, key=ranked.__getitem__)[:MAX_SUCCESS_CANDIDATES])
+    ordered = sorted(ranked, key=ranked.__getitem__)
+    if after_read is None:
+        return tuple(ordered[:MAX_SUCCESS_CANDIDATES])
+    # The after-read narrows: of the selectors chosen without it, those it also
+    # holds; a place one leaves is taken only by a selector with a login marker
+    # (a keyword, or a logout target), never by any element the two pages share.
+    chosen = ordered[:MAX_SUCCESS_CANDIDATES]
+    kept = [selector for selector in chosen if selector in on_read]
+    refill = [
+        selector
+        for selector in ordered[MAX_SUCCESS_CANDIDATES:]
+        if selector in on_read and ranked[selector][1] == 0
+    ]
+    return tuple(sorted([*kept, *refill], key=ranked.__getitem__)[:MAX_SUCCESS_CANDIDATES])
