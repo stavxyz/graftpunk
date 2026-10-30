@@ -28,6 +28,7 @@ from graftpunk.cli.main import app
 from graftpunk.cli.observe_browser import ObserveSession, run_observe_interactive
 from graftpunk.observe import capture
 from graftpunk.observe.capture import NodriverCaptureBackend
+from graftpunk.observe.run import Redaction
 from tests.unit.cli_harness import strip_ansi
 from tests.unit.test_observe_post_data import (
     _LOGIN_MODAL,
@@ -49,10 +50,13 @@ _RIGHT = json.dumps({"username": "jsmith", "password": "realsecret9"})
 _TOAST = "Invalid username or password."
 _STAYS = "Too many attempts may lock you out."
 _FAILED_PAGE = _LOGIN_MODAL.replace(
-    '<div id="app">', f'<div id="app"><div role="alert">{_TOAST}</div><p>{_STAYS}</p>'
+    '<div id="app">',
+    f'<div id="app"><div role="alert">{_TOAST}</div><p class="form-error">{_STAYS}</p>',
 )
 # The toast has dismissed itself by the time the user presses Enter.
-_FAILED_PAGE_LATER = _LOGIN_MODAL.replace('<div id="app">', f'<div id="app"><p>{_STAYS}</p>')
+_FAILED_PAGE_LATER = _LOGIN_MODAL.replace(
+    '<div id="app">', f'<div id="app"><p class="form-error">{_STAYS}</p>'
+)
 _LANDED = "<html><body><div id='account-menu'>Your orders</div></body></html>"
 
 
@@ -106,7 +110,7 @@ class TestTheReadsForTheFailedPost:
 
         request = _request(backend)
         assert request["_userMarkedFailed"] is True
-        # The toast only the 1.5 s read caught ranks first: it was in an alert.
+        # The toast only the 1.5 s read caught ranks first: that read comes first.
         assert request["_failureTextCandidates"] == [_TOAST, _STAYS]
         # Text only: no failure page is written, and the after-read keeps no text.
         assert _TOAST not in _run_text(tmp_path)
@@ -124,7 +128,8 @@ class TestTheReadsForTheFailedPost:
         await clock.advance(0.5, backend)
         assert reads == [1.0, 1.5]
         await _stop(backend, tab)
-        assert _request(backend)["_failureTextCandidates"] == [_TOAST, _STAYS]
+        # The FAILURE_READ_S read is taken first, then the read on Enter.
+        assert _request(backend)["_failureTextCandidates"] == [_STAYS, _TOAST]
 
     @pytest.mark.asyncio
     async def test_the_last_credential_post_before_enter_is_the_one_marked(
@@ -224,7 +229,174 @@ class TestTheRealLogin:
         unreadable = _unreadable_credential_body(monkeypatch)
         await _post(tab, "96.2", unreadable, respond=False)
         await _stop(backend, tab)
-        assert _request(backend, 0)["_failureTextCandidates"] == []
+        assert "_failureTextCandidates" not in _request(backend, 0)
+        assert backend.marked_failure_candidates() == ()
+
+
+class TestOnlyFailureReadsCount:
+    @pytest.mark.asyncio
+    async def test_enter_pressed_after_the_real_login_suggests_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """The user forgot Enter, logged in for real, then pressed it: the real login
+        is marked, its reads are the landed page, which holds no login, so they are
+        ignored and no text is kept."""
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        tab.dom_html = (
+            "<html><body><div class='alert-banner'>Free shipping on orders over 50</div>"
+            "<p>Your recent orders</p></body></html>"
+        )
+        await _post(tab, "89.1", _RIGHT)
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        await _stop(backend, tab)
+        assert backend.marked_failure_candidates() == ()
+        assert "_userMarkedFailed" not in _request(backend)
+
+
+class TestThePageAtThePost:
+    _SHELL = "<html><body><div id='root'></div><script src='/app.js'></script></body></html>"
+
+    async def _without_a_snapshot(self, tmp_path: Path, served: str) -> NodriverCaptureBackend:
+        """A post no snapshot was kept for: no listener snapshot, and the late read
+        finds the tab on another page. The login page as served is *served*."""
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        backend._request_map["page"] = {
+            "url": LOGIN,
+            "response": {"mimeType": "text/html", "body": served},
+        }
+        await tab.dispatch(_will_be_sent("88.1", inline=_WRONG, url=LOGIN, document_url=LOGIN))
+        await tab.dispatch(_response_received("88.1", url=LOGIN))
+        await clock.advance(2, backend)
+        assert backend._step_before == {}
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        await _stop(backend, tab)
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_a_script_rendered_shell_as_served_suggests_nothing(self, tmp_path: Path) -> None:
+        backend = await self._without_a_snapshot(tmp_path, self._SHELL)
+        assert backend.marked_failure_candidates() == ()
+
+    @pytest.mark.asyncio
+    async def test_a_served_page_holding_the_login_form_is_used(self, tmp_path: Path) -> None:
+        backend = await self._without_a_snapshot(tmp_path, _LOGIN_MODAL)
+        assert backend.marked_failure_candidates() == (_TOAST, _STAYS)
+
+
+class TestTheStepCloses:
+    @pytest.mark.asyncio
+    async def test_after_a_skip_no_post_is_held_or_read_for_the_step(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await _recording(tmp_path)
+        await _post(tab, "87.1")
+        await clock.advance(1, backend)
+        backend.skip_failure_step()
+        await clock.advance(0.9, backend)
+        # The 1.5 s read due for the post before the skip is cancelled too.
+        assert reads == []
+        await _post(tab, "87.2", _RIGHT)
+        await clock.advance(1.6, backend)
+        # Only 87.1's own after-read, 3 s after its response: none 1.5 s after 87.2's.
+        assert reads == [3.0]
+        assert backend._step_posts == []
+        assert backend._step_before == {}
+        assert backend._step_reads == {}
+        assert backend._step_read_tasks == {}
+        assert backend.mark_failed_login() is False
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_the_mark_drops_every_other_post_s_pages_and_reads(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await _recording(tmp_path)
+        await _post(tab, "86.1")
+        await clock.advance(1.6, backend)
+        assert "86.1" in backend._step_reads
+        await _post(tab, "86.2")
+        await clock.advance(0.5, backend)
+        # The later post's own 1.5 s read is still due; the earlier one's is held.
+        assert backend.mark_failed_login() is True
+        assert backend._step_reads == {}
+        assert backend._step_before == {}
+        assert backend._step_posts == []
+        await _idle(backend, clock)
+        await clock.advance(2, backend)
+        assert backend._step_reads == {}
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_the_mark_cancels_another_post_s_pending_read(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await _recording(tmp_path)
+        await _post(tab, "85.1")
+        await clock.advance(0.2, backend)
+        await _post(tab, "85.2")
+        await clock.advance(0.1, backend)
+        pending = backend._step_read_tasks["85.1"]
+        # Marks 85.2, the last post: 85.1's read, due at 1.5 s, is not wanted.
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        assert pending.cancelled()
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_stop_drops_the_raw_pages_of_the_marked_post(self, tmp_path: Path) -> None:
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        await _post(tab, "84.1")
+        await clock.advance(2, backend)
+        tab.dom_gate = asyncio.Event()
+        backend.mark_failed_login()
+        failed = backend._failed
+        assert failed is not None
+        assert failed.before is not None
+        assert failed.first_read is not None
+        await _stop(backend, tab)
+        assert (failed.before, failed.served, failed.first_read, failed.enter_read) == (
+            None,
+            None,
+            None,
+            None,
+        )
+        assert backend._failure_step_open is False
+
+
+class TestDropsWaitingForTheRealLogin:
+    """Enter, then a real login sent before the 1.5 s read settles the suggestions:
+    the real post's values wait and are applied at the settle."""
+
+    async def _real_login_first(self, tmp_path: Path, real: str) -> NodriverCaptureBackend:
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        tab.dom_html = _FAILED_PAGE.replace(_STAYS, "No match for jsmith2024 found.")
+        await _post(tab, "83.1", json.dumps({"username": "bob_tester", "password": "wrongpass1"}))
+        await clock.advance(0.5, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        await _post(tab, "83.2", real, respond=False)
+        failed = backend._failed
+        assert failed is not None
+        assert failed.candidates is None
+        assert len(failed.pending) == 1
+        await clock.advance(1, backend)
+        await _idle(backend, clock)
+        assert failed.candidates is not None
+        await _stop(backend, tab)
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_a_text_holding_its_value_is_dropped(self, tmp_path: Path) -> None:
+        real = json.dumps({"username": "jsmith2024", "password": "realsecret9"})
+        backend = await self._real_login_first(tmp_path, real)
+        assert backend.marked_failure_candidates() == (_TOAST,)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_body_drops_them_all(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.unit.test_observe_post_data import _unreadable_credential_body
+
+        unreadable = _unreadable_credential_body(monkeypatch)
+        backend = await self._real_login_first(tmp_path, unreadable)
+        assert backend.marked_failure_candidates() == ()
 
 
 class TestStopAndPrivacy:
@@ -257,9 +429,11 @@ class TestStopAndPrivacy:
         assert not enter_read.done()
         await _stop(backend, tab)
         assert enter_read.cancelled()
+        # No text was kept, so the entry carries no mark at all.
         request = _request(backend)
-        assert request["_userMarkedFailed"] is True
-        assert request["_failureTextCandidates"] == []
+        assert "_userMarkedFailed" not in request
+        assert "_failureTextCandidates" not in request
+        assert backend.marked_failure_candidates() == ()
 
     @pytest.mark.asyncio
     async def test_without_the_step_nothing_is_read_or_kept(self, tmp_path: Path) -> None:
@@ -306,7 +480,10 @@ class TestStopAndPrivacy:
         assert backend.failed_login_secrets() == ("wrongpass1",)
         tab.dom_html = _LANDED
         await save_observe_run(
-            storage, backend, "interactive-final", redact=backend.failed_login_secrets()
+            storage,
+            backend,
+            "interactive-final",
+            redact=Redaction(body_values=backend.failed_login_secrets()),
         )
 
         har = (storage.run_dir / "network.har").read_text()
@@ -315,6 +492,111 @@ class TestStopAndPrivacy:
         assert entry["request"]["_userMarkedFailed"] is True
         assert entry["request"]["_failureTextCandidates"] == [_TOAST, _STAYS]
         assert _TOAST not in _run_text(storage.run_dir).replace(har, "")
+
+
+class _Stopped:
+    """A stopped capture holding *entries*, for save_observe_run."""
+
+    def __init__(self, entries: list[dict[str, Any]]) -> None:
+        self.entries = entries
+
+    async def take_screenshot(self) -> None:
+        return None
+
+    async def get_page_source(self) -> None:
+        return None
+
+    async def stop_capture_async(self) -> None:
+        return None
+
+    def get_har_entries(self) -> list[dict[str, Any]]:
+        return self.entries
+
+    def get_console_logs(self) -> list[Any]:
+        return []
+
+
+_FORM = "application/x-www-form-urlencoded"
+
+
+class TestTheThrowawayScrub:
+    """The wrong password is scrubbed only where it stands as a whole value of a
+    request body: a throwaway such as ``password`` or ``login`` leaves the field
+    names, the URLs, and the login page intact."""
+
+    _PAGE = (
+        "<html><body><form action='/api/login/password' method='post'>"
+        "<input type='text' name='login'><input type='password' name='password'>"
+        "<button>Sign in</button></form></body></html>"
+    )
+    _POST_URL = "https://myshop.example/api/login/password"
+
+    def _entries(self, throwaway: str, content_type: str) -> list[dict[str, Any]]:
+        from tests.unit.test_har_digest import _entry
+
+        def body(password: str) -> str:
+            if content_type == _FORM:
+                return f"login=jsmith&password={password}"
+            return json.dumps({"login": "jsmith", "password": password})
+
+        entries = [
+            _entry("GET", LOGIN, content_type="text/html", body=self._PAGE),
+            _entry(
+                "POST",
+                self._POST_URL,
+                status=401,
+                post_data=body(throwaway),
+                started="2026-09-10T10:00:05.000Z",
+            ),
+            _entry(
+                "POST",
+                self._POST_URL,
+                post_data=body("RealSecret9"),
+                started="2026-09-10T10:00:09.000Z",
+            ),
+        ]
+        for entry in entries[1:]:
+            entry["request"]["postData"]["mimeType"] = content_type
+            entry["request"]["headers"] = [{"name": "Content-Type", "value": content_type}]
+        entries[1]["request"]["_userMarkedFailed"] = True
+        entries[1]["request"]["_failureTextCandidates"] = [_TOAST]
+        return entries
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("throwaway", ["password", "login"])
+    @pytest.mark.parametrize("content_type", [_FORM, "application/json"])
+    async def test_a_dictionary_word_leaves_the_run_readable(
+        self, tmp_path: Path, throwaway: str, content_type: str
+    ) -> None:
+        from graftpunk.har.digest import DigestSource, digest
+        from graftpunk.observe.run import save_observe_run
+        from graftpunk.observe.storage import ObserveStorage
+
+        storage = ObserveStorage(tmp_path, "myshop", "r1")
+        recorded = self._entries(throwaway, content_type)
+        expected = json.loads(json.dumps(recorded))
+        await save_observe_run(
+            storage,
+            _Stopped(recorded),
+            "interactive-final",
+            redact=Redaction(body_values=(throwaway,)),
+        )
+        saved = json.loads((storage.run_dir / "network.har").read_text())["log"]["entries"]
+        assert [entry["request"]["url"] for entry in saved] == [
+            LOGIN,
+            self._POST_URL,
+            self._POST_URL,
+        ]
+        assert saved[0] == expected[0]
+        assert saved[2] == expected[2]
+        failed = saved[1]["request"]["postData"]["text"]
+        if content_type == _FORM:
+            assert failed == "login=jsmith&password=***REDACTED***"
+        else:
+            assert json.loads(failed) == {"login": "jsmith", "password": "***REDACTED***"}
+        result = digest(DigestSource(har_path=storage.run_dir / "network.har"))
+        assert [set(form.fields) >= {"password"} for form in result.login_forms] == [True]
+        assert result.failure_candidates == (_TOAST,)
 
 
 class TestTheLoginPageAsServed:
@@ -393,6 +675,8 @@ class _Interactive:
         self.backend = MagicMock()
         self.backend.mark_failed_login = MagicMock(side_effect=marks or [True])
         self.backend.failed_login_secrets = MagicMock(return_value=("wrongpass1",))
+        self.backend.close_after_reads = AsyncMock()
+        self.backend.marked_failure_candidates = MagicMock(return_value=None)
         self.out = StringIO()
         self.console = Console(file=self.out, no_color=True, width=200)
         self.setup = AsyncMock(
@@ -454,7 +738,8 @@ class TestThePrompt:
             terminal.close()
         assert run.setup.await_args.kwargs["failure_step"] is True
         run.backend.mark_failed_login.assert_called_once_with()
-        assert run.save.await_args.kwargs["redact"] == ("wrongpass1",)
+        # Only where it stands as a whole value of a request body.
+        assert run.save.await_args.kwargs["redact"] == Redaction(body_values=("wrongpass1",))
 
     @pytest.mark.asyncio
     async def test_enter_before_any_credential_post_asks_again(self) -> None:
@@ -523,11 +808,33 @@ class TestThePrompt:
         finally:
             terminal.close()
         run.backend.mark_failed_login.assert_not_called()
+        # The backend is told, so it holds and reads nothing more for the step.
+        run.backend.skip_failure_step.assert_called_once_with()
         run.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_text_with_no_newline_then_end_of_input_marks_nothing(self) -> None:
+        run, terminal = _Interactive(), _FakeTerminal()
+        try:
+            with run.patches():
+                task = run.start(terminal)
+                await _until(lambda: "press Enter here" in run.text)
+                terminal.type(b"typed but no Enter")
+                await _turns()
+                terminal.close_input()
+                await _until(lambda: "skipped" in run.text)
+                _ctrl_c()
+                await task
+        finally:
+            terminal.close()
+        run.backend.mark_failed_login.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_stdin_that_is_no_terminal_refuses_before_the_browser_opens(self) -> None:
         run, terminal = _Interactive(), _FakeTerminal(tty=False)
+        # Without the refusal the browser would open here, and the test fails at once
+        # instead of waiting on a pipe nobody writes to.
+        run.setup.side_effect = AssertionError("the browser was opened")
         try:
             with run.patches():
                 task = run.start(terminal)
@@ -558,6 +865,46 @@ class TestThePrompt:
         run.backend.mark_failed_login.assert_not_called()
         run.backend.failed_login_secrets.assert_not_called()
         assert run.save.await_args.kwargs == {"console": run.console}
+
+
+class TestAnEmptyMark:
+    async def _marked_then_stopped(
+        self, kept: tuple[str, ...] | None
+    ) -> tuple[_Interactive, list[str]]:
+        run, terminal = _Interactive(), _FakeTerminal()
+        run.backend.marked_failure_candidates.return_value = kept
+        order: list[str] = []
+        run.backend.close_after_reads.side_effect = lambda: order.append("closed")
+        run.save.side_effect = lambda *args, **kwargs: order.append(
+            "saved after the line" if "No failure text" in run.text else "saved"
+        )
+        try:
+            with run.patches():
+                task = run.start(terminal)
+                await _until(lambda: "press Enter here" in run.text)
+                terminal.type(b"\n")
+                await _until(lambda: "Marked" in run.text)
+                _ctrl_c()
+                await task
+        finally:
+            terminal.close()
+        return run, order
+
+    @pytest.mark.asyncio
+    async def test_a_mark_that_kept_no_text_says_so_before_the_save(self) -> None:
+        run, order = await self._marked_then_stopped(())
+        assert "No failure text was kept from the wrong password" in run.text
+        # What the reads kept is read once they are closed, and said before the save.
+        assert order == ["closed", "saved after the line"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kept", [(_TOAST,), None])
+    async def test_a_mark_with_text_or_no_mark_says_nothing(
+        self, kept: tuple[str, ...] | None
+    ) -> None:
+        run, order = await self._marked_then_stopped(kept)
+        assert "No failure text" not in run.text
+        assert order == ["closed", "saved"]
 
 
 class TestTheFlag:

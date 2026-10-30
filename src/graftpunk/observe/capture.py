@@ -161,15 +161,22 @@ class _FailedLogin:
         self.secrets = tuple(secrets)
         self.candidates: tuple[str, ...] | None = None
         self.pending: list[tuple[str | None, Any]] = []
-        # The raw pages, in memory until the suggestions are settled: the page at the
-        # post, the read FAILURE_READ_S after its response, and the read on Enter.
+        # The raw pages, in memory until the suggestions are settled or stop: the
+        # page at the post (its request-time snapshot), the login page as served (the
+        # page at the post only when no snapshot was kept), the read FAILURE_READ_S
+        # after its response, and the read on Enter.
         self.before: str | None = None
+        self.served: str | None = None
         self.first_read: str | None = None
         self.enter_read: str | None = None
         # Whether the FAILURE_READ_S read was still due at the mark, and whether the
         # read on Enter is done.
         self.first_due = False
         self.entered = False
+
+    def drop_pages(self) -> None:
+        """Drop the raw pages held for the suggestions."""
+        self.before = self.served = self.first_read = self.enter_read = None
 
     def settle(self, candidates: tuple[str, ...]) -> None:
         """Take *candidates*, then drop by each real login's page and guard waiting."""
@@ -1218,14 +1225,12 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
         # The page read a few seconds after a credential post's response, structure
         # only (HAR 1.2 custom field): the file under the run.
         entry["request"]["_domAfter"] = request_data["_dom_after"]
-    if request_data.get("_user_marked_failed"):
+    if request_data.get("_user_marked_failed") and request_data.get("_failure_text_candidates"):
         # The credential post the user marked as a wrong password (HAR 1.2 custom
-        # fields): the failure texts the page after it suggests, text only; never the
-        # page itself.
+        # fields), only when the page after it suggested a failure text: those texts,
+        # text only; never the page itself.
         entry["request"]["_userMarkedFailed"] = True
-        entry["request"]["_failureTextCandidates"] = list(
-            request_data.get("_failure_text_candidates", ())
-        )
+        entry["request"]["_failureTextCandidates"] = list(request_data["_failure_text_candidates"])
     if isinstance(request_data.get("resource_type"), str):
         # Chrome's resource type for the request (HAR 1.2 custom field): "Document"
         # is a navigation, the digest's test for a page load. The Sec-Fetch headers
@@ -2859,19 +2864,42 @@ class NodriverCaptureBackend:
             AccountGuard.of(post.body_text, post.content_type),
             failed_password_values(post.body_text, post.content_type),
         )
-        failed.before = self._step_before.get(post.rid) or self._served_page(post.data)
+        failed.before = self._step_before.get(post.rid)
+        if failed.before is None:
+            failed.served = self._served_page(post.data)
         failed.first_read = self._step_reads.get(post.rid)
-        pending = self._step_read_tasks.get(post.rid)
+        pending = self._step_read_tasks.pop(post.rid, None)
         # Its FAILURE_READ_S read is still due: that read settles the suggestions.
         failed.first_due = pending is not None and not pending.done()
-        self._step_posts.clear()
-        self._step_before.clear()
-        self._step_reads.clear()
-        self._step_read_tasks.clear()
+        self._close_failure_step()
         post.data["_user_marked_failed"] = True
         self._failed = failed
         self._start_read_task(post.rid, self._read_marked_failure(failed))
         return True
+
+    def _close_failure_step(self) -> None:
+        """Close the wrong-password step: no later credential post is held or read for
+        it, every held post and raw page is dropped, and each FAILURE_READ_S read
+        still in the step's hands is cancelled."""
+        self._failure_step_open = False
+        self._step_posts.clear()
+        self._step_before.clear()
+        self._step_reads.clear()
+        for task in self._step_read_tasks.values():
+            task.cancel()
+        self._step_read_tasks.clear()
+
+    def skip_failure_step(self) -> None:
+        """End the wrong-password step with no post marked (end of input at the
+        prompt): the recording goes on as without the step."""
+        self._close_failure_step()
+
+    def marked_failure_candidates(self) -> tuple[str, ...] | None:
+        """The failure texts kept for the post marked failed, empty when none was
+        kept or the reads after it were cut short; None when no post was marked."""
+        if self._failed is None:
+            return None
+        return self._failed.candidates or ()
 
     async def _read_marked_failure(self, failed: _FailedLogin) -> None:
         """Read the page now for the post marked failed; settle its suggestions unless
@@ -2885,13 +2913,16 @@ class NodriverCaptureBackend:
         """Keep the failure texts the reads after the failed post suggest
         (:func:`graftpunk.observe.failure_text.failure_candidates`, in a worker thread:
         it parses whole pages), the FAILURE_READ_S read first, and drop the raw pages."""
-        from graftpunk.observe.failure_text import failure_candidates
+        from graftpunk.observe.failure_text import failure_candidates, page_at_post
 
         reads = [html for html in (failed.first_read, failed.enter_read) if html is not None]
-        before, guard = failed.before, failed.guard
-        failed.first_read = failed.enter_read = failed.before = None
-        found = await asyncio.to_thread(failure_candidates, reads, before, guard)
-        failed.settle(found)
+        snapshot, served, guard = failed.before, failed.served, failed.guard
+        failed.drop_pages()
+
+        def suggest() -> tuple[str, ...]:
+            return failure_candidates(reads, page_at_post(snapshot, served), guard)
+
+        failed.settle(await asyncio.to_thread(suggest))
 
     def _served_page(self, data: dict[str, Any]) -> str | None:
         """The page that sent the credential post *data* as it was served: the HTML body
@@ -3024,13 +3055,10 @@ class NodriverCaptureBackend:
         running; the ones cancelled."""
         self._after_reads_closed = True
         self._after_read_due.clear()
-        self._failure_step_open = False
-        self._step_posts.clear()
-        self._step_before.clear()
-        self._step_reads.clear()
-        self._step_read_tasks.clear()
+        self._close_failure_step()
         if self._failed is not None:
             self._failed.pending.clear()
+            self._failed.drop_pages()
         running = [task for task in self._after_read_tasks if not task.done()]
         for task in running:
             task.cancel()

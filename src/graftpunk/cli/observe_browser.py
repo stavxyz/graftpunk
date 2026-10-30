@@ -27,7 +27,7 @@ from graftpunk.browser_launch import (
 from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
-from graftpunk.observe.run import make_run_id, save_observe_run
+from graftpunk.observe.run import Redaction, make_run_id, save_observe_run
 from graftpunk.observe.storage import session_dirname
 
 console = Console()
@@ -251,9 +251,10 @@ async def _wrong_password_step(
 ) -> None:
     """Wait for Enter on *stdin* (a terminal) and mark the last credential post as the
     failed one (the backend's ``mark_failed_login``), or for *stop_event*. Enter before
-    any credential post asks again. End of input (Ctrl+D) skips the step. The loop
-    watches *stdin* with ``add_reader`` until the step ends, so the SIGINT handler
-    keeps working while it waits; nothing reads stdin after."""
+    any credential post asks again. End of input (Ctrl+D) skips the step and tells the
+    backend so (``skip_failure_step``), which then holds and reads nothing more for it.
+    The loop watches *stdin* with ``add_reader`` until the step ends, so the SIGINT
+    handler keeps working while it waits; nothing reads stdin after."""
     fd = stdin.fileno()
     chunks: asyncio.Queue[bytes] = asyncio.Queue()
 
@@ -277,6 +278,7 @@ async def _wrong_password_step(
                     return
                 chunk = line.result()
                 if not chunk:
+                    backend.skip_failure_step()
                     console.print(
                         "[yellow]Input closed: the wrong-password step is skipped. Log in, "
                         "then press Ctrl+C here to stop and save.[/yellow]"
@@ -315,7 +317,9 @@ async def run_observe_interactive(
     (:func:`_wrong_password_step`), which reads Enter on *stdin* (``sys.stdin`` when
     None): a stdin that is no terminal is refused before the browser opens, since
     nobody could press Enter in it. The failed post's password is then scrubbed from
-    the saved run."""
+    the saved run's request bodies where it stands as a whole value
+    (:class:`graftpunk.observe.run.Redaction`'s ``body_values``), and when the mark
+    kept no failure text, one line says so before the run is saved."""
     if wrong_password_first:
         stdin = sys.stdin if stdin is None else stdin
         if not stdin.isatty():
@@ -363,14 +367,25 @@ async def run_observe_interactive(
 
         console.print("\n[dim]Recording stopped. Saving capture...[/dim]")
         if wrong_password_first:
+            # The reads after the marked post end here (save_observe_run would end
+            # them too), so what they kept is known before the save.
+            await observed.backend.close_after_reads()
+            if observed.backend.marked_failure_candidates() == ():
+                console.print(
+                    "[yellow]No failure text was kept from the wrong password (the run "
+                    "stopped before the page was read, or no text passed the checks): "
+                    "the generated plugin's failure text is yours to fill in.[/yellow]"
+                )
             # An interactive run keeps what it posted; the throwaway is scrubbed all
-            # the same, in case it was the real password with a typo.
+            # the same, in case it was the real password with a typo: only where it
+            # stands as a whole value of a request body, so a throwaway such as
+            # "password" leaves field names, URLs, and pages intact.
             await save_observe_run(
                 observed.storage,
                 observed.backend,
                 "interactive-final",
                 console=console,
-                redact=observed.backend.failed_login_secrets(),
+                redact=Redaction(body_values=observed.backend.failed_login_secrets()),
             )
         else:
             await save_observe_run(

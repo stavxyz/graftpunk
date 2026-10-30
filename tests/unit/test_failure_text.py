@@ -10,6 +10,7 @@ with each candidate and assert the function agrees.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 import pytest
 
@@ -18,6 +19,7 @@ from graftpunk.observe.failure_text import (
     AccountGuard,
     failed_password_values,
     failure_candidates,
+    page_at_post,
     without_success_page,
 )
 from graftpunk.plugins.login_settle import failure_text_on_page
@@ -156,6 +158,34 @@ class TestFailureCandidates:
         after = _after("<div>Hello alice.smith, that failed</div><p>Please try again later.</p>")
         assert _found(after, guard=_guard(body)) == ("Please try again later.",)
 
+    def test_a_value_only_its_percent_encoded_spelling_finds_is_dropped(self) -> None:
+        """A page echoing the password as encodeURIComponent writes it: the compact
+        needles miss it, the snapshot redaction's spellings do not."""
+        body = json.dumps({"username": "jsmith", "password": "p@ss word!"})
+        guard = _guard(body)
+        assert "p%40ss%20word!" in guard.spellings
+        after = _after("<div>Retry p%40ss%20word! later</div><p>Please try again later.</p>")
+        assert _found(after, guard=guard) == ("Please try again later.",)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "username=jo&password=wrongpass1",
+            json.dumps({"username": "jo", "password": "wrongpass1"}),
+        ],
+    )
+    def test_a_short_username_is_dropped_as_a_whole_word(self, body: str) -> None:
+        content_type = (
+            "application/json" if body.startswith("{") else "application/x-www-form-urlencoded"
+        )
+        guard = _guard(body, content_type)
+        after = _after(
+            "<div>Hello JO, wrong password</div><p>Your job did not run.</p>"
+            "<p>Please try again later.</p>"
+        )
+        # "job" holds "jo" only inside a longer word.
+        assert _found(after, guard=guard) == ("Your job did not run.", "Please try again later.")
+
     def test_an_unreadable_body_gives_no_guard(self) -> None:
         assert AccountGuard.of("<xml/>", "application/xml") is None
         assert AccountGuard.of(None) is None
@@ -203,18 +233,150 @@ class TestFailureCandidates:
         """The toast in the first read is gone from the second; the text in both is
         given once."""
         first = _after(
-            "<div role='alert'>Invalid username or password.</div><p>Try again soon.</p>"
+            "<div role='alert'>Invalid username or password.</div>"
+            "<p class='error'>Try again soon.</p>"
         )
-        second = _after("<p>Try again soon.</p><p>Locked for a minute now.</p>")
+        second = _after(
+            "<p class='error'>Try again soon.</p><p class='error'>Locked for a minute now.</p>"
+        )
         assert _found([first, second]) == (
             "Invalid username or password.",
             "Try again soon.",
             "Locked for a minute now.",
         )
 
+    def test_only_alerts_when_any_alert_text_is_kept(self) -> None:
+        """A re-rendered heading or a timestamp beside a ``role="alert"`` message is
+        page churn, not the error."""
+        after = _after(
+            "<p>Last visit at 10:42 today</p><div role='alert'>That did not work out.</div>"
+        )
+        assert _found(after) == ("That did not work out.",)
+        # With no alert text at all, the others are still suggested.
+        assert _found(_after("<p>That did not work out.</p>")) == ("That did not work out.",)
+
+    @pytest.mark.parametrize(
+        "markup",
+        [
+            "<title>Sign-in failed, sorry</title>",
+            "<select><option>Sign-in failed, sorry</option></select>",
+            "<label for='x'>Sign-in failed, sorry</label>",
+            "<label><span>Sign-in failed, sorry</span></label>",
+            "<button type='button'>Sign-in failed, sorry</button>",
+            "<fieldset><legend>Sign-in failed, sorry</legend></fieldset>",
+        ],
+    )
+    def test_never_text_naming_the_page_or_a_control(self, markup: str) -> None:
+        after = _after(markup)
+        assert failure_text_on_page(after, "Sign-in failed, sorry")
+        assert _found(after) == ()
+
+    def test_never_a_placeholder(self) -> None:
+        after = _after("<input type='text' placeholder='Sign-in failed, sorry'>")
+        assert failure_text_on_page(after, "Sign-in failed, sorry")
+        assert _found(after) == ()
+
+    def test_a_read_that_is_no_login_page_is_ignored(self) -> None:
+        """Enter pressed after a real login: the read is the landed page, whose text
+        is all new and none of it a failure."""
+        landed = (
+            "<html><body><div class='alert-banner'>Free shipping on orders over 50</div>"
+            "<p>Your recent orders</p></body></html>"
+        )
+        assert _found(landed) == ()
+        # The same text on a read that is still a login page counts.
+        assert _found(_after("<div class='alert-banner'>Free shipping on orders over 50</div>"))
+
+    def test_a_server_error_page_re_rendering_the_form_counts(self) -> None:
+        """A form POST answered with a whole new document that shows the form again
+        and the error: still a login page."""
+        error_page = (
+            "<html><head><title>Sign in</title></head><body><main>"
+            "<p class='flash-error'>Invalid login. Please try again.</p>"
+            "<form method='post' action='/session'><input name='username'>"
+            "<input type='password' name='password'><button>Sign in</button></form>"
+            "</main></body></html>"
+        )
+        assert _found(error_page) == ("Invalid login. Please try again.",)
+
+    def test_a_password_input_inside_a_template_makes_no_login_page(self) -> None:
+        read = (
+            "<html><body><p class='error'>Session ended for safety</p>"
+            "<template><input type='password'></template></body></html>"
+        )
+        assert _found(read) == ()
+
     def test_a_text_repeated_in_another_case_is_given_once(self) -> None:
         after = _after("<p>Invalid credentials given</p><p>INVALID CREDENTIALS GIVEN</p>")
         assert _found(after) == ("Invalid credentials given",)
+
+
+class TestThePageAtThePost:
+    _SHELL = "<html><body><div id='root'></div><script src='/app.js'></script></body></html>"
+
+    def test_the_snapshot_when_one_was_kept(self) -> None:
+        assert page_at_post(_BEFORE, self._SHELL) == _BEFORE
+
+    def test_else_the_served_page_when_it_holds_a_login_form(self) -> None:
+        assert page_at_post(None, _BEFORE) == _BEFORE
+
+    def test_else_nothing(self) -> None:
+        assert page_at_post(None, self._SHELL) is None
+        assert page_at_post(None, None) is None
+
+    def test_a_script_rendered_shell_suggests_nothing(self) -> None:
+        """The rendered login's own labels and heading are not on the shell, so every
+        one would pass as new text and fail every login on the engine's first tick."""
+        rendered = (
+            "<html><body><div id='root'><h1>Sign in to your account</h1>"
+            "<p class='msg'>Those details did not match.</p><form><input name='username'>"
+            "<input type='password' name='password'></form></div></body></html>"
+        )
+        assert failure_candidates([rendered], page_at_post(None, self._SHELL), _guard()) == ()
+
+
+class TestCost:
+    """CPU time for a page eight times as long stays near eight times as much, well
+    under the 64 times a search of the whole page per text node would take."""
+
+    _ALERT = "<div role='alert'>Sign-in failed, sorry.</div>"
+
+    @staticmethod
+    def _filler(paragraphs: int) -> str:
+        return "".join(f"<p>Paragraph number {n} of the help text</p>" for n in range(paragraphs))
+
+    @staticmethod
+    def _cpu(pages: Callable[[int], tuple[str, str]], paragraphs: int) -> float:
+        import time
+
+        before, after = pages(paragraphs)
+        guard = _guard()
+        best = float("inf")
+        for _ in range(3):
+            start = time.process_time()
+            assert failure_candidates([after, after], before, guard) == ("Sign-in failed, sorry.",)
+            best = min(best, time.process_time() - start)
+        return best
+
+    def _ratio(self, pages: Callable[[int], tuple[str, str]]) -> float:
+        return self._cpu(pages, 16_000) / self._cpu(pages, 2_000)
+
+    def test_text_the_page_at_the_post_shares(self) -> None:
+        """The usual read: the login page again, with the error added."""
+
+        def pages(paragraphs: int) -> tuple[str, str]:
+            before = _BEFORE.replace("<form>", f"{self._filler(paragraphs)}<form>")
+            return before, before.replace("<form>", f"{self._ALERT}<form>")
+
+        assert self._ratio(pages) < 16
+
+    def test_text_only_the_read_holds(self) -> None:
+        """A read whose every text is new (a page the server rendered anew)."""
+
+        def pages(paragraphs: int) -> tuple[str, str]:
+            return _BEFORE, _after(self._ALERT, extra=self._filler(paragraphs))
+
+        assert self._ratio(pages) < 16
 
 
 class TestWithoutSuccessPage:
@@ -238,6 +400,18 @@ class TestFailedPasswordValues:
     def test_the_password_field_s_values(self) -> None:
         body = "username=jsmith&password=wrongpass1&remember=1"
         assert failed_password_values(body, "application/x-www-form-urlencoded") == ["wrongpass1"]
+
+    def test_a_hint_only_in_a_parent_name_is_no_password(self) -> None:
+        """The nearest name decides: ``note`` under ``password_policy`` is no
+        password, and scrubbing it would lose a value that is not secret."""
+        body = json.dumps(
+            {
+                "username": "jsmith",
+                "password": "wrongpass1",
+                "password_policy": {"note": "x9y8z7w6"},
+            }
+        )
+        assert failed_password_values(body, _JSON) == ["wrongpass1"]
 
     def test_a_nested_json_password(self) -> None:
         body = json.dumps({"user": {"login": "jsmith", "password": "wrongpass1"}})
