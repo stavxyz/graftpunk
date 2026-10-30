@@ -494,9 +494,10 @@ def _scrub_json(text: str, wanted: frozenset[str], outer: str | None, *, nested:
     one of *wanted* (a number as the reader writes it, ``str`` of its parsed value)
     and has a password-like nearest name replaced by the redaction string: the key
     it is the value of, else the key of the nearest object around the list holding
-    it, else *outer* (the field holding *text*). With *nested*, a string holding JSON is scrubbed the same
-    way one level down and, when it changed, written back escaped as before. Each
-    string token is decoded on its own, so no depth of nesting is parsed at once."""
+    it, else *outer* (the field holding *text*). With *nested*, a string holding
+    JSON is scrubbed the same way one level down and, when it changed, written back
+    escaped as before. Each string token is decoded on its own, so no depth of
+    nesting is parsed at once."""
     # The key each open object is at (None before its first key), and None for each
     # open list.
     keys: list[str | None] = []

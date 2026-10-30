@@ -532,9 +532,7 @@ class TestScrubFailedPassword:
         field and its CRLF; the part after an ``&`` is the password too."""
         body = "password=pa&ss9\r\n"
         assert failed_password_values(body, "text/plain") == ["pa&ss9"]
-        assert scrub_failed_password(body, "text/plain", ["pa&ss9"]) == (
-            f"password={self._R}\r\n"
-        )
+        assert scrub_failed_password(body, "text/plain", ["pa&ss9"]) == (f"password={self._R}\r\n")
 
     def test_json_in_a_text_plain_field(self) -> None:
         body = 'user=jsmith\r\ncreds={"password":"wrong-abc123"}\r\n'
