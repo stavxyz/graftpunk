@@ -576,7 +576,9 @@ their method, host, content type, top-level response shape (its kind, a JSON
 object's top-level keys, a JSON array's element kind; a JSON body too large to
 read never joins), number of segments (two or more), and trailing slash, and
 their templates differ in exactly one segment, which in each is letters-only:
-every part of it, split on `_`, `.`, `-`, `~`, and `$`, is ASCII letters.
+every part of it, split on `_`, `.`, `-`, `~`, and `$`, is ASCII letters, and
+percent-encoding it as the generated command does (`urllib.parse.quote` with no
+safe characters) leaves it unchanged, so a segment holding `$` never joins.
 Values that differ only in letter case (`North`, `north`) are one word, so none
 of those members joins. The varying segment is never a routing word (`admin`, `ajax`, `api`, `apis`,
 `assets`, `auth`, `graphql`, `internal`, `oauth`, `public`, `rest`, `rpc`,

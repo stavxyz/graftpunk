@@ -406,6 +406,13 @@ class TestFamilyMembership:
     def test_a_segment_holding_a_digit_is_not_letters_only(self, tmp_path: Path) -> None:
         assert _families(tmp_path, [_get("/shop/page2/items"), _get("/shop/page3/items")]) == []
 
+    def test_a_segment_quoting_would_change_never_joins(self, tmp_path: Path) -> None:
+        """The generated stub quotes its parameter with ``quote(value, safe="")``,
+        which turns ``$`` into ``%24``: its test would request a path no member's
+        fixture is named for."""
+        entries = [_get("/search/north$region/items/"), _get("/search/south$region/items/")]
+        assert _families(tmp_path, entries) == []
+
     def test_an_empty_part_is_not_letters_only(self, tmp_path: Path) -> None:
         for values in (("north--region", "south--region"), ("-north", "-south")):
             entries = [_get(f"/r/{value}/items") for value in values]
@@ -770,6 +777,27 @@ class TestFixturesForAFamily:
         self._fixtures(app, target / "tests" / "fixtures", f"GET {_FAMILY}")
         assert "2 passed" in _project_pytest(target)
         _assert_ruff_clean(target)
+
+    def test_a_dollar_value_forms_no_family_and_its_literal_flow_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``north$region`` would be quoted to ``north%24region`` by a family stub, so
+        it forms no family: the family template is no endpoint, and the literal
+        commands' project passes its own tests."""
+        entries = [_get("/search/north$region/items/"), _get("/search/south$region/items/")]
+        app = _run_with_a_family(tmp_path, monkeypatch, entries)
+        projected = CliRunner().invoke(app, ["observe", "digest", "myshop", "--endpoints-json"])
+        assert projected.exit_code == 0, projected.output
+        assert "family_members" not in projected.output
+        target = tmp_path / "out"
+        new = ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)]
+        refused = CliRunner().invoke(app, [*new, "--command", f"fam=GET {_FAMILY}"])
+        assert refused.exit_code != 0
+        assert not target.exists()
+        result = CliRunner().invoke(app, new)
+        assert result.exit_code == 0, result.output
+        self._fixtures(app, target / "tests" / "fixtures", "GET /search/*")
+        assert "3 passed" in _project_pytest(target)
 
     def test_a_stem_collision_through_a_family_match_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

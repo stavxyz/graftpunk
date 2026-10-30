@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, get_args
 from urllib.parse import parse_qs, unquote, unquote_plus, urljoin, urlparse, urlunparse
+from urllib.parse import quote as percent_encode
 
 from graftpunk.har.documents import (
     PASSWORD_NAME_HINTS,
@@ -3039,10 +3040,14 @@ def _letters_only(segment: str) -> bool:
 
 def _family_eligible(segment: str, *, last: bool) -> bool:
     """True when *segment* may be the one that varies across a family's members:
-    letters-only, not in the fixed vocabulary, and, as a path's last segment, not a
-    file name (holding a ``.``: ``intro.html`` and ``setup.html`` are two
-    documents)."""
+    letters-only, unchanged by ``quote(segment, safe="")``, not in the fixed
+    vocabulary, and, as a path's last segment, not a file name (holding a ``.``:
+    ``intro.html`` and ``setup.html`` are two documents). The generated stub quotes
+    its parameter that way, so a value it would change (``north$region`` becomes
+    ``north%24region``) would request a path no member's fixture is named for."""
     if not _letters_only(segment) or segment.lower() in _FIXED_VOCABULARY:
+        return False
+    if percent_encode(segment, safe="") != segment:
         return False
     return not (last and "." in segment)
 
