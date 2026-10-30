@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading
+
+1. **A run `gp observe go` or `gp observe interactive` records from now on can hold a `snapshots/<request id>.after.html` file for each credential post, linked from the post's HAR entry as `request._domAfter`, and its digest takes that page as the logged-in page for the `success` suggestions** (#268). It takes effect from the next recording; a run recorded by 1.29.0 or earlier has no such file and no such key, and `gp observe digest` and `gp plugin new` give it exactly the output 1.29.0 gave (a test pins that output byte for byte). To get suggestions read from the landing page for a login you already recorded, record it again. A reader of the HAR that compares a request's keys with an exact set sees one more. The file is the page a few seconds after the post's response, a logged-in page, stored with no text and no attribute values the snapshot drops, the post's own values redacted, and every email address in an attribute replaced; an id, a class, or a link's path can still name the account, so delete a run you no longer need, as with the other snapshots.
+
+### Added
+
+- **`gp observe go` and `gp observe interactive` read the page after each credential post's response, and the digest suggests `success` selectors from it** (#268). The recorder reads the page 3 seconds after the post's response and again 10 seconds after it, or, when a top-level document committed since the response has not loaded by then, at its load, but no later than 30 seconds after the response. It keeps the last read that succeeded, structure only (no text at all), as `snapshots/<request id>.after.html`, linked as `request._domAfter`; a read that fails or finds no document leaves no file and no link, and stop cancels the reads still waiting. The digest takes the last credential post's read as the logged-in page, before `page-source.html` and before the last page in the HAR, unless the read holds a login form, asks for a one-time code, or the browser submitted a step-shaped form after that post; then it falls back exactly as 1.29.0 did. The suggestion rules read no text, so a structure-only page serves them as any other does. New API: `sanitize_dom_snapshot(..., structure_only=True)` and `stored_dom_snapshot(..., structure_only=True)` in `graftpunk.observe.snapshot`, `graftpunk.har.login_signals.asks_for_a_code`, and `HARRequest.dom_after_file` and `dom_after`.
+
 ## [1.29.0] - 2026-10-30
 
 This is a minor release. Three changes reach a program on the first run after the upgrade:
