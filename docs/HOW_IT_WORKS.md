@@ -947,17 +947,21 @@ but a link, a button, or a form. Nor is a name holding an account value of a
 credential post: the password field's value; the value of the field a recorded
 login form takes as its username and of every field
 `graftpunk.session_identity.is_identifier_field` accepts (a Rails-style name by
-its last bracketed part), under that name at any depth of a JSON body; every
-email address inside any value; and, when no field is a username by those rules,
-every value but a token field's. A field counts as the username only when its
+its last bracketed part), under that name at any depth of a JSON body (a
+value inside a field whose value is itself JSON counts by that field's name,
+never by a key inside it); every email address inside any value; and, when no
+field is a username by those rules, every value but a token field's. A field counts as the username only when its
 value has at least three characters, is not a boolean word, and is not its own
 name, case aside, so `email=`, `login=Login`, and `account=1` leave every value
 an account value. Each value and an email's local part is compared lower-cased
 with whitespace, `-`, `_`, and `.` removed, at least three characters, and not a
 boolean word. The values are read by `graftpunk.har.digest.body_values` from a
 JSON body at any depth (walked without recursion), a form body, a `text/plain`
-form body one field a line (as a browser sends `enctype="text/plain"`, a line
-not starting with a field name continuing the value before it), or a
+form body one field a line (as a browser sends `enctype="text/plain"`: the first
+line must start with a name spelled like a field's, each later line holding `=`
+starts a field whatever its name, a line with no `=` continues the value before
+it, and a value is read as written, with no `&` splitting or percent-decoding),
+or a
 `multipart/form-data` body's text parts (split on the boundary its
 `Content-Type` names, else on the body's first non-blank line). A value that is
 itself a JSON object or array is read one level down, under its field's name.
