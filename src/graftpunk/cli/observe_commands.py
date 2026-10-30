@@ -734,8 +734,9 @@ def observe_interactive(
                 "Start with a wrong-password attempt: submit the throwaway wrong password "
                 "it prints, press Enter here, then log in for real. The page after it gives "
                 "suggested failure text for gp plugin new. That password is scrubbed "
-                "from the attempt's own request body only, not from page-source.html "
-                "or response bodies, so never use your real one with a typo"
+                "only from the attempt's own request body and a 307 or 308 resend of it, "
+                "not from page-source.html or response bodies, so never use your real "
+                "one with a typo"
             ),
         ),
     ] = False,

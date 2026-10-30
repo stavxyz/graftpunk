@@ -216,8 +216,8 @@ log in for real and go on as above. The attempt counts against the
 site like any failed login, so skip the flag when a lockout is close. graftpunk
 keeps only up to three short texts from the page after that attempt and no other
 text of that page. It scrubs the wrong password from that attempt's own request
-body, but not from `page-source.html` or from response bodies that echo it,
-which is why it must be a throwaway. The command needs a terminal to press Enter
+body (and from a 307 or 308 resend of it), but not from `page-source.html` or
+from response bodies that echo it, which is why it must be a throwaway. The command needs a terminal to press Enter
 in.
 
 One recording is usually enough. Take several when the flows are genuinely
@@ -1744,9 +1744,11 @@ password and copy the sentence off the screen.
 **Text the recording suggests is a suggestion.** A run recorded with
 `--wrong-password-first` (see [Capture](#capture)) can give `gp plugin new` up
 to three texts from the page after the wrong password, each one the engine
-would find there and not on the login page, holding no value either login sent,
-and none on the page the real login landed on as the recording read it (with no
-read of that page, there are none). They are written just below the
+would find there and not on the login page, holding no value either login sent
+and no value of three or more characters a POST sent up to the real login (an
+identifier-first login's username step, under any field name), and none on the
+page the real login landed on as the recording read it (with no read of that
+page, there are none). They are written just below the
 live `failure="GP-FILL: ..."` line, which stays, each commented out under one
 `GP-FILL`:
 

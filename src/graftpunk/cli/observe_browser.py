@@ -332,8 +332,9 @@ async def run_observe_interactive(
     (:func:`_wrong_password_step`), which reads Enter on *stdin* (``sys.stdin`` when
     None): a stdin that is no terminal is refused before the browser opens, since
     nobody could press Enter in it. The recorder scrubs the failed post's password
-    from that post's own body when it is marked (``mark_failed_login``), and when the
-    mark kept no failure text, one line says so before the run is saved."""
+    from that post's own body, and from a 307 or 308 resend of it, when it is marked
+    (``mark_failed_login``) and again at stop, and when the mark kept no failure
+    text, one line says so before the run is saved."""
     if wrong_password_first:
         stdin = sys.stdin if stdin is None else stdin
         if not stdin.isatty():
