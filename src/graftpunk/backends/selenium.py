@@ -18,10 +18,20 @@ from typing import TYPE_CHECKING, Any, Self, cast
 
 import selenium.common.exceptions
 import webdriver_manager.chrome
+from selenium.webdriver.chrome.service import Service
 
 from graftpunk._distribution import install_command
 from graftpunk.backends.base import Cookie
+from graftpunk.browser_launch import (
+    SeleniumProcesses,
+    attach_selenium_processes,
+    check_in_own_session,
+    chromes_started_by,
+    prepare_selenium_launch,
+    release_selenium_processes,
+)
 from graftpunk.chrome import get_chrome_version
+from graftpunk.chrome_orphans import owner_switch
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
 
@@ -29,6 +39,27 @@ if TYPE_CHECKING:
     from selenium.webdriver.remote.webdriver import WebDriver
 
 LOG = get_logger(__name__)
+
+
+class _RegisteringService(Service):
+    """chromedriver in a session of its own, registered with the handlers once spawned (#335).
+
+    Selenium's supported seams: ``popen_kw`` for the session, ``service_args``
+    for the owner marker (chromedriver starts with a switch it does not know),
+    and ``start()``, which spawns chromedriver before Chrome is asked for.
+    """
+
+    def __init__(self, path: str, processes: SeleniumProcesses) -> None:
+        super().__init__(path, service_args=[owner_switch()], popen_kw={"start_new_session": True})
+        self._graftpunk_processes = processes
+
+    def start(self) -> None:
+        try:
+            super().start()
+        finally:
+            process = getattr(self, "process", None)
+            if process is not None:
+                self._graftpunk_processes.add(process)
 
 
 class SeleniumBackend:
@@ -195,7 +226,6 @@ class SeleniumBackend:
     def _start_standard_driver(self) -> None:
         """Start browser with standard Selenium (no stealth)."""
         from selenium import webdriver
-        from selenium.webdriver.chrome.service import Service
 
         try:
             chrome_version = get_chrome_version(major=True)
@@ -223,9 +253,28 @@ class SeleniumBackend:
         window_size = self._options.get("window_size", "800,600")
         chrome_options.add_argument(f"--window-size={window_size}")
 
-        # Create driver
-        service = Service(driver_path)
-        self._driver = webdriver.Chrome(service=service, options=chrome_options)
+        # The stealth path's rule (#335): with graftpunk's termination handlers
+        # installed, chromedriver starts in a session of its own through
+        # Selenium's own popen_kw, and Chrome, which chromedriver spawns, is in
+        # that session too. Both carry the owner marker for the orphan sweep,
+        # and both are registered with the handlers: chromedriver as soon as
+        # it is spawned, Chrome once the driver is up and its pid can be read.
+        if not prepare_selenium_launch():
+            self._driver = webdriver.Chrome(service=Service(driver_path), options=chrome_options)
+            return
+        chrome_options.add_argument(owner_switch())
+        processes = SeleniumProcesses()
+        service = _RegisteringService(driver_path, processes)
+        try:
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            for pid in chromes_started_by(service.process.pid):
+                processes.add_pid(pid)
+        except BaseException:
+            processes.end()
+            raise
+        attach_selenium_processes(driver, processes)
+        check_in_own_session(processes.pids)
+        self._driver = driver
 
     def stop(self) -> None:
         """Stop the browser and release resources.
@@ -250,6 +299,7 @@ class SeleniumBackend:
             else:
                 LOG.warning("selenium_backend_stop_unexpected_os", error=str(exc))
         finally:
+            release_selenium_processes(self._driver)
             self._driver = None
             self._started = False
             LOG.info("selenium_backend_stopped")

@@ -9,7 +9,9 @@ The registry holds browser HANDLES, not sessions: anything that can end one
 browser without an event loop. ``NoDriverBackend`` registers itself once its
 browser is up; the two launch sites that drive a ``nodriver`` browser directly,
 ``gp observe`` and browser token extraction, register the one adapter they
-share, ``graftpunk.browser_launch.NodriverBrowserHandle``. Nothing here knows
+share, ``graftpunk.browser_launch.NodriverBrowserHandle``; a selenium driver
+started in a session of its own registers its chromedriver and Chrome as
+``graftpunk.browser_launch.SeleniumProcesses``. Nothing here knows
 what a ``BrowserSession`` is, and a future backend gets the behaviour by
 implementing one method.
 
@@ -120,9 +122,10 @@ def _handle_termination(signum: int, _frame: FrameType | None) -> None:
 def termination_cleanup_installed() -> bool:
     """Whether this module's handler holds every termination slot this platform has.
 
-    ``NoDriverBackend`` starts Chrome in a session of its own only then: a
-    Chrome outside the process group no longer dies of a terminal hangup or a
-    group SIGTERM with Python, so it needs these handlers to end it (#333).
+    ``NoDriverBackend`` starts Chrome in a session of its own only then, and
+    so does the selenium backend for chromedriver and Chrome: a process
+    outside the process group no longer dies of a terminal hangup or a group
+    SIGTERM with Python, so it needs these handlers to end it (#333, #335).
     """
     found = False
     for name in _HANDLED_SIGNAL_NAMES:

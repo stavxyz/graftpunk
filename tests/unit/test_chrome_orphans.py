@@ -231,6 +231,25 @@ class TestListChromeProcesses:
         assert proc.args.startswith(CHROME)
         assert "--remote-debugging-port=9222" in proc.args
 
+    def test_a_marked_chromedriver_is_listed_and_an_unmarked_one_is_not(self) -> None:
+        """chromedriver has no debugging port; a selenium launch in its own
+        session gives it the owner marker instead (#335)."""
+        uc_driver = (
+            "/Users/x/Library/Application Support/undetected_chromedriver/undetected_chromedriver"
+        )
+        table = "\n".join(
+            [
+                _row(800, 1, f"{uc_driver} --port=51000 {OWNER_SWITCH}=799"),
+                _row(801, 1, "/opt/drivers/chromedriver --port=51001"),
+                _row(802, 1, f'sh -c "chromedriver --port=51002 {OWNER_SWITCH}=799"'),
+                _row(803, 1, f"/usr/bin/grep -- {OWNER_SWITCH}=799 chromedriver.log"),
+            ]
+        )
+
+        (proc,) = list_chrome_processes(_ops(table))
+
+        assert (proc.pid, proc.owner_pid, proc.user_data_dir) == (800, 799, None)
+
     def test_a_browser_without_a_debugging_port_is_not_listed(self) -> None:
         """The user's own Chrome and its renderers. No CDP port, never ours."""
         table = "\n".join([_row(700, 1, CHROME), _row(701, 700, f"{CHROME} --type=renderer")])

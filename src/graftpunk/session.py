@@ -35,6 +35,7 @@ import slugify as slugify_lib
 
 from graftpunk import console as gp_console
 from graftpunk.backends.nodriver import DEFAULT_CALL_TIMEOUT_S, DEFAULT_NAVIGATE_TIMEOUT_S
+from graftpunk.browser_launch import release_selenium_processes
 from graftpunk.cookies import (
     BrowserCookiesMixin,
     _browser_cookie_domain,
@@ -645,6 +646,9 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 LOG.error(
                     "error_stopping_selenium_session", error=str(exc), exc_type=type(exc).__name__
                 )
+            finally:
+                # Out of the termination handlers' registry (#335).
+                release_selenium_processes(self._webdriver)
             self._webdriver = None
 
     def quit(self) -> None:
