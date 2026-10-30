@@ -885,6 +885,27 @@ _UNSAFE_IDS = {
 }
 
 
+class TestLegacyEventScripts:
+    @pytest.mark.parametrize(
+        ("attrs", "read"),
+        [
+            (' for="btn" event="onclick"', False),
+            (' for="window" event="onclick"', False),
+            (' for="btn" event="onload"', False),
+            (' for=" Window " event=" OnLoad() "', True),
+            (' for="window" event="onload"', True),
+            (' for="btn"', True),
+            (' event="onclick"', True),
+        ],
+    )
+    def test_a_script_with_for_and_event_runs_only_on_window_onload(
+        self, tmp_path: Path, attrs: str, read: bool
+    ) -> None:
+        page = _page(_script(_ASSIGNED, attrs))
+        expected = ("window.App.props", _SHAPE) if read else None
+        assert _found(tmp_path, page) == expected
+
+
 class TestSafeTargets:
     def test_a_hyphenated_script_id_is_reported_as_written(self, tmp_path: Path) -> None:
         page = _page(_json_script(_STATE_TEXT, " id='app-state'"))
@@ -1375,6 +1396,25 @@ class TestTheDecodeBudgetMore:
         assert cut_in_a_literal[window - 3 : window] == "tru"
         page = _page(_script(f"window.Flags = {cut_in_a_literal};"))
         assert _found(tmp_path / "b", page) == ("window.Flags", "object{a}")
+
+    @pytest.mark.parametrize("literal", ["-Infinity", '"\\u00e9"'])
+    @pytest.mark.parametrize("into", range(1, 9))
+    def test_a_window_cut_inside_a_long_literal_is_read_whole(
+        self, tmp_path: Path, literal: str, into: int
+    ) -> None:
+        """The decoder reports a literal or an escape the window cuts short a few
+        characters before the cut; such a candidate is decoded whole."""
+        window = 2 * inline_state.MIN_OBJECT_CHARS
+        if into >= len(literal):
+            pytest.skip("the cut falls past the literal")
+        head = '{"pad": "'
+        tail = '", "v": ' + literal + ', "w": 1}'
+        pad = window - into - len(head) - len('", "v": ')
+        text = head + "x" * pad + tail
+        assert text[window - into : window - into + len(literal)] == literal
+        page = _page(_script(f"window.Big = {text};"))
+        assert _found(tmp_path, page) == ("window.Big", "object{pad, v, w}")
+        assert read_inline_json(page) is not None
 
     def test_a_failure_past_the_window_counts(self, tmp_path: Path) -> None:
         failing = _script(f"window.A.b = {_failing_at(3 * inline_state.MIN_OBJECT_CHARS)};")

@@ -17,7 +17,8 @@ one inside a ``<template>`` is inert and is skipped, and nothing after a
   standard's "prepare the script element" (:func:`_runs_as_javascript`: a
   ``type`` or ``language`` naming a JavaScript MIME type essence, all of
   :data:`JAVASCRIPT_TYPES` but ``module``, or ``module``; no ``nomodule`` on a
-  classic script), holding an assignment whose target is a dotted name of two or
+  classic script; no ``for`` and ``event`` pair but ``window`` and ``onload``),
+  holding an assignment whose target is a dotted name of two or
   more parts (``window.App``, ``App.props``, ``window.App.props``) and whose
   value starts with ``{`` and is a JSON object. An assignment inside a
   JavaScript string, template literal, or ``//`` or ``/* */`` comment is
@@ -161,7 +162,7 @@ _ATTRIBUTE = (
 _ATTRIBUTE_RE = re.compile(_ATTRIBUTE)
 # The rest of a tag after its name, up to and including the ">" that ends it.
 _TAG_REST_RE = re.compile(rf"(?:[\t\n\f\r /]++|{_ATTRIBUTE})*+>")
-_ATTRIBUTES_READ = frozenset({"type", "language", "id", "src", "nomodule"})
+_ATTRIBUTES_READ = frozenset({"type", "language", "id", "src", "nomodule", "for", "event"})
 _COMMENT_END_RE = re.compile(r"--!?>")
 # Elements whose content is text up to their own end tag: scripts, the raw text
 # elements, and the escapable raw text ones (noscript is raw text when scripting
@@ -311,10 +312,13 @@ _DECODE_LOOKAHEAD = 16
 
 
 def _chars_read(error: json.JSONDecodeError) -> int:
-    """How far into its text the decode that raised *error* read: to the end for a
-    string left unterminated (the error names where the string starts), else to
-    the error."""
-    if error.msg.startswith("Unterminated string"):
+    """How far into its text the decode that raised *error* read: to the end when
+    the error sits on a string's opening quote (an unterminated string names where
+    the string starts, and the decoder read to the end looking for its close), else
+    to the error. Read from the text, not the message, so a reworded message
+    changes nothing; an error that merely sits on a quote is counted as reading to
+    the end, which only sends the candidate to a whole decode."""
+    if error.doc.startswith('"', error.pos):
         return len(error.doc)
     return error.pos
 
@@ -426,7 +430,15 @@ def _runs_as_javascript(attributes: dict[str, str]) -> bool:
     JavaScript MIME type essence (:data:`JAVASCRIPT_TYPES` but ``module``) without
     case, so a parameter or a whitespace-only ``type`` makes a data block; a
     classic script with ``nomodule`` is not run. A module script is one whose
-    type string is ``module`` without case, unstripped."""
+    type string is ``module`` without case, unstripped. A script with both ``for``
+    and ``event`` runs only when ``for`` is ``window`` and ``event`` is ``onload``
+    or ``onload()``, each stripped and without case (the standard's legacy event
+    handler step); any other such script is never run."""
+    if "for" in attributes and "event" in attributes:
+        target = attributes["for"].strip(_HTML_SPACE).lower()
+        event = attributes["event"].strip(_HTML_SPACE).lower()
+        if target != "window" or event not in ("onload", "onload()"):
+            return False
     script_type = attributes.get("type")
     if script_type is None:
         language = attributes.get("language", "")

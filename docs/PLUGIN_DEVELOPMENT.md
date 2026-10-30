@@ -782,11 +782,12 @@ bracketed name, `JSON.parse("...")`, a JavaScript object literal that is not
 JSON, an array, a script with a `src`, and `application/ld+json` are not read.
 An object spelled in fewer than 512 characters is ignored, and of the rest the
 largest is reported. Only names and kinds are kept, by the response shape's
-rules. The target is printed as written only when it is a plain dotted name of
-at most 64 characters; a part that looks like an id is printed as a placeholder
-(`window.{window_id}.props`), and a script id that is not a plain HTML id
-(letters, numerals, `_`, `.`, and `-`, such as `app-state`), or that looks like
-an id (`k3-m9-p2-q7`), as `script#{id}`. `gp plugin new` and `gp plugin add-command` keep such a page's
+rules. An assignment's target is printed as written when it is a plain dotted
+name of at most 64 characters, with a part that looks like an id printed as a
+placeholder (`window.{window_id}.props`); a JSON script's id is printed when it
+is a plain HTML id (letters, numerals, `_`, `.`, and `-`, such as
+`script#app-state`), and as `script#{id}` when it is not or looks like an id
+(`k3-m9-p2-q7`). `gp plugin new` and `gp plugin add-command` keep such a page's
 request as it is and add a comment naming the target and the shape, then a
 commented `inline_state(page)` function that calls `read_inline_json` from
 `graftpunk.har.inline_state`, the digest's own scan, so it returns the object
