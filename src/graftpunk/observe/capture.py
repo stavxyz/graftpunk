@@ -1576,6 +1576,18 @@ def _capture_session_kwargs(tab: Any, session_id: Any) -> dict[str, Any]:
     return {}
 
 
+def _stored_login_page(snapshots_dir: Path, data: dict[str, Any]) -> str | None:
+    """The stored snapshot the credential post *data* links (``_dom_snapshot``, under
+    *snapshots_dir*'s parent), or None when it has none or it cannot be read."""
+    linked = data.get("_dom_snapshot")
+    if not isinstance(linked, str):
+        return None
+    try:
+        return (snapshots_dir.parent / linked).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 class NodriverCaptureBackend:
     """Capture backend for nodriver (async Chrome DevTools Protocol).
 
@@ -2660,10 +2672,12 @@ class NodriverCaptureBackend:
     ) -> None:
         """Read the page (:meth:`_read_dom`) and store it structure only and redacted
         of the post's own values (:func:`graftpunk.observe.snapshot.stored_dom_snapshot`
-        with ``structure_only``), owner-only, as ``snapshots/<rid>.after.html``,
-        replacing an earlier read whole, and link it from *data*. A read that fails,
-        finds no document, or is over ``DOM_SNAPSHOT_MAX_CHARS`` is one debug line,
-        and changes neither the file nor the link."""
+        with ``structure_only``, whose username rule reads the login form of the post's
+        stored snapshot when it has one, :func:`_stored_login_page`), owner-only, as
+        ``snapshots/<rid>.after.html``, replacing an earlier read whole, and link it
+        from *data*. A read that fails, finds no document, or is over
+        ``DOM_SNAPSHOT_MAX_CHARS`` is one debug line, and changes neither the file nor
+        the link."""
         snapshots_dir = self._dom_snapshots_dir
         tab = self._tab
         if snapshots_dir is None or tab is None:
@@ -2686,13 +2700,18 @@ class NodriverCaptureBackend:
                     chars=len(html),
                 )
                 return
-            stored = await asyncio.to_thread(
-                stored_dom_snapshot,
-                html,
-                body_text,
-                _request_content_type(data),
-                structure_only=True,
-            )
+            content_type = _request_content_type(data)
+
+            def store() -> str:
+                return stored_dom_snapshot(
+                    html,
+                    body_text,
+                    content_type,
+                    structure_only=True,
+                    login_page=_stored_login_page(snapshots_dir, data),
+                )
+
+            stored = await asyncio.to_thread(store)
             snapshots_dir.parent.mkdir(parents=True, exist_ok=True)
             make_private_dir(snapshots_dir)
             write_private_file(partial, stored)

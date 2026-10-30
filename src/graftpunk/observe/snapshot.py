@@ -11,22 +11,25 @@ values are redacted from what is left.
 
 The read the recorder takes of the page after a credential post's response (#268)
 is a logged-in page, and goes through the structure-only mode, which keeps no text
-at all.
+at all and redacts more of the account from ids, classes, and paths.
 
-Redaction reads one attribute value or one text at a time, and the stored markup
-once more as a whole: a value the page renders across elements
-(``hun<b>ter22</b>``) is kept, a documented limit.
+Redaction reads one attribute value or one text at a time, decoded and then once
+more as escaped: a value the page renders across elements (``hun<b>ter22</b>``) is
+kept, a documented limit. It never changes an attribute's name or a plain element
+name.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from html import escape
 from html.parser import HTMLParser
 from urllib.parse import quote
 
-from graftpunk.har.digest import body_values, password_field_names
+from graftpunk.har.digest import body_values, password_field_names, post_account_values
+from graftpunk.har.documents import extract_login_forms
+from graftpunk.har.login_signals import could_be_an_account_value
 from graftpunk.observe.run import _MIN_REDACT_LEN, REDACTED, Redaction, text_redactor
 from graftpunk.session_identity import identifier_key, is_identifier_field
 
@@ -85,6 +88,11 @@ _VOID = frozenset(
 
 # The attributes that hold a URL: kept without their query or fragment.
 _URL_ATTRIBUTES = frozenset({"href", "action"})
+# The attributes whose values a structure-only read also redacts the account's words
+# from (_account_scrub): ids, class tokens, an id a label or a control names, and
+# paths. Never ``name`` (a field's name is the key a login form's selectors use) nor
+# a fixed vocabulary (type, autocomplete, method, role, aria-modal).
+_ACCOUNT_ATTRIBUTES = frozenset({"id", "class", "for", "form", "href", "action"})
 
 
 # What a browser's URL parser removes before reading a scheme: ASCII tab and
@@ -116,18 +124,21 @@ def _bare_reference(value: str) -> str:
 
 # An email address in an attribute value (a mailto: link, a profile path). A
 # structure-only read drops it whoever's it is: the page is a logged-in one, and the
-# account's email need not be the one the post sent. The local part is any run of
-# characters but whitespace, quotes, angle brackets, and URL delimiters ("/", ":",
-# "?", "#", "&", "=", ";", ","), so a path or a scheme before it is kept and a
-# non-ASCII local part is taken whole. The "@" may be written "%40", "%2540" (encoded
-# twice), or a full-width "\uff20". The host has a dot; a host without one
-# (_email_pattern) is matched only when it is the posted email's host.
-_EMAIL_LOCAL = r"[^\s/:@\uff20\"'<>?#&=;,]+"
+# account's email need not be the one the post sent. The local part is a run of 1 to
+# 64 characters (RFC 5321's limit) but whitespace, quotes, angle brackets, and URL
+# delimiters ("/", ":", "?", "#", "&", "=", ";", ","), so a path or a scheme before
+# it is kept and a non-ASCII local part is taken whole. The "@" may be written "%40",
+# "%2540" (encoded twice), or a full-width "\uff20". The host has a dot: 2 to 10
+# labels of at most 63 characters; a host without one (_email_pattern) is matched
+# only when it is the posted email's host. Every repeat is bounded, so the pattern
+# runs in time linear in a value's length (with an unbounded local part, a
+# 100,000-character id took minutes).
+_EMAIL_LOCAL = r"[^\s/:@\uff20\"'<>?#&=;,]{1,64}"
 _EMAIL_AT = r"(?:@|\uff20|%40|%2540)"
-_DOTTED_HOST = r"[\w-]+(?:\.[\w-]+)+"
+_DOTTED_HOST = r"[\w-]{1,63}(?:\.[\w-]{1,63}){1,9}"
 _EMAIL_RE = re.compile(f"{_EMAIL_LOCAL}{_EMAIL_AT}{_DOTTED_HOST}", re.IGNORECASE)
 # An element name written as it is (HTML lower-cases it); any other is written as
-# _SAFE_TAG, as is a name the post's values are redacted from.
+# _SAFE_TAG, as is a name holding the post's password.
 _PLAIN_TAG_RE = re.compile(r"[a-z][a-z0-9-]*")
 _SAFE_TAG = "x-redacted"
 # Every doctype is written as this one: a doctype's text is free, and the digest
@@ -148,7 +159,7 @@ def _email_pattern(redaction: Redaction) -> re.Pattern[str]:
         key=len,
         reverse=True,
     )
-    dotless = [host for host in hosts if "." not in host and re.fullmatch(r"[\w-]+", host)]
+    dotless = [host for host in hosts if "." not in host and re.fullmatch(r"[\w-]{1,63}", host)]
     if not dotless:
         return _EMAIL_RE
     named = "|".join(re.escape(host) for host in dotless)
@@ -159,13 +170,22 @@ def _email_pattern(redaction: Redaction) -> re.Pattern[str]:
 
 class _Sanitizer(HTMLParser):
     def __init__(
-        self, redact: Callable[[str], str], *, emails: re.Pattern[str] | None = None
+        self,
+        redact: Callable[[str], str],
+        *,
+        secrets: Callable[[str], str],
+        account: Callable[[str], str] | None = None,
+        emails: re.Pattern[str] | None = None,
     ) -> None:
         super().__init__(convert_charrefs=True)
-        # Run on each decoded value and text before it is escaped again: an escaped
-        # value (p&amp;ss) is not a spelling the scrub looks for.
+        # Run on each decoded value and text, and again on it escaped: the scrub
+        # looks for the escaped spellings (p&amp;ss) too.
         self._redact = redact
-        # Structure only: no text, and every email in a kept value replaced.
+        # The post's password-like values alone, which no element name may hold.
+        self._secrets = secrets
+        # Structure only: the account's words in ids, classes, and paths
+        # (_ACCOUNT_ATTRIBUTES), no text, and every email in a kept value replaced.
+        self._account = account
         self._emails = emails
         self.out: list[str] = []
         # Open elements whose contents are dropped, by tag, and the text budget left
@@ -174,29 +194,43 @@ class _Sanitizer(HTMLParser):
         self._budgets: list[list[int]] = []
         self._text_open: dict[str, int] = {}
         self._textarea = 0
+        # The text since the last tag, in the chunks the parser gave (a comment
+        # between two splits it), redacted as one (_flush_text).
+        self._text: list[str] = []
 
     def _tag(self, tag: str, attrs: list[tuple[str, str | None]], close: str) -> str:
         kept = "".join(
-            f' {name}="{escape(self._kept_value(name, value or ""), quote=True)}"'
+            f' {name}="{self._kept_value(name, value or "")}"'
             for name, value in attrs
             if name in KEPT_ATTRIBUTES
         )
         return f"<{self._name(tag)}{kept}{close}>"
 
     def _name(self, tag: str) -> str:
-        """*tag* as written: a plain name the scrub leaves alone, else :data:`_SAFE_TAG`
-        (broken markup can make a name of an email, ``<ivan@x.example>``)."""
-        if _PLAIN_TAG_RE.fullmatch(tag) and self._redact(tag) == tag:
+        """*tag* as written when it is plain: no account value is redacted from an
+        element name, so ``main`` stays ``main`` for the username ``main``. Else
+        :data:`_SAFE_TAG`: broken markup can make a name of an email
+        (``<ivan@x.example>``), and a name holding the post's password is never
+        written."""
+        if _PLAIN_TAG_RE.fullmatch(tag) and self._secrets(tag) == tag:
             return tag
         return _SAFE_TAG
 
     def _kept_value(self, name: str, value: str) -> str:
+        """*value* of the kept attribute *name*, redacted and escaped for the markup."""
         if name in _URL_ATTRIBUTES:
             value = _bare_reference(value)
+        account = self._account if name in _ACCOUNT_ATTRIBUTES else None
         value = self._redact(value)
-        return self._emails.sub(REDACTED, value) if self._emails is not None else value
+        if account is not None:
+            value = account(value)
+        if self._emails is not None:
+            value = self._emails.sub(REDACTED, value)
+        escaped = self._redact(escape(value, quote=True))
+        return account(escaped) if account is not None else escaped
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._flush_text()
         if self._dropping:
             if tag == self._dropping[0]:
                 self._dropping.append(tag)
@@ -212,6 +246,7 @@ class _Sanitizer(HTMLParser):
             self._text_open[tag] = self._text_open.get(tag, 0) + 1
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._flush_text()
         if self._dropping:
             return
         if tag in _VOID:
@@ -220,6 +255,7 @@ class _Sanitizer(HTMLParser):
             self.out.append(self._tag(tag, attrs, " /"))
 
     def handle_endtag(self, tag: str) -> None:
+        self._flush_text()
         if self._dropping:
             if tag == self._dropping[0]:
                 self._dropping.pop()
@@ -236,21 +272,45 @@ class _Sanitizer(HTMLParser):
         self.out.append(f"</{self._name(tag)}>")
 
     def handle_data(self, data: str) -> None:
-        if self._dropping or self._textarea or not self._budgets or self._emails is not None:
+        self._text.append(data)
+
+    def _flush_text(self) -> None:
+        """Write the text since the last tag, when it is kept: redacted whole, so a
+        value a comment splits (``hun<!-- x -->ter22``) is still found, then cut to
+        the budget, escaped, and redacted once more as escaped."""
+        data = "".join(self._text)
+        self._text.clear()
+        if (
+            not data
+            or self._dropping
+            or self._textarea
+            or not self._budgets
+            or self._emails is not None
+        ):
             return
         budget = self._budgets[-1]
         text = self._redact(data)[: budget[0]]
         budget[0] -= len(text)
         if text:
-            self.out.append(escape(text, quote=False))
+            self.out.append(self._redact(escape(text, quote=False)))
+
+    def close(self) -> None:
+        super().close()
+        self._flush_text()
 
     def handle_decl(self, decl: str) -> None:
+        self._flush_text()
         if decl.lower().startswith("doctype"):
             self.out.append(_DOCTYPE)
 
 
 def sanitize_dom_snapshot(
-    html: str, redaction: Redaction | None = None, *, structure_only: bool = False
+    html: str,
+    redaction: Redaction | None = None,
+    *,
+    structure_only: bool = False,
+    account_values: Iterable[str] = (),
+    field_names: Iterable[str] = (),
 ) -> str:
     """*html* (a page's serialized DOM) with only what the digest reads: every
     element and its kept attributes (``KEPT_ATTRIBUTES``: never ``value``,
@@ -263,19 +323,30 @@ def sanitize_dom_snapshot(
     value, and a ``javascript:``, ``data:``, or ``vbscript:`` URL only its scheme
     (:func:`_bare_reference`). With *redaction*, each kept value and text is
     redacted on its decoded text (:func:`_redactor`, an email in any letter case),
-    before the text budget cuts it, identifiers included. Every kept value and text
-    is then escaped again, so the output is markup the page did not write only
-    where it was markup before. A doctype is written ``<!DOCTYPE html>``, and an
-    element name that is not plain (``[a-z][a-z0-9-]*``) or that the scrub would
-    change is written ``x-redacted``.
+    before the text budget cuts it, identifiers included, then escaped again and
+    redacted once more as escaped, so the output is markup the page did not write
+    only where it was markup before. An attribute's name is never redacted. A
+    doctype is written ``<!DOCTYPE html>``, and an element name that is not plain
+    (``[a-z][a-z0-9-]*``) or that holds one of *redaction*'s secrets is written
+    ``x-redacted``.
 
     With *structure_only* (the read of a logged-in page after a credential post), no
-    text is kept at all, the labelling elements' included, and each kept attribute
-    value also has every email address in it replaced, whoever's it is
-    (:func:`_email_pattern`)."""
+    text is kept at all, the labelling elements' included; each kept attribute
+    value has every email address in it replaced, whoever's it is
+    (:func:`_email_pattern`); and an ``id``, ``class``, ``for``, ``form``, ``href``,
+    or ``action`` value has the account's words replaced in any letter case where
+    they stand as a whole word (:func:`_account_words`: *redaction*'s identifiers
+    and *account_values*, an email's local part, their separator and
+    percent-encoded spellings), but never a word that is one of *field_names* (the
+    post's own field names), any case aside."""
     redaction = redaction or Redaction()
     parser = _Sanitizer(
-        _redactor(redaction), emails=_email_pattern(redaction) if structure_only else None
+        _redactor(redaction),
+        secrets=text_redactor(redaction.secrets),
+        account=_account_scrub([*redaction.identifiers, *account_values], field_names)
+        if structure_only
+        else None,
+        emails=_email_pattern(redaction) if structure_only else None,
     )
     parser.feed(html)
     parser.close()
@@ -283,45 +354,82 @@ def sanitize_dom_snapshot(
 
 
 def _redactor(redaction: Redaction) -> Callable[[str], str]:
-    """:func:`graftpunk.observe.run.text_redactor` for *redaction*; then each
+    """:func:`graftpunk.observe.run.text_redactor` for *redaction*, and then each
     identifier spelling that holds an email (``@`` or ``%40``) replaced in any letter
-    case, anywhere: a page often shows an email lowercased, or as the user typed it;
-    then each identifier spelling, and each email's local part of at least
-    ``_MIN_REDACT_LEN`` characters, replaced in any letter case where it stands as a
-    whole word (no ASCII letter or digit beside it): a profile path or a class often
-    spells the username lower-cased (``/users/alice``), or only the email's local
-    part (``menu-alice.smith``)."""
+    case: a page often shows an email lowercased, or as the user typed it."""
     scrub = text_redactor(redaction)
     emails = sorted(
         {value for value in redaction.identifiers if "@" in value or "%40" in value.lower()},
         key=len,
         reverse=True,
     )
-    locals_ = (re.split(r"@|%40", email, maxsplit=1, flags=re.IGNORECASE)[0] for email in emails)
-    words = sorted(
-        {value for value in (*redaction.identifiers, *locals_) if len(value) >= _MIN_REDACT_LEN},
-        key=len,
-        reverse=True,
-    )
-    if not words:
+    if not emails:
         return scrub
+    pattern = re.compile("|".join(re.escape(email) for email in emails), re.IGNORECASE)
+    return lambda text: pattern.sub(REDACTED, scrub(text))
+
+
+def _account_scrub(
+    values: Iterable[str], field_names: Iterable[str]
+) -> Callable[[str], str] | None:
+    """Each of :func:`_account_words` of *values* replaced in any letter case where it
+    stands as a whole word (no ASCII letter or digit beside it): a profile path or a
+    class often spells the username lower-cased (``/users/alice``), or only the
+    email's local part (``menu-alice.smith``). None when there is no such word."""
+    words = _account_words(values, field_names)
+    if not words:
+        return None
     whole = re.compile(
         "(?<![A-Za-z0-9])(?:" + "|".join(re.escape(word) for word in words) + ")(?![A-Za-z0-9])",
         re.IGNORECASE,
     )
-    anywhere = (
-        re.compile("|".join(re.escape(email) for email in emails), re.IGNORECASE)
-        if emails
-        else None
+    return lambda text: whole.sub(REDACTED, text)
+
+
+_AT_RE = re.compile(r"@|%40", re.IGNORECASE)
+_SEPARATORS_RE = re.compile(r"[._-]+")
+
+
+def _account_words(values: Iterable[str], field_names: Iterable[str]) -> list[str]:
+    """The words a structure-only read redacts, longest first: each of *values* and
+    each email's local part among them, each also with its ``.``, ``-``, and ``_``
+    written as any one of them or as nothing (``alice.smith`` as ``alice-smith``,
+    ``alice_smith``, ``alicesmith``) and each of those percent-encoded
+    (``alice%2Esmith``); those that could name an account
+    (:func:`graftpunk.har.login_signals.could_be_an_account_value`: three or more
+    characters, not a boolean word), and never one of *field_names*, any case
+    aside, so a field the page names as the account (``user=user%40example.com``,
+    ``<input name="user" id="user">``) keeps its selector."""
+    names = {name.casefold() for name in field_names}
+    found: set[str] = set()
+    for value in values:
+        text = value.strip()
+        for word in (text, _AT_RE.split(text, maxsplit=1)[0] if _AT_RE.search(text) else ""):
+            pieces = [piece for piece in _SEPARATORS_RE.split(word) if piece]
+            spelled = {word, *(sep.join(pieces) for sep in (".", "-", "_", ""))}
+            found |= spelled | {_percent_encoded(each) for each in spelled}
+    return sorted(
+        (
+            word
+            for word in found
+            if len(word) >= _MIN_REDACT_LEN
+            and could_be_an_account_value(word)
+            and word.casefold() not in names
+        ),
+        key=len,
+        reverse=True,
     )
 
-    def redact(text: str) -> str:
-        text = scrub(text)
-        if anywhere is not None:
-            text = anywhere.sub(REDACTED, text)
-        return whole.sub(REDACTED, text)
 
-    return redact
+def _percent_encoded(word: str) -> str:
+    """*word* with every character but an ASCII letter or digit percent-encoded as
+    UTF-8 (``alice.smith`` as ``alice%2Esmith``); matched in any letter case."""
+    return "".join(
+        char
+        if char.isascii() and char.isalnum()
+        else "".join(f"%{byte:02X}" for byte in char.encode())
+        for char in word
+    )
 
 
 def _spellings(value: str) -> list[str]:
@@ -367,14 +475,47 @@ def snapshot_redaction(body_text: str | None, content_type: str = "") -> Redacti
 
 
 def stored_dom_snapshot(
-    html: str, body_text: str | None, content_type: str = "", *, structure_only: bool = False
+    html: str,
+    body_text: str | None,
+    content_type: str = "",
+    *,
+    structure_only: bool = False,
+    login_page: str | None = None,
 ) -> str:
     """*html* as a run stores it: sanitized (:func:`sanitize_dom_snapshot`, with no
     text at all when *structure_only*) with the triggering post's values
-    (:func:`snapshot_redaction`) redacted from each decoded value and text, then
-    scrubbed of them once more as markup (:func:`_redactor`, the scrub the rest of a
-    run uses, emails in any letter case)."""
+    (:func:`snapshot_redaction`) redacted from each value and text, decoded and as
+    escaped (:func:`_redactor`, the scrub the rest of a run uses, emails in any
+    letter case).
+
+    With *structure_only* (the read of the page after the post), the words of every
+    value the digest's username guard takes for an account value are redacted too
+    (:func:`graftpunk.har.digest.post_account_values`, by the same rule: the field
+    the login form on *login_page*, the post's stored snapshot, takes as its
+    username, an identifier field, or, when neither is in the post, every value but
+    a token field's), but never the post's own field names."""
     redaction = snapshot_redaction(body_text, content_type)
-    return _redactor(redaction)(
-        sanitize_dom_snapshot(html, redaction, structure_only=structure_only)
+    if not structure_only:
+        return sanitize_dom_snapshot(html, redaction)
+    usernames = (
+        {
+            form.username_name
+            for form in extract_login_forms(login_page, source="", snapshot=True)
+            if form.username_name
+        }
+        if login_page
+        else set()
+    )
+    names = {
+        each
+        for path, _value in body_values(body_text, content_type)
+        for name in path
+        for each in (name, identifier_key(name))
+    }
+    return sanitize_dom_snapshot(
+        html,
+        redaction,
+        structure_only=True,
+        account_values=post_account_values(body_text, content_type, usernames) or (),
+        field_names=names | usernames,
     )

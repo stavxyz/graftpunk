@@ -3567,7 +3567,13 @@ class TestTheReadAfterTheCredentialPost:
     ``request._domAfter``."""
 
     async def _login(
-        self, tmp_path: Path, *, html: str | None = _LANDED_PAGE, respond: bool = True
+        self,
+        tmp_path: Path,
+        *,
+        html: str | None = _LANDED_PAGE,
+        respond: bool = True,
+        body: str = _LOGIN_BODY,
+        modal: str = _LOGIN_MODAL,
     ) -> tuple[FakeTab, NodriverCaptureBackend, FakeClock, list[float]]:
         tab = FakeTab({}, _never)
         tab.dom_html = html
@@ -3577,8 +3583,8 @@ class TestTheReadAfterTheCredentialPost:
         reads: list[float] = []
         tab.on_dom_read = lambda: reads.append(clock.now)
         # The listener's snapshot is the post's own, so every DOM read is an after-read.
-        await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40))
-        await tab.dispatch(_will_be_sent("80.1", inline=_LOGIN_BODY, url=LOGIN))
+        await tab.dispatch(_binding_called(modal, time_ms=_POST_MS - 40))
+        await tab.dispatch(_will_be_sent("80.1", inline=body, url=LOGIN))
         if respond:
             await tab.dispatch(_response_received("80.1", url=LOGIN))
         return tab, backend, clock, reads
@@ -3817,6 +3823,60 @@ class TestTheReadAfterTheCredentialPost:
         assert all(chunk == "" or chunk.startswith("<") for chunk in text.split(">")[1:])
         assert '<div id="account-menu" class="menu">' in text
         assert '<a class="signout-link" href="/users/***REDACTED***/logout">' in text
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            pytest.param({"j_username": "jsmith", "j_password": "hunter2hunter2"}, id="j_username"),
+            pytest.param({"log": "jsmith", "pwd": "hunter2hunter2"}, id="log"),
+            pytest.param({"loginfmt": "jsmith", "passwd": "hunter2hunter2"}, id="loginfmt"),
+            pytest.param(
+                {"ctl00$Main$UserName": "jsmith", "ctl00$Main$Password": "hunter2hunter2"},
+                id="aspnet",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_username_field_off_the_allowlist_is_redacted(
+        self, tmp_path: Path, fields: dict[str, str]
+    ) -> None:
+        """Toolkit round 2 I1: the read redacts every value the digest's username
+        guard takes for an account value, whatever the field is named."""
+        page = (
+            '<html><body><nav id="menu-jsmith" class="u-jsmith">'
+            '<a href="/users/JSmith/settings"></a><a href="/author/jsmith/"></a></nav>'
+            "</body></html>"
+        )
+        tab, backend, clock, _reads = await self._login(
+            tmp_path, html=page, body=json.dumps(fields)
+        )
+        await clock.advance(3, backend)
+        await _stop(backend, tab)
+        text = self._after(tmp_path).read_text()
+        assert "jsmith" not in text.lower()
+        assert '<nav id="menu-***REDACTED***" class="u-***REDACTED***">' in text
+
+    @pytest.mark.asyncio
+    async def test_the_post_s_snapshot_names_its_username_field(self, tmp_path: Path) -> None:
+        """The login form of the post's stored snapshot says which field is the
+        username, as it does for the digest: its value is redacted, and another
+        field's value is not taken for the account's."""
+        modal = (
+            '<html><body><form action="/session" method="post">'
+            '<input type="text" id="handle" name="acct_handle">'
+            '<input type="password" name="password"><button>Sign in</button></form>'
+            "</body></html>"
+        )
+        body = json.dumps(
+            {"acct_handle": "jsmith", "region": "northwind", "password": "hunter2hunter2"}
+        )
+        page = '<html><body><nav id="menu-jsmith" class="region-northwind"></nav></body></html>'
+        tab, backend, clock, _reads = await self._login(tmp_path, html=page, body=body, modal=modal)
+        await clock.advance(3, backend)
+        await _stop(backend, tab)
+        assert (tmp_path / "snapshots" / "80.1.html").is_file()
+        text = self._after(tmp_path).read_text()
+        assert '<nav id="menu-***REDACTED***" class="region-northwind">' in text
 
     @pytest.mark.asyncio
     async def test_a_post_that_is_not_a_login_gets_no_read(self, tmp_path: Path) -> None:
