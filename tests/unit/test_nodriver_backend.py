@@ -7173,3 +7173,125 @@ class TestNoDriverWorkOffTheLoop:
         queued_runner[0].join(5)
 
         assert done_when_awaited == [True]
+
+
+class _ChildBrowser:
+    """A nodriver Browser stand-in whose Chrome is a real child process."""
+
+    def __init__(self, process: asyncio.subprocess.Process) -> None:
+        self._process = process
+        # A profile the stop path must not touch.
+        self.config = SimpleNamespace(uses_custom_data_dir=True, user_data_dir=None)
+
+    async def get(self, url: str) -> MagicMock:
+        return MagicMock()
+
+    def stop(self) -> None:
+        # What nodriver's Browser.stop() does to the process.
+        self._process.terminate()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="sessions are a POSIX notion")
+class TestNoDriverBackendChromeInItsOwnSession:
+    """A login's Chrome starts outside the terminal's process group (#333), so a
+    Ctrl+C reaches only Python, and Python still ends Chrome."""
+
+    @staticmethod
+    def _nodriver_spawning_children(spawned: list[asyncio.subprocess.Process]) -> MagicMock:
+        """A stand-in nodriver whose start() spawns a child the way Browser.start does."""
+        import sys
+
+        import nodriver.core.browser as nodriver_launcher
+
+        mock_uc = MagicMock()
+
+        async def start(**kwargs: object) -> _ChildBrowser:
+            process = await nodriver_launcher.asyncio.create_subprocess_exec(
+                sys.executable, "-c", "import time; time.sleep(30)"
+            )
+            spawned.append(process)
+            return _ChildBrowser(process)
+
+        mock_uc.start = start
+        return mock_uc
+
+    async def test_the_backend_launches_chrome_in_a_session_of_its_own(self) -> None:
+        spawned: list[asyncio.subprocess.Process] = []
+        backend = NoDriverBackend()
+
+        with patch.dict("sys.modules", {"nodriver": self._nodriver_spawning_children(spawned)}):
+            try:
+                await backend.start_async()
+                [process] = spawned
+                assert os.getsid(process.pid) == process.pid
+                assert os.getsid(process.pid) != os.getsid(0)
+            finally:
+                await backend.stop_async()
+                for process in spawned:
+                    if process.returncode is None:
+                        process.kill()
+                        await process.wait()
+
+        assert spawned[0].returncode == -15
+
+    async def test_a_chrome_that_shares_this_session_is_logged_with_what_it_costs(
+        self,
+    ) -> None:
+        """The outcome is checked, not the seam: a launch that bypassed it warns."""
+        import sys
+
+        spawned: list[asyncio.subprocess.Process] = []
+        mock_uc = MagicMock()
+
+        async def start(**kwargs: object) -> _ChildBrowser:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-c", "import time; time.sleep(30)"
+            )
+            spawned.append(process)
+            return _ChildBrowser(process)
+
+        mock_uc.start = start
+        backend = NoDriverBackend()
+
+        with patch.dict("sys.modules", {"nodriver": mock_uc}), capture_logs() as logs:
+            try:
+                await backend.start_async()
+            finally:
+                await backend.stop_async()
+                for process in spawned:
+                    if process.returncode is None:
+                        process.kill()
+                        await process.wait()
+
+        [event] = [e for e in logs if e["event"] == "chrome_not_in_own_session"]
+        assert event["log_level"] == "warning"
+        assert event["pid"] == spawned[0].pid
+        assert "Ctrl+C" in event["consequence"]
+
+    def test_a_ctrl_c_during_a_plain_login_still_ends_chrome(self) -> None:
+        """The login engine's shape: ``async with BrowserSession`` under
+        ``asyncio.run``, a real SIGINT to this process while the login waits.
+        Chrome no longer gets that SIGINT, so the session's exit has to end it."""
+        import signal
+
+        from graftpunk.session import BrowserSession
+
+        if signal.getsignal(signal.SIGINT) is not signal.default_int_handler:
+            pytest.skip("asyncio.run turns SIGINT into a cancellation only from the default")
+        spawned: list[asyncio.subprocess.Process] = []
+
+        async def login() -> None:
+            async with BrowserSession(backend="nodriver", headless=True):
+                os.kill(os.getpid(), signal.SIGINT)
+                await asyncio.sleep(30)
+
+        with patch.dict("sys.modules", {"nodriver": self._nodriver_spawning_children(spawned)}):
+            try:
+                with pytest.raises(KeyboardInterrupt):
+                    asyncio.run(login())
+                [process] = spawned
+                assert process.returncode == -15
+            finally:
+                for process in spawned:
+                    if process.returncode is None:
+                        process.kill()

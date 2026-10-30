@@ -556,6 +556,118 @@ class TestSetupObserveSessionSigintIsolation:
         assert sid != os.getsid(0)
         assert nodriver_launcher.asyncio is asyncio
 
+    @pytest.mark.skipif(os.name != "posix", reason="sessions are a POSIX notion")
+    @pytest.mark.asyncio
+    async def test_a_chrome_that_shares_this_session_is_reported_on_the_session(
+        self, tmp_path: Path
+    ) -> None:
+        """The outcome is checked after the start: a launch that bypassed the
+        seam (nodriver moved its call) marks the run, so interactive can warn."""
+        from graftpunk.cli.observe_browser import setup_observe_session
+
+        spawned: list[asyncio.subprocess.Process] = []
+        mock_backend = MagicMock()
+        mock_backend.start_capture_async = AsyncMock()
+
+        async def fake_nodriver_start(**kwargs: object) -> MagicMock:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-c", "import time; time.sleep(30)"
+            )
+            spawned.append(proc)
+            browser = MagicMock()
+            browser._process = proc
+            browser.get = AsyncMock(return_value=MagicMock())
+            return browser
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = fake_nodriver_start
+        mock_storage = MagicMock()
+        mock_storage.run_dir = tmp_path / "run"
+
+        try:
+            with (
+                patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+                patch(
+                    "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
+                ),
+                patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
+            ):
+                observed = await setup_observe_session(
+                    "test-ns", "https://example.com", 1024, headless=True, session_name=None
+                )
+        finally:
+            for proc in spawned:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+
+        assert observed is not None
+        assert observed.own_session is False
+
+    @pytest.mark.skipif(os.name != "posix", reason="sessions are a POSIX notion")
+    @pytest.mark.asyncio
+    async def test_a_failed_attempts_chrome_is_registered_at_once_and_ended_before_the_retry(
+        self, tmp_path: Path
+    ) -> None:
+        """nodriver raises "Failed to connect" after it has spawned Chrome. That
+        Chrome is in the signal registry from the spawn, and is ended before the
+        next attempt starts one more."""
+        import nodriver.core.browser as nodriver_launcher
+
+        from graftpunk import signals
+        from graftpunk.cli.observe_browser import setup_observe_session
+
+        spawned: list[asyncio.subprocess.Process] = []
+        registered_at_spawn: list[bool] = []
+        first_ended_before_second: list[bool] = []
+        mock_tab = MagicMock()
+        mock_browser = MagicMock()
+        mock_browser.main_tab = mock_tab
+        mock_browser.get = AsyncMock(return_value=mock_tab)
+        mock_backend = MagicMock()
+        mock_backend.start_capture_async = AsyncMock()
+
+        async def fake_nodriver_start(**kwargs: object) -> MagicMock:
+            if spawned:
+                first_ended_before_second.append(spawned[0].returncode is not None)
+                return mock_browser
+            proc = await nodriver_launcher.asyncio.create_subprocess_exec(
+                sys.executable, "-c", "import time; time.sleep(30)"
+            )
+            spawned.append(proc)
+            registered_at_spawn.append(
+                any(getattr(h, "_process", None) is proc for h in signals.live_browsers())
+            )
+            raise Exception("Failed to connect to browser")
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = fake_nodriver_start
+        mock_storage = MagicMock()
+        mock_storage.run_dir = tmp_path / "run"
+
+        try:
+            with (
+                patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+                patch(
+                    "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
+                ),
+                patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
+            ):
+                observed = await setup_observe_session(
+                    "test-ns", "https://example.com", 1024, headless=True, session_name=None
+                )
+        finally:
+            for proc in spawned:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+
+        assert observed is not None
+        assert registered_at_spawn == [True]
+        assert first_ended_before_second == [True]
+        assert spawned[0].returncode == -signal.SIGTERM
+        assert not any(getattr(h, "_process", None) is spawned[0] for h in signals.live_browsers())
+
     @pytest.mark.asyncio
     async def test_sigint_restored_even_if_nodriver_start_raises(self) -> None:
         """If nodriver.start() raises, the original SIGINT handler is still restored."""
