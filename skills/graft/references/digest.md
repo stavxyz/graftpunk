@@ -87,7 +87,7 @@ unresolved role in the proposal: the generated login config carries a `GP-FILL` 
 each, which the implement step fills from the login form's field names the HAR
 reader prints for the login page (`references/har.md`), or, when the recording does
 not hold them, with a selector the user reads off the login page in their browser
-(guide: Login). `success_candidates` holds suggested `success` selectors.
+(guide: Login). `success_candidates` holds suggested `success` selectors (step 5).
 
 ## A worked example
 

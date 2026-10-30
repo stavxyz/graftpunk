@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.28.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.29.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -982,7 +982,9 @@ api-orders-by-order-id calls api.myshop.example, not myshop.example; its request
 ```
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
-text (nobody recorded a failed login), the success selector, the help text for
+text (nobody recorded a failed login), the success selector (commented-out
+suggestions when the run holds a logged-in page; see [Getting the signals
+right](#getting-the-signals-right)), the help text for
 each command, and the value of any custom header. The command names themselves
 carry no marker, because the generator derives them from the endpoint path and
 they are usually wrong for a human to type: see [Check the CLI surface you
@@ -1735,6 +1737,70 @@ is not.
 A URL signal counts only once the URL differs from the one the last submit was
 clicked from, which is a second guard against the same mistake. Set both
 `success` and `success_url` and both have to hold.
+
+**A `success` element already on the page before the submit is logged.** Just
+before each submit, until it has warned, the engine looks for the `success`
+element once. When it is already there, the login logs
+`login_success_present_before_submit` with the selector, once a login. Without
+`success_url`, the login may report success before it happens, even with wrong
+credentials. With `success_url` set too, the login still waits for the URL to
+change, so the element alone cannot pass it early, but a found element can still
+hide a failure page shown at a new URL (a rate-limit page, say). It is a warning
+only, and the login goes on as it would without it. Treat it as a wrong selector
+and pick one that appears only after login.
+
+**A selector the recording suggests is a suggestion.** When a recording holds a
+logged-in page (`page-source.html` at stop, or a page loaded after the
+credential post), `gp plugin new` may write up to three `success` selectors
+under a `GP-FILL`, each commented out:
+
+```python
+        # GP-FILL: the recording suggests a success selector: an element on the logged-in page and
+        #   on no recorded login page. Check that it appears only after login on a fresh visit to
+        #   the login URL, then uncomment one suggestion (all of its lines):
+        # success="#account-menu",
+        # success="a.signout-link",
+```
+
+Each is an element on the logged-in page and on no logged-out page the run
+recorded, but the engine opens the login URL fresh, and that page can differ
+from the one recorded (a login modal on the home page in the recording,
+`/login` at replay). Before you uncomment one, open the login URL in a private
+window, logged out, and check in the browser's developer tools that
+`document.querySelector("<selector>")` is `null` there and finds the element
+once you have logged in. Then uncomment that one suggestion, all of its lines
+(a long selector is written as `# success=(`, one commented line per piece, and
+`# ),`), delete the others and the `GP-FILL` lines, and run `gp myshop login`
+with a wrong password to see it fail. `gp observe digest --endpoints-json`
+prints the same list as `login.success_candidates`.
+
+No suggestion holds the password, the username, or an email address the
+credential post sent. The username is the value of the field the login form or
+graftpunk's identifier rules name (by the field's own name when its value is
+itself JSON, never by a key inside it), or every value when no field qualifies.
+The list is empty, and the scaffold writes the success `GP-FILL` with no
+suggestions, when the run recorded no credential post, never got past the
+login's steps (an MFA page, say), or holds a credential post whose username the
+digest cannot read: a body the recording does not hold as text, or one it does
+not read by field names (XML, a JSON value under no name, a body nested too
+deep to parse).
+
+A recording cannot see three kinds of login step that have no one-time-code
+input: an MFA step whose code a script sends; one whose form posts only field
+names and a path with no step word (`pin=`, `passcode=`, or `pinCode=` to
+`/session/second-factor`, where a step word is one such as `otp`, `mfa`, or
+`verify`, a field named `code`, `sms_code`, `security_code`, or `one_time_code`,
+or `remember_me`); and a step the run stopped on without submitting it, such as
+a "stay signed in" page with only a button. Each counts as a logged-in page, so
+an element it shares with the landing page can be suggested. The fresh-visit
+check does not catch that, because the element is absent from the login page,
+and a login that reports success on such a step fails on its first real call. If
+your site asks for a code or shows a step after the password, also check that
+the suggestion is absent from that page.
+
+The opposite case costs only suggestions: a page after the landing that holds a
+login form, such as a "confirm your password" page, counts as logged out, so an
+element it shares with the landing page is not suggested.
 
 **After the last step, `timeout` is the whole post-submit budget.** After the last step, the engine
 checks the page every half second until the timeout: the failure text ends the
