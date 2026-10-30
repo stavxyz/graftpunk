@@ -1311,3 +1311,142 @@ class TestStructureOnly:
         out = stored_dom_snapshot(_LOGGED_IN, _LOGGED_IN_POST, "application/json")
         assert "Save ***REDACTED***" in out
         assert "bob.other@example.org" in out
+
+
+_FORM = "application/x-www-form-urlencoded"
+
+
+@pytest.mark.parametrize("structure_only", [False, True], ids=["default", "structure-only"])
+class TestAccountValuesInEitherMode:
+    """#268 part 2, review round 1: both modes redact the posted identifiers in any
+    letter case and an email's local part on its own, and write no doctype text or
+    element name the scrub would change."""
+
+    @staticmethod
+    def _stored(html: str, body: str, structure_only: bool) -> str:
+        return stored_dom_snapshot(html, body, _FORM, structure_only=structure_only)
+
+    @pytest.mark.parametrize(
+        ("html", "body", "kept"),
+        [
+            pytest.param(
+                '<a href="/users/alice/x" class="hello-ALICE"></a>',
+                "username=Alice&password=hunter22secret",
+                '<a href="/users/***REDACTED***/x" class="hello-***REDACTED***">',
+                id="username-in-another-case",
+            ),
+            pytest.param(
+                '<div id="ALICE" class="Alice name-Alice"></div>',
+                "username=alice&password=hunter22secret",
+                '<div id="***REDACTED***" class="***REDACTED*** name-***REDACTED***">',
+                id="username-capitalised",
+            ),
+            pytest.param(
+                '<a href="/u/alice.smith/settings" id="menu-alice.smith"></a>',
+                "username=Alice.Smith%40Example.com&password=hunter22secret",
+                '<a href="/u/***REDACTED***/settings" id="menu-***REDACTED***">',
+                id="email-local-part",
+            ),
+        ],
+    )
+    def test_an_account_value_in_an_attribute_is_redacted(
+        self, structure_only: bool, html: str, body: str, kept: str
+    ) -> None:
+        assert kept in self._stored(html, body, structure_only)
+
+    def test_a_longer_word_holding_the_username_is_kept(self, structure_only: bool) -> None:
+        html = '<a href="/users/alice123/x" class="alicesmith"></a>'
+        out = self._stored(html, "username=alice&password=hunter22secret", structure_only)
+        assert '<a href="/users/alice123/x" class="alicesmith">' in out
+
+    def test_a_local_part_under_three_characters_is_kept(self, structure_only: bool) -> None:
+        out = self._stored(
+            '<div id="al" class="al-x"></div>', "email=al%40x.example", structure_only
+        )
+        assert '<div id="al" class="al-x">' in out
+
+    @pytest.mark.parametrize(
+        "doctype",
+        [
+            '<!DOCTYPE html PUBLIC "heidi@x.example">',
+            "<!DOCTYPE html alice@example.com>",
+            "<!doctype html>",
+        ],
+    )
+    def test_every_doctype_is_written_as_the_html_one(
+        self, structure_only: bool, doctype: str
+    ) -> None:
+        out = self._stored(f"{doctype}<p></p>", "username=alice", structure_only)
+        assert out.startswith("<!DOCTYPE html><p>")
+        assert "@" not in out
+
+    @pytest.mark.parametrize(
+        ("html", "written"),
+        [
+            pytest.param(
+                "<ivan@x.example>t</ivan@x.example>", "<x-redacted></x-redacted>", id="email"
+            ),
+            pytest.param("<alice-card></alice-card>", "<x-redacted></x-redacted>", id="username"),
+            pytest.param("<my-widget></my-widget>", "<my-widget></my-widget>", id="plain"),
+        ],
+    )
+    def test_an_element_name_is_plain_or_replaced(
+        self, structure_only: bool, html: str, written: str
+    ) -> None:
+        out = self._stored(html, "username=alice&password=hunter22secret", structure_only)
+        assert written in out
+
+
+class TestEmailsInAStructureOnlyRead:
+    """Every email in a kept attribute of a structure-only read, whoever's it is,
+    however its "@" is written."""
+
+    @staticmethod
+    def _stored(html: str, body: str = "username=alice&password=hunter22secret") -> str:
+        return stored_dom_snapshot(html, body, _FORM, structure_only=True)
+
+    @pytest.mark.parametrize(
+        ("html", "kept"),
+        [
+            pytest.param(
+                '<a href="/u/dave%2540x.example/edit"></a>',
+                '<a href="/u/***REDACTED***/edit">',
+                id="encoded-twice",
+            ),
+            pytest.param(
+                '<a href="/u/oscar＠x.example">x</a>',
+                '<a href="/u/***REDACTED***">',
+                id="full-width",
+            ),
+            pytest.param(
+                '<a href="/u/éve@x.example">x</a>',
+                '<a href="/u/***REDACTED***">',
+                id="non-ascii-local",
+            ),
+            pytest.param(
+                '<div class="x carol@exämple.com"></div>',
+                '<div class="x ***REDACTED***">',
+                id="non-ascii-host",
+            ),
+            pytest.param(
+                '<a href="/u/dave%40x.example/edit"></a>',
+                '<a href="/u/***REDACTED***/edit">',
+                id="encoded",
+            ),
+        ],
+    )
+    def test_it_is_replaced(self, html: str, kept: str) -> None:
+        assert kept in self._stored(html)
+
+    def test_a_host_with_no_dot_is_kept_unless_it_is_the_posted_one(self) -> None:
+        html = '<a href="/u/sybil@localhost"></a><a href="/u/trent@intranet/x"></a>'
+        out = self._stored(html, "email=alice%40intranet&password=hunter22secret")
+        assert '<a href="/u/sybil@localhost">' in out
+        assert '<a href="/u/***REDACTED***/x">' in out
+        assert "trent" not in out
+
+    def test_the_default_mode_keeps_an_email_that_is_not_the_post_s(self) -> None:
+        out = stored_dom_snapshot(
+            '<a href="/u/dave%2540x.example/edit">x</a>', "username=alice", _FORM
+        )
+        assert '<a href="/u/dave%2540x.example/edit">' in out

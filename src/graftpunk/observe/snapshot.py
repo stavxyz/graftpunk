@@ -27,7 +27,7 @@ from html.parser import HTMLParser
 from urllib.parse import quote
 
 from graftpunk.har.digest import body_values, password_field_names
-from graftpunk.observe.run import REDACTED, Redaction, text_redactor
+from graftpunk.observe.run import _MIN_REDACT_LEN, REDACTED, Redaction, text_redactor
 from graftpunk.session_identity import identifier_key, is_identifier_field
 
 __all__ = [
@@ -116,18 +116,57 @@ def _bare_reference(value: str) -> str:
 
 # An email address in an attribute value (a mailto: link, a profile path). A
 # structure-only read drops it whoever's it is: the page is a logged-in one, and the
-# account's email need not be the one the post sent. The local part is the usual
-# one (no "/" or ":"), so a path or a scheme before it is kept.
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+# account's email need not be the one the post sent. The local part is any run of
+# characters but whitespace, quotes, angle brackets, and URL delimiters ("/", ":",
+# "?", "#", "&", "=", ";", ","), so a path or a scheme before it is kept and a
+# non-ASCII local part is taken whole. The "@" may be written "%40", "%2540" (encoded
+# twice), or a full-width "\uff20". The host has a dot; a host without one
+# (_email_pattern) is matched only when it is the posted email's host.
+_EMAIL_LOCAL = r"[^\s/:@\uff20\"'<>?#&=;,]+"
+_EMAIL_AT = r"(?:@|\uff20|%40|%2540)"
+_DOTTED_HOST = r"[\w-]+(?:\.[\w-]+)+"
+_EMAIL_RE = re.compile(f"{_EMAIL_LOCAL}{_EMAIL_AT}{_DOTTED_HOST}", re.IGNORECASE)
+# An element name written as it is (HTML lower-cases it); any other is written as
+# _SAFE_TAG, as is a name the post's values are redacted from.
+_PLAIN_TAG_RE = re.compile(r"[a-z][a-z0-9-]*")
+_SAFE_TAG = "x-redacted"
+# Every doctype is written as this one: a doctype's text is free, and the digest
+# reads none of it.
+_DOCTYPE = "<!DOCTYPE html>"
+
+
+def _email_pattern(redaction: Redaction) -> re.Pattern[str]:
+    """:data:`_EMAIL_RE`, and an address at a host with no dot when that host is the
+    one an identifier of *redaction* (the posted email) has (``sybil@intranet``)."""
+    hosts = sorted(
+        {
+            re.split(r"@|%40", value, maxsplit=1, flags=re.IGNORECASE)[1].lower()
+            for value in redaction.identifiers
+            if re.search(r"@|%40", value, flags=re.IGNORECASE)
+        }
+        - {""},
+        key=len,
+        reverse=True,
+    )
+    dotless = [host for host in hosts if "." not in host and re.fullmatch(r"[\w-]+", host)]
+    if not dotless:
+        return _EMAIL_RE
+    named = "|".join(re.escape(host) for host in dotless)
+    return re.compile(
+        f"{_EMAIL_LOCAL}{_EMAIL_AT}(?:{_DOTTED_HOST}|(?:{named})(?![\\w.-]))", re.IGNORECASE
+    )
 
 
 class _Sanitizer(HTMLParser):
-    def __init__(self, redact: Callable[[str], str], *, structure_only: bool = False) -> None:
+    def __init__(
+        self, redact: Callable[[str], str], *, emails: re.Pattern[str] | None = None
+    ) -> None:
         super().__init__(convert_charrefs=True)
         # Run on each decoded value and text before it is escaped again: an escaped
         # value (p&amp;ss) is not a spelling the scrub looks for.
         self._redact = redact
-        self._structure_only = structure_only
+        # Structure only: no text, and every email in a kept value replaced.
+        self._emails = emails
         self.out: list[str] = []
         # Open elements whose contents are dropped, by tag, and the text budget left
         # to each open labelling element, innermost last.
@@ -142,13 +181,20 @@ class _Sanitizer(HTMLParser):
             for name, value in attrs
             if name in KEPT_ATTRIBUTES
         )
-        return f"<{tag}{kept}{close}>"
+        return f"<{self._name(tag)}{kept}{close}>"
+
+    def _name(self, tag: str) -> str:
+        """*tag* as written: a plain name the scrub leaves alone, else :data:`_SAFE_TAG`
+        (broken markup can make a name of an email, ``<ivan@x.example>``)."""
+        if _PLAIN_TAG_RE.fullmatch(tag) and self._redact(tag) == tag:
+            return tag
+        return _SAFE_TAG
 
     def _kept_value(self, name: str, value: str) -> str:
         if name in _URL_ATTRIBUTES:
             value = _bare_reference(value)
         value = self._redact(value)
-        return _EMAIL_RE.sub(REDACTED, value) if self._structure_only else value
+        return self._emails.sub(REDACTED, value) if self._emails is not None else value
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if self._dropping:
@@ -178,7 +224,7 @@ class _Sanitizer(HTMLParser):
             if tag == self._dropping[0]:
                 self._dropping.pop()
                 if not self._dropping:
-                    self.out.append(f"</{tag}>")
+                    self.out.append(f"</{self._name(tag)}>")
             return
         if tag in _VOID:
             return
@@ -187,10 +233,10 @@ class _Sanitizer(HTMLParser):
         elif tag in _TEXT_ELEMENTS and self._text_open.get(tag):
             self._text_open[tag] -= 1
             self._budgets.pop()
-        self.out.append(f"</{tag}>")
+        self.out.append(f"</{self._name(tag)}>")
 
     def handle_data(self, data: str) -> None:
-        if self._dropping or self._textarea or not self._budgets or self._structure_only:
+        if self._dropping or self._textarea or not self._budgets or self._emails is not None:
             return
         budget = self._budgets[-1]
         text = self._redact(data)[: budget[0]]
@@ -200,7 +246,7 @@ class _Sanitizer(HTMLParser):
 
     def handle_decl(self, decl: str) -> None:
         if decl.lower().startswith("doctype"):
-            self.out.append(f"<!{escape(decl, quote=False)}>")
+            self.out.append(_DOCTYPE)
 
 
 def sanitize_dom_snapshot(
@@ -219,31 +265,63 @@ def sanitize_dom_snapshot(
     redacted on its decoded text (:func:`_redactor`, an email in any letter case),
     before the text budget cuts it, identifiers included. Every kept value and text
     is then escaped again, so the output is markup the page did not write only
-    where it was markup before.
+    where it was markup before. A doctype is written ``<!DOCTYPE html>``, and an
+    element name that is not plain (``[a-z][a-z0-9-]*``) or that the scrub would
+    change is written ``x-redacted``.
 
     With *structure_only* (the read of a logged-in page after a credential post), no
     text is kept at all, the labelling elements' included, and each kept attribute
-    value also has every email address in it replaced, whoever's it is."""
-    parser = _Sanitizer(_redactor(redaction or Redaction()), structure_only=structure_only)
+    value also has every email address in it replaced, whoever's it is
+    (:func:`_email_pattern`)."""
+    redaction = redaction or Redaction()
+    parser = _Sanitizer(
+        _redactor(redaction), emails=_email_pattern(redaction) if structure_only else None
+    )
     parser.feed(html)
     parser.close()
     return "".join(parser.out)
 
 
 def _redactor(redaction: Redaction) -> Callable[[str], str]:
-    """:func:`graftpunk.observe.run.text_redactor` for *redaction*, and then each
+    """:func:`graftpunk.observe.run.text_redactor` for *redaction*; then each
     identifier spelling that holds an email (``@`` or ``%40``) replaced in any letter
-    case: a page often shows an email lowercased, or as the user typed it."""
+    case, anywhere: a page often shows an email lowercased, or as the user typed it;
+    then each identifier spelling, and each email's local part of at least
+    ``_MIN_REDACT_LEN`` characters, replaced in any letter case where it stands as a
+    whole word (no ASCII letter or digit beside it): a profile path or a class often
+    spells the username lower-cased (``/users/alice``), or only the email's local
+    part (``menu-alice.smith``)."""
     scrub = text_redactor(redaction)
     emails = sorted(
         {value for value in redaction.identifiers if "@" in value or "%40" in value.lower()},
         key=len,
         reverse=True,
     )
-    if not emails:
+    locals_ = (re.split(r"@|%40", email, maxsplit=1, flags=re.IGNORECASE)[0] for email in emails)
+    words = sorted(
+        {value for value in (*redaction.identifiers, *locals_) if len(value) >= _MIN_REDACT_LEN},
+        key=len,
+        reverse=True,
+    )
+    if not words:
         return scrub
-    pattern = re.compile("|".join(re.escape(email) for email in emails), re.IGNORECASE)
-    return lambda text: pattern.sub(REDACTED, scrub(text))
+    whole = re.compile(
+        "(?<![A-Za-z0-9])(?:" + "|".join(re.escape(word) for word in words) + ")(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+    anywhere = (
+        re.compile("|".join(re.escape(email) for email in emails), re.IGNORECASE)
+        if emails
+        else None
+    )
+
+    def redact(text: str) -> str:
+        text = scrub(text)
+        if anywhere is not None:
+            text = anywhere.sub(REDACTED, text)
+        return whole.sub(REDACTED, text)
+
+    return redact
 
 
 def _spellings(value: str) -> list[str]:
