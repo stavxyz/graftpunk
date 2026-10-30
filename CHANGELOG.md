@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **A credential-post snapshot stores no free doctype or odd element name** (#268). Every doctype is stored as `<!DOCTYPE html>`, and an element name that is not plain (`[a-z][a-z0-9-]*`) or that holds the post's password is stored as `x-redacted`. Redaction otherwise reads as 1.29.0's: each attribute value and each piece of text is redacted as before, and 1.29.0's last pass over the whole stored markup now runs over each attribute value and over the text between two tags, escaped, so it never changes an attribute's name or a plain element name. The recorder's DOM reads ask `DOM.getDocument` for the document node alone (`depth=0`) instead of the whole tree.
+- **A credential-post snapshot stores no free doctype or odd element name** (#268). Every doctype is stored as `<!DOCTYPE html>`, and an element name that is not plain (`[a-z][a-z0-9-]*`) or that holds the post's password, or a custom element's name (one with `-`) that holds an account value (`<jsmith-widget>`), is stored as `x-redacted`. Redaction otherwise reads as 1.29.0's: each attribute value and each piece of text is redacted as before, and 1.29.0's last pass over the whole stored markup now runs over each attribute value and over the text between two tags, escaped, so it never changes an attribute's name or a built-in element's name. The recorder's DOM reads ask `DOM.getDocument` for the document node alone (`depth=0`) instead of the whole tree.
 
 ### Fixed
 

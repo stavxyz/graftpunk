@@ -288,10 +288,17 @@ class _Sanitizer(HTMLParser):
         element name, so ``main`` stays ``main`` for the username ``main``. Else
         :data:`_SAFE_TAG`: broken markup can make a name of an email
         (``<ivan@x.example>``), and a name holding the post's password is never
-        written."""
-        if _PLAIN_TAG_RE.fullmatch(tag) and self._secrets(tag) == tag:
-            return tag
-        return _SAFE_TAG
+        written. A custom element's name (one holding ``-``, which no built-in
+        element's does) is a page's own word, so it is replaced when it holds an
+        account value (``<jsmith-widget>``)."""
+        if not _PLAIN_TAG_RE.fullmatch(tag) or self._secrets(tag) != tag:
+            return _SAFE_TAG
+        if "-" in tag and (
+            self._redact(tag) != tag
+            or (self._account is not None and self._account("id", tag) != tag)
+        ):
+            return _SAFE_TAG
+        return tag
 
     def _kept_value(self, name: str, value: str) -> str:
         """*value* of the kept attribute *name*, redacted and escaped for the markup."""

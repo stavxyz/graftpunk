@@ -1675,7 +1675,6 @@ class TestNoNameIsRedacted:
             pytest.param(
                 "<ivan@x.example>t</ivan@x.example>", "<x-redacted></x-redacted>", id="email"
             ),
-            pytest.param("<alice-card></alice-card>", "<alice-card></alice-card>", id="username"),
             pytest.param("<main></main>", "<main></main>", id="username-is-a-tag"),
             pytest.param(
                 "<x-hunter22secret></x-hunter22secret>",
@@ -1692,6 +1691,18 @@ class TestNoNameIsRedacted:
         assert written in out
         out = self._stored(html, "username=main&password=hunter22secret", structure_only)
         assert written in out
+
+    def test_a_custom_element_name_holding_the_username_is_replaced(
+        self, structure_only: bool
+    ) -> None:
+        """A custom element's name is the page's own word, as 1.29.0 redacted it; a
+        built-in element's name is never replaced for an account value."""
+        html = "<alice-card></alice-card><main></main>"
+        out = self._stored(html, "username=alice&password=hunter22secret", structure_only)
+        assert "alice" not in out
+        assert "<x-redacted></x-redacted><main></main>" in out
+        out = self._stored(html, "username=bob&password=hunter22secret", structure_only)
+        assert "<alice-card></alice-card><main></main>" in out
 
     @pytest.mark.parametrize(
         "doctype",
