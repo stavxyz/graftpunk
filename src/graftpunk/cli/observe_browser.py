@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import signal
+import string
 import sys
 from dataclasses import dataclass
 from typing import Any
@@ -238,12 +240,23 @@ async def run_observe_go(
         stop_observe_browser(observed.browser, observed.handle)
 
 
-_STEP_INSTRUCTION = (
-    "\n[bold]Recording.[/bold] First, a wrong password: in the browser, submit the login "
-    "with a throwaway wrong password (never your real one with a typo), wait for the "
-    "error to show, then press Enter here. Then log in for real, and press Ctrl+C here "
-    "to stop and save."
-)
+# The throwaway the prompt offers: generated, so it is no word on any page and no
+# field name, and never the real password with a typo.
+_THROWAWAY_ALPHABET = string.ascii_lowercase + string.digits
+
+
+def _throwaway_password() -> str:
+    """A wrong password for the step: ``wrong-`` and 6 random letters and digits."""
+    return "wrong-" + "".join(secrets.choice(_THROWAWAY_ALPHABET) for _ in range(6))
+
+
+def _step_instruction(throwaway: str) -> str:
+    return (
+        "\n[bold]Recording.[/bold] First, a wrong password: in the browser, submit the "
+        f"login with this throwaway wrong password, [bold]{escape(throwaway)}[/bold] (never "
+        "your real one with a typo), wait for the error to show, then press Enter here. "
+        "Then log in for real, and press Ctrl+C here to stop and save."
+    )
 
 
 async def _wrong_password_step(
@@ -251,7 +264,9 @@ async def _wrong_password_step(
 ) -> None:
     """Wait for Enter on *stdin* (a terminal) and mark the last credential post as the
     failed one (the backend's ``mark_failed_login``), or for *stop_event*. Enter before
-    any credential post asks again. End of input (Ctrl+D) skips the step and tells the
+    any credential post asks again. The prompt offers a generated throwaway
+    (:func:`_throwaway_password`), so it collides with no word on the page; whatever
+    the user types is accepted. End of input (Ctrl+D) skips the step and tells the
     backend so (``skip_failure_step``), which then holds and reads nothing more for it.
     The loop watches *stdin* with ``add_reader`` until the step ends, so the SIGINT
     handler keeps working while it waits; nothing reads stdin after."""
@@ -265,7 +280,7 @@ async def _wrong_password_step(
             chunk = b""
         chunks.put_nowait(chunk)
 
-    console.print(_STEP_INSTRUCTION)
+    console.print(_step_instruction(_throwaway_password()))
     loop.add_reader(fd, readable)
     try:
         stopped = asyncio.ensure_future(stop_event.wait())

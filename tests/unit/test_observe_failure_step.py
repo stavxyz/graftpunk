@@ -667,6 +667,9 @@ async def _turns(count: int = 20) -> None:
         await asyncio.sleep(0)
 
 
+_THROWAWAY = "wrong-x7k2q9"
+
+
 class _Interactive:
     """run_observe_interactive with the browser set-up, the save, and the stop
     replaced; the console writes to a buffer."""
@@ -701,6 +704,7 @@ class _Interactive:
         stack.enter_context(patch(f"{where}.save_observe_run", self.save))
         stack.enter_context(patch(f"{where}.stop_observe_browser"))
         stack.enter_context(patch(f"{where}.console", self.console))
+        stack.enter_context(patch(f"{where}._throwaway_password", lambda: _THROWAWAY))
         return stack
 
     def start(self, stdin: Any, *, step: bool = True) -> asyncio.Future[None]:
@@ -726,7 +730,7 @@ class TestThePrompt:
             with run.patches():
                 task = run.start(terminal)
                 await _until(lambda: "press Enter here" in run.text)
-                assert "throwaway wrong password" in run.text
+                assert f"with this throwaway wrong password, {_THROWAWAY} (never" in run.text
                 assert "never your real one with a typo" in run.text
                 run.backend.mark_failed_login.assert_not_called()
                 terminal.type(b"\n")
@@ -905,6 +909,24 @@ class TestAnEmptyMark:
         run, order = await self._marked_then_stopped(kept)
         assert "No failure text" not in run.text
         assert order == ["closed", "saved"]
+
+
+class TestTheThrowaway:
+    def test_it_is_wrong_and_six_random_letters_and_digits(self) -> None:
+        import re
+
+        from graftpunk.cli.observe_browser import _throwaway_password
+
+        offered = {_throwaway_password() for _ in range(20)}
+        assert all(re.fullmatch(r"wrong-[a-z0-9]{6}", value) for value in offered)
+        # From secrets: twenty draws are not one value.
+        assert len(offered) > 1
+
+    def test_the_draw_comes_from_secrets(self) -> None:
+        from graftpunk.cli import observe_browser
+
+        with patch.object(observe_browser.secrets, "choice", side_effect=list("ab12cd")):
+            assert observe_browser._throwaway_password() == "wrong-ab12cd"
 
 
 class TestTheFlag:
