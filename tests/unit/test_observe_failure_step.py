@@ -8,14 +8,27 @@ the fake tab and fake clock of the after-read tests.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import os
+import signal
+from collections.abc import Callable
+from io import StringIO
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import typer
+from rich.console import Console
+from typer.testing import CliRunner
 
+from graftpunk.cli.main import app
+from graftpunk.cli.observe_browser import ObserveSession, run_observe_interactive
 from graftpunk.observe import capture
 from graftpunk.observe.capture import NodriverCaptureBackend
+from tests.unit.cli_harness import strip_ansi
 from tests.unit.test_observe_post_data import (
     _LOGIN_MODAL,
     _POST_MS,
@@ -315,3 +328,252 @@ class TestTheLoginPageAsServed:
         assert backend._served_page(post) == "<p>new</p>"
         backend._request_map = {"3": script, "4": post}
         assert backend._served_page(post) is None
+
+
+# The prompt: gp observe interactive --wrong-password-first reads Enter on stdin
+# inside the asyncio loop, beside the SIGINT handler that stops the recording. A pipe
+# stands in for the terminal; the loop's own reader and signal handler are real.
+
+
+class _FakeTerminal:
+    """A stdin whose file descriptor is a pipe's read end."""
+
+    def __init__(self, *, tty: bool = True) -> None:
+        self.read_fd, self.write_fd = os.pipe()
+        self.tty = tty
+
+    def fileno(self) -> int:
+        return self.read_fd
+
+    def isatty(self) -> bool:
+        return self.tty
+
+    def type(self, data: bytes) -> None:
+        os.write(self.write_fd, data)
+
+    def close_input(self) -> None:
+        os.close(self.write_fd)
+
+    def close(self) -> None:
+        for fd in (self.read_fd, self.write_fd):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+class _Untouchable:
+    """A stdin no part of the command may use."""
+
+    def fileno(self) -> int:
+        raise AssertionError("stdin was read")
+
+    def isatty(self) -> bool:
+        raise AssertionError("stdin was read")
+
+
+async def _until(condition: Callable[[], bool]) -> None:
+    """Until *condition* holds; the loop turns between checks let the reader and the
+    signal handler run."""
+    for _ in range(2000):
+        if condition():
+            return
+        await asyncio.sleep(0.001)
+    raise AssertionError("the condition never held")
+
+
+async def _turns(count: int = 20) -> None:
+    for _ in range(count):
+        await asyncio.sleep(0)
+
+
+class _Interactive:
+    """run_observe_interactive with the browser set-up, the save, and the stop
+    replaced; the console writes to a buffer."""
+
+    def __init__(self, marks: list[bool] | None = None) -> None:
+        self.backend = MagicMock()
+        self.backend.mark_failed_login = MagicMock(side_effect=marks or [True])
+        self.backend.failed_login_secrets = MagicMock(return_value=("wrongpass1",))
+        self.out = StringIO()
+        self.console = Console(file=self.out, no_color=True, width=200)
+        self.setup = AsyncMock(
+            return_value=ObserveSession(
+                browser=MagicMock(),
+                handle=MagicMock(),
+                tab=MagicMock(),
+                storage=MagicMock(),
+                backend=self.backend,
+            )
+        )
+        self.save = AsyncMock()
+
+    @property
+    def text(self) -> str:
+        return " ".join(self.out.getvalue().split())
+
+    def patches(self) -> contextlib.ExitStack:
+        stack = contextlib.ExitStack()
+        where = "graftpunk.cli.observe_browser"
+        stack.enter_context(patch(f"{where}.setup_observe_session", self.setup))
+        stack.enter_context(patch(f"{where}.save_observe_run", self.save))
+        stack.enter_context(patch(f"{where}.stop_observe_browser"))
+        stack.enter_context(patch(f"{where}.console", self.console))
+        return stack
+
+    def start(self, stdin: Any, *, step: bool = True) -> asyncio.Future[None]:
+        kwargs: dict[str, Any] = {"session_name": None, "stdin": stdin}
+        if step:
+            kwargs["wrong_password_first"] = True
+        return asyncio.ensure_future(
+            run_observe_interactive("myshop", "https://myshop.example/login", 1024, **kwargs)
+        )
+
+
+def _ctrl_c() -> None:
+    signal.raise_signal(signal.SIGINT)
+
+
+class TestThePrompt:
+    @pytest.mark.asyncio
+    async def test_enter_marks_the_failed_post_and_ctrl_c_saves_without_its_password(
+        self,
+    ) -> None:
+        run, terminal = _Interactive(), _FakeTerminal()
+        try:
+            with run.patches():
+                task = run.start(terminal)
+                await _until(lambda: "press Enter here" in run.text)
+                assert "throwaway wrong password" in run.text
+                assert "never your real one with a typo" in run.text
+                run.backend.mark_failed_login.assert_not_called()
+                terminal.type(b"\n")
+                await _until(lambda: "Marked" in run.text)
+                assert "log in for real" in run.text.split("Marked")[-1]
+                _ctrl_c()
+                await task
+        finally:
+            terminal.close()
+        assert run.setup.await_args.kwargs["failure_step"] is True
+        run.backend.mark_failed_login.assert_called_once_with()
+        assert run.save.await_args.kwargs["redact"] == ("wrongpass1",)
+
+    @pytest.mark.asyncio
+    async def test_enter_before_any_credential_post_asks_again(self) -> None:
+        run, terminal = _Interactive([False, True]), _FakeTerminal()
+        try:
+            with run.patches():
+                task = run.start(terminal)
+                await _until(lambda: "press Enter here" in run.text)
+                terminal.type(b"\n")
+                await _until(lambda: "No credential post yet" in run.text)
+                assert "Marked" not in run.text
+                terminal.type(b"typed by mistake\n")
+                await _until(lambda: "Marked" in run.text)
+                assert run.backend.mark_failed_login.call_count == 2
+                _ctrl_c()
+                await task
+        finally:
+            terminal.close()
+
+    @pytest.mark.asyncio
+    async def test_input_after_the_mark_is_not_read(self) -> None:
+        run, terminal = _Interactive([True]), _FakeTerminal()
+        try:
+            with run.patches():
+                task = run.start(terminal)
+                await _until(lambda: "press Enter here" in run.text)
+                terminal.type(b"\n")
+                await _until(lambda: "Marked" in run.text)
+                terminal.type(b"\n\n")
+                await _turns()
+                _ctrl_c()
+                await task
+        finally:
+            terminal.close()
+        run.backend.mark_failed_login.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_ctrl_c_during_the_step_saves_and_stops_reading_stdin(self) -> None:
+        run, terminal = _Interactive(), _FakeTerminal()
+        try:
+            with run.patches():
+                task = run.start(terminal)
+                await _until(lambda: "press Enter here" in run.text)
+                _ctrl_c()
+                await task
+                # The loop no longer watches stdin: there is no reader left to remove.
+                assert asyncio.get_running_loop().remove_reader(terminal.read_fd) is False
+        finally:
+            terminal.close()
+        run.backend.mark_failed_login.assert_not_called()
+        run.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_end_of_input_skips_the_step_and_keeps_recording(self) -> None:
+        run, terminal = _Interactive(), _FakeTerminal()
+        try:
+            with run.patches():
+                task = run.start(terminal)
+                await _until(lambda: "press Enter here" in run.text)
+                terminal.close_input()
+                await _until(lambda: "skipped" in run.text)
+                await _turns()
+                assert not task.done()
+                _ctrl_c()
+                await task
+        finally:
+            terminal.close()
+        run.backend.mark_failed_login.assert_not_called()
+        run.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_stdin_that_is_no_terminal_refuses_before_the_browser_opens(self) -> None:
+        run, terminal = _Interactive(), _FakeTerminal(tty=False)
+        try:
+            with run.patches():
+                task = run.start(terminal)
+                with pytest.raises(typer.Exit) as exited:
+                    await task
+        finally:
+            terminal.close()
+        assert exited.value.exit_code == 1
+        assert "needs a terminal" in run.text
+        run.setup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_without_the_flag_stdin_is_untouched_and_the_run_is_main_s(self) -> None:
+        run = _Interactive()
+        with run.patches():
+            task = run.start(_Untouchable(), step=False)
+            await _until(lambda: "Recording..." in run.text)
+            _ctrl_c()
+            await task
+        assert run.setup.await_args.kwargs["failure_step"] is False
+        # main's lines, word for word.
+        assert run.text == (
+            "Recording... press Ctrl+C to stop and save Tip: Use Ctrl+C in this terminal "
+            "for a complete capture (screenshot, page source, and network data). Closing "
+            "the browser window will preserve network data only. Recording stopped. "
+            "Saving capture..."
+        )
+        run.backend.mark_failed_login.assert_not_called()
+        run.backend.failed_login_secrets.assert_not_called()
+        assert run.save.await_args.kwargs == {"console": run.console}
+
+
+class TestTheFlag:
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_the_command_passes_it_on(self, flag: bool) -> None:
+        args = ["observe", "--no-session", "interactive", "https://myshop.example/login"]
+        with (
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock
+            ) as interactive,
+            patch("graftpunk.cli.observe_commands.asyncio"),
+        ):
+            result = CliRunner().invoke(app, [*args, "--wrong-password-first"] if flag else args)
+        assert result.exit_code == 0, result.output
+        assert interactive.call_args.kwargs["wrong_password_first"] is flag
+
+    def test_the_help_names_it(self) -> None:
+        result = CliRunner().invoke(app, ["observe", "interactive", "--help"])
+        assert "--wrong-password-first" in strip_ansi(result.output)

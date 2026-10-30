@@ -16,8 +16,8 @@ import pytest
 from graftpunk.observe.failure_text import (
     MAX_FAILURE_CANDIDATES,
     AccountGuard,
-    failure_candidates,
     failed_password_values,
+    failure_candidates,
     without_success_page,
 )
 from graftpunk.plugins.login_settle import failure_text_on_page
