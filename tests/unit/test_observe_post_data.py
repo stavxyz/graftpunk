@@ -3784,13 +3784,23 @@ class TestTheReadAfterTheCredentialPost:
 
     @pytest.mark.asyncio
     async def test_a_post_whose_values_cannot_be_read_by_name_gets_no_read(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """#330: a credential post whose body is not read by its field names (here a
         value holding JSON nested past the parser's limit) gets no after-read, since
-        what to redact from it is not known; the snapshot at the post is still taken."""
-        deep = "[" * 100_000 + "]" * 100_000
+        what to redact from it is not known; the snapshot at the post is still taken.
+        How deep json.loads goes depends on the Python version and the platform's
+        stack, so the parser's refusal of the inner value is stood in for."""
+        deep = "[[[1]]]"
         body = json.dumps({"username": "jsmith", "password": "hunter2hunter2", "state": deep})
+        loads = json.loads
+
+        def too_deep(text: Any, *args: Any, **kwargs: Any) -> Any:
+            if text == deep:
+                raise RecursionError("maximum recursion depth exceeded")
+            return loads(text, *args, **kwargs)
+
+        monkeypatch.setattr(json, "loads", too_deep)
         assert is_credential_body(body, "application/json")
         assert post_account_values(body, "application/json") is None
         with capture_logs() as logs:
