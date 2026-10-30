@@ -799,11 +799,15 @@ def body_values(post_data: str | None, content_type: str = "") -> list[tuple[tup
     recursion, so a body nested thousands deep is read like any other."""
     declared = content_type.split(";")[0].strip().lower()
     kind, parsed = _decoded_body(post_data, declared)
+    if kind == "none" and post_data and declared == _MULTIPART_CONTENT_TYPE:
+        return _multipart_values(post_data, content_type)
+    if kind == "none":
+        # Values feed redaction and the leak guard, so a form-shaped body read as a
+        # form whatever type it declared (text/plain), which body_params does not.
+        kind, parsed = _decoded_body(post_data, "")
     if kind == "form":
         return [((name,), value) for name, values in parsed.items() for value in values]
     if kind == "none":
-        if post_data and declared == _MULTIPART_CONTENT_TYPE:
-            return _multipart_values(post_data, content_type)
         return []
     found: list[tuple[tuple[str, ...], str]] = []
     stack: list[tuple[object, tuple[str, ...]]] = [(parsed, ())]

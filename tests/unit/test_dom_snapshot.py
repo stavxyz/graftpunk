@@ -150,6 +150,13 @@ class TestRedaction:
         redaction = snapshot_redaction(body, "multipart/form-data; boundary=XyZ")
         assert redaction.identifiers == ("alice",)
 
+    def test_a_form_body_declared_as_another_type_is_still_redacted(self) -> None:
+        """A form-shaped body sent as text/plain was read as a form before the shared
+        reader (#325), and redaction must not lose it."""
+        body = "user_name=alice&login_password=pa55word"
+        redaction = snapshot_redaction(body, "text/plain")
+        assert redaction.identifiers == ("alice",)
+
     def test_a_body_with_no_fields_redacts_nothing(self) -> None:
         assert not snapshot_redaction("not a body", "text/plain")
         assert not snapshot_redaction(None, "")
