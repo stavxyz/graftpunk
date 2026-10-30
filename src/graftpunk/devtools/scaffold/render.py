@@ -1897,7 +1897,9 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
     seen_tests: set[str] = set(_FIXED_TEST_NAMES) | set(policy.RESERVED_COMMAND_NAMES)
     # Each stem taken so far: the request its fixture answers, whether a family
     # command took it, and the label the collision note names.
-    stems: dict[str, tuple[tuple[str, str], bool, str]] = {}
+    # Per stem: the recorded request its fixture holds, whether a literal command's
+    # test already reads it, and the first command's label for the note.
+    stems: dict[str, list[object]] = {}
     for command in planned:
         endpoint = command.endpoint
         method = command.method
@@ -1919,9 +1921,11 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
         taken = stems.get(stem.casefold())
         # A family command and a literal command for its fixture member issue the
         # same recorded request, so both tests read that member's own fixture and
-        # both stay. Any other shared stem means FixtureSession, which looks a
-        # fixture up by stem, would hand this test the other endpoint's fixture.
-        if taken is not None and not (taken[0] == fixture_request and (family or taken[1])):
+        # both stay; a second literal command on that member gets the note, as it did
+        # before families, whatever the order. Any other shared stem means
+        # FixtureSession, which looks a fixture up by stem, would hand this test the
+        # other endpoint's fixture.
+        if taken is not None and not (taken[0] == fixture_request and (family or not taken[1])):
             note = (
                 f"{GP_FILL_MARKER}: no test for {name} ({method} {endpoint.template}): its "
                 f"fixture would share the stem {stem} with {taken[2]}; write its "
@@ -1932,7 +1936,9 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
             lines.append("")
             continue
         if taken is None:
-            stems[stem.casefold()] = (fixture_request, family, f"{method} {endpoint.template}")
+            stems[stem.casefold()] = [fixture_request, not family, f"{method} {endpoint.template}"]
+        elif not family:
+            taken[1] = True
         test_name = _deduped(name, seen_tests)
         # The same seeding as _render_command_stub, so the identifiers here are
         # the ones the stub actually declares.

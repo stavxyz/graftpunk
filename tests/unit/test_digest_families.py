@@ -10,6 +10,7 @@ pins.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import json
 import os
 import subprocess
@@ -654,6 +655,27 @@ class TestScaffoldingAFamily:
         assert "def test_north() -> None:" in tests
         assert "GP-FILL: no test" not in tests
         assert fixture_paths(spec) == ["tests/fixtures/get_search_north-region_items.json"]
+
+    @pytest.mark.parametrize("order", list(itertools.permutations(range(3))))
+    def test_a_second_literal_on_the_member_gets_the_note_in_any_order(
+        self, tmp_path: Path, order: tuple[int, ...]
+    ) -> None:
+        """With a family and two literal commands on its fixture member, the family's
+        test and the first literal's stay and the second literal gets the note it got
+        before families, whatever the order."""
+        result = _digest_of(tmp_path, _TWO_REGIONS)
+        commands = [
+            CommandSelection("region-items", "GET", _FAMILY),
+            CommandSelection("north", "GET", "/search/north-region/items/"),
+            CommandSelection("north-again", "GET", "/search/north-region/items/"),
+        ]
+        ordered = [commands[i] for i in order]
+        tests = render(_spec(result, *ordered))["tests/test_plugin.py"]
+        literals = [c.name for c in ordered if c.name != "region-items"]
+        assert "def test_region_items() -> None:" in tests
+        assert f"def test_{literals[0].replace('-', '_')}() -> None:" in tests
+        assert f"def test_{literals[1].replace('-', '_')}() -> None:" not in tests
+        assert tests.count("GP-FILL: no test") == 1
 
     def test_a_family_sharing_a_stem_with_another_request_loses_its_test(
         self, tmp_path: Path
