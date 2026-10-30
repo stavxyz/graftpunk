@@ -708,6 +708,56 @@ class TestARedirectedFailedPost:
         assert backend._failed.secrets == ()
 
     @pytest.mark.asyncio
+    async def test_two_resends_before_the_mark_are_scrubbed(self, tmp_path: Path) -> None:
+        """Two 307/308 hops (an HTTPS upgrade, then a trailing slash): the middle
+        resend is recorded as ``<id>:redirect:<n>``, neither the failed entry nor
+        ``<id>``."""
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        await _post(tab, "94.1", respond=False)
+        for url, before in ((self._AGAIN, LOGIN), (self._AGAIN + "x", self._AGAIN)):
+            await tab.dispatch(
+                _will_be_sent(
+                    "94.1", inline=_WRONG, url=url, redirect_from=before, headers=self._JSON
+                )
+            )
+        await tab.dispatch(_response_received("94.1", url=self._AGAIN + "x"))
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        await _stop(backend, tab)
+        entries = backend.get_har_entries()
+        assert [entry["request"]["url"] for entry in entries] == [
+            LOGIN,
+            self._AGAIN,
+            self._AGAIN + "x",
+        ]
+        assert "wrongpass1" not in json.dumps(entries)
+
+    @pytest.mark.asyncio
+    async def test_a_resend_after_the_mark_is_scrubbed_at_a_stop_with_no_tab(
+        self, tmp_path: Path
+    ) -> None:
+        """The browser window closed before stop: the stop with no tab scrubs too."""
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        await _post(tab, "95.1", respond=False)
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await tab.dispatch(
+            _will_be_sent(
+                "95.1", inline=_WRONG, url=self._AGAIN, redirect_from=LOGIN, headers=self._JSON
+            )
+        )
+        await tab.dispatch(_response_received("95.1", url=self._AGAIN))
+        await _idle(backend, clock)
+        backend._get_tab = lambda: None
+        await backend.stop_capture_async()
+        entries = backend.get_har_entries()
+        assert len(entries) == 2
+        assert "wrongpass1" not in json.dumps(entries)
+        assert backend._failed is not None
+        assert backend._failed.secrets == ()
+
+    @pytest.mark.asyncio
     async def test_another_request_id_is_not_touched(self, tmp_path: Path) -> None:
         tab, backend, clock, _reads = await _recording(tmp_path)
         await _post(tab, "93.1")
@@ -759,6 +809,46 @@ class TestTheThrowawayScrub:
         return json.dumps(
             {"grant_type": "password", "action": "login", "login": "jsmith", "password": password}
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("body", "content_type", "scrubbed"),
+        [
+            (
+                "username=jsmith\r\npassword=pa&ss9\r\n",
+                "text/plain",
+                "username=jsmith\r\npassword=***REDACTED***\r\n",
+            ),
+            (
+                '--b\r\nContent-Disposition: form-data; name="username"\r\n\r\njsmith\r\n'
+                '--b\r\nContent-Disposition: form-data; name="password"\r\n\r\npa&ss9\r\n'
+                "--b--\r\n",
+                "multipart/form-data; boundary=b",
+                '--b\r\nContent-Disposition: form-data; name="username"\r\n\r\njsmith\r\n'
+                '--b\r\nContent-Disposition: form-data; name="password"\r\n\r\n'
+                "***REDACTED***\r\n--b--\r\n",
+            ),
+        ],
+    )
+    async def test_each_entry_is_split_by_its_own_content_type(
+        self, tmp_path: Path, body: str, content_type: str, scrubbed: str
+    ) -> None:
+        """Read as a form, neither body gives ``pa&ss9`` whole, so the scrub must
+        split each entry by the type it declared. The recorder marks only a post
+        whose field names it reads (JSON or a form), so the failed post is set here
+        by hand."""
+        tab, backend, _clock, _reads = await _recording(tmp_path)
+        await tab.dispatch(
+            _will_be_sent("71.1", inline=body, url=LOGIN, headers={"Content-Type": content_type})
+        )
+        await tab.dispatch(_response_received("71.1", url=LOGIN))
+        data = backend._request_map["71.1"]
+        failed = capture._FailedLogin(capture._StepPost("71.1", data, body, content_type), [])
+        failed.secrets = ("pa&ss9",)
+        backend._scrub_failed_post(failed)
+        (entry,) = backend.get_har_entries()
+        assert entry["request"]["postData"]["text"] == scrubbed
+        assert "pa&ss9" not in json.dumps(entry)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("throwaway", ["password", "login"])

@@ -536,6 +536,19 @@ class TestScrubFailedPassword:
             f"password={self._R}\r\n"
         )
 
+    def test_json_in_a_text_plain_field(self) -> None:
+        body = 'user=jsmith\r\ncreds={"password":"wrong-abc123"}\r\n'
+        assert failed_password_values(body, "text/plain") == ["wrong-abc123"]
+        assert scrub_failed_password(body, "text/plain", ["wrong-abc123"]) == (
+            f'user=jsmith\r\ncreds={{"password":"{self._R}"}}\r\n'
+        )
+
+    def test_a_text_plain_value_under_a_password_name_only(self) -> None:
+        body = "action=login\r\nuser=jsmith\r\npassword=login\r\n"
+        assert scrub_failed_password(body, "text/plain", ["login"]) == (
+            f"action=login\r\nuser=jsmith\r\npassword={self._R}\r\n"
+        )
+
     def test_a_text_plain_value_is_compared_as_written(self) -> None:
         body = "username=jsmith\npassword=pa+ss%9\n"
         assert failed_password_values(body, "text/plain") == ["pa+ss%9"]
