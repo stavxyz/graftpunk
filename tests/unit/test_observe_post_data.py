@@ -4278,8 +4278,38 @@ class TestPageSource:
         assert [e["event"] for e in logs] == ["nodriver_get_page_source_failed"]
         assert tab.dom_requests == []
         # The abandoned turn left the lock as it was: held by this test, then free.
+        # Checked before the last read, so a turn that was not abandoned (and takes
+        # the lock once this test frees it) fails here instead of hanging that read.
         assert backend._dom_read_lock.locked()
         backend._dom_read_lock.release()
+        await _turns()
+        assert not backend._dom_read_lock.locked()
+        assert await backend.get_page_source() == _ORDERS_PAGE
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_read_cancelled_while_it_waits_for_its_turn_gives_the_turn_up(
+        self,
+    ) -> None:
+        """Toolkit round 3 Minor 5, superpowers Minor 7: a page-source read cancelled
+        while another read holds the lock abandons its turn, so the lock is free once
+        that read is done, and the next DOM read is not left waiting forever."""
+        tab = FakeTab({}, _never)
+        tab.dom_html = _ORDERS_PAGE
+        clock = FakeClock()
+        backend = await _start(tab)
+        backend._now, backend._sleep = clock.time, clock.sleep
+        await backend._dom_read_lock.acquire()
+        reading = asyncio.get_running_loop().create_task(backend.get_page_source())
+        await _turns()
+        assert not reading.done()
+        reading.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reading
+        backend._dom_read_lock.release()
+        await _turns()
+        assert not backend._dom_read_lock.locked()
+        assert tab.dom_requests == []
         assert await backend.get_page_source() == _ORDERS_PAGE
         await _stop(backend, tab)
 
