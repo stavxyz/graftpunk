@@ -2,8 +2,9 @@
 run's final logged-in page and on none of its logged-out pages. Each emitted
 selector is checked with lxml and cssselect against both sides where they can tell,
 so the stdlib matcher the module uses at run time cannot drift from what a CSS
-engine selects. lxml has no quirks mode, so the quirks-mode cases are asserted on
-the module alone."""
+engine selects. lxml matches ids and classes with case in every document, so the
+cases where the module counts them without case are asserted on the module
+alone."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import time
 import lxml.html
 import pytest
 
-from graftpunk.har.login_signals import _GENERATED_RULES, success_candidates
+from graftpunk.har.login_signals import _GENERATED_RULES, _words, success_candidates
 
 _DOCTYPE = "<!DOCTYPE html>"
 _LOGIN = (
@@ -25,9 +26,9 @@ _LOGIN = (
 )
 
 
-def _page(header: str, main: str = "<p class='intro'>Welcome</p>", *, doctype: bool = True) -> str:
+def _page(header: str, main: str = "<p class='intro'>Welcome</p>") -> str:
     return (
-        f"{_DOCTYPE if doctype else ''}<html><body><header><nav class='site-nav'>"
+        f"{_DOCTYPE}<html><body><header><nav class='site-nav'>"
         f"{header}</nav></header><main>{main}</main></body></html>"
     )
 
@@ -88,6 +89,7 @@ class TestSuccessCandidates:
         [
             ("not_identifier", "1st"),
             ("css_module", "Header_loggedIn__abcde"),
+            ("css_module", "Header-module__loggedIn__abcde"),
             ("triple_underscore", "user___x"),
             ("underscore_hash", "_loggedIn_abcde"),
             ("css_in_js", "sc-bdVaJa"),
@@ -154,13 +156,26 @@ class TestSuccessCandidates:
         # Without the values each of them would have been suggested.
         assert set(_checked([_LOGIN], after)) >= {"#user-jsmith", "img.avatar-jdoe"}
 
-    @pytest.mark.parametrize("value", ["on", "true", "1", "ab", ""])
+    @pytest.mark.parametrize(
+        "value", ["true", "false", "yes", "off", "null", "none", "on", "1", "ab", ""]
+    )
     def test_a_short_or_boolean_credential_value_rejects_nothing(self, value: str) -> None:
-        after = _page("<div id='account-menu'></div><div class='button-row'></div>")
-        assert _checked([_LOGIN], after, account_values=(value,)) == (
+        after = _page(f"<div id='account-menu'></div><div id='badge-{value}-row'></div>")
+        assert _checked([_LOGIN], after, account_values=(value, value.upper())) == (
             "#account-menu",
-            "div.button-row",
+            f"#badge-{value}-row",
         )
+
+    def test_a_credential_value_matches_without_case_dots_or_dashes(self) -> None:
+        after = _page("<div id='user-jsmith'></div><div id='account-menu'></div>")
+        values = ("j.smith@example.com",)
+        assert _checked([_LOGIN], after, account_values=values) == ("#account-menu",)
+        after = _page("<div id='user-j-smith'></div><div id='account-menu'></div>")
+        assert _checked([_LOGIN], after, account_values=("J-Smith",)) == ("#account-menu",)
+
+    def test_a_name_is_also_matched_without_its_dots_and_dashes(self) -> None:
+        after = _page("<div id='user-j_smith'></div><div id='account-menu'></div>")
+        assert _checked([_LOGIN], after, account_values=("jsmith",)) == ("#account-menu",)
 
     def test_a_selector_matching_twice_is_not_suggested(self) -> None:
         after = _page("<span class='user-chip'></span><span class='user-chip'></span>")
@@ -202,20 +217,23 @@ class TestSuccessCandidates:
         closed = _page("<template></template><div id='user-panel'></div>")
         assert _checked([_LOGIN], closed) == ("#user-panel",)
 
-    def test_matching_is_case_sensitive_in_a_standards_document(self) -> None:
+    def test_a_logged_out_page_is_matched_without_case(self) -> None:
+        """A quirks-mode browser matches ids and classes without case, so a name on a
+        logged-out page in any case rejects the selector, in any document."""
+        login = _LOGIN.replace("<main>", "<main><div id='USERMENU'></div>")
+        assert success_candidates([login], _page("<div id='userMenu'></div>")) == ()
         login = _LOGIN.replace("<main>", "<main><div class='UserChip'></div>")
-        after = _page("<div class='userchip'></div>")
-        assert _checked([login], after) == ("div.userchip",)
+        assert success_candidates([login], _page("<div class='userchip'></div>")) == ()
 
-    def test_a_quirks_logged_out_page_matches_without_case(self) -> None:
-        """No doctype: a browser matches ids and classes ASCII-case-insensitively."""
-        login = _page("<div id='ACCOUNT'></div><div class='UserChip'></div>", doctype=False)
-        after = _page("<div id='account'></div><div class='userchip'></div>")
-        assert success_candidates([login], after) == ()
-
-    def test_a_quirks_logged_in_page_counts_without_case(self) -> None:
-        after = _page("<div class='userchip'></div><div class='UserChip'></div>", doctype=False)
+    def test_the_logged_in_page_counts_without_case(self) -> None:
+        after = _page("<div class='userchip'></div><div class='UserChip'></div>")
         assert success_candidates([_LOGIN], after) == ()
+        after = _page("<div id='userMenu'></div><p id='USERMENU'></p>")
+        assert success_candidates([_LOGIN], after) == ()
+
+    def test_a_selector_keeps_its_element_s_case(self) -> None:
+        after = _page("<div id='userMenu'></div><span class='ProfileChip'></span>")
+        assert _checked([_LOGIN], after) == ("#userMenu", "span.ProfileChip")
 
     def test_the_first_of_duplicated_attributes_wins(self) -> None:
         after = _page("<div id='account-menu' id='other'></div><div class='user-a' class='user-b'>")
@@ -238,6 +256,91 @@ class TestSuccessCandidates:
             "<math class='user-math'></math><div class='user-after'></div>"
         )
         assert _checked([_LOGIN], after) == ("#user-avatar", "div.user-after")
+
+    def test_a_self_closing_svg_closes_itself(self) -> None:
+        after = _page("<svg class='user-icon'/><div class='account-box'></div>")
+        assert _checked([_LOGIN], after) == ("div.account-box",)
+
+    def test_an_image_tag_gives_only_an_id(self) -> None:
+        """The HTML parser turns <image> into <img>, so image.<token> matches
+        nothing in a browser."""
+        after = _page("<image id='user-pic' class='avatar-pic'><div class='user-row'></div>")
+        assert success_candidates([_LOGIN], after) == ("#user-pic", "div.user-row")
+
+    def test_a_repeated_class_token_counts_once(self) -> None:
+        after = _page("<div class='user-chip user-chip'></div>")
+        assert _checked([_LOGIN], after) == ("div.user-chip",)
+
+    @pytest.mark.parametrize(
+        "name", ["designing-panel", "design-intro", "guestbook", "assigning-tasks", "dialogOutline"]
+    )
+    def test_a_marker_inside_another_word_rejects_nothing(self, name: str) -> None:
+        assert _checked([_LOGIN], _page(f"<div class='{name}'></div>")) == (f"div.{name}",)
+
+    @pytest.mark.parametrize("name", ["catalog-outlet", "dialog-outline", "blogout"])
+    def test_a_sign_out_word_inside_another_word_is_no_boost(self, name: str) -> None:
+        after = _page(f"<div id='main-panel'></div><a class='{name}' href='/sale'>Sale</a>")
+        assert _checked([_LOGIN], after) == ("#main-panel", f"a.{name}")
+
+    @pytest.mark.parametrize(
+        ("markup", "selector"),
+        [
+            ("<div id='signedOut'></div>", ""),
+            ("<a class='signin-link' href='/x'>x</a>", ""),
+            ("<div class='guest2-banner'></div>", ""),
+            ("<div class='user-menu'></div>", "div.user-menu"),
+            ("<div class='myAccount'></div>", "div.myAccount"),
+            ("<div class='is-logged-in'></div>", "div.is-logged-in"),
+        ],
+    )
+    def test_words_split_at_case_changes_and_digits(self, markup: str, selector: str) -> None:
+        after = _page(f"<div id='main-panel'></div>{markup}")
+        expected = (selector, "#main-panel") if selector else ("#main-panel",)
+        assert _checked([_LOGIN], after) == expected
+
+    def test_a_name_s_words(self) -> None:
+        """Digits split words too, though a name holding a word next to digits is
+        mostly rejected as generated before its words are read."""
+        assert _words("signIn2fa_user.XMLMenu-x") == [
+            "sign",
+            "in",
+            "fa",
+            "user",
+            "xml",
+            "menu",
+            "x",
+        ]
+
+    def test_a_logout_form_is_a_sign_out_control(self) -> None:
+        after = _page(
+            "<div id='main-panel'></div>"
+            "<form id='logout-form' action='/logout' method='post'></form>"
+            "<form class='exit' action='/account/sign-out' method='post'></form>"
+        )
+        assert _checked([_LOGIN], after) == ("#logout-form", "form.exit", "#main-panel")
+
+    def test_a_sign_out_name_on_a_list_item_is_not_suggested(self) -> None:
+        after = _page("<li class='nav-logout'>Signed out</li>")
+        assert _checked([_LOGIN], after) == ()
+
+    def test_a_marker_on_every_logged_in_page_ranks_first(self) -> None:
+        """The run browsed on after landing: what every logged-in page carries is the
+        header the engine will see on the page the login lands on."""
+        landing = _page("<div id='nav-shell'></div><div id='welcome'></div>")
+        after = _page("<div id='nav-shell'></div>", "<div id='user-orders'></div>")
+        assert _checked([_LOGIN], after, earlier_logged_in=[landing]) == (
+            "#nav-shell",
+            "#user-orders",
+        )
+
+    def test_an_earlier_page_asking_for_a_one_time_code_is_logged_out(self) -> None:
+        mfa = _page(
+            "<div id='account-menu'></div>",
+            "<input name='code' autocomplete='One-Time-Code'>",
+        )
+        after = _page("<div id='account-menu'></div><div id='main-panel'></div>")
+        assert _checked([_LOGIN, mfa], after) == ("#main-panel",)
+        assert success_candidates([_LOGIN], after, earlier_logged_in=[mfa]) == ("#main-panel",)
 
     def test_unparseable_markup_does_not_raise(self) -> None:
         assert success_candidates(["<div <<"], "<div id='account-menu'><<<") == ("#account-menu",)
