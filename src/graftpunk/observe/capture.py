@@ -49,6 +49,9 @@ _POST_DATA_SETTLE_TIMEOUT_S = 5.0
 # logs its summary.
 _STOP_WAIT_S = 3.0
 _DOM_DISABLE_WAIT_S = 2.0
+# The most the page source read waits for its turn at the DOM read lock, so a read
+# stuck on a page that stopped answering DevTools cannot hold it up for good.
+_PAGE_SOURCE_TURN_WAIT_S = 10.0
 
 # MIME type constants for body handling
 BINARY_MIME_PREFIXES = (
@@ -1732,6 +1735,12 @@ class NodriverCaptureBackend:
     async def get_page_source(self) -> str | None:
         """Get the current page HTML source asynchronously.
 
+        Read as :meth:`_read_dom` reads, not by ``tab.get_content()``: that asks
+        ``DOM.getDocument(depth=-1)`` for the whole tree, which Chrome refuses with
+        "CBOR: stack limit exceeded" on a page nested about 160 or more elements
+        deep. It takes its turn as an after-read does, waiting for at most
+        ``_PAGE_SOURCE_TURN_WAIT_S`` for the read lock.
+
         Returns:
             HTML source string, or None if not available.
         """
@@ -1739,7 +1748,10 @@ class NodriverCaptureBackend:
         if tab is None:
             return None
         try:
-            return await tab.get_content()
+            _url, html = await self._read_dom(
+                tab, after_read=True, turn_wait=_PAGE_SOURCE_TURN_WAIT_S
+            )
+            return html
         except ConnectionError:
             LOG.warning("nodriver_browser_disconnected", operation="page_source")
             return None
@@ -2389,17 +2401,20 @@ class NodriverCaptureBackend:
                 return snapshot
         return None
 
-    async def _read_dom(self, tab: Any, *, after_read: bool = False) -> tuple[str, str]:
+    async def _read_dom(
+        self, tab: Any, *, after_read: bool = False, turn_wait: float | None = None
+    ) -> tuple[str, str]:
         """The page's document URL and HTML, by ``DOM.getDocument(depth=0)`` (the
         document node alone: only its id is used) then ``DOM.getOuterHTML`` of the
         document; then ``DOM.disable``, since ``getDocument`` turns on the DOM
         domain's events for the target. One read at a time; an *after_read* (the read
         after a credential post) waiting for its turn lets every request-time snapshot
-        read waiting go first, so it never makes one late (:meth:`_dom_read_turn`)."""
+        read waiting go first, so it never makes one late (:meth:`_dom_read_turn`).
+        With *turn_wait*, a turn not had in that many seconds raises TimeoutError."""
         import nodriver.cdp.dom as cdp_dom
 
         session = _capture_session_kwargs(tab, self._capture_session_id)
-        await self._dom_read_turn(after_read=after_read)
+        await asyncio.wait_for(self._dom_read_turn(after_read=after_read), turn_wait)
         try:
             document = await tab.send(cdp_dom.get_document(depth=0), **session)
             html = await tab.send(

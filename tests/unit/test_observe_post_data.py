@@ -19,6 +19,7 @@ import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from nodriver.cdp.util import parse_json_event
@@ -3933,6 +3934,7 @@ class TestTheReadAfterTheCredentialPostAtStop:
         (task,) = backend._after_read_tasks
         seen: list[tuple[str, bool]] = []
         page_source = backend.get_page_source
+        reads_before_page_source: list[float] = []
 
         async def screenshot() -> bytes | None:
             seen.append(("screenshot", backend._after_reads_closed))
@@ -3941,6 +3943,7 @@ class TestTheReadAfterTheCredentialPostAtStop:
 
         async def source() -> str | None:
             seen.append(("page source", backend._after_reads_closed))
+            reads_before_page_source.extend(reads)
             return await page_source()
 
         backend.take_screenshot = screenshot  # type: ignore[method-assign]
@@ -3949,7 +3952,10 @@ class TestTheReadAfterTheCredentialPostAtStop:
 
         assert seen == [("screenshot", True), ("page source", True)]
         assert task.cancelled()
-        assert reads == []
+        assert reads_before_page_source == []
+        # The one DOM read is the page source's own.
+        assert reads == [2.0 + 5.0]
+        assert (storage.run_dir / "page-source.html").read_text() == _LANDED_PAGE
         assert not (storage.run_dir / "snapshots" / "86.1.after.html").exists()
 
     @pytest.mark.asyncio
@@ -4122,3 +4128,100 @@ class TestTheReadAfterTheCredentialPostAtStop:
         assert "alice" not in text.lower()
         assert '<nav id="menu-***REDACTED***" class="hello-***REDACTED***">' in text
         assert '<a href="/u/***REDACTED***/settings" class="user-***REDACTED***">' in text
+
+
+class TestPageSource:
+    """``get_page_source`` reads the page as the DOM reads do (getDocument at depth
+    0, then getOuterHTML). ``tab.get_content`` asks for the whole tree at depth -1,
+    which Chrome refuses with "CBOR: stack limit exceeded" on a page nested about
+    160 or more elements deep, and the run then saved no page-source.html."""
+
+    @pytest.mark.asyncio
+    async def test_it_returns_the_outer_html_of_the_document_node(self) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _ORDERS_PAGE
+        get_content = AsyncMock(return_value="<html>from get_content</html>")
+        tab.get_content = get_content  # type: ignore[attr-defined]
+        backend = await _start(tab)
+
+        assert await backend.get_page_source() == _ORDERS_PAGE
+        assert tab.dom_requests == ["DOM.getDocument", "DOM.getOuterHTML", "DOM.disable"]
+        asked = [params for method, params in tab.sent if method == "DOM.getDocument"]
+        assert asked == [{"depth": 0}]
+        get_content.assert_not_awaited()
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_disconnect_warns_and_returns_none(self) -> None:
+        tab = FakeTab({}, _never)
+        backend = await _start(tab)
+
+        async def gone(_cmd: Any, **_kwargs: Any) -> Any:
+            raise ConnectionRefusedError("[Errno 61]")
+
+        tab.send = gone  # type: ignore[method-assign]
+        with capture_logs() as logs:
+            assert await backend.get_page_source() is None
+        assert [(e["event"], e["log_level"]) for e in logs] == [
+            ("nodriver_browser_disconnected", "warning")
+        ]
+        assert logs[0]["operation"] == "page_source"
+
+    @pytest.mark.asyncio
+    async def test_another_failure_is_logged_and_returns_none(self) -> None:
+        tab = FakeTab({}, _never)
+        backend = await _start(tab)
+        # dom_html None: Chrome refuses both reads, as for a target that went away.
+        with capture_logs() as logs:
+            assert await backend.get_page_source() is None
+        assert [(e["event"], e["log_level"]) for e in logs] == [
+            ("nodriver_get_page_source_failed", "error")
+        ]
+        assert tab.dom_requests == ["DOM.getDocument", "DOM.disable"]
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_it_waits_a_bounded_time_for_a_read_that_holds_the_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(capture, "_PAGE_SOURCE_TURN_WAIT_S", 0.01)
+        tab = FakeTab({}, _never)
+        tab.dom_html = _ORDERS_PAGE
+        backend = await _start(tab)
+        await backend._dom_read_lock.acquire()
+        with capture_logs() as logs:
+            assert await backend.get_page_source() is None
+        assert [e["event"] for e in logs] == ["nodriver_get_page_source_failed"]
+        assert tab.dom_requests == []
+        backend._dom_read_lock.release()
+        assert await backend.get_page_source() == _ORDERS_PAGE
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_snapshot_read_waiting_goes_before_it(self) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _ORDERS_PAGE
+        backend = await _start(tab)
+        gate = asyncio.Event()
+        tab.dom_gate = gate
+        finished: list[str] = []
+
+        async def source() -> None:
+            assert await backend.get_page_source() == _ORDERS_PAGE
+            finished.append("page source")
+
+        async def snapshot(label: str) -> None:
+            await backend._read_dom(tab)
+            finished.append(label)
+
+        loop = asyncio.get_running_loop()
+        holder = loop.create_task(snapshot("holder"))
+        await _turns()
+        page = loop.create_task(source())
+        await _turns()
+        queued = loop.create_task(snapshot("queued snapshot"))
+        await _turns()
+        gate.set()
+        await asyncio.gather(holder, page, queued)
+        assert finished == ["holder", "queued snapshot", "page source"]
+        await _stop(backend, tab)

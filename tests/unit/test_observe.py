@@ -1020,10 +1020,13 @@ class TestNodriverCaptureBackend:
     async def test_get_page_source_async_returns_html(self) -> None:
         browser = MagicMock()
         tab = MagicMock()
-        tab.get_content = AsyncMock(return_value="<html><body>Hello</body></html>")
+        document = MagicMock(backend_node_id=2, document_url="https://example.com/")
+        # DOM.getDocument, DOM.getOuterHTML, then DOM.disable.
+        tab.send = AsyncMock(side_effect=[document, "<html><body>Hello</body></html>", None])
         backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
         result = await backend.get_page_source()
         assert result == "<html><body>Hello</body></html>"
+        tab.get_content.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_page_source_async_returns_none_without_tab(self) -> None:
@@ -1112,7 +1115,7 @@ class TestNodriverCaptureBackend:
         ("method", "tab_attr", "operation"),
         [
             ("take_screenshot", "save_screenshot", "screenshot"),
-            ("get_page_source", "get_content", "page_source"),
+            ("get_page_source", "send", "page_source"),
         ],
     )
     async def test_browser_disconnect_warns_not_traces(

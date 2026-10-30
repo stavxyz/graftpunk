@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A credential-post snapshot redacts more of the account** (#268). Both the snapshot and the read after a post now replace the post's identifier values in any letter case where they stand as a whole word, and an email's local part of three or more characters on its own; every doctype is stored as `<!DOCTYPE html>`, and an element name that is not plain is stored as `x-redacted`. The recorder's DOM reads ask `DOM.getDocument` for the document node alone (`depth=0`) instead of the whole tree.
 
+### Fixed
+
+- **A recording of a page nested about 160 or more elements deep now saves its `page-source.html`** (#268). It was missing: the nodriver recorder read the page source with `tab.get_content()`, which asks Chrome for the whole DOM tree, and Chrome refused that tree with `CBOR: stack limit exceeded`. The page source is now read as the DOM snapshots are, `DOM.getDocument` for the document node alone, then `DOM.getOuterHTML`, and waits at most 10 seconds for another DOM read to finish first.
+
 ## [1.29.0] - 2026-10-30
 
 This is a minor release. Three changes reach a program on the first run after the upgrade:
