@@ -570,6 +570,43 @@ literal, and so does a word with one or two digits after it (`smith42`,
 `mary12`). A family of many sibling segments that each carry a digit
 (`red-widget-1`, `red-widget-2`, ...) collapses by count.
 
+Letters-only siblings, which the path rule keeps literal, are reported as a
+family beside their own rows. Two or more endpoints form a family when they share
+their method, host, content type, top-level response shape (its kind, a JSON
+object's top-level keys, a JSON array's element kind; a JSON body too large to
+read never joins), number of segments (two or more), and trailing slash, and
+their templates differ in exactly one segment, which in each is letters-only:
+every part of it, split on `_`, `.`, `-`, `~`, and `$`, is ASCII letters. The
+varying segment is never a routing word (`admin`, `ajax`, `api`, `apis`,
+`assets`, `auth`, `graphql`, `internal`, `oauth`, `public`, `rest`, `rpc`,
+`search`, `static`, or `www`, in any case), and as a path's last segment it never
+holds a `.` (`intro.html` and `setup.html` are two documents). A single-segment
+path never joins a family, since every root route (`/about`, `/contact`) would,
+and neither does an endpoint of the login flow. An endpoint that fits two
+families, differing from some siblings in one segment and from others in
+another, joins neither, and a family left with one member by that is dropped.
+Each family is one more endpoint beside its members, whose rows stay exactly as
+they are: `/search/north-region/items/` and `/search/south-region/items/` also
+give `/search/{search_slug}/items/`. A recording cannot know what the segment
+names, so the placeholder's name is neutral, for the author to rename: the
+singular of the segment before it (a final `ies` becomes `y`; a final `s` is
+dropped unless it follows `s`, `u`, or `i`) plus `_slug` when that segment is a
+plain word of ASCII letters (`/categories/{category_slug}/items/`), else `slug`
+(`/stores/{store_id}/{slug}/items`), with a number from 2 appended when the
+template already holds a placeholder of that name. The markdown digest lists a
+family row just before its first member, with a line giving its member count and
+each member's value of the varying segment, and its summary line counts families
+apart from endpoints. `--json` and `--endpoints-json` carry the members'
+templates in `family_members` on the family row only, so a run with no family
+prints what it printed before. A family row is a suggestion: `gp plugin new` and
+`gp plugin add-command` render a stub for it only when `--command` names it, and
+that stub takes the placeholder as a parameter and builds its request from it.
+`gp observe fixtures` writes a family's recordings under the family's template
+only when a `--match` names that template exactly (a glob never does), the
+family's fixture recording first, chosen from its members' recordings by the
+rule every endpoint's is. A command naming a member's own template behaves as it
+did before families existed.
+
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
 response keys; request header names; cookie and token candidate names; and a
@@ -1087,7 +1124,14 @@ visible.
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
 for answering `ctx.request_json`/`request_text` from a file under
 `tests/fixtures/` instead of the network, named the way `gp observe
-fixtures` names captures. A plugin added to an existing suite gets
+fixtures` names captures. A request with no fixture of its own is answered by
+a fixture named for a family row (its name holds a `slug` or `<word>_slug`
+placeholder, which no other rule writes) whose name differs from the request's
+templated path in that one segment: `get_search_{search_slug}_items.json`
+answers `/search/west-region/items/`. Each segment is tried in turn, from the
+first. A generated test for a family command passes the value its family's
+fixture recording sent and reads that fixture. A fixture named for an `id` placeholder
+answers only its own name, as before. A plugin added to an existing suite gets
 `tests/fixtures/<module>/` of its own, since fixture names are per endpoint
 and two plugins in one suite can share an endpoint path. `gp observe
 fixtures` writes a `<file>.meta.json` sidecar beside every capture (a `schema`
