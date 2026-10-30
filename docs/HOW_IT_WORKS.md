@@ -881,8 +881,9 @@ it: a top-level document POST, sent between its load and the next page load,
 whose body has a field name, or whose URL path has a segment, holding a word
 `otp`, `totp`, `mfa`, `2fa`, `twofactor`, `verify`, `verification`, `challenge`,
 `trust`, `kmsi`, `stay`, `signin`, `login`, `auth`, `sso`, or `consent`, or that
-is `code` alone or `remember` with only `me`, `device`, `browser`, `computer`,
-or `login` beside it (`remember_me`), so `postal_code`, `currencyCode`, and
+is `code` alone or `remember` with only `me`, `my`, `this`, `device`,
+`browser`, `computer`, or `login` beside it (`remember_me`,
+`remember_my_device`), so `postal_code`, `currencyCode`, and
 `remember_filters` are not step names
 (`graftpunk.har.login_signals.is_login_step_post`). A field named like a CSRF
 token (`graftpunk.har.documents.looks_like_token_name`, such as ASP.NET's

@@ -120,7 +120,7 @@ _STEP_WORDS = frozenset(
         "consent",
     }
 )
-_REMEMBER_COMPANIONS = frozenset({"me", "device", "browser", "computer", "login"})
+_REMEMBER_COMPANIONS = frozenset({"me", "my", "this", "device", "browser", "computer", "login"})
 # A credential value this short, or one of these words, is in too many names to
 # say anything about the account.
 _MIN_VALUE_LENGTH = 3

@@ -481,6 +481,8 @@ class TestALoginStepPost:
             ("/x", ("rememberMe",)),
             ("/x", ("remember_me",)),
             ("/x", ("rememberDevice",)),
+            ("/x", ("remember_my_device",)),
+            ("/x", ("remember-this-browser",)),
             ("/x", ("remember-browser",)),
             ("/x", ("RememberComputer",)),
             ("/x", ("remember_login",)),
@@ -511,8 +513,8 @@ class TestALoginStepPost:
             ("/x", ("trustee",)),
             ("/x", ("staying",)),
             ("/x", ("authority",)),
-            # "code" counts only as a whole name, "remember" only beside me,
-            # device, browser, computer, or login.
+            # "code" counts only as a whole name, "remember" only beside me, my,
+            # this, device, browser, computer, or login.
             ("/x", ("postal_code",)),
             ("/x", ("coupon_code",)),
             ("/x", ("zipCode",)),
