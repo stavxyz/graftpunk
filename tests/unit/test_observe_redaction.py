@@ -18,7 +18,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from graftpunk.observe.run import REDACTED, Redaction, is_identifier_field, redact_har_entries
+from graftpunk.observe.run import (
+    REDACTED,
+    Redaction,
+    is_identifier_field,
+    redact_har_entries,
+    redact_request_body_files,
+)
 
 # Every name the reviews of #286 found a heuristic leak: all are secrets.
 SECRET_FIELD_NAMES = [
@@ -376,3 +382,70 @@ class TestBasicCredentials:
         (clean,) = redact_har_entries([entry], Redaction(secrets=("hunter2-0?",)))
 
         assert json.loads(clean["response"]["content"]["text"]) == {"auth": f"Basic {REDACTED}"}
+
+
+_PART = '--b\r\nContent-Disposition: form-data; name="password"\r\n\r\n{}\r\n--b--'
+
+
+class TestBodyValuesMatchWholeValuesOfARequestBody:
+    """A wrong password typed as a throwaway (#268) is scrubbed only where it is a
+    whole value of a request body: a throwaway such as ``password`` leaves field
+    names, other values, URLs, headers, and responses intact."""
+
+    @pytest.mark.parametrize(
+        ("body", "scrubbed"),
+        [
+            # A key, a longer value, and a value holding it are left alone.
+            (
+                '{"password": "password", "hint": "password1", "note": "my password"}',
+                '{"password": "***REDACTED***", "hint": "password1", "note": "my password"}',
+            ),
+            # One level into a string holding JSON.
+            (
+                json.dumps({"state": json.dumps({"password": "password"})}),
+                json.dumps({"state": json.dumps({"password": "***REDACTED***"})}),
+            ),
+            ("password=password&next=%2Fpassword", "password=***REDACTED***&next=%2Fpassword"),
+            (
+                "login=jsmith\r\npassword=password\r\n",
+                "login=jsmith\r\npassword=***REDACTED***\r\n",
+            ),
+            (
+                _PART.format("password"),
+                _PART.format("***REDACTED***"),
+            ),
+            ("password", "***REDACTED***"),
+            ("passwords=passwords", "passwords=passwords"),
+        ],
+    )
+    def test_whole_values_of_a_body_only(self, body: str, scrubbed: str) -> None:
+        entry = {
+            "request": {
+                "url": "https://myshop.example/password",
+                "headers": [{"name": "X-Mode", "value": "password"}],
+                "postData": {
+                    "text": body,
+                    "params": [{"name": "password", "value": "password"}],
+                },
+            },
+            "response": {"content": {"text": "password"}},
+        }
+        (out,) = redact_har_entries([entry], Redaction(body_values=("password",)))
+        assert out["request"]["postData"]["text"] == scrubbed
+        assert out["request"]["postData"]["params"] == [
+            {"name": "password", "value": "***REDACTED***"}
+        ]
+        assert out["request"]["url"] == "https://myshop.example/password"
+        assert out["request"]["headers"] == entry["request"]["headers"]
+        assert out["response"] == entry["response"]
+        # The input is not changed.
+        assert entry["request"]["postData"]["text"] == body
+
+    def test_a_request_body_file_is_scrubbed_the_same_way(self, tmp_path: Path) -> None:
+        (tmp_path / "bodies").mkdir()
+        (tmp_path / "bodies" / "1.txt").write_text('{"password": "password", "x": "password1"}')
+        entries = [{"request": {"_postDataFile": "bodies/1.txt"}}]
+        redact_request_body_files(entries, Redaction(body_values=("password",)), tmp_path)
+        assert (tmp_path / "bodies" / "1.txt").read_text() == (
+            '{"password": "***REDACTED***", "x": "password1"}'
+        )
