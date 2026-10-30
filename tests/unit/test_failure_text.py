@@ -527,6 +527,15 @@ class TestScrubFailedPassword:
             f"username=jsmith\r\npassword={self._R}\r\n"
         )
 
+    def test_a_one_line_text_plain_body_loses_the_whole_value(self) -> None:
+        """An identifier-first password page with ``enctype="text/plain"`` sends one
+        field and its CRLF; the part after an ``&`` is the password too."""
+        body = "password=pa&ss9\r\n"
+        assert failed_password_values(body, "text/plain") == ["pa&ss9"]
+        assert scrub_failed_password(body, "text/plain", ["pa&ss9"]) == (
+            f"password={self._R}\r\n"
+        )
+
     def test_a_text_plain_value_is_compared_as_written(self) -> None:
         body = "username=jsmith\npassword=pa+ss%9\n"
         assert failed_password_values(body, "text/plain") == ["pa+ss%9"]
@@ -557,6 +566,7 @@ class TestScrubFailedPassword:
             ("username=jsmith\r\npassword=ab\r\ncd\r\nremember=1", "text/plain"),
             ("username=jsmith&password=wrong-abc123\n", _FORM),
             ("password=pa&ss9", "text/plain"),
+            ("password=pa&ss9\r\n", "text/plain"),
             ("username=jsmith&password=p%26ss+9&password=x%0Ay", _FORM),
             (json.dumps({"user": {"password": "wrong-abc123"}}), _JSON),
             ('{"username": "jsmith", "password": 12345678}', _JSON),

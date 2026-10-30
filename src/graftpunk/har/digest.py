@@ -923,10 +923,13 @@ def _text_plain_fields(post_data: str) -> list[tuple[tuple[str, ...], str]] | No
     its part before its first ``=`` is spelled like a field name, each later line
     holding ``=`` starts one whatever its name (``loginForm:log``, ``user name``),
     and a line with no ``=`` continues the value before it. A value is read as
-    written: no ``&`` splitting and no percent-decoding. ``None`` when the body is
-    one line (the form read takes it) or its first line starts no field."""
+    written: no ``&`` splitting and no percent-decoding. A browser ends every field
+    with CRLF, so one line ending in a line break is one field. ``None`` when the
+    body is one line with no line break after it (a script's ``fetch`` of a string
+    declares ``text/plain`` and often sends a URL-encoded form; the form read takes
+    it) or its first line starts no field."""
     lines = re.split(r"\r?\n", post_data.rstrip("\r\n"))
-    if len(lines) < 2:
+    if len(lines) < 2 and not post_data.endswith("\n"):
         return None
     first, separator, _value = lines[0].partition("=")
     if not (separator and _field_name_shaped(first)):
