@@ -2645,11 +2645,11 @@ class NodriverCaptureBackend:
         kept for the read's redaction until then: dropped when the read is scheduled,
         when the request fails (:meth:`_on_loading_failed`), or at stop, and never
         kept for a post seen after stop. A post whose body is not read by its field
-        names (:func:`graftpunk.har.digest.post_account_values` gives ``None``: XML, a
-        JSON value under no name, a value nested past the JSON parser's limit, no
-        body) gets no read, and so no file and no link: what to redact from it is not
-        known, and the digest suggests nothing for such a run anyway. That is one
-        debug line."""
+        names (:func:`graftpunk.har.digest.post_account_values` gives ``None``; for a
+        credential post that means a field value holding JSON nested past the JSON
+        parser's limit) gets no read, and so no file and no link: what to redact from
+        it is not known, and the digest suggests nothing for such a run anyway. That
+        is one debug line."""
         from graftpunk.har.digest import post_account_values
 
         if post_account_values(body_text, _request_content_type(data)) is None:
