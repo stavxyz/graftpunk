@@ -3872,3 +3872,253 @@ class TestTheReadAfterTheCredentialPost:
         assert entry.request.dom_after_file == "snapshots/85.1.after.html"
         assert entry.request.dom_after is not None
         assert 'id="account-menu"' in entry.request.dom_after
+
+
+def _loading_failed(rid: str) -> Any:
+    return parse_json_event(
+        {
+            "method": "Network.loadingFailed",
+            "params": {
+                "requestId": rid,
+                "timestamp": 3.0,
+                "type": "Fetch",
+                "errorText": "net::ERR_ABORTED",
+            },
+        }
+    )
+
+
+async def _turns(count: int = 20) -> None:
+    """Let the loop run the tasks that are ready, *count* turns."""
+    for _ in range(count):
+        await asyncio.sleep(0)
+
+
+class TestTheReadAfterTheCredentialPostAtStop:
+    """#268 part 2, review round 1: stop closes the reads before the screenshot and
+    the page source, no body text outlives the scheduling decision, one DOM read at a
+    time with a request-time read first, and a failed second write keeps the first."""
+
+    _login = TestTheReadAfterTheCredentialPost._login
+    _after = staticmethod(TestTheReadAfterTheCredentialPost._after)
+
+    @pytest.mark.asyncio
+    async def test_save_closes_the_reads_before_the_screenshot_and_the_page_source(
+        self, tmp_path: Path
+    ) -> None:
+        """The screenshot takes 5 s of the fake clock: a read due at 3 s would land in
+        it if the reads were still open."""
+        from graftpunk.observe.run import save_observe_run
+        from graftpunk.observe.storage import ObserveStorage
+
+        storage = ObserveStorage(tmp_path, "myshop", "r1")
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LANDED_PAGE
+        clock = FakeClock()
+        backend = NodriverCaptureBackend(
+            object(),
+            get_tab=lambda: tab,
+            bodies_dir=storage.run_dir / "bodies",
+            dom_snapshots_dir=storage.run_dir / "snapshots",
+        )
+        backend._now, backend._sleep = clock.time, clock.sleep
+        reads: list[float] = []
+        tab.on_dom_read = lambda: reads.append(clock.now)
+        await backend.start_capture_async()
+        # The listener's snapshot is the post's own, so every DOM read is an after-read.
+        await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40))
+        await tab.dispatch(_will_be_sent("86.1", inline=_LOGIN_BODY, url=LOGIN))
+        await tab.dispatch(_response_received("86.1", url=LOGIN))
+        await clock.advance(2, backend)
+        (task,) = backend._after_read_tasks
+        seen: list[tuple[str, bool]] = []
+        page_source = backend.get_page_source
+
+        async def screenshot() -> bytes | None:
+            seen.append(("screenshot", backend._after_reads_closed))
+            await clock.advance(5, backend)
+            return None
+
+        async def source() -> str | None:
+            seen.append(("page source", backend._after_reads_closed))
+            return await page_source()
+
+        backend.take_screenshot = screenshot  # type: ignore[method-assign]
+        backend.get_page_source = source  # type: ignore[method-assign]
+        await save_observe_run(storage, backend, "observe-go")
+
+        assert seen == [("screenshot", True), ("page source", True)]
+        assert task.cancelled()
+        assert reads == []
+        assert not (storage.run_dir / "snapshots" / "86.1.after.html").exists()
+
+    @pytest.mark.asyncio
+    async def test_the_sync_stop_cancels_the_reads(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path)
+        await clock.advance(1, backend)
+        (task,) = backend._after_read_tasks
+        backend.stop_capture()
+        await _turns()
+        assert task.cancelled()
+        assert backend._after_reads_closed
+        await clock.advance(60, backend)
+        assert reads == []
+
+    @pytest.mark.asyncio
+    async def test_a_stop_with_no_tab_cancels_the_reads(self, tmp_path: Path) -> None:
+        holder: dict[str, FakeTab | None] = {"tab": FakeTab({}, _never)}
+        tab = holder["tab"]
+        assert tab is not None
+        tab.dom_html = _LANDED_PAGE
+        clock = FakeClock()
+        backend = NodriverCaptureBackend(
+            object(), get_tab=lambda: holder["tab"], dom_snapshots_dir=tmp_path / "snapshots"
+        )
+        backend._now, backend._sleep = clock.time, clock.sleep
+        await backend.start_capture_async()
+        await tab.dispatch(_will_be_sent("87.1", inline=_LOGIN_BODY, url=LOGIN))
+        await tab.dispatch(_response_received("87.1", url=LOGIN))
+        await clock.advance(1, backend)
+        (task,) = backend._after_read_tasks
+        holder["tab"] = None
+        await backend.stop_capture_async()
+        assert task.cancelled()
+        assert clock.waiting == []
+
+    @pytest.mark.asyncio
+    async def test_a_post_seen_after_stop_keeps_no_body(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        await _stop(backend, tab)
+        await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40))
+        await tab.dispatch(_will_be_sent("88.1", inline=_LOGIN_BODY, url=LOGIN))
+        assert backend._after_read_due == {}
+        await tab.dispatch(_response_received("88.1", url=LOGIN))
+        assert backend._after_read_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_a_response_after_stop_starts_no_read(self, tmp_path: Path) -> None:
+        """The start's own check: a post whose response is already known (its body
+        fetched late) after stop."""
+        tab = FakeTab({}, _never)
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        await _stop(backend, tab)
+        backend._expect_after_read("89.1", {"response": {"status": 200}}, _LOGIN_BODY)
+        assert backend._after_read_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_post_drops_its_body(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path, respond=False)
+        assert backend._after_read_due["80.1"][1] == _LOGIN_BODY
+        await tab.dispatch(_loading_failed("80.1"))
+        assert backend._after_read_due == {}
+        await clock.advance(60, backend)
+        assert reads == []
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_response_of_another_request_under_the_id_schedules_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """A response is matched to the waiting post by its entry, not by request id
+        alone: one for another entry under the same id leaves the post waiting."""
+        tab, backend, clock, reads = await self._login(tmp_path, respond=False)
+        backend._response_arrived("80.1", {"request": {"method": "GET"}})
+        assert backend._after_read_tasks == set()
+        assert "80.1" in backend._after_read_due
+        await tab.dispatch(_response_received("80.1", url=LOGIN))
+        await clock.advance(3, backend)
+        assert reads == [3.0]
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_the_read_asks_for_the_document_node_alone(self, tmp_path: Path) -> None:
+        tab, backend, clock, _reads = await self._login(tmp_path)
+        await clock.advance(3, backend)
+        await _stop(backend, tab)
+        asked = [params for method, params in tab.sent if method == "DOM.getDocument"]
+        assert asked
+        assert all(params == {"depth": 0} for params in asked)
+
+    @pytest.mark.asyncio
+    async def test_one_dom_read_at_a_time_and_a_snapshot_read_goes_first(self) -> None:
+        """An after-read holds the read; another after-read queues, then a
+        request-time snapshot read: the snapshot read goes next."""
+        tab = FakeTab({}, _never)
+        tab.dom_html = _ORDERS_PAGE
+        backend = await _start(tab)
+        gate = asyncio.Event()
+        tab.dom_gate = gate
+        asked: list[int] = []
+        tab.on_dom_read = lambda: asked.append(1)
+        finished: list[str] = []
+
+        async def read(label: str, *, after_read: bool) -> None:
+            await backend._read_dom(tab, after_read=after_read)
+            finished.append(label)
+
+        loop = asyncio.get_running_loop()
+        first = loop.create_task(read("first", after_read=True))
+        await _turns()
+        queued = loop.create_task(read("queued after-read", after_read=True))
+        await _turns()
+        snapshot = loop.create_task(read("snapshot", after_read=False))
+        await _turns()
+        assert len(asked) == 1
+        gate.set()
+        await asyncio.gather(first, queued, snapshot)
+        assert finished == ["first", "snapshot", "queued after-read"]
+        methods = [method for method, _params in tab.sent if method.startswith("DOM.")]
+        assert methods == ["DOM.getDocument", "DOM.getOuterHTML", "DOM.disable"] * 3
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_second_write_that_fails_leaves_the_first_whole(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.observe import storage
+
+        real = storage.write_private_file
+        writes: list[str] = []
+
+        def flaky(path: Path, data: str | bytes) -> None:
+            if ".after." not in path.name:
+                real(path, data)
+                return
+            writes.append(path.name)
+            if len(writes) == 1:
+                real(path, data)
+                return
+            path.write_text(str(data)[:5])
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(storage, "write_private_file", flaky)
+        tab, backend, clock, reads = await self._login(tmp_path)
+        await clock.advance(3, backend)
+        tab.dom_html = _ORDERS_PAGE
+        await clock.advance(7, backend)
+        await _stop(backend, tab)
+
+        assert reads == [3.0, 10.0]
+        assert len(writes) == 2
+        assert 'id="account-menu"' in self._after(tmp_path).read_text()
+        assert sorted(p.name for p in (tmp_path / "snapshots").iterdir()) == [
+            "80.1.after.html",
+            "80.1.html",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_email_s_local_part_and_the_username_in_any_case_are_redacted(
+        self, tmp_path: Path
+    ) -> None:
+        page = (
+            '<html><body><nav id="menu-ALICE" class="hello-Alice">'
+            '<a href="/u/alice/settings" class="user-alice"></a></nav></body></html>'
+        )
+        tab, backend, clock, _reads = await self._login(tmp_path, html=page)
+        await clock.advance(3, backend)
+        await _stop(backend, tab)
+        text = self._after(tmp_path).read_text()
+        assert "alice" not in text.lower()
+        assert '<nav id="menu-***REDACTED***" class="hello-***REDACTED***">' in text
+        assert '<a href="/u/***REDACTED***/settings" class="user-***REDACTED***">' in text

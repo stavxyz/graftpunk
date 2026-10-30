@@ -1641,8 +1641,13 @@ class NodriverCaptureBackend:
         self._top_loaded = asyncio.Event()
         self._top_loaded.set()
         # One DevTools DOM read at a time: each ends with DOM.disable, which must not
-        # land between another read's getDocument and getOuterHTML.
+        # land between another read's getDocument and getOuterHTML. A request-time
+        # snapshot read goes before an after-read waiting for the lock (_read_dom):
+        # the count of those waiting, and set when none is.
         self._dom_read_lock = asyncio.Lock()
+        self._snapshot_reads_waiting = 0
+        self._no_snapshot_read_waiting = asyncio.Event()
+        self._no_snapshot_read_waiting.set()
         # The after-read's clock and sleep; tests replace both.
         self._now: Callable[[], float] = time.monotonic
         self._sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
@@ -1660,7 +1665,10 @@ class NodriverCaptureBackend:
         LOG.debug("nodriver_capture_started")
 
     def stop_capture(self) -> None:
-        """Stop capturing browser data."""
+        """Stop capturing browser data: no read after a credential post starts from
+        now on, and the ones waiting or running are cancelled (not waited for, as
+        this is not a coroutine)."""
+        self._close_after_read_state()
         LOG.debug("nodriver_capture_stopped")
 
     def take_screenshot_sync(self) -> bytes | None:
@@ -1786,6 +1794,11 @@ class NodriverCaptureBackend:
         if self._dom_snapshots_dir is not None:
             await self._install_dom_listener(tab)
             self._watch_top_level_loads(tab)
+            # A credential post that fails gets no response: its after-read's body
+            # text is dropped then (_expect_after_read).
+            loading_failed = getattr(network, "LoadingFailed", None)
+            if loading_failed is not None:
+                tab.add_handler(loading_failed, self._on_loading_failed)
 
         # Console log capture
         await tab.send(cdp_runtime.enable())
@@ -1798,7 +1811,7 @@ class NodriverCaptureBackend:
         tab = self._tab
         if tab is None:
             self._post_data_closed = True
-            await self._cancel_after_reads()
+            await self.close_after_reads()
             if self._record_request_bodies:
                 _flag_uncaptured_post_data(self._request_map)
             self._mark_unfetched_response_bodies("no_tab")
@@ -1823,8 +1836,9 @@ class NodriverCaptureBackend:
 
         try:
             # A read after a credential post can wait up to AFTER_READ_CAP_S: it is
-            # not waited for. A read it already stored stays.
-            await self._cancel_after_reads()
+            # cancelled, not waited out (save_observe_run has cancelled it already,
+            # before the screenshot and the page source). A read it stored stays.
+            await self.close_after_reads()
             await self._settle_request_time_fetches()
             if (
                 self._dom_snapshot_failures
@@ -2375,27 +2389,53 @@ class NodriverCaptureBackend:
                 return snapshot
         return None
 
-    async def _read_dom(self, tab: Any) -> tuple[str, str]:
-        """The page's document URL and HTML, by ``DOM.getDocument(depth=-1,
-        pierce=True)`` then ``DOM.getOuterHTML`` of the document, as nodriver's
-        ``Tab.get_content`` reads the page source; then ``DOM.disable``, since
-        ``getDocument`` turns on the DOM domain's events for the target."""
+    async def _read_dom(self, tab: Any, *, after_read: bool = False) -> tuple[str, str]:
+        """The page's document URL and HTML, by ``DOM.getDocument(depth=0)`` (the
+        document node alone: only its id is used) then ``DOM.getOuterHTML`` of the
+        document; then ``DOM.disable``, since ``getDocument`` turns on the DOM
+        domain's events for the target. One read at a time; an *after_read* (the read
+        after a credential post) waiting for its turn lets every request-time snapshot
+        read waiting go first, so it never makes one late (:meth:`_dom_read_turn`)."""
         import nodriver.cdp.dom as cdp_dom
 
         session = _capture_session_kwargs(tab, self._capture_session_id)
-        async with self._dom_read_lock:
+        await self._dom_read_turn(after_read=after_read)
+        try:
+            document = await tab.send(cdp_dom.get_document(depth=0), **session)
+            html = await tab.send(
+                cdp_dom.get_outer_html(backend_node_id=document.backend_node_id), **session
+            )
+        finally:
             try:
-                document = await tab.send(cdp_dom.get_document(depth=-1, pierce=True), **session)
-                html = await tab.send(
-                    cdp_dom.get_outer_html(backend_node_id=document.backend_node_id), **session
-                )
-            finally:
                 # Bounded: this also runs when stop cancels a read the page never answered.
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(
                         tab.send(cdp_dom.disable(), **session), _DOM_DISABLE_WAIT_S
                     )
+            finally:
+                self._dom_read_lock.release()
         return getattr(document, "document_url", None) or "", html
+
+    async def _dom_read_turn(self, *, after_read: bool) -> None:
+        """Take the DOM read lock. A request-time snapshot read counts itself as
+        waiting until it has the lock; an after-read takes it only when no snapshot
+        read is waiting, and hands it back to one that queued meanwhile."""
+        if not after_read:
+            self._snapshot_reads_waiting += 1
+            self._no_snapshot_read_waiting.clear()
+            try:
+                await self._dom_read_lock.acquire()
+            finally:
+                self._snapshot_reads_waiting -= 1
+                if not self._snapshot_reads_waiting:
+                    self._no_snapshot_read_waiting.set()
+            return
+        while True:
+            await self._no_snapshot_read_waiting.wait()
+            await self._dom_read_lock.acquire()
+            if not self._snapshot_reads_waiting:
+                return
+            self._dom_read_lock.release()
 
     async def _late_page(
         self, tab: Any, rid: str, data: dict[str, Any]
@@ -2530,14 +2570,21 @@ class NodriverCaptureBackend:
         """The top-level document fired its load event."""
         self._top_loaded.set()
 
+    def _on_loading_failed(self, event: Any) -> None:
+        """A request failed (Network.loadingFailed): a credential post waiting for its
+        response gets none, so its body text is dropped."""
+        self._after_read_due.pop(str(getattr(event, "request_id", "")), None)
+
     def _expect_after_read(self, rid: str, data: dict[str, Any], body_text: str | None) -> None:
         """Schedule the read of the page after the credential post *rid*, whose own
         entry is *data*, once its response arrives (:meth:`_response_arrived`), or now
         when it already has (a body known only after the response). *body_text* is
-        kept for the read's redaction until then."""
+        kept for the read's redaction until then: dropped when the read is scheduled,
+        when the request fails (:meth:`_on_loading_failed`), or at stop, and never
+        kept for a post seen after stop."""
         if "response" in data:
             self._start_after_read(rid, data, body_text)
-        else:
+        elif not self._after_reads_closed and self._dom_snapshots_dir is not None:
             self._after_read_due[rid] = (data, body_text)
 
     def _response_arrived(self, rid: str, data: dict[str, Any]) -> None:
@@ -2612,7 +2659,7 @@ class NodriverCaptureBackend:
             from graftpunk.observe.snapshot import stored_dom_snapshot
             from graftpunk.observe.storage import make_private_dir, write_private_file
 
-            _url, html = await self._read_dom(tab)
+            _url, html = await self._read_dom(tab, after_read=True)
             if not isinstance(html, str) or not html.strip():
                 LOG.debug("nodriver_dom_after_read_skipped", request_id=rid, reason="no_document")
                 return
@@ -2651,15 +2698,24 @@ class NodriverCaptureBackend:
             return
         data["_dom_after"] = f"{snapshots_dir.name}/{name}"
 
-    async def _cancel_after_reads(self) -> None:
-        """Start no read after a credential post from now on, and cancel the ones
-        waiting or running; a read already stored stays. Waits for the cancelled ones
-        at most ``_STOP_WAIT_S``."""
+    def _close_after_read_state(self) -> list[asyncio.Task[Any]]:
+        """Start no read after a credential post from now on, drop the body text kept
+        for the posts still waiting for a response, and cancel the reads waiting or
+        running; the ones cancelled."""
         self._after_reads_closed = True
         self._after_read_due.clear()
         running = [task for task in self._after_read_tasks if not task.done()]
         for task in running:
             task.cancel()
+        return running
+
+    async def close_after_reads(self) -> None:
+        """Start no read after a credential post from now on, and cancel the ones
+        waiting or running; a read already stored stays. Waits for the cancelled ones
+        to finish at most ``_STOP_WAIT_S`` (a cancelled read still sends its bounded
+        ``DOM.disable``). :func:`graftpunk.observe.run.save_observe_run` calls it
+        before the screenshot and the page source, and every stop calls it again."""
+        running = self._close_after_read_state()
         if not running:
             return
         _done, unfinished = await asyncio.wait(running, timeout=_STOP_WAIT_S)
