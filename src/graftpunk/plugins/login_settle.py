@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import dataclasses
 import fnmatch
+import json
 import time
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
@@ -517,63 +518,90 @@ def driver_url(driver: Any) -> str:
     return url if isinstance(url, str) else ""
 
 
-def _warn_success_before_submit(*, site_name: str, selector: str, backend: str) -> None:
-    """Warn that the ``success`` element is on the page before the login submits."""
+def _warn_success_before_submit(*, login_config: LoginConfig, site_name: str, backend: str) -> None:
+    """Warn that the ``success`` element is on the page before the login submits. With
+    ``success_url`` set too, the URL must also move off the submit's page, so the
+    element alone cannot pass the login early, and the hint says so instead."""
+    selector = login_config.success
+    if login_config.success_url:
+        hint = (
+            f"LoginConfig.success '{selector}' is already on the page before the login "
+            "submits. success_url is set too, so the login still waits for the URL to "
+            "change, but the element tells nothing about the login. Choose one that "
+            "appears only after login."
+        )
+    else:
+        hint = (
+            f"LoginConfig.success '{selector}' is already on the page before the login "
+            "submits, so the login may report success before it happens, even with "
+            "wrong credentials. Choose an element that appears only after login."
+        )
     LOG.warning(
         "login_success_present_before_submit",
         plugin=site_name,
         selector=selector,
         backend=backend,
-        hint=(
-            f"LoginConfig.success '{selector}' is already on the page before the login "
-            "submits, so the login may report success before it happens, even with "
-            "wrong credentials. Choose an element that appears only after login."
-        ),
+        hint=hint,
+    )
+
+
+def _success_probe_js(selector: str) -> str:
+    """A page expression answering whether *selector* matches in the top document:
+    true, or false for no match and for a selector the page rejects. The comment
+    names the probe for the tests' scripted tab."""
+    return (
+        "/* graftpunk:success-probe */ (() => { try { return document.querySelector("
+        f"{json.dumps(selector)}) !== null; }} catch (e) {{ return false; }} }})()"
     )
 
 
 async def success_shown_before_submit_nodriver(
     tab: Any,  # nodriver.Tab
     *,
-    selector: str,
+    login_config: LoginConfig,
     site_name: str,
 ) -> bool:
-    """Probe *selector*, the plugin's ``success``, once just before a submit, and warn
-    when it is already there: a ``success`` element on the login page passes the
-    wait's first tick before the login happens, and nothing else would say so (#268).
+    """Probe the plugin's ``success`` once just before a submit, and warn when it is
+    already there: a ``success`` element on the login page passes the wait's first
+    tick before the login happens, and nothing else would say so (#268).
 
-    A warning only, never a failure, so a plugin that logs in today still does. A
-    probe that cannot be answered (a selector the browser rejects, a page mid-load)
-    reads as not found. True when it warned."""
-    if not selector:
+    A warning only, never a failure, so a plugin that logs in today still does. The
+    probe is a ``Runtime.evaluate``, not ``Tab.query_selector``: nodriver's
+    query_selector sends ``DOM.disable`` when its query fails (read in nodriver
+    0.48.1 and 0.50.6, ``Tab.query_selector``), which the probe must not do just
+    before the click. A probe that cannot be answered (a selector the page rejects,
+    a page mid-load, the evaluate's ExceptionDetails) reads as not found. True when
+    it warned."""
+    if not login_config.success:
         return False
     try:
-        found = await tab.query_selector(selector) is not None
+        answer = await tab.evaluate(_success_probe_js(login_config.success), return_by_value=True)
     except Exception as exc:  # broad by design: the probe is advisory, the login goes on
         LOG.debug(
             "login_success_probe_failed", plugin=site_name, error=str(exc), backend="nodriver"
         )
         return False
-    if found:
-        _warn_success_before_submit(site_name=site_name, selector=selector, backend="nodriver")
-    return found
+    if answer is not True:
+        return False
+    _warn_success_before_submit(login_config=login_config, site_name=site_name, backend="nodriver")
+    return True
 
 
 def success_shown_before_submit_selenium(
     driver: Any,  # selenium WebDriver
     *,
-    selector: str,
+    login_config: LoginConfig,
     site_name: str,
 ) -> bool:
     """The selenium twin of :func:`success_shown_before_submit_nodriver`. A selector
     the browser rejects is not raised here: the wait after the submit raises it as it
     always did."""
-    if not selector:
+    if not login_config.success:
         return False
     from selenium.common.exceptions import NoSuchElementException
 
     try:
-        driver.find_element("css selector", selector)
+        driver.find_element("css selector", login_config.success)
     except NoSuchElementException:
         return False
     except Exception as exc:  # broad by design: the probe is advisory, the login goes on
@@ -581,7 +609,7 @@ def success_shown_before_submit_selenium(
             "login_success_probe_failed", plugin=site_name, error=str(exc), backend="selenium"
         )
         return False
-    _warn_success_before_submit(site_name=site_name, selector=selector, backend="selenium")
+    _warn_success_before_submit(login_config=login_config, site_name=site_name, backend="selenium")
     return True
 
 

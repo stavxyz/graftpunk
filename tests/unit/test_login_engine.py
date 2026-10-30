@@ -816,6 +816,9 @@ class _ScriptedNodriverTab:
         self._ready_reads = 0
         self._unreadable_ticks = unreadable_ticks
         self.send = AsyncMock()
+        # What the engine asked of the success element and when it clicked submit,
+        # in order: "probe" (the pre-submit check), "query" (a poll read), "click".
+        self.order: list[str] = []
 
     def __getattr__(self, name: str) -> MagicMock:
         """Anything the browser stack asks of a tab that this script does not model.
@@ -859,11 +862,15 @@ class _ScriptedNodriverTab:
 
     async def query_selector(self, selector: str) -> Any:
         if selector and selector == self._success_selector:
+            self.order.append("query")
             found = self._success_from is not None and self.tick >= self._success_from
             return AsyncMock() if found else None
-        return AsyncMock()
+        element = AsyncMock()
+        if selector == "#submit":
+            element.click = AsyncMock(side_effect=lambda: self.order.append("click"))
+        return element
 
-    async def evaluate(self, expression: str, **kwargs: Any) -> str:
+    async def evaluate(self, expression: str, **kwargs: Any) -> Any:
         """The document-readiness read, and the field read-back the steps make.
 
         ``_read_field_value`` evaluates its own JS with ``return_by_value=True``;
@@ -874,6 +881,14 @@ class _ScriptedNodriverTab:
         That read is deliberately not recorded, because ``events`` is the order of
         the post-submit wait and a read from the steps would interleave with it.
         """
+        if "graftpunk:success-probe" in expression:
+            self.order.append("probe")
+            return (
+                bool(self._success_selector)
+                and json.dumps(self._success_selector) in expression
+                and self._success_from is not None
+                and self.tick >= self._success_from
+            )
         if expression != "document.readyState":
             return json.dumps({"found": True, "value": None})
         self._wait_over = True
@@ -2611,6 +2626,8 @@ class _ScriptedSeleniumDriver:
         self._ready_states = ready_states
         self._ready_reads = 0
         self._unreadable_ticks = unreadable_ticks
+        # Each success lookup ("success") and the submit click ("click"), in order.
+        self.order: list[str] = []
 
     def __getattr__(self, name: str) -> MagicMock:
         """Anything the browser stack asks of a driver that this script does not model."""
@@ -2653,10 +2670,14 @@ class _ScriptedSeleniumDriver:
         from selenium.common.exceptions import NoSuchElementException
 
         if value and value == self._success_selector:
+            self.order.append("success")
             found = self._success_from is not None and self.tick >= self._success_from
             if not found:
                 raise NoSuchElementException(value)
-        return MagicMock()
+        element = MagicMock()
+        if value == "#submit":
+            element.click = MagicMock(side_effect=lambda: self.order.append("click"))
+        return element
 
     def execute_script(self, script: str) -> str | None:
         """The document-readiness read; any other script (the steps' readiness and
@@ -4597,15 +4618,20 @@ class TestSuccessAlreadyPresentBeforeSubmit:
         assert len(_present_warnings(mock_log)) == 1
 
     @pytest.mark.asyncio
-    async def test_nodriver_probe_that_fails_changes_nothing(self) -> None:
-        """A probe that raises is no warning and no error: the poll reads as before."""
+    @pytest.mark.parametrize("failure", ["raises", "exception_details"])
+    async def test_nodriver_probe_that_fails_changes_nothing(self, failure: str) -> None:
+        """A probe that raises, or that the page answers with an exception (nodriver's
+        evaluate returns the ExceptionDetails then), is no warning and no error: the
+        poll reads as before."""
         from graftpunk.plugins.login_engine import generate_login_method
 
         class _FailingProbeTab(_ScriptedNodriverTab):
-            async def query_selector(self, selector: str) -> Any:
-                if selector == self._success_selector and "tick:1" not in self.events:
-                    raise RuntimeError("Could not find node with given id")
-                return await super().query_selector(selector)
+            async def evaluate(self, expression: str, **kwargs: Any) -> Any:
+                if "graftpunk:success-probe" in expression:
+                    if failure == "raises":
+                        raise RuntimeError("no close frame received or sent")
+                    return MagicMock(name="ExceptionDetails")
+                return await super().evaluate(expression, **kwargs)
 
         tab = _FailingProbeTab(success_selector=".dashboard", success_from=0)
         mock_bs, _instance = _nodriver_session_for(tab)
@@ -4691,4 +4717,110 @@ class TestSuccessAlreadyPresentBeforeSubmit:
         ):
             generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
 
+        assert _present_warnings(mock_log) == []
+
+    @pytest.mark.asyncio
+    async def test_nodriver_probes_before_the_click_and_not_through_the_dom(self) -> None:
+        """The probe runs before the submit is clicked, and through Runtime.evaluate:
+        nodriver's Tab.query_selector sends DOM.disable when its query fails (0.48.1
+        and 0.50.6), which the probe must not do right before the click."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _nodriver_session_for(tab)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
+
+        assert tab.order[:2] == ["probe", "click"]
+        assert "query" not in tab.order[: tab.order.index("click")]
+
+    @pytest.mark.asyncio
+    async def test_nodriver_stops_probing_after_its_warning(self) -> None:
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _nodriver_session_for(tab)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            await generate_login_method(_two_step("nodriver"))(_LOGIN_CREDENTIALS)
+
+        assert tab.order.count("probe") == 1
+
+    @pytest.mark.asyncio
+    async def test_nodriver_hint_with_success_url_does_not_claim_an_early_pass(self) -> None:
+        """With success_url set too, the URL must also move, so the element alone
+        cannot pass the login early; the hint says that instead."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _nodriver_session_for(tab)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            await generate_login_method(DeclarativeNodriverBothSignals())(_LOGIN_CREDENTIALS)
+
+        hint = _warning_kwargs(mock_log, _PRESENT_BEFORE_SUBMIT)["hint"]
+        assert "success_url" in hint
+        assert "wrong credentials" not in hint
+
+    def test_selenium_probes_before_the_click(self) -> None:
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _selenium_session_for(driver)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert driver.order[:2] == ["success", "click"]
+
+    def test_selenium_hint_with_success_url_does_not_claim_an_early_pass(self) -> None:
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _selenium_session_for(driver)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            generate_login_method(DeclarativeSeleniumBothSignals())(_LOGIN_CREDENTIALS)
+
+        hint = _warning_kwargs(mock_log, _PRESENT_BEFORE_SUBMIT)["hint"]
+        assert "success_url" in hint
+        assert "wrong credentials" not in hint
+
+    def test_selenium_probe_failing_otherwise_changes_nothing(self) -> None:
+        """A WebDriverException other than an invalid selector (a stale element, a
+        window mid-navigation) at the probe is no warning and no error."""
+        from selenium.common.exceptions import StaleElementReferenceException
+
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class _StaleProbeDriver(_ScriptedSeleniumDriver):
+            def find_element(self, by: str, value: str) -> MagicMock:
+                if value == self._success_selector and "click" not in self.order:
+                    raise StaleElementReferenceException(value)
+                return super().find_element(by, value)
+
+        driver = _StaleProbeDriver(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _selenium_session_for(driver)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert "cookies" in driver.events
         assert _present_warnings(mock_log) == []

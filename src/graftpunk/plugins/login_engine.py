@@ -910,7 +910,7 @@ async def _run_nodriver_steps(
                 # Once per login: a success element already on the page would pass
                 # the wait before the login happens.
                 warned_success = warned_success or await success_shown_before_submit_nodriver(
-                    tab, selector=plugin.login_config.success, site_name=plugin.site_name
+                    tab, login_config=plugin.login_config, site_name=plugin.site_name
                 )
                 pre_submit_url = tab_url(tab)
                 submit_clicked = True
@@ -1185,7 +1185,7 @@ def _run_selenium_steps(
                 ).element
                 # Once per login, as in the nodriver body.
                 warned_success = warned_success or success_shown_before_submit_selenium(
-                    session.driver, selector=plugin.login_config.success, site_name=plugin.site_name
+                    session.driver, login_config=plugin.login_config, site_name=plugin.site_name
                 )
                 pre_submit_url = driver_url(session.driver)
                 submit_clicked = True
