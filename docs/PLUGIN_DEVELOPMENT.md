@@ -217,8 +217,8 @@ site like any failed login, so skip the flag when a lockout is close. graftpunk
 keeps only up to three short texts from the page after that attempt and no other
 text of that page. It scrubs the wrong password from that attempt's own request
 body (and from a 307 or 308 resend of it), but not from `page-source.html` or
-from response bodies that echo it, which is why it must be a throwaway. The command needs a terminal to press Enter
-in.
+from response bodies that echo it, which is why it must be a throwaway. The
+command needs a terminal to press Enter in.
 
 One recording is usually enough. Take several when the flows are genuinely
 separate, or when a first digest leaves a question you can answer by recording
