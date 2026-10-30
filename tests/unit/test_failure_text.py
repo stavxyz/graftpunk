@@ -415,8 +415,7 @@ class TestValuesOfOtherRequests:
 class TestCost:
     """CPU time for a page sixteen times as long stays near sixteen times as much,
     well under the 256 times a search of the whole page per text node would take. The
-    bound is 64, halfway on a log scale; at eight times, with a bound of 16, a loaded CI
-    runner measured 16.006 once."""
+    bound is 64, halfway between the two on a log scale."""
 
     _ALERT = "<div role='alert'>Sign-in failed, sorry.</div>"
 
