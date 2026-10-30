@@ -886,9 +886,13 @@ suggestions are then the final page's alone. An earlier post's read is never
 used, as it may show a failed attempt. A read is structure only, with no text,
 and none of the rules below reads text: the suggestions and their ranking come
 from tags, ids, class tokens, link and form targets, and the `autocomplete`
-attribute, all of which the read keeps (an id or class token it replaces for
-holding an account value is one the guard below never suggests). A run with no read (any run recorded by
-graftpunk 1.29.0 or earlier) gets exactly the suggestions 1.29.0 gave it. A page
+attribute, all of which the read keeps. An id or class token the read replaces
+for holding an account value is almost always one the guard below never
+suggests; when the run kept no snapshot of its credential post but a recorded
+login page names the username field, the read can also replace a name the guard
+would allow, which costs that suggestion and never adds one. A run with no read
+(any run recorded by graftpunk 1.29.0 or earlier) gets exactly the suggestions
+1.29.0 gave it. A page
 loaded here is a 2xx GET that is a
 navigation by the rule above and is not a frame's document. A document counts as
 a frame's by every signal the recording holds: a `Sec-Fetch-Dest` of `iframe`,

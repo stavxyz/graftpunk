@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This is a minor release. Four changes reach a program on the first run after the upgrade, all of them in runs `gp observe go` and `gp observe interactive` record from now on:
 
-- **Recorder:** a run can hold a new file for each credential post, `snapshots/<request id>.after.html`, linked from the post's HAR entry by a new key, `request._domAfter`, and a stop soon after a credential post can take up to 3 seconds longer (Upgrading, item 1).
+- **Recorder:** a run can hold a new file for each credential post, `snapshots/<request id>.after.html`, linked from the post's HAR entry by a new key, `request._domAfter`, and a stop soon after a credential post can take up to 3 seconds longer, and up to 13 when the page source then waits its turn behind another DOM read (Upgrading, item 1).
 - **Digests and scaffolds:** for such a run, `gp observe digest` and `gp plugin new` suggest only the `success` selectors that the page read after the last credential post also holds, so they can suggest fewer or none (item 2).
 - **Login-page snapshot:** the snapshot stored at each credential post writes every doctype as `<!DOCTYPE html>` and some element names as `x-redacted`, and runs its last redaction pass over each value and each run of text instead of the whole markup (item 3).
 - **Page source:** a run that ends on a page nested about 160 or more elements deep now has its `page-source.html`, which the digest reads as the final logged-in page (item 4).

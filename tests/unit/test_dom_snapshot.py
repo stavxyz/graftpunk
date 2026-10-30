@@ -1286,6 +1286,14 @@ class TestStructureOnly:
     def _stored(self, html: str = _LOGGED_IN, body: str = _LOGGED_IN_POST) -> str:
         return stored_dom_snapshot(html, body, "application/json", structure_only=True)
 
+    def test_a_custom_element_name_is_replaced_by_the_guard_s_rule(self) -> None:
+        """j_username is no identifier field, so only the after-read's account rule
+        (the digest guard's) sees jsmith in the custom element's name."""
+        body = '{"j_username": "jsmith", "j_password": "hunter22secret"}'
+        out = self._stored("<jsmith-card></jsmith-card><main></main>", body)
+        assert "jsmith" not in out
+        assert "<x-redacted></x-redacted><main></main>" in out
+
     def test_no_text_survives(self) -> None:
         out = self._stored()
         for text in ("Sign", "Gold plan", "Search", "Contact", "Orders for", "Edit", "Save"):
