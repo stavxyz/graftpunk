@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.30.1] - 2026-10-30
+
+This is a patch release. The read of the page after a credential post that `gp observe go` and `gp observe interactive` store as `snapshots/<request id>.after.html` now replaces every id, class token, `name`, `for` and `form` value, and path segment that holds any value of the post but a token field's, whether or not a field of the post is the username. In 1.30.0 a username posted under a field the digest does not take for one (`j_username` beside an `email` field) stayed in the stored file's ids and custom element names when the run had no snapshot of the login page.
+
+### Upgrading
+
+1. **An after-read recorded from now on holds more `***REDACTED***` and `x-redacted`** (#330). A name holding any value the post sent but a token's (a `next=dashboard` field replaces `id="dashboard"`) is replaced, so `gp observe digest` and `gp plugin new` can suggest fewer `success` selectors for such a run, never more. A run recorded by 1.30.0 keeps its files as they are; record the login again to get the new redaction. The snapshot stored at the post itself is unchanged.
+2. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite`.
+
+### Fixed
+
+- **The after-read no longer keeps a username posted under a field that is not an identifier** (#330). It redacted only the values the digest's username guard takes for the account's (`graftpunk.har.digest.post_account_values`): with no snapshot of the login page, a post of `{"j_username": "jsmith", "email": "alice.smith@example.com", ...}` has `email` as its username, so `jsmith` stayed in `<a id="menu-jsmith">` and `<jsmith-card>`. The after-read now also redacts every value the guard's every-value fallback takes (every value but a token field's, as a name is compared: three or more characters and not a boolean word), whether or not a field is the username, and stores `<a id="***REDACTED***">` and `<x-redacted>`. The guard itself and the snapshot taken at the post are unchanged (a test pins the latter). New API: `post_every_value` in `graftpunk.har.digest`.
+
 ## [1.30.0] - 2026-10-30
 
 This is a minor release. Four changes reach a program on the first run after the upgrade, all of them in runs `gp observe go` and `gp observe interactive` record from now on:
