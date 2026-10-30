@@ -782,8 +782,8 @@ An object spelled in fewer than 512 characters is ignored, and of the rest the
 largest is reported. Only names and kinds are kept, by the response shape's
 rules. The target is printed as written only when it is a plain dotted name of
 at most 64 characters; a part that looks like an id is printed as a placeholder
-(`window.{window_id}.props`), and a script id that is not such a name as
-`script#{id}`. `gp plugin new` and `gp plugin add-command` keep such a page's
+(`window.{window_id}.props`), and a script id that is not a plain HTML id
+(letters, numerals, `_`, `.`, and `-`, such as `app-state`) as `script#{id}`. `gp plugin new` and `gp plugin add-command` keep such a page's
 request as it is and add a comment naming the target and the shape, then a
 commented `inline_state(page)` function that calls `read_inline_json` from
 `graftpunk.har.inline_state`, the digest's own scan, so it returns the object

@@ -143,6 +143,9 @@ _END_TAG_RES = {
 }
 _IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _NAME_PATH_RE = re.compile(rf"{_IDENTIFIER}(?:\.{_IDENTIFIER})*")
+# A JSON script's id as printed: an HTML id commonly holds "-" (app-state), which a
+# script's dotted name cannot, and nothing that could break a line or a quote.
+_HTML_ID_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
 # What a script body's scan stops at: a comment, a string or template literal (each
 # skipped whole), or an assignment candidate: a dotted name not preceded by a name
 # character or a dot (so never the tail of a longer name), an "=" that is not part
@@ -317,13 +320,18 @@ def _printable_target(target: str) -> str:
 
 
 def _json_script_target(attributes: dict[str, str]) -> str:
-    """A JSON script's target: ``script#`` and its id when the id is a plain name
-    with no part that looks like it holds an id, ``script#{id}`` for any other id,
-    and ``script[type="application/json"]`` without one."""
+    """A JSON script's target: ``script#`` and its id when the id is a plain HTML id
+    (letters, digits, ``_``, ``.`` and ``-``) with no part that looks like it holds
+    an id, ``script#{id}`` for any other id, and ``script[type="application/json"]``
+    without one."""
     script_id = attributes.get("id", "")
     if not script_id:
         return _JSON_SCRIPT_TARGET
-    if _plain_name(script_id) and not any(looks_dynamic(part) for part in script_id.split(".")):
+    if (
+        len(script_id) <= MAX_TARGET_CHARS
+        and _HTML_ID_RE.fullmatch(script_id)
+        and not any(looks_dynamic(part) for part in re.split(r"[-_.]", script_id) if part)
+    ):
         return f"script#{script_id}"
     return "script#" + _PLACEHOLDER
 

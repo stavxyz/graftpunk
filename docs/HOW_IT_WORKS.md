@@ -662,8 +662,9 @@ The target is printed as written only when it is a plain dotted name
 characters. A part of an assignment's target that looks like it holds an id
 becomes a placeholder named as a path segment's would be
 (`window.{window_id}.props`), and a longer target is printed as `{id}`; a JSON
-script's id that is not a plain name, or has a part that looks like an id, is
-printed as `script#{id}`. So no quote, backtick, space, or line break from the
+script's id is printed as written when it is a plain HTML id (letters, numerals,
+`_`, `.`, and `-`, at most 64 characters, as in `script#app-state`) with no part
+that looks like an id, and as `script#{id}` otherwise. So no quote, backtick, space, or line break from the
 page reaches any output through a target, and no value is reported. The
 markdown digest adds a line under `shape: non-JSON`
 (``inline JSON state: `window.App.props`, object{results, search, total}``),

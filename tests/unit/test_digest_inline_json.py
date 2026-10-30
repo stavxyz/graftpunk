@@ -879,7 +879,6 @@ _UNSAFE_IDS = {
     "backtick": "a`b",
     "triple-quote": 'x"""y',
     "backslash": "a\\b",
-    "hyphen": "app-state",
     "email": "alice@example.com",
     "id-part": "App.user_40912873",
     "one-over": "A" * (inline_state.MAX_TARGET_CHARS + 1),
@@ -888,6 +887,15 @@ _UNSAFE_IDS = {
 
 
 class TestSafeTargets:
+    def test_a_hyphenated_script_id_is_reported_as_written(self, tmp_path: Path) -> None:
+        page = _page(_json_script(_STATE_TEXT, " id='app-state'"))
+        assert _found(tmp_path, page) == ("script#app-state", _SHAPE)
+        assert read_inline_json(page, "script#app-state") == _STATE
+
+    def test_a_hyphenated_script_id_holding_an_id_is_a_placeholder(self, tmp_path: Path) -> None:
+        page = _page(_json_script(_STATE_TEXT, " id='state-40912873'"))
+        assert _found(tmp_path, page) == ("script#{id}", _SHAPE)
+
     @pytest.mark.parametrize("name", sorted(_UNSAFE_IDS))
     def test_an_unsafe_script_id_is_a_placeholder_everywhere(
         self, tmp_path: Path, name: str
