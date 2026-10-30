@@ -44,11 +44,12 @@ MAX_FAILURE_TEXT = 200
 # them (they are in the raw HTML), so text the login page holds there is caught by
 # the check against the page at the post.
 _NO_TEXT = frozenset({"script", "style", "template", "noscript", "textarea"})
-# Elements whose text names the page or a control, never an error a site shows: a
-# changed <title> or a re-rendered <option> would otherwise pass as new text. A
-# placeholder is an attribute, never a text node, so it is never read at all.
+# Elements whose text names the page or a control, not an error a site shows: a
+# changed <title> or a re-rendered <option> would otherwise pass as new text. One
+# that is itself an alert (_marks_an_alert: jQuery Validation writes its errors as
+# <label class="error">) is read like any alert. A placeholder is an attribute,
+# never a text node, so it is never read at all.
 _NOT_A_MESSAGE = frozenset({"title", "option", "label", "button", "legend"})
-_SKIPPED = _NO_TEXT | _NOT_A_MESSAGE
 _VOID = frozenset(
     {
         "area",
@@ -138,7 +139,8 @@ class AccountGuard:
 
 
 class _TextNodes(HTMLParser):
-    """Each text node outside :data:`_SKIPPED`, whitespace-trimmed, as (text, whether
+    """Each text node outside :data:`_NO_TEXT`, and outside each element of
+    :data:`_NOT_A_MESSAGE` that is not itself an alert, whitespace-trimmed, as (text, whether
     it is inside an alert), in document order; and whether the page holds a password
     input outside a template."""
 
@@ -168,7 +170,9 @@ class _TextNodes(HTMLParser):
                 return
 
     def handle_data(self, data: str) -> None:
-        if any(tag in _SKIPPED for tag, _alert in self.open):
+        if any(
+            tag in _NO_TEXT or (tag in _NOT_A_MESSAGE and not alert) for tag, alert in self.open
+        ):
             return
         text = data.strip()
         if text:
@@ -227,7 +231,8 @@ def failure_candidates(
     (every login form holds one): a read of any other page, such as Enter pressed
     after a real login landed, shows no failure and is ignored. From each read that
     counts (raw HTML): each text node outside a script, style, template, noscript,
-    textarea, ``<title>``, ``<option>``, ``<label>``, ``<button>`` or ``<legend>``,
+    or textarea, and outside a ``<title>``, ``<option>``, ``<label>``, ``<button>``
+    or ``<legend>`` that is not itself an alert (``<label class="error">`` is one),
     whitespace-trimmed, :data:`MIN_FAILURE_TEXT` to :data:`MAX_FAILURE_TEXT`
     characters, that the engine would find on that read and not on *before*, the
     raw page at the post (:func:`graftpunk.plugins.login_settle.failure_text_on_page`),

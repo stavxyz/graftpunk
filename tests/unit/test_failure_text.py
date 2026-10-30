@@ -271,6 +271,29 @@ class TestFailureCandidates:
         assert failure_text_on_page(after, "Sign-in failed, sorry")
         assert _found(after) == ()
 
+    @pytest.mark.parametrize(
+        "markup",
+        [
+            # jQuery Validation's shape.
+            "<label id='password-error' class='error' for='password'>Sign-in failed, sorry</label>",
+            "<label role='alert'><span>Sign-in failed, sorry</span></label>",
+            "<button type='button' aria-live='polite'>Sign-in failed, sorry</button>",
+            "<legend class='is-invalid'>Sign-in failed, sorry</legend>",
+        ],
+    )
+    def test_an_excluded_element_that_is_itself_an_alert_is_read(self, markup: str) -> None:
+        after = _after("<p>Need help signing in?</p>" + markup)
+        assert _found(after) == ("Sign-in failed, sorry",)
+
+    def test_a_label_inside_an_alert_is_still_no_message(self) -> None:
+        """Only the excluded element's own markers count: a plain label inside an
+        alert box names a control."""
+        after = _after(
+            "<div class='alert'><label for='x'>Remember this device</label>"
+            "<p>Sign-in failed, sorry</p></div>"
+        )
+        assert _found(after) == ("Sign-in failed, sorry",)
+
     def test_never_a_placeholder(self) -> None:
         after = _after("<input type='text' placeholder='Sign-in failed, sorry'>")
         assert failure_text_on_page(after, "Sign-in failed, sorry")
