@@ -1757,7 +1757,8 @@ under a `GP-FILL`, each commented out:
 ```python
         # GP-FILL: the recording suggests a success selector: an element on the logged-in page and
         #   on no recorded login page. Check that it appears only after login on a fresh visit to
-        #   the login URL, then uncomment one suggestion (all of its lines):
+        #   the login URL, and on no code or verification page after the password, then uncomment
+        #   one suggestion (all of its lines):
         # success="#account-menu",
         # success="a.signout-link",
 ```
@@ -1768,7 +1769,8 @@ from the one recorded (a login modal on the home page in the recording,
 `/login` at replay). Before you uncomment one, open the login URL in a private
 window, logged out, and check in the browser's developer tools that
 `document.querySelector("<selector>")` is `null` there and finds the element
-once you have logged in. Then uncomment that one suggestion, all of its lines
+once you have logged in, and that no page asking for a code or a confirmation
+after the password shows it. Then uncomment that one suggestion, all of its lines
 (a long selector is written as `# success=(`, one commented line per piece, and
 `# ),`), delete the others and the `GP-FILL` lines, and run `gp myshop login`
 with a wrong password to see it fail. `gp observe digest --endpoints-json`
@@ -1777,7 +1779,11 @@ prints the same list as `login.success_candidates`.
 No suggestion holds the password, the username, or an email address the
 credential post sent. The username is the value of the field the login form or
 graftpunk's identifier rules name, also inside a field whose value is itself
-JSON, or every value when no top-level field qualifies.
+JSON, or every value when no top-level field qualifies. A username the digest
+reads only as part of a larger value (a GraphQL query's inline arguments, JSON
+two levels inside a field, a base64 body) is not seen, so read each suggestion
+for your account name before uncommenting it; docs/HOW_IT_WORKS.md lists these
+limits.
 The list is empty, and the scaffold writes the success `GP-FILL` with no
 suggestions, when the run recorded no credential post, never got past the
 login's steps (an MFA page, say), or holds a credential post whose username the

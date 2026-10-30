@@ -150,7 +150,8 @@ user, read off it in their own browser.
    (they try one in their own browser), a CSS selector of an element on the page
    a successful login lands on (when the config holds commented `success=`
    suggestions, ask "logged out, in a new private window at the login URL, is
-   <selector> absent, and present once logged in?" for each in order: on yes,
+   <selector> absent, absent from any code or confirmation page after the
+   password, and present once logged in?" for each in order: on yes,
    strip the leading `# ` from every line of that suggestion (one line, or from
    its `# success=(` through its `# ),` when it wraps) and delete the other
    suggestions and the `GP-FILL` lines; on no for all, ask for a selector), a

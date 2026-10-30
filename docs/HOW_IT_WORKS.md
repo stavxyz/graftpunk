@@ -992,7 +992,8 @@ differ from the page recorded (a modal on the home page in the recording,
 with suggestions it replaces the `success` `GP-FILL` with one saying the
 recording suggests a selector on the logged-in page and on no recorded login
 page, to check that it appears only after login on a fresh visit to the login
-URL and then uncomment one suggestion (all of its lines), followed by each as a
+URL and on no code or verification page after the password, and then to
+uncomment one suggestion (all of its lines), followed by each as a
 commented `success="..."` argument, escaped and wrapped as the commented opener
 step is (a long one spans several commented lines). Without suggestions the
 generated `login_config` is the one it was before.

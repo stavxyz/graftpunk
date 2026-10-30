@@ -6596,7 +6596,8 @@ class TestTheCommentedStepFitsTheGeneratedProject(_OpenerCase):
 _SUCCESS_GP_FILL = (
     "GP-FILL: the recording suggests a success selector: an element on the logged-in page "
     "and on no recorded login page. Check that it appears only after login on a fresh "
-    "visit to the login URL, then uncomment one suggestion (all of its lines):"
+    "visit to the login URL, and on no code or verification page after the password, "
+    "then uncomment one suggestion (all of its lines):"
 )
 
 # The login_config main (008f2aa0) generates for a run with no logged-in page.
@@ -7822,10 +7823,10 @@ class TestTheRecordingSuggestsASuccessSelector:
         """A browser escapes nothing in a text/plain body, so "&" is part of the
         value: the username sent is "jsmith&x=1", which "greeting-jsmith" does not
         hold, and the body is not split into "who=jsmith" and "x=1"."""
-        body = "who=jsmith&x=1\r\npwd=hunter-two\r\n"
+        body = "who=jsmith&x=1\r\npwd=hunter%41two\r\n"
         assert body_values(body, "text/plain") == [
             (("who",), "jsmith&x=1"),
-            (("pwd",), "hunter-two"),
+            (("pwd",), "hunter%41two"),
         ]
         assert self._valued_run(tmp_path, body, "text/plain").success_candidates == self._KEPT
 

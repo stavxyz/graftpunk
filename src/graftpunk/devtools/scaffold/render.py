@@ -568,8 +568,8 @@ def _render_success_hint(candidates: tuple[str, ...], *, indent: int) -> list[st
     lines = wrapped_comment_lines(
         f"{GP_FILL_MARKER}: the recording suggests a success selector: an element on the "
         "logged-in page and on no recorded login page. Check that it appears only after "
-        "login on a fresh visit to the login URL, then uncomment one suggestion (all of "
-        "its lines):",
+        "login on a fresh visit to the login URL, and on no code or verification page "
+        "after the password, then uncomment one suggestion (all of its lines):",
         indent=indent,
     )
     for selector in candidates:
