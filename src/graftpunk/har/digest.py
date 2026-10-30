@@ -11,7 +11,7 @@ import json
 import math
 import re
 import string
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,6 +30,7 @@ from graftpunk.har.documents import (
     looks_like_token_name,
 )
 from graftpunk.har.login_signals import (
+    asks_for_a_code,
     could_be_an_account_value,
     is_login_step_post,
     success_candidates,
@@ -1479,6 +1480,25 @@ def _is_top_level_page_load(entry: HAREntry, method: str, content_type: str) -> 
 _EMAIL_IN_VALUE_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
 
+def _after_read(credential_entries: Sequence[HAREntry], stepped_since: bool) -> str | None:
+    """The page the recorder read after the run's last credential post settled
+    (``request._domAfter``, structure only), as the logged-in page for success
+    suggestions; None when that post has none, or when the read is still a login: it
+    holds a login form, asks for a one-time code
+    (:func:`graftpunk.har.login_signals.asks_for_a_code`), or *stepped_since* (the
+    browser submitted a step-shaped form after that post,
+    :func:`graftpunk.har.login_signals.is_login_step_post`), so the read may show
+    that step."""
+    if not credential_entries:
+        return None
+    html = credential_entries[-1].request.dom_after
+    if not html or stepped_since or asks_for_a_code(html):
+        return None
+    if extract_login_forms(html, source="", snapshot=True):
+        return None
+    return html
+
+
 def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str] | None:
     """The values of credential post *entry* (read by :func:`body_values`) that no
     suggested name may hold, for :func:`graftpunk.har.login_signals.success_candidates`:
@@ -2152,6 +2172,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     submitted_a_step: set[int] = set()
     latest_after_post: int | None = None
     credential_entries: list[HAREntry] = []
+    # Whether the browser submitted a step-shaped top-level document POST after the
+    # last credential post: its after-read (_after_read) may show that step.
+    stepped_since_last_post = False
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
     script_driven: set[int] = set()
@@ -2290,9 +2313,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if _is_page_load(entry, method, content_type):
             page_loads.append(entry.timestamp)
         if _is_top_level_page_load(entry, method, content_type):
-            if (
+            step_shaped = (
                 method == "POST"
-                and latest_after_post is not None
+                and bool(credential_post_steps)
                 and is_login_step_post(
                     path,
                     {
@@ -2306,7 +2329,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                         ),
                     },
                 )
-            ):
+            )
+            stepped_since_last_post = stepped_since_last_post or step_shaped
+            if step_shaped and latest_after_post is not None:
                 submitted_a_step.add(latest_after_post)
             latest_after_post = None
         forms_in_entry: tuple[LoginForm, ...] = ()
@@ -2442,6 +2467,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 posts.append((step, post_target, frozenset(body_params(entry)), not by_target))
                 post_interactions.append((entry.timestamp, entry.request.login_interactions))
                 credential_entries.append(entry)
+                stepped_since_last_post = False
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must
         # not make that POST, or a later one to the same page, the credential post.
@@ -2703,6 +2729,17 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         else [value for values in read_values if values is not None for value in values]
     )
 
+    # The logged-in page: the last credential post's after-read when it is one, with
+    # every page loaded after a credential post before it; else the last of those
+    # pages (page-source.html when it went there), as 1.29.0 did.
+    after_read = _after_read(credential_entries, stepped_since_last_post)
+    if after_read is not None:
+        logged_in, earlier = after_read, after_post_pages
+    else:
+        logged_in, earlier = (
+            (after_post_pages[-1], after_post_pages[:-1]) if after_post_pages else ("", [])
+        )
+
     return RunDigest(
         source=source,
         primary_host=primary_host,
@@ -2716,17 +2753,16 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         collapsed_templates=collapse_map,
         cookie_names_dropped_as_ids=len(id_cookie_names),
         token_names_dropped_as_ids=len(id_token_names),
-        # Only for a run that recorded a login. The final page is the last of
-        # after_post_pages (page-source.html when it went there); success_candidates
-        # finds the leading run of login steps among them.
+        # Only for a run that recorded a login; success_candidates finds the leading
+        # run of login steps among the pages after the post.
         success_candidates=success_candidates(
             logged_out_pages,
-            after_post_pages[-1],
-            earlier=after_post_pages[:-1],
+            logged_in,
+            earlier=earlier,
             submitted_a_step=submitted_a_step,
             account_values=account_values,
         )
-        if credential_post_steps and after_post_pages and account_values is not None
+        if credential_post_steps and logged_in and account_values is not None
         else (),
     )
 

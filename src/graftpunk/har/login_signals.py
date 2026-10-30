@@ -51,6 +51,7 @@ from graftpunk.har.selectors import bounded_selector
 
 __all__ = [
     "MAX_SUCCESS_CANDIDATES",
+    "asks_for_a_code",
     "could_be_an_account_value",
     "is_login_step_post",
     "success_candidates",
@@ -343,6 +344,13 @@ def _read(html: str) -> _Page:
         for token in {token.lower() for token in element.classes}:
             page.pairs[(element.tag, token)] += 1
     return page
+
+
+def asks_for_a_code(html: str) -> bool:
+    """Whether *html* has an input asking for a one-time code
+    (``autocomplete="one-time-code"``): a step of a login, the rule
+    :func:`success_candidates` applies to each page after the credential post."""
+    return _read(html).asks_for_a_code
 
 
 def _needles(values: Iterable[str]) -> frozenset[str]:
