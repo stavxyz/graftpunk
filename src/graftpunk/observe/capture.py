@@ -2422,11 +2422,15 @@ class NodriverCaptureBackend:
         domain's events for the target. One read at a time; an *after_read* (the read
         after a credential post) waiting for its turn lets every request-time snapshot
         read waiting go first, so it never makes one late (:meth:`_dom_read_turn`).
-        With *turn_wait*, a turn not had in that many seconds raises TimeoutError."""
+        With *turn_wait*, a turn not had in that many seconds of the backend's clock
+        raises TimeoutError (:meth:`_dom_read_turn_within`)."""
         import nodriver.cdp.dom as cdp_dom
 
         session = _capture_session_kwargs(tab, self._capture_session_id)
-        await asyncio.wait_for(self._dom_read_turn(after_read=after_read), turn_wait)
+        if turn_wait is None:
+            await self._dom_read_turn(after_read=after_read)
+        else:
+            await self._dom_read_turn_within(turn_wait, after_read=after_read)
         try:
             document = await tab.send(cdp_dom.get_document(depth=0), **session)
             html = await tab.send(
@@ -2442,6 +2446,38 @@ class NodriverCaptureBackend:
             finally:
                 self._dom_read_lock.release()
         return getattr(document, "document_url", None) or "", html
+
+    async def _dom_read_turn_within(self, seconds: float, *, after_read: bool) -> None:
+        """:meth:`_dom_read_turn`, or TimeoutError when the turn has not come after
+        *seconds* of the backend's clock (``_sleep``, which tests replace). A turn
+        abandoned that still takes the lock hands it back at once."""
+        turn = asyncio.ensure_future(self._dom_read_turn(after_read=after_read))
+        timer = asyncio.ensure_future(self._sleep(seconds))
+        try:
+            await asyncio.wait({turn, timer}, return_when=asyncio.FIRST_COMPLETED)
+        except BaseException:
+            timer.cancel()
+            self._abandon_dom_read_turn(turn)
+            raise
+        timer.cancel()
+        if turn.done():
+            turn.result()
+            return
+        self._abandon_dom_read_turn(turn)
+        raise TimeoutError(f"no DOM read turn within {seconds} s")
+
+    def _abandon_dom_read_turn(self, turn: asyncio.Future[None]) -> None:
+        """Give up *turn*: cancel it, and release the lock if it took it all the same."""
+
+        def release_if_taken(done: asyncio.Future[None]) -> None:
+            if not done.cancelled() and done.exception() is None:
+                self._dom_read_lock.release()
+
+        if turn.done():
+            release_if_taken(turn)
+        else:
+            turn.cancel()
+            turn.add_done_callback(release_if_taken)
 
     async def _dom_read_turn(self, *, after_read: bool) -> None:
         """Take the DOM read lock. A request-time snapshot read counts itself as

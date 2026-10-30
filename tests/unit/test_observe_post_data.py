@@ -3857,6 +3857,16 @@ class TestTheReadAfterTheCredentialPost:
         assert '<nav id="menu-***REDACTED***" class="u-***REDACTED***">' in text
 
     @pytest.mark.asyncio
+    async def test_close_drops_the_body_of_a_post_with_no_response(self, tmp_path: Path) -> None:
+        """Ruling 4 of round 1: a credential post still waiting for its response at
+        stop keeps no body text (the password) past the close."""
+        tab, backend, _clock, _reads = await self._login(tmp_path, respond=False)
+        assert backend._after_read_due["80.1"][1] == _LOGIN_BODY
+        await backend.close_after_reads()
+        assert backend._after_read_due == {}
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
     async def test_the_post_s_snapshot_names_its_username_field(self, tmp_path: Path) -> None:
         """The login form of the post's stored snapshot says which field is the
         username, as it does for the digest: its value is redacted, and another
@@ -4241,20 +4251,78 @@ class TestPageSource:
         await _stop(backend, tab)
 
     @pytest.mark.asyncio
-    async def test_it_waits_a_bounded_time_for_a_read_that_holds_the_lock(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(capture, "_PAGE_SOURCE_TURN_WAIT_S", 0.01)
+    async def test_it_waits_a_bounded_time_for_a_read_that_holds_the_lock(self) -> None:
+        """The turn wait runs on the backend's clock: on a fake one, the read gives up
+        when the clock passes the bound, and never before. Without a bound the read
+        never sleeps on the clock, and the test fails at once instead of hanging."""
         tab = FakeTab({}, _never)
         tab.dom_html = _ORDERS_PAGE
+        clock = FakeClock()
         backend = await _start(tab)
+        backend._now, backend._sleep = clock.time, clock.sleep
         await backend._dom_read_lock.acquire()
         with capture_logs() as logs:
-            assert await backend.get_page_source() is None
+            reading = asyncio.get_running_loop().create_task(backend.get_page_source())
+            try:
+                await _turns()
+                assert clock.sleeps == [capture._PAGE_SOURCE_TURN_WAIT_S]
+                assert not reading.done()
+                (deadline, timer) = clock.waiting[0]
+                clock.now = deadline
+                timer.set_result(None)
+                await _turns()
+                assert reading.done()
+            finally:
+                reading.cancel()
+        assert reading.result() is None
         assert [e["event"] for e in logs] == ["nodriver_get_page_source_failed"]
         assert tab.dom_requests == []
+        # The abandoned turn left the lock as it was: held by this test, then free.
+        assert backend._dom_read_lock.locked()
         backend._dom_read_lock.release()
         assert await backend.get_page_source() == _ORDERS_PAGE
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_an_abandoned_turn_that_took_the_lock_hands_it_back(self) -> None:
+        """A turn given up on after it took the lock (the timer and the lock in the
+        same loop turn) releases it, at once or when it finishes."""
+        tab = FakeTab({}, _never)
+        backend = await _start(tab)
+        loop = asyncio.get_running_loop()
+        await backend._dom_read_lock.acquire()
+        taken: asyncio.Future[None] = loop.create_future()
+        taken.set_result(None)
+        backend._abandon_dom_read_turn(taken)
+        assert not backend._dom_read_lock.locked()
+
+        await backend._dom_read_lock.acquire()
+        waiting = loop.create_task(backend._dom_read_turn(after_read=True))
+        await _turns()
+        backend._abandon_dom_read_turn(waiting)
+        backend._dom_read_lock.release()
+        await _turns()
+        assert waiting.cancelled()
+        assert not backend._dom_read_lock.locked()
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_turn_that_comes_in_time_cancels_its_timer(self) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _ORDERS_PAGE
+        clock = FakeClock()
+        backend = await _start(tab)
+        backend._now, backend._sleep = clock.time, clock.sleep
+        await backend._dom_read_lock.acquire()
+        reading = asyncio.get_running_loop().create_task(backend.get_page_source())
+        await _turns()
+        assert len(clock.waiting) == 1
+        backend._dom_read_lock.release()
+        await _turns()
+        assert reading.done()
+        assert reading.result() == _ORDERS_PAGE
+        assert clock.waiting == []
+        assert not backend._dom_read_lock.locked()
         await _stop(backend, tab)
 
     @pytest.mark.asyncio
