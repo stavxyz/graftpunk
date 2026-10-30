@@ -1934,6 +1934,22 @@ class TestTheAfterReadRedactsEveryValue:
         out = self._after('<div id="dashboard"></div><div id="orders"></div>', body, _FORM)
         assert '<div id="***REDACTED***"></div><div id="orders"></div>' in out
 
+    def test_a_value_only_the_username_guard_takes_is_redacted(self) -> None:
+        """An email's local part inside a token field's value is an account value to
+        the guard (``post_account_values``) though ``post_every_value`` leaves the
+        token field out, so the after-read takes both."""
+        body = json.dumps(
+            {
+                "email": "alice@example.com",
+                "password": "hunter22secret",
+                "xsrf_token": "bob.jones@example.org",
+                "csrf_token": {"user": "jsmith"},
+            }
+        )
+        out = self._after('<div id="menu-bobjones" class="nav-jsmith"></div>', body)
+        assert '<div id="***REDACTED***" class="nav-***REDACTED***"></div>' in out
+        assert "bobjones" not in out
+
     def test_a_token_field_s_value_is_kept(self) -> None:
         body = "email=alice%40example.com&password=hunter22secret&csrf_token=panelwide"
         out = self._after('<div id="panelwide"></div>', body, _FORM)

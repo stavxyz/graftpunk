@@ -1907,6 +1907,26 @@ _LOGIN_MODAL = (
 _LOGIN_BODY = '{"username": "alice@example.com", "password": "hunter2hunter2"}'
 
 
+def _unreadable_credential_body(monkeypatch: pytest.MonkeyPatch) -> str:
+    """A JSON credential body whose ``state`` value holds JSON the parser refuses as
+    nested too deep, so :func:`post_account_values` cannot read it by field names.
+    How deep json.loads goes depends on the Python version and the platform's stack,
+    so the parser's refusal of the inner value is stood in for."""
+    deep = "[[[1]]]"
+    body = json.dumps({"username": "jsmith", "password": "hunter2hunter2", "state": deep})
+    loads = json.loads
+
+    def too_deep(text: Any, *args: Any, **kwargs: Any) -> Any:
+        if text == deep:
+            raise RecursionError("maximum recursion depth exceeded")
+        return loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", too_deep)
+    assert is_credential_body(body, "application/json")
+    assert post_account_values(body, "application/json") is None
+    return body
+
+
 class TestDomSnapshotAtTheCredentialPost:
     """With ``dom_snapshots_dir`` set (``gp observe`` only), a credential-shaped POST
     snapshots the page's DOM, sanitized and redacted, into ``snapshots/``."""
@@ -3788,21 +3808,8 @@ class TestTheReadAfterTheCredentialPost:
     ) -> None:
         """#330: a credential post whose body is not read by its field names (here a
         value holding JSON nested past the parser's limit) gets no after-read, since
-        what to redact from it is not known; the snapshot at the post is still taken.
-        How deep json.loads goes depends on the Python version and the platform's
-        stack, so the parser's refusal of the inner value is stood in for."""
-        deep = "[[[1]]]"
-        body = json.dumps({"username": "jsmith", "password": "hunter2hunter2", "state": deep})
-        loads = json.loads
-
-        def too_deep(text: Any, *args: Any, **kwargs: Any) -> Any:
-            if text == deep:
-                raise RecursionError("maximum recursion depth exceeded")
-            return loads(text, *args, **kwargs)
-
-        monkeypatch.setattr(json, "loads", too_deep)
-        assert is_credential_body(body, "application/json")
-        assert post_account_values(body, "application/json") is None
+        what to redact from it is not known; the snapshot at the post is still taken."""
+        body = _unreadable_credential_body(monkeypatch)
         with capture_logs() as logs:
             tab, backend, clock, reads = await self._login(tmp_path, body=body)
             await clock.advance(60, backend)
@@ -3818,6 +3825,34 @@ class TestTheReadAfterTheCredentialPost:
         assert [(e["log_level"], e["request_id"], e["reason"]) for e in skipped] == [
             ("debug", "80.1", "unreadable_body")
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_body_known_only_after_the_response_is_skipped_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#330: the unreadable-body skip also covers a body fetched after the post's
+        response arrived, which schedules its read at once."""
+        body = _unreadable_credential_body(monkeypatch)
+        tab = FakeTab({"82.1": body}, _always)
+        tab.dom_html = _LANDED_PAGE
+        clock = FakeClock()
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        backend._now, backend._sleep = clock.time, clock.sleep
+        reads: list[float] = []
+        tab.on_dom_read = lambda: reads.append(clock.now)
+        with capture_logs() as logs:
+            await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40))
+            await tab.dispatch(_will_be_sent("82.1", url=LOGIN), settle=False)
+            await tab.dispatch(_response_received("82.1", url=LOGIN))
+            await clock.advance(60, backend)
+            await _stop(backend, tab)
+
+        assert reads == []
+        assert backend._after_read_tasks == set()
+        assert not self._after(tmp_path, "82.1").exists()
+        assert "_domAfter" not in _only_entry(backend)["request"]
+        skipped = [e for e in logs if e["event"] == "nodriver_dom_after_read_skipped"]
+        assert [(e["request_id"], e["reason"]) for e in skipped] == [("82.1", "unreadable_body")]
 
     @pytest.mark.asyncio
     async def test_a_second_read_that_fails_keeps_the_first(self, tmp_path: Path) -> None:
