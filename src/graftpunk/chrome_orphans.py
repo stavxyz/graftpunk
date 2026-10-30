@@ -22,10 +22,14 @@ A second, narrower rule covers browsers launched before the marker existed and
 other nodriver users' leftovers: no marker, a nodriver temp profile as the
 ``--user-data-dir``, and a parent of pid 1.
 
-Chrome already shares graftpunk's process group. nodriver launches it with
-``asyncio.create_subprocess_exec`` and passes no ``start_new_session``, so the
-child inherits the parent's session and process group; a terminal SIGHUP and
-``kill -- -<pgid>`` reach Chrome without any process-group code here.
+The backend's Chrome and token extraction's Chrome share graftpunk's process
+group. nodriver launches Chrome with ``asyncio.create_subprocess_exec`` and
+passes no ``start_new_session``, so the child inherits the parent's session and
+process group; a terminal SIGHUP and ``kill -- -<pgid>`` reach it without any
+process-group code here. ``gp observe`` starts its Chrome in a session of its
+own (:func:`graftpunk.browser_launch.chrome_in_own_session`, #333), so the
+Ctrl+C that stops a recording reaches only Python. Nothing in this module
+depends on the session: the marker and the pid are the same either way.
 
 This module also owns the fix for the leak that makes reaping necessary so
 often: nodriver creates its temp profile with ``tempfile.mkdtemp(prefix="uc_")``

@@ -24,6 +24,7 @@ from graftpunk.browser_launch import (
     NodriverBrowserHandle,
     arm_termination_handlers,
     browser_connect_failure_message,
+    chrome_in_own_session,
     prepare_browser_launch,
 )
 from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
@@ -153,8 +154,10 @@ async def setup_observe_session(
             f"from earlier runs.[/dim]"
         )
 
-    # Isolate Chrome from SIGINT: child process inherits SIG_IGN disposition,
-    # so Ctrl+C only reaches Python. We save data, then explicitly stop Chrome.
+    # Chrome starts in a session of its own, so the Ctrl+C that stops the
+    # recording reaches only Python, which saves the run and then stops Chrome
+    # (#333). SIGINT is also ignored for the length of the start, so a Ctrl+C
+    # cannot interrupt the start half way, before the browser is registered.
     old_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         # Retry logic matching NoDriverBackend._start_async()
@@ -162,11 +165,12 @@ async def setup_observe_session(
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
             try:
-                browser = await nodriver.start(
-                    headless=headless,
-                    sandbox=False,
-                    browser_args=base_browser_args(),
-                )
+                with chrome_in_own_session():
+                    browser = await nodriver.start(
+                        headless=headless,
+                        sandbox=False,
+                        browser_args=base_browser_args(),
+                    )
                 break
             except Exception as exc:
                 last_exc = exc

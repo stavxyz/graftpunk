@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import os
 import re
 import signal
+import sys
 from pathlib import Path
 
+import nodriver.core.browser as nodriver_launcher
 import pytest
 
 import graftpunk
@@ -14,6 +19,7 @@ from graftpunk.browser_launch import (
     CleanupReport,
     arm_termination_handlers,
     browser_connect_failure_message,
+    chrome_in_own_session,
     prepare_browser_launch,
 )
 from graftpunk.chrome_orphans import ChromeProcess
@@ -219,3 +225,107 @@ class TestTheConnectFailureMessage:
             "Failed to connect to browser after 3 attempts. Chrome may be "
             "slow to start; try again, or check for stale Chrome processes."
         )
+
+
+_POSIX_ONLY = pytest.mark.skipif(os.name != "posix", reason="sessions are a POSIX notion")
+
+# A child that prints its session id and its own pid, then exits.
+_PRINT_SID = "import os; print(os.getsid(0), os.getpid())"
+
+
+async def _session_of_a_child_launched_by_nodriver() -> tuple[int, int]:
+    """Launch a child the way nodriver launches Chrome, and return (its sid, its pid).
+
+    The call is nodriver's own: ``Browser.start`` calls
+    ``asyncio.create_subprocess_exec`` through the ``asyncio`` name bound in
+    ``nodriver.core.browser``, and so does this.
+    """
+    proc = await nodriver_launcher.asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _PRINT_SID,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        close_fds=True,
+    )
+    out, _ = await proc.communicate()
+    sid, pid = (int(field) for field in out.split())
+    assert pid == proc.pid
+    return sid, pid
+
+
+class TestChromeInItsOwnSession:
+    """A terminal's Ctrl+C reaches only Python, not the Chrome gp observe drives (#333)."""
+
+    def test_nodriver_still_launches_chrome_the_way_the_seam_expects(self) -> None:
+        # The seam swaps the asyncio that nodriver's launcher module looks up. If
+        # nodriver stops calling asyncio.create_subprocess_exec there, or starts
+        # passing start_new_session itself, this is the test that says so.
+        source = inspect.getsource(nodriver_launcher.Browser.start)
+
+        assert nodriver_launcher.asyncio is asyncio
+        assert "asyncio.create_subprocess_exec(" in source
+        assert "start_new_session" not in source
+
+    @_POSIX_ONLY
+    async def test_a_launch_inside_it_starts_a_new_session(self) -> None:
+        with chrome_in_own_session() as applied:
+            sid, pid = await _session_of_a_child_launched_by_nodriver()
+
+        assert applied is True
+        assert sid == pid
+        assert sid != os.getsid(0)
+
+    @_POSIX_ONLY
+    async def test_a_launch_after_it_shares_this_session(self) -> None:
+        with chrome_in_own_session():
+            pass
+
+        sid, _ = await _session_of_a_child_launched_by_nodriver()
+
+        assert nodriver_launcher.asyncio is asyncio
+        assert sid == os.getsid(0)
+
+    def test_it_puts_the_launcher_back_when_the_launch_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="launch failed"), chrome_in_own_session():
+            raise RuntimeError("launch failed")
+
+        assert nodriver_launcher.asyncio is asyncio
+
+    def test_a_launcher_it_does_not_recognise_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stranger = object()
+        monkeypatch.setattr(nodriver_launcher, "asyncio", stranger)
+
+        with chrome_in_own_session() as applied:
+            assert nodriver_launcher.asyncio is stranger
+
+        assert applied is False
+        assert nodriver_launcher.asyncio is stranger
+
+    @_POSIX_ONLY
+    async def test_the_reaper_still_finds_and_ends_a_browser_in_its_own_session(
+        self, armed: None
+    ) -> None:
+        # An owner that has exited: the pid of a child that already finished.
+        gone = await asyncio.create_subprocess_exec(sys.executable, "-c", "pass")
+        await gone.wait()
+        args = ["--remote-debugging-port=0", chrome_orphans.owner_switch(gone.pid)]
+        with chrome_in_own_session():
+            proc = await nodriver_launcher.asyncio.create_subprocess_exec(
+                sys.executable, "-c", "import time; time.sleep(30)", *args
+            )
+        try:
+            assert os.getsid(proc.pid) == proc.pid
+            found = [p for p in chrome_orphans.list_chrome_processes() if p.pid == proc.pid]
+            assert [p.owner_pid for p in chrome_orphans.find_orphans(found)] == [gone.pid]
+
+            browser = type("Browser", (), {"_process": proc})()
+            assert chrome_orphans.terminate_nodriver_browser(browser) is True
+            assert await asyncio.wait_for(proc.wait(), timeout=10) == -signal.SIGTERM
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()

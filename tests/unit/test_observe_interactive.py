@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -445,7 +447,7 @@ class TestSetupObserveSessionTakesDomSnapshots:
 
 
 class TestSetupObserveSessionSigintIsolation:
-    """Verify that Chrome is isolated from SIGINT during nodriver.start()."""
+    """SIGINT is ignored while nodriver.start() runs, and Chrome starts in its own session."""
 
     @pytest.mark.asyncio
     async def test_sigint_ignored_during_nodriver_start(self, tmp_path: Path) -> None:
@@ -504,6 +506,55 @@ class TestSetupObserveSessionSigintIsolation:
 
         # Verify the session actually returned successfully
         assert result is not None
+
+    @pytest.mark.skipif(os.name != "posix", reason="sessions are a POSIX notion")
+    @pytest.mark.asyncio
+    async def test_chrome_starts_in_a_session_of_its_own(self, tmp_path: Path) -> None:
+        """#333: an inherited SIG_IGN does not keep Chrome alive, and a terminal's
+        Ctrl+C reaches its whole foreground process group, so Chrome has to start
+        outside it. The fake start launches a real child through the same call
+        nodriver's ``Browser.start`` makes."""
+        import nodriver.core.browser as nodriver_launcher
+
+        from graftpunk.cli.observe_browser import setup_observe_session
+
+        launched: list[tuple[int, int]] = []
+        mock_tab = MagicMock()
+        mock_browser = MagicMock()
+        mock_browser.main_tab = mock_tab
+        mock_browser.get = AsyncMock(return_value=mock_tab)
+        mock_backend = MagicMock()
+        mock_backend.start_capture_async = AsyncMock()
+
+        async def fake_nodriver_start(**kwargs: object) -> MagicMock:
+            proc = await nodriver_launcher.asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                "import os; print(os.getsid(0))",
+                stdout=asyncio.subprocess.PIPE,
+            )
+            out, _ = await proc.communicate()
+            launched.append((int(out), proc.pid))
+            return mock_browser
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = fake_nodriver_start
+        mock_storage = MagicMock()
+        mock_storage.run_dir = tmp_path / "run"
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch("graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend),
+            patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
+        ):
+            await setup_observe_session(
+                "test-ns", "https://example.com", 1024, headless=True, session_name=None
+            )
+
+        [(sid, pid)] = launched
+        assert sid == pid
+        assert sid != os.getsid(0)
+        assert nodriver_launcher.asyncio is asyncio
 
     @pytest.mark.asyncio
     async def test_sigint_restored_even_if_nodriver_start_raises(self) -> None:

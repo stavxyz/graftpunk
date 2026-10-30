@@ -15,10 +15,19 @@ period, so an async launch site hands it to a worker thread.
 sites that drive ``nodriver`` directly need the signal adapter
 ``NoDriverBackend`` gets by implementing the protocol itself, and one adapter
 in the composition root is what stops them writing two.
+
+:func:`chrome_in_own_session` is for the one launch site whose user ends the
+run with Ctrl+C, ``gp observe``: it starts Chrome outside the terminal's
+foreground process group (#333).
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import importlib
+import os
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -153,3 +162,71 @@ def browser_connect_failure_message(attempts: int) -> str:
         "Chrome may be slow to start; try again, or check for stale "
         "Chrome processes."
     )
+
+
+_NODRIVER_LAUNCHER = "nodriver.core.browser"
+
+
+class _AsyncioStartingNewSessions:
+    """``asyncio`` as nodriver's launcher module sees it inside :func:`chrome_in_own_session`.
+
+    Every attribute is the real module's, except that a subprocess it creates
+    starts in a new session.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio, name)
+
+    @staticmethod
+    async def create_subprocess_exec(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        kwargs["start_new_session"] = True
+        return await asyncio.create_subprocess_exec(*args, **kwargs)
+
+
+@contextlib.contextmanager
+def chrome_in_own_session() -> Iterator[bool]:
+    """While open, a ``nodriver.start`` launches Chrome in a session of its own (#333).
+
+    A terminal delivers Ctrl+C to its whole foreground process group, and
+    nodriver starts Chrome in Python's group. Ignoring SIGINT around the start
+    does not protect it (Chrome does not keep the ignored disposition it
+    inherits), so a Ctrl+C meant to stop ``gp observe interactive`` and save the
+    run also killed the browser the save reads its screenshot and page source
+    from.
+
+    nodriver has no option for this. ``Browser.start`` calls
+    ``asyncio.create_subprocess_exec`` through the ``asyncio`` name bound in
+    ``nodriver.core.browser``, so this rebinds that one name, for the length of
+    the block, to an object that adds ``start_new_session=True``. Nothing
+    outside nodriver's launcher module sees a change. A launcher whose
+    ``asyncio`` is not the real module (nodriver changed, or something else
+    already rebound it) is left alone with a warning, and Chrome then starts
+    where it always did. ``tests/unit/test_browser_launch.py`` pins the call
+    this relies on, so a nodriver release that moves it fails the suite.
+
+    A Chrome in its own session no longer receives the terminal's SIGINT or
+    SIGHUP, or a ``kill`` aimed at Python's process group. The stop path, the
+    SIGTERM and SIGHUP handlers, and the orphan sweep all find it by pid and
+    marker, which a session does not change.
+
+    Yields:
+        Whether the launcher was rebound.
+    """
+    if os.name != "posix":
+        yield False
+        return
+    try:
+        launcher = importlib.import_module(_NODRIVER_LAUNCHER)
+    except ImportError as exc:
+        LOG.warning("chrome_own_session_unavailable", reason="import", error=str(exc))
+        yield False
+        return
+    if getattr(launcher, "asyncio", None) is not asyncio:
+        LOG.warning("chrome_own_session_unavailable", reason="launcher_changed")
+        yield False
+        return
+    setattr(launcher, "asyncio", _AsyncioStartingNewSessions())  # noqa: B010
+    try:
+        yield True
+    finally:
+        setattr(launcher, "asyncio", asyncio)  # noqa: B010
