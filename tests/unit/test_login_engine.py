@@ -4769,6 +4769,26 @@ class TestSuccessAlreadyPresentBeforeSubmit:
         hint = _warning_kwargs(mock_log, _PRESENT_BEFORE_SUBMIT)["hint"]
         assert "success_url" in hint
         assert "wrong credentials" not in hint
+        assert "rate-limit page" in hint
+
+    @pytest.mark.asyncio
+    async def test_nodriver_does_not_probe_without_success(self) -> None:
+        """A plugin with no ``success`` makes no extra evaluate per submit."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            urls=("https://app.example.com/login", "https://app.example.com/dashboard?welcome=1")
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = await generate_login_method(DeclarativeNodriverUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert "click" in tab.order
+        assert "probe" not in tab.order
 
     def test_selenium_probes_before_the_click(self) -> None:
         from graftpunk.plugins.login_engine import generate_login_method
@@ -4798,6 +4818,7 @@ class TestSuccessAlreadyPresentBeforeSubmit:
         hint = _warning_kwargs(mock_log, _PRESENT_BEFORE_SUBMIT)["hint"]
         assert "success_url" in hint
         assert "wrong credentials" not in hint
+        assert "rate-limit page" in hint
 
     def test_selenium_probe_failing_otherwise_changes_nothing(self) -> None:
         """A WebDriverException other than an invalid selector (a stale element, a

@@ -521,14 +521,17 @@ def driver_url(driver: Any) -> str:
 def _warn_success_before_submit(*, login_config: LoginConfig, site_name: str, backend: str) -> None:
     """Warn that the ``success`` element is on the page before the login submits. With
     ``success_url`` set too, the URL must also move off the submit's page, so the
-    element alone cannot pass the login early, and the hint says so instead."""
+    element alone cannot pass the login early, and the hint says so instead; a found
+    element still keeps a rate-limit page served at a new URL from being read as
+    one (:func:`_login_tick_verdict`)."""
     selector = login_config.success
     if login_config.success_url:
         hint = (
             f"LoginConfig.success '{selector}' is already on the page before the login "
             "submits. success_url is set too, so the login still waits for the URL to "
-            "change, but the element tells nothing about the login. Choose one that "
-            "appears only after login."
+            "change and the element alone cannot pass it early, but a found element can "
+            "still hide a failure page shown at a new URL (a rate-limit page, say). "
+            "Choose one that appears only after login."
         )
     else:
         hint = (
