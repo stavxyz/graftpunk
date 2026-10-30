@@ -48,11 +48,12 @@ _STATE = {"results": _ITEMS, "search": {"query": "red widget", "page": 1}, "tota
 _STATE_TEXT = json.dumps(_STATE)
 _SHAPE = "object{results, search, total}"
 _PLANTED = "Red widget 7"
-# A candidate that fails to decode but is followed by enough text to hold an object
-# past the floor, so it cannot be ruled out by length and uses a decode.
 _PADDING = " " * 600
-_MALFORMED = "window.A.b = {x};" + _PADDING
-_MALFORMED_JSON = "{x}" + _PADDING
+# A candidate that fails to decode only after reading past the floor, so it uses a
+# decode; one that fails sooner (``{x}``) does not.
+_BROKEN = '{"pad": "' + "x" * 600 + '", x}'
+_MALFORMED = f"window.A.b = {_BROKEN};"
+_MALFORMED_JSON = _BROKEN
 
 
 def _page(*scripts: str) -> str:
@@ -344,9 +345,7 @@ class TestTheBounds:
 
     def test_only_the_first_decodes_are_tried_within_one_script(self, tmp_path: Path) -> None:
         def page(failing: int) -> str:
-            return _page(
-                _script("window.A.b = {x}; " * failing + f"window.App.props = {_STATE_TEXT};")
-            )
+            return _page(_script(f"{_MALFORMED} " * failing + f"window.App.props = {_STATE_TEXT};"))
 
         assert _found(tmp_path, page(inline_state.MAX_DECODES - 1)) == ("window.App.props", _SHAPE)
         assert inline_state.inline_json(page(inline_state.MAX_DECODES)) is None
@@ -1046,6 +1045,10 @@ _READER_PAGES: dict[str, str] = {
         _script(f"window.App.props = {_SMALL_TEXT};"),
         _script(f"window.App.props = {_STATE_TEXT};"),
     ),
+    "same-target-twice-large-first": _page(
+        _script(f"window.App.props = {_STATE_TEXT};"),
+        _script(f"window.App.props = {_SMALL_TEXT};"),
+    ),
     "placeholder-target": _page(
         _script(f"window.u999.props = {_SMALL_TEXT};"),
         _script(f"window.u12345.props = {_STATE_TEXT};"),
@@ -1152,3 +1155,287 @@ class TestPageTextInGeneratedCode:
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "read_inline_json"
         )
         assert ast.literal_eval(call.args[1]) == target
+
+
+# --- round 2 review fixes ---------------------------------------------------------
+
+_ASSIGNED = f"window.App.props = {_STATE_TEXT};"
+
+# More text that holds the state where no browser runs it as a script, or where the
+# reader stops before it: each page must report nothing.
+_NOT_RUN_EITHER: dict[str, str] = {
+    "processing-instruction": _page(f"<?x {_script(_ASSIGNED)}"),
+    "bogus-comment": _page(f"<!x {_script(_ASSIGNED)}"),
+    "malformed-end-tag": _page(f"</ {_script(_ASSIGNED)}"),
+    "plaintext": _page("<plaintext>", _script(_ASSIGNED)),
+    "xmp": _page(f"<xmp>{_script(_ASSIGNED)}</xmp>"),
+    "noembed": _page(f"<noembed>{_script(_ASSIGNED)}</noembed>"),
+    "noframes": _page(f"<noframes>{_script(_ASSIGNED)}</noframes>"),
+    "textarea-left-open": _page("<textarea>", _script(_ASSIGNED)),
+    "js-block-comment-left-open": _page(_script(f"go(); /* {_ASSIGNED}")),
+    "js-escaped-double-quote": _page(_script(f'var s = "a\\"; {_ASSIGNED} b";')),
+    "dollar-inside-an-indexed-name": _page(
+        _script(f"window.items[0].x$App.props = {_STATE_TEXT};")
+    ),
+    # Script types and attributes that make a browser skip the script.
+    "whitespace-only-type": _page(_script(_ASSIGNED, ' type="  "')),
+    "vbscript-language": _page(_script(_ASSIGNED, ' language="vbscript"')),
+    "padded-language": _page(_script(_ASSIGNED, ' language=" javascript"')),
+    "nomodule": _page(_script(_ASSIGNED, " nomodule")),
+    "typed-nomodule": _page(_script(_ASSIGNED, ' type="text/javascript" nomodule')),
+    # An array short enough for the first decode's window.
+    "json-array-in-the-window": _page(
+        _json_script(json.dumps(["x" * 40] * 15)),
+    ),
+    "language-with-type-not-run": _page(
+        _script(_ASSIGNED, ' type="text/x-template" language="javascript"')
+    ),
+}
+
+
+# Text before the state that the scans must step over: each page must report the
+# state.
+_READ_AFTER: dict[str, str] = {
+    "comment-ending-in-arrow": _page("<!--->", _script(_ASSIGNED)),
+    "stray-template-end-tag": _page("</template>", _script(_ASSIGNED)),
+    "escaped-double-quote": _page(_script(f'var s = "a\\"b"; {_ASSIGNED}')),
+    "double-quote-left-open-at-line-end": _page(_script(f'var s = "open\n{_ASSIGNED}')),
+    "single-quote-left-open-at-line-end": _page(_script(f"var s = 'open\n{_ASSIGNED}")),
+    "escaped-backtick": _page(_script(f"var t = `a\\`b`; {_ASSIGNED}")),
+    "line-comment-ending-at-cr": _page(_script(f"// c\r{_ASSIGNED}")),
+    "line-comment-ending-at-line-separator": _page(_script(f"// c\u2028{_ASSIGNED}")),
+    "line-comment-ending-at-paragraph-separator": _page(_script(f"// c\u2029{_ASSIGNED}")),
+    # Script types and attributes a browser runs.
+    "language-javascript": _page(_script(_ASSIGNED, ' language="javascript"')),
+    "language-versioned": _page(_script(_ASSIGNED, ' language="JavaScript1.2"')),
+    "language-empty": _page(_script(_ASSIGNED, ' language=""')),
+    "empty-type-beats-language": _page(_script(_ASSIGNED, ' type="" language="vbscript"')),
+    "type-beats-language": _page(_script(_ASSIGNED, ' type="text/javascript" language="vbscript"')),
+    "padded-legacy-type": _page(_script(_ASSIGNED, ' type=" TEXT/X-JAVASCRIPT "')),
+    "module-with-nomodule": _page(_script(_ASSIGNED, ' type="module" nomodule')),
+}
+
+
+class TestScriptsABrowserRunsMore:
+    @pytest.mark.parametrize("name", sorted(_NOT_RUN_EITHER))
+    def test_text_no_browser_runs_is_not_read(self, tmp_path: Path, name: str) -> None:
+        assert inline_state.inline_json(_NOT_RUN_EITHER[name]) is None
+        assert read_inline_json(_NOT_RUN_EITHER[name]) is None
+        assert _page_endpoint(tmp_path, _NOT_RUN_EITHER[name]).inline_json is None
+
+    @pytest.mark.parametrize("name", sorted(_READ_AFTER))
+    def test_the_state_after_it_is_read(self, tmp_path: Path, name: str) -> None:
+        assert _found(tmp_path, _READ_AFTER[name]) == ("window.App.props", _SHAPE)
+        assert read_inline_json(_READ_AFTER[name]) == _STATE
+
+    def test_every_javascript_mime_type_essence_is_read(self) -> None:
+        """The MIME Sniffing standard's list (mimesniff.spec.whatwg.org, "JavaScript
+        MIME type", fetched 2026-10-30), and module; each is read
+        (TestTypeValues.test_each_javascript_type_is_read)."""
+        assert {
+            "application/ecmascript",
+            "application/javascript",
+            "application/x-ecmascript",
+            "application/x-javascript",
+            "text/ecmascript",
+            "text/javascript",
+            *(f"text/javascript1.{minor}" for minor in range(6)),
+            "text/jscript",
+            "text/livescript",
+            "text/x-ecmascript",
+            "text/x-javascript",
+            "module",
+        } == inline_state.JAVASCRIPT_TYPES
+
+    def test_escaped_script_data_is_not_modelled(self, tmp_path: Path) -> None:
+        """The documented limit: in a browser, "<!--" and then "<script" inside a
+        script keep it open past the next "</script>", so all of this is one script
+        and the assignment sits in a string that never runs. The reader ends the
+        body at the first "</script>" and reads the assignment."""
+        page = _page(
+            '<script><!-- var a = "<script></script>"; '
+            f'var b = "<script>{_ASSIGNED}</script>"; --></script>'
+        )
+        assert _found(tmp_path, page) == ("window.App.props", _SHAPE)
+
+
+class TestRegularExpressionLiterals:
+    """The documented limit: a regular expression literal is read as code."""
+
+    def test_a_quote_in_one_can_make_a_later_string_read_as_code(self, tmp_path: Path) -> None:
+        page = _page(_script(f"var r = /'/; var s = '{_ASSIGNED}';"))
+        assert _found(tmp_path, page) == ("window.App.props", _SHAPE)
+
+    def test_a_block_comment_opening_in_one_hides_the_rest_of_the_script(
+        self, tmp_path: Path
+    ) -> None:
+        page = _page(_script(f"s.replace(/^\\/*/, '');\n{_ASSIGNED}"))
+        assert _page_endpoint(tmp_path, page).inline_json is None
+
+    def test_a_line_comment_opening_in_one_hides_the_rest_of_its_line(self, tmp_path: Path) -> None:
+        page = _page(_script(f"var u = /^https?:\\/\\//; {_ASSIGNED}"))
+        assert _page_endpoint(tmp_path / "a", page).inline_json is None
+        page = _page(_script(f"var u = /^https?:\\/\\//;\n{_ASSIGNED}"))
+        assert _found(tmp_path / "b", page) == ("window.App.props", _SHAPE)
+
+    def test_a_backtick_in_one_hides_text_up_to_the_next_backtick(self, tmp_path: Path) -> None:
+        page = _page(_script(f"var t = /`/;\n{_ASSIGNED}"))
+        assert _page_endpoint(tmp_path / "a", page).inline_json is None
+        page = _page(_script(f"var t = /`/; go(`);\n{_ASSIGNED}"))
+        assert _found(tmp_path / "b", page) == ("window.App.props", _SHAPE)
+
+
+# Script ids that look like ids only as a whole, or only in a part between dots.
+_ID_LIKE_IDS = ["k3-m9-p2-q7", "x1-y2-z3", "a1_b2_c3", "App.a1_b2_c3", "j0.Cg.wg.n_8"]
+# Dotted names judged both as a JSON script's id and as an assignment's target.
+_SAME_VERDICT = [
+    "App.a1_b2_c3",
+    "j0.Cg.wg.n_8",
+    "window.a1_b2_c3",
+    "App.k3_m9_p2_q7",
+    "App.state",
+    "window.__NEXT_DATA__",
+    "App.step_2",
+]
+
+
+class TestIdLikeScriptIds:
+    @pytest.mark.parametrize("script_id", _ID_LIKE_IDS)
+    def test_an_id_like_script_id_is_a_placeholder(self, tmp_path: Path, script_id: str) -> None:
+        page = _page(_json_script(_STATE_TEXT, f' id="{script_id}"'))
+        assert _found(tmp_path, page) == ("script#{id}", _SHAPE)
+
+    @pytest.mark.parametrize("script_id", ["app-state", "step-2", "__NEXT_DATA__"])
+    def test_a_word_like_script_id_is_reported_as_written(
+        self, tmp_path: Path, script_id: str
+    ) -> None:
+        page = _page(_json_script(_STATE_TEXT, f' id="{script_id}"'))
+        assert _found(tmp_path, page) == (f"script#{script_id}", _SHAPE)
+
+    @pytest.mark.parametrize("name", _SAME_VERDICT)
+    def test_a_script_id_and_a_target_spelled_alike_get_the_same_verdict(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        script = _found(tmp_path / "a", _page(_json_script(_STATE_TEXT, f' id="{name}"')))
+        target = _found(tmp_path / "b", _page(_script(f"{name} = {_STATE_TEXT};")))
+        assert script is not None
+        assert target is not None
+        assert (script[0] == f"script#{name}") == (target[0] == name)
+
+    def test_a_target_that_looks_like_an_id_only_as_a_whole_is_a_placeholder(
+        self, tmp_path: Path
+    ) -> None:
+        page = _page(_script(f"j0.Cg.wg.n_8 = {_STATE_TEXT};"))
+        assert _found(tmp_path, page) == ("{id}", _SHAPE)
+
+    def test_a_target_part_that_looks_like_an_id_is_a_placeholder(self, tmp_path: Path) -> None:
+        page = _page(_script(f"window.a1_b2_c3 = {_STATE_TEXT};"))
+        assert _found(tmp_path, page) == ("window.{window_id}", _SHAPE)
+
+
+def _failing_at(offset: int) -> str:
+    """An object that fails to decode at *offset* characters past its "{"."""
+    text = '{"p": "' + "x" * (offset - 10) + '", x}'
+    assert text.index(", x}") + 2 == offset
+    return text
+
+
+class TestTheDecodeBudgetMore:
+    def test_many_small_javascript_objects_do_not_use_up_the_decodes(self, tmp_path: Path) -> None:
+        flags = "".join(
+            f"window.flags.f{i} = {{on: true}};" for i in range(4 * inline_state.MAX_DECODES)
+        )
+        page = _page(_script(f"{flags} {_ASSIGNED}"))
+        assert _found(tmp_path, page) == ("window.App.props", _SHAPE)
+
+    def test_small_javascript_objects_in_many_scripts_do_not_use_up_the_decodes(
+        self, tmp_path: Path
+    ) -> None:
+        flags = [_script("window.flags.x = {on: true};")] * (inline_state.MAX_DECODES + 1)
+        assert _found(tmp_path, _page(*flags, _script(_ASSIGNED))) == ("window.App.props", _SHAPE)
+
+    def test_a_failure_counts_once_it_has_read_the_floor(self, tmp_path: Path) -> None:
+        floor = inline_state.MIN_OBJECT_CHARS
+
+        def page(offset: int) -> str:
+            failing = f"window.A.b = {_failing_at(offset)}; " * inline_state.MAX_DECODES
+            return _page(_script(failing + _ASSIGNED))
+
+        assert _found(tmp_path, page(floor - 1)) == ("window.App.props", _SHAPE)
+        assert inline_state.inline_json(page(floor)) is None
+
+    def test_an_object_longer_than_the_first_decode_s_window_is_read(self, tmp_path: Path) -> None:
+        """The window cuts the first object inside a string, and the second inside
+        a literal, which the decoder reports a few characters before the cut."""
+        window = 2 * inline_state.MIN_OBJECT_CHARS
+        assert len(_BIG_TEXT) > window
+        page = _page(_script(f"window.Big = {_BIG_TEXT};"))
+        assert _found(tmp_path / "a", page) == ("window.Big", "object{decoy}")
+        cut_in_a_literal = '{"a": [' + "true, " * 300 + "true]}"
+        assert cut_in_a_literal[window - 3 : window] == "tru"
+        page = _page(_script(f"window.Flags = {cut_in_a_literal};"))
+        assert _found(tmp_path / "b", page) == ("window.Flags", "object{a}")
+
+    def test_a_failure_past_the_window_counts(self, tmp_path: Path) -> None:
+        failing = _script(f"window.A.b = {_failing_at(3 * inline_state.MIN_OBJECT_CHARS)};")
+
+        def page(count: int) -> str:
+            return _page(*[failing] * count, _script(_ASSIGNED))
+
+        assert _found(tmp_path, page(inline_state.MAX_DECODES - 1)) == ("window.App.props", _SHAPE)
+        assert inline_state.inline_json(page(inline_state.MAX_DECODES)) is None
+
+    def test_a_failure_near_the_end_of_a_short_script_is_free(self, tmp_path: Path) -> None:
+        """The first decode reads the whole of a script this short, so a failure
+        near its end is the candidate's own, not the window's, and reads less than
+        the floor."""
+        failing = _failing_at(inline_state.MIN_OBJECT_CHARS - 8)
+        body = f"window.A.b = {failing}" + " " * (inline_state.MIN_OBJECT_CHARS + 2 - len(failing))
+        scripts = [_script(body)] * (inline_state.MAX_DECODES + 1)
+        assert _found(tmp_path, _page(*scripts, _script(_ASSIGNED))) == ("window.App.props", _SHAPE)
+
+    def test_a_string_left_open_to_the_end_counts(self, tmp_path: Path) -> None:
+        """The decode read the whole script looking for the string's end."""
+        failing = _script('window.A.b = {"p": "' + "x" * inline_state.MIN_OBJECT_CHARS)
+
+        def page(count: int) -> str:
+            return _page(*[failing] * count, _script(_ASSIGNED))
+
+        assert _found(tmp_path, page(inline_state.MAX_DECODES - 1)) == ("window.App.props", _SHAPE)
+        assert inline_state.inline_json(page(inline_state.MAX_DECODES)) is None
+
+    def test_each_qualifying_object_counts(self, tmp_path: Path) -> None:
+        def page(count: int) -> str:
+            return _page(*[_script(f"window.Config = {_SMALL_TEXT};")] * count, _script(_ASSIGNED))
+
+        assert _found(tmp_path, page(inline_state.MAX_DECODES - 1)) == ("window.App.props", _SHAPE)
+        assert _found(tmp_path, page(inline_state.MAX_DECODES)) == (
+            "window.Config",
+            "object{config}",
+        )
+
+    def test_cpu_time_grows_linearly_through_failed_decodes(self) -> None:
+        """Eight times the page within 32 times the CPU time, through candidates
+        that fail before the floor and so are free: JavaScript objects, strings
+        that break at a line end (some just before the floor), and objects cut off
+        by the next candidate. Only a decode of the whole text builds an error
+        whose line count reads everything before it, so none may be free."""
+
+        def page(units: int) -> str:
+            state = json.dumps({"results": [{"name": "x", "price": i} for i in range(units * 10)]})
+            code = (
+                "window.f.g = {on: 1}; " * (units * 4)
+                + ('a.b = {"k": "' + "y" * 300 + "\n") * units
+                + ('a.b = {"k": "' + "y" * 498 + "\n") * units
+                + 'a.b = {"k": 1, ' * (units * 4)
+                + f"window.App.props = {state};"
+            )
+            return f"<script>{code}</script>"
+
+        small_page, large_page = page(400), page(3200)
+        found = inline_state.inline_json(large_page)
+        assert found is not None
+        assert found.target == "window.App.props"
+        small = _cpu_seconds(lambda: inline_state.inline_json(small_page))
+        large = _cpu_seconds(lambda: inline_state.inline_json(large_page))
+        assert large < 32 * small, (small, large)

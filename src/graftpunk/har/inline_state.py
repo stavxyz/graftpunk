@@ -6,28 +6,39 @@ assignment to a dotted name (``window.App.props = {...};``) or a JSON block
 it, the digest reports such a page as non-JSON and the page holding a site's
 results reads like navigation chrome (#271).
 
-Only ``<script>`` elements a browser would parse as scripts are read: the page is
-tokenized as HTML, so a script inside an HTML comment, an attribute value, or the
-text of a ``<textarea>``, ``<title>``, ``<style>``, ``<noscript>``, ``<iframe>``,
-``<noembed>``, ``<noframes>`` or ``<xmp>`` is text, and one inside a
-``<template>`` is inert and is skipped. Two forms are read, and no other:
+Only ``<script>`` elements a browser would parse as scripts are read, within the
+limits below: the page is tokenized as HTML, so a script inside an HTML comment,
+an attribute value, or the text of a ``<textarea>``, ``<title>``, ``<style>``,
+``<noscript>``, ``<iframe>``, ``<noembed>``, ``<noframes>`` or ``<xmp>`` is text,
+one inside a ``<template>`` is inert and is skipped, and nothing after a
+``<plaintext>`` tag is read. Two forms are read, and no other:
 
-- a script whose ``type`` is absent, empty, or a JavaScript type
-  (:data:`JAVASCRIPT_TYPES`, compared as the HTML standard compares them: without
-  case, and for all but ``module`` without surrounding whitespace, and never with
-  parameters, so ``text/javascript; charset=utf-8`` is a data block), with no
-  ``src``, holding an assignment whose target is
-  a dotted name of two or more parts (``window.App``, ``App.props``,
-  ``window.App.props``) and whose value starts with ``{`` and is a JSON object.
-  An assignment inside a JavaScript string, template literal, or ``//`` or
-  ``/* */`` comment is skipped. ``var``/``let``/``const`` declarations, bare
-  names, bracketed names (``window["App"]``), ``JSON.parse("...")``, and
-  JavaScript object literals that are not JSON are not read;
+- a script with no ``src`` that a browser runs as JavaScript, by the HTML
+  standard's "prepare the script element" (:func:`_runs_as_javascript`: a
+  ``type`` or ``language`` naming a JavaScript MIME type essence, all of
+  :data:`JAVASCRIPT_TYPES` but ``module``, or ``module``; no ``nomodule`` on a
+  classic script), holding an assignment whose target is a dotted name of two or
+  more parts (``window.App``, ``App.props``, ``window.App.props``) and whose
+  value starts with ``{`` and is a JSON object. An assignment inside a
+  JavaScript string, template literal, or ``//`` or ``/* */`` comment is
+  skipped. ``var``/``let``/``const`` declarations, bare names, bracketed names
+  (``window["App"]``), ``JSON.parse("...")``, and JavaScript object literals
+  that are not JSON are not read;
 - a ``<script>`` whose ``type`` is ``application/json``, with or without
   parameters (``application/json; charset=utf-8``), whose body is a JSON object,
   named by its ``id`` (``script#__NEXT_DATA__``) or, without one, as
   ``script[type="application/json"]``. ``application/ld+json`` is search-engine
   metadata, not page state, and is not read.
+
+Two limits remain. A regular expression literal is read as code, so a quote,
+backtick, ``//``, or ``/*`` inside one changes what is read after it: a quote
+(``/'/``) opens a string the next quote closes, so a later string's text is read
+as code; a backtick hides the text up to the next backtick; ``//`` hides the rest
+of its line; and ``/*`` hides the rest of the script when no ``*/`` follows. The
+HTML tokenizer's "script data escaped" states are not modelled: every script body
+ends at the first ``</script`` followed by whitespace, ``/``, or ``>``, though a
+browser keeps a script open past one that follows ``<!--`` and ``<script`` inside
+it, so the rest of such a script is read as markup.
 
 An array is never reported, only an object. The object must be spelled in at
 least :data:`MIN_OBJECT_CHARS` characters, so a small settings object does not
@@ -38,20 +49,27 @@ The search is bounded and linear in the page: it examines at most
 :data:`MAX_SCRIPTS` scripts, skips a script body longer than
 :data:`MAX_SCRIPT_CHARS`, and decodes at most :data:`MAX_DECODES` candidate
 objects per page, each within its own script body. A candidate is first decoded
-within its first ``MIN_OBJECT_CHARS - 1`` characters; one that ends there is under
-the floor and is skipped without using a decode, so many small settings objects
-never hide the state after them. Every other candidate, a malformed one included,
-uses one. It never executes script. A decode that fails, or that the parser
-refuses for nesting too deep for it (``RecursionError``), is skipped.
+within its first ``2 * MIN_OBJECT_CHARS`` characters. One that ends under the
+floor, and one that fails before reading :data:`MIN_OBJECT_CHARS` characters
+(``{on: true}``), use no decode, so many small settings objects, JSON or
+JavaScript, never hide the state after them. An object that qualifies, a decode
+that fails after reading the floor's characters, and a candidate those first
+characters cut short (then decoded whole) each use one. It never executes script.
+A decode that fails, or that the parser refuses for nesting too deep for it
+(``RecursionError``), is skipped.
 
-The target is reported as written only when it is a plain dotted name
+An assignment's target is reported as written only when it is a plain dotted name
 (identifiers joined by ``.``) of at most :data:`MAX_TARGET_CHARS` characters. A
-part of an assignment's target that looks like it holds an id or a value
+part of it that looks like it holds an id or a value
 (:func:`graftpunk.har.paths.looks_dynamic`) is reported as a placeholder, as a
-path segment is (``window.{window_id}.props``), and a longer target is reported as
-``{id}``. A JSON script's id that is not such a name, or has such a part, is
-reported as ``script#{id}``. So no quote, backtick, space, or line break from the
-page reaches any output through a target.
+path segment is (``window.{window_id}.props``), and a target that looks like one
+only as a whole, or is longer, as ``{id}``. A JSON script's id is reported as
+written (``script#app-state``) only when it is a plain HTML id (letters, digits,
+``_``, ``.``, and ``-``) of at most :data:`MAX_TARGET_CHARS` characters that looks
+like an id neither as a whole (``k3-m9-p2-q7``) nor in a part between dots, and
+as ``script#{id}`` otherwise, so an id and a target spelled the same get the same
+verdict. So no quote, backtick, space, or line break from the page reaches any
+output through a target.
 
 :func:`read_inline_json` is the reader a generated plugin calls: the same scan and
 the same choice, so it returns the object the digest reported for the page.
@@ -87,8 +105,9 @@ MAX_SCRIPT_CHARS = 4 * 1024 * 1024
 """A script body longer than this many characters is not examined."""
 
 MAX_DECODES = 32
-"""Candidate objects decoded per page past the floor check, failed decodes
-included; a candidate the floor check rejects does not count."""
+"""Candidate objects decoded per page that qualify, or that fail after reading
+:data:`MIN_OBJECT_CHARS` characters; a smaller object or an earlier failure does
+not count."""
 
 MIN_OBJECT_CHARS = 512
 """An object spelled in fewer characters than this is not reported."""
@@ -98,17 +117,29 @@ MAX_TARGET_CHARS = 64
 
 JAVASCRIPT_TYPES = frozenset(
     {
-        "text/javascript",
-        "application/javascript",
-        "application/x-javascript",
         "application/ecmascript",
+        "application/javascript",
+        "application/x-ecmascript",
+        "application/x-javascript",
         "text/ecmascript",
+        "text/javascript",
+        "text/javascript1.0",
+        "text/javascript1.1",
+        "text/javascript1.2",
+        "text/javascript1.3",
+        "text/javascript1.4",
+        "text/javascript1.5",
+        "text/jscript",
+        "text/livescript",
+        "text/x-ecmascript",
+        "text/x-javascript",
         "module",
     }
 )
-"""The ``type`` values of a script whose assignments are read (with an absent or
-empty ``type``), compared without case; all but ``module`` also without
-surrounding whitespace."""
+"""The script types whose assignments are read: the MIME Sniffing standard's
+JavaScript MIME type essences (https://mimesniff.spec.whatwg.org/, "JavaScript MIME
+type", fetched 2026-10-30) and ``module``, compared as :func:`_runs_as_javascript`
+says."""
 
 _CLASSIC_TYPES = JAVASCRIPT_TYPES - {"module"}
 
@@ -130,7 +161,7 @@ _ATTRIBUTE = (
 _ATTRIBUTE_RE = re.compile(_ATTRIBUTE)
 # The rest of a tag after its name, up to and including the ">" that ends it.
 _TAG_REST_RE = re.compile(rf"(?:[\t\n\f\r /]++|{_ATTRIBUTE})*+>")
-_ATTRIBUTES_READ = frozenset({"type", "id", "src"})
+_ATTRIBUTES_READ = frozenset({"type", "language", "id", "src", "nomodule"})
 _COMMENT_END_RE = re.compile(r"--!?>")
 # Elements whose content is text up to their own end tag: scripts, the raw text
 # elements, and the escapable raw text ones (noscript is raw text when scripting
@@ -181,7 +212,7 @@ def _matched_end(pattern: re.Pattern[str], text: str, position: int) -> int:
 
 
 def _attributes(tag: str) -> dict[str, str]:
-    """The ``type``, ``id``, and ``src`` attributes of *tag*, the text of a tag
+    """The attributes in ``_ATTRIBUTES_READ`` of *tag*, the text of a tag
     after its name, by lower-case name; the first of each wins, as in a browser."""
     found: dict[str, str] = {}
     for match in _ATTRIBUTE_RE.finditer(tag):
@@ -272,24 +303,54 @@ class _Budget:
         return self.used >= MAX_DECODES
 
 
+# The first decode of a candidate reads at most this many characters of it.
+_WINDOW_CHARS = 2 * MIN_OBJECT_CHARS
+# How far past an error's position the decoder may have read to raise it: the
+# longest literal it compares whole is "-Infinity", and a "\uXXXX" escape is six.
+_DECODE_LOOKAHEAD = 16
+
+
+def _chars_read(error: json.JSONDecodeError) -> int:
+    """How far into its text the decode that raised *error* read: to the end for a
+    string left unterminated (the error names where the string starts), else to
+    the error."""
+    if error.msg.startswith("Unterminated string"):
+        return len(error.doc)
+    return error.pos
+
+
 def _object_at(text: str, start: int, budget: _Budget) -> tuple[dict[str, Any] | None, int]:
     """The JSON object at *start* in *text* that is spelled in at least
     :data:`MIN_OBJECT_CHARS` characters, or None, and where the scan resumes: past
     a value that decoded, at *start* after a failed decode, and at the end of
     *text* when too little of it is left to hold a qualifying object.
 
-    The value is first decoded within its first ``MIN_OBJECT_CHARS - 1``
-    characters; one that ends there is under the floor and is skipped without using
-    a decode from *budget*. Only a candidate that does not end there is decoded
-    whole, which uses one."""
+    The candidate is first decoded within its first ``2 * MIN_OBJECT_CHARS``
+    characters. A value that ends under the floor, and a decode that fails before
+    reading the floor's :data:`MIN_OBJECT_CHARS` characters (``{on: true}``), use no
+    decode from *budget*, so many small objects, JavaScript ones included, never
+    hide the state after them. A value that qualifies, a decode that fails past the
+    floor, and a candidate the window cuts short (then decoded whole) use one."""
     if len(text) - start < MIN_OBJECT_CHARS:
         return None, len(text)
+    window = text[start : start + _WINDOW_CHARS]
+    whole = start + _WINDOW_CHARS >= len(text)
     try:
-        _small, end = _DECODER.raw_decode(text[start : start + MIN_OBJECT_CHARS - 1])
+        value, end = _DECODER.raw_decode(window)
+    except json.JSONDecodeError as error:
+        read = _chars_read(error)
+        # An error the decoder raised within reach of the cut may be the cut's.
+        if whole or read < len(window) - _DECODE_LOOKAHEAD:
+            if read >= MIN_OBJECT_CHARS:
+                budget.used += 1
+            return None, start
     except (ValueError, RecursionError):
         pass
     else:
-        return None, start + end
+        if end < MIN_OBJECT_CHARS:
+            return None, start + end
+        budget.used += 1
+        return (value if isinstance(value, dict) else None), start + end
     budget.used += 1
     try:
         value, end = _DECODER.raw_decode(text, start)
@@ -302,11 +363,22 @@ def _plain_name(name: str) -> bool:
     return len(name) <= MAX_TARGET_CHARS and _NAME_PATH_RE.fullmatch(name) is not None
 
 
+def _looks_like_an_id(script_id: str) -> bool:
+    """True when *script_id* looks like it holds an id or a value
+    (:func:`graftpunk.har.paths.looks_dynamic`) as a whole (``k3-m9-p2-q7``) or in
+    a part between dots (``App.a1_b2_c3``), as an assignment's target spelled the
+    same would. ``looks_dynamic`` judges each part between ``-``, ``_``, and ``.``
+    itself, so a part holding an id (``state-40912873``) makes the whole look
+    like one."""
+    return any(looks_dynamic(part) for part in (script_id, *script_id.split(".")) if part)
+
+
 def _printable_target(target: str) -> str:
     """*target*, an assignment's dotted name, as it is reported: each part that
     looks like it holds an id or a value replaced by a placeholder named as a path
     segment's would be, and the whole as ``{id}`` when it is not a plain name of at
-    most :data:`MAX_TARGET_CHARS` characters, or its placeholders make it longer."""
+    most :data:`MAX_TARGET_CHARS` characters, its placeholders make it longer, or
+    only the whole looks like it holds an id (``j0.Cg.wg.n_8``)."""
     if not _plain_name(target):
         return _PLACEHOLDER
     parts: list[str] = []
@@ -316,21 +388,23 @@ def _printable_target(target: str) -> str:
         else:
             parts.append(part)
     printed = ".".join(parts)
+    if printed == target and looks_dynamic(target):
+        return _PLACEHOLDER
     return printed if len(printed) <= MAX_TARGET_CHARS else _PLACEHOLDER
 
 
 def _json_script_target(attributes: dict[str, str]) -> str:
     """A JSON script's target: ``script#`` and its id when the id is a plain HTML id
-    (letters, digits, ``_``, ``.`` and ``-``) with no part that looks like it holds
-    an id, ``script#{id}`` for any other id, and ``script[type="application/json"]``
-    without one."""
+    (letters, digits, ``_``, ``.`` and ``-``) of at most :data:`MAX_TARGET_CHARS`
+    characters that does not look like it holds an id, ``script#{id}`` for any
+    other id, and ``script[type="application/json"]`` without one."""
     script_id = attributes.get("id", "")
     if not script_id:
         return _JSON_SCRIPT_TARGET
     if (
         len(script_id) <= MAX_TARGET_CHARS
         and _HTML_ID_RE.fullmatch(script_id)
-        and not any(looks_dynamic(part) for part in re.split(r"[-_.]", script_id) if part)
+        and not _looks_like_an_id(script_id)
     ):
         return f"script#{script_id}"
     return "script#" + _PLACEHOLDER
@@ -340,13 +414,28 @@ def _media_type(value: str) -> str:
     return value.split(";", 1)[0].strip(_HTML_SPACE).lower()
 
 
-def _runs_as_javascript(script_type: str) -> bool:
-    """True when a script whose ``type`` is *script_type* (empty when absent) runs as
-    JavaScript, as the HTML standard's "prepare the script element" decides: an
-    empty type, a JavaScript MIME type compared without case or surrounding
-    whitespace and with no parameters, or ``module`` compared without case only."""
-    stripped = script_type.strip(_HTML_SPACE).lower()
-    return not stripped or stripped in _CLASSIC_TYPES or script_type.lower() == "module"
+def _runs_as_javascript(attributes: dict[str, str]) -> bool:
+    """True when a browser that supports modules runs a script with *attributes* as
+    JavaScript, as the HTML standard's "prepare the script element" decides
+    (https://html.spec.whatwg.org/multipage/scripting.html, fetched 2026-10-30).
+
+    The script's type string is "text/javascript" when ``type`` is empty, or absent
+    with ``language`` absent or empty; else the ``type`` value, or, when ``type``
+    is absent, "text/" and the ``language`` value. A classic script is one whose
+    type string, or whose ``type`` stripped of surrounding whitespace, is a
+    JavaScript MIME type essence (:data:`JAVASCRIPT_TYPES` but ``module``) without
+    case, so a parameter or a whitespace-only ``type`` makes a data block; a
+    classic script with ``nomodule`` is not run. A module script is one whose
+    type string is ``module`` without case, unstripped."""
+    script_type = attributes.get("type")
+    if script_type is None:
+        language = attributes.get("language", "")
+        classic = not language or f"text/{language}".lower() in _CLASSIC_TYPES
+    elif script_type.lower() == "module":
+        return True
+    else:
+        classic = not script_type or script_type.strip(_HTML_SPACE).lower() in _CLASSIC_TYPES
+    return classic and "nomodule" not in attributes
 
 
 def _assignments(body: str, budget: _Budget) -> Iterator[tuple[str, dict[str, Any], int]]:
@@ -388,7 +477,7 @@ def _candidates(page: str) -> Iterator[tuple[str, dict[str, Any], int]]:
             value, end = _object_at(body, start, budget)
             if value is not None:
                 yield _json_script_target(attributes), value, end - start
-        elif "src" not in attributes and _runs_as_javascript(script_type):
+        elif "src" not in attributes and _runs_as_javascript(attributes):
             yield from _assignments(body, budget)
 
 
