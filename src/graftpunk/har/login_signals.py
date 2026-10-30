@@ -427,6 +427,7 @@ def success_candidates(
     earlier: Sequence[str] = (),
     submitted_a_step: Collection[int] = (),
     account_values: Iterable[str] = (),
+    also_on: str | None = None,
 ) -> tuple[str, ...]:
     """Up to :data:`MAX_SUCCESS_CANDIDATES` selectors for an element on the final
     logged-in page and on no logged-out page: each selects exactly one element of
@@ -459,7 +460,11 @@ def success_candidates(
     ``logged``, ``account``, ``signout``, ``logout``, ``user``, ``profile``, or
     ``avatar``, or a link or form whose target has a ``logout``, ``log-out``,
     ``signout``, or ``sign-out`` path segment; then an id before a class; then
-    document order. Only selectors are returned, never text or attribute values."""
+    document order. Only selectors are returned, never text or attribute values.
+
+    With *also_on* (the page the recorder read a few seconds after the credential
+    post, :func:`graftpunk.har.digest._after_read`), a selector must also select an
+    element there; it narrows the candidates and changes no other rule."""
     if not logged_in:
         return ()
     after_post = [_read(html) for html in (*earlier, logged_in)]
@@ -477,6 +482,7 @@ def success_candidates(
     others = [_read(html) for html in logged_out] + after_post[:landing]
     also_logged_in = after_post[landing:-1]
     needles = _needles(account_values)
+    after_read = _read(also_on) if also_on is not None else None
     ranked: dict[str, tuple[int, int, int, int]] = {}
     seen: set[str] = set()
     for order, element in enumerate(final.elements):
@@ -490,6 +496,7 @@ def success_candidates(
                 bounded_selector(selector) is None
                 or final.count(key) != 1
                 or any(page.count(key) for page in others)
+                or (after_read is not None and not after_read.count(key))
             ):
                 continue
             everywhere = all(page.count(key) for page in also_logged_in)

@@ -2,10 +2,11 @@
 
 A credential post that carries ``request._domAfter`` links a structure-only read of
 the page taken a few seconds after its response (``snapshots/<rid>.after.html``).
-The digest takes the last credential post's read as the logged-in page for its
-success suggestions, before ``page-source.html`` and the last page in the HAR,
-unless that read is still a login (a login form, or a step of one). A run without
-the key digests exactly as graftpunk 1.29.0 did, which the golden file pins.
+The digest keeps 1.29.0's final logged-in page (``page-source.html``, else the
+last page in the HAR) and, when the last credential post's read is usable, suggests
+only what that read also holds. A read that is still a login (a login form, a step
+of one, or one a step-shaped POST followed) is not used. A run without the key
+digests exactly as graftpunk 1.29.0 did, which the golden file pins.
 """
 
 from __future__ import annotations
@@ -99,37 +100,95 @@ def _without_after(entries: list[dict]) -> list[dict]:
     return stripped
 
 
-class TestTheAfterReadIsTheLoggedInPage:
-    def test_it_wins_over_the_page_the_run_stopped_on(self, tmp_path: Path) -> None:
-        """The run stopped on /orders: without the read only what /orders shows is
-        suggested; with it, the landing page's markers are, and the one on both
-        pages ranks first."""
+def _fetch_post(path: str, payload: dict) -> dict:
+    """A POST a page's script sent (fetch), after the credential post."""
+    entry = _entry(
+        "POST", f"{_HOST}{path}", post_data=json.dumps(payload), started="2026-09-10T10:00:40.000Z"
+    )
+    entry["request"]["_resourceType"] = "Fetch"
+    return entry
+
+
+# An MFA page with no one-time-code input and no password: no rule of part 1 knows
+# it for a login step.
+_PLAIN_MFA = (
+    "<html><body><header><nav class='site-nav'></nav></header><main>"
+    "<div id='mfa-challenge'><form id='mfa-form'><input id='code' name='code' "
+    "inputmode='numeric'><button id='verify'>Verify</button></form></div></main></body></html>"
+)
+# The live probe's case 1: a script login swaps the header in place; the user then
+# browses to a help page.
+_SIGNED_OUT_HEADER = "<header id='site-header'><a id='brand' href='/'>Shop</a></header>"
+_SIGNED_IN_HEADER = (
+    "<header id='site-header' class='logged-in'><a id='brand' href='/'>Shop</a>"
+    "<nav id='account-nav'><a id='account-link' href='/account'>My account</a>"
+    "<a id='logout-link' href='/logout'>Sign out</a></nav></header>"
+)
+_SCRIPT_LOGIN = (
+    f"<html><body>{_SIGNED_OUT_HEADER}<main id='login-main'><div id='login-box'>"
+    "<input id='email' name='email'><input id='password' name='password' type='password'>"
+    "<button id='go' type='button'>Sign in</button></div></main></body></html>"
+)
+_SWAPPED = (
+    f"<html><body>{_SIGNED_IN_HEADER}<main id='dashboard'><h1 class='welcome'>Welcome"
+    "</h1></main></body></html>"
+)
+_HELP_ARTICLE = "<main id='help-article' class='article'><section id='account-faq'></section></main>"
+
+
+class TestTheAfterReadNarrowsTheSuggestions:
+    """The final logged-in page stays what 1.29.0 chose; a usable after-read of the
+    last credential post only removes the candidates it does not also hold."""
+
+    def test_it_narrows_the_page_the_run_stopped_on(self, tmp_path: Path) -> None:
+        """The run stopped on /orders: only what /orders and the landing page share
+        is suggested; /orders' own table is not."""
         entries = [_get("/login", _LOGIN), _post(tmp_path, "9.1", after=_after(_LANDING))]
 
         stopped = _digest(tmp_path / "plain", _without_after(entries), _ORDERS)
         assert stopped.success_candidates == ("a.signout-link", "#orders-table")
 
         result = _digest(tmp_path, entries, _ORDERS)
-        assert result.success_candidates == ("a.signout-link", "#account-menu", "#welcome")
+        assert result.success_candidates == ("a.signout-link",)
         payload = json.loads(render_endpoints_json(result))
-        assert payload["login"]["success_candidates"] == list(result.success_candidates)
+        assert payload["login"]["success_candidates"] == ["a.signout-link"]
 
-    def test_it_wins_over_the_last_page_in_the_har(self, tmp_path: Path) -> None:
+    def test_it_narrows_the_last_page_in_the_har(self, tmp_path: Path) -> None:
         entries = [
             _get("/login", _LOGIN),
             _post(tmp_path, "9.1", after=_after(_LANDING)),
             _get("/orders", _ORDERS, started="2026-09-10T10:00:30.000Z"),
         ]
-        result = _digest(tmp_path, entries)
-        assert result.success_candidates == ("a.signout-link", "#account-menu", "#welcome")
+        plain = _digest(tmp_path / "plain", _without_after(entries))
+        assert plain.success_candidates == ("a.signout-link", "#orders-table")
+        assert _digest(tmp_path, entries).success_candidates == ("a.signout-link",)
 
-    def test_it_alone_is_a_logged_in_page(self, tmp_path: Path) -> None:
+    def test_it_never_replaces_the_final_page(self, tmp_path: Path) -> None:
         """A script login with no page load after it and no page source: 1.29.0
-        suggested nothing; the read is the logged-in page."""
+        suggested nothing, and the read alone suggests nothing either."""
         entries = [_get("/login", _LOGIN), _post(tmp_path, "9.1", after=_after(_LANDING))]
         assert _digest(tmp_path / "plain", _without_after(entries)).success_candidates == ()
-        result = _digest(tmp_path, entries)
-        assert result.success_candidates == ("#account-menu", "a.signout-link", "#welcome")
+        assert _digest(tmp_path, entries).success_candidates == ()
+
+    def test_a_read_sharing_nothing_with_the_final_page_gives_none(self, tmp_path: Path) -> None:
+        """The live probe's case 1 as recorded: the help page the run stopped on holds
+        no header, so it and the read share nothing."""
+        help_page = f"<html><body>{_HELP_ARTICLE}</body></html>"
+        entries = [_get("/login", _SCRIPT_LOGIN), _post(tmp_path, "9.1", after=_after(_SWAPPED))]
+        plain = _digest(tmp_path / "plain", _without_after(entries), help_page)
+        assert plain.success_candidates == ("#account-faq", "#help-article", "main.article")
+        assert _digest(tmp_path, entries, help_page).success_candidates == ()
+
+    def test_a_script_login_then_a_help_page_gives_the_header(self, tmp_path: Path) -> None:
+        """The probe's case 1 on a site whose help page carries the signed-in header:
+        the header's selectors, and none of the help page's own. The article comes
+        first in document order, so 1.29.0 ranks its keyword id ahead of the header."""
+        help_page = f"<html><body>{_HELP_ARTICLE}{_SIGNED_IN_HEADER}</body></html>"
+        entries = [_get("/login", _SCRIPT_LOGIN), _post(tmp_path, "9.1", after=_after(_SWAPPED))]
+        plain = _digest(tmp_path / "plain", _without_after(entries), help_page)
+        assert plain.success_candidates == ("#account-faq", "#account-nav", "#account-link")
+        result = _digest(tmp_path, entries, help_page)
+        assert result.success_candidates == ("#account-nav", "#account-link", "#logout-link")
 
     def test_the_read_holds_no_text_and_the_ranking_needs_none(self, tmp_path: Path) -> None:
         stored = _after(_LANDING)
@@ -137,11 +196,42 @@ class TestTheAfterReadIsTheLoggedInPage:
         assert "Sign out" not in stored
         assert "alice" not in stored.lower()
         entries = [_get("/login", _LOGIN), _post(tmp_path, "9.1", after=stored)]
-        assert _digest(tmp_path, entries).success_candidates == (
+        assert _digest(tmp_path, entries, _LANDING).success_candidates == (
             "#account-menu",
             "a.signout-link",
             "#welcome",
         )
+
+    def test_an_undetected_mfa_page_in_the_read_gives_no_mfa_selector(
+        self, tmp_path: Path
+    ) -> None:
+        """The read caught an MFA page no rule knows for a step, and no step POST
+        followed it in the HAR (a push approval): the run stopped on the landing page,
+        which shares nothing with the MFA page outside the logged-out header."""
+        entries = [_get("/login", _LOGIN), _post(tmp_path, "9.1", after=_after(_PLAIN_MFA))]
+        plain = _digest(tmp_path / "plain", _without_after(entries), _LANDING)
+        assert plain.success_candidates == ("#account-menu", "a.signout-link", "#welcome")
+        assert _digest(tmp_path, entries, _LANDING).success_candidates == ()
+
+    def test_a_step_sent_by_fetch_after_the_post_falls_back(self, tmp_path: Path) -> None:
+        """The reviewers' SPA MFA: the code is verified by a fetch POST after the
+        credential post, so the read may show that step and is not used."""
+        entries = [
+            _get("/login", _LOGIN),
+            _post(tmp_path, "9.1", after=_after(_PLAIN_MFA)),
+            _fetch_post("/api/mfa/verify", {"code": "123456"}),
+        ]
+        result = _digest(tmp_path, entries, _LANDING)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#welcome")
+        assert not {"#mfa-challenge", "#code", "#verify"} & set(result.success_candidates)
+
+    def test_a_fetch_post_that_is_no_step_keeps_the_read(self, tmp_path: Path) -> None:
+        entries = [
+            _get("/login", _LOGIN),
+            _post(tmp_path, "9.1", after=_after(_LANDING)),
+            _fetch_post("/api/cart", {"item": "42"}),
+        ]
+        assert _digest(tmp_path, entries, _ORDERS).success_candidates == ("a.signout-link",)
 
     @pytest.mark.parametrize(
         "after",
@@ -174,6 +264,17 @@ class TestTheAfterReadIsTheLoggedInPage:
         assert result.success_candidates == plain.success_candidates
         assert "#account-verify" not in result.success_candidates
 
+    def test_a_step_before_the_last_post_does_not_count(self, tmp_path: Path) -> None:
+        """A failed attempt, a step-shaped post, then the good attempt: the step came
+        before the last credential post, so that post's read still narrows."""
+        entries = [
+            _get("/login", _LOGIN),
+            _post(tmp_path, "9.1"),
+            _fetch_post("/api/mfa/verify", {"code": "123456"}),
+            _post(tmp_path, "9.2", after=_after(_LANDING)),
+        ]
+        assert _digest(tmp_path, entries, _ORDERS).success_candidates == ("a.signout-link",)
+
     def test_only_the_last_credential_post_s_read_counts(self, tmp_path: Path) -> None:
         """A failed attempt, then a good one with no read: the first post's read is the
         page the failed attempt left, never the logged-in page."""
@@ -189,18 +290,26 @@ class TestTheAfterReadIsTheLoggedInPage:
         assert "#account-error" not in result.success_candidates
 
     def test_a_link_to_a_missing_file_is_no_read(self, tmp_path: Path) -> None:
+        from graftpunk.har.parser import parse_har_file
+
         entries = [_get("/login", _LOGIN), _post(tmp_path, "9.1", after=_after(_LANDING))]
         (tmp_path / "snapshots" / "9.1.after.html").unlink()
         result = _digest(tmp_path, entries, _ORDERS)
         assert result.success_candidates == ("a.signout-link", "#orders-table")
+        post = parse_har_file(tmp_path / "network.har").entries[1]
+        assert (post.request.dom_after_file, post.request.dom_after) == (None, None)
 
     def test_a_link_leaving_the_run_is_not_read(self, tmp_path: Path) -> None:
+        from graftpunk.har.parser import parse_har_file
+
         outside = tmp_path / "outside.html"
         outside.write_text(_after(_LANDING))
         post = _post(tmp_path / "run", "9.1")
         post["request"]["_domAfter"] = "../outside.html"
         result = _digest(tmp_path / "run", [_get("/login", _LOGIN), post], _ORDERS)
         assert result.success_candidates == ("a.signout-link", "#orders-table")
+        parsed = parse_har_file(tmp_path / "run" / "network.har").entries[1]
+        assert (parsed.request.dom_after_file, parsed.request.dom_after) == (None, None)
 
     def test_the_parser_reads_the_link(self, tmp_path: Path) -> None:
         from graftpunk.har.parser import parse_har_file

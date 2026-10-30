@@ -1482,13 +1482,13 @@ _EMAIL_IN_VALUE_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9
 
 def _after_read(credential_entries: Sequence[HAREntry], stepped_since: bool) -> str | None:
     """The page the recorder read after the run's last credential post settled
-    (``request._domAfter``, structure only), as the logged-in page for success
-    suggestions; None when that post has none, or when the read is still a login: it
-    holds a login form, asks for a one-time code
+    (``request._domAfter``, structure only), which narrows the success suggestions
+    (``also_on`` of :func:`graftpunk.har.login_signals.success_candidates`); None
+    when that post has none, or when the read may still be a login: it holds a
+    login form, asks for a one-time code
     (:func:`graftpunk.har.login_signals.asks_for_a_code`), or *stepped_since* (the
-    browser submitted a step-shaped form after that post,
-    :func:`graftpunk.har.login_signals.is_login_step_post`), so the read may show
-    that step."""
+    browser sent a step-shaped POST after that post, a document form or a script's,
+    :func:`graftpunk.har.login_signals.is_login_step_post`)."""
     if not credential_entries:
         return None
     html = credential_entries[-1].request.dom_after
@@ -2172,8 +2172,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     submitted_a_step: set[int] = set()
     latest_after_post: int | None = None
     credential_entries: list[HAREntry] = []
-    # Whether the browser submitted a step-shaped top-level document POST after the
-    # last credential post: its after-read (_after_read) may show that step.
+    # Whether the browser sent a step-shaped POST (a document form or a script's)
+    # after the last credential post: its after-read (_after_read) may show that step.
     stepped_since_last_post = False
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
@@ -2312,25 +2312,28 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         content_type = (entry.response.content_type or "").lower()
         if _is_page_load(entry, method, content_type):
             page_loads.append(entry.timestamp)
-        if _is_top_level_page_load(entry, method, content_type):
-            step_shaped = (
-                method == "POST"
-                and bool(credential_post_steps)
-                and is_login_step_post(
-                    path,
-                    {
-                        *body_params(entry),
-                        *(
-                            name
-                            for names, _value in body_values(
-                                entry.request.post_data, _request_content_type(entry)
-                            )
-                            for name in names
-                        ),
-                    },
-                )
+        # A step-shaped POST after a credential post: a document form, or one a
+        # script sent (an SPA's MFA code by fetch), which only the after-read's rule
+        # reads; the per-page rule (submitted_a_step) reads document forms only.
+        step_shaped = (
+            method == "POST"
+            and bool(credential_post_steps)
+            and is_login_step_post(
+                path,
+                {
+                    *body_params(entry),
+                    *(
+                        name
+                        for names, _value in body_values(
+                            entry.request.post_data, _request_content_type(entry)
+                        )
+                        for name in names
+                    ),
+                },
             )
-            stepped_since_last_post = stepped_since_last_post or step_shaped
+        )
+        stepped_since_last_post = stepped_since_last_post or step_shaped
+        if _is_top_level_page_load(entry, method, content_type):
             if step_shaped and latest_after_post is not None:
                 submitted_a_step.add(latest_after_post)
             latest_after_post = None
@@ -2729,17 +2732,6 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         else [value for values in read_values if values is not None for value in values]
     )
 
-    # The logged-in page: the last credential post's after-read when it is one, with
-    # every page loaded after a credential post before it; else the last of those
-    # pages (page-source.html when it went there), as 1.29.0 did.
-    after_read = _after_read(credential_entries, stepped_since_last_post)
-    if after_read is not None:
-        logged_in, earlier = after_read, after_post_pages
-    else:
-        logged_in, earlier = (
-            (after_post_pages[-1], after_post_pages[:-1]) if after_post_pages else ("", [])
-        )
-
     return RunDigest(
         source=source,
         primary_host=primary_host,
@@ -2753,16 +2745,19 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         collapsed_templates=collapse_map,
         cookie_names_dropped_as_ids=len(id_cookie_names),
         token_names_dropped_as_ids=len(id_token_names),
-        # Only for a run that recorded a login; success_candidates finds the leading
-        # run of login steps among the pages after the post.
+        # Only for a run that recorded a login. The final page is the last of
+        # after_post_pages (page-source.html when it went there); success_candidates
+        # finds the leading run of login steps among them. The last credential post's
+        # after-read, when usable, only narrows what that page gives.
         success_candidates=success_candidates(
             logged_out_pages,
-            logged_in,
-            earlier=earlier,
+            after_post_pages[-1],
+            earlier=after_post_pages[:-1],
             submitted_a_step=submitted_a_step,
             account_values=account_values,
+            also_on=_after_read(credential_entries, stepped_since_last_post),
         )
-        if credential_post_steps and logged_in and account_values is not None
+        if credential_post_steps and after_post_pages and account_values is not None
         else (),
     )
 
