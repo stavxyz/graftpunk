@@ -20,7 +20,7 @@ from graftpunk.observe.failure_text import (
     failed_password_values,
     failure_candidates,
     login_form_username_names,
-    posted_identifiers,
+    posted_values,
     scrub_failed_password,
     without_success_page,
 )
@@ -357,9 +357,9 @@ class TestTheSearchCap:
         assert _found(after, before) == ("That sign-in did not work.",)
 
 
-class TestIdentifiersOfOtherRequests:
+class TestValuesOfOtherRequests:
     """An identifier-first login posts the username in a step before the password
-    post, so the password post's own values do not hold it."""
+    post, under any name, so the password post's own values do not hold it."""
 
     _STEP = "username=jsmith"
     _FORM = "application/x-www-form-urlencoded"
@@ -367,9 +367,9 @@ class TestIdentifiersOfOtherRequests:
     def test_the_guard_holds_them(self) -> None:
         own = _guard("password=wrong-x7k2q9", self._FORM)
         assert not own.holds("The password for jsmith is not right.")
-        identifiers = posted_identifiers([(self._STEP, self._FORM)])
-        assert identifiers == ["jsmith"]
-        guard = AccountGuard.of("password=wrong-x7k2q9", self._FORM, also=identifiers)
+        posted = posted_values([(self._STEP, self._FORM, "POST")])
+        assert posted == ["jsmith", "jsmith"]
+        guard = AccountGuard.of("password=wrong-x7k2q9", self._FORM, also=posted)
         assert guard is not None
         assert guard.holds("The password for jsmith is not right.")
         assert guard.holds("No user JSmith here")
@@ -380,13 +380,25 @@ class TestIdentifiersOfOtherRequests:
         assert guard.holds("Unknown user jo. Try again")
         assert not guard.holds("Try a job again")
 
-    def test_only_identifier_values(self) -> None:
+    @pytest.mark.parametrize("name", ["j_username", "user_login", "loginfmt", "handle", "uid"])
+    def test_a_step_field_under_any_name(self, name: str) -> None:
+        posted = posted_values([(f"{name}=jsmith", self._FORM, "POST")])
+        assert posted == ["jsmith"]
+        guard = AccountGuard.of("j_password=wrong-x7k2q9", self._FORM, also=posted)
+        assert guard is not None
+        assert guard.holds("The password for jsmith is not right.")
+
+    def test_every_value_of_a_post_but_a_token_s_short_one_or_boolean_word(self) -> None:
         bodies = [
-            ("q=shoes&page=2", self._FORM),
-            (json.dumps({"user": {"email": "alice@example.com"}, "note": "x"}), _JSON),
-            ("password=wrong-x7k2q9", self._FORM),
+            ("q=shoes&page=2&csrf_token=abc123xyz&remember=true&lang=en", self._FORM, "POST"),
+            (json.dumps({"user": {"email": "alice@example.com"}, "note": "x"}), _JSON, "POST"),
         ]
-        assert posted_identifiers(bodies) == ["alice@example.com"]
+        assert posted_values(bodies) == ["shoes", "alice@example.com", "alice@example.com"]
+
+    def test_only_identifier_values_of_a_request_that_is_no_post(self) -> None:
+        body = json.dumps({"login": "jsmith", "note": "first visit"})
+        assert posted_values([(body, _JSON, "PUT")]) == ["jsmith"]
+        assert posted_values([(body, _JSON, "POST")]) == ["jsmith", "jsmith", "first visit"]
 
     def test_a_login_form_s_username_name_counts(self) -> None:
         page = (
@@ -395,8 +407,8 @@ class TestIdentifiersOfOtherRequests:
         )
         names = login_form_username_names(page)
         assert names == frozenset({"handle"})
-        assert posted_identifiers([("handle=jsmith", self._FORM)]) == []
-        assert posted_identifiers([("handle=jsmith", self._FORM)], names) == ["jsmith"]
+        assert posted_values([("handle=jo", self._FORM, "POST")]) == []
+        assert posted_values([("handle=jo", self._FORM, "POST")], names) == ["jo"]
         assert login_form_username_names(None) == frozenset()
 
 
@@ -506,6 +518,64 @@ class TestScrubFailedPassword:
         body = "username=jsmith\r\npassword=wrong-x7k2q9\r\n"
         assert scrub_failed_password(body, "text/plain", ["wrong-x7k2q9"]) == (
             f"username=jsmith\r\npassword={self._R}\r\n"
+        )
+
+    def test_a_text_plain_value_is_one_line_holding_an_ampersand(self) -> None:
+        body = "username=jsmith\r\npassword=pa&ss9\r\n"
+        assert failed_password_values(body, "text/plain") == ["pa&ss9"]
+        assert scrub_failed_password(body, "text/plain", ["pa&ss9"]) == (
+            f"username=jsmith\r\npassword={self._R}\r\n"
+        )
+
+    def test_a_text_plain_value_is_compared_as_written(self) -> None:
+        body = "username=jsmith\npassword=pa+ss%9\n"
+        assert failed_password_values(body, "text/plain") == ["pa+ss%9"]
+        assert scrub_failed_password(body, "text/plain", ["pa+ss%9"]) == (
+            f"username=jsmith\npassword={self._R}\n"
+        )
+
+    def test_a_text_plain_value_runs_on_over_a_line_without_an_equals_sign(self) -> None:
+        body = "username=jsmith\r\npassword=ab\r\ncd\r\nremember=1"
+        assert failed_password_values(body, "text/plain") == ["ab\ncd"]
+        assert scrub_failed_password(body, "text/plain", ["ab\ncd"]) == (
+            f"username=jsmith\r\npassword={self._R}\r\nremember=1"
+        )
+
+    def test_a_one_line_form_body_ending_in_a_line_break(self) -> None:
+        body = "username=jsmith&password=wrong-abc123\n"
+        values = failed_password_values(body, self._FORM)
+        assert values == ["wrong-abc123\n"]
+        assert scrub_failed_password(body, self._FORM, values) == (
+            f"username=jsmith&password={self._R}\n"
+        )
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            ("username=jsmith\r\npassword=pa&ss9\r\n", "text/plain"),
+            ("username=jsmith\npassword=pa+ss%9\n", "text/plain"),
+            ("username=jsmith\r\npassword=ab\r\ncd\r\nremember=1", "text/plain"),
+            ("username=jsmith&password=wrong-abc123\n", _FORM),
+            ("password=pa&ss9", "text/plain"),
+            ("username=jsmith&password=p%26ss+9&password=x%0Ay", _FORM),
+            (json.dumps({"user": {"password": "wrong-abc123"}}), _JSON),
+            (
+                '--b\r\nContent-Disposition: form-data; name="password"\r\n\r\n'
+                "ab\n--cd\r\n--b--\r\n",
+                "multipart/form-data; boundary=b",
+            ),
+        ],
+    )
+    def test_every_value_it_reads_it_scrubs(self, body: str, content_type: str) -> None:
+        values = failed_password_values(body, content_type)
+        assert values
+        scrubbed = scrub_failed_password(body, content_type, values)
+        assert set(failed_password_values(scrubbed, content_type)) <= {self._R, f"{self._R}\n"}
+
+    def test_json_in_a_form_field_written_with_plus_for_a_space(self) -> None:
+        body = "data=%7B%22password%22%3A+%22a+b%22%7D"
+        assert scrub_failed_password(body, self._FORM, ["a b"]) == (
+            "data=%7B%22password%22%3A+%22***REDACTED***%22%7D"
         )
 
     def test_json_values_under_a_password_name_only(self) -> None:

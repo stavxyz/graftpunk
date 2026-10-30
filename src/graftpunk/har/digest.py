@@ -60,11 +60,13 @@ from graftpunk.session_identity import identifier_key, is_identifier_field
 LOG = get_logger(__name__)
 
 BodyKind = Literal["json", "form", "none"]
+BodyLayout = Literal["json", "text_plain", "multipart", "form", "none"]
 ObservationKind = Literal["form_page", "credential_post", "redirect", "set_cookie", "auth_api"]
 DropReason = Literal["static", "third_party", "error", "other_scheme"]
 
 __all__ = [
     "BodyKind",
+    "BodyLayout",
     "DigestSource",
     "DropReason",
     "Endpoint",
@@ -77,14 +79,17 @@ __all__ = [
     "ShapeNode",
     "TokenCandidate",
     "TokenKind",
+    "body_layout",
     "body_params",
     "body_values",
     "digest",
     "is_credential_body",
+    "multipart_delimiter",
     "password_field_names",
     "post_account_values",
     "post_every_value",
     "post_identifier_values",
+    "posted_account_values",
     "endpoint_template",
     "FLAGGED_REASONS",
     "FlaggedReason",
@@ -797,18 +802,25 @@ _MULTIPART_NAME_RE = re.compile(r'\bname="([^"]*)"', re.IGNORECASE)
 _BOUNDARY_RE = re.compile(r'\bboundary=(?:"([^"]+)"|([^\s;]+))', re.IGNORECASE)
 
 
+def multipart_delimiter(text: str, content_type: str) -> str | None:
+    """The line a ``multipart/form-data`` body *text* splits its parts on: ``--``
+    and the boundary its *content_type* names, or, when it names none, the first
+    non-blank line of *text* when that starts with ``--``; else None."""
+    declared = _BOUNDARY_RE.search(content_type)
+    if declared:
+        return "--" + (declared.group(1) or declared.group(2))
+    delimiter = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return delimiter if delimiter.startswith("--") and len(delimiter) >= 3 else None
+
+
 def _multipart_values(text: str, content_type: str) -> list[tuple[tuple[str, ...], str]]:
     """The (name,) and value of each text part of a ``multipart/form-data`` body,
     split on the boundary its *content_type* names, or, when it names none, on the
     first non-blank line of the body. A file part is skipped."""
     newline = "\r\n" if "\r\n" in text else "\n"
-    declared = _BOUNDARY_RE.search(content_type)
-    if declared:
-        delimiter = "--" + (declared.group(1) or declared.group(2))
-    else:
-        delimiter = next((line.strip() for line in text.splitlines() if line.strip()), "")
-        if not delimiter.startswith("--") or len(delimiter) < 3:
-            return []
+    delimiter = multipart_delimiter(text, content_type)
+    if delimiter is None:
+        return []
     found: list[tuple[tuple[str, ...], str]] = []
     for part in text.split(delimiter)[1:]:
         if part.startswith("--"):
@@ -856,31 +868,50 @@ def _read_body_values(post_data: str | None, content_type: str) -> tuple[list[_B
     ``parse_qs`` with no such key (XML with an attribute, prose with an ``=``), a
     JSON body with a value under no name (a bare string, a list of strings), and a
     value holding JSON too deep for the parser are not read by field names."""
+    _layout, fields, by_names = _body_fields(post_data, content_type)
+    return _with_json_values(fields, by_names)
+
+
+def body_layout(post_data: str | None, content_type: str = "") -> BodyLayout:
+    """How :func:`body_values` splits a request body into fields, so a writer
+    (:func:`graftpunk.observe.failure_text.scrub_failed_password`) splits it the
+    same way: ``"json"``; ``"text_plain"``, a field a line
+    (:func:`_text_plain_fields`); ``"multipart"``, a field a part; ``"form"``, a
+    field each ``&``-separated piece, by ``parse_qs``; or ``"none"`` for no fields."""
+    return _body_fields(post_data, content_type)[0]
+
+
+def _body_fields(
+    post_data: str | None, content_type: str
+) -> tuple[BodyLayout, list[tuple[tuple[str, ...], str]], bool]:
+    """The one split of a body into fields, for :func:`_read_body_values` and
+    :func:`body_layout`: its layout, its fields (before the values inside a field
+    holding JSON), and whether they were read by their field names."""
     declared = content_type.split(";")[0].strip().lower()
     kind, parsed = _decoded(post_data, declared)
     if not post_data or kind == "too_deep":
-        return [], False
+        return "none", [], False
     if kind == "json":
         values = _scalar_values(parsed)
-        return _with_json_values(values, all(path for path, _value in values))
+        return "json", values, all(path for path, _value in values)
     lines = _text_plain_fields(post_data) if declared == _TEXT_PLAIN_CONTENT_TYPE else None
     if lines:
-        return _with_json_values(lines, True)
+        return "text_plain", lines, True
     if kind == "none" and declared == _MULTIPART_CONTENT_TYPE:
         parts = _multipart_values(post_data, content_type)
         if parts:
-            return _with_json_values(parts, True)
+            return "multipart", parts, True
     form = parsed if kind == "form" else _form_fields(post_data)
     if form is not None:
-        return _with_json_values(
-            [((name,), value) for name, values in form.items() for value in values], True
-        )
+        return "form", [((name,), value) for name, values in form.items() for value in values], True
     if "=" in post_data:
         loose = parse_qs(post_data, keep_blank_values=True)
-        return _with_json_values(
-            [((name,), value) for name, values in loose.items() for value in values], False
+        return (
+            "form",
+            [((name,), value) for name, values in loose.items() for value in values],
+            False,
         )
-    return [], False
+    return "none", [], False
 
 
 _TEXT_PLAIN_CONTENT_TYPE = "text/plain"
@@ -1517,13 +1548,14 @@ def _failure_candidates(
     credential_entries: Sequence[HAREntry],
     account_values: list[str] | None,
     logged_in_pages: Sequence[str],
-    identifier_values: Sequence[str] = (),
+    posted_values: Sequence[str] = (),
 ) -> tuple[str, ...]:
     """The failure texts the last credential post the user marked failed carries
     (``request._failureTextCandidates``), less each one holding an account value of
-    any credential post of the run (*account_values*) or an identifier value any
-    request posted up to the real login (*identifier_values*, the username of an
-    identifier-first login), by the rule the success suggestions are kept by
+    any credential post of the run (*account_values*) or a value any request
+    posted up to the real login (*posted_values*, :func:`posted_account_values`:
+    the username of an identifier-first login, under any name), by the rule the
+    success suggestions are kept by
     (:func:`graftpunk.har.login_signals.holds_an_account_value`), an email address,
     or a redaction, and each one the engine would find
     (:func:`graftpunk.plugins.login_settle.failure_text_on_page`) on one of
@@ -1545,7 +1577,7 @@ def _failure_candidates(
         and real_login.request.dom_after is None
     ):
         return ()
-    needles = account_needles([*account_values, *identifier_values])
+    needles = account_needles([*account_values, *posted_values])
     lowered_pages = [page.lower() for page in logged_in_pages]
     return tuple(
         text
@@ -1679,6 +1711,30 @@ def post_identifier_values(
         if value.strip()
         and any(name in by_form or is_identifier_field(identifier_key(name)) for name in path)
     ]
+
+
+def posted_account_values(
+    post_data: str | None,
+    content_type: str = "",
+    method: str = "POST",
+    username_names: Iterable[str] = (),
+) -> list[str]:
+    """The values a request of a login run sent that a failure suggestion may not
+    hold: its identifier values (:func:`post_identifier_values`) and, for a POST,
+    each value the every-value rule takes (:func:`post_every_value`) that could name
+    an account (:func:`graftpunk.har.login_signals.could_be_an_account_value`: three
+    or more characters, not a boolean word). An identifier-first login posts the
+    username in a step under any name (``j_username``, ``loginfmt``), which neither
+    the password post's values nor an identifier name finds. Held in memory only,
+    never written."""
+    values = post_identifier_values(post_data, content_type, username_names)
+    if method.upper() == "POST":
+        values += [
+            value
+            for value in post_every_value(post_data, content_type)
+            if could_be_an_account_value(value)
+        ]
+    return values
 
 
 def _path_segments(url: str) -> int:
@@ -2904,8 +2960,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             [
                 value
                 for entry in bodied_entries[:bodied_through_login]
-                for value in post_identifier_values(
-                    entry.request.post_data, _request_content_type(entry), username_names
+                for value in posted_account_values(
+                    entry.request.post_data,
+                    _request_content_type(entry),
+                    entry.request.method,
+                    username_names,
                 )
             ],
         ),

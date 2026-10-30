@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
-from graftpunk.har.digest import DigestSource, RunDigest, digest
+from graftpunk.har.digest import DigestSource, RunDigest, digest, post_identifier_values
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.report import endpoints_projection, render_endpoints_json, render_json
 from tests.unit.test_har_digest import _LOGIN_CONFIG_ON_MAIN, _comment_text, _entry, _write_har
@@ -369,18 +369,35 @@ class TestAnIdentifierFirstLogin:
     def test_a_text_holding_the_username_a_step_posted_is_dropped(self, tmp_path: Path) -> None:
         assert _digest(tmp_path, self._entries()).failure_candidates == (_TEXTS[1],)
 
-    def test_a_login_form_s_username_name_counts(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("name", ["j_username", "user_login", "loginfmt", "handle", "uid"])
+    def test_a_step_field_under_any_name_is_the_username(self, tmp_path: Path, name: str) -> None:
+        """No identifier field's name and no recorded login form's: every value of a
+        POST up to the real login counts."""
+        entries = self._entries()
+        content = entries[0]["response"]["content"]
+        content["text"] = content["text"].replace("name='username'", f"name='{name}'")
+        entries[1]["request"]["postData"]["text"] = f"{name}=jsmith"
+        assert _digest(tmp_path, entries).failure_candidates == (_TEXTS[1],)
+
+    def test_a_login_form_s_username_name_counts_in_a_request_that_is_no_post(
+        self, tmp_path: Path
+    ) -> None:
         """``handle`` is no identifier field's name, but the recorded login form takes
-        it as its username: the page's script posts it in a step of its own before
-        the form posts the password."""
+        it as its username: the page's script sends it in a step of its own (a PUT
+        here, whose other values do not count) before the form posts the password."""
         entries = self._entries()
         entries[0]["response"]["content"]["text"] = (
             "<html><body><form action='/login/password' method='post'>"
             "<input type='text' name='handle'><input type='password' name='password'>"
             "<button>Sign in</button></form></body></html>"
         )
+        entries[1]["request"]["method"] = "PUT"
         entries[1]["request"]["postData"]["text"] = "handle=jsmith"
         assert _digest(tmp_path, entries).failure_candidates == (_TEXTS[1],)
+        entries[0]["response"]["content"]["text"] = entries[0]["response"]["content"][
+            "text"
+        ].replace("name='handle'", "name='nickname'")
+        assert _digest(tmp_path, entries).failure_candidates == (self._ERROR, _TEXTS[1])
         entries[0]["response"]["content"]["text"] = entries[0]["response"]["content"][
             "text"
         ].replace("name='handle'", "name='nickname'")
@@ -404,6 +421,27 @@ class TestAnIdentifierFirstLogin:
             _TEXTS[1],
         )
 
+    def test_the_real_login_s_own_step_counts(self, tmp_path: Path) -> None:
+        """The window runs to the last credential post: the real login's identifier
+        step, posted after the marked post, is checked too."""
+        entries = self._entries()
+        entries[1]["request"]["postData"]["text"] = "username=bob_tester"
+        step = _entry(
+            "POST",
+            f"{_HOST}/login/identifier",
+            post_data="username=jsmith2024",
+            started="2026-09-10T10:00:07.000Z",
+        )
+        step["request"]["postData"]["mimeType"] = _FORM
+        step["request"]["headers"] = [{"name": "Content-Type", "value": _FORM}]
+        entries[3]["request"]["_failureTextCandidates"] = [
+            "The password for jsmith2024 is not right.",
+            _TEXTS[1],
+        ]
+        assert _digest(tmp_path, [*entries[:4], step, *entries[4:]]).failure_candidates == (
+            _TEXTS[1],
+        )
+
     def test_a_credential_post_whose_values_cannot_be_read_suggests_nothing(
         self, tmp_path: Path
     ) -> None:
@@ -415,6 +453,12 @@ class TestAnIdentifierFirstLogin:
     def test_the_projection_s_login_keys(self, tmp_path: Path) -> None:
         login = endpoints_projection(_digest(tmp_path, _entries()))["login"]
         assert set(login) == {"auth_urls", "forms", "success_candidates", "failure_candidates"}
+
+
+class TestPostIdentifierValues:
+    def test_an_identifier_name_anywhere_on_the_path(self) -> None:
+        body = json.dumps({"user": {"name": "jsmith"}, "meta": {"note": "first visit"}})
+        assert post_identifier_values(body, "application/json") == ["jsmith"]
 
 
 class TestTheGenerator:

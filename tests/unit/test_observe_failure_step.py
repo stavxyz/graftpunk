@@ -274,28 +274,65 @@ class TestAnIdentifierFirstLogin:
         await _stop(backend, tab)
         assert backend.marked_failure_candidates() == (_STAYS,)
 
+    async def _step(self, tab: FakeTab, rid: str, body: str) -> None:
+        await tab.dispatch(
+            _will_be_sent(rid, inline=body, url=self._IDENTIFIER, headers={"Content-Type": _FORM})
+        )
+        await tab.dispatch(_response_received(rid, url=self._IDENTIFIER))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["j_username", "user_login", "loginfmt", "handle", "uid"])
+    async def test_a_step_field_under_any_name_is_the_username(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        """No identifier field's name and no login form's: every value of a POST
+        counts."""
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        tab.dom_html = _FAILED_PAGE.replace(_TOAST, "The password for jsmith is not right.")
+        await self._step(tab, "76.1", f"{name}=jsmith")
+        await _post(tab, "76.2", "j_password=wrong-x7k2q9", content_type=_FORM)
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        await _stop(backend, tab)
+        assert backend.marked_failure_candidates() == (_STAYS,)
+
     @pytest.mark.asyncio
     async def test_a_login_form_s_username_name_counts(self, tmp_path: Path) -> None:
         """``handle`` is no identifier field's name; the login form on the page at the
-        post takes it as its username, and a script posted it in a step first."""
+        post takes it as its username, and a script posted it in a step first. A
+        value under three characters is no account value by the every-value rule, so
+        only this rule finds it."""
         page = _LOGIN_MODAL.replace('name="username"', 'name="handle"')
         tab, backend, clock, _reads = await _recording(tmp_path)
-        tab.dom_html = _FAILED_PAGE.replace(_TOAST, "The password for jsmith is not right.")
-        await tab.dispatch(
-            _will_be_sent(
-                "77.1",
-                inline="handle=jsmith",
-                url=self._IDENTIFIER,
-                headers={"Content-Type": _FORM},
-            )
-        )
-        await tab.dispatch(_response_received("77.1", url=self._IDENTIFIER))
+        tab.dom_html = _FAILED_PAGE.replace(_TOAST, "The password for jo is not right.")
+        await self._step(tab, "77.1", "handle=jo")
         await _post(tab, "77.2", "password=wrong-x7k2q9", content_type=_FORM, page=page)
         await clock.advance(2, backend)
         assert backend.mark_failed_login() is True
         await _idle(backend, clock)
         await _stop(backend, tab)
         assert backend.marked_failure_candidates() == (_STAYS,)
+
+    @pytest.mark.asyncio
+    async def test_the_real_login_is_checked_with_the_login_form_s_username_name(
+        self, tmp_path: Path
+    ) -> None:
+        """Once the texts are settled, the username names of the login form at the
+        failed post count for each later post too."""
+        page = _LOGIN_MODAL.replace('name="username"', 'name="handle"')
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        tab.dom_html = _FAILED_PAGE.replace(_STAYS, "No account for jo here.")
+        await _post(tab, "75.1", "password=wrong-x7k2q9", content_type=_FORM, page=page)
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        assert backend.marked_failure_candidates() == (_TOAST, "No account for jo here.")
+        tab.dom_html = _LANDED
+        await self._step(tab, "75.2", "handle=jo")
+        await _post(tab, "75.3", "password=RealSecret9", content_type=_FORM, respond=False)
+        await _stop(backend, tab)
+        assert backend.marked_failure_candidates() == (_TOAST,)
 
     @pytest.mark.asyncio
     async def test_a_text_holding_the_username_of_the_real_login_is_dropped(
@@ -613,6 +650,77 @@ class TestStopAndPrivacy:
         assert json.loads(written) == {"username": "jsmith", "password": "***REDACTED***"}
         assert request["_postDataSize"] == len(written)
         assert "wrongpass1" not in _run_text(storage.run_dir)
+
+
+class TestARedirectedFailedPost:
+    """A 307 or 308 answer to the failed post makes Chrome send the same body again
+    under the same request id; that entry holds the wrong password too."""
+
+    _AGAIN = LOGIN + "/"
+    _JSON = {"Content-Type": "application/json"}
+
+    @pytest.mark.asyncio
+    async def test_a_resend_before_the_mark_is_scrubbed(self, tmp_path: Path) -> None:
+        from graftpunk.observe.run import save_observe_run
+
+        storage, tab, backend, clock = await _saved_recording(tmp_path)
+        await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40))
+        await tab.dispatch(_will_be_sent("91.1", inline=_WRONG, url=LOGIN, headers=self._JSON))
+        await tab.dispatch(
+            _will_be_sent(
+                "91.1", inline=_WRONG, url=self._AGAIN, redirect_from=LOGIN, headers=self._JSON
+            )
+        )
+        await tab.dispatch(_response_received("91.1", url=self._AGAIN))
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        tab.dom_html = _LANDED
+        await save_observe_run(storage, backend, "interactive-final")
+
+        entries = json.loads((storage.run_dir / "network.har").read_text())["log"]["entries"]
+        assert [entry["request"]["url"] for entry in entries] == [LOGIN, self._AGAIN]
+        for entry in entries:
+            assert json.loads(entry["request"]["postData"]["text"]) == {
+                "username": "jsmith",
+                "password": "***REDACTED***",
+            }
+        assert "wrongpass1" not in _run_text(storage.run_dir)
+
+    @pytest.mark.asyncio
+    async def test_a_resend_after_the_mark_is_scrubbed_at_stop(self, tmp_path: Path) -> None:
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        await _post(tab, "92.1", respond=False)
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await tab.dispatch(
+            _will_be_sent(
+                "92.1", inline=_WRONG, url=self._AGAIN, redirect_from=LOGIN, headers=self._JSON
+            )
+        )
+        await tab.dispatch(_response_received("92.1", url=self._AGAIN))
+        await _idle(backend, clock)
+        await _stop(backend, tab)
+        entries = backend.get_har_entries()
+        assert len(entries) == 2
+        assert "wrongpass1" not in json.dumps(entries)
+        assert backend._failed is not None
+        assert backend._failed.secrets == ()
+
+    @pytest.mark.asyncio
+    async def test_another_request_id_is_not_touched(self, tmp_path: Path) -> None:
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        await _post(tab, "93.1")
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        tab.dom_html = _LANDED
+        other = json.dumps({"username": "jsmith", "password": "wrongpass1"})
+        await tab.dispatch(_will_be_sent("93.2", inline=other, url=self._AGAIN, headers=self._JSON))
+        await _stop(backend, tab)
+        failed, later = (entry["request"] for entry in backend.get_har_entries())
+        assert "wrongpass1" not in failed["postData"]["text"]
+        assert later["postData"]["text"] == other
 
 
 async def _saved_recording(

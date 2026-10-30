@@ -18,10 +18,12 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 
 from graftpunk.har.digest import (
+    body_layout,
     body_values,
+    multipart_delimiter,
     post_account_values,
     post_every_value,
-    post_identifier_values,
+    posted_account_values,
 )
 from graftpunk.har.documents import PASSWORD_NAME_HINTS, extract_login_forms
 from graftpunk.har.login_signals import account_needles, holds_an_account_value
@@ -37,7 +39,7 @@ __all__ = [
     "failed_password_values",
     "failure_candidates",
     "login_form_username_names",
-    "posted_identifiers",
+    "posted_values",
     "scrub_failed_password",
     "without_success_page",
 ]
@@ -97,7 +99,7 @@ class AccountGuard:
     those values under :data:`_MIN_SPELLING` characters (``jo``), which the needles
     and spellings leave out, as a whole word in any letter case; and any email
     address (:func:`graftpunk.observe.snapshot.holds_an_email`). Values another
-    request posted (*also* of :meth:`of`, :func:`posted_identifiers`) count as the
+    request posted (*also* of :meth:`of`, :func:`posted_values`) count as the
     post's own."""
 
     needles: frozenset[str]
@@ -229,18 +231,21 @@ def login_form_username_names(page: str | None) -> frozenset[str]:
     )
 
 
-def posted_identifiers(
-    bodies: Iterable[tuple[str | None, str]], username_names: Iterable[str] = ()
+def posted_values(
+    bodies: Iterable[tuple[str | None, str, str]], username_names: Iterable[str] = ()
 ) -> list[str]:
-    """The identifier values of *bodies* (each a request body and its
-    ``Content-Type``) by :func:`graftpunk.har.digest.post_identifier_values`, a
-    login form's *username_names* counting as identifier fields: the username an
-    identifier-first login posts in a step before the password post."""
+    """The values of *bodies* (each a request body, its ``Content-Type``, and its
+    method) that a suggestion may not hold, by
+    :func:`graftpunk.har.digest.posted_account_values`, a login form's
+    *username_names* counting as identifier fields: each identifier value, and each
+    value of a POST but a token field's of three or more characters and no boolean
+    word. That holds the username an identifier-first login posts in a step before
+    the password post, under any name."""
     names = frozenset(username_names)
     return [
         value
-        for body_text, content_type in bodies
-        for value in post_identifier_values(body_text, content_type, names)
+        for body_text, content_type, method in bodies
+        for value in posted_account_values(body_text, content_type, method, names)
     ]
 
 
@@ -346,17 +351,13 @@ def failed_password_values(body_text: str | None, content_type: str = "") -> lis
     ]
 
 
-# A form field, in a URL-encoded body or a text/plain one (a field a line): its
-# name, "=", and its value.
-_FORM_FIELD_RE = re.compile(r"(?:^|(?<=[&\r\n]))([^=&\r\n]*)=([^&\r\n]*)")
-# A multipart/form-data part's text: after its headers' blank line, up to the
-# boundary line.
-_MULTIPART_PART_RE = re.compile(r"(\r?\n\r?\n)(.*?)(?=\r?\n--)", re.DOTALL)
+# A multipart/form-data part's field name, as graftpunk.har.digest reads it.
 _MULTIPART_NAME_RE = re.compile(r'\bname="([^"]*)"', re.IGNORECASE)
 # A JSON string token, or a bracket outside one.
 _JSON_TOKEN_RE = re.compile(r'"(?:[^"\\]|\\.)*"|[{}\[\]]')
 # What follows a JSON string that is an object key.
 _KEY_END_RE = re.compile(r"\s*:")
+_LINE_BREAK_RE = re.compile(r"\r?\n")
 
 
 def _password_like(name: str | None) -> bool:
@@ -372,37 +373,49 @@ def scrub_failed_password(body: str, content_type: str, values: Iterable[str]) -
     password values, :func:`failed_password_values`) replaced by ``***REDACTED***``
     where it is a whole value under a password-like name (a
     :data:`graftpunk.har.documents.PASSWORD_NAME_HINTS` hint in the nearest name,
-    the rule :func:`failed_password_values` reads by): a form field's value,
-    percent-decoded to compare; a ``multipart/form-data`` part's text; a JSON string
-    that is no object key; and the same inside JSON held in a form field, a
-    multipart part, or a JSON string, one level down. The rest of the body is kept
-    character for character, and a field holding JSON that changed is encoded again
-    as it was written (a form field's percent-encoding, a JSON string's escapes)."""
+    the rule :func:`failed_password_values` reads by). The body is split into
+    fields as :func:`graftpunk.har.digest.body_values` splits it
+    (:func:`graftpunk.har.digest.body_layout`), so each value that reads, this
+    writes: a form field's value, an ``&``-separated piece percent-decoded to
+    compare (a line break ending it is kept after the redaction); a ``text/plain``
+    field, a line and the lines after it holding no ``=``, compared as written; a
+    ``multipart/form-data`` part's text; a JSON string that is no object key; and
+    the same inside JSON held in a field, a part, or a JSON string, one level down.
+    The rest of the body is kept character for character, and a field holding JSON
+    that changed is encoded again as it was written (a form field's
+    percent-encoding, a JSON string's escapes)."""
     wanted = frozenset(value for value in values if value)
     if not wanted or not body:
         return body
-    if _holds_json(body):
+    layout = body_layout(body, content_type)
+    if layout == "json":
         return _scrub_json(body, wanted, None, nested=True)
-    declared = content_type.split(";")[0].strip().lower()
-    if declared == "multipart/form-data" or body.lstrip().startswith("--"):
-        return _scrub_multipart(body, wanted)
-    return _scrub_form(body, wanted)
+    if layout == "text_plain":
+        return _scrub_text_plain(body, wanted)
+    if layout == "multipart":
+        return _scrub_multipart(body, content_type, wanted)
+    if layout == "form":
+        return _scrub_form(body, wanted)
+    return body
 
 
 def _scrub_form(body: str, wanted: frozenset[str]) -> str:
-    def replace(match: re.Match[str]) -> str:
-        raw_name, raw = match.group(1), match.group(2)
+    """Each ``&``-separated piece holding ``=``, read as ``parse_qs`` reads it."""
+    pieces = body.split("&")
+    for at, piece in enumerate(pieces):
+        raw_name, separator, raw = piece.partition("=")
+        if not separator:
+            continue
         name = urllib.parse.unquote_plus(raw_name)
         value = urllib.parse.unquote_plus(raw)
-        if _password_like(name) and (value in wanted or raw in wanted):
-            return f"{raw_name}={REDACTED}"
-        if _holds_json(value):
+        if _password_like(name) and value in wanted:
+            line_break = raw[len(raw.rstrip("\r\n")) :]
+            pieces[at] = f"{raw_name}={REDACTED}{line_break}"
+        elif _holds_json(value):
             inner = _scrub_json(value, wanted, name, nested=False)
             if inner != value:
-                return f"{raw_name}={_form_encoded(raw, value, inner)}"
-        return match.group(0)
-
-    return _FORM_FIELD_RE.sub(replace, body)
+                pieces[at] = f"{raw_name}={_form_encoded(raw, value, inner)}"
+    return "&".join(pieces)
 
 
 def _form_encoded(raw: str, value: str, new: str) -> str:
@@ -419,22 +432,60 @@ def _form_encoded(raw: str, value: str, new: str) -> str:
     return urllib.parse.quote(new, safe=safe)
 
 
-def _scrub_multipart(body: str, wanted: frozenset[str]) -> str:
-    def replace(match: re.Match[str]) -> str:
-        head = body[body.rfind("\n--", 0, match.start()) + 1 : match.start()]
-        name = _MULTIPART_NAME_RE.search(head)
-        if name is None or "filename=" in head.lower():
-            return match.group(0)
-        value = match.group(2)
-        if _password_like(name.group(1)) and value in wanted:
-            return match.group(1) + REDACTED
-        if _holds_json(value):
-            inner = _scrub_json(value, wanted, name.group(1), nested=False)
-            if inner != value:
-                return match.group(1) + inner
-        return match.group(0)
+def _scrub_text_plain(body: str, wanted: frozenset[str]) -> str:
+    """The fields of a ``text/plain`` body as :func:`graftpunk.har.digest.body_values`
+    reads them: each line holding ``=`` starts one, a line without continues the one
+    before, and a value is compared as written, with each line break in it as
+    ``\\n``."""
+    core = body.rstrip("\r\n")
+    breaks = list(_LINE_BREAK_RE.finditer(core))
+    starts = [0, *(match.end() for match in breaks)]
+    ends = [*(match.start() for match in breaks), len(core)]
+    # Each field: its name, and where its value starts and ends in core.
+    fields: list[tuple[str, int, int]] = []
+    for start, end in zip(starts, ends, strict=True):
+        name, separator, _value = core[start:end].partition("=")
+        if separator:
+            fields.append((name, start + len(name) + 1, end))
+        elif fields:
+            fields[-1] = (fields[-1][0], fields[-1][1], end)
+    out = core
+    for name, start, end in reversed(fields):
+        region = core[start:end]
+        if _password_like(name) and region.replace("\r\n", "\n") in wanted:
+            out = out[:start] + REDACTED + out[end:]
+        elif _holds_json(region):
+            out = out[:start] + _scrub_json(region, wanted, name, nested=False) + out[end:]
+    return out + body[len(core) :]
 
-    return _MULTIPART_PART_RE.sub(replace, body)
+
+def _scrub_multipart(body: str, content_type: str, wanted: frozenset[str]) -> str:
+    """Each text part, split on the boundary as :func:`graftpunk.har.digest.body_values`
+    splits it (:func:`graftpunk.har.digest.multipart_delimiter`)."""
+    delimiter = multipart_delimiter(body, content_type)
+    if delimiter is None:
+        return body
+    newline = "\r\n" if "\r\n" in body else "\n"
+    parts = body.split(delimiter)
+    for at in range(1, len(parts)):
+        part = parts[at]
+        if part.startswith("--"):
+            break
+        stripped = part.lstrip("\r\n")
+        head, separator, rest = stripped.partition(newline * 2)
+        name = _MULTIPART_NAME_RE.search(head)
+        if not separator or name is None or "filename=" in head.lower():
+            continue
+        value = rest.removesuffix(newline)
+        if _password_like(name.group(1)) and value in wanted:
+            new = REDACTED
+        elif _holds_json(value):
+            new = _scrub_json(value, wanted, name.group(1), nested=False)
+        else:
+            continue
+        lead = part[: len(part) - len(stripped)]
+        parts[at] = lead + head + separator + new + rest[len(value) :]
+    return delimiter.join(parts)
 
 
 def _scrub_json(text: str, wanted: frozenset[str], outer: str | None, *, nested: bool) -> str:

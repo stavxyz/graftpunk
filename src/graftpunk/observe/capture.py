@@ -154,15 +154,19 @@ class _FailedLogin:
     before then waits in ``pending`` (raw HTML, in memory only, dropped once
     applied)."""
 
-    def __init__(self, post: _StepPost, posted: list[tuple[str | None, str]]) -> None:
+    def __init__(self, post: _StepPost, posted: list[tuple[str | None, str, str]]) -> None:
         self.rid = post.rid
         self.data = post.data
         # Its body and the body of each request sent up to it, in memory until the
-        # suggestions are settled: the guard reads its values and the identifier
-        # values of the others (an identifier-first login's username).
+        # suggestions are settled: the guard reads its values and the values of the
+        # others (an identifier-first login's username).
         self.body_text = post.body_text
         self.content_type = post.content_type
         self.posted = posted
+        # Its password values, until stop: a 307 or 308 answer to it makes Chrome
+        # send the same body again under the same request id, and that entry is
+        # scrubbed too (_scrub_failed_post).
+        self.secrets: tuple[str, ...] = ()
         # The username names of the login forms on the page at the post, once settled.
         self.username_names: frozenset[str] = frozenset()
         self.candidates: tuple[str, ...] | None = None
@@ -1931,6 +1935,7 @@ class NodriverCaptureBackend:
             if self._record_request_bodies:
                 _flag_uncaptured_post_data(self._request_map)
             self._mark_unfetched_response_bodies("no_tab")
+            self._scrub_failed_resends()
             return
 
         self._extra_info.log_unmatched(self._request_map)
@@ -1986,6 +1991,7 @@ class NodriverCaptureBackend:
                 task.cancel()
             if self._record_request_bodies:
                 _flag_uncaptured_post_data(self._request_map)
+            self._scrub_failed_resends()
 
     async def _settle_request_time_fetches(self) -> None:
         """Let the request-time body fetches still running finish first.
@@ -2803,18 +2809,19 @@ class NodriverCaptureBackend:
         failed = self._failed
         if failed is None or data is failed.data:
             return
-        from graftpunk.observe.failure_text import AccountGuard, posted_identifiers
+        from graftpunk.observe.failure_text import AccountGuard, posted_values
 
         data["_after_failed_login"] = True
-        # With the identifier values every request sent so far: an identifier-first
-        # real login posts its username in a step before this post.
-        identifiers = posted_identifiers(self._posted_bodies(), failed.username_names)
-        failed.drop_on(None, AccountGuard.of(body_text, content_type, also=identifiers))
+        # With the values every request sent so far: an identifier-first real login
+        # posts its username in a step before this post, under any name.
+        posted = posted_values(self._posted_bodies(), failed.username_names)
+        failed.drop_on(None, AccountGuard.of(body_text, content_type, also=posted))
 
-    def _posted_bodies(self) -> list[tuple[str | None, str]]:
-        """Each request body recorded as text so far, with its ``Content-Type``."""
+    def _posted_bodies(self) -> list[tuple[str | None, str, str]]:
+        """Each request body recorded as text so far, with its ``Content-Type`` and
+        its method."""
         return [
-            (data["post_data"], _request_content_type(data))
+            (data["post_data"], _request_content_type(data), str(data.get("method", "")))
             for data in self._request_map.values()
             if isinstance(data.get("post_data"), str)
         ]
@@ -2874,7 +2881,8 @@ class NodriverCaptureBackend:
         post = self._step_posts[-1]
         self._failure_step_open = False
         failed = _FailedLogin(post, self._posted_bodies())
-        self._scrub_failed_post(post)
+        failed.secrets = self._failed_secrets(post)
+        self._scrub_failed_post(failed)
         failed.before = self._step_before.get(post.rid)
         failed.first_read = self._step_reads.get(post.rid)
         pending = self._step_read_tasks.pop(post.rid, None)
@@ -2923,13 +2931,14 @@ class NodriverCaptureBackend:
         (:func:`graftpunk.observe.failure_text.failure_candidates`, in a worker thread:
         it parses whole pages), the FAILURE_READ_S read first, against the page at
         the post (its request-time snapshot; with none, nothing is suggested) and the
-        guard of its values and of the identifier values each request sent up to it;
-        then drop the raw pages and bodies."""
+        guard of its values and of the values each request sent up to it
+        (:func:`graftpunk.observe.failure_text.posted_values`); then drop the raw
+        pages and bodies."""
         from graftpunk.observe.failure_text import (
             AccountGuard,
             failure_candidates,
             login_form_username_names,
-            posted_identifiers,
+            posted_values,
         )
 
         reads = [html for html in (failed.first_read, failed.enter_read) if html is not None]
@@ -2939,30 +2948,48 @@ class NodriverCaptureBackend:
 
         def suggest() -> tuple[frozenset[str], tuple[str, ...]]:
             names = login_form_username_names(before)
-            identifiers = posted_identifiers(posted, names)
-            guard = AccountGuard.of(body_text, content_type, also=identifiers)
+            guard = AccountGuard.of(body_text, content_type, also=posted_values(posted, names))
             return names, failure_candidates(reads, before, guard)
 
         failed.username_names, candidates = await asyncio.to_thread(suggest)
         failed.settle(candidates)
 
-    def _scrub_failed_post(self, post: _StepPost) -> None:
+    @staticmethod
+    def _failed_secrets(post: _StepPost) -> tuple[str, ...]:
+        from graftpunk.observe.failure_text import failed_password_values
+
+        return tuple(failed_password_values(post.body_text, post.content_type))
+
+    def _scrub_failed_post(self, failed: _FailedLogin) -> None:
         """Replace the marked post's password values in its own recorded body (the
         HAR's ``postData``, or its file under ``bodies/``) where each is a whole value
         under a password-like name
         (:func:`graftpunk.observe.failure_text.scrub_failed_password`): the run keeps
-        what it posted, and a wrong password is often the real one with a typo. No
-        other request is touched. A body file that cannot be rewritten is logged and
-        left."""
-        from graftpunk.observe.failure_text import failed_password_values, scrub_failed_password
-
-        secrets = failed_password_values(post.body_text, post.content_type)
-        if not secrets:
+        what it posted, and a wrong password is often the real one with a typo. Each
+        later entry of its request id (``<id>`` and ``<id>:redirect:<n>``, the
+        requests a 307 or 308 answer made Chrome send with the same body) is
+        scrubbed the same way. No other request is touched. A body file that cannot
+        be rewritten is logged and left. Run at the mark and at stop, so a resend
+        recorded after the mark, or whose body was fetched after it, is scrubbed
+        too; scrubbing a body twice changes nothing."""
+        if not failed.secrets:
             return
-        data = post.data
+        chain = [
+            data
+            for key, data in self._request_map.items()
+            if key == failed.rid or key.startswith(f"{failed.rid}:redirect:")
+        ]
+        for data in [failed.data, *(data for data in chain if data is not failed.data)]:
+            self._scrub_body(data, failed.secrets)
+
+    def _scrub_body(self, data: dict[str, Any], secrets: tuple[str, ...]) -> None:
+        """:meth:`_scrub_failed_post` for the one entry *data*."""
+        from graftpunk.observe.failure_text import scrub_failed_password
+
+        content_type = _request_content_type(data)
         text = data.get("post_data")
         if isinstance(text, str):
-            data["post_data"] = scrub_failed_password(text, post.content_type, secrets)
+            data["post_data"] = scrub_failed_password(text, content_type, secrets)
         ref = data.get("_post_data_file")
         if not isinstance(ref, str) or self._bodies_dir is None:
             return
@@ -2973,7 +3000,7 @@ class NodriverCaptureBackend:
         except (OSError, UnicodeDecodeError) as exc:
             LOG.warning("nodriver_failed_post_not_scrubbed", file=ref, error=str(exc))
             return
-        scrubbed = scrub_failed_password(body, post.content_type, secrets).encode("utf-8")
+        scrubbed = scrub_failed_password(body, content_type, secrets).encode("utf-8")
         if scrubbed == raw:
             return
         try:
@@ -3081,6 +3108,16 @@ class NodriverCaptureBackend:
             )
             return
         data["_dom_after"] = f"{snapshots_dir.name}/{name}"
+
+    def _scrub_failed_resends(self) -> None:
+        """At stop: scrub the failed post's request id once more
+        (:meth:`_scrub_failed_post`), for a 307 or 308 resend recorded or fetched
+        after the mark, then drop its password values."""
+        failed = self._failed
+        if failed is None:
+            return
+        self._scrub_failed_post(failed)
+        failed.secrets = ()
 
     def _close_after_read_state(self) -> list[asyncio.Task[Any]]:
         """Start no read after a credential post from now on, drop the body text kept
