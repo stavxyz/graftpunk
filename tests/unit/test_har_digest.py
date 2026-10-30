@@ -36,6 +36,7 @@ from graftpunk.har.digest import (
     _form_state,
     _login_opener,
     _parse_body,
+    _scalar_values,
     _with_login_flow,
     body_params,
     body_values,
@@ -7505,11 +7506,16 @@ class TestTheRecordingSuggestsASuccessSelector:
         result = self._valued_run(tmp_path, body, "multipart/form-data; boundary=XyZ")
         assert result.success_candidates == self._KEPT
 
-    def test_a_deeply_nested_json_body_is_read(self, tmp_path: Path) -> None:
+    def test_a_deeply_nested_json_value_is_walked_without_recursion(self) -> None:
         value: object = "jsmith"
-        for _ in range(2000):
+        for _ in range(5_000):
             value = {"a": value}
-        body = json.dumps({"username": value, "password": "x"})
-        assert body_values(body, "application/json")[0] == (("username", *["a"] * 2000), "jsmith")
-        result = self._valued_run(tmp_path, body, "application/json")
-        assert result.success_candidates == self._REJECTED
+        assert _scalar_values({"username": value}) == [(("username", *["a"] * 5_000), "jsmith")]
+
+    def test_a_body_too_deep_for_the_json_parser_does_not_fail_the_digest(
+        self, tmp_path: Path
+    ) -> None:
+        depth = 100_000
+        body = '{"username": ' + '{"a": ' * depth + '"jsmith"' + "}" * depth + "}"
+        assert body_values(body, "application/json") == []
+        self._valued_run(tmp_path, body, "application/json")

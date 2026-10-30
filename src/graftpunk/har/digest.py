@@ -744,6 +744,10 @@ def _decoded_body(post_data: str | None, declared: str) -> tuple[BodyKind, Any]:
         return "json", json.loads(post_data)
     except (ValueError, TypeError):
         pass
+    except RecursionError:
+        # Nested past the parser's limit (about 1,000 deep on Python 3.11): read as
+        # no body rather than failing the digest.
+        return "none", None
     if declared and declared != _FORM_CONTENT_TYPE:
         return "none", None
     if "=" not in post_data:
@@ -796,7 +800,7 @@ def body_values(post_data: str | None, content_type: str = "") -> list[tuple[tup
     included. The one reader of a credential post's values, for the digest's
     suggestions (:func:`_account_values`) and the recorder's snapshot redaction
     (:func:`graftpunk.observe.snapshot.snapshot_redaction`). JSON is walked without
-    recursion, so a body nested thousands deep is read like any other."""
+    recursion; a body nested past the JSON parser's own limit reads as no values."""
     declared = content_type.split(";")[0].strip().lower()
     kind, parsed = _decoded_body(post_data, declared)
     if kind == "none" and post_data and declared == _MULTIPART_CONTENT_TYPE:
@@ -809,6 +813,11 @@ def body_values(post_data: str | None, content_type: str = "") -> list[tuple[tup
         return [((name,), value) for name, values in parsed.items() for value in values]
     if kind == "none":
         return []
+    return _scalar_values(parsed)
+
+
+def _scalar_values(parsed: object) -> list[tuple[tuple[str, ...], str]]:
+    """:func:`body_values` of a parsed JSON value, walked without recursion."""
     found: list[tuple[tuple[str, ...], str]] = []
     stack: list[tuple[object, tuple[str, ...]]] = [(parsed, ())]
     while stack:
