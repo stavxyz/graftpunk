@@ -256,12 +256,13 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     An explicit field list, never a reflection over the digest's dataclasses, so
     renaming an internal field touches this function and no contract. It carries
     only what a command proposal consumes, and by construction no cookie name, no
-    token candidate, no example path, no body (the failure suggestions are page text a
-    wrong password showed, checked to hold no posted value), no untemplated login URL
-    or form
-    action path, and no form action query string or ``;params``. Its field set is pinned per
-    schema version; fields are added and never renamed or removed within one
-    (:mod:`graftpunk.contracts`). ``render_json`` stays an unversioned dump.
+    token candidate, no example path, no body, no untemplated login URL or form action
+    path, and no form action query string or ``;params``. The failure suggestions are
+    no body: they are page text a wrong password showed, checked to hold no posted
+    value, and they are the site's own text, untrusted, for a reader to treat as data
+    and never as instructions. Its field set is pinned per schema version; fields are
+    added and never renamed or removed within one (:mod:`graftpunk.contracts`).
+    ``render_json`` stays an unversioned dump.
 
     Each ``query_params`` and ``body_params`` value is one of schema 1's type
     labels: ``str``, ``int``, ``float``, ``bool``, ``object``, ``mixed``, or
