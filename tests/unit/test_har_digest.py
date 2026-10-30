@@ -7798,6 +7798,33 @@ class TestTheRecordingSuggestsASuccessSelector:
         assert result.success_candidates == ()
 
     @pytest.mark.parametrize(
+        "body",
+        [
+            # A JSF-style name and a name with a space: neither is spelled like a
+            # field name, and each still starts its own field after the first line.
+            "loginForm=loginForm\r\nloginForm:log=jsmith\r\nloginForm:pwd=hunter-two\r\n",
+            "go=1\r\nuser name=jsmith\r\npwd=hunter-two\r\n",
+        ],
+    )
+    def test_a_text_plain_line_holding_an_equals_sign_starts_a_field(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """Absorbed into the line before it, jsmith would be part of one longer
+        value that "greeting-jsmith" does not hold."""
+        assert self._valued_run(tmp_path, body, "text/plain").success_candidates == self._REJECTED
+
+    def test_a_text_plain_value_is_read_as_written(self, tmp_path: Path) -> None:
+        """A browser escapes nothing in a text/plain body, so "&" is part of the
+        value: the username sent is "jsmith&x=1", which "greeting-jsmith" does not
+        hold, and the body is not split into "who=jsmith" and "x=1"."""
+        body = "who=jsmith&x=1\r\npwd=hunter-two\r\n"
+        assert body_values(body, "text/plain") == [
+            (("who",), "jsmith&x=1"),
+            (("pwd",), "hunter-two"),
+        ]
+        assert self._valued_run(tmp_path, body, "text/plain").success_candidates == self._KEPT
+
+    @pytest.mark.parametrize(
         ("body", "content_type"),
         [
             # A form field holding a JSON object, and a JSON string holding one.
@@ -7811,14 +7838,70 @@ class TestTheRecordingSuggestsASuccessSelector:
             ),
             # A JSON list in a text/plain field: its values sit under the field's name.
             ('identifier=["jsmith"]\r\npwd=x\r\n', "text/plain"),
+            # A multipart part holding a JSON object.
+            (
+                "--XyZ\r\n"
+                'Content-Disposition: form-data; name="payload"\r\n\r\n'
+                '{"username": "jsmith"}\r\n'
+                "--XyZ\r\n"
+                'Content-Disposition: form-data; name="pwd"\r\n\r\n'
+                "hunter-two\r\n"
+                "--XyZ--\r\n",
+                "multipart/form-data; boundary=XyZ",
+            ),
         ],
     )
     def test_a_value_holding_json_is_read_one_level_down(
         self, tmp_path: Path, body: str, content_type: str
     ) -> None:
         """Read whole, the value is one account value that "greeting-jsmith" does not
-        hold; read as JSON, its username field names jsmith."""
+        hold; read as JSON, jsmith is a value of its own."""
         assert self._valued_run(tmp_path, body, content_type).success_candidates == self._REJECTED
+
+    _WHO_LOGIN = (
+        "<html><body><form action='/session' method='post'>"
+        "<input type='text' name='who'><input type='password' name='pwd'>"
+        "<button id='go'>Log in</button></form></body></html>"
+    )
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            (
+                "handle=jsmith&pwd=hunter-two&device=" + quote(json.dumps({"login": "web-client"})),
+                "application/x-www-form-urlencoded",
+            ),
+            (
+                "handle=jsmith&pwd=hunter-two&ctx=" + quote(json.dumps({"user": "anonymous"})),
+                "application/x-www-form-urlencoded",
+            ),
+            (
+                "handle=jsmith&pwd=hunter-two&ctx="
+                + quote(json.dumps({"email": "support@example.com"})),
+                "application/x-www-form-urlencoded",
+            ),
+            (
+                json.dumps(
+                    {
+                        "handle": "jsmith",
+                        "password": "hunter-two",
+                        "ctx": json.dumps({"user": "anonymous"}),
+                    }
+                ),
+                "application/json",
+            ),
+        ],
+    )
+    def test_a_key_inside_a_field_holding_json_names_no_username(
+        self, tmp_path: Path, body: str, content_type: str
+    ) -> None:
+        """The username goes under "handle", which neither the login form ("who") nor
+        the identifier rule names, so no field is a username and every value is an
+        account value. A "login", "user" or "email" key inside the JSON-valued field
+        would make "web-client", "anonymous" or the address the username and leave
+        jsmith out."""
+        result = self._valued_run(tmp_path, body, content_type, self._WHO_LOGIN)
+        assert result.success_candidates == self._REJECTED
 
     def test_a_value_holding_json_too_deep_to_read_suggests_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

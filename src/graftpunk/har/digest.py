@@ -827,13 +827,18 @@ def body_values(post_data: str | None, content_type: str = "") -> list[tuple[tup
     ``=`` that is not JSON by ``parse_qs`` even when no key reads as a field name, as
     the snapshot redaction always did, and a value that is itself a JSON object or
     array, one level down, under its field's name (:func:`_read_body_values`)."""
-    return _read_body_values(post_data, content_type)[0]
+    return [(path, value) for path, value, _named in _read_body_values(post_data, content_type)[0]]
 
 
-def _read_body_values(
-    post_data: str | None, content_type: str
-) -> tuple[list[tuple[tuple[str, ...], str]], bool]:
-    """:func:`body_values`, and whether the body was read by its field names: as
+# A body value: the names leading to it, outermost first; the value; and how many
+# of those names are the field's own. That is all of them but for a value read
+# inside a field holding JSON, whose own names are the outer field's only.
+_BodyValue = tuple[tuple[str, ...], str, int]
+
+
+def _read_body_values(post_data: str | None, content_type: str) -> tuple[list[_BodyValue], bool]:
+    """:func:`body_values`, each with how many of its names are its field's own
+    (:data:`_BodyValue`), and whether the body was read by its field names: as
     JSON in which every value has a name, as multipart parts, as ``text/plain``
     fields, or as a form with a key spelled like a field name. A body read only by
     ``parse_qs`` with no such key (XML with an attribute, prose with an ``=``), a
@@ -871,36 +876,40 @@ _TEXT_PLAIN_CONTENT_TYPE = "text/plain"
 
 def _text_plain_fields(post_data: str) -> list[tuple[tuple[str, ...], str]] | None:
     """The fields of a ``text/plain`` form body, which a browser sends as
-    ``name=value`` lines with nothing escaped: a line whose part before its first
-    ``=`` is spelled like a field name starts a field, and any other line continues
-    the value before it. ``None`` when the body is one line (the form read takes
-    it) or its first line starts no field."""
+    ``name=value`` lines with nothing escaped: the first line starts a field when
+    its part before its first ``=`` is spelled like a field name, each later line
+    holding ``=`` starts one whatever its name (``loginForm:log``, ``user name``),
+    and a line with no ``=`` continues the value before it. A value is read as
+    written: no ``&`` splitting and no percent-decoding. ``None`` when the body is
+    one line (the form read takes it) or its first line starts no field."""
     lines = re.split(r"\r?\n", post_data.rstrip("\r\n"))
     if len(lines) < 2:
+        return None
+    first, separator, _value = lines[0].partition("=")
+    if not (separator and _field_name_shaped(first)):
         return None
     fields: list[tuple[tuple[str, ...], str]] = []
     for line in lines:
         name, separator, value = line.partition("=")
-        if separator and _field_name_shaped(name):
+        if separator:
             fields.append(((name,), value))
-        elif fields:
+        else:
             path, before = fields[-1]
             fields[-1] = (path, f"{before}\n{line}")
-        else:
-            return None
     return fields
 
 
 def _with_json_values(
     values: list[tuple[tuple[str, ...], str]], by_names: bool
-) -> tuple[list[tuple[tuple[str, ...], str]], bool]:
+) -> tuple[list[_BodyValue], bool]:
     """*values*, each followed by the values inside it when it is itself a JSON
     object or array (a form field or a JSON string holding JSON), under its own
-    names; one level only. *by_names* turns false when such a value is nested past
+    names; one level only. A value inside keeps its field's names as its own
+    (:data:`_BodyValue`). *by_names* turns false when such a value is nested past
     the JSON parser's limit, because the values inside it cannot be read."""
-    found: list[tuple[tuple[str, ...], str]] = []
+    found: list[_BodyValue] = []
     for path, value in values:
-        found.append((path, value))
+        found.append((path, value, len(path)))
         if value.lstrip()[:1] not in ("{", "["):
             continue
         try:
@@ -910,7 +919,9 @@ def _with_json_values(
         except RecursionError:
             by_names = False
             continue
-        found.extend(((*path, *names), scalar) for names, scalar in _scalar_values(inner))
+        found.extend(
+            ((*path, *names), scalar, len(path)) for names, scalar in _scalar_values(inner)
+        )
     return found, by_names
 
 
@@ -1475,7 +1486,9 @@ def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str
     username's, a field the recorded login form takes as its username
     (*username_names*, ``LoginForm.username_name``) or one
     :func:`graftpunk.session_identity.is_identifier_field` accepts, by any name on
-    the way to a nested value; and each email address inside any value. When no
+    the way to a nested value (for a value read inside a field holding JSON, by the
+    names of that field only, never by a key inside it); and each email address
+    inside any value. When no
     field is a username by those rules, every value is one, but a token field's
     (:func:`graftpunk.har.documents.looks_like_token_name`). A field counts as the
     username only when its value could name an account
@@ -1505,13 +1518,17 @@ def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str
             name in username_names or is_identifier_field(identifier_key(name)) for name in path
         )
 
-    usernames = [value for path, value in values if names_a_username(path, value)]
+    usernames = [value for path, value, named in values if names_a_username(path[:named], value)]
     if not usernames:
         usernames = [
-            value for path, value in values if not any(looks_like_token_name(name) for name in path)
+            value
+            for path, value, _named in values
+            if not any(looks_like_token_name(name) for name in path)
         ]
-    passwords = [value for path, value in values if path and _password_like([path[-1]])]
-    emails = [email for _path, value in values for email in _EMAIL_IN_VALUE_RE.findall(value)]
+    passwords = [value for path, value, _named in values if path and _password_like([path[-1]])]
+    emails = [
+        email for _path, value, _named in values for email in _EMAIL_IN_VALUE_RE.findall(value)
+    ]
     return [*usernames, *passwords, *emails]
 
 
