@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.32.1] - 2026-10-30
+
+This is a patch release. `gp` now starts the chromedriver and Chrome of a selenium-backend login (the default for a YAML plugin) in a session of their own, as 1.31.1 did for the nodriver backend. The Ctrl+C typed in a terminal to stop a login recorded with `--observe full` then reaches only graftpunk, which takes the error screenshot and writes the HAR and the console log before it quits the driver. In 1.32.0 the keypress also killed chromedriver and Chrome, and the run kept only an empty `network.har`. A program that uses the selenium backend or `create_stealth_driver` as a library without calling `install_termination_cleanup()` launches both as before. The format of a run's files and of the digest is unchanged.
+
 ### Upgrading
 
 1. **A chromedriver and Chrome started by the selenium backend in `gp`, or in a program that called `install_termination_cleanup()`, are no longer in the terminal's process group** (#335). This is the change 1.31.1 made for the nodriver backend. graftpunk's SIGHUP and SIGTERM handlers end them on a terminal hangup or a SIGTERM to graftpunk, and a Ctrl+C ends them when the login's browser session exits. The selenium backend in `gp` now installs those handlers at its first launch, as the nodriver backend does, so a SIGTERM sent to the `gp` process alone now ends its chromedriver and Chrome too. Two signals that used to end them with graftpunk no longer reach them: Ctrl+\ (SIGQUIT), and any signal sent to graftpunk's whole process group (`kill -- -<pgid>`, or `kill -9 -- -<pgid>` from a supervisor or CI runner) other than the SIGHUP and SIGTERM the handlers catch. After Ctrl+\ or a group SIGKILL, graftpunk dies without running a handler, and chromedriver and Chrome keep running until the next graftpunk browser launch in `gp` ends them: both now carry graftpunk's owner marker, and the orphan sweep matches a chromedriver by it. With `GRAFTPUNK_KEEP_ORPHANED_CHROME` set, that launch skips the sweep, so nothing ends them. A program that ran `gp` and relied on a group signal to end them should send SIGTERM to the `gp` process itself. A program that uses the selenium backend or `create_stealth_driver` as a library without calling `install_termination_cleanup()` launches both as before.
+2. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
 
 ### Fixed
 
