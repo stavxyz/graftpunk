@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -179,6 +180,21 @@ class TestRedaction:
         reader (#325), and redaction must not lose it."""
         body = "user_name=alice&login_password=pa55word"
         redaction = snapshot_redaction(body, "text/plain")
+        assert redaction.identifiers == ("alice",)
+
+    @pytest.mark.parametrize(
+        "body", ["user_name=alice\r\nlogin_password=pa55word\r\n", "user_name=alice\nremember=1"]
+    )
+    def test_a_text_plain_form_is_read_one_field_a_line(self, body: str) -> None:
+        """A browser's enctype="text/plain" body; parse_qs reads it as one field
+        whose value runs to the end of the body."""
+        assert snapshot_redaction(body, "text/plain").identifiers == ("alice",)
+        out = stored_dom_snapshot('<a href="/u/alice" id="alice">x</a>', body, "text/plain")
+        assert "alice" not in out
+
+    def test_an_identifier_in_a_field_holding_json_is_redacted(self) -> None:
+        body = "payload=" + quote(json.dumps({"username": "alice"})) + "&remember=1"
+        redaction = snapshot_redaction(body, "application/x-www-form-urlencoded")
         assert redaction.identifiers == ("alice",)
 
     def test_a_body_with_no_fields_redacts_nothing(self) -> None:

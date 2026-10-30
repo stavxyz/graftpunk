@@ -742,7 +742,14 @@ def _decoded_body(post_data: str | None, declared: str) -> tuple[BodyKind, Any]:
     """The one JSON-then-form reading of a body's text, for its names
     (:func:`_parse_body_text`) and its values (:func:`body_values`): ``("json",
     <the JSON value>)``, ``("form", <parse_qs of it>)`` when it reads as a form, or
-    ``("none", None)``."""
+    ``("none", None)``, a body nested past the JSON parser's limit among them."""
+    kind, parsed = _decoded(post_data, declared)
+    return ("none", None) if kind == "too_deep" else (kind, parsed)
+
+
+def _decoded(post_data: str | None, declared: str) -> tuple[BodyKind | Literal["too_deep"], Any]:
+    """:func:`_decoded_body`, telling a body nested past the JSON parser's limit
+    (``"too_deep"``) from one that is not JSON."""
     if not post_data:
         return "none", None
     try:
@@ -752,17 +759,23 @@ def _decoded_body(post_data: str | None, declared: str) -> tuple[BodyKind, Any]:
     except RecursionError:
         # Nested past the parser's limit (about 1,000 deep on Python 3.11): read as
         # no body rather than failing the digest.
-        return "none", None
+        return "too_deep", None
     if declared and declared != _FORM_CONTENT_TYPE:
         return "none", None
+    form = _form_fields(post_data)
+    return ("none", None) if form is None else ("form", form)
+
+
+def _form_fields(post_data: str) -> dict[str, list[str]] | None:
+    """``parse_qs`` of *post_data* when it reads as a form, else ``None``."""
     if "=" not in post_data:
-        return "none", None
+        return None
     form = parse_qs(post_data, keep_blank_values=True)
     # A form when at least one key reads as a field name: a body that is really
     # XML or prose gives parse_qs one unreadable key and is not one.
     if not form or not any(_field_name_shaped(name) for name in form):
-        return "none", None
-    return "form", form
+        return None
+    return form
 
 
 _MULTIPART_CONTENT_TYPE = "multipart/form-data"
@@ -808,10 +821,12 @@ def body_values(post_data: str | None, content_type: str = "") -> list[tuple[tup
     recursion; a body nested past the JSON parser's own limit reads as no values.
 
     Values feed redaction and the leak guard, so this reads more than
-    :func:`body_params`: a form-shaped body whatever type it declared (text/plain,
-    or multipart/form-data with no parts), and, as the snapshot redaction always
-    did, any body holding ``=`` that is not JSON by ``parse_qs`` even when no key
-    reads as a field name (:func:`_read_body_values`)."""
+    :func:`body_params`: a ``text/plain`` form body field by field (one field a
+    line, as a browser sends ``enctype="text/plain"``), a form-shaped body whatever
+    type it declared (``multipart/form-data`` with no parts, say), any body holding
+    ``=`` that is not JSON by ``parse_qs`` even when no key reads as a field name, as
+    the snapshot redaction always did, and a value that is itself a JSON object or
+    array, one level down, under its field's name (:func:`_read_body_values`)."""
     return _read_body_values(post_data, content_type)[0]
 
 
@@ -819,36 +834,84 @@ def _read_body_values(
     post_data: str | None, content_type: str
 ) -> tuple[list[tuple[tuple[str, ...], str]], bool]:
     """:func:`body_values`, and whether the body was read by its field names: as
-    JSON, as multipart parts, or as a form with a key spelled like a field name. A
-    body read only by ``parse_qs`` with no such key (XML with an attribute, prose
-    with an ``=``) gives the values ``parse_qs`` finds, but not by field name."""
+    JSON in which every value has a name, as multipart parts, as ``text/plain``
+    fields, or as a form with a key spelled like a field name. A body read only by
+    ``parse_qs`` with no such key (XML with an attribute, prose with an ``=``), a
+    JSON body with a value under no name (a bare string, a list of strings), and a
+    value holding JSON too deep for the parser are not read by field names."""
     declared = content_type.split(";")[0].strip().lower()
-    kind, parsed = _decoded_body(post_data, declared)
-    if kind == "none" and post_data and declared == _MULTIPART_CONTENT_TYPE:
+    kind, parsed = _decoded(post_data, declared)
+    if not post_data or kind == "too_deep":
+        return [], False
+    if kind == "json":
+        values = _scalar_values(parsed)
+        return _with_json_values(values, all(path for path, _value in values))
+    lines = _text_plain_fields(post_data) if declared == _TEXT_PLAIN_CONTENT_TYPE else None
+    if lines:
+        return _with_json_values(lines, True)
+    if kind == "none" and declared == _MULTIPART_CONTENT_TYPE:
         parts = _multipart_values(post_data, content_type)
         if parts:
-            return parts, True
-    if kind == "none":
-        kind, parsed = _decoded_body(post_data, "")
-    if kind == "form":
-        return [((name,), value) for name, values in parsed.items() for value in values], True
-    if kind == "json":
-        return _scalar_values(parsed), True
-    if post_data and "=" in post_data and not _is_json(post_data):
+            return _with_json_values(parts, True)
+    form = parsed if kind == "form" else _form_fields(post_data)
+    if form is not None:
+        return _with_json_values(
+            [((name,), value) for name, values in form.items() for value in values], True
+        )
+    if "=" in post_data:
         loose = parse_qs(post_data, keep_blank_values=True)
-        return [((name,), value) for name, values in loose.items() for value in values], False
+        return _with_json_values(
+            [((name,), value) for name, values in loose.items() for value in values], False
+        )
     return [], False
 
 
-def _is_json(text: str) -> bool:
-    """Whether *text* is JSON, a body too deep for the parser counted as JSON."""
-    try:
-        json.loads(text)
-    except (ValueError, TypeError):
-        return False
-    except RecursionError:
-        return True
-    return True
+_TEXT_PLAIN_CONTENT_TYPE = "text/plain"
+
+
+def _text_plain_fields(post_data: str) -> list[tuple[tuple[str, ...], str]] | None:
+    """The fields of a ``text/plain`` form body, which a browser sends as
+    ``name=value`` lines with nothing escaped: a line whose part before its first
+    ``=`` is spelled like a field name starts a field, and any other line continues
+    the value before it. ``None`` when the body is one line (the form read takes
+    it) or its first line starts no field."""
+    lines = re.split(r"\r?\n", post_data.rstrip("\r\n"))
+    if len(lines) < 2:
+        return None
+    fields: list[tuple[tuple[str, ...], str]] = []
+    for line in lines:
+        name, separator, value = line.partition("=")
+        if separator and _field_name_shaped(name):
+            fields.append(((name,), value))
+        elif fields:
+            path, before = fields[-1]
+            fields[-1] = (path, f"{before}\n{line}")
+        else:
+            return None
+    return fields
+
+
+def _with_json_values(
+    values: list[tuple[tuple[str, ...], str]], by_names: bool
+) -> tuple[list[tuple[tuple[str, ...], str]], bool]:
+    """*values*, each followed by the values inside it when it is itself a JSON
+    object or array (a form field or a JSON string holding JSON), under its own
+    names; one level only. *by_names* turns false when such a value is nested past
+    the JSON parser's limit, because the values inside it cannot be read."""
+    found: list[tuple[tuple[str, ...], str]] = []
+    for path, value in values:
+        found.append((path, value))
+        if value.lstrip()[:1] not in ("{", "["):
+            continue
+        try:
+            inner = json.loads(value)
+        except (ValueError, TypeError):
+            continue
+        except RecursionError:
+            by_names = False
+            continue
+        found.extend(((*path, *names), scalar) for names, scalar in _scalar_values(inner))
+    return found, by_names
 
 
 def _scalar_values(parsed: object) -> list[tuple[tuple[str, ...], str]]:
@@ -1420,13 +1483,17 @@ def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str
     of the names leading to it, case aside (``email=``, ``login=Login``, and
     ``account=1`` leave every value an account value).
 
-    ``None`` when the body holds something but is not read by its field names
-    (:func:`_read_body_values`: nested past the JSON parser's limit, XML, or any
-    other shape), so the guard cannot see the username, and nothing may be
-    suggested. Held in memory only, never written."""
-    post_data = entry.request.post_data
-    values, by_names = _read_body_values(post_data, _request_content_type(entry))
-    if post_data and post_data.strip() and not (values and by_names):
+    ``None`` when the recording does not hold the body as readable text (no body,
+    an empty one, one the recorder did not capture, left out, or found not to be
+    UTF-8) or the body gives no values read by their field names
+    (:func:`_read_body_values`: nested past the JSON parser's limit, XML, a JSON
+    value under no name, or any other shape), so the guard cannot see the username,
+    and nothing may be suggested. Held in memory only, never written."""
+    request = entry.request
+    if request.post_data_not_captured or request.post_data_omitted or request.post_data_binary:
+        return None
+    values, by_names = _read_body_values(request.post_data, _request_content_type(entry))
+    if not (values and by_names):
         return None
 
     def names_a_username(path: tuple[str, ...], value: str) -> bool:

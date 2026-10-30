@@ -7676,3 +7676,164 @@ class TestTheRecordingSuggestsASuccessSelector:
         assert result.login
         assert result.success_candidates == ()
 
+    # Review round 5 (#325): a credential body the recording does not hold, or holds
+    # in a shape read by no field name, suggests nothing; a text/plain form and a
+    # field holding JSON are read field by field.
+
+    def _held_run(self, run: Path, **request: Any):  # noqa: ANN202
+        """The login form's post to /session with *request* as its HAR request keys,
+        and the greeted page at stop."""
+        post = _entry("POST", f"{self._HOST}/session")
+        post["request"].update(request)
+        run.mkdir(parents=True, exist_ok=True)
+        return self._digest(run, [self._get("/login", self._LOGIN), post], self._GREETED)
+
+    @pytest.mark.parametrize(
+        "request_keys",
+        [
+            # No postData at all, and an empty one.
+            {},
+            {"postData": {"mimeType": "application/x-www-form-urlencoded", "text": ""}},
+            # The recorder saw a body and did not hold it, or left it out.
+            {"_postDataNotCaptured": True},
+            {"_postDataOmitted": {"size": 9_000_000, "reason": "over_max_body_size"}},
+            {"_postDataOmitted": {"size": 12, "reason": "binary"}},
+            # A body the HAR also marks as not captured is not trusted as whole.
+            {
+                "postData": {
+                    "mimeType": "application/x-www-form-urlencoded",
+                    "text": "uid=jsmith&pwd=x",
+                },
+                "_postDataNotCaptured": True,
+            },
+        ],
+    )
+    def test_a_credential_body_the_recording_does_not_hold_suggests_nothing(
+        self, tmp_path: Path, request_keys: dict[str, Any]
+    ) -> None:
+        result = self._held_run(tmp_path, **request_keys)
+        assert result.login
+        assert result.success_candidates == ()
+
+    def test_a_credential_body_file_that_is_not_utf8_suggests_nothing(self, tmp_path: Path) -> None:
+        (tmp_path / "bodies").mkdir(parents=True)
+        (tmp_path / "bodies" / "9.request.bin").write_bytes(b"uid=jsmith&pwd=\xff\xfe")
+        result = self._held_run(tmp_path, _postDataFile="bodies/9.request.bin")
+        assert result.login
+        assert result.success_candidates == ()
+        # The same body in UTF-8 is read, which shows the file is found.
+        utf8 = tmp_path / "utf8"
+        (utf8 / "bodies").mkdir(parents=True)
+        (utf8 / "bodies" / "9.request.txt").write_text("uid=jsmith&pwd=hunter-two")
+        read = self._held_run(utf8, _postDataFile="bodies/9.request.txt")
+        assert read.success_candidates == self._REJECTED
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # Nothing under a name: an empty object or list, a bare string or
+            # number, a list of strings, and a list mixing a string and an object.
+            "{}",
+            "[]",
+            '"jsmith:hunter2x"',
+            "42",
+            '["jsmith", "hunter2x"]',
+            '["jsmith", {"password": "hunter2x"}]',
+        ],
+    )
+    def test_a_json_body_with_a_value_under_no_name_suggests_nothing(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        result = self._valued_run(tmp_path, body, "application/json")
+        assert result.login
+        assert result.success_candidates == ()
+
+    def test_one_unreadable_credential_post_among_readable_ones_suggests_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed XML attempt, then a readable retry: the guard cannot see the
+        first post's username, so the run suggests nothing."""
+        xml = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data="<login><user>jsmith</user><pass>hunter-two</pass></login>",
+            request_headers={"Content-Type": "application/xml"},
+        )
+        form = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data="uid=jsmith&pwd=hunter-two",
+            request_headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        login = self._get("/login", self._LOGIN)
+        both = self._digest(tmp_path, [login, xml, form], self._GREETED)
+        assert both.success_candidates == ()
+        alone = self._digest(tmp_path / "alone", [login, form], self._GREETED)
+        assert alone.success_candidates == self._REJECTED
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # A browser's enctype="text/plain": one field a line, nothing escaped.
+            "log=jsmith\r\npwd=hunter-two\r\n",
+            "log=jsmith\npwd=hunter-two",
+            # A value running over two lines, and a one-line body (the form read).
+            "log=jsmith\r\nnote=first line\r\nsecond line\r\npwd=hunter-two\r\n",
+            "log=jsmith&pwd=hunter-two",
+        ],
+    )
+    def test_a_text_plain_credential_body_is_read_field_by_field(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """WordPress's "log" is the username only by the login form, so the rule
+        finds jsmith only when the body is read as fields."""
+        result = self._valued_run(tmp_path, body, "text/plain", self._WORDPRESS_LOGIN)
+        assert result.success_candidates == self._REJECTED
+
+    def test_a_text_plain_body_whose_first_line_is_no_field_suggests_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        body = "<<sign in>>\r\nlog=jsmith\r\npwd=hunter-two\r\n"
+        result = self._valued_run(tmp_path, body, "text/plain", self._WORDPRESS_LOGIN)
+        assert result.success_candidates == ()
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            # A form field holding a JSON object, and a JSON string holding one.
+            (
+                "payload=" + quote(json.dumps({"username": "jsmith", "password": "x"})),
+                "application/x-www-form-urlencoded",
+            ),
+            (
+                json.dumps({"variables": json.dumps({"username": "jsmith"}), "password": "x"}),
+                "application/json",
+            ),
+            # A JSON list in a text/plain field: its values sit under the field's name.
+            ('identifier=["jsmith"]\r\npwd=x\r\n', "text/plain"),
+        ],
+    )
+    def test_a_value_holding_json_is_read_one_level_down(
+        self, tmp_path: Path, body: str, content_type: str
+    ) -> None:
+        """Read whole, the value is one account value that "greeting-jsmith" does not
+        hold; read as JSON, its username field names jsmith."""
+        assert self._valued_run(tmp_path, body, content_type).success_candidates == self._REJECTED
+
+    def test_a_value_holding_json_too_deep_to_read_suggests_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        inner = json.dumps({"username": "jsmith"})
+        body = "payload=" + quote(inner) + "&pwd=x"
+        loads = json.loads
+
+        def too_deep(text: str | bytes, *args: Any, **kwargs: Any) -> object:
+            if text == inner:
+                raise RecursionError("maximum recursion depth exceeded")
+            return loads(text, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(json, "loads", too_deep)
+            result = self._valued_run(tmp_path, body, "application/x-www-form-urlencoded")
+        assert result.login
+        assert result.success_candidates == ()
