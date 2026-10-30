@@ -398,10 +398,6 @@ class TestAnIdentifierFirstLogin:
             "text"
         ].replace("name='handle'", "name='nickname'")
         assert _digest(tmp_path, entries).failure_candidates == (self._ERROR, _TEXTS[1])
-        entries[0]["response"]["content"]["text"] = entries[0]["response"]["content"][
-            "text"
-        ].replace("name='handle'", "name='nickname'")
-        assert _digest(tmp_path, entries).failure_candidates == (self._ERROR, _TEXTS[1])
 
     def test_a_username_posted_after_the_real_login_drops_nothing(self, tmp_path: Path) -> None:
         """Only requests up to and including the real login count: a later one (a
