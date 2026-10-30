@@ -1486,10 +1486,10 @@ def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str
     username's, a field the recorded login form takes as its username
     (*username_names*, ``LoginForm.username_name``) or one
     :func:`graftpunk.session_identity.is_identifier_field` accepts, by any name on
-    the way to a nested value (for a value read inside a field holding JSON, by the
-    names of that field only, never by a key inside it); and each email address
-    inside any value. When no
-    field is a username by those rules, every value is one, but a token field's
+    the way to a nested value; a value read inside a field holding JSON under a key
+    either check accepts; and each email address inside any value. When no
+    field is a username by those rules (a key inside a field holding JSON never
+    counts here), every value is one, but a token field's
     (:func:`graftpunk.har.documents.looks_like_token_name`). A field counts as the
     username only when its value could name an account
     (:func:`graftpunk.har.login_signals.could_be_an_account_value`) and is not one
@@ -1519,6 +1519,13 @@ def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str
         )
 
     usernames = [value for path, value, named in values if names_a_username(path[:named], value)]
+    # A key inside a field holding JSON never turns the fallback off, but what it
+    # names is still the account's.
+    inner = [
+        value
+        for path, value, named in values
+        if named < len(path) and names_a_username(path, value)
+    ]
     if not usernames:
         usernames = [
             value
@@ -1529,7 +1536,7 @@ def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str
     emails = [
         email for _path, value, _named in values for email in _EMAIL_IN_VALUE_RE.findall(value)
     ]
-    return [*usernames, *passwords, *emails]
+    return [*usernames, *inner, *passwords, *emails]
 
 
 def _path_segments(url: str) -> int:

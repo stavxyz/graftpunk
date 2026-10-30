@@ -1776,8 +1776,8 @@ prints the same list as `login.success_candidates`.
 
 No suggestion holds the password, the username, or an email address the
 credential post sent. The username is the value of the field the login form or
-graftpunk's identifier rules name (by the field's own name when its value is
-itself JSON, never by a key inside it), or every value when no field qualifies.
+graftpunk's identifier rules name, also inside a field whose value is itself
+JSON, or every value when no top-level field qualifies.
 The list is empty, and the scaffold writes the success `GP-FILL` with no
 suggestions, when the run recorded no credential post, never got past the
 login's steps (an MFA page, say), or holds a credential post whose username the

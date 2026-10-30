@@ -7793,9 +7793,14 @@ class TestTheRecordingSuggestsASuccessSelector:
     def test_a_text_plain_body_whose_first_line_is_no_field_suggests_nothing(
         self, tmp_path: Path
     ) -> None:
-        body = "<<sign in>>\r\nlog=jsmith\r\npwd=hunter-two\r\n"
-        result = self._valued_run(tmp_path, body, "text/plain", self._WORDPRESS_LOGIN)
-        assert result.success_candidates == ()
+        for body in (
+            "<<sign in>>\r\nlog=jsmith\r\npwd=hunter-two\r\n",
+            # A first line holding "=" whose name is not spelled like a field's.
+            "user name=jsmith\r\npwd=hunter-two\r\n",
+            "loginForm:log=jsmith\r\nloginForm:pwd=hunter-two\r\n",
+        ):
+            result = self._valued_run(tmp_path, body, "text/plain", self._WORDPRESS_LOGIN)
+            assert result.success_candidates == (), body
 
     @pytest.mark.parametrize(
         "body",
@@ -7901,6 +7906,44 @@ class TestTheRecordingSuggestsASuccessSelector:
         would make "web-client", "anonymous" or the address the username and leave
         jsmith out."""
         result = self._valued_run(tmp_path, body, content_type, self._WHO_LOGIN)
+        assert result.success_candidates == self._REJECTED
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            (
+                "login=Log+In&payload="
+                + quote(json.dumps({"username": "jsmith", "password": "hunter-two"})),
+                "application/x-www-form-urlencoded",
+            ),
+            (
+                json.dumps(
+                    {
+                        "account": "acme-corp",
+                        "payload": json.dumps({"username": "jsmith", "password": "hunter-two"}),
+                    }
+                ),
+                "application/json",
+            ),
+            (
+                "--XyZ\r\n"
+                'Content-Disposition: form-data; name="account"\r\n\r\n'
+                "acme-corp\r\n"
+                "--XyZ\r\n"
+                'Content-Disposition: form-data; name="payload"\r\n\r\n'
+                + json.dumps({"username": "jsmith", "password": "hunter-two"})
+                + "\r\n--XyZ--\r\n",
+                "multipart/form-data; boundary=XyZ",
+            ),
+        ],
+    )
+    def test_a_username_under_a_key_inside_a_field_holding_json_is_still_kept_out(
+        self, tmp_path: Path, body: str, content_type: str
+    ) -> None:
+        """An outer field ("login", "account") is the username by name, so the
+        fallback is off; jsmith, under "username" inside the JSON-valued "payload",
+        is still an account value."""
+        result = self._valued_run(tmp_path, body, content_type)
         assert result.success_candidates == self._REJECTED
 
     def test_a_value_holding_json_too_deep_to_read_suggests_nothing(

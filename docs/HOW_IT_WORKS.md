@@ -947,13 +947,13 @@ but a link, a button, or a form. Nor is a name holding an account value of a
 credential post: the password field's value; the value of the field a recorded
 login form takes as its username and of every field
 `graftpunk.session_identity.is_identifier_field` accepts (a Rails-style name by
-its last bracketed part), under that name at any depth of a JSON body (a
-value inside a field whose value is itself JSON counts by that field's name,
-never by a key inside it); every email address inside any value; and, when no
-field is a username by those rules, every value but a token field's. A field counts as the username only when its
-value has at least three characters, is not a boolean word, and is not its own
-name, case aside, so `email=`, `login=Login`, and `account=1` leave every value
-an account value. Each value and an email's local part is compared lower-cased
+its last bracketed part), under that name at any depth of a JSON body, and
+inside a field whose value is itself JSON; every email address inside any
+value; and, when no field is a username by those rules (a key inside a field
+holding JSON never counts for this), every value but a token field's. A field
+counts as the username only when its value has at least three characters, is
+not a boolean word, and is not its own name, case aside, so `email=`,
+`login=Login`, and `account=1` leave every value an account value. Each value and an email's local part is compared lower-cased
 with whitespace, `-`, `_`, and `.` removed, at least three characters, and not a
 boolean word. The values are read by `graftpunk.har.digest.body_values` from a
 JSON body at any depth (walked without recursion), a form body, a `text/plain`
