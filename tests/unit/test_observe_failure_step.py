@@ -28,7 +28,6 @@ from graftpunk.cli.main import app
 from graftpunk.cli.observe_browser import ObserveSession, run_observe_interactive
 from graftpunk.observe import capture
 from graftpunk.observe.capture import NodriverCaptureBackend
-from graftpunk.observe.run import Redaction
 from tests.unit.cli_harness import strip_ansi
 from tests.unit.test_observe_post_data import (
     _LOGIN_MODAL,
@@ -58,6 +57,7 @@ _FAILED_PAGE_LATER = _LOGIN_MODAL.replace(
     '<div id="app">', f'<div id="app"><p class="form-error">{_STAYS}</p>'
 )
 _LANDED = "<html><body><div id='account-menu'>Your orders</div></body></html>"
+_FORM = "application/x-www-form-urlencoded"
 
 
 async def _recording(
@@ -73,10 +73,20 @@ async def _recording(
     return tab, backend, clock, reads
 
 
-async def _post(tab: FakeTab, rid: str, body: str = _WRONG, *, respond: bool = True) -> None:
+async def _post(
+    tab: FakeTab,
+    rid: str,
+    body: str = _WRONG,
+    *,
+    respond: bool = True,
+    content_type: str = "application/json",
+    page: str = _LOGIN_MODAL,
+) -> None:
     # The listener's snapshot is the post's own, so every DOM read is a read after it.
-    await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40))
-    await tab.dispatch(_will_be_sent(rid, inline=body, url=LOGIN))
+    await tab.dispatch(_binding_called(page, time_ms=_POST_MS - 40))
+    await tab.dispatch(
+        _will_be_sent(rid, inline=body, url=LOGIN, headers={"Content-Type": content_type})
+    )
     if respond:
         await tab.dispatch(_response_received(rid, url=LOGIN))
 
@@ -233,6 +243,82 @@ class TestTheRealLogin:
         assert backend.marked_failure_candidates() == ()
 
 
+class TestAnIdentifierFirstLogin:
+    """The username is posted by a step before the password post, so neither
+    password post's own values hold it."""
+
+    _IDENTIFIER = "https://myshop.example/login/identifier"
+
+    async def _identifier_step(self, tab: FakeTab, rid: str, username: str) -> None:
+        await tab.dispatch(
+            _will_be_sent(
+                rid,
+                inline=f"username={username}",
+                url=self._IDENTIFIER,
+                headers={"Content-Type": _FORM},
+            )
+        )
+        await tab.dispatch(_response_received(rid, url=self._IDENTIFIER))
+
+    @pytest.mark.asyncio
+    async def test_a_text_holding_the_username_of_the_failed_login_is_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        tab.dom_html = _FAILED_PAGE.replace(_TOAST, "The password for jsmith is not right.")
+        await self._identifier_step(tab, "79.1", "jsmith")
+        await _post(tab, "79.2", "password=wrong-x7k2q9", content_type=_FORM)
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        await _stop(backend, tab)
+        assert backend.marked_failure_candidates() == (_STAYS,)
+
+    @pytest.mark.asyncio
+    async def test_a_login_form_s_username_name_counts(self, tmp_path: Path) -> None:
+        """``handle`` is no identifier field's name; the login form on the page at the
+        post takes it as its username, and a script posted it in a step first."""
+        page = _LOGIN_MODAL.replace('name="username"', 'name="handle"')
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        tab.dom_html = _FAILED_PAGE.replace(_TOAST, "The password for jsmith is not right.")
+        await tab.dispatch(
+            _will_be_sent(
+                "77.1",
+                inline="handle=jsmith",
+                url=self._IDENTIFIER,
+                headers={"Content-Type": _FORM},
+            )
+        )
+        await tab.dispatch(_response_received("77.1", url=self._IDENTIFIER))
+        await _post(tab, "77.2", "password=wrong-x7k2q9", content_type=_FORM, page=page)
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        await _stop(backend, tab)
+        assert backend.marked_failure_candidates() == (_STAYS,)
+
+    @pytest.mark.asyncio
+    async def test_a_text_holding_the_username_of_the_real_login_is_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        tab.dom_html = _FAILED_PAGE.replace(_STAYS, "Too many tries for jsmith2024 today.")
+        await self._identifier_step(tab, "78.1", "bob_tester")
+        await _post(tab, "78.2", "password=wrong-x7k2q9", content_type=_FORM)
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        assert backend.marked_failure_candidates() == (
+            _TOAST,
+            "Too many tries for jsmith2024 today.",
+        )
+        tab.dom_html = _LANDED
+        await self._identifier_step(tab, "78.3", "jsmith2024")
+        await _post(tab, "78.4", "password=RealSecret9", content_type=_FORM, respond=False)
+        await _stop(backend, tab)
+        assert backend.marked_failure_candidates() == (_TOAST,)
+
+
 class TestOnlyFailureReadsCount:
     @pytest.mark.asyncio
     async def test_enter_pressed_after_the_real_login_suggests_nothing(
@@ -256,12 +342,29 @@ class TestOnlyFailureReadsCount:
 
 
 class TestThePageAtThePost:
-    _SHELL = "<html><body><div id='root'></div><script src='/app.js'></script></body></html>"
+    """Without the request-time snapshot of the page at the failed post, nothing is
+    suggested, whatever the HAR holds of the login page as served."""
 
-    async def _without_a_snapshot(self, tmp_path: Path, served: str) -> NodriverCaptureBackend:
+    _SHELL = "<html><body><div id='root'></div><script src='/app.js'></script></body></html>"
+    _FORM_PAGE = (
+        "<html><body><form action='/login' method='post'><input name='username'>"
+        "<input type='password' name='password'><button>Sign in</button></form>"
+        "<script src='/app.js'></script></body></html>"
+    )
+    # A script adds a cookie banner to the served form page; the error is no alert.
+    _RENDERED = _FORM_PAGE.replace(
+        "<form",
+        "<div class='cookie-alert'>We use cookies to improve your visit.</div>"
+        "<p class='msg'>That did not work, try again.</p><form",
+    )
+
+    async def _without_a_snapshot(
+        self, tmp_path: Path, served: str, read: str = _FAILED_PAGE
+    ) -> NodriverCaptureBackend:
         """A post no snapshot was kept for: no listener snapshot, and the late read
         finds the tab on another page. The login page as served is *served*."""
         tab, backend, clock, _reads = await _recording(tmp_path)
+        tab.dom_html = read
         backend._request_map["page"] = {
             "url": LOGIN,
             "response": {"mimeType": "text/html", "body": served},
@@ -281,9 +384,19 @@ class TestThePageAtThePost:
         assert backend.marked_failure_candidates() == ()
 
     @pytest.mark.asyncio
-    async def test_a_served_page_holding_the_login_form_is_used(self, tmp_path: Path) -> None:
+    async def test_a_served_page_holding_the_login_form_suggests_nothing(
+        self, tmp_path: Path
+    ) -> None:
         backend = await self._without_a_snapshot(tmp_path, _LOGIN_MODAL)
-        assert backend.marked_failure_candidates() == (_TOAST, _STAYS)
+        assert backend.marked_failure_candidates() == ()
+
+    @pytest.mark.asyncio
+    async def test_a_cookie_banner_a_script_adds_is_never_suggested(self, tmp_path: Path) -> None:
+        """The banner is on the login page the engine reads after every submit, and
+        its class holds ``alert``: against the served page it would be the one
+        suggestion, and fail every login."""
+        backend = await self._without_a_snapshot(tmp_path, self._FORM_PAGE, self._RENDERED)
+        assert backend.marked_failure_candidates() == ()
 
 
 class TestTheStepCloses:
@@ -350,13 +463,19 @@ class TestTheStepCloses:
         assert failed is not None
         assert failed.before is not None
         assert failed.first_read is not None
+        assert failed.body_text == _WRONG
+        # A real login's page waiting for the suggestions to settle.
+        failed.drop_on(_LANDED, None)
+        assert len(failed.pending) == 1
         await _stop(backend, tab)
-        assert (failed.before, failed.served, failed.first_read, failed.enter_read) == (
+        assert (failed.before, failed.first_read, failed.enter_read, failed.body_text) == (
             None,
             None,
             None,
             None,
         )
+        assert failed.posted == []
+        assert failed.pending == []
         assert backend._failure_step_open is False
 
 
@@ -442,7 +561,6 @@ class TestStopAndPrivacy:
         await clock.advance(2, backend)
         assert reads == []
         assert backend.mark_failed_login() is False
-        assert backend.failed_login_secrets() == ()
         await clock.advance(1, backend)
         assert reads == [3.0]
         await _stop(backend, tab)
@@ -454,113 +572,85 @@ class TestStopAndPrivacy:
         assert backend._step_reads == {}
 
     @pytest.mark.asyncio
-    async def test_the_failed_password_is_handed_to_the_run_s_redaction(
+    async def test_the_mark_scrubs_the_failed_password_from_its_own_body(
         self, tmp_path: Path
     ) -> None:
         from graftpunk.observe.run import save_observe_run
-        from graftpunk.observe.storage import ObserveStorage
 
-        storage = ObserveStorage(tmp_path, "myshop", "r1")
-        tab = FakeTab({}, _never)
-        tab.dom_html = _FAILED_PAGE
-        clock = FakeClock()
-        backend = NodriverCaptureBackend(
-            object(),
-            get_tab=lambda: tab,
-            bodies_dir=storage.run_dir / "bodies",
-            dom_snapshots_dir=storage.run_dir / "snapshots",
-            failure_step=True,
-        )
-        backend._now, backend._sleep = clock.time, clock.sleep
-        await backend.start_capture_async()
+        storage, tab, backend, clock = await _saved_recording(tmp_path)
         await _post(tab, "99.1")
         await clock.advance(2, backend)
         backend.mark_failed_login()
         await _idle(backend, clock)
-        assert backend.failed_login_secrets() == ("wrongpass1",)
         tab.dom_html = _LANDED
-        await save_observe_run(
-            storage,
-            backend,
-            "interactive-final",
-            redact=Redaction(body_values=backend.failed_login_secrets()),
-        )
+        await save_observe_run(storage, backend, "interactive-final")
 
         har = (storage.run_dir / "network.har").read_text()
         assert "wrongpass1" not in har
         (entry,) = json.loads(har)["log"]["entries"]
+        assert json.loads(entry["request"]["postData"]["text"]) == {
+            "username": "jsmith",
+            "password": "***REDACTED***",
+        }
         assert entry["request"]["_userMarkedFailed"] is True
         assert entry["request"]["_failureTextCandidates"] == [_TOAST, _STAYS]
         assert _TOAST not in _run_text(storage.run_dir).replace(har, "")
 
+    @pytest.mark.asyncio
+    async def test_a_failed_body_written_to_a_file_is_scrubbed_there(self, tmp_path: Path) -> None:
+        from graftpunk.observe.run import save_observe_run
 
-class _Stopped:
-    """A stopped capture holding *entries*, for save_observe_run."""
+        storage, tab, backend, clock = await _saved_recording(tmp_path, max_body_size=10)
+        await _post(tab, "99.2")
+        await clock.advance(2, backend)
+        backend.mark_failed_login()
+        await _idle(backend, clock)
+        await save_observe_run(storage, backend, "interactive-final")
 
-    def __init__(self, entries: list[dict[str, Any]]) -> None:
-        self.entries = entries
-
-    async def take_screenshot(self) -> None:
-        return None
-
-    async def get_page_source(self) -> None:
-        return None
-
-    async def stop_capture_async(self) -> None:
-        return None
-
-    def get_har_entries(self) -> list[dict[str, Any]]:
-        return self.entries
-
-    def get_console_logs(self) -> list[Any]:
-        return []
+        (entry,) = json.loads((storage.run_dir / "network.har").read_text())["log"]["entries"]
+        request = entry["request"]
+        written = (storage.run_dir / request["_postDataFile"]).read_bytes()
+        assert json.loads(written) == {"username": "jsmith", "password": "***REDACTED***"}
+        assert request["_postDataSize"] == len(written)
+        assert "wrongpass1" not in _run_text(storage.run_dir)
 
 
-_FORM = "application/x-www-form-urlencoded"
+async def _saved_recording(
+    tmp_path: Path, **kwargs: Any
+) -> tuple[Any, FakeTab, NodriverCaptureBackend, FakeClock]:
+    """A recording with the step that writes to a run directory, for save_observe_run."""
+    from graftpunk.observe.storage import ObserveStorage
+
+    storage = ObserveStorage(tmp_path, "myshop", "r1")
+    tab = FakeTab({}, _never)
+    tab.dom_html = _FAILED_PAGE
+    clock = FakeClock()
+    backend = NodriverCaptureBackend(
+        object(),
+        get_tab=lambda: tab,
+        bodies_dir=storage.run_dir / "bodies",
+        dom_snapshots_dir=storage.run_dir / "snapshots",
+        failure_step=True,
+        **kwargs,
+    )
+    backend._now, backend._sleep = clock.time, clock.sleep
+    await backend.start_capture_async()
+    return storage, tab, backend, clock
 
 
 class TestTheThrowawayScrub:
-    """The wrong password is scrubbed only where it stands as a whole value of a
-    request body: a throwaway such as ``password`` or ``login`` leaves the field
-    names, the URLs, and the login page intact."""
+    """The wrong password is scrubbed only from the failed post's own body, and only
+    under a password-like name: a throwaway such as ``password`` or ``login`` leaves
+    the real login's body (an OAuth ``grant_type=password`` included), the field
+    names, and the URLs intact."""
 
-    _PAGE = (
-        "<html><body><form action='/api/login/password' method='post'>"
-        "<input type='text' name='login'><input type='password' name='password'>"
-        "<button>Sign in</button></form></body></html>"
-    )
-    _POST_URL = "https://myshop.example/api/login/password"
-
-    def _entries(self, throwaway: str, content_type: str) -> list[dict[str, Any]]:
-        from tests.unit.test_har_digest import _entry
-
-        def body(password: str) -> str:
-            if content_type == _FORM:
-                return f"login=jsmith&password={password}"
-            return json.dumps({"login": "jsmith", "password": password})
-
-        entries = [
-            _entry("GET", LOGIN, content_type="text/html", body=self._PAGE),
-            _entry(
-                "POST",
-                self._POST_URL,
-                status=401,
-                post_data=body(throwaway),
-                started="2026-09-10T10:00:05.000Z",
-            ),
-            _entry(
-                "POST",
-                self._POST_URL,
-                post_data=body("RealSecret9"),
-                started="2026-09-10T10:00:09.000Z",
-            ),
-        ]
-        for entry in entries[1:]:
-            entry["request"]["postData"]["mimeType"] = content_type
-            entry["request"]["headers"] = [{"name": "Content-Type", "value": content_type}]
-        entries[1]["request"]["_userMarkedFailed"] = True
-        entries[1]["request"]["_failureTextCandidates"] = [_TOAST]
-        return entries
+    @staticmethod
+    def _body(password: str, content_type: str) -> str:
+        if content_type == _FORM:
+            return f"grant_type=password&action=login&login=jsmith&password={password}"
+        return json.dumps(
+            {"grant_type": "password", "action": "login", "login": "jsmith", "password": password}
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("throwaway", ["password", "login"])
@@ -570,46 +660,31 @@ class TestTheThrowawayScrub:
     ) -> None:
         from graftpunk.har.digest import DigestSource, digest
         from graftpunk.observe.run import save_observe_run
-        from graftpunk.observe.storage import ObserveStorage
 
-        storage = ObserveStorage(tmp_path, "myshop", "r1")
-        recorded = self._entries(throwaway, content_type)
-        expected = json.loads(json.dumps(recorded))
-        await save_observe_run(
-            storage,
-            _Stopped(recorded),
-            "interactive-final",
-            redact=Redaction(body_values=(throwaway,)),
+        storage, tab, backend, clock = await _saved_recording(tmp_path)
+        await _post(tab, "70.1", self._body(throwaway, content_type), content_type=content_type)
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        tab.dom_html = _LANDED
+        real = self._body("RealSecret9", content_type)
+        await _post(tab, "70.2", real, content_type=content_type)
+        await clock.advance(3, backend)
+        await _idle(backend, clock)
+        kept = backend.marked_failure_candidates()
+        await save_observe_run(storage, backend, "interactive-final")
+
+        har = storage.run_dir / "network.har"
+        failed, right = (
+            entry["request"] for entry in json.loads(har.read_text())["log"]["entries"]
         )
-        saved = json.loads((storage.run_dir / "network.har").read_text())["log"]["entries"]
-        assert [entry["request"]["url"] for entry in saved] == [
-            LOGIN,
-            self._POST_URL,
-            self._POST_URL,
-        ]
-        assert saved[0] == expected[0]
-        assert saved[2] == expected[2]
-        failed = saved[1]["request"]["postData"]["text"]
-        if content_type == _FORM:
-            assert failed == "login=jsmith&password=***REDACTED***"
-        else:
-            assert json.loads(failed) == {"login": "jsmith", "password": "***REDACTED***"}
-        result = digest(DigestSource(har_path=storage.run_dir / "network.har"))
-        assert [set(form.fields) >= {"password"} for form in result.login_forms] == [True]
-        assert result.failure_candidates == (_TOAST,)
-
-
-class TestTheLoginPageAsServed:
-    def test_the_latest_html_response_of_the_sending_page(self) -> None:
-        backend = NodriverCaptureBackend(object(), dom_snapshots_dir=Path("/nonexistent"))
-        post = {"url": LOGIN, "method": "POST", "sender_url": LOGIN + "?next=%2F"}
-        page = {"url": LOGIN, "response": {"mimeType": "text/html", "body": "<p>old</p>"}}
-        again = {"url": LOGIN + "#top", "response": {"mimeType": "text/html", "body": "<p>new</p>"}}
-        script = {"url": LOGIN, "response": {"mimeType": "application/json", "body": "{}"}}
-        backend._request_map = {"1": page, "2": again, "3": script, "4": post}
-        assert backend._served_page(post) == "<p>new</p>"
-        backend._request_map = {"3": script, "4": post}
-        assert backend._served_page(post) is None
+        assert failed["url"] == right["url"] == LOGIN
+        assert failed["postData"]["text"] == self._body("***REDACTED***", content_type)
+        assert right["postData"]["text"] == real
+        result = digest(DigestSource(har_path=har))
+        assert any(set(form.fields) >= {"password"} for form in result.login_forms)
+        assert kept
+        assert result.failure_candidates == kept
 
 
 # The prompt: gp observe interactive --wrong-password-first reads Enter on stdin
@@ -677,7 +752,6 @@ class _Interactive:
     def __init__(self, marks: list[bool] | None = None) -> None:
         self.backend = MagicMock()
         self.backend.mark_failed_login = MagicMock(side_effect=marks or [True])
-        self.backend.failed_login_secrets = MagicMock(return_value=("wrongpass1",))
         self.backend.close_after_reads = AsyncMock()
         self.backend.marked_failure_candidates = MagicMock(return_value=None)
         self.out = StringIO()
@@ -722,7 +796,7 @@ def _ctrl_c() -> None:
 
 class TestThePrompt:
     @pytest.mark.asyncio
-    async def test_enter_marks_the_failed_post_and_ctrl_c_saves_without_its_password(
+    async def test_enter_marks_the_failed_post_and_ctrl_c_saves(
         self,
     ) -> None:
         run, terminal = _Interactive(), _FakeTerminal()
@@ -742,8 +816,9 @@ class TestThePrompt:
             terminal.close()
         assert run.setup.await_args.kwargs["failure_step"] is True
         run.backend.mark_failed_login.assert_called_once_with()
-        # Only where it stands as a whole value of a request body.
-        assert run.save.await_args.kwargs["redact"] == Redaction(body_values=("wrongpass1",))
+        # The recorder scrubbed the failed post's own body at the mark: the save
+        # redacts nothing more, as without the flag.
+        assert run.save.await_args.kwargs == {"console": run.console}
 
     @pytest.mark.asyncio
     async def test_enter_before_any_credential_post_asks_again(self) -> None:
@@ -867,7 +942,6 @@ class TestThePrompt:
             "Saving capture..."
         )
         run.backend.mark_failed_login.assert_not_called()
-        run.backend.failed_login_secrets.assert_not_called()
         assert run.save.await_args.kwargs == {"console": run.console}
 
 

@@ -28,6 +28,9 @@ _LOGIN = (
 _WRONG = {"email": "alice@example.com", "password": "***REDACTED***"}
 _RIGHT = {"email": "alice@example.com", "password": "hunter2hunter2"}
 _TEXTS = ["Invalid email or password.", "Too many attempts may lock you out."]
+# The page the real login landed on, as the HAR recorded it: it shows neither text.
+_LANDED = "<html><body><p>Your orders</p></body></html>"
+_FORM = "application/x-www-form-urlencoded"
 
 _FAILURE_GP_FILL = (
     "GP-FILL: the recording suggests failure text: shown after the wrong password it "
@@ -37,8 +40,10 @@ _FAILURE_GP_FILL = (
 
 
 def _entries(
-    candidates: Any = _TEXTS, *, marked: bool = True, real: dict | None = None
+    candidates: Any = _TEXTS, *, marked: bool = True, real: dict | None = None, landed: bool = True
 ) -> list[dict]:
+    """The login page, the marked failed post, the real login, and, with *landed*, the
+    page it landed on."""
     failed = _entry(
         "POST",
         f"{_HOST}/session",
@@ -54,11 +59,22 @@ def _entries(
         post_data=json.dumps(real or _RIGHT),
         started="2026-09-10T10:00:09.000Z",
     )
-    return [
+    entries = [
         _entry("GET", f"{_HOST}/login", content_type="text/html", body=_LOGIN),
         failed,
         right,
     ]
+    if landed:
+        entries.append(
+            _entry(
+                "GET",
+                f"{_HOST}/account",
+                content_type="text/html",
+                body=_LANDED,
+                started="2026-09-10T10:00:10.000Z",
+            )
+        )
+    return entries
 
 
 def _digest(run: Path, entries: list[dict]) -> RunDigest:
@@ -202,10 +218,42 @@ class TestTheDigest:
                 f"{_HOST}/account",
                 content_type="text/html",
                 body=landed,
-                started="2026-09-10T10:00:10.000Z",
+                started="2026-09-10T10:00:11.000Z",
             ),
         ]
         assert _digest(tmp_path, entries).failure_candidates == (_TEXTS[0],)
+
+    def test_only_the_last_page_after_the_real_login_drops(self, tmp_path: Path) -> None:
+        """The last page the HAR recorded after the real login is the logged-in one; an
+        earlier one (a redirect's interstitial, say) drops nothing."""
+
+        def page(path: str, text: str, started: str) -> dict:
+            body = f"<html><body><p>{text}</p></body></html>"
+            return _entry(
+                "GET", f"{_HOST}{path}", content_type="text/html", body=body, started=started
+            )
+
+        entries = [
+            *_entries(landed=False),
+            page("/welcome", _TEXTS[0], "2026-09-10T10:00:10.000Z"),
+            page("/account", _TEXTS[1], "2026-09-10T10:00:11.000Z"),
+        ]
+        assert _digest(tmp_path, entries).failure_candidates == (_TEXTS[0],)
+
+    def test_a_page_after_the_marked_post_with_no_real_login_drops_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """With no real login after the marked post, a page browsed after the wrong
+        password (a help page) is no logged-in page."""
+        login, failed, _right = _entries(landed=False)
+        help_page = _entry(
+            "GET",
+            f"{_HOST}/help",
+            content_type="text/html",
+            body=f"<html><body><p>{_TEXTS[1]}</p></body></html>",
+            started="2026-09-10T10:00:07.000Z",
+        )
+        assert _digest(tmp_path, [login, failed, help_page]).failure_candidates == tuple(_TEXTS)
 
     def test_a_page_before_the_real_login_drops_nothing(self, tmp_path: Path) -> None:
         """Only a page after the real login is a logged-in page: one between the
@@ -231,6 +279,130 @@ class TestTheDigest:
         har = _write_har(tmp_path, _entries())
         result = digest(DigestSource(har_path=har, page_source=page))
         assert result.failure_candidates == (_TEXTS[1],)
+
+
+class TestTheLandedPage:
+    """A real login after the marked post: the texts are kept only when something
+    shows the page it landed on, since one of them may be on it and fail every good
+    login."""
+
+    def test_nothing_shows_it_so_nothing_is_suggested(self, tmp_path: Path) -> None:
+        assert _digest(tmp_path, _entries(landed=False)).failure_candidates == ()
+
+    def test_the_real_login_s_after_read_shows_it(self, tmp_path: Path) -> None:
+        """The recorder read the landed page and dropped the texts on it; the
+        after-read it wrote (structure only) is the sign."""
+        entries = _entries(landed=False)
+        (tmp_path / "snapshots").mkdir(parents=True)
+        (tmp_path / "snapshots" / "r.after.html").write_text("<html><body></body></html>")
+        entries[2]["request"]["_domAfter"] = "snapshots/r.after.html"
+        assert _digest(tmp_path, entries).failure_candidates == tuple(_TEXTS)
+
+    def test_the_page_source_shows_it(self, tmp_path: Path) -> None:
+        tmp_path.mkdir(exist_ok=True)
+        page = tmp_path / "page-source.html"
+        page.write_text(_LANDED)
+        har = _write_har(tmp_path, _entries(landed=False))
+        result = digest(DigestSource(har_path=har, page_source=page))
+        assert result.failure_candidates == tuple(_TEXTS)
+
+
+class TestAnIdentifierFirstLogin:
+    """The username is posted by a step before the password post, which holds no
+    username of its own."""
+
+    _STEP2 = (
+        "<html><body><form action='/login/password' method='post'>"
+        "<input type='password' name='password'><button>Sign in</button></form></body></html>"
+    )
+    _ERROR = "The password for jsmith is not right."
+
+    def _entries(self) -> list[dict]:
+        page1 = (
+            "<html><body><form action='/login/identifier' method='post'>"
+            "<input type='text' name='username'><button>Next</button></form></body></html>"
+        )
+        entries = [
+            _entry("GET", f"{_HOST}/login", content_type="text/html", body=page1),
+            _entry(
+                "POST",
+                f"{_HOST}/login/identifier",
+                post_data="username=jsmith",
+                started="2026-09-10T10:00:02.000Z",
+            ),
+            _entry(
+                "GET",
+                f"{_HOST}/login/password",
+                content_type="text/html",
+                body=self._STEP2,
+                started="2026-09-10T10:00:03.000Z",
+            ),
+            _entry(
+                "POST",
+                f"{_HOST}/login/password",
+                status=401,
+                post_data="password=***REDACTED***",
+                started="2026-09-10T10:00:05.000Z",
+            ),
+            _entry(
+                "POST",
+                f"{_HOST}/login/password",
+                post_data="password=RealSecret9",
+                started="2026-09-10T10:00:09.000Z",
+            ),
+            _entry(
+                "GET",
+                f"{_HOST}/account",
+                content_type="text/html",
+                body=_LANDED,
+                started="2026-09-10T10:00:10.000Z",
+            ),
+        ]
+        for entry in entries:
+            if entry["request"]["method"] == "POST":
+                entry["request"]["postData"]["mimeType"] = _FORM
+                entry["request"]["headers"] = [{"name": "Content-Type", "value": _FORM}]
+        entries[3]["request"]["_userMarkedFailed"] = True
+        entries[3]["request"]["_failureTextCandidates"] = [self._ERROR, _TEXTS[1]]
+        return entries
+
+    def test_a_text_holding_the_username_a_step_posted_is_dropped(self, tmp_path: Path) -> None:
+        assert _digest(tmp_path, self._entries()).failure_candidates == (_TEXTS[1],)
+
+    def test_a_login_form_s_username_name_counts(self, tmp_path: Path) -> None:
+        """``handle`` is no identifier field's name, but the recorded login form takes
+        it as its username: the page's script posts it in a step of its own before
+        the form posts the password."""
+        entries = self._entries()
+        entries[0]["response"]["content"]["text"] = (
+            "<html><body><form action='/login/password' method='post'>"
+            "<input type='text' name='handle'><input type='password' name='password'>"
+            "<button>Sign in</button></form></body></html>"
+        )
+        entries[1]["request"]["postData"]["text"] = "handle=jsmith"
+        assert _digest(tmp_path, entries).failure_candidates == (_TEXTS[1],)
+        entries[0]["response"]["content"]["text"] = entries[0]["response"]["content"][
+            "text"
+        ].replace("name='handle'", "name='nickname'")
+        assert _digest(tmp_path, entries).failure_candidates == (self._ERROR, _TEXTS[1])
+
+    def test_a_username_posted_after_the_real_login_drops_nothing(self, tmp_path: Path) -> None:
+        """Only requests up to and including the real login count: a later one (a
+        profile search, say) is no login."""
+        entries = self._entries()
+        entries[1]["request"]["postData"]["text"] = "username=bob_tester"
+        later = _entry(
+            "POST",
+            f"{_HOST}/api/search",
+            post_data="username=jsmith",
+            started="2026-09-10T10:00:12.000Z",
+        )
+        later["request"]["postData"]["mimeType"] = _FORM
+        later["request"]["headers"] = [{"name": "Content-Type", "value": _FORM}]
+        assert _digest(tmp_path, [*entries, later]).failure_candidates == (
+            self._ERROR,
+            _TEXTS[1],
+        )
 
     def test_a_credential_post_whose_values_cannot_be_read_suggests_nothing(
         self, tmp_path: Path

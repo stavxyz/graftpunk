@@ -29,7 +29,7 @@ from graftpunk.browser_launch import (
 from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
-from graftpunk.observe.run import Redaction, make_run_id, save_observe_run
+from graftpunk.observe.run import make_run_id, save_observe_run
 from graftpunk.observe.storage import session_dirname
 
 console = Console()
@@ -331,10 +331,9 @@ async def run_observe_interactive(
     With *wrong_password_first*, the recording starts with the wrong-password step
     (:func:`_wrong_password_step`), which reads Enter on *stdin* (``sys.stdin`` when
     None): a stdin that is no terminal is refused before the browser opens, since
-    nobody could press Enter in it. The failed post's password is then scrubbed from
-    the saved run's request bodies where it stands as a whole value
-    (:class:`graftpunk.observe.run.Redaction`'s ``body_values``), and when the mark
-    kept no failure text, one line says so before the run is saved."""
+    nobody could press Enter in it. The recorder scrubs the failed post's password
+    from that post's own body when it is marked (``mark_failed_login``), and when the
+    mark kept no failure text, one line says so before the run is saved."""
     if wrong_password_first:
         stdin = sys.stdin if stdin is None else stdin
         if not stdin.isatty():
@@ -391,20 +390,8 @@ async def run_observe_interactive(
                     "stopped before the page was read, or no text passed the checks): "
                     "the generated plugin's failure text is yours to fill in.[/yellow]"
                 )
-            # An interactive run keeps what it posted; the throwaway is scrubbed all
-            # the same, in case it was the real password with a typo: only where it
-            # stands as a whole value of a request body, so a throwaway such as
-            # "password" leaves field names, URLs, and pages intact.
-            await save_observe_run(
-                observed.storage,
-                observed.backend,
-                "interactive-final",
-                console=console,
-                redact=Redaction(body_values=observed.backend.failed_login_secrets()),
-            )
-        else:
-            await save_observe_run(
-                observed.storage, observed.backend, "interactive-final", console=console
-            )
+        await save_observe_run(
+            observed.storage, observed.backend, "interactive-final", console=console
+        )
     finally:
         stop_observe_browser(observed.browser, observed.handle)

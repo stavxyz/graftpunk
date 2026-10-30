@@ -84,6 +84,7 @@ __all__ = [
     "password_field_names",
     "post_account_values",
     "post_every_value",
+    "post_identifier_values",
     "endpoint_template",
     "FLAGGED_REASONS",
     "FlaggedReason",
@@ -1516,26 +1517,39 @@ def _failure_candidates(
     credential_entries: Sequence[HAREntry],
     account_values: list[str] | None,
     logged_in_pages: Sequence[str],
+    identifier_values: Sequence[str] = (),
 ) -> tuple[str, ...]:
     """The failure texts the last credential post the user marked failed carries
     (``request._failureTextCandidates``), less each one holding an account value of
-    any credential post of the run (*account_values*, by the rule the success
-    suggestions are kept by, :func:`graftpunk.har.login_signals.holds_an_account_value`),
-    an email address, or a redaction, and each one the engine would find
+    any credential post of the run (*account_values*) or an identifier value any
+    request posted up to the real login (*identifier_values*, the username of an
+    identifier-first login), by the rule the success suggestions are kept by
+    (:func:`graftpunk.har.login_signals.holds_an_account_value`), an email address,
+    or a redaction, and each one the engine would find
     (:func:`graftpunk.plugins.login_settle.failure_text_on_page`) on one of
     *logged_in_pages*, the run's pages after the real login, since it would fail
-    every good login. Nothing when no post is marked, or when *account_values* is
-    None (a credential post's values cannot be read). The recorder checked them
+    every good login. Nothing when no post is marked, when *account_values* is None
+    (a credential post's values cannot be read), or when a real login followed the
+    marked post and nothing shows the page it landed on: no logged-in page and no
+    after-read of the real login (``request._domAfter``, the recorder's sign that it
+    read the landed page and dropped the texts on it). The recorder checked them
     already, but a stop soon after the real login cancels its read of the landed
     page, a HAR can be edited, and the run's redaction changed it since."""
-    marked = [entry for entry in credential_entries if entry.request.user_marked_failed]
+    marked = [at for at, entry in enumerate(credential_entries) if entry.request.user_marked_failed]
     if not marked or account_values is None:
         return ()
-    needles = account_needles(account_values)
+    real_login = credential_entries[-1]
+    if (
+        marked[-1] < len(credential_entries) - 1
+        and not logged_in_pages
+        and real_login.request.dom_after is None
+    ):
+        return ()
+    needles = account_needles([*account_values, *identifier_values])
     lowered_pages = [page.lower() for page in logged_in_pages]
     return tuple(
         text
-        for text in marked[-1].request.failure_text_candidates
+        for text in credential_entries[marked[-1]].request.failure_text_candidates
         if REDACTED_MARK not in text
         and not _EMAIL_IN_VALUE_RE.search(text)
         and not holds_an_account_value(text, needles)
@@ -1647,6 +1661,24 @@ def post_every_value(post_data: str | None, content_type: str = "") -> list[str]
     only, never written."""
     values, by_names = _read_body_values(post_data, content_type)
     return _every_value_but_tokens(values) if values and by_names else []
+
+
+def post_identifier_values(
+    post_data: str | None, content_type: str = "", username_names: Iterable[str] = ()
+) -> list[str]:
+    """Each non-empty value of a request body *post_data* (read by
+    :func:`body_values`) under a name that is an identifier field's
+    (:func:`graftpunk.session_identity.is_identifier_field`) or that a recorded login
+    form takes as its username (*username_names*), by any name on the way to it: the
+    username an identifier-first login posts in a step before the password post,
+    which that post's own values do not hold. Held in memory only, never written."""
+    by_form = frozenset(username_names)
+    return [
+        value
+        for path, value in body_values(post_data, content_type)
+        if value.strip()
+        and any(name in by_form or is_identifier_field(identifier_key(name)) for name in path)
+    ]
 
 
 def _path_segments(url: str) -> int:
@@ -2265,6 +2297,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # Beside each of credential_entries: how many after_post_pages there were when it
     # was seen, so the pages after the real login are known (_failure_candidates).
     after_pages_at_post: list[int] = []
+    # Every request with a body, in order, and how many of them were sent up to and
+    # including the last credential post: an identifier-first login posts the
+    # username in a step before the password post (_failure_candidates).
+    bodied_entries: list[HAREntry] = []
+    bodied_through_login = 0
     # Whether the browser sent a step-shaped POST (a document form or a script's)
     # after the last credential post: its after-read (_after_read) may show that step.
     stepped_since_last_post = False
@@ -2306,6 +2343,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     login_action_targets = {form.action_target for form in page_forms if form.action_target[1]}
 
     for entry, host, static, entry_index in classified:
+        if entry.request.post_data:
+            bodied_entries.append(entry)
         if static:
             dropped["static"] += 1
             continue
@@ -2564,6 +2603,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 post_interactions.append((entry.timestamp, entry.request.login_interactions))
                 credential_entries.append(entry)
                 after_pages_at_post.append(len(after_post_pages))
+                bodied_through_login = len(bodied_entries)
                 stepped_since_last_post = False
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must
@@ -2857,7 +2897,18 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         )
         if credential_post_steps and after_post_pages and account_values is not None
         else (),
-        failure_candidates=_failure_candidates(credential_entries, account_values, logged_in_pages),
+        failure_candidates=_failure_candidates(
+            credential_entries,
+            account_values,
+            logged_in_pages,
+            [
+                value
+                for entry in bodied_entries[:bodied_through_login]
+                for value in post_identifier_values(
+                    entry.request.post_data, _request_content_type(entry), username_names
+                )
+            ],
+        ),
     )
 
 

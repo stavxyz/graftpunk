@@ -10,15 +10,22 @@ writes them commented out.
 
 from __future__ import annotations
 
+import json
 import re
+import urllib.parse
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
-from graftpunk.har.digest import body_values, post_account_values, post_every_value
+from graftpunk.har.digest import (
+    body_values,
+    post_account_values,
+    post_every_value,
+    post_identifier_values,
+)
 from graftpunk.har.documents import PASSWORD_NAME_HINTS, extract_login_forms
 from graftpunk.har.login_signals import account_needles, holds_an_account_value
-from graftpunk.observe.run import Redaction
+from graftpunk.observe.run import REDACTED, Redaction
 from graftpunk.observe.snapshot import holds_an_email, snapshot_redaction
 from graftpunk.plugins.login_settle import failure_text_on_lowered_page, failure_text_on_page
 
@@ -29,8 +36,9 @@ __all__ = [
     "AccountGuard",
     "failed_password_values",
     "failure_candidates",
-    "holds_a_login_form",
-    "page_at_post",
+    "login_form_username_names",
+    "posted_identifiers",
+    "scrub_failed_password",
     "without_success_page",
 ]
 
@@ -88,7 +96,9 @@ class AccountGuard:
     (:func:`graftpunk.observe.snapshot.snapshot_redaction`), any letter case; each of
     those values under :data:`_MIN_SPELLING` characters (``jo``), which the needles
     and spellings leave out, as a whole word in any letter case; and any email
-    address (:func:`graftpunk.observe.snapshot.holds_an_email`)."""
+    address (:func:`graftpunk.observe.snapshot.holds_an_email`). Values another
+    request posted (*also* of :meth:`of`, :func:`posted_identifiers`) count as the
+    post's own."""
 
     needles: frozenset[str]
     spellings: tuple[str, ...]
@@ -96,13 +106,17 @@ class AccountGuard:
     short_words: re.Pattern[str] | None = None
 
     @classmethod
-    def of(cls, body_text: str | None, content_type: str = "") -> AccountGuard | None:
-        """The guard for the post whose body is *body_text*; None when the body gives
-        no values read by their field names, so the username cannot be seen."""
+    def of(
+        cls, body_text: str | None, content_type: str = "", also: Iterable[str] = ()
+    ) -> AccountGuard | None:
+        """The guard for the post whose body is *body_text*, and for the values *also*
+        (an identifier-first login's username, posted by another request); None when
+        the body gives no values read by their field names, so the username cannot be
+        seen."""
         values = post_account_values(body_text, content_type)
         if values is None:
             return None
-        posted = [*values, *post_every_value(body_text, content_type)]
+        posted = [*values, *post_every_value(body_text, content_type), *also]
         short = sorted(
             {value.strip() for value in posted if 0 < len(value.strip()) < _MIN_SPELLING}
         )
@@ -202,23 +216,32 @@ def _parsed(html: str) -> _TextNodes:
     return parser
 
 
-def holds_a_login_form(html: str) -> bool:
-    """Whether *html* holds a login form by the digest's rule for a rendered page
-    (:func:`graftpunk.har.documents.extract_login_forms` with ``snapshot``)."""
-    return bool(extract_login_forms(html, source="", snapshot=True))
+def login_form_username_names(page: str | None) -> frozenset[str]:
+    """The username field names of the login forms *page* holds
+    (:func:`graftpunk.har.documents.extract_login_forms`, as the digest reads a
+    rendered page); empty for no page."""
+    if page is None:
+        return frozenset()
+    return frozenset(
+        form.username_name
+        for form in extract_login_forms(page, source="", snapshot=True)
+        if form.username_name
+    )
 
 
-def page_at_post(snapshot: str | None, served: str | None) -> str | None:
-    """The raw page a failure text must not already be on: *snapshot*, the page
-    taken at the post, when one was kept; else *served*, the login page as the HAR
-    holds it, only when it holds a login form (:func:`holds_a_login_form`), since a
-    page a script renders is served as a shell whose rendered text would all pass
-    as new; else None, which suggests nothing."""
-    if snapshot is not None:
-        return snapshot
-    if served is not None and holds_a_login_form(served):
-        return served
-    return None
+def posted_identifiers(
+    bodies: Iterable[tuple[str | None, str]], username_names: Iterable[str] = ()
+) -> list[str]:
+    """The identifier values of *bodies* (each a request body and its
+    ``Content-Type``) by :func:`graftpunk.har.digest.post_identifier_values`, a
+    login form's *username_names* counting as identifier fields: the username an
+    identifier-first login posts in a step before the password post."""
+    names = frozenset(username_names)
+    return [
+        value
+        for body_text, content_type in bodies
+        for value in post_identifier_values(body_text, content_type, names)
+    ]
 
 
 def failure_candidates(
@@ -227,12 +250,15 @@ def failure_candidates(
     """The failure texts the reads of the page after a failed post suggest, best
     first, at most :data:`MAX_FAILURE_CANDIDATES`.
 
-    A read counts only while it is still a login page, one holding a password input
-    (every login form holds one): a read of any other page, such as Enter pressed
-    after a real login landed, shows no failure and is ignored. From each read that
-    counts (raw HTML): each text node outside a script, style, template, noscript,
-    or textarea, and outside a ``<title>``, ``<option>``, ``<label>``, ``<button>``
-    or ``<legend>`` that is not itself an alert (``<label class="error">`` is one),
+    A read counts only while it holds a password input (every login form holds
+    one): a read of a page with none, such as the page a real login landed on when
+    Enter is pressed after it, is ignored. A landed page that holds one (a
+    change-password form) still counts; its texts are then dropped only by the real
+    login's checks (:func:`without_success_page`, and the digest's logged-in pages).
+    From each read that counts (raw HTML): each text node outside a script, style,
+    template, noscript, or textarea, and outside a ``<title>``, ``<option>``,
+    ``<label>``, ``<button>`` or ``<legend>`` that is not itself an alert
+    (``<label class="error">`` is one),
     whitespace-trimmed, :data:`MIN_FAILURE_TEXT` to :data:`MAX_FAILURE_TEXT`
     characters, that the engine would find on that read and not on *before*, the
     raw page at the post (:func:`graftpunk.plugins.login_settle.failure_text_on_page`),
@@ -249,8 +275,9 @@ def failure_candidates(
     those are suggested. They rank in the order of the reads and of each document,
     and a text repeated in any letter case is given once.
 
-    Nothing without *before* or *guard*: a text the login page already shows would
-    fail every login, and a text whose account values cannot be checked may hold one.
+    Nothing without *before* (the request-time snapshot of the page at the post) or
+    *guard*: a text the login page already shows would fail every login, and a text
+    whose account values cannot be checked may hold one.
     """
     if before is None or guard is None:
         return ()
@@ -317,3 +344,134 @@ def failed_password_values(body_text: str | None, content_type: str = "") -> lis
         for path, value in body_values(body_text, content_type)
         if value and path and any(hint in path[-1].lower() for hint in PASSWORD_NAME_HINTS)
     ]
+
+
+# A form field, in a URL-encoded body or a text/plain one (a field a line): its
+# name, "=", and its value.
+_FORM_FIELD_RE = re.compile(r"(?:^|(?<=[&\r\n]))([^=&\r\n]*)=([^&\r\n]*)")
+# A multipart/form-data part's text: after its headers' blank line, up to the
+# boundary line.
+_MULTIPART_PART_RE = re.compile(r"(\r?\n\r?\n)(.*?)(?=\r?\n--)", re.DOTALL)
+_MULTIPART_NAME_RE = re.compile(r'\bname="([^"]*)"', re.IGNORECASE)
+# A JSON string token, or a bracket outside one.
+_JSON_TOKEN_RE = re.compile(r'"(?:[^"\\]|\\.)*"|[{}\[\]]')
+# What follows a JSON string that is an object key.
+_KEY_END_RE = re.compile(r"\s*:")
+
+
+def _password_like(name: str | None) -> bool:
+    return name is not None and any(hint in name.lower() for hint in PASSWORD_NAME_HINTS)
+
+
+def _holds_json(value: str) -> bool:
+    return value.lstrip()[:1] in ("{", "[")
+
+
+def scrub_failed_password(body: str, content_type: str, values: Iterable[str]) -> str:
+    """*body*, the failed post's own request body, with each of *values* (its
+    password values, :func:`failed_password_values`) replaced by ``***REDACTED***``
+    where it is a whole value under a password-like name (a
+    :data:`graftpunk.har.documents.PASSWORD_NAME_HINTS` hint in the nearest name,
+    the rule :func:`failed_password_values` reads by): a form field's value,
+    percent-decoded to compare; a ``multipart/form-data`` part's text; a JSON string
+    that is no object key; and the same inside JSON held in a form field, a
+    multipart part, or a JSON string, one level down. The rest of the body is kept
+    character for character, and a field holding JSON that changed is encoded again
+    as it was written (a form field's percent-encoding, a JSON string's escapes)."""
+    wanted = frozenset(value for value in values if value)
+    if not wanted or not body:
+        return body
+    if _holds_json(body):
+        return _scrub_json(body, wanted, None, nested=True)
+    declared = content_type.split(";")[0].strip().lower()
+    if declared == "multipart/form-data" or body.lstrip().startswith("--"):
+        return _scrub_multipart(body, wanted)
+    return _scrub_form(body, wanted)
+
+
+def _scrub_form(body: str, wanted: frozenset[str]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        raw_name, raw = match.group(1), match.group(2)
+        name = urllib.parse.unquote_plus(raw_name)
+        value = urllib.parse.unquote_plus(raw)
+        if _password_like(name) and (value in wanted or raw in wanted):
+            return f"{raw_name}={REDACTED}"
+        if _holds_json(value):
+            inner = _scrub_json(value, wanted, name, nested=False)
+            if inner != value:
+                return f"{raw_name}={_form_encoded(raw, value, inner)}"
+        return match.group(0)
+
+    return _FORM_FIELD_RE.sub(replace, body)
+
+
+def _form_encoded(raw: str, value: str, new: str) -> str:
+    """*new* encoded as *raw* (whose decoded text is *value*) was: as is when *raw*
+    holds nothing encoded, else percent-encoded, leaving unencoded each character
+    *raw* holds unencoded, and writing a space as ``+`` when *raw* holds one."""
+    if raw == value:
+        return new
+    safe = "".join(sorted({char for char in raw if not char.isalnum() and char not in "%+"}))
+    if "%2a" not in raw.lower():
+        safe += "*"
+    if "+" in raw:
+        return urllib.parse.quote_plus(new, safe=safe)
+    return urllib.parse.quote(new, safe=safe)
+
+
+def _scrub_multipart(body: str, wanted: frozenset[str]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        head = body[body.rfind("\n--", 0, match.start()) + 1 : match.start()]
+        name = _MULTIPART_NAME_RE.search(head)
+        if name is None or "filename=" in head.lower():
+            return match.group(0)
+        value = match.group(2)
+        if _password_like(name.group(1)) and value in wanted:
+            return match.group(1) + REDACTED
+        if _holds_json(value):
+            inner = _scrub_json(value, wanted, name.group(1), nested=False)
+            if inner != value:
+                return match.group(1) + inner
+        return match.group(0)
+
+    return _MULTIPART_PART_RE.sub(replace, body)
+
+
+def _scrub_json(text: str, wanted: frozenset[str], outer: str | None, *, nested: bool) -> str:
+    """*text*, JSON, with each string that is no object key, equals one of *wanted*,
+    and has a password-like nearest name replaced: the key it is the value of, else
+    the key of the nearest object around the list holding it, else *outer* (the
+    field holding *text*). With *nested*, a string holding JSON is scrubbed the same
+    way one level down and, when it changed, written back escaped as before. Each
+    string token is decoded on its own, so no depth of nesting is parsed at once."""
+    # The key each open object is at (None before its first key), and None for each
+    # open list.
+    keys: list[str | None] = []
+
+    def replace(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token in ("{", "["):
+            keys.append(None)
+            return token
+        if token in ("}", "]"):
+            if keys:
+                keys.pop()
+            return token
+        try:
+            value = json.loads(token)
+        except ValueError:
+            return token
+        if _KEY_END_RE.match(text, match.end()) is not None:
+            if keys:
+                keys[-1] = value
+            return token
+        name = next((key for key in reversed(keys) if key is not None), outer)
+        if value in wanted and _password_like(name):
+            return json.dumps(REDACTED)
+        if nested and _holds_json(value):
+            inner = _scrub_json(value, wanted, name, nested=False)
+            if inner != value:
+                return json.dumps(inner, ensure_ascii=token.isascii())
+        return token
+
+    return _JSON_TOKEN_RE.sub(replace, text)

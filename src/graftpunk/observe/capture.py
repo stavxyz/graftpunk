@@ -154,19 +154,23 @@ class _FailedLogin:
     before then waits in ``pending`` (raw HTML, in memory only, dropped once
     applied)."""
 
-    def __init__(self, rid: str, data: dict[str, Any], guard: Any, secrets: list[str]) -> None:
-        self.rid = rid
-        self.data = data
-        self.guard = guard
-        self.secrets = tuple(secrets)
+    def __init__(self, post: _StepPost, posted: list[tuple[str | None, str]]) -> None:
+        self.rid = post.rid
+        self.data = post.data
+        # Its body and the body of each request sent up to it, in memory until the
+        # suggestions are settled: the guard reads its values and the identifier
+        # values of the others (an identifier-first login's username).
+        self.body_text = post.body_text
+        self.content_type = post.content_type
+        self.posted = posted
+        # The username names of the login forms on the page at the post, once settled.
+        self.username_names: frozenset[str] = frozenset()
         self.candidates: tuple[str, ...] | None = None
         self.pending: list[tuple[str | None, Any]] = []
         # The raw pages, in memory until the suggestions are settled or stop: the
-        # page at the post (its request-time snapshot), the login page as served (the
-        # page at the post only when no snapshot was kept), the read FAILURE_READ_S
-        # after its response, and the read on Enter.
+        # page at the post (its request-time snapshot), the read FAILURE_READ_S after
+        # its response, and the read on Enter.
         self.before: str | None = None
-        self.served: str | None = None
         self.first_read: str | None = None
         self.enter_read: str | None = None
         # Whether the FAILURE_READ_S read was still due at the mark, and whether the
@@ -175,8 +179,10 @@ class _FailedLogin:
         self.entered = False
 
     def drop_pages(self) -> None:
-        """Drop the raw pages held for the suggestions."""
-        self.before = self.served = self.first_read = self.enter_read = None
+        """Drop the raw pages and the bodies held for the suggestions."""
+        self.before = self.first_read = self.enter_read = None
+        self.body_text = None
+        self.posted = []
 
     def settle(self, candidates: tuple[str, ...]) -> None:
         """Take *candidates*, then drop by each real login's page and guard waiting."""
@@ -2797,10 +2803,21 @@ class NodriverCaptureBackend:
         failed = self._failed
         if failed is None or data is failed.data:
             return
-        from graftpunk.observe.failure_text import AccountGuard
+        from graftpunk.observe.failure_text import AccountGuard, posted_identifiers
 
         data["_after_failed_login"] = True
-        failed.drop_on(None, AccountGuard.of(body_text, content_type))
+        # With the identifier values every request sent so far: an identifier-first
+        # real login posts its username in a step before this post.
+        identifiers = posted_identifiers(self._posted_bodies(), failed.username_names)
+        failed.drop_on(None, AccountGuard.of(body_text, content_type, also=identifiers))
+
+    def _posted_bodies(self) -> list[tuple[str | None, str]]:
+        """Each request body recorded as text so far, with its ``Content-Type``."""
+        return [
+            (data["post_data"], _request_content_type(data))
+            for data in self._request_map.values()
+            if isinstance(data.get("post_data"), str)
+        ]
 
     async def _raw_page(self, rid: str) -> str | None:
         """The page by :meth:`_read_dom`, raw, for the wrong-password step: None for a
@@ -2854,19 +2871,11 @@ class NodriverCaptureBackend:
         is not open or no credential post was seen yet."""
         if not self._failure_step_open or not self._step_posts:
             return False
-        from graftpunk.observe.failure_text import AccountGuard, failed_password_values
-
         post = self._step_posts[-1]
         self._failure_step_open = False
-        failed = _FailedLogin(
-            post.rid,
-            post.data,
-            AccountGuard.of(post.body_text, post.content_type),
-            failed_password_values(post.body_text, post.content_type),
-        )
+        failed = _FailedLogin(post, self._posted_bodies())
+        self._scrub_failed_post(post)
         failed.before = self._step_before.get(post.rid)
-        if failed.before is None:
-            failed.served = self._served_page(post.data)
         failed.first_read = self._step_reads.get(post.rid)
         pending = self._step_read_tasks.pop(post.rid, None)
         # Its FAILURE_READ_S read is still due: that read settles the suggestions.
@@ -2912,43 +2921,67 @@ class NodriverCaptureBackend:
     async def _settle_failure(self, failed: _FailedLogin) -> None:
         """Keep the failure texts the reads after the failed post suggest
         (:func:`graftpunk.observe.failure_text.failure_candidates`, in a worker thread:
-        it parses whole pages), the FAILURE_READ_S read first, and drop the raw pages."""
-        from graftpunk.observe.failure_text import failure_candidates, page_at_post
+        it parses whole pages), the FAILURE_READ_S read first, against the page at
+        the post (its request-time snapshot; with none, nothing is suggested) and the
+        guard of its values and of the identifier values each request sent up to it;
+        then drop the raw pages and bodies."""
+        from graftpunk.observe.failure_text import (
+            AccountGuard,
+            failure_candidates,
+            login_form_username_names,
+            posted_identifiers,
+        )
 
         reads = [html for html in (failed.first_read, failed.enter_read) if html is not None]
-        snapshot, served, guard = failed.before, failed.served, failed.guard
+        before, body_text, content_type = failed.before, failed.body_text, failed.content_type
+        posted = failed.posted
         failed.drop_pages()
 
-        def suggest() -> tuple[str, ...]:
-            return failure_candidates(reads, page_at_post(snapshot, served), guard)
+        def suggest() -> tuple[frozenset[str], tuple[str, ...]]:
+            names = login_form_username_names(before)
+            identifiers = posted_identifiers(posted, names)
+            guard = AccountGuard.of(body_text, content_type, also=identifiers)
+            return names, failure_candidates(reads, before, guard)
 
-        failed.settle(await asyncio.to_thread(suggest))
+        failed.username_names, candidates = await asyncio.to_thread(suggest)
+        failed.settle(candidates)
 
-    def _served_page(self, data: dict[str, Any]) -> str | None:
-        """The page that sent the credential post *data* as it was served: the HTML body
-        of the latest recorded response for its URL (by scheme, host, and path), or
-        None when the HAR holds none."""
-        sender = self._sender(data)
-        if sender is None:
-            return None
-        page = _bare_page_url(sender)
-        for entry in reversed(list(self._request_map.values())):
-            response = entry.get("response") or {}
-            body = response.get("body")
-            if (
-                entry is not data
-                and isinstance(body, str)
-                and "html" in str(response.get("mimeType", "")).lower()
-                and _bare_page_url(str(entry.get("url", ""))) == page
-            ):
-                return body
-        return None
+    def _scrub_failed_post(self, post: _StepPost) -> None:
+        """Replace the marked post's password values in its own recorded body (the
+        HAR's ``postData``, or its file under ``bodies/``) where each is a whole value
+        under a password-like name
+        (:func:`graftpunk.observe.failure_text.scrub_failed_password`): the run keeps
+        what it posted, and a wrong password is often the real one with a typo. No
+        other request is touched. A body file that cannot be rewritten is logged and
+        left."""
+        from graftpunk.observe.failure_text import failed_password_values, scrub_failed_password
 
-    def failed_login_secrets(self) -> tuple[str, ...]:
-        """The password values of the post marked failed, for the run's redaction
-        (:func:`graftpunk.observe.run.save_observe_run`'s ``redact``); empty when none
-        was marked."""
-        return self._failed.secrets if self._failed is not None else ()
+        secrets = failed_password_values(post.body_text, post.content_type)
+        if not secrets:
+            return
+        data = post.data
+        text = data.get("post_data")
+        if isinstance(text, str):
+            data["post_data"] = scrub_failed_password(text, post.content_type, secrets)
+        ref = data.get("_post_data_file")
+        if not isinstance(ref, str) or self._bodies_dir is None:
+            return
+        name = Path(ref).name
+        try:
+            raw = (self._bodies_dir / name).read_bytes()
+            body = raw.decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            LOG.warning("nodriver_failed_post_not_scrubbed", file=ref, error=str(exc))
+            return
+        scrubbed = scrub_failed_password(body, post.content_type, secrets).encode("utf-8")
+        if scrubbed == raw:
+            return
+        try:
+            _write_body_file(self._bodies_dir, name, scrubbed)
+        except OSError as exc:
+            LOG.warning("nodriver_failed_post_not_scrubbed", file=ref, error=str(exc))
+            return
+        data["_post_data_size"] = len(scrubbed)
 
     async def _read_after(self, rid: str, data: dict[str, Any], body_text: str | None) -> None:
         """Read the page :data:`AFTER_READ_FIRST_S` after the credential post *rid*'s

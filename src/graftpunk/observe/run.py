@@ -53,19 +53,10 @@ class Redaction:
     ``request.queryString`` and ``response.redirectURL``), so the endpoints
     the digest reads stay readable and a short username does not eat into
     other words.
-
-    *body_values* (a wrong password a user typed as a throwaway, which may be a
-    word such as ``password``) are replaced only where one is a whole value of a
-    request body, in ``postData`` and in a request body file under ``bodies/``: a
-    form field's value, a JSON string that is no object key (one level into a
-    string holding JSON too), a ``multipart/form-data`` part's whole text, a
-    ``postData.params`` value, or the whole body. Never in a field name, inside
-    another value, in a URL, a header, or a response.
     """
 
     secrets: tuple[str, ...] = ()
     identifiers: tuple[str, ...] = ()
-    body_values: tuple[str, ...] = ()
 
     @classmethod
     def from_credentials(cls, credentials: Mapping[str, str]) -> Redaction:
@@ -85,7 +76,7 @@ class Redaction:
         return self.secrets + self.identifiers
 
     def __bool__(self) -> bool:
-        return bool(self.secrets or self.identifiers or self.body_values)
+        return bool(self.secrets or self.identifiers)
 
 
 def as_redaction(redact: Redaction | Iterable[str]) -> Redaction:
@@ -152,15 +143,7 @@ def redact_har_entries(
             return [scrub(v, in_url) for v in value]
         return value
 
-    scrubbed = scrub(entries)
-    if scrubber.body_values:
-        for entry in scrubbed:
-            post_data = (
-                (entry.get("request") or {}).get("postData") if isinstance(entry, dict) else None
-            )
-            if isinstance(post_data, dict):
-                scrubber.scrub_post_data(post_data)
-    return scrubbed
+    return scrub(entries)
 
 
 def redact_text(text: str, secrets: Redaction | Iterable[str], *, in_url: bool = False) -> str:
@@ -283,7 +266,6 @@ class _Scrubber:
     identifier_re: re.Pattern[str] | None
     identifier_bytes_re: re.Pattern[str] | None
     basic_values: tuple[str, ...]
-    body_values: frozenset[str] = frozenset()
 
     @classmethod
     def of(cls, redact: Redaction | Iterable[str]) -> _Scrubber:
@@ -300,45 +282,10 @@ class _Scrubber:
                 re.compile("|".join(re.escape(f) for f in byte_forms)) if forms else None
             ),
             basic_values=_kept_secrets(redaction.everything),
-            body_values=frozenset(value for value in redaction.body_values if value),
         )
 
     def __bool__(self) -> bool:
-        return bool(self.secret_forms or self.identifier_re or self.body_values)
-
-    def scrub_post_data(self, post_data: dict[str, Any]) -> None:
-        """Replace :attr:`body_values` in a HAR ``postData`` (mutated): in its text
-        (:meth:`scrub_body`) and as a whole ``params`` value."""
-        text = post_data.get("text")
-        if isinstance(text, str):
-            post_data["text"] = self.scrub_body(text)
-        params = post_data.get("params")
-        if isinstance(params, list):
-            for param in params:
-                if isinstance(param, dict) and param.get("value") in self.body_values:
-                    param["value"] = REDACTED
-
-    def scrub_body(self, text: str) -> str:
-        """*text*, a request body, with each of :attr:`body_values` replaced where it
-        is a whole value (see :class:`Redaction`)."""
-        if not self.body_values:
-            return text
-        if text in self.body_values:
-            return REDACTED
-        if text.lstrip()[:1] in ("{", "["):
-            return _scrub_json_values(text, self.body_values, nested=True)
-        text = _MULTIPART_PART_RE.sub(
-            lambda m: m.group(1) + REDACTED if m.group(2) in self.body_values else m.group(0),
-            text,
-        )
-        return _FORM_FIELD_RE.sub(
-            lambda m: (
-                m.group(1) + REDACTED
-                if urllib.parse.unquote_plus(m.group(2)) in self.body_values
-                else m.group(0)
-            ),
-            text,
-        )
+        return bool(self.secret_forms or self.identifier_re)
 
     def scrub_text(self, value: str, *, in_url: bool = False) -> str:
         value = _scrub_basic(value, self.basic_values)
@@ -360,42 +307,6 @@ class _Scrubber:
             )
             raw = text.encode("latin-1")
         return raw
-
-
-# A form field, in a URL-encoded body or a text/plain one (a field a line): its
-# name and "=", then its value.
-_FORM_FIELD_RE = re.compile(r"((?:^|(?<=[&\r\n]))[^=&\r\n]*=)([^&\r\n]*)")
-# A multipart/form-data part's text: after its headers' blank line, up to the
-# boundary line.
-_MULTIPART_PART_RE = re.compile(r"(\r?\n\r?\n)(.*?)(?=\r?\n--)", re.DOTALL)
-# A JSON string token.
-_JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
-# What follows a JSON string that is an object key.
-_KEY_END_RE = re.compile(r"\s*:")
-
-
-def _scrub_json_values(text: str, values: frozenset[str], *, nested: bool) -> str:
-    """*text*, JSON, with each string that is no object key and equals one of
-    *values* replaced; with *nested*, a string holding JSON is scrubbed the same way
-    one level down and written back when it changed. Each string token is decoded
-    on its own, so no depth of nesting is parsed at once."""
-
-    def replace(match: re.Match[str]) -> str:
-        if _KEY_END_RE.match(text, match.end()) is not None:
-            return match.group(0)
-        try:
-            value = json.loads(match.group(0))
-        except ValueError:
-            return match.group(0)
-        if value in values:
-            return json.dumps(REDACTED)
-        if nested and value.lstrip()[:1] in ("{", "["):
-            inner = _scrub_json_values(value, values, nested=False)
-            if inner != value:
-                return json.dumps(inner)
-        return match.group(0)
-
-    return _JSON_STRING_RE.sub(replace, text)
 
 
 def _scrub_basic(value: str, secrets: tuple[str, ...]) -> str:
@@ -487,7 +398,7 @@ def redact_request_body_files(
                     _replace_file(path, masked)
                     LOG.info("request_body_file_scrubbed", file=ref, binary=True)
                 continue
-            scrubbed = scrubber.scrub_body(scrubber.scrub_text(text))
+            scrubbed = scrubber.scrub_text(text)
             if scrubbed != text:
                 data = scrubbed.encode("utf-8")
                 _replace_file(path, data)

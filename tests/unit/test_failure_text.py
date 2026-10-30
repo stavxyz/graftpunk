@@ -19,7 +19,9 @@ from graftpunk.observe.failure_text import (
     AccountGuard,
     failed_password_values,
     failure_candidates,
-    page_at_post,
+    login_form_username_names,
+    posted_identifiers,
+    scrub_failed_password,
     without_success_page,
 )
 from graftpunk.plugins.login_settle import failure_text_on_page
@@ -335,27 +337,67 @@ class TestFailureCandidates:
 
 
 class TestThePageAtThePost:
-    _SHELL = "<html><body><div id='root'></div><script src='/app.js'></script></body></html>"
+    def test_without_one_nothing_is_suggested(self) -> None:
+        """No request-time snapshot: no page as served stands in for it, since a
+        script can add text to the login page (a cookie banner) that the served HTML
+        lacks, and that text would fail every login."""
+        after = _after("<div role='alert'>Invalid username or password.</div>")
+        assert failure_candidates([after], None, _guard()) == ()
+        assert _found(after) == ("Invalid username or password.",)
 
-    def test_the_snapshot_when_one_was_kept(self) -> None:
-        assert page_at_post(_BEFORE, self._SHELL) == _BEFORE
 
-    def test_else_the_served_page_when_it_holds_a_login_form(self) -> None:
-        assert page_at_post(None, _BEFORE) == _BEFORE
+class TestTheSearchCap:
+    def test_texts_the_page_at_the_post_shows_take_no_place_in_the_cap(self) -> None:
+        """Sixty texts the login page shows already, then a new error that is no
+        alert: the shared texts are dropped before the cap of fifty searches, so the
+        error is still searched for."""
+        shared = "".join(f"<p>Help line number {n} for signing in</p>" for n in range(60))
+        before = _BEFORE.replace("<form>", f"{shared}<form>")
+        after = before.replace("<form>", "<p>That sign-in did not work.</p><form>")
+        assert _found(after, before) == ("That sign-in did not work.",)
 
-    def test_else_nothing(self) -> None:
-        assert page_at_post(None, self._SHELL) is None
-        assert page_at_post(None, None) is None
 
-    def test_a_script_rendered_shell_suggests_nothing(self) -> None:
-        """The rendered login's own labels and heading are not on the shell, so every
-        one would pass as new text and fail every login on the engine's first tick."""
-        rendered = (
-            "<html><body><div id='root'><h1>Sign in to your account</h1>"
-            "<p class='msg'>Those details did not match.</p><form><input name='username'>"
-            "<input type='password' name='password'></form></div></body></html>"
+class TestIdentifiersOfOtherRequests:
+    """An identifier-first login posts the username in a step before the password
+    post, so the password post's own values do not hold it."""
+
+    _STEP = "username=jsmith"
+    _FORM = "application/x-www-form-urlencoded"
+
+    def test_the_guard_holds_them(self) -> None:
+        own = _guard("password=wrong-x7k2q9", self._FORM)
+        assert not own.holds("The password for jsmith is not right.")
+        identifiers = posted_identifiers([(self._STEP, self._FORM)])
+        assert identifiers == ["jsmith"]
+        guard = AccountGuard.of("password=wrong-x7k2q9", self._FORM, also=identifiers)
+        assert guard is not None
+        assert guard.holds("The password for jsmith is not right.")
+        assert guard.holds("No user JSmith here")
+
+    def test_a_short_one_is_held_as_a_whole_word(self) -> None:
+        guard = AccountGuard.of("password=wrong-x7k2q9", self._FORM, also=["jo"])
+        assert guard is not None
+        assert guard.holds("Unknown user jo. Try again")
+        assert not guard.holds("Try a job again")
+
+    def test_only_identifier_values(self) -> None:
+        bodies = [
+            ("q=shoes&page=2", self._FORM),
+            (json.dumps({"user": {"email": "alice@example.com"}, "note": "x"}), _JSON),
+            ("password=wrong-x7k2q9", self._FORM),
+        ]
+        assert posted_identifiers(bodies) == ["alice@example.com"]
+
+    def test_a_login_form_s_username_name_counts(self) -> None:
+        page = (
+            "<html><body><form action='/login' method='post'><input name='handle'>"
+            "<input type='password' name='password'></form></body></html>"
         )
-        assert failure_candidates([rendered], page_at_post(None, self._SHELL), _guard()) == ()
+        names = login_form_username_names(page)
+        assert names == frozenset({"handle"})
+        assert posted_identifiers([("handle=jsmith", self._FORM)]) == []
+        assert posted_identifiers([("handle=jsmith", self._FORM)], names) == ["jsmith"]
+        assert login_form_username_names(None) == frozenset()
 
 
 class TestCost:
@@ -439,3 +481,106 @@ class TestFailedPasswordValues:
     def test_a_nested_json_password(self) -> None:
         body = json.dumps({"user": {"login": "jsmith", "password": "wrongpass1"}})
         assert failed_password_values(body, _JSON) == ["wrongpass1"]
+
+
+class TestScrubFailedPassword:
+    """Only the failed post's own body, only a whole value under a password-like
+    name, and the rest written back character for character."""
+
+    _FORM = "application/x-www-form-urlencoded"
+    _R = "***REDACTED***"
+
+    def test_a_form_value_and_nothing_else(self) -> None:
+        body = "grant_type=password&username=jsmith&password=password&next=password"
+        assert scrub_failed_password(body, self._FORM, ["password"]) == (
+            f"grant_type=password&username=jsmith&password={self._R}&next=password"
+        )
+
+    def test_a_percent_encoded_form_value_is_compared_decoded(self) -> None:
+        body = "username=jsmith&password=p%40ss+word%21"
+        assert scrub_failed_password(body, self._FORM, ["p@ss word!"]) == (
+            f"username=jsmith&password={self._R}"
+        )
+
+    def test_a_text_plain_body(self) -> None:
+        body = "username=jsmith\r\npassword=wrong-x7k2q9\r\n"
+        assert scrub_failed_password(body, "text/plain", ["wrong-x7k2q9"]) == (
+            f"username=jsmith\r\npassword={self._R}\r\n"
+        )
+
+    def test_json_values_under_a_password_name_only(self) -> None:
+        body = (
+            '{"action": "login", "user": "jsmith", "password": "login", '
+            '"creds": {"pwd": "login"}, "passwords": ["login"], "note": "login"}'
+        )
+        assert scrub_failed_password(body, _JSON, ["login"]) == (
+            '{"action": "login", "user": "jsmith", "password": "***REDACTED***", '
+            '"creds": {"pwd": "***REDACTED***"}, "passwords": ["***REDACTED***"], '
+            '"note": "login"}'
+        )
+
+    def test_a_key_spelled_as_the_password_is_kept(self) -> None:
+        body = '{"wrong-x7k2q9": 1, "password": "wrong-x7k2q9"}'
+        assert scrub_failed_password(body, _JSON, ["wrong-x7k2q9"]) == (
+            '{"wrong-x7k2q9": 1, "password": "***REDACTED***"}'
+        )
+
+    def test_only_a_whole_value(self) -> None:
+        body = '{"password": "password", "pwd_hint": "password1", "pwd_note": "my password"}'
+        assert scrub_failed_password(body, _JSON, ["password"]) == (
+            '{"password": "***REDACTED***", "pwd_hint": "password1", "pwd_note": "my password"}'
+        )
+
+    def test_json_in_a_json_string(self) -> None:
+        inner = json.dumps({"user": "jsmith", "password": "wrong-abc123"})
+        body = json.dumps({"data": inner, "kind": "login"})
+        out = json.loads(scrub_failed_password(body, _JSON, ["wrong-abc123"]))
+        assert json.loads(out["data"]) == {"user": "jsmith", "password": self._R}
+        assert out["kind"] == "login"
+
+    def test_json_in_a_json_string_keeps_its_escapes(self) -> None:
+        """Raw non-ASCII stays raw, and an escaped one stays escaped."""
+        raw = '{"data": "{\\"password\\": \\"wrong-abc123\\", \\"name\\": \\"Zoë\\"}"}'
+        assert scrub_failed_password(raw, _JSON, ["wrong-abc123"]) == raw.replace(
+            "wrong-abc123", self._R
+        )
+        escaped = raw.replace("ë", "\\\\u00eb")
+        assert scrub_failed_password(escaped, _JSON, ["wrong-abc123"]) == escaped.replace(
+            "wrong-abc123", self._R
+        )
+
+    def test_json_in_a_percent_encoded_form_field(self) -> None:
+        body = "data=%7B%22user%22%3A%22jsmith%22%2C%22password%22%3A%22wrong-abc123%22%7D"
+        assert scrub_failed_password(body, self._FORM, ["wrong-abc123"]) == (
+            "data=%7B%22user%22%3A%22jsmith%22%2C%22password%22%3A%22***REDACTED***%22%7D"
+        )
+
+    def test_json_in_a_form_field_written_unencoded(self) -> None:
+        body = 'data={"user":"jsmith","password":"wrong-abc123"}&lang=en'
+        assert scrub_failed_password(body, "text/plain", ["wrong-abc123"]) == (
+            'data={"user":"jsmith","password":"***REDACTED***"}&lang=en'
+        )
+
+    def test_a_multipart_part_and_json_in_one(self) -> None:
+        def part(name: str, value: str) -> str:
+            head = f'Content-Disposition: form-data; name="{name}"'
+            return f"--b\r\n{head}\r\n\r\n{value}\r\n"
+
+        body = (
+            part("username", "jsmith")
+            + part("password", "password")
+            + part("mode", "password")
+            + part("creds", '{"password":"password"}')
+            + "--b--\r\n"
+        )
+        assert scrub_failed_password(body, "multipart/form-data; boundary=b", ["password"]) == (
+            part("username", "jsmith")
+            + part("password", self._R)
+            + part("mode", "password")
+            + part("creds", f'{{"password":"{self._R}"}}')
+            + "--b--\r\n"
+        )
+
+    def test_no_values_or_no_body_leaves_it(self) -> None:
+        assert scrub_failed_password("password=x1y2z3", self._FORM, []) == "password=x1y2z3"
+        assert scrub_failed_password("", self._FORM, ["x1y2z3"]) == ""
