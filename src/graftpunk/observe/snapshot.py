@@ -9,6 +9,10 @@ text of links, buttons, and labels. Everything a page renders from its data
 (values, text, scripts, styles) is dropped, and the triggering post's own
 values are redacted from what is left.
 
+The read the recorder takes of the page after a credential post's response (#268)
+is a logged-in page, and goes through the structure-only mode, which keeps no text
+at all.
+
 Redaction reads one attribute value or one text at a time, and the stored markup
 once more as a whole: a value the page renders across elements
 (``hun<b>ter22</b>``) is kept, a documented limit.
@@ -110,12 +114,20 @@ def _bare_reference(value: str) -> str:
     return _PATH_PARAMS_RE.sub(";", head) + tail
 
 
+# An email address in an attribute value (a mailto: link, a profile path). A
+# structure-only read drops it whoever's it is: the page is a logged-in one, and the
+# account's email need not be the one the post sent. The local part is the usual
+# one (no "/" or ":"), so a path or a scheme before it is kept.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+
+
 class _Sanitizer(HTMLParser):
-    def __init__(self, redact: Callable[[str], str]) -> None:
+    def __init__(self, redact: Callable[[str], str], *, structure_only: bool = False) -> None:
         super().__init__(convert_charrefs=True)
         # Run on each decoded value and text before it is escaped again: an escaped
         # value (p&amp;ss) is not a spelling the scrub looks for.
         self._redact = redact
+        self._structure_only = structure_only
         self.out: list[str] = []
         # Open elements whose contents are dropped, by tag, and the text budget left
         # to each open labelling element, innermost last.
@@ -135,7 +147,8 @@ class _Sanitizer(HTMLParser):
     def _kept_value(self, name: str, value: str) -> str:
         if name in _URL_ATTRIBUTES:
             value = _bare_reference(value)
-        return self._redact(value)
+        value = self._redact(value)
+        return _EMAIL_RE.sub(REDACTED, value) if self._structure_only else value
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if self._dropping:
@@ -177,7 +190,7 @@ class _Sanitizer(HTMLParser):
         self.out.append(f"</{tag}>")
 
     def handle_data(self, data: str) -> None:
-        if self._dropping or self._textarea or not self._budgets:
+        if self._dropping or self._textarea or not self._budgets or self._structure_only:
             return
         budget = self._budgets[-1]
         text = self._redact(data)[: budget[0]]
@@ -190,7 +203,9 @@ class _Sanitizer(HTMLParser):
             self.out.append(f"<!{escape(decl, quote=False)}>")
 
 
-def sanitize_dom_snapshot(html: str, redaction: Redaction | None = None) -> str:
+def sanitize_dom_snapshot(
+    html: str, redaction: Redaction | None = None, *, structure_only: bool = False
+) -> str:
     """*html* (a page's serialized DOM) with only what the digest reads: every
     element and its kept attributes (``KEPT_ATTRIBUTES``: never ``value``,
     ``checked``, ``selected``, ``style``, a ``data-`` attribute, or an event
@@ -204,8 +219,12 @@ def sanitize_dom_snapshot(html: str, redaction: Redaction | None = None) -> str:
     redacted on its decoded text (:func:`_redactor`, an email in any letter case),
     before the text budget cuts it, identifiers included. Every kept value and text
     is then escaped again, so the output is markup the page did not write only
-    where it was markup before."""
-    parser = _Sanitizer(_redactor(redaction or Redaction()))
+    where it was markup before.
+
+    With *structure_only* (the read of a logged-in page after a credential post), no
+    text is kept at all, the labelling elements' included, and each kept attribute
+    value also has every email address in it replaced, whoever's it is."""
+    parser = _Sanitizer(_redactor(redaction or Redaction()), structure_only=structure_only)
     parser.feed(html)
     parser.close()
     return "".join(parser.out)
@@ -269,10 +288,15 @@ def snapshot_redaction(body_text: str | None, content_type: str = "") -> Redacti
     return Redaction(tuple(secrets), tuple(identifiers))
 
 
-def stored_dom_snapshot(html: str, body_text: str | None, content_type: str = "") -> str:
-    """*html* as a run stores it: sanitized (:func:`sanitize_dom_snapshot`) with the
-    triggering post's values (:func:`snapshot_redaction`) redacted from each decoded
-    value and text, then scrubbed of them once more as markup (:func:`_redactor`, the
-    scrub the rest of a run uses, emails in any letter case)."""
+def stored_dom_snapshot(
+    html: str, body_text: str | None, content_type: str = "", *, structure_only: bool = False
+) -> str:
+    """*html* as a run stores it: sanitized (:func:`sanitize_dom_snapshot`, with no
+    text at all when *structure_only*) with the triggering post's values
+    (:func:`snapshot_redaction`) redacted from each decoded value and text, then
+    scrubbed of them once more as markup (:func:`_redactor`, the scrub the rest of a
+    run uses, emails in any letter case)."""
     redaction = snapshot_redaction(body_text, content_type)
-    return _redactor(redaction)(sanitize_dom_snapshot(html, redaction))
+    return _redactor(redaction)(
+        sanitize_dom_snapshot(html, redaction, structure_only=structure_only)
+    )

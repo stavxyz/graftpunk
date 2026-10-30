@@ -1240,3 +1240,74 @@ class TestRedactionSpellings:
         )
         (form,) = extract_login_forms(html, source=_SITE, snapshot=True)
         assert 'form[action^="/login;"] input[name="pw"]' in form.fields["password"]
+
+
+# A logged-in page as the recorder reads it after a credential post (#268, part 2):
+# the username, the email, and the password value in text and in attributes, and an
+# email that is not the one the post sent.
+_LOGGED_IN = (
+    "<!DOCTYPE html><html><head><title>Orders for alice</title>"
+    '<script>window.__USER__ = "alice@example.com";</script></head><body>'
+    '<header><div id="account-menu" class="menu user-alice" data-user="alice">'
+    '<span class="who" title="alice@example.com">Signed in as alice@example.com</span>'
+    '<a class="signout-link" href="/u/alice/bye?next=/home">Sign out alice</a>'
+    '<a href="mailto:bob.other@example.org">Contact bob.other@example.org</a>'
+    '<a href="/team/Bob.Other@Example.ORG/edit">Edit</a>'
+    '<img alt="alice" src="/avatars/alice.png">'
+    "</div></header><main>"
+    '<input type="password" name="confirm" value="hunter2hunter2">'
+    '<input type="email" id="contact-hunter2hunter2" name="contact">'
+    '<textarea name="note">hunter2hunter2</textarea>'
+    "<select name='plan'><option selected>Gold plan for alice</option></select>"
+    "<button id='save'>Save hunter2hunter2</button>"
+    "<label for='q'>Search alice's orders</label></main></body></html>"
+)
+_LOGGED_IN_POST = json.dumps({"username": "alice", "password": _PASSWORD})
+
+
+class TestStructureOnly:
+    """``structure_only``, for the read of a logged-in page: elements and their kept
+    attributes, no text at all, and no email in an attribute, whoever's it is."""
+
+    def _stored(self, html: str = _LOGGED_IN, body: str = _LOGGED_IN_POST) -> str:
+        return stored_dom_snapshot(html, body, "application/json", structure_only=True)
+
+    def test_no_text_survives(self) -> None:
+        out = self._stored()
+        for text in ("Sign", "Gold plan", "Search", "Contact", "Orders for", "Edit", "Save"):
+            assert text not in out
+        # Every ">" is followed by a tag or the end: no text node anywhere.
+        assert all(chunk == "" or chunk.startswith("<") for chunk in out.split(">")[1:])
+
+    def test_no_value_survives(self) -> None:
+        out = self._stored()
+        lowered = out.lower()
+        assert _PASSWORD not in out
+        for value in ("alice", "example.com", "bob.other", "example.org"):
+            assert value not in lowered
+        for attribute in ("value=", "title=", "alt=", "data-user", "src="):
+            assert attribute not in out
+
+    def test_the_structure_stays(self) -> None:
+        out = self._stored()
+        assert out.startswith("<!DOCTYPE html>")
+        assert '<div id="account-menu" class="menu user-***REDACTED***">' in out
+        assert '<a class="signout-link" href="/u/***REDACTED***/bye?">' in out
+        assert '<a href="/team/***REDACTED***/edit">' in out
+        assert '<input type="password" name="confirm">' in out
+        assert '<input type="email" id="contact-***REDACTED***" name="contact">' in out
+        assert "<script></script>" in out
+
+    def test_a_login_form_is_still_read_from_it(self) -> None:
+        html = (
+            "<main><form action='/session' method='post'><label for='e'>Email</label>"
+            "<input type='email' id='e' name='email' value='alice@example.com'>"
+            "<input type='password' id='p' name='password'><button>Sign in</button>"
+            "</form></main>"
+        )
+        assert extract_login_forms(self._stored(html), source=_SITE, snapshot=True)
+
+    def test_without_it_labelling_text_is_kept_as_before(self) -> None:
+        out = stored_dom_snapshot(_LOGGED_IN, _LOGGED_IN_POST, "application/json")
+        assert "Save ***REDACTED***" in out
+        assert "bob.other@example.org" in out
