@@ -772,18 +772,24 @@ one holding a site's results even though its shape line reads like navigation
 chrome. Two forms are recognised: a script assigning a JSON object to a dotted
 name of two or more parts (`window.App.props = {...}`, `App.props = {...}`), and
 a `<script type="application/json">`, named by its id (`script#__NEXT_DATA__`)
-or, without one, as `script[type="application/json"]`. A `var`, `let`, or
-`const` declaration, a bare or bracketed name, `JSON.parse("...")`, a JavaScript
-object literal that is not JSON, an array, a script with a `src`, and
-`application/ld+json` are not read. An object spelled in fewer than 512
-characters is ignored, and of the rest the largest is reported. Only names and
-kinds are kept, by the response shape's rules, and a part of the target that
-looks like an id is printed as a placeholder (`window.{window_id}.props`).
-`gp plugin new` keeps such a page's request as it is and adds a comment naming
-the target and the shape, then a commented `inline_state(page)` function that
-reads the object out of the page's text. To return the object, uncomment the
-function, return `inline_state(ctx.request_text(...))` with the request's own
-arguments, and set the return annotation to `dict`.
+or, without one, as `script[type="application/json"]`. Only scripts a browser
+would run are read: not one inside an HTML comment, an attribute, a `<template>`,
+or a `<textarea>` or other text element, and not an assignment inside a
+JavaScript string or comment. A `var`, `let`, or `const` declaration, a bare or
+bracketed name, `JSON.parse("...")`, a JavaScript object literal that is not
+JSON, an array, a script with a `src`, and `application/ld+json` are not read.
+An object spelled in fewer than 512 characters is ignored, and of the rest the
+largest is reported. Only names and kinds are kept, by the response shape's
+rules. The target is printed as written only when it is a plain dotted name of
+at most 64 characters; a part that looks like an id is printed as a placeholder
+(`window.{window_id}.props`), and a script id that is not such a name as
+`script#{id}`. `gp plugin new` and `gp plugin add-command` keep such a page's
+request as it is and add a comment naming the target and the shape, then a
+commented `inline_state(page)` function that calls `read_inline_json` from
+`graftpunk.har.inline_state`, the digest's own scan, so it returns the object
+the digest reported. To return the object, uncomment the function, return
+`inline_state(ctx.request_text(...))` with the request's own arguments, and set
+the return annotation to `dict`.
 
 What the digest cannot tell you:
 

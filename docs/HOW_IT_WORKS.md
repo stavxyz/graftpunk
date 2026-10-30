@@ -625,34 +625,65 @@ A command naming a member's own template behaves as it did before families
 existed.
 
 An HTML page that keeps its data in an inline script is reported with that
-object's shape (`graftpunk.har.inline_state`). Two forms are read: a script with
-no `type` or a JavaScript one, and no `src`, assigning a JSON object to a dotted
-name of two or more parts (`window.App.props = {...};`, `App.props = {...}`),
-and a `<script type="application/json">` whose body is a JSON object (named by
+object's shape (`graftpunk.har.inline_state`). Only scripts a browser would run
+are read. The page is tokenized as HTML, so a `<script>` inside an HTML comment,
+inside an attribute value, or in the text of a `<textarea>`, `<title>`,
+`<style>`, `<noscript>`, `<iframe>`, `<noembed>`, `<noframes>`, or `<xmp>` is
+text, and one inside a `<template>` is inert; none of them is read. Two forms are
+read. The first is a script whose `type` is absent, empty, or one of
+`text/javascript`, `application/javascript`, `application/x-javascript`,
+`application/ecmascript`, `text/ecmascript`, and `module` (compared as the HTML
+standard's "prepare the script element" compares them: without case, for all but
+`module` without surrounding whitespace, and never with parameters, so
+`text/javascript; charset=utf-8` is a data block and is not read), with no `src`, assigning a JSON object to a dotted name of two or more
+parts (`window.App.props = {...};`, `App.props = {...}`). An assignment inside a
+JavaScript string, template literal, or `//` or `/* */` comment is skipped; a
+regular expression literal is read as code, so a quote in one can hide what
+follows it on its line. The second is a script whose `type` is
+`application/json`, with or without parameters
+(`application/json; charset=utf-8`), and whose body is a JSON object (named by
 its id, `script#__NEXT_DATA__`, or else `script[type="application/json"]`).
 `var`/`let`/`const` declarations, a bare name, a bracketed name, `JSON.parse`, a
 JavaScript object literal that is not JSON, an array, and `application/ld+json`
 are not read. Of the objects spelled in 512 characters or more, the largest is
-reported, the first on a tie. The search never runs script and is linear in the
-page: it examines the first 128 scripts, skips a script body over 4 MiB
-(4,194,304 characters), decodes at most 32 candidates per page, and skips a
-decode that fails or that the parser refuses for nesting too deep. The page read
-is the endpoint's fixture recording, the one its `shape` describes. The shape
-follows the JSON body rules, a key holding an id included, and a part of the
-target that looks like it holds an id becomes a placeholder named as a path
-segment's would be (`window.{window_id}.props`); no value is reported. The
+reported, the first on a tie; a JSON script's leading whitespace is not counted.
+The search never runs script and is linear in the page: it examines the first
+128 scripts, skips a script body over 4 MiB (4,194,304 characters), decodes at
+most 32 candidates per page, and skips a decode that fails or that the parser
+refuses for nesting too deep. The decode budget counts only candidates that
+might qualify: each candidate is first decoded within its first 511 characters,
+and one that ends there is under the floor and is skipped without using a
+decode, so a page with many small settings objects before its state still
+reports the state; every other candidate, a malformed one included, uses one.
+The page read is the endpoint's fixture recording, the one its `shape`
+describes. The shape follows the JSON body rules, a key holding an id included.
+The target is printed as written only when it is a plain dotted name
+(identifiers of letters, numerals, `_`, and `$`, joined by `.`) of at most 64
+characters. A part of an assignment's target that looks like it holds an id
+becomes a placeholder named as a path segment's would be
+(`window.{window_id}.props`), and a longer target is printed as `{id}`; a JSON
+script's id that is not a plain name, or has a part that looks like an id, is
+printed as `script#{id}`. So no quote, backtick, space, or line break from the
+page reaches any output through a target, and no value is reported. The
 markdown digest adds a line under `shape: non-JSON`
 (``inline JSON state: `window.App.props`, object{results, search, total}``),
 `--json` carries `inline_json` with `target` and the shape node, and
 `--endpoints-json` carries `inline_json` with `target` and the shape summary,
 each on those endpoints only, so a run without one prints what it printed
-before; the order of endpoints does not change. A stub for such a page keeps its
-request unchanged and adds a comment naming the target and the shape, then a
-commented nested function, `inline_state(page)`, that finds the object with `re`
-and reads it with `json.JSONDecoder().raw_decode`, raising `ValueError` when the
-page no longer holds it. The function compiles and is ruff clean whether it is
-left commented or uncommented; to use it, uncomment it, return
+before; the order of endpoints does not change. A stub that `gp plugin new` or
+`gp plugin add-command` writes for such a page keeps its request unchanged and
+adds a comment naming the target and the shape, then a commented nested
+function, `inline_state(page)`, that calls
+`graftpunk.har.inline_state.read_inline_json(page, target)` and raises
+`ValueError` when the page no longer holds the object. `read_inline_json` runs
+the digest's own scan and, given a target, returns the largest object reported
+under that target, so on the recorded page it returns the object the digest
+reported. The target is written as a string literal quoted as the scaffold
+quotes every captured literal. The function compiles and is ruff clean whether
+it is left commented or uncommented; to use it, uncomment it, return
 `inline_state(ctx.request_text(...))`, and set the return annotation to `dict`.
+The generated project already requires the graftpunk release that wrote it (its
+`graftpunk>=` floor is that release's `major.minor.0`), so the import resolves.
 
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
