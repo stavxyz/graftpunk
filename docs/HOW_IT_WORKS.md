@@ -865,35 +865,52 @@ literal `?` follows fnmatch's ordinary rules there, and the generated `GP-FILL`
 failure text is the backstop for a wrong call this produces.
 
 For `success`, a run that recorded a credential post can suggest selectors
-(`graftpunk.har.login_signals`, #268). The logged-in pages are
-`page-source.html` when it holds no login form, and each page the run loaded
-after a credential post (a 2xx GET that is a navigation, by the rule above)
-holding none. The logged-out pages are each recorded page holding a login form,
-each credential post's DOM snapshot, `page-source.html` when it holds a login
-form, and each page loaded before the first credential post. A suggestion is
-`#id` or `tag.token` over a plain CSS identifier that selects exactly one element
-on every logged-in page holding it and none on any logged-out page. An element
-that renders nothing (in the head, a script, a template's content, or a
-`noscript`) is never one, and neither is a name that looks generated (a
-CSS-module class such as `Header_loggedIn__x7Q2a`, a `css-`, `sc-`, `jsx-`,
-`emotion-`, `svelte-`, or `styled-` class, a part of four or more characters
-mixing letters and digits, or a run of three or more digits), a name holding
-`loggedout` or `signedout` with `-` and `_` ignored, or one that holds an account
-value. They rank by a name holding `logged`, `account`, `signout`, `logout`,
-`user`, `profile`, or `avatar` (or a link whose `href` holds `logout` or
-`signout`) first, then an id before a class, then the one on more logged-in
-pages, then document order, and at most three are kept. `--endpoints-json`
-prints them as `login.success_candidates`, a list that is empty when there are
-none. The matcher is a stdlib `HTMLParser` pass that understands only those two
-forms; the tests check each suggestion against lxml and cssselect. A recording
-cannot show that an element is absent from the login page the engine opens on a
-fresh visit, which can differ from the page recorded (a modal on the home page
-in the recording, `/login` in `LoginConfig.url`), so the generator never sets
-`success` from one: with suggestions it replaces the `success` `GP-FILL` with
-one saying the recording suggests a selector on the logged-in page and on no
-recorded login page, to check that it appears only after login on a fresh visit
-to the login URL and then uncomment one, followed by each as a commented
-`success="..."` line, escaped and wrapped as the commented opener step is.
+(`graftpunk.har.login_signals`, #268). They come from one page, the final
+logged-in page: `page-source.html` when it holds no login form, else the last
+page loaded after a credential post that holds none. A page loaded here is a 2xx
+GET that is a navigation by the rule above and is not a frame's document (a
+`Sec-Fetch-Dest` of `iframe`, `frame`, `embed`, or `object`; a frame navigation
+recorded with only `_resourceType` and no such header cannot be told apart). The
+logged-out pages are every response holding a login form (a POST's re-rendered
+failed attempt and a login page loaded again after the post included), each
+credential post's DOM snapshot, each page loaded before the first credential post,
+and every page loaded after the post other than the final one (an MFA step, a
+"stay signed in" page, an interstitial). A suggestion is `#id`, or `tag.token`
+for a plain tag (no namespace prefix, ASCII only) outside `svg` and `math`, over a
+plain CSS identifier, that selects exactly one element on the final page and none
+on any logged-out page. The matcher follows a browser where the two could differ:
+the first of a duplicated attribute wins, class tokens split on ASCII whitespace
+only, and a page with no doctype matches ids and classes without case. It counts
+each id and each tag and class pair once a page, so its cost grows with the
+page's size. An element that renders nothing (in the head, a script, a template's
+or a noscript's content; `<template/>` opens a template, as in a browser) is never
+one. Neither is a name that looks generated (not a plain identifier; a CSS-module
+class such as `Header_loggedIn__x7Q2a` or `Header-module__loggedIn___abcDE`; any
+`___`; a `_<word>_<5 characters>` class; a `css-`, `sc-`, `jsx-`, `emotion-`,
+`svelte-`, or `styled-` class; a run of three or more digits; a part of four or
+more characters mixing letters and digits; or an account value by
+`graftpunk.har.paths.holds_an_id`). Nor is a name that says signed out, signing in,
+or a guest: one holding `loggedout`, `signedout`, `signin`, `signup`, `guest`, or
+`anonymous` with `-`, `_`, and `.` ignored, the word `login` or `log` `in`, or a
+sign-out word (`signout`, `logout`) on anything but a link or a button. Nor is a
+name holding one of the credential posts' values other than the password (each
+value and an email's local part, without case, at least three characters, and not
+a boolean word); those values stay in memory. They rank by a name holding
+`logged`, `account`, `signout`, `logout`, `user`, `profile`, or `avatar` (or a link
+whose `href` has a `logout`, `log-out`, `signout`, or `sign-out` path segment)
+first, then an id before a class, then document order, and at most three are
+kept. `--endpoints-json` prints them as `login.success_candidates`, a list that is
+empty when there are none. The tests check each suggestion against lxml and
+cssselect where those can tell. A recording cannot show that an element is absent
+from the login page the engine opens on a fresh visit, which can differ from the
+page recorded (a modal on the home page in the recording, `/login` in
+`LoginConfig.url`), so the generator never sets `success` from one: with
+suggestions it replaces the `success` `GP-FILL` with one saying the recording
+suggests a selector on the logged-in page and on no recorded login page, to check
+that it appears only after login on a fresh visit to the login URL and then
+uncomment one suggestion (all of its lines), followed by each as a commented
+`success="..."` argument, escaped and wrapped as the commented opener step is (a
+long one spans several commented lines).
 Without suggestions the generated `login_config` is the one it was before.
 
 Each rule is measured in the position it guards
@@ -1127,7 +1144,7 @@ The declarative engine executes each step in sequence:
 3. **For each step:**
    a. **(If step `wait_for` is set)** Waits for the step's selector to appear. **(Otherwise)** Waits for the page to be ready (see below), except on the first step when the top-level `wait_for` is set
    b. Clicks each field element and types the credential value
-   c. **(If `submit` is set)** Clicks the submit button. Just before the click, when `success` is set and no warning has been logged yet in this login, probes once for the `success` element and logs `login_success_present_before_submit`, naming the selector, when it is already there (see below)
+   c. **(If `submit` is set)** Clicks the submit button. Just before the click, when `success` is set and no warning has been logged yet in this login, probes once for the `success` element and logs `login_success_present_before_submit`, naming the selector, when it is already there; after that warning it probes no more (see below)
    d. **(If `delay` is set)** Pauses for the specified duration
 4. Polls the page every half second, up to `timeout` seconds, starting one interval after the last step rather than immediately. Each pass reads the current URL; it reads the page text when the page text can decide that pass, which is every pass when `failure` is set, every pass once a `success_url` matches (a rate-limited response is served at the landing URL itself), and in every configuration the last pass before the timeout. The `failure` text ends the wait as a failure, a `Too Many Requests` page on a pass that read the text ends it as a failure, and the success signal ends it as a success. The success signal is the `success` element being present, the URL having moved off the one the last submit was clicked from and matching the `success_url` glob, or both when both are configured.
 5. Waits for the document to finish loading, bounded by what the poll left of the same `timeout` budget, then pauses for `settle` seconds
@@ -1135,7 +1152,7 @@ The declarative engine executes each step in sequence:
 
 The wait is what makes a slow login work: sites that finish through an identity-provider redirect can take tens of seconds to mint their cookies, and the engine holds until the signal it was told to look for appears. When the timeout passes first, the login fails and the warning names the signal that never appeared and the URL the page ended on.
 
-Write both signals so they cannot match the login page itself. An element that is already on the form, or a glob as loose as `*example.com*`, would otherwise be satisfied before the submit has navigated anywhere, and the session cached would be the one from before the login. The engine guards the URL half of that (a `success_url` counts only once the page has moved off the URL the submit was clicked from) and delays the first pass by one interval. A `success` element that the form and the landing page share it cannot stop, but it makes it visible: just before each submit it probes for the element once, and when the element is already there it logs the warning `login_success_present_before_submit` with the selector, at most once a login. The warning changes nothing else: a probe that fails (a selector the browser rejects, a page mid-load) is logged at debug and reads as not found, and the login goes on as it would without it, so a plugin that logs in today still does. That guard needs the URL the submit was clicked from: when the browser could not read it (nodriver reports no URL while a tab navigates), a `success_url` cannot be confirmed at all and the login waits out its timeout, so a site where that happens needs a `success` selector.
+Write both signals so they cannot match the login page itself. An element that is already on the form, or a glob as loose as `*example.com*`, would otherwise be satisfied before the submit has navigated anywhere, and the session cached would be the one from before the login. The engine guards the URL half of that (a `success_url` counts only once the page has moved off the URL the submit was clicked from) and delays the first pass by one interval. A `success` element that the form and the landing page share it cannot stop, but it makes it visible: just before each submit, until it has warned, it probes for the element once, and when the element is already there it logs the warning `login_success_present_before_submit` with the selector, at most once a login. With `success_url` set too, the hint says the login still waits for the URL to change; without it, that the login may report success before it happens. Under nodriver the probe is a `Runtime.evaluate` of `document.querySelector`, not `Tab.query_selector`, because that call sends `DOM.disable` when its query fails (read in nodriver 0.48.1 and 0.50.6), and the probe runs right before the click. The warning changes nothing else: a probe that fails (a selector the browser rejects, a page mid-load) is logged at debug and reads as not found, and the login goes on as it would without it, so a plugin that logs in today still does. The URL guard needs the URL the submit was clicked from: when the browser could not read it (nodriver reports no URL while a tab navigates), a `success_url` cannot be confirmed at all and the login waits out its timeout, so a site where that happens needs a `success` selector.
 
 Configure at least one of `failure`, `success`, and `success_url`. With neither `success` nor `success_url` set there is nothing to wait for, so the engine watches the page for three seconds for the `failure` text (and for a rate-limit page), stops the moment either shows, and then takes the single verdict it has always taken from the page text. `timeout` and `settle` play no part on that path. With none of the three set, the verdict is always success and a warning advises you to add validation.
 
