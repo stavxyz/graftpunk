@@ -7248,6 +7248,14 @@ class TestTheRecordingSuggestsASuccessSelector:
             "/sso/logout",
             "/login/logout",
             "/Identity/Account/Logout",
+            # Other spellings, a file extension, case, and a segment before the last.
+            "/auth/sign_out",
+            "/sso/log_out",
+            "/auth/logout.php",
+            "/auth/signout.aspx",
+            "/login/logoff",
+            "/sso/signoff",
+            "/Auth/Logout/confirm",
         ],
     )
     def test_a_logout_post_to_a_step_word_path_leaves_the_last_page_logged_in(
@@ -7278,6 +7286,9 @@ class TestTheRecordingSuggestsASuccessSelector:
             ("/delivery", "zipCode=99999"),
             ("/currency", "currencyCode=EUR"),
             ("/orders/filter", "remember_filters=1&status=open"),
+            ("/cart/coupon", "promo_code=SAVE10"),
+            # A path segment "code" is no step word; only a field named so is.
+            ("/promo/code", "coupon=SAVE10"),
         ],
     )
     def test_an_ordinary_form_from_the_landing_page_leaves_it_logged_in(
@@ -7333,6 +7344,29 @@ class TestTheRecordingSuggestsASuccessSelector:
             ("/consent", "rememberMe=true", "<html><body><div id='brand-bar'></div></body></html>"),
             # "code" as the only step word: a whole field name, on a path with none.
             ("/session/second", "code=123456", _MFA.replace(" autocomplete='one-time-code'", "")),
+            # "code" beside a word saying what code it is, and a token-named field
+            # naming a one-time code, each the only step word.
+            *(
+                (
+                    "/session/second",
+                    f"{name}=123456&authenticity_token=abc",
+                    "<html><body><div id='brand-bar'></div></body></html>",
+                )
+                for name in (
+                    "sms_code",
+                    "security_code",
+                    "one_time_code",
+                    "passCode",
+                    "tfa_code",
+                    "otp_token",
+                    "mfa_token",
+                )
+            ),
+            (
+                "/session/second",
+                "remember_device_30_days=1",
+                "<html><body><div id='brand-bar'></div></body></html>",
+            ),
         ],
     )
     def test_a_step_then_the_landing_gives_the_landing_s_markers(
@@ -7641,3 +7675,4 @@ class TestTheRecordingSuggestsASuccessSelector:
         result = self._valued_run(tmp_path, body, "application/xml")
         assert result.login
         assert result.success_candidates == ()
+

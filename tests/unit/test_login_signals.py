@@ -71,7 +71,16 @@ class TestSuccessCandidates:
         assert _checked([_LOGIN], after) == ("a.signout-link", "#cart-count", "#main-panel")
 
     @pytest.mark.parametrize(
-        "href", ["/logout", "/account/log-out", "/signout?next=/", "/sign-out/"]
+        "href",
+        [
+            "/logout",
+            "/account/log-out",
+            "/signout?next=/",
+            "/sign-out/",
+            "/users/sign_out",
+            "/logout.php",
+            "/Account/LogOff",
+        ],
     )
     def test_a_link_to_a_logout_path_segment_ranks_first(self, href: str) -> None:
         after = _page(f"<div id='main-panel'></div><a class='nav-exit' href='{href}'>Bye</a>")
@@ -476,7 +485,20 @@ class TestALoginStepPost:
             ("/x", ("2fa",)),
             ("/x", ("code",)),
             ("/x", ("Code",)),
-            ("/promo/code", ()),
+            # "code" beside only words saying what code it is.
+            ("/x", ("sms_code",)),
+            ("/x", ("smsCode",)),
+            ("/x", ("email_code",)),
+            ("/x", ("security_code",)),
+            ("/x", ("one_time_code",)),
+            ("/x", ("oneTimeCode",)),
+            ("/x", ("backup_code",)),
+            ("/x", ("recovery_code",)),
+            ("/x", ("passCode",)),
+            ("/x", ("access_code",)),
+            ("/x", ("tfa_code",)),
+            ("/x", ("2faCode",)),
+            ("/x", ("tfa",)),
             ("/x", ("remember",)),
             ("/x", ("rememberMe",)),
             ("/x", ("remember_me",)),
@@ -486,6 +508,13 @@ class TestALoginStepPost:
             ("/x", ("remember-browser",)),
             ("/x", ("RememberComputer",)),
             ("/x", ("remember_login",)),
+            ("/x", ("remember_device_30_days",)),
+            ("/x", ("remember_for_30_days",)),
+            # A token-named field that names a one-time code is read.
+            ("/x", ("totpToken",)),
+            ("/x", ("otp_token",)),
+            ("/x", ("mfa_token",)),
+            ("/x", ("2FA_token",)),
             ("/x", ("trust_device",)),
             ("/x", ("stay_signed_in",)),
             ("/x", ("SignIn",)),
@@ -513,13 +542,18 @@ class TestALoginStepPost:
             ("/x", ("trustee",)),
             ("/x", ("staying",)),
             ("/x", ("authority",)),
-            # "code" counts only as a whole name, "remember" only beside me, my,
-            # this, device, browser, computer, or login.
+            # "code" counts only alone or beside words saying what code it is,
+            # "remember" only beside me, my, this, device, browser, computer, login,
+            # for, or days.
             ("/x", ("postal_code",)),
             ("/x", ("coupon_code",)),
             ("/x", ("zipCode",)),
             ("/x", ("currencyCode",)),
+            ("/x", ("promo_code",)),
+            ("/x", ("pinCode",)),
             ("/checkout/promo-code", ()),
+            # A path segment "code" alone is no step; only a field name is.
+            ("/promo/code", ()),
             ("/x", ("remember_filters",)),
             ("/x", ("rememberSort",)),
             # A token field says nothing about what its form is for.
@@ -527,13 +561,22 @@ class TestALoginStepPost:
             ("/x", ("__RequestVerificationToken",)),
             ("/x", ("auth_token",)),
             ("/x", ("csrf_token",)),
-            ("/x", ("totpToken",)),
             # A post to a logout path is never a step, whatever else it holds.
             ("/auth/logout", ("_token",)),
             ("/sso/logout", ()),
             ("/login/logout", ()),
             ("/Identity/Account/Logout", ("__RequestVerificationToken",)),
             ("/account/sign-out", ("otp",)),
+            # Every spelling: words of a segment, its file extension removed, in
+            # any case, and in any segment, not only the last.
+            ("/auth/sign_out", ("otp",)),
+            ("/sso/log_out", ("otp",)),
+            ("/auth/logout.php", ("otp",)),
+            ("/auth/signout.aspx", ("otp",)),
+            ("/login/logoff", ()),
+            ("/sso/signoff", ()),
+            ("/Account/LogOff", ("otp",)),
+            ("/Auth/Logout/confirm", ("otp",)),
         ],
     )
     def test_any_other_post(self, path: str, names: tuple[str, ...]) -> None:

@@ -79,7 +79,10 @@ _SIGNED_OUT = frozenset(
 # anything else it is as likely a "you have signed out" message.
 _SIGN_OUT_WORDS = frozenset({"signout", "logout"})
 _SIGN_OUT_CONTROLS = frozenset({"a", "button", "form"})
-_LOGOUT_SEGMENTS = frozenset({"logout", "log-out", "signout", "sign-out"})
+# A URL path segment holding one of these words (or "log out", "sign off" and the
+# like as two adjacent words) makes a logout path: "/auth/sign_out", "/logout.php"
+# (the split at "." leaves a file extension a word of its own), "/Account/LogOff".
+_LOGOUT_WORDS = frozenset({"logout", "logoff", "signout", "signoff"})
 # Elements that render nothing; the engine finds them, but they mark no page.
 _NOT_RENDERED = frozenset(
     {"head", "title", "meta", "link", "base", "script", "style", "noscript", "template"}
@@ -98,14 +101,17 @@ _ONE_TIME_CODE = "one-time-code"
 # A form posted from a page after the credential post is a step of the login when a
 # body field's name or a segment of its URL path holds one of these words. "code"
 # and "remember" end too many ordinary names (postal_code, currencyCode,
-# remember_filters) to be among them: "code" counts as a whole name, and
-# "remember" with only _REMEMBER_COMPANIONS beside it (remember_me, rememberDevice).
+# remember_filters) to be among them: "code" counts in a field name alone or with
+# only _CODE_COMPANIONS beside it (sms_code, one_time_code, passCode), and
+# "remember" with only _REMEMBER_COMPANIONS beside it (remember_me, rememberDevice,
+# remember_for_30_days).
 _STEP_WORDS = frozenset(
     {
         "otp",
         "totp",
         "mfa",
-        "2fa",
+        # "2fa" too, read as "tfa" (_TWO_FA_RE).
+        "tfa",
         "twofactor",
         "verify",
         "verification",
@@ -120,7 +126,36 @@ _STEP_WORDS = frozenset(
         "consent",
     }
 )
-_REMEMBER_COMPANIONS = frozenset({"me", "my", "this", "device", "browser", "computer", "login"})
+_REMEMBER_COMPANIONS = frozenset(
+    {"me", "my", "this", "device", "browser", "computer", "login", "for", "days"}
+)
+_CODE_COMPANIONS = frozenset(
+    {
+        "sms",
+        "email",
+        "security",
+        "one",
+        "time",
+        "backup",
+        "recovery",
+        "verification",
+        "auth",
+        "pass",
+        "access",
+        "login",
+        "otp",
+        "totp",
+        "mfa",
+        "tfa",
+        "twofactor",
+    }
+)
+# A token-named field (a CSRF field a framework puts in every form) is not read for
+# step words unless it holds one of these: otp_token, mfaToken, totpToken.
+_ONE_TIME_CODE_WORDS = frozenset({"otp", "totp", "mfa", "tfa", "twofactor"})
+# "2fa" as a word. _words splits the digit from its letters, so it is read as "tfa"
+# (2faCode, 2FA_token, verify-2fa).
+_TWO_FA_RE = re.compile(r"(?<![A-Za-z0-9])(?:2fa|2FA|2Fa)(?![a-z])")
 # A credential value this short, or one of these words, is in too many names to
 # say anything about the account.
 _MIN_VALUE_LENGTH = 3
@@ -171,34 +206,55 @@ def _holds_word(name: str, wanted: frozenset[str]) -> bool:
     return not wanted.isdisjoint({*words, *joined})
 
 
-def _is_step_name(name: str) -> bool:
-    """Whether *name* (a field name or a URL path segment) holds a word of
-    :data:`_STEP_WORDS`, by :func:`_holds_word` or as a whole run of letters and
-    digits (how ``2fa`` is found, since a name's words split at digits), is ``code``
-    alone, or is ``remember`` with only :data:`_REMEMBER_COMPANIONS` beside it."""
-    words = _words(name)
-    runs = re.split(r"[^0-9a-z]+", name.lower())
-    if _holds_word(name, _STEP_WORDS) or not _STEP_WORDS.isdisjoint(runs):
+def _step_words(name: str) -> str:
+    """*name* with a ``2fa`` spelled ``tfa``, so its words (:func:`_words`) hold it."""
+    return _TWO_FA_RE.sub("_tfa_", name)
+
+
+def _is_step_name(name: str, *, field: bool) -> bool:
+    """Whether *name* (a body field's name when *field*, else a URL path segment)
+    holds a word of :data:`_STEP_WORDS` (:func:`_holds_word`), is ``remember`` with
+    only :data:`_REMEMBER_COMPANIONS` beside it, or, a field name only, is ``code``
+    with only :data:`_CODE_COMPANIONS` beside it (a path segment ``code``, as in
+    ``/promo/code``, is no step). Digit runs are no words (``remember_for_30_days``)."""
+    spelled = _step_words(name)
+    if _holds_word(spelled, _STEP_WORDS):
         return True
-    if words == ["code"]:
+    words = set(_words(spelled))
+    if "remember" in words and words <= {"remember", *_REMEMBER_COMPANIONS}:
         return True
-    return "remember" in words and set(words) <= {"remember", *_REMEMBER_COMPANIONS}
+    return field and "code" in words and words <= {"code", *_CODE_COMPANIONS}
+
+
+def _read_for_steps(name: str) -> bool:
+    """Whether body field *name* is read for step words: every name but a token's
+    (:func:`graftpunk.har.documents.looks_like_token_name`), which a framework puts
+    in every form it renders, unless the token's name holds a word of
+    :data:`_ONE_TIME_CODE_WORDS` (``otp_token``, ``mfaToken``)."""
+    return not looks_like_token_name(name) or _holds_word(_step_words(name), _ONE_TIME_CODE_WORDS)
+
+
+def _is_logout_path(path: str) -> bool:
+    """Whether URL *path* has a logout segment: a segment holding a word of
+    :data:`_LOGOUT_WORDS` or two adjacent words joining into one, without case
+    (``/auth/sign_out``, ``/logout.php``, ``/Account/LogOff``,
+    ``/auth/logout/confirm``)."""
+    return any(_holds_word(segment, _LOGOUT_WORDS) for segment in path.split("/"))
 
 
 def is_login_step_post(path: str, field_names: Iterable[str]) -> bool:
     """Whether a form posted to *path* with body fields *field_names* looks like a
     step of a login (an MFA code, "stay signed in", a consent): a field name or a
     path segment is a step name (:func:`_is_step_name`). A search or a cart form is
-    not one, and neither is a post to a path with a logout segment
-    (:data:`_LOGOUT_SEGMENTS`), whatever else it holds. A field named like a CSRF
-    token (:func:`graftpunk.har.documents.looks_like_token_name`, ASP.NET's
-    ``__RequestVerificationToken`` among them) is not read: a framework puts one in
-    every form it renders, whatever the form is for."""
-    segments = path.split("/")
-    if any(segment.lower() in _LOGOUT_SEGMENTS for segment in segments):
+    not one, and neither is a post to a logout path (:func:`_is_logout_path`),
+    whatever else it holds. A field named like a CSRF token
+    (:func:`graftpunk.har.documents.looks_like_token_name`, ASP.NET's
+    ``__RequestVerificationToken`` among them) is not read unless it names a
+    one-time code (:func:`_read_for_steps`)."""
+    if _is_logout_path(path):
         return False
-    return any(_is_step_name(segment) for segment in segments) or any(
-        _is_step_name(name) for name in field_names if not looks_like_token_name(name)
+    return any(_is_step_name(segment, field=False) for segment in path.split("/")) or any(
+        _is_step_name(name, field=True) for name in field_names if _read_for_steps(name)
     )
 
 
@@ -325,14 +381,15 @@ def _says_signed_out(name: str, element: _Element) -> bool:
 
 
 def _targets_logout(element: _Element) -> bool:
-    """Whether *element* is a link or a form whose target has a logout path segment."""
+    """Whether *element* is a link or a form whose target is a logout path
+    (:func:`_is_logout_path`)."""
     if element.tag not in ("a", "form") or not element.target:
         return False
     try:
         path = urlsplit(element.target).path
     except ValueError:
         return False
-    return any(segment.lower() in _LOGOUT_SEGMENTS for segment in path.split("/"))
+    return _is_logout_path(path)
 
 
 def _usable(name: str, element: _Element, needles: frozenset[str]) -> bool:
