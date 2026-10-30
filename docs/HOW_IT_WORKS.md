@@ -879,33 +879,42 @@ page there is a step when it holds a login form, has an input with
 `autocomplete="one-time-code"`, or the browser submitted a step-shaped form from
 it: a top-level document POST, sent between its load and the next page load,
 whose body has a field name, or whose URL path has a segment, holding a word
-`otp`, `totp`, `mfa`, `2fa`, `twofactor`, `verify`, `verification`, `challenge`,
-`trust`, `kmsi`, `stay`, `signin`, `login`, `auth`, `sso`, or `consent`, or that
-is `code` alone or `remember` with only `me`, `my`, `this`, `device`,
-`browser`, `computer`, or `login` beside it (`remember_me`,
-`remember_my_device`), so `postal_code`, `currencyCode`, and
-`remember_filters` are not step names
+`otp`, `totp`, `mfa`, `2fa`, `tfa`, `twofactor`, `verify`, `verification`,
+`challenge`, `trust`, `kmsi`, `stay`, `signin`, `login`, `auth`, `sso`, or
+`consent`, or that is `remember` with only `me`, `my`, `this`, `device`,
+`browser`, `computer`, `login`, `for`, or `days` beside it (`remember_me`,
+`remember_my_device`, `remember_for_30_days`; digit runs are no words), or a
+body field name that is `code` with only `sms`, `email`, `security`, `one`,
+`time`, `backup`, `recovery`, `verification`, `auth`, `pass`, `access`, `login`,
+`otp`, `totp`, `mfa`, `2fa`, `tfa`, or `twofactor` beside it (`code`,
+`sms_code`, `one_time_code`, `passCode`). So `postal_code`, `coupon_code`,
+`currencyCode`, and `remember_filters` are not step names, and neither is a path
+segment `code` (`/promo/code`)
 (`graftpunk.har.login_signals.is_login_step_post`). A field named like a CSRF
 token (`graftpunk.har.documents.looks_like_token_name`, such as ASP.NET's
 `__RequestVerificationToken` or `auth_token`) is not read, since a framework
-puts one in every form, and a POST to a path with a `logout`, `log-out`,
-`signout`, or `sign-out` segment (`/auth/logout`) is never a step. The first
-page that is not a step ends the run, and it and every later page are logged-in
-pages, whatever forms they post or inputs they hold: a search, an add to cart, a
-2FA settings page, or a logout form. When every page after the post is a step,
-the final one included, nothing is suggested. A step is a logged-out page, as
-are every response holding a login form (a POST's re-rendered failed attempt and
-a login page loaded again after the post included), each credential post's DOM
-snapshot, and each page loaded before the first credential post. That holds
-after the landing too: a page there holding a login form (a change-email form
-asking for the current password, a "confirm your password" page) is logged out,
-and an element it shares with the landing is not suggested; this errs toward
-fewer suggestions. A document POST is known by the same navigation rule, so in a
-HAR with neither `_resourceType` nor `Sec-Fetch` headers a form submission is
-not seen. Three kinds of step with no one-time-code input cannot be told from a
-logged-in page by a recording either: an MFA step whose code a script sends; one
-whose form posts only field names and a path with no step word (`pin=`,
-`passcode=` to `/session/second-factor`); and a step the run stopped on without
+puts one in every form, unless its name holds a word `otp`, `totp`, `mfa`,
+`2fa`, `tfa`, or `twofactor` (`otp_token`, `mfaToken`). A POST to a logout path
+is never a step: a path with a segment, in any position and any case, holding a
+word `logout`, `logoff`, `signout`, or `signoff`, or two adjacent words making
+one (`/auth/logout`, `/auth/sign_out`, `/sso/log_out`, `/auth/logout.php`,
+`/Account/LogOff`, `/auth/logout/confirm`). The first page that is not a step
+ends the run, and it and every later page are logged-in pages, whatever forms
+they post or inputs they hold: a search, an add to cart, a 2FA settings page, or
+a logout form. When every page after the post is a step, the final one included,
+nothing is suggested. A step is a logged-out page, as are every response holding
+a login form (a POST's re-rendered failed attempt and a login page loaded again
+after the post included), each credential post's DOM snapshot, and each page
+loaded before the first credential post. That holds after the landing too: a
+page there holding a login form (a change-email form asking for the current
+password, a "confirm your password" page) is logged out, and an element it
+shares with the landing is not suggested; this errs toward fewer suggestions. A
+document POST is known by the same navigation rule, so in a HAR with neither
+`_resourceType` nor `Sec-Fetch` headers a form submission is not seen. Three
+kinds of step with no one-time-code input cannot be told from a logged-in page
+by a recording either: an MFA step whose code a script sends; one whose form
+posts only field names and a path with no step word (`pin=`, `passcode=`, or
+`pinCode=` to `/session/second-factor`); and a step the run stopped on without
 submitting it (a "stay signed in" page with only a button). Each counts as
 logged in, so an element it shares with the landing page can be suggested; the
 fresh-visit check does not catch that, and a login that reports success on such
@@ -946,34 +955,43 @@ name, case aside, so `email=`, `login=Login`, and `account=1` leave every value
 an account value. Each value and an email's local part is compared lower-cased
 with whitespace, `-`, `_`, and `.` removed, at least three characters, and not a
 boolean word. The values are read by `graftpunk.har.digest.body_values` from a
-JSON body at any depth (walked without recursion), a form body, or a
+JSON body at any depth (walked without recursion), a form body, a `text/plain`
+form body one field a line (as a browser sends `enctype="text/plain"`, a line
+not starting with a field name continuing the value before it), or a
 `multipart/form-data` body's text parts (split on the boundary its
-`Content-Type` names, else on the body's first non-blank line), and stay in
-memory. A credential post with a body that reader does not read by its field
-names (nested past the JSON parser's limit, XML, or any other shape) hides its
-username from this guard, so the run suggests nothing. The recorder's snapshot
+`Content-Type` names, else on the body's first non-blank line). A value that is
+itself a JSON object or array is read one level down, under its field's name.
+The values stay in memory. When the guard cannot read the username, the run
+suggests nothing: a credential post whose body the recording does not hold as
+text (no body, an empty one, one the recorder did not capture or left out, or
+one that is not UTF-8), or whose body gives no values read by field names
+(nested past the JSON parser's limit, XML, a JSON body with a value under no
+name such as a bare string or a list of strings, a value holding JSON too deep
+to parse, or any other shape). A username inside a string that is not JSON, such
+as a GraphQL query with inline arguments (`mutation { login(username: "...")
+}`), is not read; such a body is read by its field names, so the run can still
+suggest, and the username can be among the suggestions. The recorder's snapshot
 redaction reads a credential post with the same reader, which also reads a
 form-shaped body whatever type it declares and, as the snapshot's own reader did
 before it, any other body holding `=` that is not JSON by `parse_qs`.
 Suggestions rank first by being on every logged-in page the run loaded (the
 header the engine sees on the landing page, rather than a page the user browsed
 to), then by a name with a word `logged`, `account`, `signout`, `logout`,
-`user`, `profile`, or `avatar` (or a link or form whose target has a `logout`,
-`log-out`, `signout`, or `sign-out` path segment), then an id before a class,
-then document order, and at most three are kept. `--endpoints-json` prints them
-as `login.success_candidates`, a list that is empty when there are none. The
-tests check each suggestion against lxml and cssselect where those can tell. A
-recording cannot show that an element is absent from the login page the engine
-opens on a fresh visit, which can differ from the page recorded (a modal on the
-home page in the recording, `/login` in `LoginConfig.url`), so the generator
-never sets `success` from one: with suggestions it replaces the `success`
-`GP-FILL` with one saying the recording suggests a selector on the logged-in
-page and on no recorded login page, to check that it appears only after login on
-a fresh visit to the login URL and then uncomment one suggestion (all of its
-lines), followed by each as a commented `success="..."` argument, escaped and
-wrapped as the commented opener step is (a long one spans several commented
-lines). Without suggestions the generated `login_config` is the one it was
-before.
+`user`, `profile`, or `avatar` (or a link or form whose target is a logout path,
+by the rule above), then an id before a class, then document order, and at most
+three are kept. `--endpoints-json` prints them as `login.success_candidates`, a
+list that is empty when there are none. The tests check each suggestion against
+lxml and cssselect where those can tell. A recording cannot show that an element
+is absent from the login page the engine opens on a fresh visit, which can
+differ from the page recorded (a modal on the home page in the recording,
+`/login` in `LoginConfig.url`), so the generator never sets `success` from one:
+with suggestions it replaces the `success` `GP-FILL` with one saying the
+recording suggests a selector on the logged-in page and on no recorded login
+page, to check that it appears only after login on a fresh visit to the login
+URL and then uncomment one suggestion (all of its lines), followed by each as a
+commented `success="..."` argument, escaped and wrapped as the commented opener
+step is (a long one spans several commented lines). Without suggestions the
+generated `login_config` is the one it was before.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
