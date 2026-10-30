@@ -13,9 +13,10 @@ The steps of the login are the leading run of the pages loaded after the post: a
 page there is a step when it asks for a one-time code or the browser submitted a
 step-shaped form from it (:func:`is_login_step_post`). The first page that is
 neither ends the run, and it and every later page are logged in, whatever they
-submit or hold (a search, a cart, a 2FA settings page). An MFA page whose code a
-script sends, with no one-time-code input and no step-shaped form, cannot be told
-from a logged-in page by a recording, and counts as one.
+submit or hold (a search, a cart, a 2FA settings page). A step with no one-time-code
+input cannot be told from a logged-in page by a recording, and counts as one, when a
+script sends its code, when its form posts only names and a path with no step word
+(``pin``, ``passcode``), or when the run stopped on it without submitting it.
 
 Only ever a suggestion. One recording cannot show that an element is absent from
 the login page the engine opens on a fresh visit (a modal on the home page in the
@@ -44,10 +45,16 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
+from graftpunk.har.documents import looks_like_token_name
 from graftpunk.har.paths import holds_an_id
 from graftpunk.har.selectors import bounded_selector
 
-__all__ = ["MAX_SUCCESS_CANDIDATES", "is_login_step_post", "success_candidates"]
+__all__ = [
+    "MAX_SUCCESS_CANDIDATES",
+    "could_be_an_account_value",
+    "is_login_step_post",
+    "success_candidates",
+]
 
 MAX_SUCCESS_CANDIDATES = 3
 
@@ -89,7 +96,10 @@ _RENAMED_TAGS = frozenset({"image"})
 # The autocomplete token of an input asking for an MFA or emailed code.
 _ONE_TIME_CODE = "one-time-code"
 # A form posted from a page after the credential post is a step of the login when a
-# body field's name or a segment of its URL path holds one of these words.
+# body field's name or a segment of its URL path holds one of these words. "code"
+# and "remember" end too many ordinary names (postal_code, currencyCode,
+# remember_filters) to be among them: "code" counts as a whole name, and
+# "remember" with only _REMEMBER_COMPANIONS beside it (remember_me, rememberDevice).
 _STEP_WORDS = frozenset(
     {
         "otp",
@@ -97,11 +107,9 @@ _STEP_WORDS = frozenset(
         "mfa",
         "2fa",
         "twofactor",
-        "code",
         "verify",
         "verification",
         "challenge",
-        "remember",
         "trust",
         "kmsi",
         "stay",
@@ -112,6 +120,7 @@ _STEP_WORDS = frozenset(
         "consent",
     }
 )
+_REMEMBER_COMPANIONS = frozenset({"me", "device", "browser", "computer", "login"})
 # A credential value this short, or one of these words, is in too many names to
 # say anything about the account.
 _MIN_VALUE_LENGTH = 3
@@ -162,19 +171,34 @@ def _holds_word(name: str, wanted: frozenset[str]) -> bool:
     return not wanted.isdisjoint({*words, *joined})
 
 
+def _is_step_name(name: str) -> bool:
+    """Whether *name* (a field name or a URL path segment) holds a word of
+    :data:`_STEP_WORDS`, by :func:`_holds_word` or as a whole run of letters and
+    digits (how ``2fa`` is found, since a name's words split at digits), is ``code``
+    alone, or is ``remember`` with only :data:`_REMEMBER_COMPANIONS` beside it."""
+    words = _words(name)
+    runs = re.split(r"[^0-9a-z]+", name.lower())
+    if _holds_word(name, _STEP_WORDS) or not _STEP_WORDS.isdisjoint(runs):
+        return True
+    if words == ["code"]:
+        return True
+    return "remember" in words and set(words) <= {"remember", *_REMEMBER_COMPANIONS}
+
+
 def is_login_step_post(path: str, field_names: Iterable[str]) -> bool:
     """Whether a form posted to *path* with body fields *field_names* looks like a
     step of a login (an MFA code, "stay signed in", a consent): a field name or a
-    path segment holds a word of :data:`_STEP_WORDS`, by :func:`_holds_word`, or as
-    a whole run of letters and digits (how ``2fa`` is found, since a name's words
-    split at digits). A search or a cart form is not one."""
-
-    def holds(name: str) -> bool:
-        runs = re.split(r"[^0-9a-z]+", name.lower())
-        return _holds_word(name, _STEP_WORDS) or not _STEP_WORDS.isdisjoint(runs)
-
-    return any(holds(segment) for segment in path.split("/")) or any(
-        holds(name) for name in field_names
+    path segment is a step name (:func:`_is_step_name`). A search or a cart form is
+    not one, and neither is a post to a path with a logout segment
+    (:data:`_LOGOUT_SEGMENTS`), whatever else it holds. A field named like a CSRF
+    token (:func:`graftpunk.har.documents.looks_like_token_name`, ASP.NET's
+    ``__RequestVerificationToken`` among them) is not read: a framework puts one in
+    every form it renders, whatever the form is for."""
+    segments = path.split("/")
+    if any(segment.lower() in _LOGOUT_SEGMENTS for segment in segments):
+        return False
+    return any(_is_step_name(segment) for segment in segments) or any(
+        _is_step_name(name) for name in field_names if not looks_like_token_name(name)
     )
 
 
@@ -281,10 +305,17 @@ def _needles(values: Iterable[str]) -> frozenset[str]:
     for value in values:
         text = value.strip()
         for part in (text, text.split("@", 1)[0] if "@" in text else ""):
-            form = _compact(part)
-            if len(form) >= _MIN_VALUE_LENGTH and form not in _NOT_ACCOUNT_VALUES:
-                found.add(form)
+            if could_be_an_account_value(part):
+                found.add(_compact(part))
     return frozenset(found)
+
+
+def could_be_an_account_value(value: str) -> bool:
+    """Whether *value*, compared as a name could spell it (:func:`_compact`), is long
+    enough to say anything about an account (:data:`_MIN_VALUE_LENGTH`) and is not
+    a boolean word (``true``, ``off``, ``none``)."""
+    form = _compact(value)
+    return len(form) >= _MIN_VALUE_LENGTH and form not in _NOT_ACCOUNT_VALUES
 
 
 def _says_signed_out(name: str, element: _Element) -> bool:

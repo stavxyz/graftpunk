@@ -7238,6 +7238,79 @@ class TestTheRecordingSuggestsASuccessSelector:
         result = self._digest(tmp_path, entries)
         assert result.success_candidates == ("#account-menu", "a.signout-link", "#dash")
 
+    # Review round 4 (#325): a token field, a logout path, and an ordinary name
+    # ending in "code" or starting with "remember" make no step.
+
+    @pytest.mark.parametrize(
+        "logout",
+        [
+            "/auth/logout",
+            "/sso/logout",
+            "/login/logout",
+            "/Identity/Account/Logout",
+        ],
+    )
+    def test_a_logout_post_to_a_step_word_path_leaves_the_last_page_logged_in(
+        self, tmp_path: Path, logout: str
+    ) -> None:
+        """ASP.NET Identity's sign-out form posts its antiforgery token, whose name
+        holds "verification"; the others post to a path holding a step word."""
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/dashboard", self._with("<div id='dash'></div>")),
+            self._form_post(logout, "__RequestVerificationToken=CfDJ8abc"),
+            self._get("/login", self._LOGIN),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#dash")
+
+    @pytest.mark.parametrize(
+        ("path", "body"),
+        [
+            # ASP.NET MVC and Core put the antiforgery token in every form.
+            ("/Search", "q=milk&__RequestVerificationToken=CfDJ8abc"),
+            ("/Cart/Add", "ProductId=7&__RequestVerificationToken=CfDJ8abc"),
+            ("/search", "q=milk&auth_token=abc123"),
+            ("/search", "q=milk&csrf_token=abc123"),
+            ("/cart/coupon", "coupon_code=SAVE10"),
+            ("/delivery", "postal_code=99999"),
+            ("/delivery", "zipCode=99999"),
+            ("/currency", "currencyCode=EUR"),
+            ("/orders/filter", "remember_filters=1&status=open"),
+        ],
+    )
+    def test_an_ordinary_form_from_the_landing_page_leaves_it_logged_in(
+        self, tmp_path: Path, path: str, body: str
+    ) -> None:
+        results = self._with("<div id='results'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/dashboard", self._with("<div id='dash'></div>")),
+            self._form_post(path, body),
+            self._get("/results", results),
+        ]
+        result = self._digest(tmp_path, entries, results)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#results")
+
+    def test_a_multipart_step_form_is_a_step(self, tmp_path: Path) -> None:
+        """The step word is only in a multipart part's name, which body_params does
+        not read and body_values does, and the path holds none."""
+        body = '--XyZ\r\nContent-Disposition: form-data; name="otp"\r\n\r\n123456\r\n--XyZ--\r\n'
+        dash = self._with("<div id='brand-bar'></div><div id='dash'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/session/second", "<html><body><div id='brand-bar'></div></body></html>"),
+            self._form_post(
+                "/session/second", body, **{"Content-Type": "multipart/form-data; boundary=XyZ"}
+            ),
+            self._get("/dashboard", dash),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#dash")
+
     def test_a_2fa_settings_page_browsed_after_landing_is_logged_in(self, tmp_path: Path) -> None:
         settings = self._with(
             "<div id='security'></div><input name='otp' autocomplete='one-time-code'>"
@@ -7258,6 +7331,8 @@ class TestTheRecordingSuggestsASuccessSelector:
             ("/mfa", "code=123456", _MFA.replace(" autocomplete='one-time-code'", "")),
             ("/kmsi", "stay=yes", "<html><body><div id='brand-bar'></div></body></html>"),
             ("/consent", "rememberMe=true", "<html><body><div id='brand-bar'></div></body></html>"),
+            # "code" as the only step word: a whole field name, on a path with none.
+            ("/session/second", "code=123456", _MFA.replace(" autocomplete='one-time-code'", "")),
         ],
     )
     def test_a_step_then_the_landing_gives_the_landing_s_markers(
