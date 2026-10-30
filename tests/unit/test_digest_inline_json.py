@@ -767,6 +767,16 @@ _NOT_RUN: dict[str, str] = {
     "js-type-with-parameters": _page(
         _script(f"window.App.props = {_STATE_TEXT};", ' type="text/javascript; charset=utf-8"')
     ),
+    # A ">" in the comment before the script: the comment still runs to "-->".
+    "html-comment-with-gt": _page(
+        f"<!-- a > b {_script(f'window.App.props = {_STATE_TEXT};')} -->"
+    ),
+    "html-comment-with-gt-left-open": _page(
+        "<!-- a > b ", _script(f"window.App.props = {_STATE_TEXT};")
+    ),
+    # The tail of an indexed name, and a name glued to a numeral, are not names.
+    "indexed-name-two-parts": _page(_script(f"window.items[0].App.props = {_STATE_TEXT};")),
+    "numeral-before-name": _page(_script(f"2window.App.props = {_STATE_TEXT};")),
     # "module" is compared without stripping: a padded one is a data block.
     "padded-module-type": _page(_script(f"window.App.props = {_STATE_TEXT};", ' type=" module "')),
     "bracketed-name": _page(_script(f'window["App"].props = {_STATE_TEXT};')),
@@ -1116,6 +1126,9 @@ class TestPageTextInGeneratedCode:
         result = _digest_of(tmp_path / "run", [_html("/search", _PAGES["assignment"][0])])
         files = render(_spec(_with_target(result, target)))
         code = files["src/graftpunk_myshop/plugin.py"]
+        # Every example line is printable ASCII, so none holds a line separator
+        # an editor or str.splitlines would break the comment at.
+        assert all(" " <= char <= "~" for line in _example_lines(code) for char in line)
         compile(code, "plugin.py", "exec")
         _ruff(_write(tmp_path / "commented", files))
         uncommented = _uncommented(code)
