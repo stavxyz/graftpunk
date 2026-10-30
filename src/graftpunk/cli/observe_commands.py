@@ -222,11 +222,43 @@ def _capture_text(entry: HAREntry) -> str | None:
     return capture_text(entry.response.body, entry.response.status)
 
 
+def _family_patterns(
+    run_digest: RunDigest, endpoints: list[tuple[str, str]]
+) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    """Each ``(method, member template)`` of a family row whose own template a
+    ``--match`` names exactly, to those patterns. The member's recordings are written
+    under the member's own template: a generated family command's test passes a
+    recorded member's value, so it reads that member's fixture. A glob never names a
+    family row."""
+    named = set(endpoints)
+    patterns: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for endpoint in run_digest.endpoints:
+        for method in endpoint.methods:
+            pattern = (method, endpoint.template)
+            if endpoint.family_members and pattern in named:
+                for member in endpoint.family_members:
+                    patterns.setdefault((method, member), []).append(pattern)
+    return patterns
+
+
+def _hits(
+    method: str,
+    template: str,
+    endpoints: list[tuple[str, str]],
+    families: dict[tuple[str, str], list[tuple[str, str]]],
+) -> list[tuple[str, str]]:
+    """The ``--match`` patterns an entry filed under *method* and *template* answers:
+    each one matching its template, and each family row it is a member of
+    (:func:`_family_patterns`)."""
+    hits = [e for e in endpoints if _matches_template(method, template, e)]
+    return hits + families.get((method, template), [])
+
+
 def _colliding_file_names(
     entries: list[HAREntry],
     run_digest: RunDigest,
     endpoints: list[tuple[str, str]],
-    families: dict[tuple[str, str], list[str]],
+    families: dict[tuple[str, str], list[tuple[str, str]]],
 ) -> dict[str, set[str]]:
     """The capture stems two or more matched endpoints would share (``/a_b`` and
     ``/a/b`` both name ``get_a_b``, whatever each one's extension), each with those
@@ -239,49 +271,17 @@ def _colliding_file_names(
             path = urlparse(entry.request.url).path or "/"
         except ValueError:
             continue
+        template = endpoint_template(run_digest, path)
         method = entry.request.method.upper()
-        if _capture_text(entry) is None:
+        if _capture_text(entry) is None or not _hits(method, template, endpoints, families):
             continue
-        targets = _fixture_targets(method, endpoint_template(run_digest, path), endpoints, families)
-        for template, _hits in targets:
-            # Case-folded: on a case-insensitive filesystem get_Users and get_users
-            # are one file.
-            stem = capture_slug(method, template)
-            name = stem.casefold()
-            shown.setdefault(name, stem)
-            keys_by_name.setdefault(name, set()).add(f"{method} {template}")
+        # Case-folded: on a case-insensitive filesystem get_Users and get_users
+        # are one file.
+        stem = capture_slug(method, template)
+        name = stem.casefold()
+        shown.setdefault(name, stem)
+        keys_by_name.setdefault(name, set()).add(f"{method} {template}")
     return {shown[name]: keys for name, keys in keys_by_name.items() if len(keys) > 1}
-
-
-def _named_families(
-    run_digest: RunDigest, endpoints: list[tuple[str, str]]
-) -> dict[tuple[str, str], list[str]]:
-    """Each ``(method, member template)`` of a family row whose own template a
-    ``--match`` names exactly, to those family templates. A glob never names a
-    family: a family's fixture is written only for a command that uses its template."""
-    named = set(endpoints)
-    families: dict[tuple[str, str], list[str]] = {}
-    for endpoint in run_digest.endpoints:
-        for method in endpoint.methods:
-            if endpoint.family_members and (method, endpoint.template) in named:
-                for member in endpoint.family_members:
-                    families.setdefault((method, member), []).append(endpoint.template)
-    return families
-
-
-def _fixture_targets(
-    method: str,
-    template: str,
-    endpoints: list[tuple[str, str]],
-    families: dict[tuple[str, str], list[str]],
-) -> list[tuple[str, list[tuple[str, str]]]]:
-    """Each template an entry filed under *template* is written as, with the
-    ``--match`` patterns that write satisfies: its own template, when a pattern
-    matches it, and each named family it is a member of (:func:`_named_families`)."""
-    hits = [e for e in endpoints if _matches_template(method, template, e)]
-    targets = [(template, hits)] if hits else []
-    targets.extend((family, [(method, family)]) for family in families.get((method, template), []))
-    return targets
 
 
 def fixtures_cmd(
@@ -375,7 +375,7 @@ def fixtures_cmd(
             "from being committed.[/yellow]"
         )
 
-    families = _named_families(run_digest, endpoints)
+    families = _family_patterns(run_digest, endpoints)
     collisions = _colliding_file_names(entries, run_digest, endpoints, families)
     if collisions:
         for filename, keys in sorted(collisions.items()):
@@ -413,10 +413,20 @@ def fixtures_cmd(
         if endpoint.fixture_entry_index is not None
     }
 
-    # One write per entry and template it is written as: its own template, and each
-    # family row a --match names that it is a member of (_fixture_targets).
-    writes: list[tuple[int, HAREntry, str, list[tuple[str, str]]]] = []
-    for entry_index, entry in enumerate(entries):
+    def written_first(indexed: tuple[int, HAREntry]) -> tuple[int, int, int, int]:
+        entry_index, entry = indexed
+        try:
+            path = urlparse(entry.request.url).path or "/"
+        except ValueError:
+            path = "/"
+        key = (entry.request.method.upper(), endpoint_template(run_digest, path))
+        is_the_fixture = entry_index == fixture_index.get(key)
+        type_rank, body_rank = fixture_order(
+            _capture_text(entry), entry.response.content_type or "", fixture_types.get(key, "")
+        )
+        return (0 if is_the_fixture else 1, type_rank, body_rank, entry_index)
+
+    for _entry_index, entry in sorted(enumerate(entries), key=written_first):
         try:
             path = urlparse(entry.request.url).path or "/"
         except ValueError:
@@ -425,25 +435,11 @@ def fixtures_cmd(
         # The digest's own template, collapse included: --match takes the
         # template the digest printed, and a generated test looks for the file
         # named after it.
+        template = endpoint_template(run_digest, path)
         method = entry.request.method.upper()
-        for target, hits in _fixture_targets(
-            method, endpoint_template(run_digest, path), endpoints, families
-        ):
-            writes.append((entry_index, entry, target, hits))
-
-    def written_first(
-        write: tuple[int, HAREntry, str, list[tuple[str, str]]],
-    ) -> tuple[int, int, int, int]:
-        entry_index, entry, template, _hits = write
-        key = (entry.request.method.upper(), template)
-        is_the_fixture = entry_index == fixture_index.get(key)
-        type_rank, body_rank = fixture_order(
-            _capture_text(entry), entry.response.content_type or "", fixture_types.get(key, "")
-        )
-        return (0 if is_the_fixture else 1, type_rank, body_rank, entry_index)
-
-    for _entry_index, entry, template, hits in sorted(writes, key=written_first):
-        method = entry.request.method.upper()
+        hits = _hits(method, template, endpoints, families)
+        if not hits:
+            continue
         matched.update(hits)
         content_type = entry.response.content_type or UNNAMED_CONTENT_TYPE
         text = _capture_text(entry)

@@ -19,7 +19,6 @@ import requests
 
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.har.naming import capture_slug
-from graftpunk.har.paths import FAMILY_PLACEHOLDER_RE, template_path
 from graftpunk.plugins.cli_plugin import CommandContext, PluginConfig
 from graftpunk.testing.sidecar import is_sidecar, load_sidecar, sidecar_path
 
@@ -80,15 +79,7 @@ class FixtureSession(GraftpunkSession):
     lookup does not know: a fixture named for a collapsed family
     (``get_products_{product_id}.json``) answers a request whose segment
     templates the same way (an id such as ``1``), not a request for one of
-    the recorded slugs. A fixture named for a family row of the digest
-    (``get_search_{search_slug}_items.json``, a placeholder
-    :data:`graftpunk.har.paths.FAMILY_PLACEHOLDER_RE` matches) answers a request
-    that has no fixture of its own and differs from that name in that one
-    segment, whatever its value there (``/search/west-region/items/``): when no
-    file has the request's own stem, each segment of its templated path in turn,
-    from the first, is tried as each family placeholder the directory's fixture
-    names hold, in sorted order, and the first stem with a file answers. An
-    ``id`` placeholder answers only its own stem, as before. A sidecar
+    the recorded slugs. A sidecar
     ``<filename>.meta.json`` beside a fixture supplies its status and content type
     when present, read through :mod:`graftpunk.testing.sidecar`; without one, the
     status is 200 and the type is guessed from the file's extension. No matching
@@ -114,7 +105,17 @@ class FixtureSession(GraftpunkSession):
         self, method: str, url: str, **kwargs: Any
     ) -> requests.Response:
         path = urlparse(url).path or "/"
-        matches = self._files_for(capture_slug(method, path)) or self._family_files(method, path)
+        stem = capture_slug(method, path)
+        matches = sorted(
+            (
+                p
+                for p in self._fixtures_dir.glob(f"{glob.escape(stem)}.*")
+                # The stem plus exactly one extension: get_api_users.csv.txt is
+                # another endpoint's fixture, not get_api_users'.
+                if p.is_file() and not is_sidecar(p) and p.stem == stem
+            ),
+            key=_fixture_preference,
+        )
         response = requests.Response()
         response.request = requests.PreparedRequest()
         response.request.method = method.upper()
@@ -125,41 +126,6 @@ class FixtureSession(GraftpunkSession):
             response._content = b""
             return response
         return self._respond_from_file(matches[0], response)
-
-    def _files_for(self, stem: str) -> list[Path]:
-        """The fixture files named *stem* plus exactly one extension, preferred first:
-        ``get_api_users.csv.txt`` is another endpoint's fixture, not ``get_api_users``'."""
-        return sorted(
-            (
-                p
-                for p in self._fixtures_dir.glob(f"{glob.escape(stem)}.*")
-                if p.is_file() and not is_sidecar(p) and p.stem == stem
-            ),
-            key=_fixture_preference,
-        )
-
-    def _family_files(self, method: str, path: str) -> list[Path]:
-        """The files of the first family fixture that answers *path* (see the class
-        docstring), or none."""
-        placeholders = sorted(
-            {
-                match.group(0)
-                for p in self._fixtures_dir.glob("*{*}*")
-                if p.is_file() and not is_sidecar(p)
-                for match in FAMILY_PLACEHOLDER_RE.finditer(p.stem)
-            }
-        )
-        if not placeholders:
-            return []
-        template, _ = template_path(path)
-        segments = template.strip("/").split("/") if template.strip("/") else []
-        for position in range(len(segments)):
-            for placeholder in placeholders:
-                candidate = [*segments[:position], placeholder, *segments[position + 1 :]]
-                files = self._files_for(capture_slug(method, "/" + "/".join(candidate)))
-                if files:
-                    return files
-        return []
 
     def _respond_from_file(self, path: Path, response: requests.Response) -> requests.Response:
         """Answer from *path*; its sidecar, when present, is read through the owner,

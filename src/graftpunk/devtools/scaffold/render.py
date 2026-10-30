@@ -1449,6 +1449,19 @@ def _family_identifier(endpoint: Endpoint, path_params: list[str]) -> str | None
     return path_params[names.index(endpoint.family_placeholder)]
 
 
+def _fixture_template(endpoint: Endpoint) -> str:
+    """The template *endpoint*'s generated test reads a fixture for: its own, or for a
+    family row the member its fixture recording came from. That test passes the
+    member's value (``Endpoint.family_fixture_value``), so the request it issues is
+    one the run recorded, answered by the fixture ``gp observe fixtures`` writes for
+    that member."""
+    if not endpoint.family_members:
+        return endpoint.template
+    return endpoint.template.replace(
+        "{" + endpoint.family_placeholder + "}", endpoint.family_fixture_value
+    )
+
+
 def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
     """The endpoints the scaffold renders a stub for, most useful first. The login
     flow's own endpoints are skipped by the digest's ``login_flow`` flag, and a family
@@ -1525,7 +1538,9 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
         None
         if _no_fixture_is_written(command.endpoint)
         else capture_filename(
-            command.method, command.endpoint.template, _fixture_type(command.endpoint)
+            command.method,
+            _fixture_template(command.endpoint),
+            _fixture_type(command.endpoint),
         )
     )
     return RenderedCommand(
@@ -1805,13 +1820,14 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
         if _no_fixture_is_written(endpoint):
             continue  # no generated test reads one (see _render_test_module)
         # Case-folded, as a case-insensitive filesystem compares them.
-        stem = capture_slug(command.method, endpoint.template).casefold()
+        template = _fixture_template(endpoint)
+        stem = capture_slug(command.method, template).casefold()
         if stem in stems:
             continue  # no generated test reads it (see _render_test_module)
         stems.add(stem)
         paths.append(
             f"{fixtures_root_for(spec)}"
-            f"{capture_filename(command.method, endpoint.template, _fixture_type(endpoint))}"
+            f"{capture_filename(command.method, template, _fixture_type(endpoint))}"
         )
     return paths
 
@@ -1893,7 +1909,7 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
             lines.append("")
             lines.append("")
             continue
-        stem = capture_slug(method, endpoint.template)
+        stem = capture_slug(method, _fixture_template(endpoint))
         if stem.casefold() in stems:
             # FixtureSession looks a fixture up by stem, so this endpoint's test
             # would read the other endpoint's fixture.
@@ -1914,8 +1930,8 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
             endpoint.template, {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
         )
         # A family's placeholder gets the value its fixture recording sent, so the
-        # request is one the run recorded; FixtureSession answers it from the fixture
-        # named for the family (graftpunk.har.paths.FAMILY_PLACEHOLDER_RE).
+        # request is one the run recorded, answered from that member's own fixture
+        # (_fixture_template).
         family_identifier = _family_identifier(endpoint, path_params)
         arguments = [
             f"{p}={quoted_literal(endpoint.family_fixture_value)}"

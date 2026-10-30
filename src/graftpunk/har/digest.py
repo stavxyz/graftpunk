@@ -52,6 +52,7 @@ from graftpunk.har.paths import (
     param_name_for_segment,
     reads_as_cased_words,
     reads_as_words,
+    split_parts,
     template_path,
 )
 from graftpunk.har.selectors import bounded_selector, selector_holds_an_id, selector_keys
@@ -3025,16 +3026,15 @@ _FIXED_VOCABULARY = frozenset(
         "www",
     }
 )
-_SEGMENT_PART_SPLIT_RE = re.compile(r"[_.\-~$]")
 
 
 def _letters_only(segment: str) -> bool:
-    """True when every part of *segment* (split on ``_ . - ~ $``, as the path rule
-    splits one) is one or more ASCII letters, and the path rule keeps it literal:
-    ``north-region``, ``sale_items``. A placeholder, a percent-escape, an empty
-    part, and a digit anywhere each make it something else."""
-    parts = _SEGMENT_PART_SPLIT_RE.split(segment)
-    return all(part.isascii() and part.isalpha() for part in parts) and not looks_dynamic(segment)
+    """True when every part of *segment* (:func:`graftpunk.har.paths.split_parts`) is
+    one or more ASCII letters: ``north-region``, ``sale_items``. A placeholder, a
+    percent-escape, an empty part, and a digit anywhere each make it something else.
+    The segment comes from a template, so ``template_path`` has already turned one the
+    path rule reads as dynamic into a placeholder."""
+    return all(part.isascii() and part.isalpha() for part in split_parts(segment))
 
 
 def _family_eligible(segment: str, *, last: bool) -> bool:
@@ -3075,7 +3075,8 @@ def _family_groups(
     family's members share; see :func:`_family_endpoints`."""
     groups: dict[tuple[int, tuple[object, ...]], list[Endpoint]] = {}
     for endpoint in endpoints:
-        if endpoint.login_flow or len(endpoint.methods) != 1:
+        # One method each: the digest files an endpoint per method and template.
+        if endpoint.login_flow:
             continue
         shape = _top_level_shape(endpoint.shape)
         segments = _segments(endpoint.template)
@@ -3097,6 +3098,17 @@ def _family_groups(
     return groups
 
 
+def _without_case_variants(members: list[Endpoint], position: int) -> list[Endpoint]:
+    """*members* less every one whose value at *position* equals another member's
+    there but for letter case: ``Items`` and ``items`` are one word spelled two ways,
+    not two values of a parameter."""
+    folded: dict[str, int] = {}
+    for member in members:
+        value = _segments(member.template)[position].casefold()
+        folded[value] = folded.get(value, 0) + 1
+    return [m for m in members if folded[_segments(m.template)[position].casefold()] == 1]
+
+
 def _family_endpoints(
     endpoints: tuple[Endpoint, ...],
     accumulators: dict[tuple[str, str], _EndpointAccumulator],
@@ -3108,28 +3120,32 @@ def _family_endpoints(
     (:func:`_top_level_shape`), segment count of two or more, and trailing slash, and
     whose templates agree in every segment but one, that one passing
     :func:`_family_eligible` in each. A single segment is no family: every root route
-    (``/about``, ``/contact``) would join one. An endpoint that fits two families (it
-    differs from some siblings in one segment and from others in another) joins
-    neither, and a family left with fewer than two members by that is dropped. The
-    family's template holds :func:`graftpunk.har.paths.family_param_name`'s
-    placeholder at the varying position; one that would repeat an existing
-    endpoint's method and template is dropped. Its recordings are its members',
-    merged as the high-cardinality collapse merges a family's, from *accumulators*
-    (keyed by method and template, and only read). The members' own endpoints stay
-    exactly as they are.
+    (``/about``, ``/contact``) would join one. Members whose values differ only in
+    letter case are one word, so none of them joins (:func:`_without_case_variants`).
+    An endpoint that fits two families (it differs from some siblings in one segment
+    and from others in another) joins neither, and a family left with fewer than two
+    members by that is dropped. The family's template holds
+    :func:`graftpunk.har.paths.family_param_name`'s placeholder at the varying
+    position. Two families that would have the same method and template (an HTML and
+    a JSON family under one prefix) are both dropped: the template would name either,
+    and a row a command could take for the wrong one is worse than no row. Its
+    recordings are its members', merged as the high-cardinality collapse merges a
+    family's, from *accumulators* (keyed by method and template, and only read). The
+    members' own endpoints stay exactly as they are.
     """
-    qualifying = [
-        (key, members) for key, members in _family_groups(endpoints).items() if len(members) > 1
-    ]
+    qualifying = []
+    for key, members in _family_groups(endpoints).items():
+        distinct = _without_case_variants(members, key[0])
+        if len(distinct) > 1:
+            qualifying.append((key[0], distinct))
     fits: dict[tuple[str, str], int] = {}
-    for _key, members in qualifying:
+    for _position, members in qualifying:
         for member in members:
             ident = (member.methods[0], member.template)
             fits[ident] = fits.get(ident, 0) + 1
-    existing = {(method, e.template) for e in endpoints for method in e.methods}
 
-    families: list[Endpoint] = []
-    for (position, _shared), members in qualifying:
+    planned: list[tuple[str, str, int, str, list[Endpoint]]] = []
+    for position, members in qualifying:
         method = members[0].methods[0]
         kept = sorted(
             (m for m in members if fits[(method, m.template)] == 1), key=lambda m: m.template
@@ -3141,7 +3157,14 @@ def _family_endpoints(
         name = family_param_name(segments[position - 1] if position else "", taken)
         segments[position] = "{" + name + "}"
         template = "/" + "/".join(segments) + ("/" if kept[0].template.endswith("/") else "")
-        if (method, template) in existing:
+        planned.append((method, template, position, name, kept))
+    templates: dict[tuple[str, str], int] = {}
+    for method, template, *_rest in planned:
+        templates[(method, template)] = templates.get((method, template), 0) + 1
+
+    families: list[Endpoint] = []
+    for method, template, position, name, kept in planned:
+        if templates[(method, template)] > 1:
             continue
         family = _EndpointAccumulator(kept[0].host)
         family.methods.append(method)

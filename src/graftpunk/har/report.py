@@ -130,20 +130,37 @@ def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
     """*d*'s endpoints in the order both renderers list them: by
     :func:`_endpoint_sort_key`, each family row just before the first of its
     members, so it reads beside the rows it stands for. A run with no family is
-    listed exactly as it was before family rows existed."""
+    listed exactly as it was before family rows existed. Linear in the endpoint
+    count: each family is found by its members' method and template."""
     literal = sorted((e for e in d.endpoints if not e.family_members), key=_endpoint_sort_key)
-    families = [e for e in d.endpoints if e.family_members]
+    by_member: dict[tuple[tuple[str, ...], str], list[Endpoint]] = {}
+    for family in (e for e in d.endpoints if e.family_members):
+        for member in family.family_members:
+            by_member.setdefault((family.methods, member), []).append(family)
+    emitted: set[int] = set()
     ordered: list[Endpoint] = []
     for endpoint in literal:
-        ordered.extend(
-            family
-            for family in families
-            if family not in ordered
-            and family.methods == endpoint.methods
-            and endpoint.template in family.family_members
-        )
+        for family in by_member.get((endpoint.methods, endpoint.template), ()):
+            if id(family) not in emitted:
+                emitted.add(id(family))
+                ordered.append(family)
         ordered.append(endpoint)
     return ordered
+
+
+def _limited(ordered: list[Endpoint], limit: int) -> list[Endpoint]:
+    """The head of *ordered* the markdown digest shows: its first *limit* literal
+    rows, each with the family rows listed before it. A family row never takes a
+    literal row's place under the limit."""
+    shown: list[Endpoint] = []
+    literal = 0
+    for endpoint in ordered:
+        if literal == limit:
+            break
+        if not endpoint.family_members:
+            literal += 1
+        shown.append(endpoint)
+    return shown
 
 
 def _other_host_sort_key(item: tuple[str, int]) -> int:
@@ -214,11 +231,17 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
 
     lines.append("## Endpoints")
     ordered = _ordered_endpoints(d)
-    shown, remaining = ordered[:limit], ordered[limit:]
+    shown = _limited(ordered, limit)
     for endpoint in shown:
         lines.extend(_endpoint_block(endpoint))
-    if remaining:
-        lines.append(f"... and {len(remaining)} more endpoint(s) (raise --limit to see them)")
+    # Counted as the summary line counts: literal endpoints, and family rows apart.
+    more_families = sum(1 for e in ordered[len(shown) :] if e.family_members)
+    more_endpoints = len(ordered) - len(shown) - more_families
+    if more_endpoints:
+        family_note = f", {more_families} more family row(s)" if more_families else ""
+        lines.append(
+            f"... and {more_endpoints} more endpoint(s){family_note} (raise --limit to see them)"
+        )
         lines.append("")
 
     other_hosts = {h: c for h, c in d.hosts.items() if h != d.primary_host}

@@ -33,7 +33,6 @@ _EMAIL_SHAPE = r"[^@\s/]+@[^@\s/]+\.[^@\s/.]+"
 _EMAIL_SEARCH_RE = re.compile(_EMAIL_SHAPE)
 
 __all__ = [
-    "FAMILY_PLACEHOLDER_RE",
     "bare_host",
     "bare_path",
     "bare_url",
@@ -46,6 +45,7 @@ __all__ = [
     "param_name_for_segment",
     "reads_as_cased_words",
     "reads_as_words",
+    "split_parts",
     "template_path",
     "templated_url",
     "templates_a_segment",
@@ -125,8 +125,14 @@ def _letter_digit_switches(text: str) -> int:
     return sum(1 for before, after in zip(kinds, kinds[1:], strict=False) if before != after)
 
 
+def split_parts(text: str) -> list[str]:
+    """*text* split on ``_ . - ~ $``, the separators the path rule reads a segment's
+    parts by, empty parts kept (``north--region`` gives an empty middle part)."""
+    return _PART_SPLIT_RE.split(text)
+
+
 def _parts(text: str) -> list[str]:
-    return [part for part in _PART_SPLIT_RE.split(text) if part]
+    return [part for part in split_parts(text) if part]
 
 
 def _email(text: str) -> bool:
@@ -733,11 +739,27 @@ def _singular(word: str) -> str:
 
 _PLAIN_WORD_RE = re.compile(r"[A-Za-z]+")
 
-FAMILY_PLACEHOLDER_RE = re.compile(r"\{(?:[A-Za-z]+_)?slug\d*\}")
-"""A placeholder :func:`family_param_name` writes, and no other rule does:
-``template_path`` and the digest's high-cardinality collapse name theirs ``id`` or
-``<word>_id``. ``graftpunk.testing.FixtureSession`` reads a fixture named with one
-as answering every value of that segment."""
+# Plurals ending in "ies" whose singular is not "y": the same word in the plural,
+# and words whose singular ends in "ie" (the final "s" alone comes off).
+_SAME_IN_THE_PLURAL = frozenset({"series", "species"})
+_IE_PLURALS = frozenset(
+    {
+        "brownies",
+        "calories",
+        "cookies",
+        "freebies",
+        "goalies",
+        "lies",
+        "movies",
+        "newbies",
+        "pies",
+        "rookies",
+        "selfies",
+        "smoothies",
+        "ties",
+        "zombies",
+    }
+)
 
 
 def family_param_name(prev_segment: str, taken: Iterable[str] = ()) -> str:
@@ -748,15 +770,19 @@ def family_param_name(prev_segment: str, taken: Iterable[str] = ()) -> str:
     stable, for the author to rename: the singular of *prev_segment* plus
     ``_slug`` when *prev_segment* is a plain word of ASCII letters
     (``categories`` -> ``category_slug``, ``regions`` -> ``region_slug``; a final
-    ``ies`` becomes ``y``, which ``param_name_for_segment`` keeps as it always has),
-    else ``slug`` (no segment before it, a
-    placeholder, or a segment with a digit or a separator). When that name is in
-    *taken* (the template's other placeholder names), a number from 2 up is
-    appended (``slug2``).
+    ``ies`` becomes ``y``, which ``param_name_for_segment`` keeps as it always has,
+    except in ``series`` and ``species``, which keep their spelling, and in a few
+    words whose singular ends in ``ie``, such as ``movies``), else ``slug`` (no
+    segment before it, a placeholder, or a segment with a digit or a separator). When
+    that name is in *taken* (the template's other placeholder names), a number from 2
+    up is appended (``slug2``).
     """
+    lowered = prev_segment.lower()
     if not _PLAIN_WORD_RE.fullmatch(prev_segment):
         base = "slug"
-    elif prev_segment.lower().endswith("ies") and len(prev_segment) > 3:
+    elif lowered in _SAME_IN_THE_PLURAL:
+        base = f"{prev_segment}_slug"
+    elif lowered.endswith("ies") and len(prev_segment) > 3 and lowered not in _IE_PLURALS:
         base = f"{prev_segment[:-3]}y_slug"
     else:
         base = f"{_singular(prev_segment)}_slug"
