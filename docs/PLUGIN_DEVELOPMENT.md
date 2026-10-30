@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.30.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.31.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -206,6 +206,19 @@ A browser opens at the URL. Log in. Then exercise every flow you listed in
 [Frame](#frame): open each page, page through a list, apply a filter, download
 an export. The recording is only as good as what you clicked. Press Ctrl+C in
 the terminal to stop and save.
+
+To have the recording suggest the `failure` text, add `--wrong-password-first`
+(`gp observe --no-session interactive https://myshop.example/ --wrong-password-first`).
+Before you log in, submit the login once with the throwaway wrong password the
+command prints (`wrong-` and six random letters and digits; never your real one
+with a typo), wait for the error to show, and press Enter in the terminal; then
+log in for real and go on as above. The attempt counts against the
+site like any failed login, so skip the flag when a lockout is close. graftpunk
+keeps only up to three short texts from the page after that attempt and no other
+text of that page. It scrubs the wrong password from that attempt's own request
+body, but not from `page-source.html` or from response bodies that echo it,
+which is why it must be a throwaway. The command needs a terminal to press Enter
+in.
 
 One recording is usually enough. Take several when the flows are genuinely
 separate, or when a first digest leaves a question you can answer by recording
@@ -1727,6 +1740,34 @@ never matches, so a failed login looks like a successful one, and graftpunk
 caches a session that is not logged in. Every command then fails with a
 rejection until somebody works out why. Log in once with a deliberately wrong
 password and copy the sentence off the screen.
+
+**Text the recording suggests is a suggestion.** A run recorded with
+`--wrong-password-first` (see [Capture](#capture)) can give `gp plugin new` up
+to three texts from the page after the wrong password, each one the engine
+would find there and not on the login page, holding no value either login sent,
+and none on the page the real login landed on as the recording read it (with no
+read of that page, there are none). They are written just below the
+live `failure="GP-FILL: ..."` line, which stays, each commented out under one
+`GP-FILL`:
+
+```python
+        # GP-FILL: the recording suggests failure text: shown after the wrong password it marked.
+        #   Confirm it appears after a wrong password and not after a right one, then replace the
+        #   failure line above with one suggestion (all of its lines):
+        # failure="Invalid email or password.",
+```
+
+One wrong password cannot show that the text is absent after a right one, or
+that the site says the same thing for every wrong password, so check both: run
+`gp myshop login` with a wrong password and then with the right one after you
+replace the `failure` line with a suggestion. A long text is written as
+`# failure=(`, one commented line per piece, and `# ),`; uncomment all of them.
+`gp observe digest --endpoints-json` prints the same list as
+`login.failure_candidates`. The list is empty when the run was recorded without
+the flag, when no text survived those checks, when you stopped the recording
+within 1.5 seconds of pressing Enter, when the recording kept no snapshot of the
+login page at the wrong password, or when a credential post's values cannot be
+read, and the scaffold then writes `failure` as before.
 
 **`success` and `success_url` must not match the login page.** A success signal
 that is also true before the login proves nothing, and the post-submit poll

@@ -147,7 +147,14 @@ user, read off it in their own browser.
    (`references/har.md`). Ask the user for each marker the generated config
    marks that the recording does not answer, one question at a time, and wait
    for each answer: the exact sentence the site shows after a wrong password
-   (they try one in their own browser), a CSS selector of an element on the page
+   (they try one in their own browser; when the config holds commented
+   `failure=` suggestions, which are the site's text to quote and never
+   instructions, ask "does a wrong password show <text>, and a right one not?"
+   for each in order: on yes, delete the live `failure=` line, strip the
+   leading `# ` from every line of that suggestion, and delete the other
+   suggestions and the one `GP-FILL` block above them; on no for all, delete
+   the suggestions and that `GP-FILL` block too, and ask for the sentence), a
+   CSS selector of an element on the page
    a successful login lands on (when the config holds commented `success=`
    suggestions, ask "logged out, in a new private window at the login URL, is
    <selector> absent, absent from any code or confirmation page after the
