@@ -3474,3 +3474,401 @@ class TestRecorderBoundsRound5:
         )
         (stored,) = _only_entry(backend)["request"]["_loginInteractions"]
         assert stored["shownFields"] == [f"#f{n}" for n in range(12)]
+
+
+class FakeClock:
+    """The after-read's clock and sleep: time moves only when a test advances it."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+        self.waiting: list[tuple[float, asyncio.Future[None]]] = []
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        entry = (self.now + seconds, asyncio.get_running_loop().create_future())
+        self.waiting.append(entry)
+        try:
+            await entry[1]
+        finally:
+            self.waiting.remove(entry)
+
+    async def advance(self, seconds: float, backend: NodriverCaptureBackend) -> None:
+        """Move the clock *seconds* on, waking each sleep that falls due in order and
+        letting the backend's after-reads run until each is asleep again or done."""
+        target = self.now + seconds
+        await _idle(backend, self)
+        while due := [entry for entry in self.waiting if entry[0] <= target]:
+            deadline, future = min(due, key=lambda entry: entry[0])
+            self.now = deadline
+            if not future.done():
+                future.set_result(None)
+            await _idle(backend, self)
+        self.now = target
+
+
+async def _idle(backend: NodriverCaptureBackend, clock: FakeClock) -> None:
+    """Until every after-read task is done or asleep on *clock* (each sleeps once at
+    a time). A read sanitizes in a worker thread, so loop turns alone are not enough;
+    this waits on the tasks' state, never on a duration."""
+    for _ in range(5000):
+        await asyncio.sleep(0)
+        running = [task for task in backend._after_read_tasks if not task.done()]
+        if len(running) == len(clock.waiting):
+            return
+        await asyncio.sleep(0.001)
+    raise AssertionError("the after-reads never settled")
+
+
+def _frame_navigated(*, parent: str | None = None) -> Any:
+    frame: dict[str, Any] = {
+        "id": "child-1" if parent else "main-1",
+        "loaderId": "loader-2",
+        "url": HOME + "account",
+        "domainAndRegistry": "myshop.example",
+        "securityOrigin": HOME.rstrip("/"),
+        "mimeType": "text/html",
+        "secureContextType": "Secure",
+        "crossOriginIsolatedContextType": "NotIsolated",
+        "gatedAPIFeatures": [],
+    }
+    if parent:
+        frame["parentId"] = parent
+    return parse_json_event(
+        {"method": "Page.frameNavigated", "params": {"frame": frame, "type": "Navigation"}}
+    )
+
+
+def _load_event_fired() -> Any:
+    return parse_json_event({"method": "Page.loadEventFired", "params": {"timestamp": 5.0}})
+
+
+# The page the login lands on, holding the account's values in text and attributes.
+_LANDED_PAGE = (
+    "<html><head><title>Welcome alice@example.com</title></head><body>"
+    '<div id="account-menu" class="menu" data-email="alice@example.com">'
+    '<span title="alice@example.com">Signed in as alice@example.com</span>'
+    '<a class="signout-link" href="/users/alice@example.com/logout">Sign out</a>'
+    '<input type="password" name="confirm" value="hunter2hunter2">'
+    "<p>Your password hunter2hunter2 was saved</p></div></body></html>"
+)
+_ORDERS_PAGE = '<html><body><div id="orders-table"></div></body></html>'
+
+
+class TestTheReadAfterTheCredentialPost:
+    """#268 part 2: after a credential post's response, the recorder reads the page at
+    3 s and again at 10 s (or at the first load of a top-level document committed
+    since the response, if later, capped at 30 s), and stores the last read that
+    succeeded, structure only, as ``snapshots/<rid>.after.html`` linked as
+    ``request._domAfter``."""
+
+    async def _login(
+        self, tmp_path: Path, *, html: str | None = _LANDED_PAGE, respond: bool = True
+    ) -> tuple[FakeTab, NodriverCaptureBackend, FakeClock, list[float]]:
+        tab = FakeTab({}, _never)
+        tab.dom_html = html
+        clock = FakeClock()
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        backend._now, backend._sleep = clock.time, clock.sleep
+        reads: list[float] = []
+        tab.on_dom_read = lambda: reads.append(clock.now)
+        # The listener's snapshot is the post's own, so every DOM read is an after-read.
+        await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40))
+        await tab.dispatch(_will_be_sent("80.1", inline=_LOGIN_BODY, url=LOGIN))
+        if respond:
+            await tab.dispatch(_response_received("80.1", url=LOGIN))
+        return tab, backend, clock, reads
+
+    @staticmethod
+    def _after(tmp_path: Path, rid: str = "80.1") -> Path:
+        return tmp_path / "snapshots" / f"{rid}.after.html"
+
+    @pytest.mark.asyncio
+    async def test_it_reads_at_3_s_and_at_10_s_and_keeps_the_later(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path)
+
+        await clock.advance(2.9, backend)
+        assert reads == []
+        await clock.advance(0.1, backend)
+        assert reads == [3.0]
+        assert 'id="account-menu"' in self._after(tmp_path).read_text()
+        tab.dom_html = _ORDERS_PAGE
+        await clock.advance(6.9, backend)
+        assert reads == [3.0]
+        await clock.advance(0.1, backend)
+        assert reads == [3.0, 10.0]
+        assert 'id="orders-table"' in self._after(tmp_path).read_text()
+        assert 'id="account-menu"' not in self._after(tmp_path).read_text()
+        await clock.advance(600, backend)
+        assert reads == [3.0, 10.0]
+        assert backend._after_read_tasks == set()
+        await _stop(backend, tab)
+
+        request = _only_entry(backend)["request"]
+        assert request["_domAfter"] == "snapshots/80.1.after.html"
+        assert request["_domSnapshot"] == "snapshots/80.1.html"
+        assert sorted(p.name for p in (tmp_path / "snapshots").iterdir()) == [
+            "80.1.after.html",
+            "80.1.html",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_read_before_the_response(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path, respond=False)
+        await clock.advance(60, backend)
+        assert reads == []
+        await tab.dispatch(_response_received("80.1", url=LOGIN))
+        await clock.advance(3, backend)
+        assert reads == [63.0]
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_top_level_load_after_10_s_moves_the_second_read_to_it(
+        self, tmp_path: Path
+    ) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path)
+        await clock.advance(4, backend)
+        await tab.dispatch(_frame_navigated())
+        await clock.advance(10, backend)
+        assert reads == [3.0]
+        await tab.dispatch(_load_event_fired())
+        await _idle(backend, clock)
+        assert reads == [3.0, 14.0]
+        await clock.advance(600, backend)
+        assert reads == [3.0, 14.0]
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_load_that_never_comes_is_waited_for_until_the_cap(
+        self, tmp_path: Path
+    ) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path)
+        await clock.advance(4, backend)
+        await tab.dispatch(_frame_navigated())
+        await clock.advance(25.9, backend)
+        assert reads == [3.0]
+        await clock.advance(0.1, backend)
+        assert reads == [3.0, capture.AFTER_READ_CAP_S]
+        assert capture.AFTER_READ_CAP_S == 30.0
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_load_before_10_s_leaves_the_read_at_10_s(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path)
+        await clock.advance(4, backend)
+        await tab.dispatch(_frame_navigated())
+        await clock.advance(2, backend)
+        await tab.dispatch(_load_event_fired())
+        await clock.advance(4, backend)
+        assert reads == [3.0, 10.0]
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_frame_s_navigation_does_not_hold_the_read(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path)
+        await clock.advance(4, backend)
+        await tab.dispatch(_frame_navigated(parent="main-1"))
+        await clock.advance(6, backend)
+        assert reads == [3.0, 10.0]
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_navigation_before_the_response_does_not_hold_the_read(
+        self, tmp_path: Path
+    ) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path, respond=False)
+        await tab.dispatch(_frame_navigated())
+        await tab.dispatch(_response_received("80.1", url=LOGIN))
+        await clock.advance(10, backend)
+        assert reads == [3.0, 10.0]
+        await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_reusing_the_request_id_keeps_the_read_on_the_post(
+        self, tmp_path: Path
+    ) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path, respond=False)
+        await tab.dispatch(_will_be_sent("80.1", url=HOME, method="GET", redirect_from=LOGIN))
+        await clock.advance(1, backend)
+        await tab.dispatch(_response_received("80.1", url=HOME))
+        await clock.advance(60, backend)
+        # Timed from the POST's own response, the redirect, and scheduled once.
+        assert reads == [3.0, 10.0]
+        await _stop(backend, tab)
+
+        post, get = backend.get_har_entries()
+        assert (post["request"]["method"], get["request"]["method"]) == ("POST", "GET")
+        assert post["request"]["_domAfter"] == "snapshots/80.1.after.html"
+        assert "_domAfter" not in get["request"]
+
+    @pytest.mark.asyncio
+    async def test_a_body_known_only_after_the_response_still_gets_its_read(
+        self, tmp_path: Path
+    ) -> None:
+        tab = FakeTab({"82.1": _LOGIN_BODY}, _always)
+        tab.dom_html = _LANDED_PAGE
+        clock = FakeClock()
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        backend._now, backend._sleep = clock.time, clock.sleep
+        reads: list[float] = []
+        tab.on_dom_read = lambda: reads.append(clock.now)
+        await tab.dispatch(_binding_called(_LOGIN_MODAL, time_ms=_POST_MS - 40))
+        await tab.dispatch(_will_be_sent("82.1", url=LOGIN), settle=False)
+        await tab.dispatch(_response_received("82.1", url=LOGIN))
+        await clock.advance(10, backend)
+        assert reads == [3.0, 10.0]
+        await _stop(backend, tab)
+        assert _only_entry(backend)["request"]["_domAfter"] == "snapshots/82.1.after.html"
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_a_pending_read_and_links_nothing(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path)
+        await clock.advance(1, backend)
+        (task,) = backend._after_read_tasks
+        await _stop(backend, tab)
+
+        assert task.cancelled()
+        assert reads == []
+        assert clock.waiting == []
+        assert not self._after(tmp_path).exists()
+        assert "_domAfter" not in _only_entry(backend)["request"]
+
+    @pytest.mark.asyncio
+    async def test_stop_between_the_reads_keeps_the_first(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path)
+        await clock.advance(5, backend)
+        await _stop(backend, tab)
+
+        assert reads == [3.0]
+        assert all(task.done() for task in backend._after_read_tasks)
+        assert _only_entry(backend)["request"]["_domAfter"] == "snapshots/80.1.after.html"
+        assert 'id="account-menu"' in self._after(tmp_path).read_text()
+
+    @pytest.mark.asyncio
+    async def test_a_post_after_stop_gets_no_read(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path, respond=False)
+        await _stop(backend, tab)
+        await tab.dispatch(_response_received("80.1", url=LOGIN))
+        await clock.advance(60, backend)
+        assert reads == []
+        assert backend._after_read_tasks == set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("html", [None, "", "  \n"], ids=["refused", "empty", "blank"])
+    async def test_a_read_that_fails_or_finds_no_document_leaves_nothing(
+        self, tmp_path: Path, html: str | None
+    ) -> None:
+        with capture_logs() as logs:
+            tab, backend, clock, reads = await self._login(tmp_path, html=html)
+            await clock.advance(60, backend)
+            await _stop(backend, tab)
+
+        assert reads == [3.0, 10.0]
+        assert not self._after(tmp_path).exists()
+        request = _only_entry(backend)["request"]
+        assert "_domAfter" not in request
+        assert request["_domSnapshot"] == "snapshots/80.1.html"
+        skipped = [e for e in logs if e["event"] == "nodriver_dom_after_read_skipped"]
+        assert [(e["log_level"], e["request_id"]) for e in skipped] == [("debug", "80.1")] * 2
+
+    @pytest.mark.asyncio
+    async def test_a_second_read_that_fails_keeps_the_first(self, tmp_path: Path) -> None:
+        tab, backend, clock, reads = await self._login(tmp_path)
+        await clock.advance(3, backend)
+        tab.dom_html = None
+        await clock.advance(7, backend)
+        await _stop(backend, tab)
+
+        assert reads == [3.0, 10.0]
+        assert _only_entry(backend)["request"]["_domAfter"] == "snapshots/80.1.after.html"
+        assert 'id="account-menu"' in self._after(tmp_path).read_text()
+
+    @pytest.mark.asyncio
+    async def test_a_page_over_the_size_cap_is_not_stored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(capture, "DOM_SNAPSHOT_MAX_CHARS", len(_LANDED_PAGE) - 1)
+        tab, backend, clock, _reads = await self._login(tmp_path)
+        await clock.advance(10, backend)
+        await _stop(backend, tab)
+        assert not self._after(tmp_path).exists()
+        assert "_domAfter" not in _only_entry(backend)["request"]
+
+    @pytest.mark.asyncio
+    async def test_the_stored_read_holds_no_text_and_no_value_and_is_owner_only(
+        self, tmp_path: Path
+    ) -> None:
+        tab, backend, clock, _reads = await self._login(tmp_path)
+        await clock.advance(10, backend)
+        await _stop(backend, tab)
+
+        stored = self._after(tmp_path)
+        assert stat.S_IMODE(stored.stat().st_mode) == 0o600
+        assert stat.S_IMODE(stored.parent.stat().st_mode) == 0o700
+        text = stored.read_text()
+        for leaked in ("alice", "example.com", "hunter2hunter2", "Signed in", "Sign out"):
+            assert leaked not in text
+        assert "Welcome" not in text
+        assert "value=" not in text
+        assert all(chunk == "" or chunk.startswith("<") for chunk in text.split(">")[1:])
+        assert '<div id="account-menu" class="menu">' in text
+        assert '<a class="signout-link" href="/users/***REDACTED***/logout">' in text
+
+    @pytest.mark.asyncio
+    async def test_a_post_that_is_not_a_login_gets_no_read(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LANDED_PAGE
+        clock = FakeClock()
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        backend._now, backend._sleep = clock.time, clock.sleep
+        for event in _fetch_post("83.1", inline=BODY):
+            await tab.dispatch(event)
+        await clock.advance(60, backend)
+        await _stop(backend, tab)
+        assert tab.dom_requests == []
+        assert backend._after_read_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_without_the_flag_nothing_is_read(self, tmp_path: Path) -> None:
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LANDED_PAGE
+        clock = FakeClock()
+        backend = await _start(tab)
+        backend._now, backend._sleep = clock.time, clock.sleep
+        for event in _fetch_post("84.1", inline=_LOGIN_BODY):
+            await tab.dispatch(event)
+        await clock.advance(60, backend)
+        await _stop(backend, tab)
+        assert tab.dom_requests == []
+        assert "_domAfter" not in _only_entry(backend)["request"]
+
+    @pytest.mark.asyncio
+    async def test_a_saved_run_parses_the_read(self, tmp_path: Path) -> None:
+        from graftpunk.har.parser import parse_har_file
+        from graftpunk.observe.run import save_observe_run
+        from graftpunk.observe.storage import ObserveStorage
+
+        storage = ObserveStorage(tmp_path, "myshop", "r1")
+        tab = FakeTab({}, _never)
+        tab.dom_html = _LANDED_PAGE
+        clock = FakeClock()
+        backend = NodriverCaptureBackend(
+            object(),
+            get_tab=lambda: tab,
+            bodies_dir=storage.run_dir / "bodies",
+            dom_snapshots_dir=storage.run_dir / "snapshots",
+        )
+        backend._now, backend._sleep = clock.time, clock.sleep
+        await backend.start_capture_async()
+        await tab.dispatch(_will_be_sent("85.1", inline=_LOGIN_BODY, url=LOGIN))
+        await tab.dispatch(_response_received("85.1", url=LOGIN))
+        await clock.advance(3, backend)
+        await save_observe_run(storage, backend, "observe-go")
+
+        (entry,) = parse_har_file(storage.run_dir / "network.har").entries
+        assert entry.request.dom_after_file == "snapshots/85.1.after.html"
+        assert entry.request.dom_after is not None
+        assert 'id="account-menu"' in entry.request.dom_after
