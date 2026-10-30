@@ -30,6 +30,7 @@ from graftpunk.har.documents import (
     looks_like_new_password_name,
     looks_like_token_name,
 )
+from graftpunk.har.inline_state import inline_json
 from graftpunk.har.login_signals import (
     account_needles,
     asks_for_a_code,
@@ -75,6 +76,7 @@ __all__ = [
     "DropReason",
     "Endpoint",
     "INTERNAL",
+    "InlineJson",
     "LoginForm",
     "OMIT_EMPTY",
     "LoginObservation",
@@ -281,6 +283,17 @@ class ShapeNode:
     truncated: bool = False  # keys beyond the cap or depth beyond the cap were dropped
 
 
+@dataclass(frozen=True)
+class InlineJson:
+    """The inline JSON state an HTML page carries (:mod:`graftpunk.har.inline_state`):
+    the target it is assigned to as written, a part holding an id shown as a
+    placeholder (``window.App.props``, ``script#__NEXT_DATA__``), and the object's
+    shape, read by the rule a JSON body's is. Never a value."""
+
+    target: str
+    shape: ShapeNode
+
+
 SHAPE_UNAVAILABLE = ShapeNode(kind="unavailable")
 """A JSON response too large to have been captured whole: its shape is unknown.
 
@@ -392,6 +405,11 @@ class Endpoint:
     # Lookups for the generator, so render_json leaves them out.
     family_placeholder: str = field(default="", metadata={INTERNAL: True})
     family_fixture_value: str = field(default="", metadata={INTERNAL: True})
+    # The inline JSON state the fixture recording carries when it is an HTML page
+    # (_inline_json_of), read from the same recording as shape, so it describes the
+    # page the generated test reads. None otherwise, and then left out of
+    # render_json, so a run without one renders as it did before the field existed.
+    inline_json: InlineJson | None = field(default=None, metadata={OMIT_EMPTY: True})
 
 
 @dataclass(frozen=True)
@@ -1085,6 +1103,22 @@ def _response_shape(entry: HAREntry) -> ShapeNode | None:
             return SHAPE_UNAVAILABLE
         return None
     return _shape_of(parsed)
+
+
+_HTML_MEDIA_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+
+
+def _inline_json_of(media_type: str, text: str) -> InlineJson | None:
+    """The inline JSON state *text*, a recorded response body of normalised
+    *media_type*, carries when it is an HTML page
+    (:func:`graftpunk.har.inline_state.inline_json`), with its object's shape
+    read by :func:`_shape_of`; None for any other body or a page holding none."""
+    if media_type not in _HTML_MEDIA_TYPES or not text:
+        return None
+    state = inline_json(text)
+    if state is None:
+        return None
+    return InlineJson(target=state.target, shape=_shape_of(state.value))
 
 
 def _custom_headers(entry: HAREntry) -> tuple[tuple[str, ...], set[str]]:
@@ -1963,7 +1997,7 @@ def _count_ids(names: set[str]) -> int:
 # falsy JSON value of that recording's body when the type reads as JSON, its JSON
 # shape under the same condition, and the raw index (parse_har_file's own order)
 # of the HAR entry that recording came from.
-_FixtureCandidate = tuple[tuple[int, int], str | None, ShapeNode | None, int]
+_FixtureCandidate = tuple[tuple[int, int], str | None, ShapeNode | None, int, InlineJson | None]
 
 
 def _is_json_media_type(media_type: str) -> bool:
@@ -2039,7 +2073,8 @@ class _EndpointAccumulator:
                 is_json = _is_json_media_type(recorded_type)
                 falsy = _falsy_value(text) if is_json else None
                 shape = _response_shape(entry) if is_json else None
-                self.fixture_candidates[recorded_type] = (key, falsy, shape, entry_index)
+                state = _inline_json_of(recorded_type, text)
+                self.fixture_candidates[recorded_type] = (key, falsy, shape, entry_index, state)
         method = entry.request.method.upper()
         if method not in self.methods:
             self.methods.append(method)
@@ -2147,6 +2182,7 @@ class _EndpointAccumulator:
             fixture_content_type="" if fixture_type is None else fixture_type,
             fixture_written=bool(candidates),
             fixture_entry_index=None if fixture_type is None else candidates[fixture_type][3],
+            inline_json=None if fixture_type is None else candidates[fixture_type][4],
         )
 
 

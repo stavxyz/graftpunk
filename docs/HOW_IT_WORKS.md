@@ -624,6 +624,100 @@ family and its fixture member, both generated tests read that member's fixture.
 A command naming a member's own template behaves as it did before families
 existed.
 
+An HTML page that keeps its data in an inline script is reported with that
+object's shape (`graftpunk.har.inline_state`). Only scripts a browser would run
+are read, within the limits below. The page is tokenized as HTML, so a
+`<script>` inside an HTML comment, inside an attribute value, or in the text of
+a `<textarea>`, `<title>`, `<style>`, `<noscript>`, `<iframe>`, `<noembed>`,
+`<noframes>`, or `<xmp>` is text, and one inside a `<template>` is inert; none of
+them is read, and nothing after a `<plaintext>` tag is. Two forms are read.
+
+The first is a script with no `src` that the HTML standard's "prepare the
+script element" runs, assigning a JSON object to a dotted name of two or more
+parts (`window.App.props = {...};`, `App.props = {...}`). A classic script is
+read when its `type` is empty, or absent with `language` absent or empty, or
+when its `type` (or, with `type` absent, `text/` and its `language`) is one of
+the MIME Sniffing standard's JavaScript MIME type essences without case:
+`application/ecmascript`, `application/javascript`, `application/x-ecmascript`,
+`application/x-javascript`, `text/ecmascript`, `text/javascript`,
+`text/javascript1.0` to `text/javascript1.5`, `text/jscript`,
+`text/livescript`, `text/x-ecmascript`, and `text/x-javascript`. A `type` is
+also matched with surrounding whitespace stripped; a `language` is not. A
+parameter makes a data block (`text/javascript; charset=utf-8` is not read),
+and so does a `type` of whitespace only, a `language` such as `vbscript`, and a
+`type` that is not JavaScript, whatever `language` says. A classic script with
+`nomodule` is not read, since a browser that runs modules skips it. A script
+whose `type` is `module` without case, not stripped, is read, `nomodule` or
+not. An assignment inside a JavaScript string, template literal, or `//` or
+`/* */` comment is skipped.
+
+The second is a script whose `type` is `application/json`, with or without
+parameters (`application/json; charset=utf-8`), and whose body is a JSON object
+(named by its id, `script#__NEXT_DATA__`, or else
+`script[type="application/json"]`). `var`/`let`/`const` declarations, a bare
+name, a bracketed name, `JSON.parse`, a JavaScript object literal that is not
+JSON, an array, and `application/ld+json` are not read.
+
+Two limits remain. A regular expression literal is read as code, so a quote,
+backtick, `//`, or `/*` inside one changes what is read after it: a quote
+(`var r = /'/; var s = '...';`) opens a string that the next quote closes, so a
+later string's text is read as code and an assignment spelled in it is
+reported; a backtick (`` /`/ ``) hides the text up to the next backtick; `//`
+(`/^https?:\/\//`) hides the rest of its line; and `/*` (`/^\/*/`) hides the
+rest of the script when no `*/` follows. The HTML tokenizer's "script data
+escaped" states are not modelled: a browser keeps a script open past a
+`</script>` that follows `<!--` and `<script` inside it, while this reader ends
+every script body at the first `</script` followed by whitespace, `/`, or `>`,
+so text after that point is read as markup, and an assignment in a string of
+such a script can be read as a script of its own.
+
+Of the objects spelled in 512 characters or more, the largest is reported, the
+first on a tie; a JSON script's leading whitespace is not counted. The search
+never runs script and is linear in the page: it examines the first 128 scripts,
+skips a script body over 4 MiB (4,194,304 characters), decodes at most 32
+candidates per page, and skips a decode that fails or that the parser refuses
+for nesting too deep. Each candidate is first decoded within its first 1,024
+characters. One that ends under 512 characters, and one that fails before
+reading 512 characters (`{on: true}`, or `{"on": x}`), does not count toward the
+32, so a page with many small settings objects, JSON or JavaScript, before its
+state still reports the state. An object of 512 characters or more, a decode
+that fails after reading 512 characters (to the end of the text for a string
+left open), and a candidate the 1,024 characters cut short, which is then
+decoded whole, each count one.
+The page read is the endpoint's fixture recording, the one its `shape`
+describes. The shape follows the JSON body rules, a key holding an id included.
+An assignment's target is printed as written only when it is a plain dotted
+name (identifiers of letters, numerals, `_`, and `$`, joined by `.`) of at most
+64 characters. A part of it that looks like an id (`graftpunk.har.paths.looks_dynamic`,
+the rule a path segment follows) becomes a placeholder named as a path
+segment's would be (`window.{window_id}.props`); a target that looks like an id
+only as a whole, or that is longer, is printed as `{id}`. A JSON script's id is
+printed as written when it is a plain HTML id (letters, numerals, `_`, `.`, and
+`-`, at most 64 characters, as in `script#app-state`) that looks like an id
+neither as a whole (`k3-m9-p2-q7`, `a1_b2_c3`) nor in a part between dots
+(`App.a1_b2_c3`), and as `script#{id}` otherwise, so an id and a target spelled
+the same get the same verdict. So no quote, backtick, space, or line break from the
+page reaches any output through a target, and no value is reported. The
+markdown digest adds a line under `shape: non-JSON`
+(``inline JSON state: `window.App.props`, object{results, search, total}``),
+`--json` carries `inline_json` with `target` and the shape node, and
+`--endpoints-json` carries `inline_json` with `target` and the shape summary,
+each on those endpoints only, so a run without one prints what it printed
+before; the order of endpoints does not change. A stub that `gp plugin new` or
+`gp plugin add-command` writes for such a page keeps its request unchanged and
+adds a comment naming the target and the shape, then a commented nested
+function, `inline_state(page)`, that calls
+`graftpunk.har.inline_state.read_inline_json(page, target)` and raises
+`ValueError` when the page no longer holds the object. `read_inline_json` runs
+the digest's own scan and, given a target, returns the largest object reported
+under that target, so on the recorded page it returns the object the digest
+reported. The target is written as a string literal quoted as the scaffold
+quotes every captured literal. The function compiles and is ruff clean whether
+it is left commented or uncommented; to use it, uncomment it, return
+`inline_state(ctx.request_text(...))`, and set the return annotation to `dict`.
+The generated project already requires the graftpunk release that wrote it (its
+`graftpunk>=` floor is that release's `major.minor.0`), so the import resolves.
+
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
 response keys; request header names; cookie and token candidate names; and a

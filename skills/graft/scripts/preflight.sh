@@ -31,7 +31,7 @@
 # line even without the stack, so preflight cannot tell and prints no note.
 set -u
 
-SKILL_REQUIRES_GRAFTPUNK="1.31.0"
+SKILL_REQUIRES_GRAFTPUNK="1.32.0"
 SKILL_READS_INFO_SCHEMA=1
 SKILL_READS_ENDPOINTS_SCHEMA=1
 

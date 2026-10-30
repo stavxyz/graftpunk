@@ -1431,10 +1431,91 @@ def _render_command_stub(
             f"{L2}# Each path value is percent-encoded, so a / ? or # in it stays in its segment."
         )
         lines.extend(f'{L2}{p} = _quote_path({p}, safe="")' for p in path_params)
+    if not is_json:
+        lines.extend(_inline_json_example(endpoint))
     lines.append(_ENDPOINT_COMMENT)
     lines.append(f"{L2}return ctx.{call}(")
     lines.extend(call_lines)
     lines.append(f"{L2})")
+    lines.append("")
+    return lines
+
+
+_INLINE_STATE_READER = (
+    "def inline_state(page: str) -> dict:",
+    "    from graftpunk.har.inline_state import read_inline_json",
+    "",
+    "    state = read_inline_json(",
+    "        page,",
+)
+_INLINE_STATE_READER_END = (
+    "    )",
+    "    if state is None:",
+    '        raise ValueError("the inline JSON state is not on the page")',
+    "    return state",
+)
+
+
+def _ascii_literal(value: str) -> str:
+    """*value* as :func:`pysrc.quoted_literal` quotes a captured literal (the quote
+    ``ruff format`` settles on), with every character that is not printable ASCII as
+    its escape (:func:`_escaped_char`), so the literal holds no line separator."""
+    return "".join(
+        char if " " <= char <= "~" else _escaped_char(char) for char in quoted_literal(value)
+    )
+
+
+def _commented_quoted_lines(value: str, *, indent: int, inner: int) -> list[str]:
+    """*value* as a ``"value",`` argument commented out at *indent* with the argument
+    *inner* columns further in, quoted by :func:`_ascii_literal`: one line when it
+    fits the generated width, else an implicit string concatenation inside
+    parentheses, one chunk a line, each chunk quoted on its own and never split
+    inside an escape. Removing ``# `` from each line gives the argument back, ruff
+    clean."""
+    pad = f"{' ' * indent}# {' ' * inner}"
+    single = f"{pad}{_ascii_literal(value)},"
+    if len(single) <= GENERATED_LINE_LENGTH:
+        return [single]
+    chunk_pad = f"{pad}{' ' * INDENT_STEP}"
+    budget = GENERATED_LINE_LENGTH - len(chunk_pad)
+    chunks: list[str] = []
+    chunk = ""
+    for char in value:
+        if chunk and len(_ascii_literal(chunk + char)) > budget:
+            chunks.append(chunk)
+            chunk = ""
+        chunk += char
+    chunks.append(chunk)
+    return [f"{pad}(", *(f"{chunk_pad}{_ascii_literal(c)}" for c in chunks), f"{pad}),"]
+
+
+def _inline_json_example(endpoint: Endpoint) -> list[str]:
+    """For an HTML page that holds inline JSON state (``Endpoint.inline_json``): a
+    comment naming its target and shape, then a commented function that reads the
+    object from the page's text with
+    :func:`graftpunk.har.inline_state.read_inline_json`, the digest's own scan, so it
+    returns the object the digest reported. It is set apart by a blank line before
+    and after, as ``ruff format`` sets apart a nested function. Removing each ``# ``
+    gives a function that compiles and is ruff clean, and so does leaving it
+    commented. Nothing when the page holds none. The request is never changed."""
+    state = endpoint.inline_json
+    if state is None:
+        return []
+    shape = summarize_shape(state.shape, depth=_SCAFFOLD_SHAPE_DEPTH)
+    lines = [""]
+    lines.extend(
+        wrapped_comment_lines(
+            f"The page carries its data as inline JSON state: {_comment_safe(state.target)}, "
+            f"shaped {shape} (gp observe digest). To return that object instead of the "
+            "page, uncomment inline_state below, return "
+            "inline_state(ctx.request_text(...)) with the request's own arguments, and set "
+            "the return annotation to dict.",
+            indent=len(L2),
+        )
+    )
+    lines.extend(f"{L2}# {line}".rstrip() for line in _INLINE_STATE_READER)
+    lines.extend(_commented_quoted_lines(state.target, indent=len(L2), inner=2 * INDENT_STEP))
+    lines.extend(f"{L2}# {line}" for line in _INLINE_STATE_READER_END)
     lines.append("")
     return lines
 
