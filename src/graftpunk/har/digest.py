@@ -79,6 +79,7 @@ __all__ = [
     "digest",
     "is_credential_body",
     "password_field_names",
+    "post_account_values",
     "endpoint_template",
     "FLAGGED_REASONS",
     "FlaggedReason",
@@ -1500,8 +1501,23 @@ def _after_read(credential_entries: Sequence[HAREntry], stepped_since: bool) -> 
 
 
 def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str] | None:
-    """The values of credential post *entry* (read by :func:`body_values`) that no
-    suggested name may hold, for :func:`graftpunk.har.login_signals.success_candidates`:
+    """:func:`post_account_values` of credential post *entry*; ``None`` also when the
+    recording does not hold the body as readable text (no body, an empty one, one the
+    recorder did not capture, left out, or found not to be UTF-8)."""
+    request = entry.request
+    if request.post_data_not_captured or request.post_data_omitted or request.post_data_binary:
+        return None
+    return post_account_values(request.post_data, _request_content_type(entry), username_names)
+
+
+def post_account_values(
+    post_data: str | None, content_type: str = "", username_names: Iterable[str] = ()
+) -> list[str] | None:
+    """The values of a credential post's body *post_data* (read by
+    :func:`body_values`) that no suggested name may hold, for
+    :func:`graftpunk.har.login_signals.success_candidates`, and that the recorder's
+    read of the page after the post redacts
+    (:func:`graftpunk.observe.snapshot.stored_dom_snapshot` with ``structure_only``):
     the password field's (a name with a :data:`PASSWORD_NAME_HINTS` hint); the
     username's, a field the recorded login form takes as its username
     (*username_names*, ``LoginForm.username_name``) or one
@@ -1516,18 +1532,14 @@ def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str
     of the names leading to it, case aside (``email=``, ``login=Login``, and
     ``account=1`` leave every value an account value).
 
-    ``None`` when the recording does not hold the body as readable text (no body,
-    an empty one, one the recorder did not capture, left out, or found not to be
-    UTF-8) or the body gives no values read by their field names
-    (:func:`_read_body_values`: nested past the JSON parser's limit, XML, a JSON
-    value under no name, or any other shape), so the guard cannot see the username,
-    and nothing may be suggested. Held in memory only, never written."""
-    request = entry.request
-    if request.post_data_not_captured or request.post_data_omitted or request.post_data_binary:
-        return None
-    values, by_names = _read_body_values(request.post_data, _request_content_type(entry))
+    ``None`` when the body gives no values read by their field names
+    (:func:`_read_body_values`: no body, nested past the JSON parser's limit, XML, a
+    JSON value under no name, or any other shape), so the guard cannot see the
+    username, and nothing may be suggested. Held in memory only, never written."""
+    values, by_names = _read_body_values(post_data, content_type)
     if not (values and by_names):
         return None
+    usernames_by_form = frozenset(username_names)
 
     def names_a_username(path: tuple[str, ...], value: str) -> bool:
         if not could_be_an_account_value(value) or value.strip().lower() in {
@@ -1535,7 +1547,7 @@ def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str
         }:
             return False
         return any(
-            name in username_names or is_identifier_field(identifier_key(name)) for name in path
+            name in usernames_by_form or is_identifier_field(identifier_key(name)) for name in path
         )
 
     usernames = [value for path, value, named in values if names_a_username(path[:named], value)]
