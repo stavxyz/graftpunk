@@ -38,6 +38,10 @@ A run recorded without the flag, or by 1.30.1 or earlier, digests and scaffolds 
 
 - **The `/graftpunk:graft` skill is 0.1.18 and needs graftpunk 1.31.0 or later** (#268). The guide's Capture section describes `--wrong-password-first` and its "Getting the signals right" section the suggested `failure` text, and the skill's login step asks the user to confirm each commented `failure=` suggestion before it is used.
 
+### Fixed
+
+- **A one-line `text/plain` request body that ends in a line break is read as one field** (#268). A browser form with `enctype="text/plain"` ends every field with CRLF, so a one-field step (the password page of an identifier-first login) sends one line and a CRLF. `graftpunk.har.digest.body_values` split that line at `&` as a form, so a value holding `&` was read in pieces: the digest's account guard and the snapshot redaction compared only the part before the `&`, and the `--wrong-password-first` scrub would have left the rest of a typed wrong password holding `&` in the HAR. A one-line `text/plain` body with no line break after it (a script's `fetch` of a string, often URL-encoded) is still read as a form. `body_params`, and so the endpoint fields the digest prints and a scaffold writes, never read a `text/plain` body and are unchanged.
+
 ## [1.30.1] - 2026-10-30
 
 This is a patch release. The read of the page after a credential post that `gp observe go` and `gp observe interactive` store as `snapshots/<request id>.after.html` now replaces every id, class token, `name`, `for` and `form` value, and path segment that holds any value of the post but a token field's, whether or not a field of the post is the username. In 1.30.0 a username posted under a field the digest does not take for one (`j_username` beside an `email` field) stayed in the stored file's ids and custom element names when the run had no snapshot of the login page. A credential post with a field value holding JSON nested past the JSON parser's limit, whose values the recorder cannot read by their field names, gets no after-read at all.
