@@ -772,10 +772,12 @@ one holding a site's results even though its shape line reads like navigation
 chrome. Two forms are recognised: a script assigning a JSON object to a dotted
 name of two or more parts (`window.App.props = {...}`, `App.props = {...}`), and
 a `<script type="application/json">`, named by its id (`script#__NEXT_DATA__`)
-or, without one, as `script[type="application/json"]`. Only scripts a browser
-would run are read: not one inside an HTML comment, an attribute, a `<template>`,
-or a `<textarea>` or other text element, and not an assignment inside a
-JavaScript string or comment. A `var`, `let`, or `const` declaration, a bare or
+or, without one, as `script[type="application/json"]`. Scripts a browser would
+not run are skipped: one inside an HTML comment, an attribute, a `<template>`, or
+a `<textarea>` or other text element, and an assignment inside a JavaScript
+string or comment. Two limits remain (docs/HOW_IT_WORKS.md has them): a regular
+expression literal is read as code, and the HTML parser's escaped-script states
+are not modelled. A `var`, `let`, or `const` declaration, a bare or
 bracketed name, `JSON.parse("...")`, a JavaScript object literal that is not
 JSON, an array, a script with a `src`, and `application/ld+json` are not read.
 An object spelled in fewer than 512 characters is ignored, and of the rest the
