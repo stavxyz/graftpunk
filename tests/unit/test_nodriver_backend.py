@@ -2538,6 +2538,37 @@ def _chrome_like_child(
         child.stdout.close()
 
 
+def _exited_now(child: Any) -> bool:
+    """Whether *child* (from ``_chrome_like_child``) has exited at this moment.
+
+    Not ``child.poll()``: the reaper thread sits in ``child.wait()``, which
+    holds the Popen's waitpid lock from before the child exits until it has
+    recorded the exit status, and ``poll()`` answers None whenever it cannot
+    take that lock. After the kernel has reaped the child, or while the
+    child is a zombie the reaper has not been scheduled to collect yet,
+    ``poll()`` still says running until that thread gets the GIL back
+    (#340). This asks the kernel instead, at once and without waiting, so a
+    stop that returned while the child still ran still reads as running.
+    ``waitid`` with ``WNOWAIT`` sees a zombie as exited without reaping it
+    (Linux); without it (macOS) ``kill(pid, 0)`` answers for a zombie too,
+    as it does for the backend there.
+    """
+    if child.returncode is not None:
+        return True
+    waitid = getattr(os, "waitid", None)
+    if waitid is not None:
+        try:
+            state = waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return True
+        return state is not None
+    try:
+        os.kill(child.pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
 class _Browser:
     """A nodriver Browser stand-in, hashable as nodriver's registry needs."""
 
@@ -2568,7 +2599,7 @@ class TestNoDriverBackendEndingChromeWithoutItsLoop:
             backend._browser = _temp_browser(profile, child)
             backend._release_failed_attempt()
 
-            assert child.poll() is not None
+            assert _exited_now(child)
             assert not profile.exists()
         assert backend._browser is None
 
@@ -2763,7 +2794,7 @@ class TestNoDriverBackendEndingChromeWithoutItsLoop:
             backend._browser = _temp_browser(profile, child)
             backend._release_failed_attempt()
 
-            assert child.poll() is None
+            assert not _exited_now(child)
             assert profile.exists()
         [warning] = [e for e in captured_logs if e["log_level"] == "warning"]
         assert warning["event"] == "chrome_still_running_profile_kept"
@@ -5309,7 +5340,7 @@ class TestNoDriverBackendAbandonedLockHolder:
             stranded = self._start_then_strand_a_stop_async(backend, child, profile, monkeypatch)
             try:
                 elapsed = _within(10, backend.stop)
-                exited = child.poll() is not None
+                exited = _exited_now(child)
             finally:
                 stranded.finish()
 
@@ -5338,7 +5369,7 @@ class TestNoDriverBackendAbandonedLockHolder:
             stranded = self._start_then_strand_a_stop_async(backend, child, profile, monkeypatch)
             try:
                 elapsed = _within(10, stop_async)
-                exited = child.poll() is not None
+                exited = _exited_now(child)
             finally:
                 stranded.finish()
 
@@ -5428,7 +5459,7 @@ class TestNoDriverBackendAbandonedLockHolder:
             )
             try:
                 elapsed = _within(10, backend.stop)
-                exited = child.poll() is not None
+                exited = _exited_now(child)
                 _within(10, start)
             finally:
                 stranded.finish()
@@ -5493,7 +5524,7 @@ class TestNoDriverBackendAbandonedLockHolder:
                     time.sleep(0.005)
                 gave_up_after = time.monotonic() - closed_at
                 stopper.join(10)
-                exited = child.poll() is not None
+                exited = _exited_now(child)
                 elapsed = _within(10, start)
             finally:
                 stranded.finish()
@@ -5721,11 +5752,11 @@ class TestNoDriverBackendAbandonedLockHolder:
             stranded = _Stranded(backend, backend.start_async, "start_async", entered.is_set)
             try:
                 _within(10, backend.stop)
-                running_after_the_stop = child.poll() is None
+                running_after_the_stop = not _exited_now(child)
             finally:
                 gate.set()
                 stranded.finish(resume=True)
-            exited = child.poll() is not None
+            exited = _exited_now(child)
 
         [outcome] = stranded.outcome
         assert isinstance(outcome, RuntimeError)
@@ -5777,7 +5808,7 @@ class TestNoDriverBackendAbandonedLockHolder:
             stranded = _Stranded(backend, backend.stop_async, "stop_async", entered.is_set)
             try:
                 _within(10, backend.stop)
-                exited = child.poll() is not None
+                exited = _exited_now(child)
             finally:
                 gate.set()
                 stranded.finish(resume=True)
@@ -5826,7 +5857,7 @@ class TestNoDriverBackendAbandonedLockHolder:
                     time.sleep(0.01)
                 assert backend._abandoned is not None
                 elapsed = _within(10, stop)
-                exited_when_it_returned = child.poll() is not None
+                exited_when_it_returned = _exited_now(child)
                 first.join(10)
             finally:
                 stranded.finish()
@@ -5880,7 +5911,7 @@ class TestNoDriverBackendAbandonedLockHolder:
                     waiter.start()
                 for waiter in waiters:
                     waiter.join(10)
-                exited = child.poll() is not None
+                exited = _exited_now(child)
             finally:
                 stranded.finish()
 
@@ -5985,7 +6016,7 @@ class TestNoDriverBackendAbandonedLockHolder:
                 with pytest.raises(RuntimeError, match="gave up waiting for a stop_async()"):
                     _within(10, start)
                 elapsed = _within(10, stop)
-                exited = child.poll() is not None
+                exited = _exited_now(child)
             finally:
                 stranded.finish()
 
@@ -6146,7 +6177,7 @@ class TestNoDriverBackendAbandonedLockHolder:
                 ender_thread.join(10)
                 late_thread.join(10)
                 holder_thread.join(10)
-            exited = child.poll() is not None
+            exited = _exited_now(child)
 
         assert errors == []
         assert not ender_thread.is_alive()
@@ -6238,7 +6269,7 @@ class TestNoDriverBackendAbandonedLockHolder:
             try:
                 assert paused.wait(10)
                 _within(10, backend.stop)
-                exited = child.poll() is not None
+                exited = _exited_now(child)
             finally:
                 resume.set()
                 gate.set()
@@ -6457,7 +6488,7 @@ class TestNoDriverBackendAbandonedLockHolder:
                         break
                     time.sleep(0.01)
                 lock_free_with_its_loop_stopped = not backend._lock.locked()
-                exited = child.poll() is not None
+                exited = _exited_now(child)
                 monkeypatch.setattr(backend, "_stop_async", real_stop)
                 start_took = _within(10, backend.start)
                 running = backend.is_running
@@ -6615,7 +6646,7 @@ class TestNoDriverBackendAbandonedLockHolder:
                 gate.set()
                 stranded.finish(resume=True)
                 lock_held_after_the_holder = backend._lock.locked()
-                exited = child.poll() is not None
+                exited = _exited_now(child)
                 monkeypatch.setattr(backend, "_stop_async", real_stop)
                 _within(10, backend.start)
                 running = backend.is_running
@@ -6669,7 +6700,7 @@ class TestNoDriverBackendAbandonedLockHolder:
                         asyncio.run_coroutine_threadsafe(backend.stop_async(), private).result(10)
                     ),
                 )
-                exited = child.poll() is not None
+                exited = _exited_now(child)
             finally:
                 gate.set()
                 stranded.finish()
@@ -6756,10 +6787,10 @@ class TestNoDriverBackendAbandonedLockHolder:
                 assert stopped_as_it_gave_up.wait(10)
                 for _ in range(500):
                     abandoned = backend._abandoned
-                    if child.poll() is not None and abandoned and abandoned.ended.is_set():
+                    if _exited_now(child) and abandoned and abandoned.ended.is_set():
                         break
                     time.sleep(0.01)
-                exited_with_its_loop_stopped = child.poll() is not None
+                exited_with_its_loop_stopped = _exited_now(child)
                 assert backend._abandoned is not None
                 ended = backend._abandoned.ended.is_set()
                 if then == "close_its_loop":
@@ -6842,7 +6873,7 @@ class TestNoDriverBackendAbandonedLockHolder:
             stranded = _Stranded(backend, backend.stop_async, "stop_async", entered.is_set)
             try:
                 _within(10, lambda: asyncio.run(stop_without_an_executor()))
-                exited = child.poll() is not None
+                exited = _exited_now(child)
                 assert backend._abandoned is not None
                 ended = backend._abandoned.ended.is_set()
                 gate.set()
@@ -7014,7 +7045,7 @@ class TestNoDriverBackendAbandonedLockHolder:
             try:
                 _within(15, lambda: loop.run_until_complete(give_up_stop()))
                 ends_after_the_stop = list(ends)
-                exited = child.poll() is not None
+                exited = _exited_now(child)
                 gate.set()
                 stranded.finish(resume=True)
                 monkeypatch.setattr(backend, "_stop_async", real_stop)
