@@ -989,9 +989,10 @@ starts a field whatever its name, a line with no `=` continues the value before
 it, and a value is read as written, with no `&` splitting or percent-decoding;
 a browser ends every field with CRLF, so a body of one line counts only when a
 line break follows it, and one line with none after it, as a script's `fetch` of
-a string sends, is read as a form), or a `multipart/form-data` body's text parts (split on the boundary its
-`Content-Type` names, else on the body's first non-blank line). A value that is
-itself a JSON object or array is read one level down, under its field's name.
+a string sends, is read as a form), or a `multipart/form-data` body's text
+parts (split on the boundary its `Content-Type` names, else on the body's first
+non-blank line). A value that is itself a JSON object or array is read one level
+down, under its field's name.
 The values stay in memory. When the guard cannot read the username, the run
 suggests nothing: a credential post whose body the recording does not hold as
 text (no body, an empty one, one the recorder did not capture or left out, or
