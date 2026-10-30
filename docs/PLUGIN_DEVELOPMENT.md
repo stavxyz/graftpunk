@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.31.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.32.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -343,6 +343,29 @@ The path rule's known limits: a letters-only segment that holds no id stays
 literal, and so does a word with one or two digits after it (`smith42`,
 `mary12`). A family of many sibling segments that each carry a digit
 (`red-widget-1`, `red-widget-2`, ...) collapses by count.
+
+Letters-only siblings get a row of their own beside theirs. When two or more
+endpoints agree on method, host, content type, top-level response shape,
+trailing slash, and every path segment but one, and that one is letters only in
+each (`/search/north-region/items/`, `/search/south-region/items/`), the digest
+adds `/search/{search_slug}/items/` and keeps both literal rows as they were.
+The placeholder is the segment before it, singular, plus `_slug`
+(`/categories/{category_slug}/items/`), or plain `{slug}` when that segment is
+not a plain word (`/stores/{store_id}/{slug}/items`); the recording cannot know
+what the segment means, so rename the argument in the generated command. A
+routing word such as `api` or `search` is never the varying segment, nor is a
+file name such as `intro.html` at the end of a path, nor are two spellings of
+one word that differ only in case. A one-segment path, a login-flow endpoint, or
+a path that would fit two such families never joins one, and when two families
+would share one template, both are left out. Sibling HTML pages
+(`/account/profile`, `/account/settings`) form families too, and so do JSON
+endpoints that wrap different data in one response envelope, though they are
+usually separate pages or resources: a family row is an alternative to its
+members, never a default. In the markdown digest the family row comes just
+before its first member and lists each member's value; in `--endpoints-json` it
+is the one row with a `family_members` key. Pass its template to `--command` to
+get one command taking the segment as an argument, or pass the literal
+templates to get one command each; nothing picks a family for you.
 
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
@@ -740,6 +763,28 @@ parameter names with the types the recording showed, the names of any
 non-standard request headers, a summary of the JSON response shape, and up to
 three real example paths.
 
+An HTML page that keeps its data in an inline script gets one more line under
+its `shape: non-JSON`, `inline JSON state:` followed by the target and the shape
+(`window.App.props` and `object{results, search, total}`). Its
+`--endpoints-json` entry carries the same as `inline_json`, with `target` and
+`shape`; no other entry has the key. Such a page is often the
+one holding a site's results even though its shape line reads like navigation
+chrome. Two forms are recognised: a script assigning a JSON object to a dotted
+name of two or more parts (`window.App.props = {...}`, `App.props = {...}`), and
+a `<script type="application/json">`, named by its id (`script#__NEXT_DATA__`)
+or, without one, as `script[type="application/json"]`. A `var`, `let`, or
+`const` declaration, a bare or bracketed name, `JSON.parse("...")`, a JavaScript
+object literal that is not JSON, an array, a script with a `src`, and
+`application/ld+json` are not read. An object spelled in fewer than 512
+characters is ignored, and of the rest the largest is reported. Only names and
+kinds are kept, by the response shape's rules, and a part of the target that
+looks like an id is printed as a placeholder (`window.{window_id}.props`).
+`gp plugin new` keeps such a page's request as it is and adds a comment naming
+the target and the shape, then a commented `inline_state(page)` function that
+reads the object out of the page's text. To return the object, uncomment the
+function, return `inline_state(ctx.request_text(...))` with the request's own
+arguments, and set the return annotation to `dict`.
+
 What the digest cannot tell you:
 
 - What a parameter means. `archived: bool` says the site sent `archived=false`,
@@ -952,7 +997,9 @@ request for a path, which `ctx.request_json` or `ctx.request_text` joins to
 `base_url`, or, for an endpoint recorded on a host other than `base_url`'s, for
 the absolute URL on that host; a docstring recording the method, the path, how
 many times it was seen, which run it came from, and the
-response shape. Each path value is percent-encoded before it goes into the URL
+response shape; and, for an HTML page whose script holds its data, the commented
+`inline_state` reader described under [Understand](#understand). Each path value
+is percent-encoded before it goes into the URL
 (`_quote_path(order_id, safe="")`, `urllib.parse.quote` imported under a private
 name so a site parameter called `quote` cannot shadow it), so a `/`, `?`, or `#`
 in it stays in its segment. A command's name is a Python identifier (`import`
@@ -2324,8 +2371,15 @@ included: a dozen product pages the digest shows as `GET /products/{product_id}`
 are matched by that template and written as `get_products_{product_id}.json`.
 `FixtureSession` names a request by the path alone and does not know about the
 collapse, so a test reaches that fixture with an id-shaped value (the generated
-tests pass `"1"`); a real slug would be looked up as
-`get_products_alpha-widget-2024.json` and answer 404. `--out PATH` chooses where
+tests pass `"1001"`); a real slug would be looked up as
+`get_products_alpha-widget-2024.json` and answer 404. A family row works
+differently: no file is ever named for its template. Its command's generated
+test passes the value one recorded member sent (`search_slug="north-region"`),
+so it reads that member's own fixture, `get_search_north-region_items.json`, and
+`--match "GET /search/{search_slug}/items/"` writes every member's recordings,
+each under the member's own name, as naming each member would. A glob such as
+`GET /search/*` matches the members' templates, never the family's. `--out PATH`
+chooses where
 to write (`./tests/captures` by default), `--limit N` caps how many files are
 written per matched template (5 by default), and `--allow-tracked` overrides the
 refusal to write onto a git-tracked path. A template's fixture recording, the

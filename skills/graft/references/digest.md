@@ -43,12 +43,13 @@ site URL's scheme and host, and its port if it has one, in place of
    it. Each endpoint carries its `host`, and a row on another host than the
    base host is shown with that host.
 2. Keep JSON endpoints, and HTML documents that carry the user's own data (a
-   dashboard, an order list, a statement page). Drop navigation chrome.
-3. Name each kept entry as a short verb phrase a person would type at the
-   shell: `orders` for `GET /api/orders`, `order` for
-   `GET /api/orders/{order_id}` (the path parameter becomes the command's
-   argument), `invoice-pdf` for a document download. A list and its detail are
-   two commands, never one.
+   dashboard, an order list). A row's `inline_json` (`target`, `shape`) is the
+   data a page's script holds, often the results. Drop navigation chrome.
+3. Name each kept entry as a short shell verb phrase: `orders` for
+   `GET /api/orders`, `order` for `GET /api/orders/{order_id}` (the parameter
+   becomes the argument), `invoice-pdf` for a download; a list and its detail
+   are two commands. A `family_members` row offers its members as one command:
+   an option, not the default. Sibling pages and one-envelope JSON form them too.
 4. Show one table, one row per command: name, what it returns (from `shape` and
    `content_type`), the endpoint as `<METHOD> <template>`, and the parameters
    with their types (each `query_params` and `body_params` value is a type
@@ -61,9 +62,8 @@ site URL's scheme and host, and its port if it has one, in place of
 5. Ask one question, "keep, rename, or drop any of these?", and apply the
    answer. A want with no endpoint goes back to the capture step for that flow.
 
-What request call a stub makes (`request_json` or `request_text`, and its role)
-is the generator's decision; the table reports `content_type` and `shape` and
-never predicts the call.
+The stub's request call (`request_json` or `request_text`) is the generator's
+decision; the table reports `content_type` and `shape`, never the call.
 
 The `login` summary tells a plain form from a redirect. `auth_urls` lists only
 the login's own observations, each of kind `form_page`, `credential_post`,
