@@ -873,17 +873,29 @@ a frame's by every signal the recording holds: a `Sec-Fetch-Dest` of `iframe`,
 `frame`, `embed`, or `object`, or a `_resourceType` other than `Document`. A
 frame's document recorded as `Document` with no `Sec-Fetch-Dest` cannot be told
 apart and counts as a page; Chrome sends that header only to a secure origin, and
-the recorder has it only when Chrome reported the request's extra info. Every
-other page loaded after the post is a logged-in page unless it is a step of the
-login: it holds a login form, the browser sent a top-level document POST (a form
-submission, as from an MFA or "stay signed in" page) between its load and the
-next page load, or it has an input with `autocomplete="one-time-code"`. A step is
-a logged-out page, as are every response holding a login form (a POST's
-re-rendered failed attempt and a login page loaded again after the post
-included), each credential post's DOM snapshot, and each page loaded before the
-first credential post. A document POST is known by the same navigation rule, so
-in a HAR with neither `_resourceType` nor `Sec-Fetch` headers a form submission is
-not seen. A suggestion is `#id`, or `tag.token` for a plain tag (no namespace
+the recorder has it only when Chrome reported the request's extra info. The
+steps of the login are the leading run of the pages loaded after the post. A page
+there is a step when it holds a login form, has an input with
+`autocomplete="one-time-code"`, or the browser submitted a step-shaped form from
+it: a top-level document POST, sent between its load and the next page load,
+whose body has a field name or whose URL path has a segment holding a word `otp`,
+`totp`, `mfa`, `2fa`, `twofactor`, `code`, `verify`, `verification`,
+`challenge`, `remember`, `trust`, `kmsi`, `stay`, `signin`, `login`, `auth`,
+`sso`, or `consent` (`graftpunk.har.login_signals.is_login_step_post`). The first
+page that is not a step ends the run, and it and every later page are logged-in
+pages, whatever forms they post or inputs they hold: a search, an add to cart, a
+2FA settings page, or a logout form. When every page after the post is a step,
+the final one included, nothing is suggested. A step is a logged-out page, as are
+every response holding a login form (a POST's re-rendered failed attempt and a
+login page loaded again after the post included), each credential post's DOM
+snapshot, and each page loaded before the first credential post. A document POST
+is known by the same navigation rule, so in a HAR with neither `_resourceType`
+nor `Sec-Fetch` headers a form submission is not seen. An MFA page whose code a
+script sends, with no one-time-code input and no step-shaped form, cannot be told
+from a logged-in page by a recording either. It counts as logged in, so an element
+it shares with the landing page can be suggested; the fresh-visit check does not
+catch that, and a login that reports success on the MFA page fails on its first
+real call. A suggestion is `#id`, or `tag.token` for a plain tag (no namespace
 prefix, ASCII only) outside `svg` and `math` and other than `image` (which the
 HTML parser turns into `img`), over a plain CSS identifier, that selects exactly
 one element on the final page and none on any logged-out page. The matcher
@@ -903,16 +915,24 @@ characters mixing letters and digits; or an account value by
 `graftpunk.har.paths.holds_an_id`). The word rules below read a name's words,
 split at case changes and at `-`, `_`, `.`, and digits, each word alone or two
 adjacent words joined, so `sign-out` holds `signout` and `designing-panel` holds
-no `signin`. A name is never one when it says signed out, signing in, or a guest
+no `signin`. A single lowercase compound such as `signupnow` or `guestuser` is
+one word, and so is not rejected by the words inside it. A name is never one when it says signed out, signing in, or a guest
 (a word `loggedout`, `signedout`, `login`, `signin`, `signup`, `guest`, or
 `anonymous`), nor when it has a sign-out word (`signout`, `logout`) on anything
-but a link, a button, or a form. Nor is a name holding a value of the credential
-posts' username and password fields (a field whose name holds a password hint or
-`user`, `email`, `login`, or `account`) or any value written as an email address,
-each value and an email's local part compared lower-cased with `-`, `_`, and `.`
-removed, at least three characters, and not a boolean word. The values are read
-from a JSON body at any depth, a form body, or a `multipart/form-data` body's
-text parts, and stay in memory. Suggestions rank first by being on every
+but a link, a button, or a form. Nor is a name holding an account value of a
+credential post: the password field's value; the value of the field a recorded
+login form takes as its username and of every field
+`graftpunk.session_identity.is_identifier_field` accepts (a Rails-style name by
+its last bracketed part), under that name at any depth of a JSON body; every
+email address inside any value; and, when no field is a username by those rules,
+every value but a token field's. Each value and an email's local part is
+compared lower-cased with whitespace, `-`, `_`, and `.` removed, at least three
+characters, and not a boolean word. The values are read by
+`graftpunk.har.digest.body_values` from a JSON body at any depth (walked without
+recursion), a form body, or a `multipart/form-data` body's text parts (split on
+the boundary its `Content-Type` names, else on the body's first non-blank line),
+and stay in memory. The recorder's snapshot redaction reads a credential post
+with the same reader. Suggestions rank first by being on every
 logged-in page the run loaded (the header the engine sees on the landing page,
 rather than a page the user browsed to), then by a name with a word `logged`,
 `account`, `signout`, `logout`, `user`, `profile`, or `avatar` (or a link or form
