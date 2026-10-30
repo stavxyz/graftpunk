@@ -258,13 +258,27 @@ class TestFamilyMembership:
             _entry("POST", f"{_HOST}/search/north-region/items/", body=_RESULTS),
             _entry("POST", f"{_HOST}/search/south-region/items/", body=_RESULTS),
         ]
-        families = _families(tmp_path, entries)
+        result = _digest_of(tmp_path, entries)
+        families = [e for e in result.endpoints if e.family_members]
         assert [(e.methods, e.template) for e in families] == [
             (("GET",), _FAMILY),
             (("POST",), _FAMILY),
         ]
         for family in families:
             assert family.count == 2
+        # Each family comes just before the first member of its own method.
+        expected = [
+            f"GET {_FAMILY}",
+            "GET /search/north-region/items/",
+            f"POST {_FAMILY}",
+            "POST /search/north-region/items/",
+            "GET /search/south-region/items/",
+            "POST /search/south-region/items/",
+        ]
+        headers = [line for line in render_markdown(result).splitlines() if line.startswith("### ")]
+        assert headers == [f"### {row}" for row in expected]
+        rows = endpoints_projection(result)["endpoints"]
+        assert [f"{row['method']} {row['template']}" for row in rows] == expected
 
     def test_an_unreadable_json_body_never_joins(self, tmp_path: Path) -> None:
         """A JSON body too large to read and not parsing has an unavailable shape,
@@ -392,6 +406,16 @@ class TestFamilyMembership:
     def test_a_segment_holding_a_digit_is_not_letters_only(self, tmp_path: Path) -> None:
         assert _families(tmp_path, [_get("/shop/page2/items"), _get("/shop/page3/items")]) == []
 
+    def test_an_empty_part_is_not_letters_only(self, tmp_path: Path) -> None:
+        for values in (("north--region", "south--region"), ("-north", "-south")):
+            entries = [_get(f"/r/{value}/items") for value in values]
+            assert _families(tmp_path / values[0], entries) == [], values
+
+    def test_a_dot_in_a_middle_segment_joins(self, tmp_path: Path) -> None:
+        (family,) = _families(tmp_path, [_get("/docs/a.b/items"), _get("/docs/c.d/items")])
+        assert family.template == "/docs/{doc_slug}/items"
+        assert family_values(family) == ("a.b", "c.d")
+
     def test_a_last_segment_with_a_file_extension_gives_none(self, tmp_path: Path) -> None:
         entries = [
             _get("/docs/intro.html", _PAGE, "text/html"),
@@ -404,6 +428,13 @@ class TestFamilyMembership:
         entries = [_get("/api/items"), _get("/north/items"), _get("/south/items")]
         (family,) = _families(tmp_path, entries)
         assert family.template == "/{slug}/items"
+        assert family.family_members == ("/north/items", "/south/items")
+
+    def test_a_routing_word_in_upper_case_never_joins(self, tmp_path: Path) -> None:
+        entries = [_get("/x/API/items"), _get("/x/STATIC/items")]
+        assert _families(tmp_path / "upper", entries) == []
+        entries = [_get("/API/items"), _get("/north/items"), _get("/south/items")]
+        (family,) = _families(tmp_path / "mixed", entries)
         assert family.family_members == ("/north/items", "/south/items")
 
     def test_one_segment_paths_never_form_a_family(self, tmp_path: Path) -> None:
@@ -524,6 +555,17 @@ class TestWhereAFamilyShows:
         for row in rows[1:]:
             assert set(row) == _ENDPOINT_V1
 
+    def test_a_family_row_comes_just_before_its_first_member(self, tmp_path: Path) -> None:
+        """``/zzz`` was recorded twice and each member once, so the family (count 2)
+        and ``/zzz`` tie on count; sorting every row together would put the family
+        first by template, and the rule puts it beside its members."""
+        entries = [_get("/zz/north/items"), _get("/zz/south/items"), _get("/zzz"), _get("/zzz")]
+        result = _digest_of(tmp_path, entries)
+        expected = ["/zzz", "/zz/{zz_slug}/items", "/zz/north/items", "/zz/south/items"]
+        assert [row["template"] for row in endpoints_projection(result)["endpoints"]] == expected
+        headers = [line for line in render_markdown(result).splitlines() if line.startswith("### ")]
+        assert headers == [f"### GET {template}" for template in expected]
+
     def test_the_json_carries_the_members_on_the_family_only(self, tmp_path: Path) -> None:
         payload = json.loads(render_json(_digest_of(tmp_path, _TWO_REGIONS)))
         members = [e.get("family_members") for e in payload["endpoints"]]
@@ -572,6 +614,22 @@ class TestScaffoldingAFamily:
         tests = files["tests/test_plugin.py"]
         assert 'search_slug="north-region"' in tests
         compile(tests, "test_plugin.py", "exec")
+
+    def test_a_family_beside_an_id_placeholder_fills_its_own_argument(self, tmp_path: Path) -> None:
+        entries = [_get("/stores/1001/north/items"), _get("/stores/1002/south/items")]
+        result = _digest_of(tmp_path, entries)
+        family = "/stores/{store_id}/{slug}/items"
+        files = render(_spec(result, CommandSelection("store-items", "GET", family)))
+        plugin = files["src/graftpunk_myshop/plugin.py"]
+        comment = " ".join(
+            line.strip().removeprefix("#").strip()
+            for line in plugin.split("def store_items(", 1)[1].splitlines()
+            if line.strip().startswith("#")
+        )
+        assert "differ only in the segment slug fills" in " ".join(comment.split())
+        tests = files["tests/test_plugin.py"]
+        call = " ".join(tests.split("result = plugin.store_items(", 1)[1].split(")", 1)[0].split())
+        assert call == 'ctx, store_id="1001", slug="north"'
 
     def test_the_default_render_proposes_no_family(self, tmp_path: Path) -> None:
         result = _digest_of(tmp_path, _TWO_REGIONS)
@@ -709,23 +767,24 @@ class TestFixturesForAFamily:
         )
         assert result.exit_code == 0, result.output
         assert "tests/fixtures/get_search_north-region_items.json" in strip_ansi(result.output)
-        fixtures_dir = target / "tests" / "fixtures"
-        self._fixtures(app, fixtures_dir, f"GET {_FAMILY}")
-        for meta in fixtures_dir.glob("*.meta.json"):
-            meta.write_text(
-                sidecar_text(dataclasses.replace(load_sidecar(meta), capture_sha256=None))
-            )
-        env = {**os.environ, "PYTHONPATH": str(target / "src")}
-        tested = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
-            [sys.executable, "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"],
-            cwd=target,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        assert tested.returncode == 0, tested.stdout + tested.stderr
-        assert "2 passed" in tested.stdout, tested.stdout
+        self._fixtures(app, target / "tests" / "fixtures", f"GET {_FAMILY}")
+        assert "2 passed" in _project_pytest(target)
         _assert_ruff_clean(target)
+
+    def test_a_stem_collision_through_a_family_match_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entries = [_get("/x/north/items"), _get("/x/south/items"), _get("/x_north/items")]
+        app = _run_with_a_family(tmp_path, monkeypatch, entries)
+        out = tmp_path / "captures"
+        argv = ["observe", "fixtures", "myshop", "--out", str(out)]
+        argv += ["--match", "GET /x/{x_slug}/items", "--match", "GET /x_north/items"]
+        result = CliRunner().invoke(app, argv)
+        assert result.exit_code == 1, result.output
+        assert (
+            "Refusing to write get_x_north_items: GET /x/north/items and GET /x_north/items "
+            "would share that fixture name"
+        ) in " ".join(strip_ansi(result.output).split())
 
     def test_two_families_on_one_template_leave_the_literal_flow_intact(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -754,20 +813,7 @@ class TestFixturesForAFamily:
             "get_account_settings.html",
             "get_account_status.json",
         ]
-        for meta in fixtures_dir.glob("*.meta.json"):
-            meta.write_text(
-                sidecar_text(dataclasses.replace(load_sidecar(meta), capture_sha256=None))
-            )
-        env = {**os.environ, "PYTHONPATH": str(target / "src")}
-        tested = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
-            [sys.executable, "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"],
-            cwd=target,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        assert tested.returncode == 0, tested.stdout + tested.stderr
-        assert "5 passed" in tested.stdout, tested.stdout
+        assert "5 passed" in _project_pytest(target)
 
     def test_add_command_adds_a_family_command(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -847,6 +893,24 @@ def test_family_rows_cost_linear_time(tmp_path: Path) -> None:
 
     small, large = _cpu_seconds(everything(25)), _cpu_seconds(everything(200))
     assert large < 32 * small, (small, large)
+
+
+def _project_pytest(target: Path) -> str:
+    """Run the generated project's own pytest on fixtures ``gp observe fixtures``
+    wrote into it (their capture hashes cleared, as the existing gates do), and
+    return its output; the run must pass."""
+    for meta in (target / "tests" / "fixtures").glob("*.meta.json"):
+        meta.write_text(sidecar_text(dataclasses.replace(load_sidecar(meta), capture_sha256=None)))
+    env = {**os.environ, "PYTHONPATH": str(target / "src")}
+    tested = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [sys.executable, "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"],
+        cwd=target,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert tested.returncode == 0, tested.stdout + tested.stderr
+    return tested.stdout
 
 
 def _assert_ruff_clean(project: Path) -> None:
