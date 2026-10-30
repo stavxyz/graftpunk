@@ -51,8 +51,10 @@ from graftpunk.har.selectors import bounded_selector
 
 __all__ = [
     "MAX_SUCCESS_CANDIDATES",
+    "account_needles",
     "asks_for_a_code",
     "could_be_an_account_value",
+    "holds_an_account_value",
     "is_login_step_post",
     "success_candidates",
 ]
@@ -353,7 +355,7 @@ def asks_for_a_code(html: str) -> bool:
     return _read(html).asks_for_a_code
 
 
-def _needles(values: Iterable[str]) -> frozenset[str]:
+def account_needles(values: Iterable[str]) -> frozenset[str]:
     """The credential post's *values*, and an email's local part, as a name is
     compared with them: lower-cased with ``-``, ``_``, ``.``, and whitespace
     removed (:func:`_compact`), leaving out a short one or a boolean word. Comparing the
@@ -398,8 +400,16 @@ def _usable(name: str, element: _Element, needles: frozenset[str]) -> bool:
         return False
     if _says_signed_out(name, element):
         return False
+    return not holds_an_account_value(name, needles)
+
+
+def holds_an_account_value(name: str, needles: frozenset[str]) -> bool:
+    """Whether *name*, compared as :func:`_compact` writes it, holds one of *needles*
+    (:func:`account_needles`) anywhere: the rule that keeps a name off the success
+    suggestions, and that the recorder's read of the page after a credential post
+    redacts by (:func:`graftpunk.observe.snapshot.stored_dom_snapshot`)."""
     compact = _compact(name)
-    return not any(needle in compact for needle in needles)
+    return any(needle in compact for needle in needles)
 
 
 def _selectors(
@@ -485,7 +495,7 @@ def success_candidates(
     final = after_post[-1]
     others = [_read(html) for html in logged_out] + after_post[:landing]
     also_logged_in = after_post[landing:-1]
-    needles = _needles(account_values)
+    needles = account_needles(account_values)
     after_read = _read(also_on) if also_on is not None else None
     ranked: dict[str, tuple[int, int, int, int]] = {}
     # The selectors that also select an element on the after-read.

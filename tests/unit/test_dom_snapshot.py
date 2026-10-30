@@ -1331,11 +1331,12 @@ _FORM = "application/x-www-form-urlencoded"
 
 
 class TestAccountValuesInAStructureOnlyRead:
-    """#268 part 2, review rounds 1 and 2: the read of a logged-in page redacts the
-    account's words from ids, classes, and paths in any letter case, an email's local
-    part on its own, their separator and percent-encoded spellings, and every value
-    the digest's username guard takes for an account value. The default mode (the
-    snapshot of the login page) redacts as 1.29.0 did."""
+    """#268 part 2, review rounds 1 to 3: the read of a logged-in page replaces each
+    id, class token, ``for``, ``form``, and ``name`` value, and path segment that
+    holds an account value anywhere, by the digest guard's own rule (any letter case,
+    ``-``, ``_``, and ``.`` ignored, an email's local part on its own, percent-decoded
+    too), for every value the guard takes for an account value. The default mode
+    (the snapshot of the login page) redacts as 1.29.0 did."""
 
     @staticmethod
     def _stored(html: str, body: str, *, structure_only: bool = True) -> str:
@@ -1347,19 +1348,19 @@ class TestAccountValuesInAStructureOnlyRead:
             pytest.param(
                 '<a href="/users/alice/x" class="hello-ALICE"></a>',
                 "username=Alice&password=hunter22secret",
-                '<a href="/users/***REDACTED***/x" class="hello-***REDACTED***">',
+                '<a href="/users/***REDACTED***/x" class="***REDACTED***">',
                 id="username-in-another-case",
             ),
             pytest.param(
                 '<div id="ALICE" class="Alice name-Alice"></div>',
                 "username=alice&password=hunter22secret",
-                '<div id="***REDACTED***" class="***REDACTED*** name-***REDACTED***">',
+                '<div id="***REDACTED***" class="***REDACTED*** ***REDACTED***">',
                 id="username-capitalised",
             ),
             pytest.param(
                 '<a href="/u/alice.smith/settings" id="menu-alice.smith"></a>',
                 "username=Alice.Smith%40Example.com&password=hunter22secret",
-                '<a href="/u/***REDACTED***/settings" id="menu-***REDACTED***">',
+                '<a href="/u/***REDACTED***/settings" id="***REDACTED***">',
                 id="email-local-part",
             ),
             pytest.param(
@@ -1371,7 +1372,7 @@ class TestAccountValuesInAStructureOnlyRead:
             pytest.param(
                 '<a href="/u/alice%2Esmith/x" id="m-alice%2esmith"></a>',
                 "email=alice.smith%40example.com&password=hunter22secret",
-                '<a href="/u/***REDACTED***/x" id="m-***REDACTED***">',
+                '<a href="/u/***REDACTED***/x" id="***REDACTED***">',
                 id="local-part-percent-encoded",
             ),
             pytest.param(
@@ -1406,12 +1407,17 @@ class TestAccountValuesInAStructureOnlyRead:
         account value, and so does the read."""
         html = (
             '<nav id="menu-jsmith" class="u-jsmith"><a href="/users/JSmith/settings"></a>'
-            '<a href="/author/jsmith/"></a></nav>'
+            '<a href="/author/jsmith/"></a><label for="jsmith-x"></label>'
+            '<input form="jsmith"><form action="/u/jsmith/save" name="prefs-jsmith"></form>'
+            "</nav>"
         )
         out = self._stored(html, body)
         assert "jsmith" not in out.lower()
-        assert '<nav id="menu-***REDACTED***" class="u-***REDACTED***">' in out
+        assert '<nav id="***REDACTED***" class="***REDACTED***">' in out
         assert '<a href="/users/***REDACTED***/settings">' in out
+        assert '<label for="***REDACTED***">' in out
+        assert '<input form="***REDACTED***">' in out
+        assert '<form action="/u/***REDACTED***/save" name="***REDACTED***">' in out
 
     def test_the_login_form_s_username_field_turns_the_fallback_off(self) -> None:
         """The digest's rule, reused: the field the post's stored snapshot takes as
@@ -1423,29 +1429,134 @@ class TestAccountValuesInAStructureOnlyRead:
         )
         html = '<div id="menu-jsmith" class="region-northwind"></div>'
         known = stored_dom_snapshot(html, body, _FORM, structure_only=True, login_page=login_page)
-        assert '<div id="menu-***REDACTED***" class="region-northwind">' in known
+        assert '<div id="***REDACTED***" class="region-northwind">' in known
         unknown = self._stored(html, body)
-        assert '<div id="menu-***REDACTED***" class="region-***REDACTED***">' in unknown
+        assert '<div id="***REDACTED***" class="***REDACTED***">' in unknown
 
-    def test_a_field_s_name_and_a_fixed_vocabulary_are_not_scrubbed(self) -> None:
-        """Only ids, classes, ``for`` and ``form`` ids, and paths lose the account's
-        words: a ``name`` is the key a form's selectors use."""
-        html = '<input name="alice-smith-notes" id="alice-smith-notes" role="alice-smith">'
-        out = self._stored(html, "email=alice.smith%40example.com&password=hunter22secret")
-        assert (
-            '<input name="alice-smith-notes" id="***REDACTED***-notes" role="alice-smith">' in out
+    def test_a_name_holding_the_account_is_replaced_and_a_field_s_name_kept(self) -> None:
+        """Superpowers round 3 I2 and toolkit Minor 1: a ``name`` is scrubbed like an
+        id, but a field name of the post is kept, so a login form's keys stay."""
+        html = (
+            '<input name="alice-smith-notes" id="alice-smith-notes">'
+            '<iframe name="alice.smith"></iframe><input name="email" id="email">'
         )
+        out = self._stored(html, "email=alice.smith%40example.com&password=hunter22secret")
+        assert '<input name="***REDACTED***" id="***REDACTED***">' in out
+        assert '<iframe name="***REDACTED***">' in out
+        assert '<input name="email" id="email">' in out
+
+    @pytest.mark.parametrize(
+        ("html", "kept"),
+        [
+            pytest.param(
+                '<div role="alice.smith"></div><div role="Dialog navigation"></div>',
+                '<div role="***REDACTED***"></div><div role="Dialog navigation">',
+                id="role",
+            ),
+            pytest.param(
+                '<input type="alice.smith"><input type="password"><button type="SUBMIT">'
+                '<script type="text/javascript"></script>',
+                '<input type="***REDACTED***"><input type="password"><button type="SUBMIT">'
+                '<script type="text/javascript">',
+                id="type",
+            ),
+            pytest.param(
+                '<input autocomplete="alice.smith"><input autocomplete="shipping email">'
+                '<input autocomplete="section-jsmith username">',
+                '<input autocomplete="***REDACTED***"><input autocomplete="shipping email">'
+                '<input autocomplete="***REDACTED*** username">',
+                id="autocomplete",
+            ),
+            pytest.param(
+                '<form method="alice"></form><form method="POST"></form>',
+                '<form method="***REDACTED***"></form><form method="POST">',
+                id="method",
+            ),
+            pytest.param(
+                '<div aria-modal="alicesmith"></div><div aria-modal="true"></div>',
+                '<div aria-modal="***REDACTED***"></div><div aria-modal="true">',
+                id="aria-modal",
+            ),
+        ],
+    )
+    def test_a_fixed_vocabulary_keeps_only_its_known_tokens(self, html: str, kept: str) -> None:
+        """Ruling 2 of round 4: a ``role``, ``type``, ``autocomplete``, ``method``, or
+        ``aria-modal`` token outside its vocabulary is replaced, whatever it holds."""
+        out = self._stored(html, "email=alice.smith%40example.com&password=hunter22secret")
+        assert kept in out
+
+    def test_a_fixed_vocabulary_is_kept_in_the_default_mode(self) -> None:
+        html = '<div role="alice.smith"></div><input type="alice.smith">'
+        out = self._stored(
+            html, "email=alice.smith%40example.com&password=hunter22secret", structure_only=False
+        )
+        assert html in out
+
+    def test_a_rails_field_s_last_part_is_a_field_name(self) -> None:
+        """Toolkit round 3 Minor 4, superpowers Minor 6: ``user[login]`` names the
+        field ``login`` too, so an email whose local part is ``login`` leaves the
+        login form's ``#login`` as written."""
+        body = "user%5Blogin%5D=login%40example.com&user%5Bpassword%5D=hunter22secret"
+        out = self._stored('<input id="login" name="login"><div id="login-x"></div>', body)
+        assert '<input id="login" name="login">' in out
+        assert '<div id="***REDACTED***">' in out
 
     def test_a_token_a_flag_and_a_short_value_are_kept(self) -> None:
         body = "user_handle=jsmith&csrf_token=tok3n&remember=true&lang=en&pw=hunter22secret"
         html = '<div id="tok3n" class="true en menu-jsmith"></div>'
         out = self._stored(html, body)
-        assert '<div id="tok3n" class="true en menu-***REDACTED***">' in out
+        assert '<div id="tok3n" class="true en ***REDACTED***">' in out
 
-    def test_a_longer_word_holding_the_username_is_kept(self) -> None:
-        html = '<a href="/users/alice123/x" class="alicesmith"></a>'
-        out = self._stored(html, "username=alice&password=hunter22secret")
-        assert '<a href="/users/alice123/x" class="alicesmith">' in out
+    @pytest.mark.parametrize(
+        ("body", "html", "kept"),
+        [
+            pytest.param(
+                "username=alice&password=hunter22secret",
+                '<div id="menuAlice" class="alice2 avatarAlice nav"></div>',
+                '<div id="***REDACTED***" class="***REDACTED*** ***REDACTED*** nav">',
+                id="camel-case-and-digits",
+            ),
+            pytest.param(
+                "username=alice&password=hunter22secret",
+                '<a href="/u/alice123/orders" class="xalice"></a>',
+                '<a href="/u/***REDACTED***/orders" class="***REDACTED***">',
+                id="path-and-prefix",
+            ),
+            pytest.param(
+                "j_username=jsmith&j_password=hunter22secret",
+                '<div id="jsmithNav" class="user-jsmith99"></div><a href="/people/JSmith42"></a>',
+                '<div id="***REDACTED***" class="***REDACTED***"></div>'
+                '<a href="/people/***REDACTED***">',
+                id="off-the-allowlist",
+            ),
+            pytest.param(
+                "j_username=jsmith&j_password=hunter22secret",
+                '<a name="jsmith"></a><input name="notify_jsmith">'
+                '<iframe name="pane-jsmith"></iframe>',
+                '<a name="***REDACTED***"></a><input name="***REDACTED***">'
+                '<iframe name="***REDACTED***">',
+                id="name",
+            ),
+            pytest.param(
+                "username=JSmith&password=hunter22secret",
+                '<a name="jsmith"></a><input name="notify_jsmith">',
+                '<a name="***REDACTED***"></a><input name="***REDACTED***">',
+                id="name-allowlisted-other-case",
+            ),
+            pytest.param(
+                "j_username=o%27brien&j_password=hunter22secret",
+                '<div id="o\'brien-menu"></div>',
+                '<div id="***REDACTED***">',
+                id="decoded-value",
+            ),
+        ],
+    )
+    def test_a_longer_word_holding_the_account_is_replaced(
+        self, body: str, html: str, kept: str
+    ) -> None:
+        """Superpowers round 3 I2: the guard rejects a name that holds an account
+        value anywhere, and the read replaces the same names."""
+        assert kept in self._stored(html, body)
 
     def test_a_local_part_under_three_characters_is_kept(self) -> None:
         out = self._stored('<div id="al" class="al-x"></div>', "email=al%40x.example")
@@ -1473,6 +1584,58 @@ class TestAccountValuesInAStructureOnlyRead:
         """Superpowers round 2 I1: the snapshot of the login page keeps 1.29.0's
         redaction, so the login form the digest reads from it is 1.29.0's."""
         assert html in self._stored(html, body, structure_only=False)
+
+
+class TestLoginPageTextAs1290:
+    """Toolkit and superpowers round 3 I1, superpowers Minor 1: the login page's
+    text is redacted chunk by chunk as 1.29.0 did, then once more as one run, so a
+    comment between a letter and the username still leaves the username alone, and
+    a void element's end tag does not split a value. Each expected output is
+    1.29.0's (cd8b06be) for the same input."""
+
+    @pytest.mark.parametrize(
+        ("body", "html", "stored"),
+        [
+            pytest.param(
+                "username=jsmith&password=hunter22",
+                "<label>Signed in: Alice<!-- -->jsmith</label>",
+                "<label>Signed in: Alice***REDACTED***</label>",
+                id="label",
+            ),
+            pytest.param(
+                "username=jsmith&password=hunter22",
+                "<a>@<!-- -->jsmith<!-- -->s</a>",
+                "<a>@***REDACTED***s</a>",
+                id="between-two-comments",
+            ),
+            pytest.param(
+                "username=jsmith&password=hunter22",
+                "<button>jsmith<!-- -->2</button>",
+                "<button>***REDACTED***2</button>",
+                id="digit-after",
+            ),
+            pytest.param(
+                "username=alice&password=hunter22",
+                "<a>Hi<!-- -->alice</a><option>1<!-- -->alice</option>",
+                "<a>Hi***REDACTED***</a><option>1***REDACTED***</option>",
+                id="letter-and-digit-before",
+            ),
+            pytest.param(
+                "username=alice&password=hunter22",
+                "<button>hun</br>ter22</button><a>hun</input>ter22</a>",
+                "<button>***REDACTED***</button><a>***REDACTED***</a>",
+                id="void-end-tag",
+            ),
+            pytest.param(
+                "username=alice&password=a%26lt%3Bbc123",
+                "<label>a&lt;bc123</label>",
+                "<label>***REDACTED***</label>",
+                id="escaped-password",
+            ),
+        ],
+    )
+    def test_it_is_stored_as_1_29_0_stored_it(self, body: str, html: str, stored: str) -> None:
+        assert stored_dom_snapshot(html, body, _FORM) == stored
 
 
 @pytest.mark.parametrize("structure_only", [False, True], ids=["default", "structure-only"])

@@ -3854,7 +3854,7 @@ class TestTheReadAfterTheCredentialPost:
         await _stop(backend, tab)
         text = self._after(tmp_path).read_text()
         assert "jsmith" not in text.lower()
-        assert '<nav id="menu-***REDACTED***" class="u-***REDACTED***">' in text
+        assert '<nav id="***REDACTED***" class="***REDACTED***">' in text
 
     @pytest.mark.asyncio
     async def test_close_drops_the_body_of_a_post_with_no_response(self, tmp_path: Path) -> None:
@@ -3886,7 +3886,7 @@ class TestTheReadAfterTheCredentialPost:
         await _stop(backend, tab)
         assert (tmp_path / "snapshots" / "80.1.html").is_file()
         text = self._after(tmp_path).read_text()
-        assert '<nav id="menu-***REDACTED***" class="region-northwind">' in text
+        assert '<nav id="***REDACTED***" class="region-northwind">' in text
 
     @pytest.mark.asyncio
     async def test_a_post_that_is_not_a_login_gets_no_read(self, tmp_path: Path) -> None:
@@ -4196,8 +4196,8 @@ class TestTheReadAfterTheCredentialPostAtStop:
         await _stop(backend, tab)
         text = self._after(tmp_path).read_text()
         assert "alice" not in text.lower()
-        assert '<nav id="menu-***REDACTED***" class="hello-***REDACTED***">' in text
-        assert '<a href="/u/***REDACTED***/settings" class="user-***REDACTED***">' in text
+        assert '<nav id="***REDACTED***" class="***REDACTED***">' in text
+        assert '<a href="/u/***REDACTED***/settings" class="***REDACTED***">' in text
 
 
 class TestPageSource:

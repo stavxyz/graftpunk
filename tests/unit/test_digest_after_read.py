@@ -18,6 +18,7 @@ import pytest
 
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
 from graftpunk.har.digest import DigestSource, digest
+from graftpunk.har.documents import extract_login_forms
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from graftpunk.observe.snapshot import stored_dom_snapshot
 from tests.unit.test_har_digest import _entry, _write_har
@@ -288,6 +289,58 @@ class TestTheAfterReadNarrowsTheSuggestions:
         plain = _digest(tmp_path / "plain", _without_after(entries), _ORDERS)
         assert result.success_candidates == plain.success_candidates
         assert result.success_candidates == ("a.signout-link", "#orders-table")
+
+    @pytest.mark.parametrize(
+        ("creds", "login"),
+        [
+            pytest.param(
+                {"j_username": "jsmith", "j_password": "hunter2hunter2"},
+                "<form id='jsmith-login' action='/j_security_check' method='post'>"
+                "<input id='j_username' name='j_username'>"
+                "<input type='password' id='j_password' name='j_password'></form>",
+                id="j_username",
+            ),
+            pytest.param(
+                {"login": "login@example.com", "password": "hunter2hunter2"},
+                "<form id='login-form' action='/login' method='post'>"
+                "<input type='email' id='login' name='login' autocomplete='username'>"
+                "<input type='password' id='password' name='password'></form>",
+                id="local-part-is-the-field-name",
+            ),
+            pytest.param(
+                {"user": "user@example.com", "password": "hunter2hunter2"},
+                "<div role='dialog' aria-modal='true'><form action='/session'>"
+                "<input type='email' id='user' name='user'>"
+                "<input type='password' name='password'></form></div>",
+                id="user",
+            ),
+        ],
+    )
+    def test_a_login_page_stored_by_the_read_is_still_a_login(
+        self, tmp_path: Path, creds: dict[str, str], login: str
+    ) -> None:
+        """Ruling 2 of round 4: the read replaces every name that holds an account
+        value, but a login page it stores is still found to be a login, so the digest
+        falls back exactly as without the read."""
+        body = json.dumps(creds)
+        stored = stored_dom_snapshot(
+            f"<html><body><main>{login}</main></body></html>",
+            body,
+            "application/json",
+            structure_only=True,
+        )
+        assert extract_login_forms(stored, source="", snapshot=True)
+        post = _entry(
+            "POST", f"{_HOST}/session", post_data=body, started="2026-09-10T10:00:05.000Z"
+        )
+        (tmp_path / "snapshots").mkdir()
+        (tmp_path / "snapshots" / "9.1.after.html").write_text(stored)
+        post["request"]["_domAfter"] = "snapshots/9.1.after.html"
+        entries = [_get("/login", _LOGIN), post]
+        result = _digest(tmp_path, entries, _ORDERS)
+        plain = _digest(tmp_path / "plain", _without_after(entries), _ORDERS)
+        assert result.success_candidates == plain.success_candidates
+        assert result.success_candidates
 
     def test_a_step_submitted_after_the_post_falls_back(self, tmp_path: Path) -> None:
         """The browser posted a step-shaped form after the credential post (an MFA code
