@@ -7831,6 +7831,21 @@ class TestTheRecordingSuggestsASuccessSelector:
         ]
         assert self._valued_run(tmp_path, body, "text/plain").success_candidates == self._KEPT
 
+    def test_a_one_line_text_plain_body_ending_in_a_line_break_is_one_field(self) -> None:
+        """A browser ends every text/plain field with CRLF, so a one-field form (an
+        identifier-first password page) is one line and a line break; one line with
+        none after it is a script's string, often URL-encoded, and read as a form."""
+        assert body_values("password=pa&ss9\r\n", "text/plain") == [(("password",), "pa&ss9")]
+        assert body_values("password=pa&ss9\n", "text/plain") == [(("password",), "pa&ss9")]
+        assert body_values("username=jsmith&password=x", "text/plain") == [
+            (("username",), "jsmith"),
+            (("password",), "x"),
+        ]
+        assert body_values("username=jsmith&password=x\r\n", _FORM_CONTENT_TYPE) == [
+            (("username",), "jsmith"),
+            (("password",), "x\r\n"),
+        ]
+
     @pytest.mark.parametrize(
         ("body", "content_type"),
         [

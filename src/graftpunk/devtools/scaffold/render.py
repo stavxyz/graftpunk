@@ -520,6 +520,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     else:
         lines.extend(literal_lines(login_url, indent=len(L2), prefix="url="))
     lines.append(f'        failure="{GP_FILL_MARKER}: text on the page indicating login failure",')
+    lines.extend(_render_failure_hint(spec.digest.failure_candidates, indent=len(L2)))
     # Nothing observed proves which element marks the landing page (a suggestion
     # may also be on the login page the engine opens), and a GP-FILL literal here
     # would be a configured signal: the engine would poll for that selector until
@@ -574,6 +575,26 @@ def _render_success_hint(candidates: tuple[str, ...], *, indent: int) -> list[st
     )
     for selector in candidates:
         lines.extend(_commented_literal_lines(selector, indent=indent, inner=0, prefix="success="))
+    return lines
+
+
+def _render_failure_hint(candidates: tuple[str, ...], *, indent: int) -> list[str]:
+    """With *candidates* (``RunDigest.failure_candidates``), a ``GP-FILL`` and each as a
+    commented ``failure=`` argument, under the live ``failure`` line, which stays: one
+    wrong password cannot show the text is absent after a right one, so the author
+    confirms it and replaces that line with one. Without, nothing, so the output is
+    as it was."""
+    if not candidates:
+        return []
+    lines = wrapped_comment_lines(
+        f"{GP_FILL_MARKER}: the recording suggests failure text: shown after the wrong "
+        "password it marked. Confirm it appears after a wrong password and not after a "
+        "right one, then replace the failure line above with one suggestion (all of its "
+        "lines):",
+        indent=indent,
+    )
+    for text in candidates:
+        lines.extend(_commented_literal_lines(text, indent=indent, inner=0, prefix="failure="))
     return lines
 
 

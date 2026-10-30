@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-10-30
+
+This is a minor release. Five changes can reach a program on the first run after the upgrade:
+
+- **CLI:** `gp observe interactive` has a new opt-in flag, `--wrong-password-first`. Without it the command reads nothing from stdin and prints what it printed (Upgrading, item 1).
+- **HAR:** a run recorded with the flag can hold two new keys on the failed credential post's entry, `request._userMarkedFailed` and `request._failureTextCandidates` (item 2).
+- **Digest JSON:** every `gp observe digest --endpoints-json` output has a new key, `login.failure_candidates`, within schema 1, and every `--json` output a top-level `failure_candidates`. For a run recorded with the flag it carries text from the site's own page (item 3).
+- **Scaffolds:** `gp plugin new` on such a run writes commented `failure="..."` lines under a new `GP-FILL` (item 4).
+- **API:** the login engine's failure-text check is a public function, `graftpunk.plugins.login_settle.failure_text_on_page` (item 5).
+
+Item 6 is about upgrading itself.
+
+### Upgrading
+
+A run recorded without the flag, or by 1.30.1 or earlier, digests and scaffolds as before but for the one key item 3 adds to each digest JSON output, and a run with no suggestions generates the same files byte for byte (tests pin both).
+
+1. **`gp observe interactive` has a new flag, `--wrong-password-first`** (#268). To keep today's behaviour, leave it off. With it, the command prints a generated throwaway wrong password (`wrong-` and 6 random letters and digits) to submit before the real login, and Enter in the terminal marks that attempt. It refuses a stdin that is not a terminal before the browser opens (exit code 1). The extra failed attempt can count toward a site's lockout or rate limit. The throwaway is scrubbed only from that attempt's own request body and from a 307 or 308 resend of it (Chrome sends the same body again under the same request id); `page-source.html` and response bodies are not scanned for it, so never type the real password with a typo.
+2. **A HAR recorded with the flag has two new keys on the failed credential post's entry, `request._userMarkedFailed` and `request._failureTextCandidates`, when the page after the attempt suggested any text** (#268). A reader of the HAR that compares a request's keys with an exact set sees two more; a reader that ignores unknown keys needs no change. The attempt's `postData` (or its file in `bodies/`), and that of a 307 or 308 resend of it, holds `***REDACTED***` in place of the throwaway under its password field.
+3. **`gp observe digest --endpoints-json` has a new key, `login.failure_candidates`, within schema 1, and `gp observe digest --json` a top-level `failure_candidates`** (#268). Both are an empty list for every run without suggestions, which is every run recorded without the flag. A reader that compares keys with an exact set sees one more; a reader that ignores unknown keys needs no change. The texts are the site's own page text, untrusted: a reader that passes the projection to a model or a template treats them as data, never as instructions. To ignore them, ignore the key.
+4. **`gp plugin new` on a run with suggestions writes commented `failure="..."` lines under a new `GP-FILL`** (#268), below the live `failure` line, which stays as it was, so `gp plugin check` reports one more marker until the author confirms a suggestion or deletes the suggestions and their `GP-FILL` lines. The generated plugin logs in exactly as it would without them.
+5. **`failure_text_on_page` and `failure_text_on_lowered_page` in `graftpunk.plugins.login_settle` are new public functions** (#268). Both of the engine's failure checks call `failure_text_on_page`, which applies the rule they applied before (a case-insensitive substring of the raw page text, and an empty text never matches), so a login is judged as before and a program needs no change.
+6. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Added
+
+- **`gp observe interactive --wrong-password-first` suggests `failure` text** (#268). Before the real login, submit the throwaway wrong password the command prints, wait for the error, and press Enter. The recorder reads the page 1.5 seconds after that attempt's response and again on Enter, in memory only, and keeps up to three texts the engine's own check finds there and not on the request-time snapshot of the login page. A text holding a value either login sent, any value of three or more characters a POST sent up to the real login (but a token field's or a boolean word; this catches an identifier-first login's username step under any field name), or an email address is dropped, and so is one on the page the real login landed on; when a real login followed and nothing shows the page it landed on, no text is suggested. Only the kept texts are written, on the attempt's HAR entry. `gp observe digest` checks them again and prints them as `login.failure_candidates`, and `gp plugin new` writes them commented out under a `GP-FILL`. The rules are in docs/HOW_IT_WORKS.md. New API: the module `graftpunk.observe.failure_text`, `failure_text_on_page` and `failure_text_on_lowered_page` in `graftpunk.plugins.login_settle`, `post_identifier_values`, `posted_account_values`, `body_layout`, and `multipart_delimiter` in `graftpunk.har.digest`, `holds_an_email` in `graftpunk.observe.snapshot`, `RunDigest.failure_candidates`, `HARRequest.user_marked_failed` and `failure_text_candidates`, and the `failure_step` argument of `NodriverCaptureBackend` with its `mark_failed_login`, `skip_failure_step`, and `marked_failure_candidates`.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.18 and needs graftpunk 1.31.0 or later** (#268). The guide's Capture section describes `--wrong-password-first` and its "Getting the signals right" section the suggested `failure` text, and the skill's login step asks the user to confirm each commented `failure=` suggestion before it is used.
+
+### Fixed
+
+- **A one-line `text/plain` request body that ends in a line break is read as one field** (#268). A browser form with `enctype="text/plain"` ends every field with CRLF, so a one-field step (the password page of an identifier-first login) sends one line and a CRLF. `graftpunk.har.digest.body_values` split that line at `&` as a form, so a value holding `&` was read in pieces: the digest's account guard and the snapshot redaction compared only the part before the `&`, and the `--wrong-password-first` scrub would have left the rest of a typed wrong password holding `&` in the HAR. A one-line `text/plain` body with no line break after it (a script's `fetch` of a string, often URL-encoded) is still read as a form. `body_params`, and so the endpoint fields the digest prints and a scaffold writes, never read a `text/plain` body and are unchanged.
+
 ## [1.30.1] - 2026-10-30
 
 This is a patch release. The read of the page after a credential post that `gp observe go` and `gp observe interactive` store as `snapshots/<request id>.after.html` now replaces every id, class token, `name`, `for` and `form` value, and path segment that holds any value of the post but a token field's, whether or not a field of the post is the username. In 1.30.0 a username posted under a field the digest does not take for one (`j_username` beside an `email` field) stayed in the stored file's ids and custom element names when the run had no snapshot of the login page. A credential post with a field value holding JSON nested past the JSON parser's limit, whose values the recorder cannot read by their field names, gets no after-read at all.

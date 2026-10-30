@@ -512,4 +512,18 @@ def test_a_run_without_an_after_read_digests_as_1_29_0_did(tmp_path: Path) -> No
     """The golden file was written by graftpunk 1.29.0 (main at cd8b06be) from these
     runs; every output must match it byte for byte."""
     golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
-    assert golden_outputs(tmp_path) == golden
+    assert _without_failure_candidates(golden_outputs(tmp_path)) == golden
+
+
+def _without_failure_candidates(outputs: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    """*outputs* with the one key added since 1.29.0 (#268 part 3, within schema 1)
+    taken out of the JSON (top level) and the endpoints projection (``login``) as
+    text: its one line, an empty list, which a key sorted after it always follows.
+    No golden run suggests any failure text, and every other byte, the JSON's
+    formatting included, is compared as rendered."""
+    for outputs_of_run in outputs.values():
+        for key, indent in (("json", 2), ("endpoints", 4)):
+            line = " " * indent + '"failure_candidates": [],\n'
+            assert outputs_of_run[key].count(line) == 1, key
+            outputs_of_run[key] = outputs_of_run[key].replace(line, "")
+    return outputs

@@ -7,7 +7,11 @@ nothing here imports a command module back.
 from __future__ import annotations
 
 import asyncio
+import os
+import secrets
 import signal
+import string
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,6 +79,7 @@ async def setup_observe_session(
     headless: bool,
     *,
     session_name: str | None = None,
+    failure_step: bool = False,
 ) -> ObserveSession | None:
     """Set up browser, optionally inject cookies, initialize capture, and navigate to URL.
 
@@ -89,6 +94,8 @@ async def setup_observe_session(
             larger one is written to the run's bodies/ directory.
         headless: Whether to run browser headless.
         session_name: Session name for cookie injection, or None to skip.
+        failure_step: Record the wrong-password step of ``gp observe interactive
+            --wrong-password-first`` (the backend's ``mark_failed_login``).
 
     Returns:
         The set-up :class:`ObserveSession`, or None on failure.
@@ -203,6 +210,7 @@ async def setup_observe_session(
             # The page's DOM at each credential-shaped POST: a login modal a script
             # renders is in no recorded HTML response (#267).
             dom_snapshots_dir=storage.run_dir / "snapshots",
+            failure_step=failure_step,
         )
         await backend.start_capture_async()
 
@@ -232,13 +240,117 @@ async def run_observe_go(
         stop_observe_browser(observed.browser, observed.handle)
 
 
-async def run_observe_interactive(
-    namespace: str, url: str, max_body_size: int, *, session_name: str | None = None
+# The throwaway the prompt offers: generated, so it is no word on any page and no
+# field name, and never the real password with a typo.
+_THROWAWAY_ALPHABET = string.ascii_lowercase + string.digits
+
+
+def _throwaway_password() -> str:
+    """A wrong password for the step: ``wrong-`` and 6 random letters and digits."""
+    return "wrong-" + "".join(secrets.choice(_THROWAWAY_ALPHABET) for _ in range(6))
+
+
+def _step_instruction(throwaway: str) -> str:
+    return (
+        "\n[bold]Recording.[/bold] First, a wrong password: in the browser, submit the "
+        f"login with this throwaway wrong password, [bold]{escape(throwaway)}[/bold] (never "
+        "your real one with a typo), wait for the error to show, then press Enter here. "
+        "Then log in for real, and press Ctrl+C here to stop and save."
+    )
+
+
+async def _wrong_password_step(
+    backend: Any, stop_event: asyncio.Event, loop: asyncio.AbstractEventLoop, stdin: Any
 ) -> None:
-    """Async implementation of observe interactive."""
+    """Wait for Enter on *stdin* (a terminal) and mark the last credential post as the
+    failed one (the backend's ``mark_failed_login``), or for *stop_event*. Enter before
+    any credential post asks again. The prompt offers a generated throwaway
+    (:func:`_throwaway_password`), so it collides with no word on the page; whatever
+    the user types is accepted. End of input (Ctrl+D) skips the step and tells the
+    backend so (``skip_failure_step``), which then holds and reads nothing more for it.
+    The loop watches *stdin* with ``add_reader`` until the step ends, so the SIGINT
+    handler keeps working while it waits; nothing reads stdin after."""
+    fd = stdin.fileno()
+    chunks: asyncio.Queue[bytes] = asyncio.Queue()
+
+    def readable() -> None:
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            chunk = b""
+        chunks.put_nowait(chunk)
+
+    console.print(_step_instruction(_throwaway_password()))
+    loop.add_reader(fd, readable)
+    try:
+        stopped = asyncio.ensure_future(stop_event.wait())
+        try:
+            while True:
+                line = asyncio.ensure_future(chunks.get())
+                await asyncio.wait({line, stopped}, return_when=asyncio.FIRST_COMPLETED)
+                if not line.done():
+                    line.cancel()
+                    return
+                chunk = line.result()
+                if not chunk:
+                    backend.skip_failure_step()
+                    console.print(
+                        "[yellow]Input closed: the wrong-password step is skipped. Log in, "
+                        "then press Ctrl+C here to stop and save.[/yellow]"
+                    )
+                    return
+                if b"\n" not in chunk:
+                    continue
+                if backend.mark_failed_login():
+                    console.print(
+                        "[green]Marked the last login attempt as the wrong password.[/green] "
+                        "Now log in for real, then press Ctrl+C here to stop and save."
+                    )
+                    return
+                console.print(
+                    "[yellow]No credential post yet: submit the wrong password in the "
+                    "browser, wait for the error, then press Enter here again.[/yellow]"
+                )
+        finally:
+            stopped.cancel()
+    finally:
+        loop.remove_reader(fd)
+
+
+async def run_observe_interactive(
+    namespace: str,
+    url: str,
+    max_body_size: int,
+    *,
+    session_name: str | None = None,
+    wrong_password_first: bool = False,
+    stdin: Any = None,
+) -> None:
+    """Async implementation of observe interactive.
+
+    With *wrong_password_first*, the recording starts with the wrong-password step
+    (:func:`_wrong_password_step`), which reads Enter on *stdin* (``sys.stdin`` when
+    None): a stdin that is no terminal is refused before the browser opens, since
+    nobody could press Enter in it. The recorder scrubs the failed post's password
+    from that post's own body, and from a 307 or 308 resend of it, when it is marked
+    (``mark_failed_login``) and again at stop, and when the mark kept no failure
+    text, one line says so before the run is saved."""
+    if wrong_password_first:
+        stdin = sys.stdin if stdin is None else stdin
+        if not stdin.isatty():
+            console.print(
+                "[red]--wrong-password-first needs a terminal to press Enter in, and "
+                "stdin is not one.[/red]"
+            )
+            raise typer.Exit(1)
 
     observed = await setup_observe_session(
-        namespace, url, max_body_size, headless=False, session_name=session_name
+        namespace,
+        url,
+        max_body_size,
+        headless=False,
+        session_name=session_name,
+        failure_step=wrong_password_first,
     )
     if observed is None:
         raise typer.Exit(1)
@@ -254,19 +366,31 @@ async def run_observe_interactive(
             )
             return
 
-        console.print("\n[bold]Recording... press Ctrl+C to stop and save[/bold]")
-        console.print(
-            "[dim]Tip: Use Ctrl+C in this terminal for a complete capture "
-            "(screenshot, page source, and network data). "
-            "Closing the browser window will preserve network data only.[/dim]\n"
-        )
-
         try:
+            if wrong_password_first:
+                await _wrong_password_step(observed.backend, stop_event, loop, stdin)
+            else:
+                console.print("\n[bold]Recording... press Ctrl+C to stop and save[/bold]")
+                console.print(
+                    "[dim]Tip: Use Ctrl+C in this terminal for a complete capture "
+                    "(screenshot, page source, and network data). "
+                    "Closing the browser window will preserve network data only.[/dim]\n"
+                )
             await stop_event.wait()
         finally:
             loop.remove_signal_handler(signal.SIGINT)
 
         console.print("\n[dim]Recording stopped. Saving capture...[/dim]")
+        if wrong_password_first:
+            # The reads after the marked post end here (save_observe_run would end
+            # them too), so what they kept is known before the save.
+            await observed.backend.close_after_reads()
+            if observed.backend.marked_failure_candidates() == ():
+                console.print(
+                    "[yellow]No failure text was kept from the wrong password (the run "
+                    "stopped before the page was read, or no text passed the checks): "
+                    "the generated plugin's failure text is yours to fill in.[/yellow]"
+                )
         await save_observe_run(
             observed.storage, observed.backend, "interactive-final", console=console
         )

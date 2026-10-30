@@ -247,6 +247,13 @@ def _email_pattern(redaction: Redaction) -> re.Pattern[str]:
     )
 
 
+def holds_an_email(text: str, redaction: Redaction) -> bool:
+    """Whether *text* holds an email address by the rule the stored after-read
+    redacts by (:func:`_email_pattern`): any address at a dotted host, or at the
+    dotless host of an email *redaction* holds, in any letter case."""
+    return _email_pattern(redaction).search(text) is not None
+
+
 class _Sanitizer(HTMLParser):
     def __init__(
         self,

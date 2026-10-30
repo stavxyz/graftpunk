@@ -30,8 +30,10 @@ from graftpunk.har.documents import (
     looks_like_token_name,
 )
 from graftpunk.har.login_signals import (
+    account_needles,
     asks_for_a_code,
     could_be_an_account_value,
+    holds_an_account_value,
     is_login_step_post,
     success_candidates,
 )
@@ -52,16 +54,19 @@ from graftpunk.har.paths import (
 )
 from graftpunk.har.selectors import bounded_selector, selector_holds_an_id, selector_keys
 from graftpunk.logging import get_logger
+from graftpunk.plugins.login_settle import failure_text_on_lowered_page
 from graftpunk.session_identity import identifier_key, is_identifier_field
 
 LOG = get_logger(__name__)
 
 BodyKind = Literal["json", "form", "none"]
+BodyLayout = Literal["json", "text_plain", "multipart", "form", "none"]
 ObservationKind = Literal["form_page", "credential_post", "redirect", "set_cookie", "auth_api"]
 DropReason = Literal["static", "third_party", "error", "other_scheme"]
 
 __all__ = [
     "BodyKind",
+    "BodyLayout",
     "DigestSource",
     "DropReason",
     "Endpoint",
@@ -74,13 +79,17 @@ __all__ = [
     "ShapeNode",
     "TokenCandidate",
     "TokenKind",
+    "body_layout",
     "body_params",
     "body_values",
     "digest",
     "is_credential_body",
+    "multipart_delimiter",
     "password_field_names",
     "post_account_values",
     "post_every_value",
+    "post_identifier_values",
+    "posted_account_values",
     "endpoint_template",
     "FLAGGED_REASONS",
     "FlaggedReason",
@@ -425,6 +434,11 @@ class RunDigest:
     # (graftpunk.har.login_signals.success_candidates). Suggestions only: the
     # generator writes them commented out.
     success_candidates: tuple[str, ...] = ()
+    # Text the recording suggests for LoginConfig.failure: shown on the page after
+    # the credential post the user marked as a wrong password in gp observe
+    # interactive --wrong-password-first (_failure_candidates). Suggestions only: the
+    # generator writes them commented out.
+    failure_candidates: tuple[str, ...] = ()
 
 
 def _scope_root(primary_host: str) -> str:
@@ -788,18 +802,25 @@ _MULTIPART_NAME_RE = re.compile(r'\bname="([^"]*)"', re.IGNORECASE)
 _BOUNDARY_RE = re.compile(r'\bboundary=(?:"([^"]+)"|([^\s;]+))', re.IGNORECASE)
 
 
+def multipart_delimiter(text: str, content_type: str) -> str | None:
+    """The line a ``multipart/form-data`` body *text* splits its parts on: ``--``
+    and the boundary its *content_type* names, or, when it names none, the first
+    non-blank line of *text* when that starts with ``--``; else None."""
+    declared = _BOUNDARY_RE.search(content_type)
+    if declared:
+        return "--" + (declared.group(1) or declared.group(2))
+    delimiter = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return delimiter if delimiter.startswith("--") and len(delimiter) >= 3 else None
+
+
 def _multipart_values(text: str, content_type: str) -> list[tuple[tuple[str, ...], str]]:
     """The (name,) and value of each text part of a ``multipart/form-data`` body,
     split on the boundary its *content_type* names, or, when it names none, on the
     first non-blank line of the body. A file part is skipped."""
     newline = "\r\n" if "\r\n" in text else "\n"
-    declared = _BOUNDARY_RE.search(content_type)
-    if declared:
-        delimiter = "--" + (declared.group(1) or declared.group(2))
-    else:
-        delimiter = next((line.strip() for line in text.splitlines() if line.strip()), "")
-        if not delimiter.startswith("--") or len(delimiter) < 3:
-            return []
+    delimiter = multipart_delimiter(text, content_type)
+    if delimiter is None:
+        return []
     found: list[tuple[tuple[str, ...], str]] = []
     for part in text.split(delimiter)[1:]:
         if part.startswith("--"):
@@ -847,31 +868,50 @@ def _read_body_values(post_data: str | None, content_type: str) -> tuple[list[_B
     ``parse_qs`` with no such key (XML with an attribute, prose with an ``=``), a
     JSON body with a value under no name (a bare string, a list of strings), and a
     value holding JSON too deep for the parser are not read by field names."""
+    _layout, fields, by_names = _body_fields(post_data, content_type)
+    return _with_json_values(fields, by_names)
+
+
+def body_layout(post_data: str | None, content_type: str = "") -> BodyLayout:
+    """How :func:`body_values` splits a request body into fields, so a writer
+    (:func:`graftpunk.observe.failure_text.scrub_failed_password`) splits it the
+    same way: ``"json"``; ``"text_plain"``, a field a line
+    (:func:`_text_plain_fields`); ``"multipart"``, a field a part; ``"form"``, a
+    field each ``&``-separated piece, by ``parse_qs``; or ``"none"`` for no fields."""
+    return _body_fields(post_data, content_type)[0]
+
+
+def _body_fields(
+    post_data: str | None, content_type: str
+) -> tuple[BodyLayout, list[tuple[tuple[str, ...], str]], bool]:
+    """The one split of a body into fields, for :func:`_read_body_values` and
+    :func:`body_layout`: its layout, its fields (before the values inside a field
+    holding JSON), and whether they were read by their field names."""
     declared = content_type.split(";")[0].strip().lower()
     kind, parsed = _decoded(post_data, declared)
     if not post_data or kind == "too_deep":
-        return [], False
+        return "none", [], False
     if kind == "json":
         values = _scalar_values(parsed)
-        return _with_json_values(values, all(path for path, _value in values))
+        return "json", values, all(path for path, _value in values)
     lines = _text_plain_fields(post_data) if declared == _TEXT_PLAIN_CONTENT_TYPE else None
     if lines:
-        return _with_json_values(lines, True)
+        return "text_plain", lines, True
     if kind == "none" and declared == _MULTIPART_CONTENT_TYPE:
         parts = _multipart_values(post_data, content_type)
         if parts:
-            return _with_json_values(parts, True)
+            return "multipart", parts, True
     form = parsed if kind == "form" else _form_fields(post_data)
     if form is not None:
-        return _with_json_values(
-            [((name,), value) for name, values in form.items() for value in values], True
-        )
+        return "form", [((name,), value) for name, values in form.items() for value in values], True
     if "=" in post_data:
         loose = parse_qs(post_data, keep_blank_values=True)
-        return _with_json_values(
-            [((name,), value) for name, values in loose.items() for value in values], False
+        return (
+            "form",
+            [((name,), value) for name, values in loose.items() for value in values],
+            False,
         )
-    return [], False
+    return "none", [], False
 
 
 _TEXT_PLAIN_CONTENT_TYPE = "text/plain"
@@ -883,10 +923,13 @@ def _text_plain_fields(post_data: str) -> list[tuple[tuple[str, ...], str]] | No
     its part before its first ``=`` is spelled like a field name, each later line
     holding ``=`` starts one whatever its name (``loginForm:log``, ``user name``),
     and a line with no ``=`` continues the value before it. A value is read as
-    written: no ``&`` splitting and no percent-decoding. ``None`` when the body is
-    one line (the form read takes it) or its first line starts no field."""
+    written: no ``&`` splitting and no percent-decoding. A browser ends every field
+    with CRLF, so one line ending in a line break is one field. ``None`` when the
+    body is one line with no line break after it (a script's ``fetch`` of a string
+    declares ``text/plain`` and often sends a URL-encoded form; the form read takes
+    it) or its first line starts no field."""
     lines = re.split(r"\r?\n", post_data.rstrip("\r\n"))
-    if len(lines) < 2:
+    if len(lines) < 2 and not post_data.endswith("\n"):
         return None
     first, separator, _value = lines[0].partition("=")
     if not (separator and _field_name_shaped(first)):
@@ -1478,6 +1521,9 @@ def _is_top_level_page_load(entry: HAREntry, method: str, content_type: str) -> 
     return dest not in _FRAME_DESTINATIONS and _is_page_load(entry, method, content_type)
 
 
+# What a run's redaction writes in place of a value (graftpunk.observe.run.REDACTED,
+# which this module cannot import): a text holding it can never match a page.
+REDACTED_MARK = "***REDACTED***"
 # An email address inside a value.
 _EMAIL_IN_VALUE_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
@@ -1499,6 +1545,67 @@ def _after_read(credential_entries: Sequence[HAREntry], stepped_since: bool) -> 
     if extract_login_forms(html, source="", snapshot=True):
         return None
     return html
+
+
+def _failure_candidates(
+    credential_entries: Sequence[HAREntry],
+    account_values: list[str] | None,
+    logged_in_pages: Sequence[str],
+    posted_values: Sequence[str] = (),
+) -> tuple[str, ...]:
+    """The failure texts the last credential post the user marked failed carries
+    (``request._failureTextCandidates``), less each one holding an account value of
+    any credential post of the run (*account_values*) or a value any request
+    posted up to the real login (*posted_values*, :func:`posted_account_values`:
+    the username of an identifier-first login, under any name), by the rule the
+    success suggestions are kept by
+    (:func:`graftpunk.har.login_signals.holds_an_account_value`), an email address,
+    or a redaction, and each one the engine would find
+    (:func:`graftpunk.plugins.login_settle.failure_text_on_page`) on one of
+    *logged_in_pages*, the run's pages after the real login, since it would fail
+    every good login. Nothing when no post is marked, when *account_values* is None
+    (a credential post's values cannot be read), or when a real login followed the
+    marked post and nothing shows the page it landed on: no logged-in page and no
+    after-read of the real login (``request._domAfter``, the recorder's sign that it
+    read the landed page and dropped the texts on it). The recorder checked them
+    already, but a stop soon after the real login cancels its read of the landed
+    page, a HAR can be edited, and the run's redaction changed it since."""
+    marked = [at for at, entry in enumerate(credential_entries) if entry.request.user_marked_failed]
+    if not marked or account_values is None:
+        return ()
+    real_login = credential_entries[-1]
+    if (
+        marked[-1] < len(credential_entries) - 1
+        and not logged_in_pages
+        and real_login.request.dom_after is None
+    ):
+        return ()
+    needles = account_needles([*account_values, *posted_values])
+    lowered_pages = [page.lower() for page in logged_in_pages]
+    return tuple(
+        text
+        for text in credential_entries[marked[-1]].request.failure_text_candidates
+        if REDACTED_MARK not in text
+        and not _EMAIL_IN_VALUE_RE.search(text)
+        and not holds_an_account_value(text, needles)
+        and not any(failure_text_on_lowered_page(page, text) for page in lowered_pages)
+    )
+
+
+def _pages_after_the_real_login(
+    credential_entries: Sequence[HAREntry],
+    after_pages_at_post: Sequence[int],
+    after_post_pages: Sequence[str],
+) -> list[str]:
+    """The last recorded page after the real login (the last credential post after
+    the last one the user marked failed), as a list of none or one: a page loaded
+    after it holding no login form (*after_post_pages*, each credential post's count
+    of them beside it in *after_pages_at_post*)."""
+    marked = [at for at, entry in enumerate(credential_entries) if entry.request.user_marked_failed]
+    if not marked or marked[-1] == len(credential_entries) - 1:
+        return []
+    pages = after_post_pages[after_pages_at_post[-1] :]
+    return [pages[-1]] if pages else []
 
 
 def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str] | None:
@@ -1589,6 +1696,48 @@ def post_every_value(post_data: str | None, content_type: str = "") -> list[str]
     only, never written."""
     values, by_names = _read_body_values(post_data, content_type)
     return _every_value_but_tokens(values) if values and by_names else []
+
+
+def post_identifier_values(
+    post_data: str | None, content_type: str = "", username_names: Iterable[str] = ()
+) -> list[str]:
+    """Each non-empty value of a request body *post_data* (read by
+    :func:`body_values`) under a name that is an identifier field's
+    (:func:`graftpunk.session_identity.is_identifier_field`) or that a recorded login
+    form takes as its username (*username_names*), by any name on the way to it: the
+    username an identifier-first login posts in a step before the password post,
+    which that post's own values do not hold. Held in memory only, never written."""
+    by_form = frozenset(username_names)
+    return [
+        value
+        for path, value in body_values(post_data, content_type)
+        if value.strip()
+        and any(name in by_form or is_identifier_field(identifier_key(name)) for name in path)
+    ]
+
+
+def posted_account_values(
+    post_data: str | None,
+    content_type: str = "",
+    method: str = "POST",
+    username_names: Iterable[str] = (),
+) -> list[str]:
+    """The values a request of a login run sent that a failure suggestion may not
+    hold: its identifier values (:func:`post_identifier_values`) and, for a POST,
+    each value the every-value rule takes (:func:`post_every_value`) that could name
+    an account (:func:`graftpunk.har.login_signals.could_be_an_account_value`: three
+    or more characters, not a boolean word). An identifier-first login posts the
+    username in a step under any name (``j_username``, ``loginfmt``), which neither
+    the password post's values nor an identifier name finds. Held in memory only,
+    never written."""
+    values = post_identifier_values(post_data, content_type, username_names)
+    if method.upper() == "POST":
+        values += [
+            value
+            for value in post_every_value(post_data, content_type)
+            if could_be_an_account_value(value)
+        ]
+    return values
 
 
 def _path_segments(url: str) -> int:
@@ -2204,6 +2353,14 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     submitted_a_step: set[int] = set()
     latest_after_post: int | None = None
     credential_entries: list[HAREntry] = []
+    # Beside each of credential_entries: how many after_post_pages there were when it
+    # was seen, so the pages after the real login are known (_failure_candidates).
+    after_pages_at_post: list[int] = []
+    # Every request with a body, in order, and how many of them were sent up to and
+    # including the last credential post: an identifier-first login posts the
+    # username in a step before the password post (_failure_candidates).
+    bodied_entries: list[HAREntry] = []
+    bodied_through_login = 0
     # Whether the browser sent a step-shaped POST (a document form or a script's)
     # after the last credential post: its after-read (_after_read) may show that step.
     stepped_since_last_post = False
@@ -2245,6 +2402,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     login_action_targets = {form.action_target for form in page_forms if form.action_target[1]}
 
     for entry, host, static, entry_index in classified:
+        if entry.request.post_data:
+            bodied_entries.append(entry)
         if static:
             dropped["static"] += 1
             continue
@@ -2502,6 +2661,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 posts.append((step, post_target, frozenset(body_params(entry)), not by_target))
                 post_interactions.append((entry.timestamp, entry.request.login_interactions))
                 credential_entries.append(entry)
+                after_pages_at_post.append(len(after_post_pages))
+                bodied_through_login = len(bodied_entries)
                 stepped_since_last_post = False
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must
@@ -2606,7 +2767,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         )
     promoted = {post.page_step for post in credential_posts}
 
+    logged_in_pages = _pages_after_the_real_login(
+        credential_entries, after_pages_at_post, after_post_pages
+    )
     if source.page_source is not None and source.page_source.is_file():
+        logged_in_pages.append(page_html)
         # A run stopped on a page holding a login form stopped logged out, or on
         # another login.
         (logged_out_pages if page_forms else after_post_pages).append(page_html)
@@ -2791,6 +2956,21 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         )
         if credential_post_steps and after_post_pages and account_values is not None
         else (),
+        failure_candidates=_failure_candidates(
+            credential_entries,
+            account_values,
+            logged_in_pages,
+            [
+                value
+                for entry in bodied_entries[:bodied_through_login]
+                for value in posted_account_values(
+                    entry.request.post_data,
+                    _request_content_type(entry),
+                    entry.request.method,
+                    username_names,
+                )
+            ],
+        ),
     )
 
 

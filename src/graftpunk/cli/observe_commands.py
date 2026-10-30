@@ -726,6 +726,20 @@ def observe_interactive(
             ),
         ),
     ] = 5 * 1024 * 1024,
+    wrong_password_first: Annotated[
+        bool,
+        typer.Option(
+            "--wrong-password-first",
+            help=(
+                "Start with a wrong-password attempt: submit the throwaway wrong password "
+                "it prints, press Enter here, then log in for real. The page after it gives "
+                "suggested failure text for gp plugin new. That password is scrubbed "
+                "only from the attempt's own request body and a 307 or 308 resend of it, "
+                "not from page-source.html or response bodies, so never use your real "
+                "one with a typo"
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Record an interactive browser session into a HAR file.
 
@@ -740,5 +754,11 @@ def observe_interactive(
 
     with suppress_asyncio_noise():
         asyncio.run(
-            run_observe_interactive(namespace, url, max_body_size, session_name=session_name)
+            run_observe_interactive(
+                namespace,
+                url,
+                max_body_size,
+                session_name=session_name,
+                wrong_password_first=wrong_password_first,
+            )
         )
