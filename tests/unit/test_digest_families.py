@@ -638,6 +638,41 @@ class TestScaffoldingAFamily:
         call = " ".join(tests.split("result = plugin.store_items(", 1)[1].split(")", 1)[0].split())
         assert call == 'ctx, store_id="1001", slug="north"'
 
+    @pytest.mark.parametrize("family_first", [True, False])
+    def test_a_family_and_its_fixture_member_both_get_a_test(
+        self, tmp_path: Path, family_first: bool
+    ) -> None:
+        """Both tests issue the member's recorded request and read its one fixture."""
+        result = _digest_of(tmp_path, _TWO_REGIONS)
+        commands = [
+            CommandSelection("region-items", "GET", _FAMILY),
+            CommandSelection("north", "GET", "/search/north-region/items/"),
+        ]
+        spec = _spec(result, *(commands if family_first else commands[::-1]))
+        tests = render(spec)["tests/test_plugin.py"]
+        assert "def test_region_items() -> None:" in tests
+        assert "def test_north() -> None:" in tests
+        assert "GP-FILL: no test" not in tests
+        assert fixture_paths(spec) == ["tests/fixtures/get_search_north-region_items.json"]
+
+    def test_a_family_sharing_a_stem_with_another_request_loses_its_test(
+        self, tmp_path: Path
+    ) -> None:
+        """``/x_north/items`` names its fixture as the family's member
+        ``/x/north/items`` does, but answers another request: the second test would
+        read the first one's fixture, so it is left out with a note."""
+        entries = [_get("/x/north/items"), _get("/x/south/items"), _get("/x_north/items")]
+        result = _digest_of(tmp_path, entries)
+        spec = _spec(
+            result,
+            CommandSelection("x-items", "GET", "/x/{x_slug}/items"),
+            CommandSelection("x-north", "GET", "/x_north/items"),
+        )
+        tests = render(spec)["tests/test_plugin.py"]
+        assert "def test_x_items() -> None:" in tests
+        assert "def test_x_north() -> None:" not in tests
+        assert "# GP-FILL: no test for x_north (GET /x_north/items): its fixture would" in tests
+
     def test_the_default_render_proposes_no_family(self, tmp_path: Path) -> None:
         result = _digest_of(tmp_path, _TWO_REGIONS)
         without = dataclasses.replace(
@@ -652,6 +687,19 @@ class TestScaffoldingAFamily:
         )
         literal = CommandSelection("north", "GET", "/search/north-region/items/")
         assert render(_spec(result, literal)) == render(_spec(without, literal))
+
+    def test_two_literal_commands_on_one_endpoint_render_as_before(self, tmp_path: Path) -> None:
+        """Only a family command shares its member's fixture: two literal commands on
+        one endpoint keep the earlier rule, one test and a note."""
+        result = _digest_of(tmp_path, _TWO_REGIONS)
+        north = "/search/north-region/items/"
+        spec = _spec(
+            result, CommandSelection("north", "GET", north), CommandSelection("n", "GET", north)
+        )
+        tests = render(spec)["tests/test_plugin.py"]
+        assert "def test_north() -> None:" in tests
+        assert "def test_n() -> None:" not in tests
+        assert f"# GP-FILL: no test for n (GET {north}): its fixture would share" in tests
 
     def test_fixture_paths_name_the_fixture_member_s_own_file(self, tmp_path: Path) -> None:
         result = _digest_of(tmp_path, _TWO_REGIONS)
@@ -777,6 +825,26 @@ class TestFixturesForAFamily:
         self._fixtures(app, target / "tests" / "fixtures", f"GET {_FAMILY}")
         assert "2 passed" in _project_pytest(target)
         _assert_ruff_clean(target)
+
+    @pytest.mark.parametrize("family_first", [True, False])
+    def test_a_family_and_its_fixture_member_s_command_both_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family_first: bool
+    ) -> None:
+        """A family command and a literal command for its fixture member read that
+        member's one fixture, so the project runs both tests, in either order."""
+        app = _run_with_a_family(tmp_path, monkeypatch)
+        target = tmp_path / "out"
+        commands = [f"region-items=GET {_FAMILY}", "north=GET /search/north-region/items/"]
+        argv = ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)]
+        for command in commands if family_first else commands[::-1]:
+            argv += ["--command", command]
+        result = CliRunner().invoke(app, argv)
+        assert result.exit_code == 0, result.output
+        tests = (target / "tests" / "test_plugin.py").read_text()
+        assert "GP-FILL: no test" not in tests
+        fixtures_dir = target / "tests" / "fixtures"
+        self._fixtures(app, fixtures_dir, f"GET {_FAMILY}")
+        assert "3 passed" in _project_pytest(target)
 
     def test_a_dollar_value_forms_no_family_and_its_literal_flow_passes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

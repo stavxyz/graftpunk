@@ -1823,7 +1823,9 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
         template = _fixture_template(endpoint)
         stem = capture_slug(command.method, template).casefold()
         if stem in stems:
-            continue  # no generated test reads it (see _render_test_module)
+            # Either the file another test already reads (a family and its fixture
+            # member) or one no generated test reads (see _render_test_module).
+            continue
         stems.add(stem)
         paths.append(
             f"{fixtures_root_for(spec)}"
@@ -1893,7 +1895,9 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
     # the collisions this module can still create: a command named the same as
     # the fixed plugin_instantiates test, or as one of SitePlugin's own attributes.
     seen_tests: set[str] = set(_FIXED_TEST_NAMES) | set(policy.RESERVED_COMMAND_NAMES)
-    stems: dict[str, str] = {}
+    # Each stem taken so far: the request its fixture answers, whether a family
+    # command took it, and the label the collision note names.
+    stems: dict[str, tuple[tuple[str, str], bool, str]] = {}
     for command in planned:
         endpoint = command.endpoint
         method = command.method
@@ -1909,20 +1913,26 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
             lines.append("")
             lines.append("")
             continue
-        stem = capture_slug(method, _fixture_template(endpoint))
-        if stem.casefold() in stems:
-            # FixtureSession looks a fixture up by stem, so this endpoint's test
-            # would read the other endpoint's fixture.
+        fixture_request = (method, _fixture_template(endpoint))
+        stem = capture_slug(*fixture_request)
+        family = bool(endpoint.family_members)
+        taken = stems.get(stem.casefold())
+        # A family command and a literal command for its fixture member issue the
+        # same recorded request, so both tests read that member's own fixture and
+        # both stay. Any other shared stem means FixtureSession, which looks a
+        # fixture up by stem, would hand this test the other endpoint's fixture.
+        if taken is not None and not (taken[0] == fixture_request and (family or taken[1])):
             note = (
                 f"{GP_FILL_MARKER}: no test for {name} ({method} {endpoint.template}): its "
-                f"fixture would share the stem {stem} with {stems[stem.casefold()]}; write its "
+                f"fixture would share the stem {stem} with {taken[2]}; write its "
                 "test against a fixture of its own."
             )
             lines.extend(wrapped_comment_lines(note, indent=0))
             lines.append("")
             lines.append("")
             continue
-        stems[stem.casefold()] = f"{method} {endpoint.template}"
+        if taken is None:
+            stems[stem.casefold()] = (fixture_request, family, f"{method} {endpoint.template}")
         test_name = _deduped(name, seen_tests)
         # The same seeding as _render_command_stub, so the identifiers here are
         # the ones the stub actually declares.

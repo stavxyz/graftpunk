@@ -619,8 +619,10 @@ it issues is a recorded one, answered by that member's own fixture
 family's template writes each member's recordings under the member's own
 template, as naming every member would (a glob never names a family row); no
 fixture is written under a family template's name, and `FixtureSession` looks a
-request up by its own template only, as before. A command naming a member's own
-template behaves as it did before families existed.
+request up by its own template only, as before. When one project names both a
+family and its fixture member, both generated tests read that member's fixture.
+A command naming a member's own template behaves as it did before families
+existed.
 
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
