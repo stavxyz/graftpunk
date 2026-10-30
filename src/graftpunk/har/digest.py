@@ -43,7 +43,9 @@ from graftpunk.har.paths import (
     bare_host,
     bare_path,
     bare_url,
+    family_param_name,
     holds_an_id,
+    is_placeholder,
     keys_are_ids,
     looks_dynamic,
     normal_host,
@@ -72,6 +74,7 @@ __all__ = [
     "Endpoint",
     "INTERNAL",
     "LoginForm",
+    "OMIT_EMPTY",
     "LoginObservation",
     "ObservationKind",
     "SHAPE_UNAVAILABLE",
@@ -91,6 +94,7 @@ __all__ = [
     "post_identifier_values",
     "posted_account_values",
     "endpoint_template",
+    "family_values",
     "FLAGGED_REASONS",
     "FlaggedReason",
     "flagged_names_of",
@@ -101,6 +105,11 @@ __all__ = [
 INTERNAL = "internal"
 """The dataclass field metadata key marking a field that is a lookup for code, not
 part of the digest a reader sees: ``render_json`` skips a field that carries it."""
+
+OMIT_EMPTY = "omit_empty"
+"""The dataclass field metadata key marking a field ``render_json`` leaves out while
+it holds an empty value: a field added for a finding most runs do not have, so a
+run without that finding renders as it did before the field existed."""
 
 # Thresholds, every one a named constant (plugin tooling spec, "Rules the digest applies").
 # A body over this size that does not parse is reported as "shape unavailable"
@@ -368,6 +377,19 @@ class Endpoint:
     # never made (an out-of-scope or a static entry sharing the same method and
     # template). None when fixture_written is False.
     fixture_entry_index: int | None = field(default=None, metadata={INTERNAL: True})
+    # The literal templates this endpoint stands for when it is a family row
+    # (_family_endpoints): two or more recorded paths that differ only in one
+    # letters-only segment, which this template holds as the placeholder
+    # family_placeholder names. Empty on every other endpoint, and then left out of
+    # render_json. A family row is a suggestion beside its members' own rows, which
+    # stay exactly as they are.
+    family_members: tuple[str, ...] = field(default=(), metadata={OMIT_EMPTY: True})
+    # The family's placeholder name (graftpunk.har.paths.family_param_name), and the
+    # varying segment's value in the member whose recording is the family's fixture:
+    # the value a generated test passes, so the request it issues is a recorded one.
+    # Lookups for the generator, so render_json leaves them out.
+    family_placeholder: str = field(default="", metadata={INTERNAL: True})
+    family_fixture_value: str = field(default="", metadata={INTERNAL: True})
 
 
 @dataclass(frozen=True)
@@ -2049,6 +2071,45 @@ class _EndpointAccumulator:
         if path not in self.examples and len(self.examples) < _MAX_ENDPOINT_EXAMPLES:
             self.examples.append(path)
 
+    def absorb(self, acc: _EndpointAccumulator) -> None:
+        """Add *acc*'s recordings to this one's: a member joining a family (the
+        high-cardinality collapse's, or a family row's). *acc* is read and never
+        changed."""
+        self.count += acc.count
+        self.statuses.extend(acc.statuses)
+        for ct, n in acc.content_types.items():
+            self.content_types[ct] = self.content_types.get(ct, 0) + n
+        _merged_types(self.query_params, acc.query_params, json_body=False)
+        json_body = "json" in (self.body_kind, acc.body_kind)
+        _merged_types(self.body_params, acc.body_params, json_body=json_body)
+        self.custom_headers.update(acc.custom_headers)
+        self.dropped_query |= acc.dropped_query
+        self.dropped_body |= acc.dropped_body
+        self.bodied = self.bodied or acc.bodied
+        self.body_not_captured += acc.body_not_captured
+        self.body_omitted += acc.body_omitted
+        self.body_binary += acc.body_binary
+        if not self.body_binary_file:
+            self.body_binary_file = acc.body_binary_file
+            self.body_binary_size = acc.body_binary_size
+        # The family's fixture candidates are its members' first recordings of
+        # each type, whichever member recorded them.
+        for recorded_type, candidate in acc.fixture_candidates.items():
+            best = self.fixture_candidates.get(recorded_type)
+            if best is None or candidate[0] < best[0]:
+                self.fixture_candidates[recorded_type] = candidate
+        self.dropped_headers |= acc.dropped_headers
+        # The first member of a collapsed family answers for the family, so a
+        # member that happened to redirect or return HTML must not cost the
+        # merged endpoint its request body kind. Its fixture recording (shape
+        # included, merged into fixture_candidates above) is decided the same
+        # way as any other endpoint's, from the family's combined candidates.
+        if self.body_kind == "none" and acc.body_kind != "none":
+            self.body_kind = acc.body_kind
+        for example in acc.examples:
+            if example not in self.examples and len(self.examples) < _MAX_ENDPOINT_EXAMPLES:
+                self.examples.append(example)
+
     def finish(self, template: str) -> Endpoint:
         primary_content_type = max(
             self.content_types, key=lambda ct: self.content_types[ct], default=""
@@ -2871,41 +2932,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if merged_key not in merged:
             merged[merged_key] = acc
         else:
-            target = merged[merged_key]
-            target.count += acc.count
-            target.statuses.extend(acc.statuses)
-            for ct, n in acc.content_types.items():
-                target.content_types[ct] = target.content_types.get(ct, 0) + n
-            _merged_types(target.query_params, acc.query_params, json_body=False)
-            json_body = "json" in (target.body_kind, acc.body_kind)
-            _merged_types(target.body_params, acc.body_params, json_body=json_body)
-            target.custom_headers.update(acc.custom_headers)
-            target.dropped_query |= acc.dropped_query
-            target.dropped_body |= acc.dropped_body
-            target.bodied = target.bodied or acc.bodied
-            target.body_not_captured += acc.body_not_captured
-            target.body_omitted += acc.body_omitted
-            target.body_binary += acc.body_binary
-            if not target.body_binary_file:
-                target.body_binary_file = acc.body_binary_file
-                target.body_binary_size = acc.body_binary_size
-            # The family's fixture candidates are its members' first recordings of
-            # each type, whichever member recorded them.
-            for recorded_type, candidate in acc.fixture_candidates.items():
-                best = target.fixture_candidates.get(recorded_type)
-                if best is None or candidate[0] < best[0]:
-                    target.fixture_candidates[recorded_type] = candidate
-            target.dropped_headers |= acc.dropped_headers
-            # The first member of a collapsed family answers for the family, so a
-            # member that happened to redirect or return HTML must not cost the
-            # merged endpoint its request body kind. Its fixture recording (shape
-            # included, merged into fixture_candidates above) is decided the same
-            # way as any other endpoint's, from the family's combined candidates.
-            if target.body_kind == "none" and acc.body_kind != "none":
-                target.body_kind = acc.body_kind
-            for example in acc.examples:
-                if example not in target.examples and len(target.examples) < _MAX_ENDPOINT_EXAMPLES:
-                    target.examples.append(example)
+            merged[merged_key].absorb(acc)
 
     endpoints = tuple(
         sorted(
@@ -2929,11 +2956,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         else [value for values in read_values if values is not None for value in values]
     )
 
+    literal_endpoints = _with_login_flow(endpoints, tuple(login))
     return RunDigest(
         source=source,
         primary_host=primary_host,
         hosts=hosts,
-        endpoints=_with_login_flow(endpoints, tuple(login)),
+        endpoints=literal_endpoints + _family_endpoints(literal_endpoints, merged),
         login=tuple(login),
         login_forms=tuple(ranked_forms),
         tokens=tokens,
@@ -2972,6 +3000,187 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             ],
         ),
     )
+
+
+# A segment that names a fixed part of a site's routing rather than a value: when
+# one of these is what differs between two paths, they are two routes, not one
+# route and a parameter. Compared case-insensitively. A version (v1, v2beta) holds
+# a digit, so it is never letters-only and needs no entry here.
+_FIXED_VOCABULARY = frozenset(
+    {
+        "admin",
+        "ajax",
+        "api",
+        "apis",
+        "assets",
+        "auth",
+        "graphql",
+        "internal",
+        "oauth",
+        "public",
+        "rest",
+        "rpc",
+        "search",
+        "static",
+        "www",
+    }
+)
+_SEGMENT_PART_SPLIT_RE = re.compile(r"[_.\-~$]")
+
+
+def _letters_only(segment: str) -> bool:
+    """True when every part of *segment* (split on ``_ . - ~ $``, as the path rule
+    splits one) is one or more ASCII letters, and the path rule keeps it literal:
+    ``north-region``, ``sale_items``. A placeholder, a percent-escape, an empty
+    part, and a digit anywhere each make it something else."""
+    parts = _SEGMENT_PART_SPLIT_RE.split(segment)
+    return all(part.isascii() and part.isalpha() for part in parts) and not looks_dynamic(segment)
+
+
+def _family_eligible(segment: str, *, last: bool) -> bool:
+    """True when *segment* may be the one that varies across a family's members:
+    letters-only, not in the fixed vocabulary, and, as a path's last segment, not a
+    file name (holding a ``.``: ``intro.html`` and ``setup.html`` are two
+    documents)."""
+    if not _letters_only(segment) or segment.lower() in _FIXED_VOCABULARY:
+        return False
+    return not (last and "." in segment)
+
+
+def _top_level_shape(shape: ShapeNode | None) -> tuple[object, ...] | None:
+    """What two family members must share of their response shape: its kind, an
+    object's top-level keys (and whether they were cut at the cap), and an array's
+    element kind; ``("none",)`` for an endpoint that returns no JSON. None for a
+    shape that could not be read (``SHAPE_UNAVAILABLE``), which matches nothing."""
+    if shape is None:
+        return ("none",)
+    if shape.kind == "unavailable":
+        return None
+    if shape.kind == "object":
+        return ("object", frozenset(shape.children or {}), shape.truncated)
+    if shape.kind == "array":
+        return ("array", None if shape.item is None else shape.item.kind)
+    return (shape.kind,)
+
+
+def _segments(template: str) -> list[str]:
+    stripped = template.strip("/")
+    return stripped.split("/") if stripped else []
+
+
+def _family_groups(
+    endpoints: tuple[Endpoint, ...],
+) -> dict[tuple[int, tuple[object, ...]], list[Endpoint]]:
+    """*endpoints* grouped by the varying segment's position and everything else a
+    family's members share; see :func:`_family_endpoints`."""
+    groups: dict[tuple[int, tuple[object, ...]], list[Endpoint]] = {}
+    for endpoint in endpoints:
+        if endpoint.login_flow or len(endpoint.methods) != 1:
+            continue
+        shape = _top_level_shape(endpoint.shape)
+        segments = _segments(endpoint.template)
+        if shape is None or len(segments) < 2:
+            continue
+        trailing = endpoint.template.endswith("/")
+        for position, segment in enumerate(segments):
+            if not _family_eligible(segment, last=position == len(segments) - 1):
+                continue
+            shared = (
+                endpoint.methods[0],
+                endpoint.host,
+                endpoint.content_type,
+                shape,
+                trailing,
+                _family_key(segments, position),
+            )
+            groups.setdefault((position, shared), []).append(endpoint)
+    return groups
+
+
+def _family_endpoints(
+    endpoints: tuple[Endpoint, ...],
+    accumulators: dict[tuple[str, str], _EndpointAccumulator],
+) -> tuple[Endpoint, ...]:
+    """One more endpoint for each family among *endpoints*, sorted by template.
+
+    A family is two or more endpoints, none of them part of the login flow, that
+    share their method, host, content type, top-level response shape
+    (:func:`_top_level_shape`), segment count of two or more, and trailing slash, and
+    whose templates agree in every segment but one, that one passing
+    :func:`_family_eligible` in each. A single segment is no family: every root route
+    (``/about``, ``/contact``) would join one. An endpoint that fits two families (it
+    differs from some siblings in one segment and from others in another) joins
+    neither, and a family left with fewer than two members by that is dropped. The
+    family's template holds :func:`graftpunk.har.paths.family_param_name`'s
+    placeholder at the varying position; one that would repeat an existing
+    endpoint's method and template is dropped. Its recordings are its members',
+    merged as the high-cardinality collapse merges a family's, from *accumulators*
+    (keyed by method and template, and only read). The members' own endpoints stay
+    exactly as they are.
+    """
+    qualifying = [
+        (key, members) for key, members in _family_groups(endpoints).items() if len(members) > 1
+    ]
+    fits: dict[tuple[str, str], int] = {}
+    for _key, members in qualifying:
+        for member in members:
+            ident = (member.methods[0], member.template)
+            fits[ident] = fits.get(ident, 0) + 1
+    existing = {(method, e.template) for e in endpoints for method in e.methods}
+
+    families: list[Endpoint] = []
+    for (position, _shared), members in qualifying:
+        method = members[0].methods[0]
+        kept = sorted(
+            (m for m in members if fits[(method, m.template)] == 1), key=lambda m: m.template
+        )
+        if len(kept) < 2:
+            continue
+        segments = _segments(kept[0].template)
+        taken = {segment[1:-1] for segment in segments if is_placeholder(segment)}
+        name = family_param_name(segments[position - 1] if position else "", taken)
+        segments[position] = "{" + name + "}"
+        template = "/" + "/".join(segments) + ("/" if kept[0].template.endswith("/") else "")
+        if (method, template) in existing:
+            continue
+        family = _EndpointAccumulator(kept[0].host)
+        family.methods.append(method)
+        for member in kept:
+            family.absorb(accumulators[(method, member.template)])
+        finished = family.finish(template)
+        fixture_member = next(
+            (
+                member
+                for member in kept
+                if any(
+                    candidate[3] == finished.fixture_entry_index
+                    for candidate in accumulators[
+                        (method, member.template)
+                    ].fixture_candidates.values()
+                )
+            ),
+            None,
+        )
+        families.append(
+            replace(
+                finished,
+                family_members=tuple(member.template for member in kept),
+                family_placeholder=name,
+                family_fixture_value=""
+                if fixture_member is None
+                else _segments(fixture_member.template)[position],
+            )
+        )
+    return tuple(sorted(families, key=lambda e: (e.template, e.methods)))
+
+
+def family_values(endpoint: Endpoint) -> tuple[str, ...]:
+    """The varying segment's value in each of *endpoint*'s family members, in member
+    order; empty for an endpoint that is no family."""
+    if not endpoint.family_members:
+        return ()
+    position = _segments(endpoint.template).index("{" + endpoint.family_placeholder + "}")
+    return tuple(_segments(member)[position] for member in endpoint.family_members)
 
 
 def endpoint_template(d: RunDigest, path: str) -> str:

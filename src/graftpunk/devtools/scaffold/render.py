@@ -1404,6 +1404,17 @@ def _render_command_stub(
         lines.append("")
         lines.extend(wrapped_docstring_lines(shape_line))
     lines.append(f'{L2}"""')
+    family_identifier = _family_identifier(endpoint, path_params)
+    if family_identifier is not None:
+        lines.extend(
+            wrapped_comment_lines(
+                f"{endpoint.template} stands for {len(endpoint.family_members)} recorded "
+                f"templates that differ only in the segment {family_identifier} fills (gp "
+                f"observe digest lists them); {family_identifier} is a neutral name: rename it "
+                "here and in its test to what that segment names.",
+                indent=len(L2),
+            )
+        )
     for note in [*_recording_gap_notes(endpoint, bodies_where), *flag_notes]:
         lines.extend(wrapped_comment_lines(note, indent=len(L2)))
     for field_name, reason in sorted(undeclared.items()):
@@ -1428,10 +1439,22 @@ def _render_command_stub(
     return lines
 
 
+def _family_identifier(endpoint: Endpoint, path_params: list[str]) -> str | None:
+    """The stub's identifier for *endpoint*'s family placeholder, among *path_params*
+    (``_templated_url``'s, in template order); None for an endpoint that is no
+    family."""
+    if not endpoint.family_members:
+        return None
+    names = [match.group(1) for match in URL_PLACEHOLDER_RE.finditer(endpoint.template)]
+    return path_params[names.index(endpoint.family_placeholder)]
+
+
 def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
     """The endpoints the scaffold renders a stub for, most useful first. The login
-    flow's own endpoints are skipped by the digest's ``login_flow`` flag."""
-    kept = [e for e in d.endpoints if not e.login_flow]
+    flow's own endpoints are skipped by the digest's ``login_flow`` flag, and a family
+    row is only a suggestion: it is rendered when a ``--command`` names it, never by
+    default, so a run renders the same stubs whether or not it holds a family."""
+    kept = [e for e in d.endpoints if not e.login_flow and not e.family_members]
     return sorted(kept, key=lambda e: (not _is_json_endpoint(e), -e.count, e.template))
 
 
@@ -1890,6 +1913,16 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
         _, path_params = _templated_url(
             endpoint.template, {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
         )
+        # A family's placeholder gets the value its fixture recording sent, so the
+        # request is one the run recorded; FixtureSession answers it from the fixture
+        # named for the family (graftpunk.har.paths.FAMILY_PLACEHOLDER_RE).
+        family_identifier = _family_identifier(endpoint, path_params)
+        arguments = [
+            f"{p}={quoted_literal(endpoint.family_fixture_value)}"
+            if p == family_identifier
+            else f'{p}="1001"'
+            for p in path_params
+        ]
         # "1001" round-trips through the naming rule (paths.looks_dynamic
         # treats a digit run of 3 or more as dynamic; "1" stays literal, like
         # /page/1): the request this test issues
@@ -1909,7 +1942,7 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
         lines.extend(
             call_expression_lines(
                 f"result = plugin.{name}",
-                ["ctx", *(f'{p}="1001"' for p in path_params)],
+                ["ctx", *arguments],
                 indent=len(L1),
             )
         )

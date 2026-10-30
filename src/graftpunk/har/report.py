@@ -16,7 +16,14 @@ from pathlib import Path
 from typing import Any
 
 from graftpunk.contracts import current_schema
-from graftpunk.har.digest import INTERNAL, Endpoint, RunDigest, ShapeNode
+from graftpunk.har.digest import (
+    INTERNAL,
+    OMIT_EMPTY,
+    Endpoint,
+    RunDigest,
+    ShapeNode,
+    family_values,
+)
 from graftpunk.har.documents import LoginForm, printable_selectors, printable_unresolved_roles
 from graftpunk.har.paths import templated_url, templates_a_segment
 
@@ -73,6 +80,12 @@ def _size_note(size: int | None) -> str:
 
 def _endpoint_block(endpoint: Endpoint) -> list[str]:
     lines = [f"### {'/'.join(endpoint.methods)} {endpoint.template}", ""]
+    if endpoint.family_members:
+        values = ", ".join(family_values(endpoint))
+        lines.append(
+            f"- family of {len(endpoint.family_members)} recorded templates, "
+            f"{endpoint.family_placeholder}: {values}"
+        )
     statuses = list(endpoint.statuses)
     lines.append(f"- host: `{endpoint.host}`, count: {endpoint.count}, statuses: {statuses}")
     lines.append(f"- content type: `{endpoint.content_type or '(none)'}`")
@@ -113,6 +126,26 @@ def _endpoint_sort_key(endpoint: Endpoint) -> tuple[bool, int, str]:
     return (endpoint.shape is None, -endpoint.count, endpoint.template)
 
 
+def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
+    """*d*'s endpoints in the order both renderers list them: by
+    :func:`_endpoint_sort_key`, each family row just before the first of its
+    members, so it reads beside the rows it stands for. A run with no family is
+    listed exactly as it was before family rows existed."""
+    literal = sorted((e for e in d.endpoints if not e.family_members), key=_endpoint_sort_key)
+    families = [e for e in d.endpoints if e.family_members]
+    ordered: list[Endpoint] = []
+    for endpoint in literal:
+        ordered.extend(
+            family
+            for family in families
+            if family not in ordered
+            and family.methods == endpoint.methods
+            and endpoint.template in family.family_members
+        )
+        ordered.append(endpoint)
+    return ordered
+
+
 def _other_host_sort_key(item: tuple[str, int]) -> int:
     return -item[1]
 
@@ -127,7 +160,9 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     )
     lines.append(f"- source: `{source_label}`")
     lines.append(f"- primary host: `{d.primary_host}`")
-    lines.append(f"- hosts: {len(d.hosts)}, endpoints: {len(d.endpoints)}")
+    families = sum(1 for e in d.endpoints if e.family_members)
+    family_note = f", families: {families}" if families else ""
+    lines.append(f"- hosts: {len(d.hosts)}, endpoints: {len(d.endpoints) - families}{family_note}")
     lines.append(
         f"- dropped: static={d.dropped.get('static', 0)}, "
         f"third_party={d.dropped.get('third_party', 0)}, "
@@ -178,7 +213,7 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     lines.append("")
 
     lines.append("## Endpoints")
-    ordered = sorted(d.endpoints, key=_endpoint_sort_key)
+    ordered = _ordered_endpoints(d)
     shown, remaining = ordered[:limit], ordered[limit:]
     for endpoint in shown:
         lines.extend(_endpoint_block(endpoint))
@@ -202,6 +237,7 @@ def _jsonable(value: Any) -> Any:
             f.name: _jsonable(getattr(value, f.name))
             for f in dataclasses.fields(value)
             if not f.metadata.get(INTERNAL)
+            and not (f.metadata.get(OMIT_EMPTY) and not getattr(value, f.name))
         }
     if isinstance(value, Path):
         return str(value)
@@ -250,6 +286,32 @@ def _projected_form(form: LoginForm) -> dict[str, Any]:
     }
 
 
+def _projected_endpoint(endpoint: Endpoint, method: str) -> dict[str, Any]:
+    """One ``endpoints`` entry of the projection: *endpoint* under *method*. A family
+    row (``Endpoint.family_members``) also carries ``family_members``, its members'
+    templates, which every other entry leaves out."""
+    projected: dict[str, Any] = {
+        "method": method,
+        "host": endpoint.host,
+        "template": endpoint.template,
+        "login_flow": endpoint.login_flow,
+        "content_type": endpoint.content_type,
+        "shape": summarize_shape(endpoint.shape),
+        "query_params": dict(sorted(endpoint.query_params.items())),
+        "body_params": dict(sorted(endpoint.body_params.items())),
+        # Lost, left out, or kept only as a binary file: the HAR holds no
+        # body text the projection could read fields from.
+        "body_not_captured": endpoint.body_not_captured
+        + endpoint.body_omitted
+        + endpoint.body_binary
+        > 0,
+        "custom_headers": list(endpoint.custom_headers),
+    }
+    if endpoint.family_members:
+        projected["family_members"] = list(endpoint.family_members)
+    return projected
+
+
 def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     """The declared projection ``gp observe digest --endpoints-json`` prints.
 
@@ -268,6 +330,13 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     labels: ``str``, ``int``, ``float``, ``bool``, ``object``, ``mixed``, or
     ``list[<element>]``, the element one of those, ``list``, or ``unknown`` (see
     ``graftpunk.har.digest``).
+
+    A family row (two or more recorded paths differing in one letters-only segment,
+    reported as one more template with a placeholder) is an entry like any other,
+    listed just before the first of its members, plus ``family_members``: the
+    templates of the members, whose own entries are listed unchanged. Added within
+    schema 1, on family rows only, so a run with no family prints what it printed
+    before.
     """
     source = d.source
     return {
@@ -279,24 +348,8 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
         },
         "primary_host": d.primary_host,
         "endpoints": [
-            {
-                "method": method,
-                "host": endpoint.host,
-                "template": endpoint.template,
-                "login_flow": endpoint.login_flow,
-                "content_type": endpoint.content_type,
-                "shape": summarize_shape(endpoint.shape),
-                "query_params": dict(sorted(endpoint.query_params.items())),
-                "body_params": dict(sorted(endpoint.body_params.items())),
-                # Lost, left out, or kept only as a binary file: the HAR holds no
-                # body text the projection could read fields from.
-                "body_not_captured": endpoint.body_not_captured
-                + endpoint.body_omitted
-                + endpoint.body_binary
-                > 0,
-                "custom_headers": list(endpoint.custom_headers),
-            }
-            for endpoint in sorted(d.endpoints, key=_endpoint_sort_key)
+            _projected_endpoint(endpoint, method)
+            for endpoint in _ordered_endpoints(d)
             for method in endpoint.methods
         ],
         "login": {
