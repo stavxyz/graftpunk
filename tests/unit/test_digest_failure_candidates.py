@@ -1,0 +1,235 @@
+"""#268 part 3: the failure texts a recording's wrong-password step suggests, read
+from the failed post's HAR entry (``request._failureTextCandidates``), checked again
+against every credential post's account values, and written by ``gp plugin new`` as
+commented ``failure=`` lines under a ``GP-FILL``; the live ``failure`` stays as it
+was."""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
+from graftpunk.har.digest import DigestSource, RunDigest, digest
+from graftpunk.har.parser import parse_har_file
+from graftpunk.har.report import endpoints_projection, render_endpoints_json, render_json
+from tests.unit.test_har_digest import _LOGIN_CONFIG_ON_MAIN, _comment_text, _entry, _write_har
+
+_HOST = "https://myshop.example.com"
+_LOGIN = (
+    "<html><body><form action='/session' method='post'><input type='email' id='email' "
+    "name='email'><input type='password' id='password' name='password'><button id='go'>"
+    "Sign in</button></form></body></html>"
+)
+_WRONG = {"email": "alice@example.com", "password": "***REDACTED***"}
+_RIGHT = {"email": "alice@example.com", "password": "hunter2hunter2"}
+_TEXTS = ["Invalid email or password.", "Too many attempts may lock you out."]
+
+_FAILURE_GP_FILL = (
+    "GP-FILL: the recording suggests failure text: shown after the wrong password it "
+    "marked. Confirm it appears after a wrong password and not after a right one, then "
+    "replace the failure line above with one suggestion (all of its lines):"
+)
+
+
+def _entries(
+    candidates: Any = _TEXTS, *, marked: bool = True, real: dict | None = None
+) -> list[dict]:
+    failed = _entry(
+        "POST",
+        f"{_HOST}/session",
+        post_data=json.dumps(_WRONG),
+        started="2026-09-10T10:00:05.000Z",
+    )
+    if marked:
+        failed["request"]["_userMarkedFailed"] = True
+        failed["request"]["_failureTextCandidates"] = candidates
+    right = _entry(
+        "POST",
+        f"{_HOST}/session",
+        post_data=json.dumps(real or _RIGHT),
+        started="2026-09-10T10:00:09.000Z",
+    )
+    return [
+        _entry("GET", f"{_HOST}/login", content_type="text/html", body=_LOGIN),
+        failed,
+        right,
+    ]
+
+
+def _digest(run: Path, entries: list[dict]) -> RunDigest:
+    run.mkdir(parents=True, exist_ok=True)
+    return digest(DigestSource(har_path=_write_har(run, entries)))
+
+
+def _plugin(result: RunDigest, backend: str = "nodriver") -> dict[str, str]:
+    return render(
+        ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend=backend,  # type: ignore[arg-type]
+            base_url=_HOST,
+            digest=result,
+        )
+    )
+
+
+def _login_config(code: str) -> Any:
+    from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep
+
+    start = code.index("LoginConfig(")
+    end = code.index("\n    )\n", start) + 6
+    return eval(code[start:end], {"LoginConfig": LoginConfig, "LoginStep": LoginStep})  # noqa: S307
+
+
+def _confirmed(code: str, which: int) -> str:
+    """*code* as an author who confirmed the *which*-th suggestion leaves it: the live
+    ``failure=`` line deleted, and the suggestion's lines uncommented."""
+    out: list[str] = []
+    seen = -1
+    open_block = False
+    for line in code.split("\n"):
+        stripped = line.lstrip()
+        pad = line[: len(line) - len(stripped)]
+        if stripped.startswith('failure="GP-FILL'):
+            continue
+        if stripped.startswith("# failure="):
+            seen += 1
+            if seen == which:
+                out.append(pad + stripped[2:])
+                open_block = stripped.endswith("(")
+                continue
+        elif open_block and stripped.startswith("#"):
+            out.append(pad + stripped[2:])
+            open_block = not stripped.startswith("# )")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+class TestTheParser:
+    def test_the_keys_are_read(self, tmp_path: Path) -> None:
+        har = _write_har(tmp_path, _entries())
+        failed = parse_har_file(har).entries[1].request
+        assert failed.user_marked_failed is True
+        assert failed.failure_text_candidates == tuple(_TEXTS)
+        assert parse_har_file(har).entries[2].request.user_marked_failed is False
+
+    @pytest.mark.parametrize(
+        ("raw", "kept"),
+        [
+            ("Invalid email or password.", ()),
+            ([1, None, "Short", "x" * 201, "Invalid email or password."], (_TEXTS[0],)),
+            (
+                [f"Error number {n} here" for n in range(5)],
+                tuple(f"Error number {n} here" for n in range(3)),
+            ),
+        ],
+    )
+    def test_only_strings_of_8_to_200_characters_and_at_most_3(
+        self, tmp_path: Path, raw: Any, kept: tuple[str, ...]
+    ) -> None:
+        har = _write_har(tmp_path, _entries(raw))
+        assert parse_har_file(har).entries[1].request.failure_text_candidates == kept
+
+    def test_a_flag_that_is_not_true_marks_nothing(self, tmp_path: Path) -> None:
+        entries = _entries()
+        entries[1]["request"]["_userMarkedFailed"] = "yes"
+        har = _write_har(tmp_path, entries)
+        assert parse_har_file(har).entries[1].request.user_marked_failed is False
+
+
+class TestTheDigest:
+    def test_the_marked_post_s_candidates_are_suggested(self, tmp_path: Path) -> None:
+        result = _digest(tmp_path, _entries())
+        assert result.failure_candidates == tuple(_TEXTS)
+        payload = json.loads(render_endpoints_json(result))
+        assert payload["login"]["failure_candidates"] == _TEXTS
+        assert json.loads(render_json(result))["failure_candidates"] == _TEXTS
+
+    def test_without_a_marked_post_nothing_is_suggested(self, tmp_path: Path) -> None:
+        entries = _entries(marked=False)
+        entries[1]["request"]["_failureTextCandidates"] = _TEXTS
+        assert _digest(tmp_path, entries).failure_candidates == ()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "No account for alice here.",
+            "No account for ALICE here.",
+            "Write to help@myshop.example for help",
+            "Password ***REDACTED*** is wrong",
+            "Your hunter2hunter2 was wrong",
+        ],
+    )
+    def test_a_text_holding_an_account_value_an_email_or_a_redaction_is_dropped(
+        self, tmp_path: Path, text: str
+    ) -> None:
+        result = _digest(tmp_path, _entries([text, _TEXTS[0]]))
+        assert result.failure_candidates == (_TEXTS[0],)
+
+    def test_a_credential_post_whose_values_cannot_be_read_suggests_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        entries = _entries()
+        del entries[2]["request"]["postData"]
+        entries[2]["request"]["_postDataNotCaptured"] = True
+        assert _digest(tmp_path, entries).failure_candidates == ()
+
+    def test_the_projection_s_login_keys(self, tmp_path: Path) -> None:
+        login = endpoints_projection(_digest(tmp_path, _entries()))["login"]
+        assert set(login) == {"auth_urls", "forms", "success_candidates", "failure_candidates"}
+
+
+class TestTheGenerator:
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    def test_without_candidates_the_output_is_main_s(self, tmp_path: Path, backend: str) -> None:
+        """A run with a marked post and no surviving candidate, and a run with no
+        marked post, generate the same files byte for byte, and main's login config."""
+        plain = _plugin(_digest(tmp_path / "plain", _entries(marked=False)), backend)
+        empty = _plugin(_digest(tmp_path / "empty", _entries([])), backend)
+        assert empty == plain
+        code = plain["src/graftpunk_myshop/plugin.py"]
+        assert _LOGIN_CONFIG_ON_MAIN.replace('"#email"', '"#email"') in code
+        assert "# failure=" not in code
+
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    def test_they_are_written_commented_and_failure_stays_as_it_was(
+        self, tmp_path: Path, backend: str
+    ) -> None:
+        from tests.unit import test_scaffold_render as rendered
+
+        files = _plugin(_digest(tmp_path, _entries()), backend)
+        code = files["src/graftpunk_myshop/plugin.py"]
+        assert '        failure="GP-FILL: text on the page indicating login failure",' in code
+        assert _FAILURE_GP_FILL in _comment_text(code)
+        assert '        # failure="Invalid email or password.",' in code
+        assert '        # failure="Too many attempts may lock you out.",' in code
+        compile(code, "plugin.py", "exec")
+        assert _login_config(code).failure.startswith("GP-FILL")
+        checker = rendered.TestRenderedTreeIsRuffClean()
+        checker._assert_tree_is_clean(checker._write_tree(tmp_path / "tree", files))
+        for which, text in enumerate(_TEXTS):
+            confirmed = _confirmed(code, which)
+            compile(confirmed, "plugin.py", "exec")
+            assert _login_config(confirmed).failure == text
+
+    @pytest.mark.parametrize(
+        "text", ["y" * 200, 'He said "no" \\ twice', "Fehler: Zugang verweigert é x"]
+    )
+    def test_any_text_is_ruff_clean_and_reads_back(self, tmp_path: Path, text: str) -> None:
+        from tests.unit import test_scaffold_render as rendered
+
+        result = dataclasses.replace(_digest(tmp_path, _entries()), failure_candidates=(text,))
+        files = _plugin(result)
+        checker = rendered.TestRenderedTreeIsRuffClean()
+        checker._assert_ruff_clean(checker._write_tree(tmp_path / "tree", files), "check")
+        code = files["src/graftpunk_myshop/plugin.py"]
+        compile(code, "plugin.py", "exec")
+        confirmed = _confirmed(code, 0)
+        compile(confirmed, "plugin.py", "exec")
+        assert _login_config(confirmed).failure == text

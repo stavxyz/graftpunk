@@ -256,7 +256,9 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     An explicit field list, never a reflection over the digest's dataclasses, so
     renaming an internal field touches this function and no contract. It carries
     only what a command proposal consumes, and by construction no cookie name, no
-    token candidate, no example path, no body, no untemplated login URL or form
+    token candidate, no example path, no body (the failure suggestions are page text a
+    wrong password showed, checked to hold no posted value), no untemplated login URL
+    or form
     action path, and no form action query string or ``;params``. Its field set is pinned per
     schema version; fields are added and never renamed or removed within one
     (:mod:`graftpunk.contracts`). ``render_json`` stays an unversioned dump.
@@ -308,6 +310,10 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
             # Selectors the recording suggests for LoginConfig.success, best first;
             # never text. Only suggestions: a generated login never sets one.
             "success_candidates": list(d.success_candidates),
+            # Text the recording suggests for LoginConfig.failure, best first: shown on
+            # the page after the post the user marked as a wrong password. Page text,
+            # never a body; only suggestions, which a generated login never sets.
+            "failure_candidates": list(d.failure_candidates),
         },
     }
 

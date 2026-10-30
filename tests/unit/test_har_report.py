@@ -221,6 +221,7 @@ class TestRenderJson:
             "cookie_names_dropped_as_ids",
             "token_names_dropped_as_ids",
             "success_candidates",
+            "failure_candidates",
         }
 
     def test_dropped_carries_every_reason(self, tmp_path: Path) -> None:
@@ -268,7 +269,7 @@ _ENDPOINT_V1 = {
     "body_not_captured",
     "custom_headers",
 }
-_LOGIN_V1 = {"auth_urls", "forms", "success_candidates"}
+_LOGIN_V1 = {"auth_urls", "forms", "success_candidates", "failure_candidates"}
 _AUTH_URL_V1 = {"method", "url", "kind"}
 _FORM_V1 = {"action", "fields", "submit", "neutral_roles", "unresolved_roles", "opener_candidate"}
 

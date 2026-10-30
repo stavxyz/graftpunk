@@ -30,8 +30,10 @@ from graftpunk.har.documents import (
     looks_like_token_name,
 )
 from graftpunk.har.login_signals import (
+    account_needles,
     asks_for_a_code,
     could_be_an_account_value,
+    holds_an_account_value,
     is_login_step_post,
     success_candidates,
 )
@@ -425,6 +427,11 @@ class RunDigest:
     # (graftpunk.har.login_signals.success_candidates). Suggestions only: the
     # generator writes them commented out.
     success_candidates: tuple[str, ...] = ()
+    # Text the recording suggests for LoginConfig.failure: shown on the page after
+    # the credential post the user marked as a wrong password in gp observe
+    # interactive --wrong-password-first (_failure_candidates). Suggestions only: the
+    # generator writes them commented out.
+    failure_candidates: tuple[str, ...] = ()
 
 
 def _scope_root(primary_host: str) -> str:
@@ -1478,6 +1485,9 @@ def _is_top_level_page_load(entry: HAREntry, method: str, content_type: str) -> 
     return dest not in _FRAME_DESTINATIONS and _is_page_load(entry, method, content_type)
 
 
+# What a run's redaction writes in place of a value (graftpunk.observe.run.REDACTED,
+# which this module cannot import): a text holding it can never match a page.
+REDACTED_MARK = "***REDACTED***"
 # An email address inside a value.
 _EMAIL_IN_VALUE_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
@@ -1499,6 +1509,30 @@ def _after_read(credential_entries: Sequence[HAREntry], stepped_since: bool) -> 
     if extract_login_forms(html, source="", snapshot=True):
         return None
     return html
+
+
+def _failure_candidates(
+    credential_entries: Sequence[HAREntry], account_values: list[str] | None
+) -> tuple[str, ...]:
+    """The failure texts the last credential post the user marked failed carries
+    (``request._failureTextCandidates``), less each one holding an account value of
+    any credential post of the run (*account_values*, by the rule the success
+    suggestions are kept by, :func:`graftpunk.har.login_signals.holds_an_account_value`),
+    an email address, or a redaction. Nothing when no post is marked, or when
+    *account_values* is None (a credential post's values cannot be read). The
+    recorder checked them already; a HAR can be edited, and the run's redaction
+    changed it since."""
+    marked = [entry for entry in credential_entries if entry.request.user_marked_failed]
+    if not marked or account_values is None:
+        return ()
+    needles = account_needles(account_values)
+    return tuple(
+        text
+        for text in marked[-1].request.failure_text_candidates
+        if REDACTED_MARK not in text
+        and not _EMAIL_IN_VALUE_RE.search(text)
+        and not holds_an_account_value(text, needles)
+    )
 
 
 def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str] | None:
@@ -2791,6 +2825,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         )
         if credential_post_steps and after_post_pages and account_values is not None
         else (),
+        failure_candidates=_failure_candidates(credential_entries, account_values),
     )
 
 

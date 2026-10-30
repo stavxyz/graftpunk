@@ -105,6 +105,12 @@ class HARRequest:
     # The clicks and focus moves gp observe recorded before a credential post, oldest
     # first (request._loginInteractions); an item of another shape is skipped.
     login_interactions: tuple[LoginInteraction, ...] = ()
+    # The credential post the user marked as a wrong password in gp observe
+    # interactive --wrong-password-first (request._userMarkedFailed is true), and the
+    # failure texts the page after it suggests (request._failureTextCandidates):
+    # strings of FAILURE_TEXT_LENGTH characters, at most MAX_FAILURE_TEXTS.
+    user_marked_failed: bool = False
+    failure_text_candidates: tuple[str, ...] = ()
     # The request's CDP resource type as the recorder saw it (request._resourceType):
     # "Document" for a navigation. None when the HAR does not say.
     resource_type: str | None = None
@@ -384,6 +390,21 @@ def _login_interactions(raw: Any) -> tuple[LoginInteraction, ...]:
     return tuple(sorted(kept, key=lambda each: -each.ms_before))
 
 
+# The failure texts a recording may suggest: as many and as long as the recorder
+# keeps (graftpunk.observe.failure_text), so a hand-edited HAR cannot widen them.
+MAX_FAILURE_TEXTS = 3
+FAILURE_TEXT_LENGTH = range(8, 201)
+
+
+def _failure_texts(raw: Any) -> tuple[str, ...]:
+    """``request._failureTextCandidates``: the strings of ``FAILURE_TEXT_LENGTH``
+    characters, at most ``MAX_FAILURE_TEXTS``; nothing when it is not a list."""
+    if not isinstance(raw, list):
+        return ()
+    kept = [text for text in raw if isinstance(text, str) and len(text) in FAILURE_TEXT_LENGTH]
+    return tuple(kept[:MAX_FAILURE_TEXTS])
+
+
 def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -> HARRequest:
     """Parse request section of HAR entry.
 
@@ -459,6 +480,8 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         dom_after_file=after_file,
         dom_after=after,
         login_interactions=_login_interactions(request_data.get("_loginInteractions")),
+        user_marked_failed=request_data.get("_userMarkedFailed") is True,
+        failure_text_candidates=_failure_texts(request_data.get("_failureTextCandidates")),
         resource_type=resource_type if isinstance(resource_type, str) else None,
     )
 
