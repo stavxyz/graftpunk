@@ -166,6 +166,34 @@ class TestTheAfterReadNarrowsTheSuggestions:
         assert plain.success_candidates == ("a.signout-link", "#orders-table")
         assert _digest(tmp_path, entries).success_candidates == ("a.signout-link",)
 
+    def test_a_name_holding_another_posted_value_is_not_suggested(self, tmp_path: Path) -> None:
+        """#330: the after-read replaces a name holding any value of the post but a
+        token's (``next=dashboard``), even with a username field in the post, so the
+        digest no longer suggests ``#dashboard``; the HAR alone still does."""
+        creds = {**_CREDS, "next": "dashboard"}
+        landing = (
+            "<html><body><header><nav class='site-nav'>"
+            "<a class='signout-link' href='/bye'>Sign out</a></nav></header>"
+            "<main><div id='dashboard'></div></main></body></html>"
+        )
+        after = stored_dom_snapshot(
+            landing, json.dumps(creds), "application/json", structure_only=True
+        )
+        assert '<div id="***REDACTED***">' in after
+        post = _entry(
+            "POST",
+            f"{_HOST}/session",
+            post_data=json.dumps(creds),
+            started="2026-09-10T10:00:05.000Z",
+        )
+        (tmp_path / "snapshots").mkdir()
+        (tmp_path / "snapshots" / "9.1.after.html").write_text(after)
+        post["request"]["_domAfter"] = "snapshots/9.1.after.html"
+        entries = [_get("/login", _LOGIN), post]
+        plain = _digest(tmp_path / "plain", _without_after(entries), landing)
+        assert plain.success_candidates == ("a.signout-link", "#dashboard")
+        assert _digest(tmp_path, entries, landing).success_candidates == ("a.signout-link",)
+
     def test_it_never_replaces_the_final_page(self, tmp_path: Path) -> None:
         """A script login with no page load after it and no page source: 1.29.0
         suggested nothing, and the read alone suggests nothing either."""

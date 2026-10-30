@@ -3867,10 +3867,12 @@ class TestTheReadAfterTheCredentialPost:
         await _stop(backend, tab)
 
     @pytest.mark.asyncio
-    async def test_the_post_s_snapshot_names_its_username_field(self, tmp_path: Path) -> None:
+    async def test_every_value_is_redacted_beside_the_snapshot_s_username_field(
+        self, tmp_path: Path
+    ) -> None:
         """The login form of the post's stored snapshot says which field is the
-        username, as it does for the digest: its value is redacted, and another
-        field's value is not taken for the account's."""
+        username, and its value is redacted; since #330 another field's value but a
+        token's is redacted too, whether or not a field is the username."""
         modal = (
             '<html><body><form action="/session" method="post">'
             '<input type="text" id="handle" name="acct_handle">'
@@ -3886,7 +3888,7 @@ class TestTheReadAfterTheCredentialPost:
         await _stop(backend, tab)
         assert (tmp_path / "snapshots" / "80.1.html").is_file()
         text = self._after(tmp_path).read_text()
-        assert '<nav id="***REDACTED***" class="region-northwind">' in text
+        assert '<nav id="***REDACTED***" class="***REDACTED***">' in text
 
     @pytest.mark.asyncio
     async def test_a_post_that_is_not_a_login_gets_no_read(self, tmp_path: Path) -> None:

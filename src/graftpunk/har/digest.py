@@ -80,6 +80,7 @@ __all__ = [
     "is_credential_body",
     "password_field_names",
     "post_account_values",
+    "post_every_value",
     "endpoint_template",
     "FLAGGED_REASONS",
     "FlaggedReason",
@@ -1559,16 +1560,35 @@ def post_account_values(
         if named < len(path) and names_a_username(path, value)
     ]
     if not usernames:
-        usernames = [
-            value
-            for path, value, _named in values
-            if not any(looks_like_token_name(name) for name in path)
-        ]
+        usernames = _every_value_but_tokens(values)
     passwords = [value for path, value, _named in values if path and _password_like([path[-1]])]
     emails = [
         email for _path, value, _named in values for email in _EMAIL_IN_VALUE_RE.findall(value)
     ]
     return [*usernames, *inner, *passwords, *emails]
+
+
+def _every_value_but_tokens(values: list[_BodyValue]) -> list[str]:
+    """The every-value fallback of :func:`post_account_values`: each of *values* but
+    one under a token field's name (:func:`graftpunk.har.documents.looks_like_token_name`)
+    anywhere on its way."""
+    return [
+        value for path, value, _named in values if not any(looks_like_token_name(n) for n in path)
+    ]
+
+
+def post_every_value(post_data: str | None, content_type: str = "") -> list[str]:
+    """The values of a credential post's body *post_data* that the every-value
+    fallback of :func:`post_account_values` takes, whether or not a field of the post
+    is a username by its rules: every value but a token field's. The recorder's read
+    of the page after the post redacts these beside :func:`post_account_values`
+    (:func:`graftpunk.observe.snapshot.stored_dom_snapshot` with ``structure_only``),
+    because a username posted under a field neither rule knows (``j_username`` beside
+    an ``email``) is still the account's. Empty when the body gives no values read by
+    their field names, as :func:`post_account_values` gives ``None``. Held in memory
+    only, never written."""
+    values, by_names = _read_body_values(post_data, content_type)
+    return _every_value_but_tokens(values) if values and by_names else []
 
 
 def _path_segments(url: str) -> int:

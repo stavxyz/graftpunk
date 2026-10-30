@@ -1447,9 +1447,10 @@ class TestAccountValuesInAStructureOnlyRead:
         assert '<input form="***REDACTED***">' in out
         assert '<form action="/u/***REDACTED***/save" name="***REDACTED***">' in out
 
-    def test_the_login_form_s_username_field_turns_the_fallback_off(self) -> None:
-        """The digest's rule, reused: the field the post's stored snapshot takes as
-        the username is the account's; with it known, another field's value is not."""
+    def test_another_field_s_value_is_redacted_with_the_username_field_known(self) -> None:
+        """The field the post's stored snapshot takes as the username is the
+        account's; since #330 the read replaces another field's value as well, whether
+        or not the username field is known, where the digest's guard does not."""
         body = "handle=jsmith&region=northwind&pass_phrase=hunter22secret"
         login_page = (
             '<form action="/session" method="post"><input type="text" name="handle">'
@@ -1457,7 +1458,7 @@ class TestAccountValuesInAStructureOnlyRead:
         )
         html = '<div id="menu-jsmith" class="region-northwind"></div>'
         known = stored_dom_snapshot(html, body, _FORM, structure_only=True, login_page=login_page)
-        assert '<div id="***REDACTED***" class="region-northwind">' in known
+        assert '<div id="***REDACTED***" class="***REDACTED***">' in known
         unknown = self._stored(html, body)
         assert '<div id="***REDACTED***" class="***REDACTED***">' in unknown
 
@@ -1870,3 +1871,70 @@ class TestEmailsInAStructureOnlyRead:
             '<a href="/u/dave%2540x.example/edit">x</a>', "username=alice", _FORM
         )
         assert '<a href="/u/dave%2540x.example/edit">' in out
+
+
+# Issue #330: a username posted under a field that is no identifier, beside an email
+# field that is one.
+_ISSUE_330_POST = json.dumps(
+    {"j_username": "jsmith", "email": "alice.smith@example.com", "j_password": "hunter22secret"}
+)
+_ISSUE_330_PAGE = (
+    '<html><body><a id="menu-jsmith" href="/u/jsmith/settings?tab=profile">Settings</a>'
+    "<jsmith-card></jsmith-card></body></html>"
+)
+_ISSUE_330_LOGIN = (
+    '<form action="/j_security_check" method="post"><input type="email" name="email">'
+    '<input type="text" name="j_username"><input type="password" name="j_password">'
+    "<button>Sign in</button></form>"
+)
+_ISSUE_330_AFTER = (
+    '<html><body><a id="***REDACTED***" href="/u/***REDACTED***/settings?"></a>'
+    "<x-redacted></x-redacted></body></html>"
+)
+
+
+class TestTheAfterReadRedactsEveryValue:
+    """#330: the read after a credential post replaces every value the digest's
+    every-value fallback would take, whether or not a field qualified as the
+    username; the snapshot taken at the post is unchanged."""
+
+    @staticmethod
+    def _after(
+        html: str, body: str, content_type: str = "application/json", login_page: str | None = None
+    ) -> str:
+        return stored_dom_snapshot(
+            html, body, content_type, structure_only=True, login_page=login_page
+        )
+
+    def test_a_username_under_a_non_identifier_field_is_redacted_with_no_login_page(
+        self,
+    ) -> None:
+        out = self._after(_ISSUE_330_PAGE, _ISSUE_330_POST)
+        assert "jsmith" not in out.lower()
+        assert out == _ISSUE_330_AFTER
+
+    def test_with_the_login_page_the_read_is_as_in_1_30_0(self) -> None:
+        assert self._after(_ISSUE_330_PAGE, _ISSUE_330_POST, login_page=_ISSUE_330_LOGIN) == (
+            _ISSUE_330_AFTER
+        )
+
+    @pytest.mark.parametrize("login_page", [None, _ISSUE_330_LOGIN], ids=["no-login", "login"])
+    def test_the_snapshot_at_the_post_is_unchanged(self, login_page: str | None) -> None:
+        """Not structure only: byte-identical to graftpunk 1.30.0's for these inputs."""
+        out = stored_dom_snapshot(
+            _ISSUE_330_PAGE, _ISSUE_330_POST, "application/json", login_page=login_page
+        )
+        assert out == (
+            '<html><body><a id="menu-jsmith" href="/u/jsmith/settings?">Settings</a>'
+            "<jsmith-card></jsmith-card></body></html>"
+        )
+
+    def test_another_field_s_value_is_redacted_beside_a_username(self) -> None:
+        body = "email=alice%40example.com&password=hunter22secret&next=dashboard"
+        out = self._after('<div id="dashboard"></div><div id="orders"></div>', body, _FORM)
+        assert '<div id="***REDACTED***"></div><div id="orders"></div>' in out
+
+    def test_a_token_field_s_value_is_kept(self) -> None:
+        body = "email=alice%40example.com&password=hunter22secret&csrf_token=panelwide"
+        out = self._after('<div id="panelwide"></div>', body, _FORM)
+        assert '<div id="panelwide"></div>' in out

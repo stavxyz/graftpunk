@@ -29,7 +29,12 @@ from html import escape
 from html.parser import HTMLParser
 from urllib.parse import quote, unquote
 
-from graftpunk.har.digest import body_values, password_field_names, post_account_values
+from graftpunk.har.digest import (
+    body_values,
+    password_field_names,
+    post_account_values,
+    post_every_value,
+)
 from graftpunk.har.documents import extract_login_forms
 from graftpunk.har.login_signals import account_needles, holds_an_account_value
 from graftpunk.observe.run import REDACTED, Redaction, text_redactor
@@ -558,8 +563,11 @@ def stored_dom_snapshot(
     (:func:`graftpunk.har.digest.post_account_values`, by the same rule: the field
     the login form on *login_page*, the post's stored snapshot, takes as its
     username, an identifier field, or, when neither is in the post, every value but
-    a token field's; matched as the guard matches a name), but never one that is a
-    field name of the post or that login form's username field."""
+    a token field's; matched as the guard matches a name), and so is one holding any
+    other value but a token field's (:func:`graftpunk.har.digest.post_every_value`),
+    whether or not a field is the username: a username posted under a field neither
+    rule knows is the account's too, and the read keeps structure only. Never one
+    that is a field name of the post or that login form's username field."""
     redaction = snapshot_redaction(body_text, content_type)
     if not structure_only:
         return sanitize_dom_snapshot(html, redaction)
@@ -582,6 +590,9 @@ def stored_dom_snapshot(
         html,
         redaction,
         structure_only=True,
-        account_values=post_account_values(body_text, content_type, usernames) or (),
+        account_values=[
+            *(post_account_values(body_text, content_type, usernames) or ()),
+            *post_every_value(body_text, content_type),
+        ],
         field_names=names | usernames,
     )
