@@ -107,6 +107,11 @@ LOGIN_INTERACTION_WINDOW_MS = 120_000
 AFTER_READ_FIRST_S = 3.0
 AFTER_READ_SECOND_S = 10.0
 AFTER_READ_CAP_S = 30.0
+# With the wrong-password step (gp observe interactive --wrong-password-first), the
+# page is read, raw and in memory only, this long after a credential post's response
+# while the step is open: an error toast can dismiss itself before the user presses
+# Enter, which reads it again.
+FAILURE_READ_S = 1.5
 # The longest selector the recorder keeps (graftpunk.har.selectors): a longer one
 # is kept as None, so neither memory nor holds_an_id's run time grows with a
 # page's ids.
@@ -130,6 +135,62 @@ class _Interaction(NamedTuple):
     in_dialog: bool = False
     revealed: bool = False
     shown_fields: tuple[str | None, ...] = ()
+
+
+class _StepPost(NamedTuple):
+    """A credential post seen while the wrong-password step is open: its request id,
+    its own entry, its body text, and its ``Content-Type``. In memory only."""
+
+    rid: str
+    data: dict[str, Any]
+    body_text: str | None
+    content_type: str
+
+
+class _FailedLogin:
+    """The credential post the user marked failed (``mark_failed_login``), and what
+    its failure-text suggestions are checked against. Its ``candidates`` are None
+    until the reads after it are done; a real login's page or guard that arrives
+    before then waits in ``pending`` (raw HTML, in memory only, dropped once
+    applied)."""
+
+    def __init__(self, rid: str, data: dict[str, Any], guard: Any, secrets: list[str]) -> None:
+        self.rid = rid
+        self.data = data
+        self.guard = guard
+        self.secrets = tuple(secrets)
+        self.candidates: tuple[str, ...] | None = None
+        self.pending: list[tuple[str | None, Any]] = []
+        # The raw pages, in memory until the suggestions are settled: the page at the
+        # post, the read FAILURE_READ_S after its response, and the read on Enter.
+        self.before: str | None = None
+        self.first_read: str | None = None
+        self.enter_read: str | None = None
+        # Whether the FAILURE_READ_S read was still due at the mark, and whether the
+        # read on Enter is done.
+        self.first_due = False
+        self.entered = False
+
+    def settle(self, candidates: tuple[str, ...]) -> None:
+        """Take *candidates*, then drop by each real login's page and guard waiting."""
+        self.candidates = candidates
+        pending, self.pending = self.pending, []
+        self.data["_failure_text_candidates"] = list(candidates)
+        for page, guard in pending:
+            self.drop_on(page, guard)
+
+    def drop_on(self, page: str | None, guard: Any) -> None:
+        """Drop each candidate the engine would find on *page* (the raw page read after
+        the real login's post, or None for none) or that *guard* (that post's
+        :class:`graftpunk.observe.failure_text.AccountGuard`, or None when its values
+        cannot be read, which drops them all) holds."""
+        if self.candidates is None:
+            self.pending.append((page, guard))
+            return
+        from graftpunk.observe.failure_text import without_success_page
+
+        self.candidates = without_success_page(self.candidates, page, guard)
+        self.data["_failure_text_candidates"] = list(self.candidates)
 
 
 class _ListenerSnapshot(NamedTuple):
@@ -1157,6 +1218,14 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
         # The page read a few seconds after a credential post's response, structure
         # only (HAR 1.2 custom field): the file under the run.
         entry["request"]["_domAfter"] = request_data["_dom_after"]
+    if request_data.get("_user_marked_failed"):
+        # The credential post the user marked as a wrong password (HAR 1.2 custom
+        # fields): the failure texts the page after it suggests, text only; never the
+        # page itself.
+        entry["request"]["_userMarkedFailed"] = True
+        entry["request"]["_failureTextCandidates"] = list(
+            request_data.get("_failure_text_candidates", ())
+        )
     if isinstance(request_data.get("resource_type"), str):
         # Chrome's resource type for the request (HAR 1.2 custom field): "Document"
         # is a navigation, the digest's test for a page load. The Sec-Fetch headers
@@ -1603,6 +1672,7 @@ class NodriverCaptureBackend:
         bodies_dir: Path | None = None,
         record_request_bodies: bool = True,
         dom_snapshots_dir: Path | None = None,
+        failure_step: bool = False,
     ) -> None:
         self._browser = browser
         self._get_tab = get_tab
@@ -1650,6 +1720,17 @@ class NodriverCaptureBackend:
         self._after_read_due: dict[str, tuple[dict[str, Any], str | None]] = {}
         # Set at stop: no read after a credential post starts from then on.
         self._after_reads_closed = False
+        # The wrong-password step (gp observe interactive --wrong-password-first), open
+        # until the user marks a post failed (mark_failed_login) or stop. While open,
+        # each credential post, the raw page at it, and the raw page FAILURE_READ_S
+        # after its response are held in memory, by request id; the marked post's
+        # survive as _failed, and everything else is dropped at the mark.
+        self._failure_step_open = failure_step and self._dom_snapshots_dir is not None
+        self._step_posts: list[_StepPost] = []
+        self._step_before: dict[str, str] = {}
+        self._step_reads: dict[str, str] = {}
+        self._step_read_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._failed: _FailedLogin | None = None
         # Top-level documents committed (Page.frameNavigated with no parent frame),
         # and whether the latest has fired its load event.
         self._top_documents = 0
@@ -2583,6 +2664,9 @@ class NodriverCaptureBackend:
                 self._dom_snapshot_too_large += 1
                 LOG.debug("nodriver_dom_snapshot_too_large", request_id=rid)
                 return
+            if self._failure_step_open and any(post.rid == rid for post in self._step_posts):
+                # Raw, in memory only: what a failure text must not already be on.
+                self._step_before[rid] = page.html
             stored = await asyncio.to_thread(
                 stored_dom_snapshot, page.html, body_text, _request_content_type(data)
             )
@@ -2652,6 +2736,7 @@ class NodriverCaptureBackend:
         is one debug line."""
         from graftpunk.har.digest import post_account_values
 
+        self._note_step_post(rid, data, body_text)
         if post_account_values(body_text, _request_content_type(data)) is None:
             LOG.debug("nodriver_dom_after_read_skipped", request_id=rid, reason="unreadable_body")
             return
@@ -2672,16 +2757,167 @@ class NodriverCaptureBackend:
         self._start_after_read(rid, data, due[1])
 
     def _start_after_read(self, rid: str, data: dict[str, Any], body_text: str | None) -> None:
-        """Run :meth:`_read_after` for *rid* in a task stop cancels, unless stop began."""
+        """Run :meth:`_read_after` for *rid* in a task stop cancels, unless stop began;
+        and, while the wrong-password step is open, :meth:`_read_for_step` too."""
         if self._after_reads_closed or self._dom_snapshots_dir is None:
             return
+        task = self._start_read_task(rid, self._read_after(rid, data, body_text))
+        if task is not None and self._failure_step_open:
+            step_read = self._start_read_task(rid, self._read_for_step(rid))
+            if step_read is not None:
+                self._step_read_tasks[rid] = step_read
+
+    def _start_read_task(self, rid: str, read: Any) -> asyncio.Task[Any] | None:
+        """Run the coroutine *read* in a task stop cancels (``_after_read_tasks``);
+        None, with the coroutine closed, when there is no running loop."""
         try:
-            task = asyncio.get_running_loop().create_task(self._read_after(rid, data, body_text))
+            task = asyncio.get_running_loop().create_task(read)
         except RuntimeError as exc:
+            read.close()
             LOG.debug("nodriver_dom_after_read_skipped", request_id=rid, reason=str(exc))
-            return
+            return None
         self._after_read_tasks.add(task)
         task.add_done_callback(self._after_read_tasks.discard)
+        return task
+
+    def _note_step_post(self, rid: str, data: dict[str, Any], body_text: str | None) -> None:
+        """Hold the credential post *rid* while the wrong-password step is open. Once a
+        post is marked failed, check its suggestions against each later post's values
+        (:meth:`_FailedLogin.drop_on`), and flag that post so its after-reads check
+        them against its page too."""
+        content_type = _request_content_type(data)
+        if self._failure_step_open:
+            self._step_posts.append(_StepPost(rid, data, body_text, content_type))
+            return
+        failed = self._failed
+        if failed is None or data is failed.data:
+            return
+        from graftpunk.observe.failure_text import AccountGuard
+
+        data["_after_failed_login"] = True
+        failed.drop_on(None, AccountGuard.of(body_text, content_type))
+
+    async def _raw_page(self, rid: str) -> str | None:
+        """The page by :meth:`_read_dom`, raw, for the wrong-password step: None for a
+        read that fails, finds no document, or is over ``DOM_SNAPSHOT_MAX_CHARS``
+        (one debug line). Never written anywhere."""
+        tab = self._tab
+        if tab is None:
+            return None
+        try:
+            _url, html = await self._read_dom(tab, after_read=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - best-effort; the HAR never depends on it
+            LOG.debug(
+                "nodriver_failure_read_skipped",
+                request_id=rid,
+                reason="failed",
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            return None
+        if not isinstance(html, str) or not html.strip() or len(html) > DOM_SNAPSHOT_MAX_CHARS:
+            LOG.debug("nodriver_failure_read_skipped", request_id=rid, reason="no_usable_document")
+            return None
+        return html
+
+    async def _read_for_step(self, rid: str) -> None:
+        """Read the page :data:`FAILURE_READ_S` after the credential post *rid*'s
+        response, raw, and hold it in memory for the wrong-password step while the step
+        is open. For the post the step marked failed, the read is that post's first,
+        and once the read on Enter is in too, the two are settled
+        (:meth:`_settle_failure`). Stop cancels it."""
+        await self._sleep(FAILURE_READ_S)
+        html = await self._raw_page(rid)
+        if self._after_reads_closed:
+            return
+        failed = self._failed
+        if failed is not None and failed.rid == rid:
+            failed.first_read = html
+            failed.first_due = False
+            if failed.entered:
+                await self._settle_failure(failed)
+        elif self._failure_step_open and html is not None:
+            self._step_reads[rid] = html
+
+    def mark_failed_login(self) -> bool:
+        """Mark the last credential post seen while the wrong-password step was open as
+        the failed one (``request._userMarkedFailed``), close the step, and read the
+        page again now (:meth:`_read_marked_failure`), in a task stop cancels. Every
+        other post's held pages are dropped. False, with nothing changed, when the step
+        is not open or no credential post was seen yet."""
+        if not self._failure_step_open or not self._step_posts:
+            return False
+        from graftpunk.observe.failure_text import AccountGuard, failed_password_values
+
+        post = self._step_posts[-1]
+        self._failure_step_open = False
+        failed = _FailedLogin(
+            post.rid,
+            post.data,
+            AccountGuard.of(post.body_text, post.content_type),
+            failed_password_values(post.body_text, post.content_type),
+        )
+        failed.before = self._step_before.get(post.rid) or self._served_page(post.data)
+        failed.first_read = self._step_reads.get(post.rid)
+        pending = self._step_read_tasks.get(post.rid)
+        # Its FAILURE_READ_S read is still due: that read settles the suggestions.
+        failed.first_due = pending is not None and not pending.done()
+        self._step_posts.clear()
+        self._step_before.clear()
+        self._step_reads.clear()
+        self._step_read_tasks.clear()
+        post.data["_user_marked_failed"] = True
+        self._failed = failed
+        self._start_read_task(post.rid, self._read_marked_failure(failed))
+        return True
+
+    async def _read_marked_failure(self, failed: _FailedLogin) -> None:
+        """Read the page now for the post marked failed; settle its suggestions unless
+        its :data:`FAILURE_READ_S` read is still due, which then settles them."""
+        failed.enter_read = await self._raw_page(failed.rid)
+        failed.entered = True
+        if not failed.first_due:
+            await self._settle_failure(failed)
+
+    async def _settle_failure(self, failed: _FailedLogin) -> None:
+        """Keep the failure texts the reads after the failed post suggest
+        (:func:`graftpunk.observe.failure_text.failure_candidates`, in a worker thread:
+        it parses whole pages), the FAILURE_READ_S read first, and drop the raw pages."""
+        from graftpunk.observe.failure_text import failure_candidates
+
+        reads = [html for html in (failed.first_read, failed.enter_read) if html is not None]
+        before, guard = failed.before, failed.guard
+        failed.first_read = failed.enter_read = failed.before = None
+        found = await asyncio.to_thread(failure_candidates, reads, before, guard)
+        failed.settle(found)
+
+    def _served_page(self, data: dict[str, Any]) -> str | None:
+        """The page that sent the credential post *data* as it was served: the HTML body
+        of the latest recorded response for its URL (by scheme, host, and path), or
+        None when the HAR holds none."""
+        sender = self._sender(data)
+        if sender is None:
+            return None
+        page = _bare_page_url(sender)
+        for entry in reversed(list(self._request_map.values())):
+            response = entry.get("response") or {}
+            body = response.get("body")
+            if (
+                entry is not data
+                and isinstance(body, str)
+                and "html" in str(response.get("mimeType", "")).lower()
+                and _bare_page_url(str(entry.get("url", ""))) == page
+            ):
+                return body
+        return None
+
+    def failed_login_secrets(self) -> tuple[str, ...]:
+        """The password values of the post marked failed, for the run's redaction
+        (:func:`graftpunk.observe.run.save_observe_run`'s ``redact``); empty when none
+        was marked."""
+        return self._failed.secrets if self._failed is not None else ()
 
     async def _read_after(self, rid: str, data: dict[str, Any], body_text: str | None) -> None:
         """Read the page :data:`AFTER_READ_FIRST_S` after the credential post *rid*'s
@@ -2747,6 +2983,10 @@ class NodriverCaptureBackend:
                 )
                 return
             content_type = _request_content_type(data)
+            if data.get("_after_failed_login") and self._failed is not None:
+                from graftpunk.observe.failure_text import AccountGuard
+
+                self._failed.drop_on(html, AccountGuard.of(body_text, content_type))
 
             def store() -> str:
                 return stored_dom_snapshot(
@@ -2784,6 +3024,13 @@ class NodriverCaptureBackend:
         running; the ones cancelled."""
         self._after_reads_closed = True
         self._after_read_due.clear()
+        self._failure_step_open = False
+        self._step_posts.clear()
+        self._step_before.clear()
+        self._step_reads.clear()
+        self._step_read_tasks.clear()
+        if self._failed is not None:
+            self._failed.pending.clear()
         running = [task for task in self._after_read_tasks if not task.done()]
         for task in running:
             task.cancel()
