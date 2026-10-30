@@ -19,7 +19,9 @@ in the composition root is what stops them writing two.
 :func:`chrome_in_own_session` is for the launch sites whose user can end a
 run with Ctrl+C and still expects it saved, ``gp observe`` and
 ``NoDriverBackend`` (a login recorded with ``--observe full``): it starts
-Chrome outside the terminal's foreground process group (#333).
+Chrome outside the terminal's foreground process group (#333). The backend
+uses it only when graftpunk's termination handlers are installed, since
+nothing else would end that Chrome on a hangup.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import importlib
 import os
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -179,6 +182,7 @@ CHROME_SHARES_SESSION_CONSEQUENCE = (
 
 _END_TERM_TIMEOUT_S = 5.0
 _END_KILL_TIMEOUT_S = 2.0
+_END_POLL_S = 0.05
 
 
 class _LaunchedChromeHandle:
@@ -242,18 +246,36 @@ class OwnSessionLaunch:
 
 
 async def _end_process(process: asyncio.subprocess.Process) -> None:
-    """SIGTERM *process*, then SIGKILL it if it has not exited in time."""
-    if process.returncode is not None:
-        return
-    with contextlib.suppress(ProcessLookupError):
-        process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), _END_TERM_TIMEOUT_S)
-    except TimeoutError:
+    """SIGTERM *process*, then SIGKILL it if it has not exited in time.
+
+    Polls ``returncode``, which the loop's child watcher sets at exit, as the
+    backend's reap does: ``Process.wait()`` on CPython 3.11 and later also
+    waits for every pipe to close, and Chrome's helper processes can hold
+    nodriver's pipes open after Chrome itself has exited. Once the status is
+    collected the transport is closed, which closes those pipes.
+    """
+    if process.returncode is None:
         with contextlib.suppress(ProcessLookupError):
-            process.kill()
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(process.wait(), _END_KILL_TIMEOUT_S)
+            process.terminate()
+        if not await _exited_within(process, _END_TERM_TIMEOUT_S):
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await _exited_within(process, _END_KILL_TIMEOUT_S)
+    if process.returncode is not None:
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            with contextlib.suppress(Exception):
+                transport.close()
+
+
+async def _exited_within(process: asyncio.subprocess.Process, timeout_s: float) -> bool:
+    """Whether the child watcher collects *process*'s exit status within *timeout_s*."""
+    deadline = time.monotonic() + timeout_s
+    while process.returncode is None:
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(_END_POLL_S)
+    return True
 
 
 def _take_from_nodriver_registry(processes: list[asyncio.subprocess.Process]) -> list[Any]:
@@ -380,7 +402,10 @@ def chrome_in_own_session() -> Iterator[OwnSessionLaunch]:
     A Chrome in its own session no longer receives the terminal's SIGINT,
     SIGHUP or SIGQUIT, or a ``kill`` aimed at Python's process group. The stop
     path, the SIGTERM and SIGHUP handlers, and the orphan sweep all find it by
-    pid and marker, which a session does not change.
+    pid and marker, which a session does not change; the handlers exist only
+    in ``gp`` and in a program that called
+    :func:`graftpunk.signals.install_termination_cleanup`, so a caller without
+    them should not open this block.
 
     Yields:
         The block's :class:`OwnSessionLaunch`.

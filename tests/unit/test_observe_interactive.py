@@ -606,6 +606,45 @@ class TestSetupObserveSessionSigintIsolation:
 
     @pytest.mark.skipif(os.name != "posix", reason="sessions are a POSIX notion")
     @pytest.mark.asyncio
+    async def test_a_start_that_fails_another_way_still_ends_its_chrome(self) -> None:
+        """nodriver can raise after the spawn for reasons other than "Failed to
+        connect" (attach() or update_targets() failing); no retry, but the Chrome
+        it spawned is ended before the error propagates."""
+        import nodriver.core.browser as nodriver_launcher
+
+        from graftpunk.cli.observe_browser import setup_observe_session
+
+        spawned: list[asyncio.subprocess.Process] = []
+
+        async def fake_nodriver_start(**kwargs: object) -> None:
+            proc = await nodriver_launcher.asyncio.create_subprocess_exec(
+                sys.executable, "-c", "import time; time.sleep(30)"
+            )
+            spawned.append(proc)
+            raise RuntimeError("boom")
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = fake_nodriver_start
+
+        try:
+            with (
+                patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+                pytest.raises(RuntimeError, match="boom"),
+            ):
+                await setup_observe_session(
+                    "test-ns", "https://example.com", 1024, headless=True, session_name=None
+                )
+        finally:
+            for proc in spawned:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+
+        assert len(spawned) == 1
+        assert spawned[0].returncode == -signal.SIGTERM
+
+    @pytest.mark.skipif(os.name != "posix", reason="sessions are a POSIX notion")
+    @pytest.mark.asyncio
     async def test_a_failed_attempts_chrome_is_registered_at_once_and_ended_before_the_retry(
         self, tmp_path: Path
     ) -> None:

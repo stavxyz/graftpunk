@@ -15,7 +15,7 @@ import pytest
 from structlog.testing import capture_logs
 
 import graftpunk
-from graftpunk import chrome_orphans, signals
+from graftpunk import browser_launch, chrome_orphans, signals
 from graftpunk.browser_launch import (
     CHROME_SHARES_SESSION_CONSEQUENCE,
     CleanupReport,
@@ -281,6 +281,20 @@ class TestChromeInItsOwnSession:
         assert [p.pid for p in launch.processes] == [pid]
         assert sid == pid
         assert sid != os.getsid(0)
+        # Reset, so a later launch in this context is not recorded on a
+        # released block.
+        assert browser_launch._CURRENT_LAUNCH.get() is None
+
+    def test_a_name_something_else_bound_meanwhile_is_not_overwritten(self) -> None:
+        sentinel = object()
+        try:
+            with chrome_in_own_session():
+                nodriver_launcher.asyncio = sentinel  # type: ignore[assignment]
+
+            assert nodriver_launcher.asyncio is sentinel
+        finally:
+            nodriver_launcher.asyncio = asyncio
+            browser_launch._proxy_users = 0
 
     @_POSIX_ONLY
     async def test_a_launch_after_it_shares_this_session(self) -> None:
@@ -354,6 +368,8 @@ class TestChromeInItsOwnSession:
         assert nodriver_launcher.asyncio is stranger
         [event] = [e for e in logs if e["event"] == "chrome_own_session_unavailable"]
         assert event["reason"] == "launcher_changed"
+        # A block that did not apply leaves the count of proxy users alone.
+        assert browser_launch._proxy_users == 0
         assert event["log_level"] == "warning"
         assert "Ctrl+C" in event["consequence"]
 
@@ -374,6 +390,7 @@ class TestChromeInItsOwnSession:
         assert nodriver_launcher.asyncio is asyncio
         [event] = [e for e in logs if e["event"] == "chrome_own_session_unavailable"]
         assert event["reason"] == "import"
+        assert browser_launch._proxy_users == 0
         assert event["log_level"] == "warning"
 
     @_POSIX_ONLY
@@ -422,6 +439,117 @@ class TestChromeInItsOwnSession:
         assert proc.returncode == -signal.SIGTERM
         assert registry == set()
         assert removed == [browser]
+
+    @_POSIX_ONLY
+    async def test_end_launched_keeps_the_profile_of_a_chrome_still_running(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Removing the profile under a live Chrome leaves it half deleted."""
+        from nodriver.core import util as nodriver_util
+
+        registry: set[object] = set()
+        monkeypatch.setattr(nodriver_util, "get_registered_instances", lambda: registry)
+        removed: list[object] = []
+        monkeypatch.setattr(chrome_orphans, "remove_browser_temp_profile", removed.append)
+
+        async def does_not_end(process: object) -> None:
+            return None
+
+        monkeypatch.setattr(browser_launch, "_end_process", does_not_end)
+
+        with chrome_in_own_session() as launch:
+            proc = await nodriver_launcher.asyncio.create_subprocess_exec(
+                sys.executable, "-c", "import time; time.sleep(30)"
+            )
+            try:
+                registry.add(type("Browser", (), {"_process": proc})())
+                await launch.end_launched()
+                assert proc.returncode is None
+            finally:
+                proc.kill()
+                await proc.wait()
+
+        assert registry == set()
+        assert removed == []
+
+    @_POSIX_ONLY
+    async def test_end_launched_escalates_to_sigkill_for_a_chrome_ignoring_sigterm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(browser_launch, "_END_TERM_TIMEOUT_S", 0.2)
+        stubborn = (
+            "import signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        with chrome_in_own_session() as launch:
+            proc = await nodriver_launcher.asyncio.create_subprocess_exec(
+                sys.executable, "-c", stubborn, stdout=asyncio.subprocess.PIPE
+            )
+            try:
+                assert proc.stdout is not None
+                assert (await proc.stdout.readline()).strip() == b"ready"
+                await launch.end_launched()
+                # Read before the cleanup below, which would SIGKILL it too.
+                ended_with = proc.returncode
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+
+        assert ended_with == -signal.SIGKILL
+
+    @_POSIX_ONLY
+    async def test_end_launched_does_not_wait_for_helpers_holding_chromes_pipes(
+        self,
+    ) -> None:
+        """A stand-in exits on SIGTERM at once while a helper it spawned holds its
+        stdout for 3 s; ``Process.wait()`` would wait for that pipe too."""
+        import time
+
+        chrome = (
+            "import signal, subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)'])\n"
+            "signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        with chrome_in_own_session() as launch:
+            proc = await nodriver_launcher.asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                chrome,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                assert proc.stdout is not None
+                assert (await proc.stdout.readline()).strip() == b"ready"
+                began = time.monotonic()
+                await launch.end_launched()
+                took = time.monotonic() - began
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+
+        assert proc.returncode == 0
+        assert took < 1.5
+
+    @_POSIX_ONLY
+    async def test_the_outcome_check_says_nothing_when_getsid_fails(self) -> None:
+        """A pid that has exited (ESRCH) cannot be told; it is not a shared session."""
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", "pass")
+        await proc.wait()
+        browser = type("Browser", (), {"_process": proc})()
+
+        with capture_logs() as logs:
+            assert chrome_leads_own_session(browser) is None
+            assert check_chrome_in_own_session(browser) is True
+
+        assert logs == []
 
     @_POSIX_ONLY
     async def test_the_outcome_check_warns_when_chrome_shares_this_session(self) -> None:

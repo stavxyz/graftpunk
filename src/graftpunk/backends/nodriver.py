@@ -49,7 +49,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Coroutine
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Self
 
@@ -69,7 +69,11 @@ from graftpunk.chrome_orphans import (
 )
 from graftpunk.exceptions import BrowserError
 from graftpunk.logging import get_logger, suppress_asyncio_noise
-from graftpunk.signals import register_live_browser, unregister_live_browser
+from graftpunk.signals import (
+    register_live_browser,
+    termination_cleanup_installed,
+    unregister_live_browser,
+)
 
 if TYPE_CHECKING:
     import nodriver
@@ -1790,20 +1794,25 @@ class NoDriverBackend:
         for attempt in range(1, max_attempts + 1):
             self._raise_if_given_up(hold)
             before = set(registry) if registry is not None else set()
+            # With graftpunk's SIGTERM and SIGHUP handlers installed (the gp
+            # CLI, or a program that called install_termination_cleanup()),
             # Chrome starts in a session of its own, so a terminal's Ctrl+C
             # reaches only Python, and a login recorded with --observe full
             # still reads its screenshot and page source from Chrome (#333).
-            # The block registers each Chrome with the SIGTERM and SIGHUP
-            # handlers as soon as it is spawned; the attempt's end below runs
-            # inside it.
-            with chrome_in_own_session():
+            # The block registers each Chrome with those handlers as soon as
+            # it is spawned; the attempt's end below runs inside it. Without
+            # the handlers nothing would end a Chrome outside the process
+            # group on a hangup, so it launches in Python's group as before.
+            own_session = termination_cleanup_installed()
+            with chrome_in_own_session() if own_session else nullcontext():
                 try:
                     self._browser = await uc.start(**start_kwargs)
                     self._raise_if_given_up(hold)
                     # Registered before the first tab: a signal arriving during
                     # navigation must still find this browser (#96).
                     register_live_browser(self)
-                    check_chrome_in_own_session(self._browser)
+                    if own_session:
+                        check_chrome_in_own_session(self._browser)
                     # Get initial page/tab - navigate to blank page
                     self._page = await self._browser.get("about:blank")
                     self._raise_if_given_up(hold)

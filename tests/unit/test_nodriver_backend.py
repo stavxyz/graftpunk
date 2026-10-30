@@ -7194,7 +7194,14 @@ class _ChildBrowser:
 @pytest.mark.skipif(os.name != "posix", reason="sessions are a POSIX notion")
 class TestNoDriverBackendChromeInItsOwnSession:
     """A login's Chrome starts outside the terminal's process group (#333), so a
-    Ctrl+C reaches only Python, and Python still ends Chrome."""
+    Ctrl+C reaches only Python, and Python still ends Chrome. Only with
+    graftpunk's termination handlers installed, as the gp CLI installs them."""
+
+    @pytest.fixture(autouse=True)
+    def _handlers_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.termination_cleanup_installed", lambda: True
+        )
 
     @staticmethod
     def _nodriver_spawning_children(spawned: list[asyncio.subprocess.Process]) -> MagicMock:
@@ -7214,6 +7221,35 @@ class TestNoDriverBackendChromeInItsOwnSession:
 
         mock_uc.start = start
         return mock_uc
+
+    async def test_without_the_handlers_chrome_launches_in_this_session_as_before(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A library program that never installed the handlers keeps its old
+        signal behaviour: nothing would end a Chrome outside its group."""
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.termination_cleanup_installed", lambda: False
+        )
+        spawned: list[asyncio.subprocess.Process] = []
+        backend = NoDriverBackend()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": self._nodriver_spawning_children(spawned)}),
+            capture_logs() as logs,
+        ):
+            try:
+                await backend.start_async()
+                [process] = spawned
+                assert os.getsid(process.pid) == os.getsid(0)
+                assert os.getpgid(process.pid) == os.getpgid(0)
+            finally:
+                await backend.stop_async()
+                for process in spawned:
+                    if process.returncode is None:
+                        process.kill()
+                        await process.wait()
+
+        assert [e for e in logs if e["event"] == "chrome_not_in_own_session"] == []
 
     async def test_the_backend_launches_chrome_in_a_session_of_its_own(self) -> None:
         spawned: list[asyncio.subprocess.Process] = []
@@ -7295,3 +7331,118 @@ class TestNoDriverBackendChromeInItsOwnSession:
                 for process in spawned:
                     if process.returncode is None:
                         process.kill()
+
+
+# A library program: NoDriverBackend with nodriver.start replaced by a stand-in
+# that spawns a sleeper through nodriver's launcher module, the sweep stubbed
+# out, and graftpunk's termination handlers installed only when argv[1] says so.
+# It prints the stand-in's pid and session, then waits.
+_LIBRARY_CONSUMER = """
+import asyncio, os, sys, types
+import nodriver
+import nodriver.core.browser as launcher
+import graftpunk.backends.nodriver as nb
+from graftpunk import signals
+from graftpunk.browser_launch import CleanupReport
+
+nb.prepare_browser_launch = lambda: CleanupReport()
+if sys.argv[1] == "handlers":
+    signals.install_termination_cleanup()
+
+
+class Browser:
+    def __init__(self, process):
+        self._process = process
+        self.config = types.SimpleNamespace(uses_custom_data_dir=True, user_data_dir=None)
+
+    async def get(self, url):
+        return object()
+
+    def stop(self):
+        self._process.terminate()
+
+
+async def start(**kwargs):
+    process = await launcher.asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)"
+    )
+    return Browser(process)
+
+
+nodriver.start = start
+
+
+async def main():
+    backend = nb.NoDriverBackend()
+    await backend.start_async()
+    pid = backend._browser._process.pid
+    print(pid, os.getsid(pid), flush=True)
+    await asyncio.sleep(30)
+
+
+asyncio.run(main())
+"""
+
+
+def _gone_within(pid: int, timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.skipif(os.name != "posix", reason="sessions are a POSIX notion")
+class TestALibraryProgramsChromeOnAGroupHangup:
+    """A closing terminal sends SIGHUP to the program's process group (#333)."""
+
+    def _run(self, mode: str, tmp_path: Path) -> tuple[int, int, int, bool]:
+        """Start the consumer in a group of its own, hang it up, and report
+        (consumer pid, Chrome stand-in pid, its sid, whether it was gone within 10 s)."""
+        import signal
+        import subprocess
+        import sys
+
+        env = dict(os.environ, GRAFTPUNK_CONFIG_DIR=str(tmp_path))
+        consumer = subprocess.Popen(  # noqa: S603 - a fixed script run by this interpreter
+            [sys.executable, "-c", _LIBRARY_CONSUMER, mode],
+            stdout=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+        child = 0
+        try:
+            assert consumer.stdout is not None
+            child, sid = (int(field) for field in consumer.stdout.readline().split())
+            os.killpg(consumer.pid, signal.SIGHUP)
+            assert consumer.wait(10) == -signal.SIGHUP
+            return consumer.pid, child, sid, _gone_within(child, 10)
+        finally:
+            if consumer.poll() is None:
+                consumer.kill()
+                consumer.wait(5)
+            if child:
+                with suppress(ProcessLookupError):
+                    os.kill(child, 9)
+            assert consumer.stdout is not None
+            consumer.stdout.close()
+
+    def test_without_the_handlers_chrome_shares_the_group_and_dies_with_it(
+        self, tmp_path: Path
+    ) -> None:
+        """As at 1.31.0: the hangup reaches Chrome directly."""
+        consumer, _, sid, gone = self._run("plain", tmp_path)
+
+        assert sid == consumer
+        assert gone is True
+
+    def test_with_the_handlers_chrome_has_its_own_session_and_the_handler_ends_it(
+        self, tmp_path: Path
+    ) -> None:
+        _, child, sid, gone = self._run("handlers", tmp_path)
+
+        assert sid == child
+        assert gone is True

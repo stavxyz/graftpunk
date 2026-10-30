@@ -117,6 +117,27 @@ def _handle_termination(signum: int, _frame: FrameType | None) -> None:
         os.kill(os.getpid(), signum)
 
 
+def termination_cleanup_installed() -> bool:
+    """Whether this module's handler holds every termination slot this platform has.
+
+    ``NoDriverBackend`` starts Chrome in a session of its own only then: a
+    Chrome outside the process group no longer dies of a terminal hangup or a
+    group SIGTERM with Python, so it needs these handlers to end it (#333).
+    """
+    found = False
+    for name in _HANDLED_SIGNAL_NAMES:
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        try:
+            if signal.getsignal(signum) is not _handle_termination:
+                return False
+        except (OSError, ValueError):
+            return False
+        found = True
+    return found
+
+
 def install_termination_cleanup() -> None:
     """Take the SIGTERM and SIGHUP slots, if nobody else has them.
 
