@@ -311,6 +311,9 @@ class _Sanitizer(HTMLParser):
             value = self._emails.sub(REDACTED, value)
             if name in _FIXED_VOCABULARIES:
                 value = _known_tokens(name, value)
+            if name == "type" and self._account is not None:
+                # A MIME type's subtype is free text (text/jsmith).
+                value = self._account("id", value)
         return self._redact(escape(value, quote=True))
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:

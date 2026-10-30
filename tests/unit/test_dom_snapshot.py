@@ -67,6 +67,18 @@ class TestSanitizer:
         assert "<script></script>" in out
         assert "<template></template>" in out
 
+    def test_dropped_contents_inside_a_labelling_element_are_dropped(self) -> None:
+        out = sanitize_dom_snapshot(
+            "<label>Email<script>var t = 's3cr3t';</script>"
+            "<style>.x { color: red }</style><template>tpl</template></label>"
+            "<button>Go<script>leak()</script></button>"
+        )
+        assert "s3cr3t" not in out
+        assert "color: red" not in out
+        assert "tpl" not in out
+        assert "leak" not in out
+        assert ">Email<script></script>" in out
+
     def test_text_is_kept_only_inside_the_labelling_elements(self) -> None:
         out = sanitize_dom_snapshot(_modal())
         assert ">Email address</label>" in out
@@ -1293,6 +1305,14 @@ class TestStructureOnly:
         out = self._stored("<jsmith-card></jsmith-card><main></main>", body)
         assert "jsmith" not in out
         assert "<x-redacted></x-redacted><main></main>" in out
+
+    def test_a_mime_type_holding_an_account_value_is_replaced(self) -> None:
+        body = '{"j_username": "jsmith", "j_password": "hunter22secret"}'
+        out = self._stored(
+            '<script type="text/jsmith"></script><script type="text/javascript"></script>', body
+        )
+        assert "jsmith" not in out
+        assert '<script type="text/javascript">' in out
 
     def test_no_text_survives(self) -> None:
         out = self._stored()
