@@ -61,6 +61,7 @@ from graftpunk.har.digest import (
     TokenCandidate,
 )
 from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
+from graftpunk.har.inline_state import pattern_for
 from graftpunk.har.naming import capture_filename, capture_slug
 from graftpunk.har.paths import (
     normal_host,
@@ -1431,10 +1432,62 @@ def _render_command_stub(
             f"{L2}# Each path value is percent-encoded, so a / ? or # in it stays in its segment."
         )
         lines.extend(f'{L2}{p} = _quote_path({p}, safe="")' for p in path_params)
+    if not is_json:
+        lines.extend(_inline_json_example(endpoint))
     lines.append(_ENDPOINT_COMMENT)
     lines.append(f"{L2}return ctx.{call}(")
     lines.extend(call_lines)
     lines.append(f"{L2})")
+    lines.append("")
+    return lines
+
+
+_INLINE_STATE_READER = (
+    "def inline_state(page: str) -> dict:",
+    "    import json",
+    "    import re",
+    "",
+    "    found = re.search(",
+)
+_INLINE_STATE_READER_END = (
+    "        page,",
+    "    )",
+    "    if found is None:",
+    '        raise ValueError("the inline JSON state is not on the page")',
+    "    state, _end = json.JSONDecoder().raw_decode(page, found.end())",
+    "    return state",
+)
+
+
+def _inline_json_example(endpoint: Endpoint) -> list[str]:
+    """For an HTML page that holds inline JSON state (``Endpoint.inline_json``): a
+    comment naming its target and shape, then a commented function that reads the
+    object from the page's text, set apart by a blank line before and after, as
+    ``ruff format`` sets apart a nested function. Removing each ``# `` gives a
+    function that compiles and is ruff clean, and so does leaving it commented.
+    Nothing when the page holds none. The request is never changed."""
+    state = endpoint.inline_json
+    if state is None:
+        return []
+    shape = summarize_shape(state.shape, depth=_SCAFFOLD_SHAPE_DEPTH)
+    lines = [""]
+    lines.extend(
+        wrapped_comment_lines(
+            f"The page carries its data as inline JSON state: {_comment_safe(state.target)}, "
+            f"shaped {shape} (gp observe digest). To return that object instead of the "
+            "page, uncomment inline_state below, return "
+            "inline_state(ctx.request_text(...)) with the request's own arguments, and set "
+            "the return annotation to dict.",
+            indent=len(L2),
+        )
+    )
+    lines.extend(f"{L2}# {line}".rstrip() for line in _INLINE_STATE_READER)
+    lines.extend(
+        _commented_literal_lines(
+            pattern_for(state.target), indent=len(L2), inner=2 * INDENT_STEP, prefix=""
+        )
+    )
+    lines.extend(f"{L2}# {line}" for line in _INLINE_STATE_READER_END)
     lines.append("")
     return lines
 

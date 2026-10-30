@@ -624,6 +624,36 @@ family and its fixture member, both generated tests read that member's fixture.
 A command naming a member's own template behaves as it did before families
 existed.
 
+An HTML page that keeps its data in an inline script is reported with that
+object's shape (`graftpunk.har.inline_state`). Two forms are read: a script with
+no `type` or a JavaScript one, and no `src`, assigning a JSON object to a dotted
+name of two or more parts (`window.App.props = {...};`, `App.props = {...}`),
+and a `<script type="application/json">` whose body is a JSON object (named by
+its id, `script#__NEXT_DATA__`, or else `script[type="application/json"]`).
+`var`/`let`/`const` declarations, a bare name, a bracketed name, `JSON.parse`, a
+JavaScript object literal that is not JSON, an array, and `application/ld+json`
+are not read. Of the objects spelled in 512 characters or more, the largest is
+reported, the first on a tie. The search never runs script and is linear in the
+page: it examines the first 128 scripts, skips a script body over 4 MiB
+(4,194,304 characters), decodes at most 32 candidates per page, and skips a
+decode that fails or that the parser refuses for nesting too deep. The page read
+is the endpoint's fixture recording, the one its `shape` describes. The shape
+follows the JSON body rules, a key holding an id included, and a part of the
+target that looks like it holds an id becomes a placeholder named as a path
+segment's would be (`window.{window_id}.props`); no value is reported. The
+markdown digest adds a line under `shape: non-JSON`
+(``inline JSON state: `window.App.props`, object{results, search, total}``),
+`--json` carries `inline_json` with `target` and the shape node, and
+`--endpoints-json` carries `inline_json` with `target` and the shape summary,
+each on those endpoints only, so a run without one prints what it printed
+before; the order of endpoints does not change. A stub for such a page keeps its
+request unchanged and adds a comment naming the target and the shape, then a
+commented nested function, `inline_state(page)`, that finds the object with `re`
+and reads it with `json.JSONDecoder().raw_decode`, raising `ValueError` when the
+page no longer holds it. The function compiles and is ruff clean whether it is
+left commented or uncommented; to use it, uncomment it, return
+`inline_state(ctx.request_text(...))`, and set the return annotation to `dict`.
+
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
 response keys; request header names; cookie and token candidate names; and a

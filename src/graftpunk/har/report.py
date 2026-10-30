@@ -116,6 +116,11 @@ def _endpoint_block(endpoint: Endpoint) -> list[str]:
     if endpoint.custom_headers:
         lines.append(f"- custom headers: {', '.join(endpoint.custom_headers)}")
     lines.append(f"- shape: {summarize_shape(endpoint.shape)}")
+    if endpoint.inline_json is not None:
+        lines.append(
+            f"- inline JSON state: `{endpoint.inline_json.target}`, "
+            f"{summarize_shape(endpoint.inline_json.shape)}"
+        )
     if endpoint.examples:
         lines.append(f"- examples: {', '.join(endpoint.examples)}")
     lines.append("")
@@ -312,7 +317,9 @@ def _projected_form(form: LoginForm) -> dict[str, Any]:
 def _projected_endpoint(endpoint: Endpoint, method: str) -> dict[str, Any]:
     """One ``endpoints`` entry of the projection: *endpoint* under *method*. A family
     row (``Endpoint.family_members``) also carries ``family_members``, its members'
-    templates, which every other entry leaves out."""
+    templates, and an HTML page holding inline JSON state (``Endpoint.inline_json``)
+    carries ``inline_json``, its target and shape summary; every other entry leaves
+    them out."""
     projected: dict[str, Any] = {
         "method": method,
         "host": endpoint.host,
@@ -332,6 +339,11 @@ def _projected_endpoint(endpoint: Endpoint, method: str) -> dict[str, Any]:
     }
     if endpoint.family_members:
         projected["family_members"] = list(endpoint.family_members)
+    if endpoint.inline_json is not None:
+        projected["inline_json"] = {
+            "target": endpoint.inline_json.target,
+            "shape": summarize_shape(endpoint.inline_json.shape),
+        }
     return projected
 
 
@@ -360,6 +372,12 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     templates of the members, whose own entries are listed unchanged. Added within
     schema 1, on family rows only, so a run with no family prints what it printed
     before.
+
+    An HTML page that keeps its data in an inline script (#271) carries
+    ``inline_json``: ``target``, the name the object is assigned to or the JSON
+    script it is in, and ``shape``, its summary as ``shape`` reads for a JSON body.
+    Added within schema 1, on those entries only, so a run without one prints what
+    it printed before.
     """
     source = d.source
     return {

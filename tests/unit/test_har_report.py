@@ -275,6 +275,9 @@ _ENDPOINT_V1 = {
 }
 # A family row (#271) carries one field more, added within schema 1.
 _FAMILY_ENDPOINT_V1 = _ENDPOINT_V1 | {"family_members"}
+# An HTML page holding inline JSON state (#271) carries one field more, added within
+# schema 1.
+_INLINE_ENDPOINT_V1 = _ENDPOINT_V1 | {"inline_json"}
 _LOGIN_V1 = {"auth_urls", "forms", "success_candidates", "failure_candidates"}
 _AUTH_URL_V1 = {"method", "url", "kind"}
 _FORM_V1 = {"action", "fields", "submit", "neutral_roles", "unresolved_roles", "opener_candidate"}
@@ -381,6 +384,19 @@ class TestEndpointsProjection:
         assert payload["schema"] == 1
         fields = sorted((sorted(entry) for entry in payload["endpoints"]), key=len)
         assert [set(f) for f in fields] == [_ENDPOINT_V1, _ENDPOINT_V1, _FAMILY_ENDPOINT_V1]
+
+    def test_an_inline_json_row_s_field_set(self, tmp_path: Path) -> None:
+        state = json.dumps({"results": ["x" * 600]})
+        page = f"<html><script>window.App.props = {state};</script></html>"
+        entries = [
+            _entry("GET", "https://myshop.example.com/search", content_type="text/html", body=page),
+            _entry("GET", "https://myshop.example.com/api/orders"),
+        ]
+        payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
+        assert payload["schema"] == 1
+        fields = sorted((sorted(entry) for entry in payload["endpoints"]), key=len)
+        assert [set(f) for f in fields] == [_ENDPOINT_V1, _INLINE_ENDPOINT_V1]
+        assert set(payload["endpoints"][1]["inline_json"]) == {"target", "shape"}
 
     def test_no_cookie_name_token_candidate_example_path_or_body(self, tmp_path: Path) -> None:
         result = digest(DigestSource.from_har(_planted_run(tmp_path)))
