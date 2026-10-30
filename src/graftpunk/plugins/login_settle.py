@@ -150,7 +150,13 @@ def failure_text_on_page(page_text: str, failure_text: str) -> bool:
     scripts, templates, and escaped characters as written). The one rule every
     failure check uses, and the one the recorder's failure-text suggestions are
     checked by (:mod:`graftpunk.observe.failure_text`). An empty one never is."""
-    return bool(failure_text) and failure_text.lower() in page_text.lower()
+    return failure_text_on_lowered_page(page_text.lower(), failure_text)
+
+
+def failure_text_on_lowered_page(lowered_page: str, failure_text: str) -> bool:
+    """:func:`failure_text_on_page` for a page already lower-cased (*lowered_page*),
+    so a caller checking many texts against one page lower-cases it once."""
+    return bool(failure_text) and failure_text.lower() in lowered_page
 
 
 def _check_login_result(*, page_text: str, failure_text: str, site_name: str) -> bool:

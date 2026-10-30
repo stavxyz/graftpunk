@@ -172,6 +172,66 @@ class TestTheDigest:
         result = _digest(tmp_path, _entries([text, _TEXTS[0]]))
         assert result.failure_candidates == (_TEXTS[0],)
 
+    def test_a_text_holding_a_redaction_is_dropped_by_that_check_alone(
+        self, tmp_path: Path
+    ) -> None:
+        """The failed post's password is a plain value here, so no account value of
+        either post is in the text: only the redaction check drops it."""
+        entries = _entries(["Your ***REDACTED*** was wrong", _TEXTS[0]])
+        entries[1]["request"]["postData"]["text"] = json.dumps(
+            {"email": "alice@example.com", "password": "wrongpass1"}
+        )
+        assert _digest(tmp_path, entries).failure_candidates == (_TEXTS[0],)
+
+    def test_the_last_marked_post_s_candidates_are_the_ones(self, tmp_path: Path) -> None:
+        entries = _entries(["Unknown sign-in, sorry."])
+        second = json.loads(json.dumps(entries[1]))
+        second["startedDateTime"] = "2026-09-10T10:00:07.000Z"
+        second["request"]["_failureTextCandidates"] = _TEXTS
+        entries.insert(2, second)
+        assert _digest(tmp_path, entries).failure_candidates == tuple(_TEXTS)
+
+    def test_a_text_on_the_page_after_the_real_login_is_dropped(self, tmp_path: Path) -> None:
+        """A stop soon after the real login cancels the recorder's read of the landed
+        page; the page the HAR recorded after that login still drops the text."""
+        landed = f"<html><body><p>{_TEXTS[1].upper()}</p><nav id='account'></nav></body></html>"
+        entries = [
+            *_entries(),
+            _entry(
+                "GET",
+                f"{_HOST}/account",
+                content_type="text/html",
+                body=landed,
+                started="2026-09-10T10:00:10.000Z",
+            ),
+        ]
+        assert _digest(tmp_path, entries).failure_candidates == (_TEXTS[0],)
+
+    def test_a_page_before_the_real_login_drops_nothing(self, tmp_path: Path) -> None:
+        """Only a page after the real login is a logged-in page: one between the
+        wrong password and the real login (a help page, say) is not."""
+        between = f"<html><body><p>{_TEXTS[1]}</p></body></html>"
+        entries = _entries()
+        entries.insert(
+            2,
+            _entry(
+                "GET",
+                f"{_HOST}/help",
+                content_type="text/html",
+                body=between,
+                started="2026-09-10T10:00:07.000Z",
+            ),
+        )
+        assert _digest(tmp_path, entries).failure_candidates == tuple(_TEXTS)
+
+    def test_a_text_on_the_page_source_is_dropped(self, tmp_path: Path) -> None:
+        tmp_path.mkdir(exist_ok=True)
+        page = tmp_path / "page-source.html"
+        page.write_text(f"<html><body><footer>{_TEXTS[0]}</footer></body></html>")
+        har = _write_har(tmp_path, _entries())
+        result = digest(DigestSource(har_path=har, page_source=page))
+        assert result.failure_candidates == (_TEXTS[1],)
+
     def test_a_credential_post_whose_values_cannot_be_read_suggests_nothing(
         self, tmp_path: Path
     ) -> None:
@@ -194,7 +254,7 @@ class TestTheGenerator:
         empty = _plugin(_digest(tmp_path / "empty", _entries([])), backend)
         assert empty == plain
         code = plain["src/graftpunk_myshop/plugin.py"]
-        assert _LOGIN_CONFIG_ON_MAIN.replace('"#email"', '"#email"') in code
+        assert _LOGIN_CONFIG_ON_MAIN in code
         assert "# failure=" not in code
 
     @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
