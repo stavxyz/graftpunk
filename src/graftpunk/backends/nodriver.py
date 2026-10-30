@@ -49,7 +49,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Coroutine
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Self
 
@@ -58,6 +58,8 @@ from graftpunk.backends.base import Cookie
 from graftpunk.browser_launch import (
     arm_termination_handlers,
     browser_connect_failure_message,
+    check_chrome_in_own_session,
+    chrome_in_own_session,
     prepare_browser_launch,
 )
 from graftpunk.chrome_orphans import (
@@ -67,7 +69,11 @@ from graftpunk.chrome_orphans import (
 )
 from graftpunk.exceptions import BrowserError
 from graftpunk.logging import get_logger, suppress_asyncio_noise
-from graftpunk.signals import register_live_browser, unregister_live_browser
+from graftpunk.signals import (
+    register_live_browser,
+    termination_cleanup_installed,
+    unregister_live_browser,
+)
 
 if TYPE_CHECKING:
     import nodriver
@@ -1788,41 +1794,54 @@ class NoDriverBackend:
         for attempt in range(1, max_attempts + 1):
             self._raise_if_given_up(hold)
             before = set(registry) if registry is not None else set()
-            try:
-                self._browser = await uc.start(**start_kwargs)
-                self._raise_if_given_up(hold)
-                # Registered before the first tab: a signal arriving during
-                # navigation must still find this browser (#96).
-                register_live_browser(self)
-                # Get initial page/tab - navigate to blank page
-                self._page = await self._browser.get("about:blank")
-                self._raise_if_given_up(hold)
-                return
-            except Exception as exc:
-                last_exc = exc
-                # Release whatever this attempt left running before the next
-                # one overwrites the handle, or before the raise below (#192).
-                # On a worker thread: this loop may be the caller's.
-                await _finish_on_worker_thread(
-                    self._take_attempt_browsers(registry, before, launch_arg)
-                )
-                if "Failed to connect to browser" not in str(exc):
+            # With graftpunk's SIGTERM and SIGHUP handlers installed (the gp
+            # CLI, or a program that called install_termination_cleanup()),
+            # Chrome starts in a session of its own, so a terminal's Ctrl+C
+            # reaches only Python, and a login recorded with --observe full
+            # still reads its screenshot and page source from Chrome (#333).
+            # The block registers each Chrome with those handlers as soon as
+            # it is spawned; the attempt's end below runs inside it. Without
+            # the handlers nothing would end a Chrome outside the process
+            # group on a hangup, so it launches in Python's group as before.
+            own_session = termination_cleanup_installed()
+            with chrome_in_own_session() if own_session else nullcontext():
+                try:
+                    self._browser = await uc.start(**start_kwargs)
+                    self._raise_if_given_up(hold)
+                    # Registered before the first tab: a signal arriving during
+                    # navigation must still find this browser (#96).
+                    register_live_browser(self)
+                    if own_session:
+                        check_chrome_in_own_session(self._browser)
+                    # Get initial page/tab - navigate to blank page
+                    self._page = await self._browser.get("about:blank")
+                    self._raise_if_given_up(hold)
+                    return
+                except Exception as exc:
+                    last_exc = exc
+                    # Release whatever this attempt left running before the next
+                    # one overwrites the handle, or before the raise below (#192).
+                    # On a worker thread: this loop may be the caller's.
+                    await _finish_on_worker_thread(
+                        self._take_attempt_browsers(registry, before, launch_arg)
+                    )
+                    if "Failed to connect to browser" not in str(exc):
+                        raise
+                except BaseException as exc:
+                    # Cancelled (Ctrl-C during a synchronous start, or a timeout
+                    # around start_async()) or exiting: no retry, but the
+                    # half-started browser still has to go, or it stays
+                    # registered with _started False, where stop() skips it.
+                    end = self._take_attempt_browsers(registry, before, launch_arg)
+                    if isinstance(exc, asyncio.CancelledError):
+                        await _finish_on_worker_thread(end)
+                    else:
+                        # KeyboardInterrupt or SystemExit raised inside this
+                        # coroutine is stopping the loop with it, so an await
+                        # would hand control to a loop that is unwinding. Ending
+                        # Chrome here blocks it for the few seconds the end takes.
+                        end()
                     raise
-            except BaseException as exc:
-                # Cancelled (Ctrl-C during a synchronous start, or a timeout
-                # around start_async()) or exiting: no retry, but the
-                # half-started browser still has to go, or it stays
-                # registered with _started False, where stop() skips it.
-                end = self._take_attempt_browsers(registry, before, launch_arg)
-                if isinstance(exc, asyncio.CancelledError):
-                    await _finish_on_worker_thread(end)
-                else:
-                    # KeyboardInterrupt or SystemExit raised inside this
-                    # coroutine is stopping the loop with it, so an await
-                    # would hand control to a loop that is unwinding. Ending
-                    # Chrome here blocks it for the few seconds the end takes.
-                    end()
-                raise
             if attempt < max_attempts:
                 LOG.warning(
                     "nodriver_browser_connect_retry",

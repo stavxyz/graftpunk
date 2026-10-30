@@ -123,6 +123,16 @@ class TestInstallTerminationCleanup:
 
         assert signal.getsignal(signal.SIGTERM) is _handle_termination
 
+    def test_installed_is_reported_only_when_every_slot_holds_the_handler(self) -> None:
+        """NoDriverBackend's own-session launch hangs on this (#333)."""
+        assert signals.termination_cleanup_installed() is False
+
+        install_termination_cleanup()
+        assert signals.termination_cleanup_installed() is True
+
+        signal.signal(signal.SIGHUP, signal.SIG_DFL)
+        assert signals.termination_cleanup_installed() is False
+
 
 def test_importing_graftpunk_arms_nothing() -> None:
     """The flag is opt-in: a library consumer's signal slots stay theirs.

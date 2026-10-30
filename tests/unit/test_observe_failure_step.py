@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import os
 import signal
@@ -1141,6 +1142,25 @@ class TestThePrompt:
         )
         run.backend.mark_failed_login.assert_not_called()
         assert run.save.await_args.kwargs == {"console": run.console}
+
+    @pytest.mark.asyncio
+    async def test_a_chrome_sharing_the_session_gets_a_warning_in_place_of_the_tip(
+        self,
+    ) -> None:
+        """#333: when Chrome did not start in a session of its own, the Ctrl+C
+        stops Chrome too, so no complete capture is promised."""
+        run = _Interactive()
+        run.setup.return_value = dataclasses.replace(run.setup.return_value, own_session=False)
+        with run.patches():
+            task = run.start(_Untouchable(), step=False)
+            await _until(lambda: "Recording..." in run.text)
+            _ctrl_c()
+            await task
+        assert run.text == (
+            "Chrome did not start in a session of its own, so a Ctrl+C in this terminal "
+            "also stops Chrome, and the run's page source and screenshot can be lost. "
+            "Recording... press Ctrl+C to stop and save Recording stopped. Saving capture..."
+        )
 
 
 class TestAnEmptyMark:

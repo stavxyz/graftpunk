@@ -21,9 +21,12 @@ from rich.markup import escape
 
 from graftpunk import signals
 from graftpunk.browser_launch import (
+    CHROME_SHARES_SESSION_CONSEQUENCE,
     NodriverBrowserHandle,
     arm_termination_handlers,
     browser_connect_failure_message,
+    check_chrome_in_own_session,
+    chrome_in_own_session,
     prepare_browser_launch,
 )
 from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
@@ -46,6 +49,8 @@ class ObserveSession:
         tab: The post-navigation tab.
         storage: Where this run's capture is written.
         backend: The capture backend, already started.
+        own_session: False when Chrome is known to share this process's
+            session, so a terminal's Ctrl+C also stops it (#333).
     """
 
     browser: Any
@@ -53,6 +58,7 @@ class ObserveSession:
     tab: Any
     storage: Any
     backend: Any
+    own_session: bool = True
 
 
 def stop_observe_browser(browser: Any, handle: NodriverBrowserHandle) -> None:
@@ -153,40 +159,52 @@ async def setup_observe_session(
             f"from earlier runs.[/dim]"
         )
 
-    # Isolate Chrome from SIGINT: child process inherits SIG_IGN disposition,
-    # so Ctrl+C only reaches Python. We save data, then explicitly stop Chrome.
+    # Chrome starts in a session of its own, so the Ctrl+C that stops the
+    # recording reaches only Python, which saves the run and then stops Chrome
+    # (#333). SIGINT is also ignored for the length of the start, so a Ctrl+C
+    # cannot interrupt the start half way, before the browser is registered.
     old_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         # Retry logic matching NoDriverBackend._start_async()
         max_attempts = 3
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
-            try:
-                browser = await nodriver.start(
-                    headless=headless,
-                    sandbox=False,
-                    browser_args=base_browser_args(),
-                )
-                break
-            except Exception as exc:
-                last_exc = exc
-                if "Failed to connect to browser" not in str(exc):
-                    raise
-                if attempt < max_attempts:
-                    LOG.warning(
-                        "observe_browser_connect_retry",
-                        attempt=attempt,
-                        max_attempts=max_attempts,
+            # The block registers each Chrome with the SIGTERM and SIGHUP
+            # handlers as soon as it is spawned, until the handle below or the
+            # end of a failed attempt takes over.
+            with chrome_in_own_session() as launch:
+                try:
+                    browser = await nodriver.start(
+                        headless=headless,
+                        sandbox=False,
+                        browser_args=base_browser_args(),
                     )
-                    await asyncio.sleep(1.0 * attempt)
+                except Exception as exc:
+                    # A failed attempt's Chrome is still running ("Failed to
+                    # connect" is raised after the spawn); end it before the
+                    # next one starts.
+                    await launch.end_launched()
+                    last_exc = exc
+                    if "Failed to connect to browser" not in str(exc):
+                        raise
+                else:
+                    handle = NodriverBrowserHandle(browser)
+                    signals.register_live_browser(handle)
+                    break
+            if attempt < max_attempts:
+                LOG.warning(
+                    "observe_browser_connect_retry",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                )
+                await asyncio.sleep(1.0 * attempt)
         else:
             raise RuntimeError(browser_connect_failure_message(max_attempts)) from last_exc
     finally:
         signal.signal(signal.SIGINT, old_sigint)
 
-    handle = NodriverBrowserHandle(browser)
-    signals.register_live_browser(handle)
     try:
+        own_session = check_chrome_in_own_session(browser)
         tab = browser.main_tab
 
         if session is not None:
@@ -216,7 +234,12 @@ async def setup_observe_session(
 
         tab = await browser.get(url)
         return ObserveSession(
-            browser=browser, handle=handle, tab=tab, storage=storage, backend=backend
+            browser=browser,
+            handle=handle,
+            tab=tab,
+            storage=storage,
+            backend=backend,
+            own_session=own_session,
         )
     except Exception:
         stop_observe_browser(browser, handle)
@@ -367,8 +390,12 @@ async def run_observe_interactive(
             return
 
         try:
+            if not observed.own_session:
+                console.print(f"[yellow]{escape(CHROME_SHARES_SESSION_CONSEQUENCE)}[/yellow]")
             if wrong_password_first:
                 await _wrong_password_step(observed.backend, stop_event, loop, stdin)
+            elif not observed.own_session:
+                console.print("\n[bold]Recording... press Ctrl+C to stop and save[/bold]\n")
             else:
                 console.print("\n[bold]Recording... press Ctrl+C to stop and save[/bold]")
                 console.print(
