@@ -25,7 +25,11 @@ PIN_FIELDS = {"userPin": "#pin", "password": "#password"}
 PIN_CREDS = {"FMTSITE_USERPIN": "pin4417q", "FMTSITE_PASSWORD": "pw-x"}
 # 1.24.0 picked loginPin (a static secret); the label now comes from user_id.
 LABELLED_FIELDS = {"loginPin": "#pin", "user_id": "#u", "password": "#p"}
-LABELLED_CREDS = {"FMTSITE_LOGINPIN": "pin4417q", "FMTSITE_USER_ID": "bob", "FMTSITE_PASSWORD": "pw-x"}
+LABELLED_CREDS = {
+    "FMTSITE_LOGINPIN": "pin4417q",
+    "FMTSITE_USER_ID": "bob",
+    "FMTSITE_PASSWORD": "pw-x",
+}
 CODE_FIELD = "loginCode"
 CODE_FIELDS = {"loginCode": "#c", "user_id": "#u", "password": "#p"}
 CODE_CREDS = {"FMTSITE_LOGINCODE": "111222", "FMTSITE_USER_ID": "bob", "FMTSITE_PASSWORD": "pw-x"}
@@ -1111,7 +1115,10 @@ class TestRedaction:
         log = get_logger("probe")
         with capture_logs() as logs, log_secrets(["tok-secret-99"]), hidden_name("myshop@pin4417q"):
             log.bind(slot="myshop@pin4417q").warning(
-                "x", name="myshop@pin4417q", option="tok-secret-99", both="myshop@pin4417q tok-secret-99"
+                "x",
+                name="myshop@pin4417q",
+                option="tok-secret-99",
+                both="myshop@pin4417q tok-secret-99",
             )
 
         line = logs[0]
@@ -1291,7 +1298,11 @@ class TestRound3:
     def test_the_source_field_is_the_one_the_old_rule_picked(self) -> None:
         """An identifier field holding the same value must not stop the migration."""
         fields = {"account": "#a", "loginPin": "#p", "user_id": "#u"}
-        creds = {"FMTSITE_ACCOUNT": "pin4417q", "FMTSITE_LOGINPIN": "pin4417q", "FMTSITE_USER_ID": "bob"}
+        creds = {
+            "FMTSITE_ACCOUNT": "pin4417q",
+            "FMTSITE_LOGINPIN": "pin4417q",
+            "FMTSITE_USER_ID": "bob",
+        }
         _cache_stale()
 
         result = invoke_plugin_app(_plugin(fields), ["fmtsite", "login"], **creds)
