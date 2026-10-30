@@ -1252,6 +1252,60 @@ def _is_page_load(entry: HAREntry, method: str, content_type: str) -> bool:
     return method == "GET" and "html" in content_type and 200 <= entry.response.status < 300
 
 
+# A navigation into one of these is a frame's document, never the page the engine
+# queries.
+_FRAME_DESTINATIONS = frozenset({"iframe", "frame", "embed", "object"})
+
+
+def _is_top_level_page_load(entry: HAREntry, method: str, content_type: str) -> bool:
+    """Whether *entry* is a navigation of the top-level page (:func:`_is_page_load`),
+    not of a frame: a ``Sec-Fetch-Dest`` of ``iframe``, ``frame``, ``embed``, or
+    ``object`` is a frame's. A frame navigation a HAR records with only the
+    recorder's ``_resourceType`` and no such header cannot be told apart."""
+    dest = next(
+        (
+            value.strip().lower()
+            for name, value in entry.request.headers.items()
+            if name.lower() == "sec-fetch-dest"
+        ),
+        "",
+    )
+    return dest not in _FRAME_DESTINATIONS and _is_page_load(entry, method, content_type)
+
+
+def _credential_values(entry: HAREntry) -> list[str]:
+    """The values of *entry*'s body other than a password-like field's (a JSON
+    object's scalars at any depth, or a form's values), for
+    :func:`graftpunk.har.login_signals.success_candidates` to keep out of a
+    suggested name. Held in memory only, never written."""
+    text = entry.request.post_data
+    if not text:
+        return []
+    found: list[str] = []
+
+    def walk(value: object, key: str) -> None:
+        if isinstance(value, dict):
+            for name, inner in value.items():
+                walk(inner, str(name))
+        elif isinstance(value, list):
+            for inner in value:
+                walk(inner, key)
+        elif (
+            isinstance(value, str | int | float)
+            and not isinstance(value, bool)
+            and not _password_like([key])
+        ):
+            found.append(str(value))
+
+    try:
+        walk(json.loads(text), "")
+    except (ValueError, TypeError):
+        for name, values in parse_qs(text, keep_blank_values=True).items():
+            for value in values:
+                walk(value, name)
+    return found
+
+
 def _path_segments(url: str) -> int:
     """How many non-empty path segments *url* has."""
     return len([segment for segment in urlparse(url).path.split("/") if segment])
@@ -1851,11 +1905,14 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # dialog-marked element (_snapshot_page_forms).
     dialog_shapes: set[tuple[tuple[str, str], tuple[object, ...]]] = set()
     # For the suggested success selectors (graftpunk.har.login_signals): every page
-    # the run saw logged out (a page holding a login form, a credential post's DOM
-    # snapshot, any page loaded before the first credential post), and every page
-    # loaded after one that holds no login form.
+    # the run saw logged out (a response holding a login form, a credential post's
+    # DOM snapshot, any page loaded before the first credential post); each page
+    # loaded after one that holds no login form, in order, the last of which is the
+    # final logged-in page when page-source.html is not; and the credential posts'
+    # values other than the password, which no suggested name may hold.
     logged_out_pages: list[str] = []
-    logged_in_pages: list[str] = []
+    after_post_pages: list[str] = []
+    account_values: list[str] = []
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
     script_driven: set[int] = set()
@@ -1999,6 +2056,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             forms_in_entry = extract_login_forms(
                 entry.response.body, source=document_source, base=_unmasked_page(entry)
             )
+            # Any response holding a login form shows the site logged out, a failed
+            # attempt re-rendered by a POST included.
+            holds_a_login_form = bool(forms_in_entry)
             if method != "GET":
                 # Only a page the run opened shows a dialog login: a POST's HTML (a
                 # failed attempt re-rendered, a search result) is never its page, its
@@ -2021,14 +2081,14 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
                 token_key = (candidate.kind, candidate.name)
                 token_seen.setdefault(token_key, []).extend(candidate.seen_on)
-            if method == "GET" and forms_in_entry:
+            if holds_a_login_form:
                 logged_out_pages.append(entry.response.body)
             elif (
                 method == "GET"
                 and 200 <= entry.response.status < 300
-                and _is_page_load(entry, method, content_type)
+                and _is_top_level_page_load(entry, method, content_type)
             ):
-                (logged_in_pages if credential_post_steps else logged_out_pages).append(
+                (after_post_pages if credential_post_steps else logged_out_pages).append(
                     entry.response.body
                 )
 
@@ -2120,6 +2180,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 chain_next[step] = _redirect_target(entry)
                 posts.append((step, post_target, frozenset(body_params(entry)), not by_target))
                 post_interactions.append((entry.timestamp, entry.request.login_interactions))
+                account_values.extend(_credential_values(entry))
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must
         # not make that POST, or a later one to the same page, the credential post.
@@ -2226,7 +2287,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     if source.page_source is not None and source.page_source.is_file():
         # A run stopped on a page holding a login form stopped logged out, or on
         # another login.
-        (logged_out_pages if page_forms else logged_in_pages).append(page_html)
+        (logged_out_pages if page_forms else after_post_pages).append(page_html)
         page_label = str(source.page_source)
         login_forms.extend(page_forms)
         for candidate in extract_token_candidates(page_html, source=page_label):
@@ -2384,9 +2445,15 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         collapsed_templates=collapse_map,
         cookie_names_dropped_as_ids=len(id_cookie_names),
         token_names_dropped_as_ids=len(id_token_names),
-        # Only for a run that recorded a login.
-        success_candidates=success_candidates(logged_out_pages, logged_in_pages)
-        if credential_post_steps
+        # Only for a run that recorded a login. The final logged-in page is the
+        # last of after_post_pages (page-source.html when it went there); every
+        # earlier one (an MFA or a "stay signed in" step) is logged out.
+        success_candidates=success_candidates(
+            logged_out_pages + after_post_pages[:-1],
+            after_post_pages[-1],
+            account_values=account_values,
+        )
+        if credential_post_steps and after_post_pages
         else (),
     )
 

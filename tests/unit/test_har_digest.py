@@ -6593,7 +6593,7 @@ class TestTheCommentedStepFitsTheGeneratedProject(_OpenerCase):
 _SUCCESS_GP_FILL = (
     "GP-FILL: the recording suggests a success selector: an element on the logged-in page "
     "and on no recorded login page. Check that it appears only after login on a fresh "
-    "visit to the login URL, then uncomment one:"
+    "visit to the login URL, then uncomment one suggestion (all of its lines):"
 )
 
 # The login_config main (008f2aa0) generates for a run with no logged-in page.
@@ -6811,3 +6811,162 @@ class TestTheRecordingSuggestsASuccessSelector:
         confirmed = _uncommented_success(code, 0)
         compile(confirmed, "plugin.py", "exec")
         assert self._login_config(confirmed).success == selector
+
+    # Review round 1 (#325): the final logged-in page, the pages that do not count,
+    # and the credential values.
+
+    def _get(self, path: str, body: str, *, status: int = 200, **headers: str) -> dict:
+        entry = _entry(
+            "GET",
+            f"{self._HOST}{path}",
+            content_type="text/html",
+            body=body,
+            status=status,
+            request_headers=headers or None,
+        )
+        if not headers:
+            entry["request"]["_resourceType"] = "Document"
+        return entry
+
+    def _credential_post(self, payload: dict | None = None, html: str = "") -> dict:
+        return _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data=json.dumps(payload or self._CREDS),
+            content_type="text/html" if html else "application/json",
+            body=html or "{}",
+        )
+
+    @staticmethod
+    def _digest(run: Path, entries: list[dict], page_source: str = ""):  # noqa: ANN205
+        run.mkdir(parents=True, exist_ok=True)
+        har = _write_har(run, entries)
+        source = None
+        if page_source:
+            source = run / "page-source.html"
+            source.write_text(page_source)
+        return digest(DigestSource(har_path=har, page_source=source))
+
+    def test_without_a_page_source_the_last_page_after_the_post_is_final(
+        self, tmp_path: Path
+    ) -> None:
+        """An interstitial before the landing (a consent or "stay signed in" page) is
+        a logged-out page: an element it shares with the landing is no marker."""
+        consent = (
+            "<html><body><div id='user-consent'></div><div id='account-menu'></div></body></html>"
+        )
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/consent", consent),
+            self._get("/account", self._LANDED),
+        ]
+        assert self._digest(tmp_path, entries).success_candidates == ("a.signout-link",)
+
+    def test_an_mfa_page_before_the_page_source_is_a_logged_out_page(self, tmp_path: Path) -> None:
+        mfa = (
+            "<html><body><div id='account-verify'></div><form action='/mfa' method='post'>"
+            "<input id='otp-code' name='otp'></form></body></html>"
+        )
+        final = self._LANDED.replace("<main>", "<main><div id='account-verify'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/mfa", mfa),
+            _entry("POST", f"{self._HOST}/mfa", post_data=json.dumps({"otp": "123456"})),
+        ]
+        result = self._digest(tmp_path, entries, page_source=final)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+
+    def test_a_page_source_holding_a_login_form_leaves_the_last_page_final(
+        self, tmp_path: Path
+    ) -> None:
+        """The user signed out and stopped on the login page: the last page loaded
+        after the post is the final logged-in page."""
+        stopped = self._LOGIN.replace("<main>", "<main><div id='signed-off-note'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/account", self._LANDED),
+        ]
+        result = self._digest(tmp_path, entries, page_source=stopped)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+
+    def test_an_iframe_document_is_no_page(self, tmp_path: Path) -> None:
+        frame = self._get("/widget", self._LANDED, **{"Sec-Fetch-Dest": "iframe"})
+        frame["request"]["_resourceType"] = "Document"
+        entries = [self._get("/login", self._LOGIN), self._credential_post(), frame]
+        assert self._digest(tmp_path, entries).success_candidates == ()
+
+    def test_an_iframe_does_not_take_the_final_page(self, tmp_path: Path) -> None:
+        frame = self._get(
+            "/widget",
+            "<html><body><div id='user-widget'></div></body></html>",
+            **{"Sec-Fetch-Dest": "iframe"},
+        )
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/account", self._LANDED),
+            frame,
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+
+    def test_a_post_response_holding_a_login_form_is_a_logged_out_page(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed attempt the server re-rendered with the form."""
+        failed = self._LOGIN.replace("<main>", "<main><div id='account-menu'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(html=failed),
+            self._credential_post(),
+        ]
+        result = self._digest(tmp_path, entries, page_source=self._LANDED)
+        assert result.success_candidates == ("a.signout-link",)
+
+    def test_a_login_page_loaded_again_after_the_post_is_a_logged_out_page(
+        self, tmp_path: Path
+    ) -> None:
+        again = self._LOGIN.replace("<main>", "<main><div id='account-menu'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/login", again),
+        ]
+        result = self._digest(tmp_path, entries, page_source=self._LANDED)
+        assert result.success_candidates == ("a.signout-link",)
+
+    def test_a_page_answering_404_after_the_post_is_no_page(self, tmp_path: Path) -> None:
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/account", self._LANDED, status=404),
+        ]
+        assert self._digest(tmp_path, entries).success_candidates == ()
+
+    def test_an_html_fragment_a_script_fetched_is_no_page(self, tmp_path: Path) -> None:
+        fragment = self._get("/account", self._LANDED, **{"Sec-Fetch-Mode": "cors"})
+        entries = [self._get("/login", self._LOGIN), self._credential_post(), fragment]
+        assert self._digest(tmp_path, entries).success_candidates == ()
+
+    def test_a_run_with_no_credential_post_suggests_nothing(self, tmp_path: Path) -> None:
+        result = self._digest(tmp_path, [self._get("/login", self._LOGIN)], self._LANDED)
+        assert result.success_candidates == ()
+        assert json.loads(render_endpoints_json(result))["login"]["success_candidates"] == []
+
+    def test_a_name_holding_a_credential_value_is_not_suggested(self, tmp_path: Path) -> None:
+        payload = {"email": "jsmith@example.com", "username": "jdoe", "password": "pw-12345"}
+        final = self._LANDED.replace(
+            "<main>", "<main><div id='user-jsmith'></div><img class='avatar-jdoe'>"
+        )
+        entries = [self._get("/login", self._LOGIN), self._credential_post(payload)]
+        result = self._digest(tmp_path, entries, page_source=final)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+        unrelated = self._digest(
+            tmp_path / "other",
+            [self._get("/login", self._LOGIN), self._credential_post()],
+            page_source=final,
+        )
+        assert "#user-jsmith" in unrelated.success_candidates
