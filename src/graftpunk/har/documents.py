@@ -43,6 +43,7 @@ __all__ = [
     "is_login_document",
     "looks_like_new_password_name",
     "looks_like_token_name",
+    "looks_like_username_name",
     "printable_selectors",
     "printable_unresolved_roles",
 ]
@@ -681,11 +682,17 @@ def _is_button_like(raw: _RawInput) -> bool:
     )
 
 
+def looks_like_username_name(name: str) -> bool:
+    """True when *name* (an input's or a request body field's name) holds a username
+    hint: ``user``, ``email``, ``login``, or ``account``."""
+    lowered = name.lower()
+    return any(hint in lowered for hint in _USERNAME_HINTS)
+
+
 def _has_username_hint(raw: _RawInput) -> bool:
     if raw.autocomplete in _USERNAME_AUTOCOMPLETE or raw.input_type == "email":
         return True
-    lowered = raw.name.lower()
-    return any(hint in lowered for hint in _USERNAME_HINTS)
+    return looks_like_username_name(raw.name)
 
 
 _LITERAL_USERNAME_NAMES = frozenset({"username", "email", "login", "user"})

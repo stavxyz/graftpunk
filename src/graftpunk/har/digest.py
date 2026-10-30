@@ -28,6 +28,7 @@ from graftpunk.har.documents import (
     form_action_targets,
     looks_like_new_password_name,
     looks_like_token_name,
+    looks_like_username_name,
 )
 from graftpunk.har.login_signals import success_candidates
 from graftpunk.har.naming import capture_text, fixture_rank, normalize_media_type
@@ -713,32 +714,94 @@ def _parse_body_text(
 ) -> tuple[dict[str, str], BodyKind, set[str]]:
     """:func:`_parse_body_keys` on a body's text and the media type its request
     declared (lowered, without parameters; empty when it declared none)."""
-    if not post_data:
-        return {}, "none", set()
-
-    try:
-        parsed = json.loads(post_data)
-    except (ValueError, TypeError):
-        pass
-    else:
+    kind, parsed = _decoded_body(post_data, declared)
+    if kind == "json":
         if isinstance(parsed, dict):
             types, dropped = _json_body_types(parsed)
             return types, "json", dropped
         return {}, "json", set()
+    if kind == "form":
+        # A key that is not a field name, or that holds an id, is dropped and
+        # counted, never the whole body.
+        types = {k: _text_values_type(v) for k, v in parsed.items() if _plausible_field_name(k)}
+        return types, "form", {k for k in parsed if not _plausible_field_name(k)}
+    return {}, "none", set()
 
+
+def _decoded_body(post_data: str | None, declared: str) -> tuple[BodyKind, Any]:
+    """The one JSON-then-form reading of a body's text, for its names
+    (:func:`_parse_body_text`) and its values (:func:`_body_values`): ``("json",
+    <the JSON value>)``, ``("form", <parse_qs of it>)`` when it reads as a form, or
+    ``("none", None)``."""
+    if not post_data:
+        return "none", None
+    try:
+        return "json", json.loads(post_data)
+    except (ValueError, TypeError):
+        pass
     if declared and declared != _FORM_CONTENT_TYPE:
-        return {}, "none", set()
+        return "none", None
     if "=" not in post_data:
-        return {}, "none", set()
+        return "none", None
     form = parse_qs(post_data, keep_blank_values=True)
     # A form when at least one key reads as a field name: a body that is really
-    # XML or prose gives parse_qs one unreadable key and is not one. A key that is
-    # not a field name, or that holds an id, is dropped and counted, never the
-    # whole body.
+    # XML or prose gives parse_qs one unreadable key and is not one.
     if not form or not any(_field_name_shaped(name) for name in form):
-        return {}, "none", set()
-    types = {k: _text_values_type(v) for k, v in form.items() if _plausible_field_name(k)}
-    return types, "form", {k for k in form if not _plausible_field_name(k)}
+        return "none", None
+    return "form", form
+
+
+_MULTIPART_CONTENT_TYPE = "multipart/form-data"
+# A multipart part's field name, from its Content-Disposition; "filename=" holds
+# "name=" after a word character, so \b keeps it out.
+_MULTIPART_NAME_RE = re.compile(r'\bname="([^"]*)"', re.IGNORECASE)
+
+
+def _multipart_fields(text: str) -> list[tuple[str, str]]:
+    """The (name, value) of each text part of a ``multipart/form-data`` body, its
+    boundary read from the first line; a file part is skipped."""
+    newline = "\r\n" if "\r\n" in text else "\n"
+    boundary = text.split(newline, 1)[0].strip()
+    if not boundary.startswith("--") or len(boundary) < 3:
+        return []
+    found: list[tuple[str, str]] = []
+    for part in text.split(boundary)[1:]:
+        if part.startswith("--"):
+            break
+        head, separator, value = part.lstrip("\r\n").partition(newline * 2)
+        name = _MULTIPART_NAME_RE.search(head)
+        if separator and name and "filename=" not in head.lower():
+            found.append((name.group(1), value.removesuffix(newline)))
+    return found
+
+
+def _body_values(entry: HAREntry) -> list[tuple[str, str]]:
+    """The (field name, value) of each scalar in *entry*'s request body, read as
+    :func:`body_params` reads its names (:func:`_decoded_body`): a JSON value at any
+    depth under its nearest key (a boolean and ``null`` skipped), each value of a
+    form field, and, which :func:`body_params` does not read, each text part of a
+    ``multipart/form-data`` body."""
+    declared = _declared_request_content_type(entry)
+    text = entry.request.post_data
+    kind, parsed = _decoded_body(text, declared)
+    if kind == "form":
+        return [(name, value) for name, values in parsed.items() for value in values]
+    if kind == "none":
+        return _multipart_fields(text) if text and declared == _MULTIPART_CONTENT_TYPE else []
+    found: list[tuple[str, str]] = []
+
+    def walk(value: object, key: str) -> None:
+        if isinstance(value, dict):
+            for name, inner in value.items():
+                walk(inner, str(name))
+        elif isinstance(value, list):
+            for inner in value:
+                walk(inner, key)
+        elif isinstance(value, str | int | float) and not isinstance(value, bool):
+            found.append((key, str(value)))
+
+    walk(parsed, "")
+    return found
 
 
 def body_params(entry: HAREntry) -> dict[str, str]:
@@ -1259,9 +1322,12 @@ _FRAME_DESTINATIONS = frozenset({"iframe", "frame", "embed", "object"})
 
 def _is_top_level_page_load(entry: HAREntry, method: str, content_type: str) -> bool:
     """Whether *entry* is a navigation of the top-level page (:func:`_is_page_load`),
-    not of a frame: a ``Sec-Fetch-Dest`` of ``iframe``, ``frame``, ``embed``, or
-    ``object`` is a frame's. A frame navigation a HAR records with only the
-    recorder's ``_resourceType`` and no such header cannot be told apart."""
+    not of a frame. A frame's document is told by every signal a recording holds for
+    it: a ``Sec-Fetch-Dest`` of ``iframe``, ``frame``, ``embed``, or ``object``, or
+    a ``_resourceType`` other than ``Document`` (which :func:`_is_page_load` reads
+    as no navigation). A frame navigation recorded with ``_resourceType``
+    ``Document``, as the recorder writes every navigation, and no ``Sec-Fetch-Dest``
+    cannot be told apart."""
     dest = next(
         (
             value.strip().lower()
@@ -1273,37 +1339,24 @@ def _is_top_level_page_load(entry: HAREntry, method: str, content_type: str) -> 
     return dest not in _FRAME_DESTINATIONS and _is_page_load(entry, method, content_type)
 
 
+# A value written as an email address.
+_EMAIL_VALUE_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
 def _credential_values(entry: HAREntry) -> list[str]:
-    """The values of *entry*'s body other than a password-like field's (a JSON
-    object's scalars at any depth, or a form's values), for
+    """The values of credential post *entry*'s username and password fields (a field
+    whose name holds a password hint, :data:`PASSWORD_NAME_HINTS`, or a username
+    hint, :func:`graftpunk.har.documents.looks_like_username_name`) and any value
+    written as an email address, read by :func:`_body_values`, for
     :func:`graftpunk.har.login_signals.success_candidates` to keep out of a
     suggested name. Held in memory only, never written."""
-    text = entry.request.post_data
-    if not text:
-        return []
-    found: list[str] = []
-
-    def walk(value: object, key: str) -> None:
-        if isinstance(value, dict):
-            for name, inner in value.items():
-                walk(inner, str(name))
-        elif isinstance(value, list):
-            for inner in value:
-                walk(inner, key)
-        elif (
-            isinstance(value, str | int | float)
-            and not isinstance(value, bool)
-            and not _password_like([key])
-        ):
-            found.append(str(value))
-
-    try:
-        walk(json.loads(text), "")
-    except (ValueError, TypeError):
-        for name, values in parse_qs(text, keep_blank_values=True).items():
-            for value in values:
-                walk(value, name)
-    return found
+    return [
+        value
+        for name, value in _body_values(entry)
+        if _password_like([name])
+        or looks_like_username_name(name)
+        or _EMAIL_VALUE_RE.fullmatch(value.strip())
+    ]
 
 
 def _path_segments(url: str) -> int:
@@ -1908,10 +1961,16 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # the run saw logged out (a response holding a login form, a credential post's
     # DOM snapshot, any page loaded before the first credential post); each page
     # loaded after one that holds no login form, in order, the last of which is the
-    # final logged-in page when page-source.html is not; and the credential posts'
-    # values other than the password, which no suggested name may hold.
+    # final logged-in page when page-source.html is not; the indexes of those after
+    # which the browser sent a top-level document POST before loading another page
+    # (a step of the login, such as an MFA or "stay signed in" form); the index of
+    # the after-post page that is the latest page load, if one is; and the
+    # credential posts' username, password, and email values, which no suggested
+    # name may hold.
     logged_out_pages: list[str] = []
     after_post_pages: list[str] = []
+    submitted_from: set[int] = set()
+    latest_after_post: int | None = None
     account_values: list[str] = []
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
@@ -2050,6 +2109,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         content_type = (entry.response.content_type or "").lower()
         if _is_page_load(entry, method, content_type):
             page_loads.append(entry.timestamp)
+        if _is_top_level_page_load(entry, method, content_type):
+            if method == "POST" and latest_after_post is not None:
+                submitted_from.add(latest_after_post)
+            latest_after_post = None
         forms_in_entry: tuple[LoginForm, ...] = ()
         if "html" in content_type and entry.response.body:
             document_source = url
@@ -2088,9 +2151,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 and 200 <= entry.response.status < 300
                 and _is_top_level_page_load(entry, method, content_type)
             ):
-                (after_post_pages if credential_post_steps else logged_out_pages).append(
-                    entry.response.body
-                )
+                if credential_post_steps:
+                    latest_after_post = len(after_post_pages)
+                    after_post_pages.append(entry.response.body)
+                else:
+                    logged_out_pages.append(entry.response.body)
 
         by_target = method == "POST" and _posts_to_a_login_form(post_target, login_action_targets)
         kind: ObservationKind | None = None
@@ -2446,11 +2511,19 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         cookie_names_dropped_as_ids=len(id_cookie_names),
         token_names_dropped_as_ids=len(id_token_names),
         # Only for a run that recorded a login. The final logged-in page is the
-        # last of after_post_pages (page-source.html when it went there); every
-        # earlier one (an MFA or a "stay signed in" step) is logged out.
+        # last of after_post_pages (page-source.html when it went there); an
+        # earlier one is logged out when a form was submitted from it, and logged
+        # in otherwise (success_candidates also reads one asking for a one-time
+        # code as logged out).
         success_candidates=success_candidates(
-            logged_out_pages + after_post_pages[:-1],
+            logged_out_pages
+            + [
+                after_post_pages[i] for i in sorted(submitted_from) if i < len(after_post_pages) - 1
+            ],
             after_post_pages[-1],
+            earlier_logged_in=[
+                page for i, page in enumerate(after_post_pages[:-1]) if i not in submitted_from
+            ],
             account_values=account_values,
         )
         if credential_post_steps and after_post_pages

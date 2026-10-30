@@ -32,6 +32,7 @@ from graftpunk.har.digest import (
     Endpoint,
     LoginObservation,
     ObservationKind,
+    _credential_values,
     _form_state,
     _login_opener,
     _parse_body,
@@ -6847,11 +6848,65 @@ class TestTheRecordingSuggestsASuccessSelector:
             source.write_text(page_source)
         return digest(DigestSource(har_path=har, page_source=source))
 
-    def test_without_a_page_source_the_last_page_after_the_post_is_final(
+    def _document_post(self, path: str, payload: dict) -> dict:
+        """A form submitted from the page the browser is on: a top-level document
+        POST."""
+        entry = _entry("POST", f"{self._HOST}{path}", status=302, post_data=json.dumps(payload))
+        entry["request"]["_resourceType"] = "Document"
+        return entry
+
+    @pytest.mark.parametrize("with_page_source", [True, False])
+    def test_the_landing_page_in_the_har_and_at_stop_gives_its_markers(
+        self, tmp_path: Path, with_page_source: bool
+    ) -> None:
+        """A server-rendered login recorded with Ctrl+C on the landing page: the HAR's
+        copy of the landing page is a logged-in page, not a logged-out one."""
+        landing = self._LANDED.replace("<main>", "<main><div id='welcome'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/account", landing),
+        ]
+        result = self._digest(tmp_path, entries, landing if with_page_source else "")
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#welcome")
+
+    @pytest.mark.parametrize("with_page_source", [True, False])
+    def test_after_browsing_on_the_landing_page_s_markers_rank_first(
+        self, tmp_path: Path, with_page_source: bool
+    ) -> None:
+        """The run browsed to /orders after landing and stopped there: what every
+        logged-in page carries ranks above what only the final page has."""
+        landing = self._LANDED.replace("<main>", "<main><div id='welcome'></div>")
+        orders = self._LANDED.replace(
+            "<main><p>Orders</p></main>", "<main><div id='orders-table'></div></main>"
+        )
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/account", landing),
+            self._get("/orders", orders),
+        ]
+        result = self._digest(tmp_path, entries, orders if with_page_source else "")
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#orders-table")
+
+    def test_a_page_after_the_post_that_submits_no_form_is_logged_in(self, tmp_path: Path) -> None:
+        between = (
+            "<html><body><div id='user-consent'></div><div id='account-menu'></div></body></html>"
+        )
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/consent", between),
+            self._get("/account", self._LANDED),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+
+    def test_a_page_a_form_was_submitted_from_after_the_post_is_logged_out(
         self, tmp_path: Path
     ) -> None:
-        """An interstitial before the landing (a consent or "stay signed in" page) is
-        a logged-out page: an element it shares with the landing is no marker."""
+        """A "stay signed in" page: the browser posted a form from it, so it is a step
+        of the login, and an element it shares with the landing is no marker."""
         consent = (
             "<html><body><div id='user-consent'></div><div id='account-menu'></div></body></html>"
         )
@@ -6859,9 +6914,45 @@ class TestTheRecordingSuggestsASuccessSelector:
             self._get("/login", self._LOGIN),
             self._credential_post(),
             self._get("/consent", consent),
+            self._document_post("/consent", {"remember": "yes"}),
             self._get("/account", self._LANDED),
         ]
         assert self._digest(tmp_path, entries).success_candidates == ("a.signout-link",)
+
+    def test_a_script_post_from_a_page_after_the_post_leaves_it_logged_in(
+        self, tmp_path: Path
+    ) -> None:
+        between = "<html><body><div id='account-menu'></div></body></html>"
+        fetched = _entry("POST", f"{self._HOST}/api/track", post_data=json.dumps({"e": "x"}))
+        fetched["request"]["_resourceType"] = "Fetch"
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/home", between),
+            fetched,
+            self._get("/account", self._LANDED),
+        ]
+        assert self._digest(tmp_path, entries).success_candidates == (
+            "#account-menu",
+            "a.signout-link",
+        )
+
+    def test_a_page_asking_for_a_one_time_code_after_the_post_is_logged_out(
+        self, tmp_path: Path
+    ) -> None:
+        mfa = (
+            "<html><body><div id='account-verify'></div>"
+            "<input id='code' name='code' autocomplete='one-time-code'></body></html>"
+        )
+        final = self._LANDED.replace("<main>", "<main><div id='account-verify'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/mfa", mfa),
+            self._get("/account", final),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
 
     def test_an_mfa_page_before_the_page_source_is_a_logged_out_page(self, tmp_path: Path) -> None:
         mfa = (
@@ -6873,10 +6964,13 @@ class TestTheRecordingSuggestsASuccessSelector:
             self._get("/login", self._LOGIN),
             self._credential_post(),
             self._get("/mfa", mfa),
-            _entry("POST", f"{self._HOST}/mfa", post_data=json.dumps({"otp": "123456"})),
+            self._document_post("/mfa", {"otp": "123456"}),
         ]
         result = self._digest(tmp_path, entries, page_source=final)
         assert result.success_candidates == ("#account-menu", "a.signout-link")
+        # Without the submission the same page is a logged-in one.
+        unsubmitted = self._digest(tmp_path / "other", entries[:-1], page_source=final)
+        assert "#account-verify" in unsubmitted.success_candidates
 
     def test_a_page_source_holding_a_login_form_leaves_the_last_page_final(
         self, tmp_path: Path
@@ -6892,9 +6986,16 @@ class TestTheRecordingSuggestsASuccessSelector:
         result = self._digest(tmp_path, entries, page_source=stopped)
         assert result.success_candidates == ("#account-menu", "a.signout-link")
 
-    def test_an_iframe_document_is_no_page(self, tmp_path: Path) -> None:
-        frame = self._get("/widget", self._LANDED, **{"Sec-Fetch-Dest": "iframe"})
+    @pytest.mark.parametrize("dest", ["iframe", "frame", "embed", "object", "IFrame"])
+    def test_an_iframe_document_is_no_page(self, tmp_path: Path, dest: str) -> None:
+        frame = self._get("/widget", self._LANDED, **{"Sec-Fetch-Dest": dest})
         frame["request"]["_resourceType"] = "Document"
+        entries = [self._get("/login", self._LOGIN), self._credential_post(), frame]
+        assert self._digest(tmp_path, entries).success_candidates == ()
+
+    def test_a_document_of_another_resource_type_is_no_page(self, tmp_path: Path) -> None:
+        frame = self._get("/widget", self._LANDED)
+        frame["request"]["_resourceType"] = "Other"
         entries = [self._get("/login", self._LOGIN), self._credential_post(), frame]
         assert self._digest(tmp_path, entries).success_candidates == ()
 
@@ -6970,3 +7071,65 @@ class TestTheRecordingSuggestsASuccessSelector:
             page_source=final,
         )
         assert "#user-jsmith" in unrelated.success_candidates
+
+    _NAMED = (
+        "<main><div id='user-jsmith'></div><div id='user-hunter-two'></div>"
+        "<div class='plan-user'></div>"
+    )
+
+    def _named_run(self, run: Path, post: dict):  # noqa: ANN202
+        final = self._LANDED.replace("<main>", self._NAMED)
+        return self._digest(run, [self._get("/login", self._LOGIN), post], page_source=final)
+
+    def test_a_form_encoded_post_s_values_are_not_suggested(self, tmp_path: Path) -> None:
+        post = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data="email=jsmith%40example.com&password=hunter.two&type=user",
+            request_headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        result = self._named_run(tmp_path, post)
+        # The username and password values are rejected; "type=user" is no
+        # identity field, so "user" rejects nothing.
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "div.plan-user")
+
+    def test_a_multipart_post_s_values_are_not_suggested(self, tmp_path: Path) -> None:
+        body = (
+            "------b7\r\n"
+            'Content-Disposition: form-data; name="login"\r\n\r\n'
+            "jsmith\r\n"
+            "------b7\r\n"
+            'Content-Disposition: form-data; name="password"\r\n\r\n'
+            "hunter-two\r\n"
+            "------b7\r\n"
+            'Content-Disposition: form-data; name="avatar"; filename="user.png"\r\n'
+            "Content-Type: image/png\r\n\r\n"
+            "plan\r\n"
+            "------b7--\r\n"
+        )
+        post = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data=body,
+            request_headers={"Content-Type": "multipart/form-data; boundary=----b7"},
+        )
+        result = self._named_run(tmp_path, post)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "div.plan-user")
+
+    def test_a_nested_json_post_s_values_are_not_suggested(self, tmp_path: Path) -> None:
+        payload = {
+            "auth": {"users": [{"username": "jsmith"}], "password": "hunter_two"},
+            "account_no": 40912873,
+            "remember": True,
+            "plan": "user",
+        }
+        result = self._named_run(tmp_path, self._credential_post(payload))
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "div.plan-user")
+        har = _write_har(tmp_path, [self._credential_post(payload)], "one.har")
+        (entry,) = parse_har_file(har).entries
+        assert sorted(_credential_values(entry)) == ["40912873", "hunter_two", "jsmith"]
+
+    def test_any_value_written_as_an_email_is_not_suggested(self, tmp_path: Path) -> None:
+        payload = {"id": "jsmith@example.com", "pass": "x"}
+        result = self._named_run(tmp_path, self._credential_post(payload))
+        assert "#user-jsmith" not in result.success_candidates
