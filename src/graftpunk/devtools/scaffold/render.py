@@ -520,19 +520,14 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     else:
         lines.extend(literal_lines(login_url, indent=len(L2), prefix="url="))
     lines.append(f'        failure="{GP_FILL_MARKER}: text on the page indicating login failure",')
-    # Nothing observed says which element marks the landing page, and a GP-FILL
-    # literal here would be a configured signal: the engine would poll for that
-    # selector until the timeout and fail naming it, as a GP-FILL success_url
-    # literal once did. The hint is a comment and the field stays unset, so a fresh
+    # Nothing observed proves which element marks the landing page (a suggestion
+    # may also be on the login page the engine opens), and a GP-FILL literal here
+    # would be a configured signal: the engine would poll for that selector until
+    # the timeout and fail naming it, as a GP-FILL success_url literal once did.
+    # The hint is a comment and the field stays unset, so a fresh
     # scaffold whose success_url was pre-filled has exactly one signal, which is
     # the intended state.
-    lines.extend(
-        wrapped_comment_lines(
-            f"{GP_FILL_MARKER}: success, a CSS selector for an element that is on the page this "
-            "login lands on and not on the login form itself.",
-            indent=len(L2),
-        )
-    )
+    lines.extend(_render_success_hint(spec.digest.success_candidates, indent=len(L2)))
     if pattern:
         # What the run saw the credential post redirect to: the engine polls for
         # this URL after submit, and an element check is still worth filling in.
@@ -556,6 +551,29 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
             )
         )
     lines.append("    )")
+    return lines
+
+
+def _render_success_hint(candidates: tuple[str, ...], *, indent: int) -> list[str]:
+    """The ``GP-FILL`` for ``success``: with *candidates* (``RunDigest.success_candidates``),
+    each as a commented ``success=`` argument for the author to confirm and uncomment,
+    since one recording cannot show the element is absent from the login page the
+    engine opens; without, the bare hint."""
+    if not candidates:
+        return wrapped_comment_lines(
+            f"{GP_FILL_MARKER}: success, a CSS selector for an element that is on the page this "
+            "login lands on and not on the login form itself.",
+            indent=indent,
+        )
+    lines = wrapped_comment_lines(
+        f"{GP_FILL_MARKER}: the recording suggests a success selector: an element on the "
+        "logged-in page and on no recorded login page. Check that it appears only after "
+        "login on a fresh visit to the login URL, and on no code or verification page "
+        "after the password, then uncomment one suggestion (all of its lines):",
+        indent=indent,
+    )
+    for selector in candidates:
+        lines.extend(_commented_literal_lines(selector, indent=indent, inner=0, prefix="success="))
     return lines
 
 

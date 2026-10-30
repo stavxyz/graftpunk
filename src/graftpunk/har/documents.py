@@ -102,6 +102,10 @@ class LoginForm:
     # The name of every control of the form, so the digest can tell which of two
     # forms posting to one place a POST's body came from. Internal like the above.
     input_names: tuple[str, ...] = field(default=(), metadata={"internal": True})
+    # The name of the input the form takes as its username (fields["username"]),
+    # empty when it has none or the input has no name, so the digest can keep that
+    # field's posted value out of a suggestion. Internal like the above.
+    username_name: str = field(default="", metadata={"internal": True})
     # The form's structure: its element id and each control's (tag, type, name,
     # element id) in order. The same form on several pages has one signature even
     # when its selectors differ by page, so the digest lists it once. Internal.
@@ -1391,6 +1395,7 @@ def _login_form(
         absent_roles=tuple(absent),
         action_target=action_target,
         input_names=tuple(i.name for i in inputs if i.name),
+        username_name=inputs[username_index].name if username_index is not None else "",
         visible_names=tuple(i.name for i in inputs if i.name and i.input_type != "hidden"),
         signature=(
             element_id,

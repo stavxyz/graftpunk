@@ -16,16 +16,15 @@ once more as a whole: a value the page renders across elements
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
 from html import escape
 from html.parser import HTMLParser
-from urllib.parse import parse_qsl, quote
+from urllib.parse import quote
 
-from graftpunk.har.digest import password_field_names
+from graftpunk.har.digest import body_values, password_field_names
 from graftpunk.observe.run import REDACTED, Redaction, text_redactor
-from graftpunk.session_identity import is_identifier_field
+from graftpunk.session_identity import identifier_key, is_identifier_field
 
 __all__ = [
     "KEPT_ATTRIBUTES",
@@ -212,24 +211,6 @@ def sanitize_dom_snapshot(html: str, redaction: Redaction | None = None) -> str:
     return "".join(parser.out)
 
 
-def _body_values(body_text: str | None) -> list[tuple[str, str]]:
-    """The top-level field names and values of a JSON object or form-encoded body;
-    a number or a boolean as its text. Empty for any other body."""
-    if not body_text:
-        return []
-    try:
-        parsed = json.loads(body_text)
-    except ValueError:
-        return parse_qsl(body_text, keep_blank_values=False) if "=" in body_text else []
-    if not isinstance(parsed, dict):
-        return []
-    return [
-        (str(name), value if isinstance(value, str) else json.dumps(value))
-        for name, value in parsed.items()
-        if isinstance(value, str | int | float) and not isinstance(value, bool)
-    ]
-
-
 def _redactor(redaction: Redaction) -> Callable[[str], str]:
     """:func:`graftpunk.observe.run.text_redactor` for *redaction*, and then each
     identifier spelling that holds an email (``@`` or ``%40``) replaced in any letter
@@ -244,13 +225,6 @@ def _redactor(redaction: Redaction) -> Callable[[str], str]:
         return scrub
     pattern = re.compile("|".join(re.escape(email) for email in emails), re.IGNORECASE)
     return lambda text: pattern.sub(REDACTED, scrub(text))
-
-
-def _identifier_key(name: str) -> str:
-    """The part of a field *name* that says what it holds: the last bracketed part
-    of a Rails-style name (``user[email]`` is ``email``), else the name."""
-    parts = re.findall(r"\[([^\[\]]*)\]", name)
-    return parts[-1] if parts and parts[-1] else name
 
 
 def _spellings(value: str) -> list[str]:
@@ -275,19 +249,22 @@ def snapshot_redaction(body_text: str | None, content_type: str = "") -> Redacti
     (:func:`graftpunk.session_identity.is_identifier_field`, an allowlist) as
     identifiers, replaced where they stand as a whole value. Another field's value
     (``remember=1``) is left alone: replacing it everywhere would mangle the
-    markup. A Rails-style name is read by its last bracketed part
-    (:func:`_identifier_key`). Each value's other spellings (:func:`_spellings`) are
-    added beside it, a second net under the sanitizer's own redaction of decoded
-    text."""
+    markup. The values are read by :func:`graftpunk.har.digest.body_values` (a
+    nested JSON value under its nearest name, a multipart text part), and a
+    Rails-style name by its last bracketed part
+    (:func:`graftpunk.session_identity.identifier_key`). Each value's other
+    spellings (:func:`_spellings`) are added beside it, a second net under the
+    sanitizer's own redaction of decoded text."""
     password_names = set(password_field_names(body_text, content_type))
     secrets: list[str] = []
     identifiers: list[str] = []
-    for name, value in _body_values(body_text):
+    for path, value in body_values(body_text, content_type):
+        name = path[-1] if path else ""
         if not value:
             continue
         if name in password_names:
             secrets.extend(_spellings(value))
-        elif is_identifier_field(_identifier_key(name)):
+        elif is_identifier_field(identifier_key(name)):
             identifiers.extend(_spellings(value))
     return Redaction(tuple(secrets), tuple(identifiers))
 

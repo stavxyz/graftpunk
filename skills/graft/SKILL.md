@@ -148,7 +148,14 @@ user, read off it in their own browser.
    marks that the recording does not answer, one question at a time, and wait
    for each answer: the exact sentence the site shows after a wrong password
    (they try one in their own browser), a CSS selector of an element on the page
-   a successful login lands on, a selector for any login field or submit button
+   a successful login lands on (when the config holds commented `success=`
+   suggestions, ask "logged out, in a new private window at the login URL, is
+   <selector> absent, absent from any code or confirmation page after the
+   password, and present once logged in?" for each in order: on yes,
+   strip the leading `# ` from every line of that suggestion (one line, or from
+   its `# success=(` through its `# ),` when it wraps) and delete the other
+   suggestions and the `GP-FILL` lines; on no for all, ask for a selector), a
+   selector for any login field or submit button
    the digest left unresolved, and the login page's path, or its full URL when
    it is not on the base URL's host. Ask for the URL a login lands on only when
    `success` is still unset; once `success` is set, drop a `success_url` marker

@@ -864,6 +864,140 @@ not an anchor for the one that starts a query, so a pattern or a page holding a
 literal `?` follows fnmatch's ordinary rules there, and the generated `GP-FILL`
 failure text is the backstop for a wrong call this produces.
 
+For `success`, a run that recorded a credential post can suggest selectors
+(`graftpunk.har.login_signals`, #268). They come from the final logged-in page:
+`page-source.html` when it holds no login form, else the last page loaded after
+a credential post that holds none. A page loaded here is a 2xx GET that is a
+navigation by the rule above and is not a frame's document. A document counts as
+a frame's by every signal the recording holds: a `Sec-Fetch-Dest` of `iframe`,
+`frame`, `embed`, or `object`, or a `_resourceType` other than `Document`. A
+frame's document recorded as `Document` with no `Sec-Fetch-Dest` cannot be told
+apart and counts as a page; Chrome sends that header only to a secure origin,
+and the recorder has it only when Chrome reported the request's extra info. The
+steps of the login are the leading run of the pages loaded after the post. A
+page there is a step when it holds a login form, has an input with
+`autocomplete="one-time-code"`, or the browser submitted a step-shaped form from
+it: a top-level document POST, sent between its load and the next page load,
+whose body has a field name, or whose URL path has a segment, holding a word
+`otp`, `totp`, `mfa`, `2fa`, `tfa`, `twofactor`, `verify`, `verification`,
+`challenge`, `trust`, `kmsi`, `stay`, `signin`, `login`, `auth`, `sso`, or
+`consent`, or that is `remember` with only `me`, `my`, `this`, `device`,
+`browser`, `computer`, `login`, `for`, or `days` beside it (`remember_me`,
+`remember_my_device`, `remember_for_30_days`; digit runs are no words), or a
+body field name that is `code` with only `sms`, `email`, `security`, `one`,
+`time`, `backup`, `recovery`, `verification`, `auth`, `pass`, `access`, `login`,
+`otp`, `totp`, `mfa`, `2fa`, `tfa`, or `twofactor` beside it (`code`,
+`sms_code`, `one_time_code`, `passCode`). So `postal_code`, `coupon_code`,
+`currencyCode`, and `remember_filters` are not step names, and neither is a path
+segment `code` (`/promo/code`)
+(`graftpunk.har.login_signals.is_login_step_post`). A field named like a CSRF
+token (`graftpunk.har.documents.looks_like_token_name`, such as ASP.NET's
+`__RequestVerificationToken` or `auth_token`) is not read, since a framework
+puts one in every form, unless its name holds a word `otp`, `totp`, `mfa`,
+`2fa`, `tfa`, or `twofactor` (`otp_token`, `mfaToken`). A POST to a logout path
+is never a step: a path with a segment, in any position and any case, holding a
+word `logout`, `logoff`, `signout`, or `signoff`, or two adjacent words making
+one (`/auth/logout`, `/auth/sign_out`, `/sso/log_out`, `/auth/logout.php`,
+`/Account/LogOff`, `/auth/logout/confirm`). The first page that is not a step
+ends the run, and it and every later page are logged-in pages, whatever forms
+they post or inputs they hold: a search, an add to cart, a 2FA settings page, or
+a logout form. When every page after the post is a step, the final one included,
+nothing is suggested. A step is a logged-out page, as are every response holding
+a login form (a POST's re-rendered failed attempt and a login page loaded again
+after the post included), each credential post's DOM snapshot, and each page
+loaded before the first credential post. That holds after the landing too: a
+page there holding a login form (a change-email form asking for the current
+password, a "confirm your password" page) is logged out, and an element it
+shares with the landing is not suggested; this errs toward fewer suggestions. A
+document POST is known by the same navigation rule, so in a HAR with neither
+`_resourceType` nor `Sec-Fetch` headers a form submission is not seen. Three
+kinds of step with no one-time-code input cannot be told from a logged-in page
+by a recording either: an MFA step whose code a script sends; one whose form
+posts only field names and a path with no step word (`pin=`, `passcode=`, or
+`pinCode=` to `/session/second-factor`); and a step the run stopped on without
+submitting it (a "stay signed in" page with only a button). Each counts as
+logged in, so an element it shares with the landing page can be suggested; the
+fresh-visit check does not catch that, and a login that reports success on such
+a step fails on its first real call. A suggestion is `#id`, or `tag.token` for a
+plain tag (no namespace prefix, ASCII only) outside `svg` and `math` and other
+than `image` (which the HTML parser turns into `img`), over a plain CSS
+identifier, that selects exactly one element on the final page and none on any
+logged-out page. The matcher follows a browser's parser where the two could
+differ (the first of a duplicated attribute wins, class tokens split on ASCII
+whitespace only), and it counts ids and class tokens without case on every page,
+as a quirks-mode document matches them; in a standards-mode document that only
+rejects more, so a kept selector, written in its element's own case, holds in
+both. It counts each id and each tag and class pair once a page, so its cost
+grows with the page's size. An element that renders nothing (in the head, a
+script, a template's or a noscript's content; `<template/>` opens a template, as
+in a browser) is never one. Neither is a name that looks generated (not a plain
+identifier; a CSS-module class such as `Header_loggedIn__x7Q2a` or
+`Header-module__loggedIn___abcDE`; any `___`; a `_<word>_<5 characters>` class;
+a `css-`, `sc-`, `jsx-`, `emotion-`, `svelte-`, or `styled-` class; a run of
+three or more digits; a part of four or more characters mixing letters and
+digits; or an account value by `graftpunk.har.paths.holds_an_id`). The word
+rules below read a name's words, split at case changes and at `-`, `_`, `.`, and
+digits, each word alone or two adjacent words joined, so `sign-out` holds
+`signout` and `designing-panel` holds no `signin`. A single lowercase compound
+such as `signupnow` or `guestuser` is one word, and so is not rejected by the
+words inside it. A name is never one when it says signed out, signing in, or a
+guest (a word `loggedout`, `signedout`, `login`, `signin`, `signup`, `guest`, or
+`anonymous`), nor when it has a sign-out word (`signout`, `logout`) on anything
+but a link, a button, or a form. Nor is a name holding an account value of a
+credential post: the password field's value; the value of the field a recorded
+login form takes as its username and of every field
+`graftpunk.session_identity.is_identifier_field` accepts (a Rails-style name by
+its last bracketed part), under that name at any depth of a JSON body, and
+inside a field whose value is itself JSON; every email address inside any
+value; and, when no field is a username by those rules (a key inside a field
+holding JSON never counts for this), every value but a token field's. A field
+counts as the username only when its value has at least three characters, is
+not a boolean word, and is not its own name, case aside, so `email=`,
+`login=Login`, and `account=1` leave every value an account value. Each value and an email's local part is compared lower-cased
+with whitespace, `-`, `_`, and `.` removed, at least three characters, and not a
+boolean word. The values are read by `graftpunk.har.digest.body_values` from a
+JSON body at any depth (walked without recursion), a form body, a `text/plain`
+form body one field a line (as a browser sends `enctype="text/plain"`: the first
+line must start with a name spelled like a field's, each later line holding `=`
+starts a field whatever its name, a line with no `=` continues the value before
+it, and a value is read as written, with no `&` splitting or percent-decoding),
+or a
+`multipart/form-data` body's text parts (split on the boundary its
+`Content-Type` names, else on the body's first non-blank line). A value that is
+itself a JSON object or array is read one level down, under its field's name.
+The values stay in memory. When the guard cannot read the username, the run
+suggests nothing: a credential post whose body the recording does not hold as
+text (no body, an empty one, one the recorder did not capture or left out, or
+one that is not UTF-8), or whose body gives no values read by field names
+(nested past the JSON parser's limit, XML, a JSON body with a value under no
+name such as a bare string or a list of strings, a value holding JSON too deep
+to parse, or any other shape). A username inside a string that is not JSON, such
+as a GraphQL query with inline arguments (`mutation { login(username: "...")
+}`), is not read; such a body is read by its field names, so the run can still
+suggest, and the username can be among the suggestions. The recorder's snapshot
+redaction reads a credential post with the same reader, which also reads a
+form-shaped body whatever type it declares and, as the snapshot's own reader did
+before it, any other body holding `=` that is not JSON by `parse_qs`.
+Suggestions rank first by being on every logged-in page the run loaded (the
+header the engine sees on the landing page, rather than a page the user browsed
+to), then by a name with a word `logged`, `account`, `signout`, `logout`,
+`user`, `profile`, or `avatar` (or a link or form whose target is a logout path,
+by the rule above), then an id before a class, then document order, and at most
+three are kept. `--endpoints-json` prints them as `login.success_candidates`, a
+list that is empty when there are none. The tests check each suggestion against
+lxml and cssselect where those can tell. A recording cannot show that an element
+is absent from the login page the engine opens on a fresh visit, which can
+differ from the page recorded (a modal on the home page in the recording,
+`/login` in `LoginConfig.url`), so the generator never sets `success` from one:
+with suggestions it replaces the `success` `GP-FILL` with one saying the
+recording suggests a selector on the logged-in page and on no recorded login
+page, to check that it appears only after login on a fresh visit to the login
+URL and on no code or verification page after the password, and then to
+uncomment one suggestion (all of its lines), followed by each as a
+commented `success="..."` argument, escaped and wrapped as the commented opener
+step is (a long one spans several commented lines). Without suggestions the
+generated `login_config` is the one it was before.
+
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
 those shapes must be caught as a name, and each sub-rule of the name rule must
@@ -1095,7 +1229,7 @@ The declarative engine executes each step in sequence:
 3. **For each step:**
    a. **(If step `wait_for` is set)** Waits for the step's selector to appear. **(Otherwise)** Waits for the page to be ready (see below), except on the first step when the top-level `wait_for` is set
    b. Clicks each field element and types the credential value
-   c. **(If `submit` is set)** Clicks the submit button
+   c. **(If `submit` is set)** Clicks the submit button. Just before the click, when `success` is set and no warning has been logged yet in this login, probes once for the `success` element and logs `login_success_present_before_submit`, naming the selector, when it is already there; after that warning it probes no more (see below)
    d. **(If `delay` is set)** Pauses for the specified duration
 4. Polls the page every half second, up to `timeout` seconds, starting one interval after the last step rather than immediately. Each pass reads the current URL; it reads the page text when the page text can decide that pass, which is every pass when `failure` is set, every pass once a `success_url` matches (a rate-limited response is served at the landing URL itself), and in every configuration the last pass before the timeout. The `failure` text ends the wait as a failure, a `Too Many Requests` page on a pass that read the text ends it as a failure, and the success signal ends it as a success. The success signal is the `success` element being present, the URL having moved off the one the last submit was clicked from and matching the `success_url` glob, or both when both are configured.
 5. Waits for the document to finish loading, bounded by what the poll left of the same `timeout` budget, then pauses for `settle` seconds
@@ -1103,7 +1237,7 @@ The declarative engine executes each step in sequence:
 
 The wait is what makes a slow login work: sites that finish through an identity-provider redirect can take tens of seconds to mint their cookies, and the engine holds until the signal it was told to look for appears. When the timeout passes first, the login fails and the warning names the signal that never appeared and the URL the page ended on.
 
-Write both signals so they cannot match the login page itself. An element that is already on the form, or a glob as loose as `*example.com*`, would otherwise be satisfied before the submit has navigated anywhere, and the session cached would be the one from before the login. The engine guards the URL half of that (a `success_url` counts only once the page has moved off the URL the submit was clicked from) and delays the first pass by one interval, but a `success` element that the form and the landing page share is beyond its reach. That guard needs the URL the submit was clicked from: when the browser could not read it (nodriver reports no URL while a tab navigates), a `success_url` cannot be confirmed at all and the login waits out its timeout, so a site where that happens needs a `success` selector.
+Write both signals so they cannot match the login page itself. An element that is already on the form, or a glob as loose as `*example.com*`, would otherwise be satisfied before the submit has navigated anywhere, and the session cached would be the one from before the login. The engine guards the URL half of that (a `success_url` counts only once the page has moved off the URL the submit was clicked from) and delays the first pass by one interval. A `success` element that the form and the landing page share it cannot stop, but it makes it visible: just before each submit, until it has warned, it probes for the element once, and when the element is already there it logs the warning `login_success_present_before_submit` with the selector, at most once a login. With `success_url` set too, the hint says the login still waits for the URL to change, so the element alone cannot pass it early, but that a found element can still hide a failure page shown at a new URL (it keeps a rate-limit page from being read as one); without it, that the login may report success before it happens. Under nodriver the probe is a `Runtime.evaluate` of `document.querySelector`, not `Tab.query_selector`, because that call sends `DOM.disable` when its query fails (read in nodriver 0.48.1 and 0.50.6), and the probe runs right before the click. The warning changes nothing else: a probe that fails (a selector the browser rejects, a page mid-load) is logged at debug and reads as not found, and the login goes on as it would without it, so a plugin that logs in today still does. The URL guard needs the URL the submit was clicked from: when the browser could not read it (nodriver reports no URL while a tab navigates), a `success_url` cannot be confirmed at all and the login waits out its timeout, so a site where that happens needs a `success` selector.
 
 Configure at least one of `failure`, `success`, and `success_url`. With neither `success` nor `success_url` set there is nothing to wait for, so the engine watches the page for three seconds for the `failure` text (and for a rate-limit page), stops the moment either shows, and then takes the single verdict it has always taken from the page text. `timeout` and `settle` play no part on that path. With none of the three set, the verdict is always success and a warning advises you to add validation.
 

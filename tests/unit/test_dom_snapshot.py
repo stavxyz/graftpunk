@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -126,6 +127,74 @@ class TestRedaction:
         body = "user_name=alice&login_password=pa55word&remember=yes"
         redaction = snapshot_redaction(body, "application/x-www-form-urlencoded")
         assert redaction.secrets == ("pa55word",)
+        assert redaction.identifiers == ("alice",)
+
+    def test_a_nested_identifier_is_redacted(self) -> None:
+        """Round 3 (#325): the snapshot reads the post's values with the digest's
+        reader, so an identifier under a nested JSON name is redacted; reading the
+        top level only, the snapshot kept it."""
+        # "profile" is no identifier, so the email is found by its nearest name.
+        body = json.dumps({"profile": {"email": _EMAIL}, "password": _PASSWORD})
+        assert _EMAIL in snapshot_redaction(body, "application/json").identifiers
+        out = stored_dom_snapshot(f"<button>Not {_EMAIL}?</button>", body, "application/json")
+        assert _EMAIL not in out
+
+    def test_an_identifier_in_a_json_list_is_redacted(self) -> None:
+        body = json.dumps({"username": ["alice"], "password": _PASSWORD})
+        assert snapshot_redaction(body, "application/json").identifiers == ("alice",)
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            # A form body declared multipart/form-data, holding no parts.
+            ("user_name=alice&login_password=pa55word", "multipart/form-data; boundary=XyZ"),
+            ("user_name=alice&login_password=pa55word", "multipart/form-data"),
+            # Keys no field name is spelled like, read by parse_qs all the same.
+            ("[user_name]=alice&1[x]=y", "application/x-www-form-urlencoded"),
+        ],
+    )
+    def test_a_body_read_as_main_read_it_is_still_redacted(
+        self, body: str, content_type: str
+    ) -> None:
+        """Main's snapshot reader took parse_qs of any non-JSON body holding "=";
+        the shared reader (#325) must not read less."""
+        assert "alice" in snapshot_redaction(body, content_type).identifiers
+        out = stored_dom_snapshot('<a href="/u/alice" id="alice">x</a>', body, content_type)
+        assert "alice" not in out
+
+    def test_a_multipart_identifier_is_redacted(self) -> None:
+        body = (
+            "--XyZ\r\n"
+            'Content-Disposition: form-data; name="username"\r\n\r\n'
+            "alice\r\n"
+            "--XyZ\r\n"
+            'Content-Disposition: form-data; name="password"\r\n\r\n'
+            "hunter2hunter2\r\n"
+            "--XyZ--\r\n"
+        )
+        redaction = snapshot_redaction(body, "multipart/form-data; boundary=XyZ")
+        assert redaction.identifiers == ("alice",)
+
+    def test_a_form_body_declared_as_another_type_is_still_redacted(self) -> None:
+        """A form-shaped body sent as text/plain was read as a form before the shared
+        reader (#325), and redaction must not lose it."""
+        body = "user_name=alice&login_password=pa55word"
+        redaction = snapshot_redaction(body, "text/plain")
+        assert redaction.identifiers == ("alice",)
+
+    @pytest.mark.parametrize(
+        "body", ["user_name=alice\r\nlogin_password=pa55word\r\n", "user_name=alice\nremember=1"]
+    )
+    def test_a_text_plain_form_is_read_one_field_a_line(self, body: str) -> None:
+        """A browser's enctype="text/plain" body; parse_qs reads it as one field
+        whose value runs to the end of the body."""
+        assert snapshot_redaction(body, "text/plain").identifiers == ("alice",)
+        out = stored_dom_snapshot('<a href="/u/alice" id="alice">x</a>', body, "text/plain")
+        assert "alice" not in out
+
+    def test_an_identifier_in_a_field_holding_json_is_redacted(self) -> None:
+        body = "payload=" + quote(json.dumps({"username": "alice"})) + "&remember=1"
+        redaction = snapshot_redaction(body, "application/x-www-form-urlencoded")
         assert redaction.identifiers == ("alice",)
 
     def test_a_body_with_no_fields_redacts_nothing(self) -> None:

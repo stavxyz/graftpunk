@@ -32,11 +32,14 @@ from graftpunk.har.digest import (
     Endpoint,
     LoginObservation,
     ObservationKind,
+    _account_values,
     _form_state,
     _login_opener,
     _parse_body,
+    _scalar_values,
     _with_login_flow,
     body_params,
+    body_values,
     digest,
     endpoint_template,
     flagged_names_of,
@@ -6588,3 +6591,1376 @@ class TestTheCommentedStepFitsTheGeneratedProject(_OpenerCase):
         code = self._plugin_on(spec, "nodriver")
         assert _suggestion("#signin", waits=False) in _comment_text(code)
         assert "# wait_for" not in code
+
+
+_SUCCESS_GP_FILL = (
+    "GP-FILL: the recording suggests a success selector: an element on the logged-in page "
+    "and on no recorded login page. Check that it appears only after login on a fresh "
+    "visit to the login URL, and on no code or verification page after the password, "
+    "then uncomment one suggestion (all of its lines):"
+)
+
+# The login_config main (008f2aa0) generates for a run with no logged-in page.
+_LOGIN_CONFIG_ON_MAIN = """\
+    login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={
+                    "password": "#password",
+                    "username": "#email",
+                },
+                submit="#go",
+            ),
+        ],
+        url="/login",
+        failure="GP-FILL: text on the page indicating login failure",
+        # GP-FILL: success, a CSS selector for an element that is on the page this login lands on
+        #   and not on the login form itself.
+        # GP-FILL: success_url, a glob matched against the whole URL this login lands on, e.g.
+        #   */dashboard*. This run observed no redirect after the credential post.
+    )
+"""
+
+
+def _uncommented_success(code: str, which: int) -> str:
+    """*code* with the *which*-th suggested ``success`` argument uncommented, as an
+    author who confirmed it would leave it: its ``# success=`` line, and, when it is
+    wrapped, every commented line to its ``# ),``."""
+    out: list[str] = []
+    seen = -1
+    open_block = False
+    for line in code.split("\n"):
+        stripped = line.lstrip()
+        pad = line[: len(line) - len(stripped)]
+        if stripped.startswith("# success="):
+            seen += 1
+            if seen == which:
+                out.append(pad + stripped[2:])
+                open_block = stripped.endswith("(")
+                continue
+        elif open_block and stripped.startswith("#"):
+            out.append(pad + stripped[2:])
+            open_block = not stripped.startswith("# )")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+class TestTheRecordingSuggestsASuccessSelector:
+    """#268, part 1: elements on the run's logged-in page and on no recorded copy of
+    the login page, suggested for ``success`` and never written live."""
+
+    _HOST = "https://myshop.example.com"
+    _LOGIN = (
+        "<html><body><header><nav class='site-nav'></nav></header><main>"
+        "<form action='/session' method='post'><input type='email' id='email' name='email'>"
+        "<input type='password' id='password' name='password'><button id='go'>Sign in</button>"
+        "</form></main></body></html>"
+    )
+    _LANDED = (
+        "<html><body><header><nav class='site-nav'><div id='account-menu'>"
+        "<a class='signout-link' href='/bye'>Sign out</a></div></nav></header>"
+        "<main><p>Orders</p></main></body></html>"
+    )
+    _CREDS = {"email": "alice@example.com", "password": "hunter2hunter2"}
+
+    def _entries(
+        self, run: Path, *, snapshot: str = "", after: str = "", home: str = ""
+    ) -> list[dict]:
+        post = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data=json.dumps(self._CREDS),
+            started="2026-09-10T10:00:05.000Z",
+        )
+        if snapshot:
+            (run / "snapshots").mkdir(exist_ok=True)
+            (run / "snapshots" / "9.1.html").write_text(snapshot)
+            post["request"]["_domSnapshot"] = "snapshots/9.1.html"
+            post["request"]["_domSnapshotUrl"] = f"{self._HOST}/login"
+        entries = [
+            _entry("GET", f"{self._HOST}/login", content_type="text/html", body=self._LOGIN),
+            post,
+        ]
+        if home:
+            visited = _entry("GET", f"{self._HOST}/", content_type="text/html", body=home)
+            visited["request"]["_resourceType"] = "Document"
+            entries.insert(0, visited)
+        if after:
+            landed = _entry(
+                "GET",
+                f"{self._HOST}/account",
+                content_type="text/html",
+                body=after,
+                started="2026-09-10T10:00:06.000Z",
+            )
+            landed["request"]["_resourceType"] = "Document"
+            entries.append(landed)
+        return entries
+
+    def _run(  # noqa: ANN202
+        self,
+        run: Path,
+        *,
+        page_source: str = "",
+        snapshot: str = "",
+        after: str = "",
+        home: str = "",
+    ):
+        har = _write_har(run, self._entries(run, snapshot=snapshot, after=after, home=home))
+        source = None
+        if page_source:
+            source = run / "page-source.html"
+            source.write_text(page_source)
+        return digest(DigestSource(har_path=har, page_source=source))
+
+    @staticmethod
+    def _files(result, backend: str) -> dict[str, str]:  # noqa: ANN001
+        return render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend=backend,  # type: ignore[arg-type]
+                base_url="https://myshop.example.com",
+                digest=result,
+            )
+        )
+
+    @staticmethod
+    def _login_config(code: str):  # noqa: ANN205
+        from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep
+
+        start = code.index("LoginConfig(")
+        end = code.index("\n    )\n", start) + 6
+        namespace = {"LoginConfig": LoginConfig, "LoginStep": LoginStep}
+        return eval(code[start:end], namespace)  # noqa: S307 - our own render
+
+    def test_the_page_source_at_stop_gives_the_suggestions(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, page_source=self._LANDED)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+        payload = json.loads(render_endpoints_json(result))
+        assert payload["login"]["success_candidates"] == ["#account-menu", "a.signout-link"]
+
+    def test_a_page_loaded_after_the_post_gives_the_suggestions(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, after=self._LANDED)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+
+    def test_the_snapshot_at_the_post_is_a_login_copy(self, tmp_path: Path) -> None:
+        snapshot = self._LOGIN.replace("<main>", "<main><div id='account-menu'></div>")
+        result = self._run(tmp_path, page_source=self._LANDED, snapshot=snapshot)
+        assert result.success_candidates == ("a.signout-link",)
+
+    def test_a_page_loaded_before_the_login_is_a_logged_out_page(self, tmp_path: Path) -> None:
+        """An element the home page showed before the login marks no logged-in state,
+        though the login page itself lacks it."""
+        home = "<html><body><div id='account-menu'></div></body></html>"
+        result = self._run(tmp_path, page_source=self._LANDED, home=home)
+        assert result.success_candidates == ("a.signout-link",)
+
+    def test_a_page_source_holding_a_login_form_gives_nothing(self, tmp_path: Path) -> None:
+        stopped = self._LANDED.replace("<main>", "<main>" + self._LOGIN)
+        assert self._run(tmp_path, page_source=stopped).success_candidates == ()
+
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    def test_no_logged_in_page_gives_nothing_and_main_s_output(
+        self, tmp_path: Path, backend: str
+    ) -> None:
+        result = self._run(tmp_path)
+        assert result.success_candidates == ()
+        assert json.loads(render_endpoints_json(result))["login"]["success_candidates"] == []
+        code = self._files(result, backend)["src/graftpunk_myshop/plugin.py"]
+        assert _LOGIN_CONFIG_ON_MAIN in code
+        assert "# success=" not in code
+
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    def test_the_generator_writes_them_commented_and_success_stays_unset(
+        self, tmp_path: Path, backend: str
+    ) -> None:
+        from tests.unit import test_scaffold_render as rendered
+
+        files = self._files(self._run(tmp_path, page_source=self._LANDED), backend)
+        code = files["src/graftpunk_myshop/plugin.py"]
+        assert _SUCCESS_GP_FILL in _comment_text(code)
+        assert '        # success="a.signout-link",' in code
+        assert '        # success="#account-menu",' in code
+        compile(code, "plugin.py", "exec")
+        assert self._login_config(code).success == ""
+        checker = rendered.TestRenderedTreeIsRuffClean()
+        checker._assert_tree_is_clean(checker._write_tree(tmp_path / "tree", files))
+        for which, selector in enumerate(("#account-menu", "a.signout-link")):
+            confirmed = _uncommented_success(code, which)
+            compile(confirmed, "plugin.py", "exec")
+            assert self._login_config(confirmed).success == selector
+
+    @pytest.mark.parametrize(
+        "selector", ["#" + "a" * 69, "#" + "b" * 99, "#" + "c" * 250, '#a\x00b c\x85d"e']
+    )
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    def test_any_selector_is_ruff_clean_and_reads_back(
+        self, tmp_path: Path, selector: str, backend: str
+    ) -> None:
+        """Escaped and wrapped as the commented opener step is, so the generated
+        project passes its own ruff check and compiles commented and uncommented."""
+        from tests.unit import test_scaffold_render as rendered
+
+        result = dataclasses.replace(
+            self._run(tmp_path, page_source=self._LANDED), success_candidates=(selector,)
+        )
+        files = self._files(result, backend)
+        checker = rendered.TestRenderedTreeIsRuffClean()
+        checker._assert_ruff_clean(checker._write_tree(tmp_path / "tree", files), "check")
+        code = files["src/graftpunk_myshop/plugin.py"]
+        compile(code, "plugin.py", "exec")
+        assert self._login_config(code).success == ""
+        confirmed = _uncommented_success(code, 0)
+        compile(confirmed, "plugin.py", "exec")
+        assert self._login_config(confirmed).success == selector
+
+    # Review round 1 (#325): the final logged-in page, the pages that do not count,
+    # and the credential values.
+
+    def _get(self, path: str, body: str, *, status: int = 200, **headers: str) -> dict:
+        entry = _entry(
+            "GET",
+            f"{self._HOST}{path}",
+            content_type="text/html",
+            body=body,
+            status=status,
+            request_headers=headers or None,
+        )
+        if not headers:
+            entry["request"]["_resourceType"] = "Document"
+        return entry
+
+    def _credential_post(self, payload: dict | None = None, html: str = "") -> dict:
+        return _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data=json.dumps(payload or self._CREDS),
+            content_type="text/html" if html else "application/json",
+            body=html or "{}",
+        )
+
+    @staticmethod
+    def _digest(run: Path, entries: list[dict], page_source: str = ""):  # noqa: ANN205
+        run.mkdir(parents=True, exist_ok=True)
+        har = _write_har(run, entries)
+        source = None
+        if page_source:
+            source = run / "page-source.html"
+            source.write_text(page_source)
+        return digest(DigestSource(har_path=har, page_source=source))
+
+    def _document_post(self, path: str, payload: dict) -> dict:
+        """A form submitted from the page the browser is on: a top-level document
+        POST."""
+        entry = _entry("POST", f"{self._HOST}{path}", status=302, post_data=json.dumps(payload))
+        entry["request"]["_resourceType"] = "Document"
+        return entry
+
+    @pytest.mark.parametrize("with_page_source", [True, False])
+    def test_the_landing_page_in_the_har_and_at_stop_gives_its_markers(
+        self, tmp_path: Path, with_page_source: bool
+    ) -> None:
+        """A server-rendered login recorded with Ctrl+C on the landing page: the HAR's
+        copy of the landing page is a logged-in page, not a logged-out one."""
+        landing = self._LANDED.replace("<main>", "<main><div id='welcome'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/account", landing),
+        ]
+        result = self._digest(tmp_path, entries, landing if with_page_source else "")
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#welcome")
+
+    @pytest.mark.parametrize("with_page_source", [True, False])
+    def test_after_browsing_on_the_landing_page_s_markers_rank_first(
+        self, tmp_path: Path, with_page_source: bool
+    ) -> None:
+        """The run browsed to /orders after landing and stopped there: what every
+        logged-in page carries ranks above what only the final page has."""
+        landing = self._LANDED.replace("<main>", "<main><div id='welcome'></div>")
+        orders = self._LANDED.replace(
+            "<main><p>Orders</p></main>", "<main><div id='orders-table'></div></main>"
+        )
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/account", landing),
+            self._get("/orders", orders),
+        ]
+        result = self._digest(tmp_path, entries, orders if with_page_source else "")
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#orders-table")
+
+    def test_a_page_after_the_post_that_submits_no_form_is_logged_in(self, tmp_path: Path) -> None:
+        between = (
+            "<html><body><div id='user-consent'></div><div id='account-menu'></div></body></html>"
+        )
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/consent", between),
+            self._get("/account", self._LANDED),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+
+    def test_a_page_a_form_was_submitted_from_after_the_post_is_logged_out(
+        self, tmp_path: Path
+    ) -> None:
+        """A "stay signed in" page: the browser posted a form from it, so it is a step
+        of the login, and an element it shares with the landing is no marker."""
+        consent = (
+            "<html><body><div id='user-consent'></div><div id='account-menu'></div></body></html>"
+        )
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/consent", consent),
+            self._document_post("/consent", {"remember": "yes"}),
+            self._get("/account", self._LANDED),
+        ]
+        assert self._digest(tmp_path, entries).success_candidates == ("a.signout-link",)
+
+    def test_a_script_post_from_a_page_after_the_post_leaves_it_logged_in(
+        self, tmp_path: Path
+    ) -> None:
+        between = "<html><body><div id='account-menu'></div></body></html>"
+        fetched = _entry("POST", f"{self._HOST}/api/track", post_data=json.dumps({"e": "x"}))
+        fetched["request"]["_resourceType"] = "Fetch"
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/home", between),
+            fetched,
+            self._get("/account", self._LANDED),
+        ]
+        assert self._digest(tmp_path, entries).success_candidates == (
+            "#account-menu",
+            "a.signout-link",
+        )
+
+    def test_a_page_asking_for_a_one_time_code_after_the_post_is_logged_out(
+        self, tmp_path: Path
+    ) -> None:
+        mfa = (
+            "<html><body><div id='account-verify'></div>"
+            "<input id='code' name='code' autocomplete='one-time-code'></body></html>"
+        )
+        final = self._LANDED.replace("<main>", "<main><div id='account-verify'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/mfa", mfa),
+            self._get("/account", final),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+
+    def test_an_mfa_page_before_the_page_source_is_a_logged_out_page(self, tmp_path: Path) -> None:
+        mfa = (
+            "<html><body><div id='account-verify'></div><form action='/mfa' method='post'>"
+            "<input id='otp-code' name='otp'></form></body></html>"
+        )
+        final = self._LANDED.replace("<main>", "<main><div id='account-verify'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/mfa", mfa),
+            self._document_post("/mfa", {"otp": "123456"}),
+        ]
+        result = self._digest(tmp_path, entries, page_source=final)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+        # Without the submission the same page is a logged-in one.
+        unsubmitted = self._digest(tmp_path / "other", entries[:-1], page_source=final)
+        assert "#account-verify" in unsubmitted.success_candidates
+
+    def test_a_page_source_holding_a_login_form_leaves_the_last_page_final(
+        self, tmp_path: Path
+    ) -> None:
+        """The user signed out and stopped on the login page: the last page loaded
+        after the post is the final logged-in page."""
+        stopped = self._LOGIN.replace("<main>", "<main><div id='signed-off-note'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/account", self._LANDED),
+        ]
+        result = self._digest(tmp_path, entries, page_source=stopped)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+
+    @pytest.mark.parametrize("dest", ["iframe", "frame", "embed", "object", "IFrame"])
+    def test_an_iframe_document_is_no_page(self, tmp_path: Path, dest: str) -> None:
+        frame = self._get("/widget", self._LANDED, **{"Sec-Fetch-Dest": dest})
+        frame["request"]["_resourceType"] = "Document"
+        entries = [self._get("/login", self._LOGIN), self._credential_post(), frame]
+        assert self._digest(tmp_path, entries).success_candidates == ()
+
+    def test_a_document_of_another_resource_type_is_no_page(self, tmp_path: Path) -> None:
+        frame = self._get("/widget", self._LANDED)
+        frame["request"]["_resourceType"] = "Other"
+        entries = [self._get("/login", self._LOGIN), self._credential_post(), frame]
+        assert self._digest(tmp_path, entries).success_candidates == ()
+
+    def test_an_iframe_does_not_take_the_final_page(self, tmp_path: Path) -> None:
+        frame = self._get(
+            "/widget",
+            "<html><body><div id='user-widget'></div></body></html>",
+            **{"Sec-Fetch-Dest": "iframe"},
+        )
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/account", self._LANDED),
+            frame,
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+
+    def test_a_post_response_holding_a_login_form_is_a_logged_out_page(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed attempt the server re-rendered with the form."""
+        failed = self._LOGIN.replace("<main>", "<main><div id='account-menu'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(html=failed),
+            self._credential_post(),
+        ]
+        result = self._digest(tmp_path, entries, page_source=self._LANDED)
+        assert result.success_candidates == ("a.signout-link",)
+
+    def test_a_login_page_loaded_again_after_the_post_is_a_logged_out_page(
+        self, tmp_path: Path
+    ) -> None:
+        again = self._LOGIN.replace("<main>", "<main><div id='account-menu'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/login", again),
+        ]
+        result = self._digest(tmp_path, entries, page_source=self._LANDED)
+        assert result.success_candidates == ("a.signout-link",)
+
+    def test_a_page_answering_404_after_the_post_is_no_page(self, tmp_path: Path) -> None:
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/account", self._LANDED, status=404),
+        ]
+        assert self._digest(tmp_path, entries).success_candidates == ()
+
+    def test_an_html_fragment_a_script_fetched_is_no_page(self, tmp_path: Path) -> None:
+        fragment = self._get("/account", self._LANDED, **{"Sec-Fetch-Mode": "cors"})
+        entries = [self._get("/login", self._LOGIN), self._credential_post(), fragment]
+        assert self._digest(tmp_path, entries).success_candidates == ()
+
+    def test_a_run_with_no_credential_post_suggests_nothing(self, tmp_path: Path) -> None:
+        result = self._digest(tmp_path, [self._get("/login", self._LOGIN)], self._LANDED)
+        assert result.success_candidates == ()
+        assert json.loads(render_endpoints_json(result))["login"]["success_candidates"] == []
+
+    def test_a_name_holding_a_credential_value_is_not_suggested(self, tmp_path: Path) -> None:
+        payload = {"email": "jsmith@example.com", "username": "jdoe", "password": "pw-12345"}
+        final = self._LANDED.replace(
+            "<main>", "<main><div id='user-jsmith'></div><img class='avatar-jdoe'>"
+        )
+        entries = [self._get("/login", self._LOGIN), self._credential_post(payload)]
+        result = self._digest(tmp_path, entries, page_source=final)
+        assert result.success_candidates == ("#account-menu", "a.signout-link")
+        unrelated = self._digest(
+            tmp_path / "other",
+            [self._get("/login", self._LOGIN), self._credential_post()],
+            page_source=final,
+        )
+        assert "#user-jsmith" in unrelated.success_candidates
+
+    _NAMED = (
+        "<main><div id='user-jsmith'></div><div id='user-hunter-two'></div>"
+        "<div class='plan-user'></div>"
+    )
+
+    def _named_run(self, run: Path, post: dict):  # noqa: ANN202
+        final = self._LANDED.replace("<main>", self._NAMED)
+        return self._digest(run, [self._get("/login", self._LOGIN), post], page_source=final)
+
+    def test_a_form_encoded_post_s_values_are_not_suggested(self, tmp_path: Path) -> None:
+        post = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data="email=jsmith%40example.com&password=hunter.two&type=user",
+            request_headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        result = self._named_run(tmp_path, post)
+        # The username and password values are rejected; "type=user" is no
+        # identity field, so "user" rejects nothing.
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "div.plan-user")
+
+    def test_a_multipart_post_s_values_are_not_suggested(self, tmp_path: Path) -> None:
+        body = (
+            "------b7\r\n"
+            'Content-Disposition: form-data; name="login"\r\n\r\n'
+            "jsmith\r\n"
+            "------b7\r\n"
+            'Content-Disposition: form-data; name="password"\r\n\r\n'
+            "hunter-two\r\n"
+            "------b7\r\n"
+            'Content-Disposition: form-data; name="avatar"; filename="user.png"\r\n'
+            "Content-Type: image/png\r\n\r\n"
+            "plan\r\n"
+            "------b7--\r\n"
+        )
+        post = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data=body,
+            request_headers={"Content-Type": "multipart/form-data; boundary=----b7"},
+        )
+        result = self._named_run(tmp_path, post)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "div.plan-user")
+
+    def test_a_nested_json_post_s_values_are_not_suggested(self, tmp_path: Path) -> None:
+        payload = {
+            "auth": {"users": [{"username": "jsmith"}], "password": "hunter_two"},
+            "account_no": 40912873,
+            "remember": True,
+            "plan": "user",
+        }
+        result = self._named_run(tmp_path, self._credential_post(payload))
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "div.plan-user")
+        har = _write_har(tmp_path, [self._credential_post(payload)], "one.har")
+        (entry,) = parse_har_file(har).entries
+        assert sorted(_account_values(entry, frozenset()) or ()) == ["hunter_two", "jsmith"]
+
+    def test_any_value_written_as_an_email_is_not_suggested(self, tmp_path: Path) -> None:
+        payload = {"id": "jsmith@example.com", "pass": "x"}
+        result = self._named_run(tmp_path, self._credential_post(payload))
+        assert "#user-jsmith" not in result.success_candidates
+
+    # Review round 3 (#325): the login's steps are only the leading run of the pages
+    # after the post (login_signals.success_candidates), and a POST makes a page a
+    # step only when it is step-shaped (login_signals.is_login_step_post).
+
+    def _form_post(
+        self, path: str, body: str, *, status: int = 302, html: str = "", **headers: str
+    ) -> dict:
+        """A form submitted from the page the browser is on: a top-level document
+        POST, form-encoded."""
+        entry = _entry(
+            "POST",
+            f"{self._HOST}{path}",
+            status=status,
+            content_type="text/html" if html else "application/json",
+            body=html or "{}",
+            post_data=body,
+            request_headers={"Content-Type": "application/x-www-form-urlencoded", **headers},
+        )
+        entry["request"]["_resourceType"] = "Document"
+        return entry
+
+    def _with(self, main: str) -> str:
+        """The landed page with *main* as its main content."""
+        return self._LANDED.replace("<main><p>Orders</p></main>", f"<main>{main}</main>")
+
+    _MFA = (
+        "<html><body><div id='brand-bar'></div><form action='/mfa' method='post'>"
+        "<input name='code' autocomplete='one-time-code'><button>Verify</button>"
+        "</form></body></html>"
+    )
+
+    @pytest.mark.parametrize("with_page_source", [True, False])
+    def test_a_search_from_the_landing_page_leaves_it_logged_in(
+        self, tmp_path: Path, with_page_source: bool
+    ) -> None:
+        results = self._with("<div id='results'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/dashboard", self._with("<div id='dash'></div>")),
+            self._form_post("/search", "q=milk"),
+            self._get("/results", results),
+        ]
+        result = self._digest(tmp_path, entries, results if with_page_source else "")
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#results")
+
+    def test_an_add_to_cart_from_a_browsed_page_leaves_it_logged_in(self, tmp_path: Path) -> None:
+        orders = self._with("<div id='orders-table'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/dashboard", self._with("<div id='dash'></div>")),
+            self._get("/orders", orders),
+            self._form_post("/cart/add", "sku=1&qty=2"),
+            self._get("/orders", orders),
+        ]
+        result = self._digest(tmp_path, entries, orders)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#orders-table")
+
+    def test_a_post_answered_with_its_own_page_leaves_the_landing_logged_in(
+        self, tmp_path: Path
+    ) -> None:
+        cart = self._with("<div id='cart'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/dashboard", self._with("<div id='dash'></div>")),
+            self._form_post("/cart/add", "sku=1", status=200, html=cart),
+        ]
+        result = self._digest(tmp_path, entries, cart)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#cart")
+
+    def test_a_webforms_postback_leaves_the_landing_logged_in(self, tmp_path: Path) -> None:
+        orders = self._with("<div id='orders'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/Default.aspx", self._with("<div id='dash'></div>")),
+            self._form_post(
+                "/Default.aspx",
+                "__EVENTTARGET=menu&__VIEWSTATE=dDwtMTA&__EVENTVALIDATION=x",
+                status=200,
+                html=orders,
+            ),
+        ]
+        result = self._digest(tmp_path, entries, orders)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#orders")
+
+    def test_a_logout_form_at_the_end_leaves_the_last_page_logged_in(self, tmp_path: Path) -> None:
+        """The run signed out through a form from the final page and stopped on the
+        login page, with no page-source: the POST from the final page changes
+        nothing, and the login page is a logged-out page."""
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/dashboard", self._with("<div id='dash'></div>")),
+            self._form_post("/logout", "_token=abc123"),
+            self._get("/login", self._LOGIN),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#dash")
+
+    # Review round 4 (#325): a token field, a logout path, and an ordinary name
+    # ending in "code" or starting with "remember" make no step.
+
+    @pytest.mark.parametrize(
+        "logout",
+        [
+            "/auth/logout",
+            "/sso/logout",
+            "/login/logout",
+            "/Identity/Account/Logout",
+            # Other spellings, a file extension, case, and a segment before the last.
+            "/auth/sign_out",
+            "/sso/log_out",
+            "/auth/logout.php",
+            "/auth/signout.aspx",
+            "/login/logoff",
+            "/sso/signoff",
+            "/Auth/Logout/confirm",
+        ],
+    )
+    def test_a_logout_post_to_a_step_word_path_leaves_the_last_page_logged_in(
+        self, tmp_path: Path, logout: str
+    ) -> None:
+        """ASP.NET Identity's sign-out form posts its antiforgery token, whose name
+        holds "verification"; the others post to a path holding a step word."""
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/dashboard", self._with("<div id='dash'></div>")),
+            self._form_post(logout, "__RequestVerificationToken=CfDJ8abc"),
+            self._get("/login", self._LOGIN),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#dash")
+
+    @pytest.mark.parametrize(
+        ("path", "body"),
+        [
+            # ASP.NET MVC and Core put the antiforgery token in every form.
+            ("/Search", "q=milk&__RequestVerificationToken=CfDJ8abc"),
+            ("/Cart/Add", "ProductId=7&__RequestVerificationToken=CfDJ8abc"),
+            ("/search", "q=milk&auth_token=abc123"),
+            ("/search", "q=milk&csrf_token=abc123"),
+            ("/cart/coupon", "coupon_code=SAVE10"),
+            ("/delivery", "postal_code=99999"),
+            ("/delivery", "zipCode=99999"),
+            ("/currency", "currencyCode=EUR"),
+            ("/orders/filter", "remember_filters=1&status=open"),
+            ("/cart/coupon", "promo_code=SAVE10"),
+            # A path segment "code" is no step word; only a field named so is.
+            ("/promo/code", "coupon=SAVE10"),
+        ],
+    )
+    def test_an_ordinary_form_from_the_landing_page_leaves_it_logged_in(
+        self, tmp_path: Path, path: str, body: str
+    ) -> None:
+        results = self._with("<div id='results'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/dashboard", self._with("<div id='dash'></div>")),
+            self._form_post(path, body),
+            self._get("/results", results),
+        ]
+        result = self._digest(tmp_path, entries, results)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#results")
+
+    def test_a_multipart_step_form_is_a_step(self, tmp_path: Path) -> None:
+        """The step word is only in a multipart part's name, which body_params does
+        not read and body_values does, and the path holds none."""
+        body = '--XyZ\r\nContent-Disposition: form-data; name="otp"\r\n\r\n123456\r\n--XyZ--\r\n'
+        dash = self._with("<div id='brand-bar'></div><div id='dash'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/session/second", "<html><body><div id='brand-bar'></div></body></html>"),
+            self._form_post(
+                "/session/second", body, **{"Content-Type": "multipart/form-data; boundary=XyZ"}
+            ),
+            self._get("/dashboard", dash),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#dash")
+
+    def test_a_2fa_settings_page_browsed_after_landing_is_logged_in(self, tmp_path: Path) -> None:
+        settings = self._with(
+            "<div id='security'></div><input name='otp' autocomplete='one-time-code'>"
+        )
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/dashboard", self._with("<div id='dash'></div>")),
+            self._get("/security", settings),
+            self._get("/orders", self._with("<div id='orders-table'></div>")),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#orders-table")
+
+    @pytest.mark.parametrize(
+        ("step_path", "step_body", "step_page"),
+        [
+            ("/mfa", "code=123456", _MFA.replace(" autocomplete='one-time-code'", "")),
+            ("/kmsi", "stay=yes", "<html><body><div id='brand-bar'></div></body></html>"),
+            ("/consent", "rememberMe=true", "<html><body><div id='brand-bar'></div></body></html>"),
+            # "code" as the only step word: a whole field name, on a path with none.
+            ("/session/second", "code=123456", _MFA.replace(" autocomplete='one-time-code'", "")),
+            # "code" beside a word saying what code it is, and a token-named field
+            # naming a one-time code, each the only step word.
+            *(
+                (
+                    "/session/second",
+                    f"{name}=123456&authenticity_token=abc",
+                    "<html><body><div id='brand-bar'></div></body></html>",
+                )
+                for name in (
+                    "sms_code",
+                    "security_code",
+                    "one_time_code",
+                    "passCode",
+                    "tfa_code",
+                    "otp_token",
+                    "mfa_token",
+                )
+            ),
+            (
+                "/session/second",
+                "remember_device_30_days=1",
+                "<html><body><div id='brand-bar'></div></body></html>",
+            ),
+        ],
+    )
+    def test_a_step_then_the_landing_gives_the_landing_s_markers(
+        self, tmp_path: Path, step_path: str, step_body: str, step_page: str
+    ) -> None:
+        """An MFA or "stay signed in" page submitted by a step-shaped form, then the
+        landing: the step's #brand-bar, which the landing also shows, is no marker."""
+        dash = self._with("<div id='brand-bar'></div><div id='dash'></div>")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get(step_path, step_page),
+            self._form_post(step_path, step_body),
+            self._get("/dashboard", dash),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#dash")
+
+    def test_a_run_ending_on_an_mfa_page_without_page_source_suggests_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """The code was posted and answered with a page, not a redirect, so the last
+        page loaded is the MFA page, which the browser submitted a step from."""
+        dash = self._with("<div id='brand-bar'></div><div id='dash'></div>")
+        no_autocomplete = self._MFA.replace(" autocomplete='one-time-code'", "")
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/mfa", no_autocomplete),
+            self._form_post("/mfa", "code=123456", status=200, html=dash),
+        ]
+        assert self._digest(tmp_path, entries).success_candidates == ()
+        # With the one-time-code input and no submission at all, too.
+        entries = [*entries[:2], self._get("/mfa", self._MFA)]
+        assert self._digest(tmp_path / "otc", entries).success_candidates == ()
+
+    def test_a_run_stopped_on_an_mfa_page_suggests_nothing(self, tmp_path: Path) -> None:
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/mfa", self._MFA),
+        ]
+        assert self._digest(tmp_path, entries, self._MFA).success_candidates == ()
+
+    def test_a_step_form_from_the_only_page_makes_it_a_step(self, tmp_path: Path) -> None:
+        """A POST from the final page makes it a step only while the run has not
+        ended: here it is the only page after the post."""
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/verify", self._with("<div id='dash'></div>")),
+            self._form_post("/verify", "otp=123456", status=200, html="<html></html>"),
+        ]
+        assert self._digest(tmp_path, entries).success_candidates == ()
+
+    def test_a_page_load_between_a_page_and_a_post_takes_the_post(self, tmp_path: Path) -> None:
+        """The run loaded /home, then a page answering 404, then posted a step-shaped
+        form from that page: the POST is the 404 page's, so /home stays the landing."""
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/home", self._with("<div id='home'></div>")),
+            self._get("/missing", "<html><body>Not found</body></html>", status=404),
+            self._form_post("/verify", "code=1"),
+            self._get("/account", self._with("<div id='acct'></div>")),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#acct")
+
+    def test_a_post_from_an_iframe_makes_no_step(self, tmp_path: Path) -> None:
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/home", self._with("<div id='home'></div>")),
+            self._form_post("/verify", "code=1", **{"Sec-Fetch-Dest": "iframe"}),
+            self._get("/account", self._with("<div id='acct'></div>")),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("#account-menu", "a.signout-link", "#acct")
+
+    def test_a_step_is_left_out_of_the_every_page_rank(self, tmp_path: Path) -> None:
+        """An MFA step, the landing, then /orders, with names holding no keyword so
+        the keyword rank cannot hide the order: what the landing and /orders share
+        ranks first, the step not counted among the logged-in pages."""
+        landing = (
+            "<html><body><div class='site-header'></div><div id='welcome'></div></body></html>"
+        )
+        orders = (
+            "<html><body><div class='site-header'></div><div id='orders-table'></div></body></html>"
+        )
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/mfa", "<html><body><div id='step-box'></div></body></html>"),
+            self._form_post("/mfa", "code=123456"),
+            self._get("/home", landing),
+            self._get("/orders", orders),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("div.site-header", "#orders-table")
+
+    def test_two_browsed_pages_rank_what_every_page_shows_first(self, tmp_path: Path) -> None:
+        """#promo is on the second and the final page only; div.site-header is on all
+        three, and ranks first though an id would otherwise come before a class."""
+        header = "<html><body><div class='site-header'></div>"
+        entries = [
+            self._get("/login", self._LOGIN),
+            self._credential_post(),
+            self._get("/home", f"{header}</body></html>"),
+            self._get("/deals", f"{header}<div id='promo'></div></body></html>"),
+            self._get("/orders", f"{header}<div id='promo'></div></body></html>"),
+        ]
+        result = self._digest(tmp_path, entries)
+        assert result.success_candidates == ("div.site-header", "#promo")
+
+    # Round 3: the account values (_account_values).
+
+    _GREETED = (
+        "<html><body><div id='account-menu'></div><div id='greeting-jsmith'></div>"
+        "<div class='plan-box'></div></body></html>"
+    )
+    _KEPT = ("#account-menu", "#greeting-jsmith", "div.plan-box")
+    _REJECTED = ("#account-menu", "div.plan-box")
+
+    def _valued_run(self, run: Path, body: str, content_type: str, login: str = ""):  # noqa: ANN202
+        post = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data=body,
+            request_headers={"Content-Type": content_type},
+        )
+        entries = [self._get("/login", login or self._LOGIN), post]
+        return self._digest(run, entries, page_source=self._GREETED)
+
+    _WORDPRESS_LOGIN = (
+        "<html><body><form action='/session' method='post'>"
+        "<input type='text' name='log' id='user_login' autocomplete='username'>"
+        "<input type='password' name='pwd' id='pw'><button id='go'>Log in</button>"
+        "</form></body></html>"
+    )
+
+    def test_the_login_form_s_username_field_is_an_account_value(self, tmp_path: Path) -> None:
+        """WordPress posts the username as "log". Another field ("account") is an
+        identifier, so only the login form's own username field finds it."""
+        body = "log=jsmith&pwd=hunter-two&account=personal"
+        form = "application/x-www-form-urlencoded"
+        result = self._valued_run(tmp_path, body, form, self._WORDPRESS_LOGIN)
+        assert result.success_candidates == self._REJECTED
+        # With a login form whose username is another field, "log" is no username.
+        other = self._valued_run(tmp_path / "other", body, form)
+        assert other.success_candidates == self._KEPT
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            # An identifier field (session_identity.is_identifier_field). Each case
+            # below that names one also posts "account", an identifier, so the
+            # every-value fallback is off and the rule itself must find jsmith.
+            (json.dumps({"identifier": "jsmith", "password": "x"}), "application/json"),
+            # A Rails-style name, read by its last bracketed part.
+            (
+                "session%5Blogin%5D=jsmith&session%5Bpassword%5D=x&account=personal",
+                "application/x-www-form-urlencoded",
+            ),
+            # Under an identifier name at any depth, or in a list.
+            (
+                json.dumps({"user": {"id": "jsmith"}, "password": "x", "account": "personal"}),
+                "application/json",
+            ),
+            (
+                json.dumps({"username": ["jsmith"], "password": "x", "account": "personal"}),
+                "application/json",
+            ),
+            # Every value of a repeated form field.
+            ("username=a&username=jsmith&password=x", "application/x-www-form-urlencoded"),
+            # An email inside a longer value of a field that is no identifier.
+            (
+                json.dumps({"username": "x9q", "note": "Alice <jsmith@example.com>", "pw": "x"}),
+                "application/json",
+            ),
+            # No identifier field: every value but a token's.
+            ("uid=jsmith&pwd=x", "application/x-www-form-urlencoded"),
+            ("name=jsmith&pass=xyzzy", "application/x-www-form-urlencoded"),
+            # An identifier field whose value could not be the username (empty, a
+            # submit button's own name, too short, a boolean word) leaves every
+            # value an account value.
+            ("email=&uid=jsmith&pwd=x", "application/x-www-form-urlencoded"),
+            ("uid=jsmith&pwd=x&login=Login", "application/x-www-form-urlencoded"),
+            ("uid=jsmith&pwd=x&account=1", "application/x-www-form-urlencoded"),
+            ("uid=jsmith&pwd=x&account=true", "application/x-www-form-urlencoded"),
+            (json.dumps({"uid": "jsmith", "password": "x", "user": ""}), "application/json"),
+        ],
+    )
+    def test_an_account_value_is_not_suggested(
+        self, tmp_path: Path, body: str, content_type: str
+    ) -> None:
+        assert self._valued_run(tmp_path, body, content_type).success_candidates == self._REJECTED
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            # An identifier qualified, so another field's value is no account value.
+            (
+                json.dumps({"username": "x9q", "plan": "jsmith", "password": "x"}),
+                "application/json",
+            ),
+            # No identifier field, and the only other value is a token's.
+            ("pwd=hunter-two&_token=jsmith", "application/x-www-form-urlencoded"),
+        ],
+    )
+    def test_other_values_are_not_account_values(
+        self, tmp_path: Path, body: str, content_type: str
+    ) -> None:
+        assert self._valued_run(tmp_path, body, content_type).success_candidates == self._KEPT
+
+    _PARTS = (
+        "--XyZ\r\n"
+        'Content-Disposition: form-data; name="username"\r\n\r\n'
+        "jsmith\r\n"
+        "--XyZ\r\n"
+        'Content-Disposition: form-data; name="password"\r\n\r\n'
+        "hunter-two\r\n"
+        "--XyZ--\r\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            (_PARTS, "multipart/form-data; boundary=XyZ"),
+            (_PARTS, 'multipart/form-data; boundary="XyZ"'),
+            (_PARTS.replace("\r\n", "\n"), "multipart/form-data; boundary=XyZ"),
+            # A leading blank line, with the boundary declared and without it.
+            ("\r\n" + _PARTS, "multipart/form-data; boundary=XyZ"),
+            ("\r\n" + _PARTS, "multipart/form-data"),
+            # A preamble line the declared boundary skips.
+            ("This is a preamble.\r\n" + _PARTS, "multipart/form-data; boundary=XyZ"),
+        ],
+    )
+    def test_a_multipart_post_s_account_values(
+        self, tmp_path: Path, body: str, content_type: str
+    ) -> None:
+        assert self._valued_run(tmp_path, body, content_type).success_candidates == self._REJECTED
+
+    def test_a_multipart_file_part_is_no_value(self, tmp_path: Path) -> None:
+        """No identifier field, so every text value is an account value; the file
+        part's content is not one."""
+        body = (
+            "--XyZ\r\n"
+            'Content-Disposition: form-data; name="pwd"\r\n\r\n'
+            "hunter-two\r\n"
+            "--XyZ\r\n"
+            'Content-Disposition: form-data; name="upload"; filename="plan.txt"\r\n'
+            "Content-Type: text/plain\r\n\r\n"
+            "plan\r\n"
+            "--XyZ--\r\n"
+        )
+        result = self._valued_run(tmp_path, body, "multipart/form-data; boundary=XyZ")
+        assert result.success_candidates == self._KEPT
+
+    def test_a_deeply_nested_json_value_is_walked_without_recursion(self) -> None:
+        value: object = "jsmith"
+        for _ in range(5_000):
+            value = {"a": value}
+        assert _scalar_values({"username": value}) == [(("username", *["a"] * 5_000), "jsmith")]
+
+    def test_a_body_too_deep_for_the_json_parser_suggests_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """How deep json.loads goes before RecursionError depends on the Python
+        version and the platform's stack (3.11 stops near 1,000; 3.14 on Linux read
+        100,000), so the parser's refusal is stood in for. The body reads as no
+        values, so the guard cannot see the username, and nothing is suggested."""
+        body = json.dumps({"username": {"a": "jsmith"}, "password": "x"})
+        loads = json.loads
+
+        def too_deep(text: str | bytes, *args: Any, **kwargs: Any) -> object:
+            if text == body:
+                raise RecursionError("maximum recursion depth exceeded")
+            return loads(text, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(json, "loads", too_deep)
+            assert body_values(body, "application/json") == []
+            result = self._valued_run(tmp_path, body, "application/json")
+        assert result.login
+        assert result.success_candidates == ()
+        # A body the parser may or may not refuse here: either way the digest
+        # finishes, and the username is never suggested.
+        depth = 100_000
+        deep = '{"username": ' + '{"a": ' * depth + '"jsmith"' + "}" * depth + "}"
+        real = self._valued_run(tmp_path / "real", deep, "application/json")
+        assert "#greeting-jsmith" not in real.success_candidates
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<login><user>jsmith</user><pass>hunter-two</pass></login>",
+            '<?xml version="1.0"?><login><user>jsmith</user><pass>hunter-two</pass></login>',
+        ],
+    )
+    def test_a_credential_body_read_by_no_field_name_suggests_nothing(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """XML: the second body holds an "=", so parse_qs reads a value from it, but
+        by no field name, and the username inside it is no account value."""
+        result = self._valued_run(tmp_path, body, "application/xml")
+        assert result.login
+        assert result.success_candidates == ()
+
+    # Review round 5 (#325): a credential body the recording does not hold, or holds
+    # in a shape read by no field name, suggests nothing; a text/plain form and a
+    # field holding JSON are read field by field.
+
+    def _held_run(self, run: Path, **request: Any):  # noqa: ANN202
+        """The login form's post to /session with *request* as its HAR request keys,
+        and the greeted page at stop."""
+        post = _entry("POST", f"{self._HOST}/session")
+        post["request"].update(request)
+        run.mkdir(parents=True, exist_ok=True)
+        return self._digest(run, [self._get("/login", self._LOGIN), post], self._GREETED)
+
+    @pytest.mark.parametrize(
+        "request_keys",
+        [
+            # No postData at all, and an empty one.
+            {},
+            {"postData": {"mimeType": "application/x-www-form-urlencoded", "text": ""}},
+            # The recorder saw a body and did not hold it, or left it out.
+            {"_postDataNotCaptured": True},
+            {"_postDataOmitted": {"size": 9_000_000, "reason": "over_max_body_size"}},
+            {"_postDataOmitted": {"size": 12, "reason": "binary"}},
+            # A body the HAR also marks as not captured is not trusted as whole.
+            {
+                "postData": {
+                    "mimeType": "application/x-www-form-urlencoded",
+                    "text": "uid=jsmith&pwd=x",
+                },
+                "_postDataNotCaptured": True,
+            },
+        ],
+    )
+    def test_a_credential_body_the_recording_does_not_hold_suggests_nothing(
+        self, tmp_path: Path, request_keys: dict[str, Any]
+    ) -> None:
+        result = self._held_run(tmp_path, **request_keys)
+        assert result.login
+        assert result.success_candidates == ()
+
+    def test_a_credential_body_file_that_is_not_utf8_suggests_nothing(self, tmp_path: Path) -> None:
+        (tmp_path / "bodies").mkdir(parents=True)
+        (tmp_path / "bodies" / "9.request.bin").write_bytes(b"uid=jsmith&pwd=\xff\xfe")
+        result = self._held_run(tmp_path, _postDataFile="bodies/9.request.bin")
+        assert result.login
+        assert result.success_candidates == ()
+        # The same body in UTF-8 is read, which shows the file is found.
+        utf8 = tmp_path / "utf8"
+        (utf8 / "bodies").mkdir(parents=True)
+        (utf8 / "bodies" / "9.request.txt").write_text("uid=jsmith&pwd=hunter-two")
+        read = self._held_run(utf8, _postDataFile="bodies/9.request.txt")
+        assert read.success_candidates == self._REJECTED
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # Nothing under a name: an empty object or list, a bare string or
+            # number, a list of strings, and a list mixing a string and an object.
+            "{}",
+            "[]",
+            '"jsmith:hunter2x"',
+            "42",
+            '["jsmith", "hunter2x"]',
+            '["jsmith", {"password": "hunter2x"}]',
+        ],
+    )
+    def test_a_json_body_with_a_value_under_no_name_suggests_nothing(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        result = self._valued_run(tmp_path, body, "application/json")
+        assert result.login
+        assert result.success_candidates == ()
+
+    def test_one_unreadable_credential_post_among_readable_ones_suggests_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed XML attempt, then a readable retry: the guard cannot see the
+        first post's username, so the run suggests nothing."""
+        xml = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data="<login><user>jsmith</user><pass>hunter-two</pass></login>",
+            request_headers={"Content-Type": "application/xml"},
+        )
+        form = _entry(
+            "POST",
+            f"{self._HOST}/session",
+            post_data="uid=jsmith&pwd=hunter-two",
+            request_headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        login = self._get("/login", self._LOGIN)
+        both = self._digest(tmp_path, [login, xml, form], self._GREETED)
+        assert both.success_candidates == ()
+        alone = self._digest(tmp_path / "alone", [login, form], self._GREETED)
+        assert alone.success_candidates == self._REJECTED
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # A browser's enctype="text/plain": one field a line, nothing escaped.
+            "log=jsmith\r\npwd=hunter-two\r\n",
+            "log=jsmith\npwd=hunter-two",
+            # A value running over two lines, and a one-line body (the form read).
+            "log=jsmith\r\nnote=first line\r\nsecond line\r\npwd=hunter-two\r\n",
+            "log=jsmith&pwd=hunter-two",
+        ],
+    )
+    def test_a_text_plain_credential_body_is_read_field_by_field(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """WordPress's "log" is the username only by the login form, so the rule
+        finds jsmith only when the body is read as fields."""
+        result = self._valued_run(tmp_path, body, "text/plain", self._WORDPRESS_LOGIN)
+        assert result.success_candidates == self._REJECTED
+
+    def test_a_text_plain_body_whose_first_line_is_no_field_suggests_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        for body in (
+            "<<sign in>>\r\nlog=jsmith\r\npwd=hunter-two\r\n",
+            # A first line holding "=" whose name is not spelled like a field's.
+            "user name=jsmith\r\npwd=hunter-two\r\n",
+            "loginForm:log=jsmith\r\nloginForm:pwd=hunter-two\r\n",
+        ):
+            result = self._valued_run(tmp_path, body, "text/plain", self._WORDPRESS_LOGIN)
+            assert result.success_candidates == (), body
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # A JSF-style name and a name with a space: neither is spelled like a
+            # field name, and each still starts its own field after the first line.
+            "loginForm=loginForm\r\nloginForm:log=jsmith\r\nloginForm:pwd=hunter-two\r\n",
+            "go=1\r\nuser name=jsmith\r\npwd=hunter-two\r\n",
+        ],
+    )
+    def test_a_text_plain_line_holding_an_equals_sign_starts_a_field(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """Absorbed into the line before it, jsmith would be part of one longer
+        value that "greeting-jsmith" does not hold."""
+        assert self._valued_run(tmp_path, body, "text/plain").success_candidates == self._REJECTED
+
+    def test_a_text_plain_value_is_read_as_written(self, tmp_path: Path) -> None:
+        """A browser escapes nothing in a text/plain body, so "&" is part of the
+        value: the username sent is "jsmith&x=1", which "greeting-jsmith" does not
+        hold, and the body is not split into "who=jsmith" and "x=1"."""
+        body = "who=jsmith&x=1\r\npwd=hunter%41two\r\n"
+        assert body_values(body, "text/plain") == [
+            (("who",), "jsmith&x=1"),
+            (("pwd",), "hunter%41two"),
+        ]
+        assert self._valued_run(tmp_path, body, "text/plain").success_candidates == self._KEPT
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            # A form field holding a JSON object, and a JSON string holding one.
+            (
+                "payload=" + quote(json.dumps({"username": "jsmith", "password": "x"})),
+                "application/x-www-form-urlencoded",
+            ),
+            (
+                json.dumps({"variables": json.dumps({"username": "jsmith"}), "password": "x"}),
+                "application/json",
+            ),
+            # A JSON list in a text/plain field: its values sit under the field's name.
+            ('identifier=["jsmith"]\r\npwd=x\r\n', "text/plain"),
+            # A multipart part holding a JSON object.
+            (
+                "--XyZ\r\n"
+                'Content-Disposition: form-data; name="payload"\r\n\r\n'
+                '{"username": "jsmith"}\r\n'
+                "--XyZ\r\n"
+                'Content-Disposition: form-data; name="pwd"\r\n\r\n'
+                "hunter-two\r\n"
+                "--XyZ--\r\n",
+                "multipart/form-data; boundary=XyZ",
+            ),
+        ],
+    )
+    def test_a_value_holding_json_is_read_one_level_down(
+        self, tmp_path: Path, body: str, content_type: str
+    ) -> None:
+        """Read whole, the value is one account value that "greeting-jsmith" does not
+        hold; read as JSON, jsmith is a value of its own."""
+        assert self._valued_run(tmp_path, body, content_type).success_candidates == self._REJECTED
+
+    _WHO_LOGIN = (
+        "<html><body><form action='/session' method='post'>"
+        "<input type='text' name='who'><input type='password' name='pwd'>"
+        "<button id='go'>Log in</button></form></body></html>"
+    )
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            (
+                "handle=jsmith&pwd=hunter-two&device=" + quote(json.dumps({"login": "web-client"})),
+                "application/x-www-form-urlencoded",
+            ),
+            (
+                "handle=jsmith&pwd=hunter-two&ctx=" + quote(json.dumps({"user": "anonymous"})),
+                "application/x-www-form-urlencoded",
+            ),
+            (
+                "handle=jsmith&pwd=hunter-two&ctx="
+                + quote(json.dumps({"email": "support@example.com"})),
+                "application/x-www-form-urlencoded",
+            ),
+            (
+                json.dumps(
+                    {
+                        "handle": "jsmith",
+                        "password": "hunter-two",
+                        "ctx": json.dumps({"user": "anonymous"}),
+                    }
+                ),
+                "application/json",
+            ),
+        ],
+    )
+    def test_a_key_inside_a_field_holding_json_names_no_username(
+        self, tmp_path: Path, body: str, content_type: str
+    ) -> None:
+        """The username goes under "handle", which neither the login form ("who") nor
+        the identifier rule names, so no field is a username and every value is an
+        account value. A "login", "user" or "email" key inside the JSON-valued field
+        would make "web-client", "anonymous" or the address the username and leave
+        jsmith out."""
+        result = self._valued_run(tmp_path, body, content_type, self._WHO_LOGIN)
+        assert result.success_candidates == self._REJECTED
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            (
+                "login=Log+In&payload="
+                + quote(json.dumps({"username": "jsmith", "password": "hunter-two"})),
+                "application/x-www-form-urlencoded",
+            ),
+            (
+                json.dumps(
+                    {
+                        "account": "acme-corp",
+                        "payload": json.dumps({"username": "jsmith", "password": "hunter-two"}),
+                    }
+                ),
+                "application/json",
+            ),
+            (
+                "--XyZ\r\n"
+                'Content-Disposition: form-data; name="account"\r\n\r\n'
+                "acme-corp\r\n"
+                "--XyZ\r\n"
+                'Content-Disposition: form-data; name="payload"\r\n\r\n'
+                + json.dumps({"username": "jsmith", "password": "hunter-two"})
+                + "\r\n--XyZ--\r\n",
+                "multipart/form-data; boundary=XyZ",
+            ),
+        ],
+    )
+    def test_a_username_under_a_key_inside_a_field_holding_json_is_still_kept_out(
+        self, tmp_path: Path, body: str, content_type: str
+    ) -> None:
+        """An outer field ("login", "account") is the username by name, so the
+        fallback is off; jsmith, under "username" inside the JSON-valued "payload",
+        is still an account value."""
+        result = self._valued_run(tmp_path, body, content_type)
+        assert result.success_candidates == self._REJECTED
+
+    def test_a_value_holding_json_too_deep_to_read_suggests_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        inner = json.dumps({"username": "jsmith"})
+        body = "payload=" + quote(inner) + "&pwd=x"
+        loads = json.loads
+
+        def too_deep(text: str | bytes, *args: Any, **kwargs: Any) -> object:
+            if text == inner:
+                raise RecursionError("maximum recursion depth exceeded")
+            return loads(text, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(json, "loads", too_deep)
+            result = self._valued_run(tmp_path, body, "application/x-www-form-urlencoded")
+        assert result.login
+        assert result.success_candidates == ()

@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.29.0] - 2026-10-30
+
+This is a minor release. Three changes reach a program on the first run after the upgrade:
+
+- **Login engine:** a declarative login whose `success` element is already on the page before a submit logs a new warning, `login_success_present_before_submit`, and until it has warned the engine looks for the element once before each submit (Upgrading, item 1).
+- **Endpoint projection:** `gp observe digest --endpoints-json`'s `login` block has a new `success_candidates` key, so a reader that compares the block's keys with an exact set sees one more (item 2).
+- **Digests and scaffolds:** `gp observe digest` and `gp plugin new`, run again on a recording that holds a logged-in page, suggest `success` selectors, and the scaffold writes them commented out under a `GP-FILL` (item 2).
+
+Item 3 is about upgrading itself.
+
+### Upgrading
+
+Item 1 takes effect at the first login of a declarative plugin with `success` set. Item 2 takes effect when `gp observe digest` or `gp plugin new` runs again; a run already digested and a plugin already generated do not change. Item 3 takes effect when you upgrade.
+
+1. **A declarative login whose `success` element is already on the page before a submit now logs a warning, `login_success_present_before_submit`, naming the selector** (#268). Without `success_url`, such a selector passes the wait's first check before the login happens, so the cached session can be the one from before the login, even with wrong credentials; until now nothing said so. With `success_url` set too the login still waits for the URL to change, so the element alone cannot pass it early, and the warning's hint says that instead, adding that a found element can still hide a failure page shown at a new URL (it keeps a rate-limit page from being read as one). It is a warning only, at most once a login: the login goes on exactly as before, and a plugin that logs in today still does. Until it warns, the engine probes for the element once just before each submit, so a plugin with `success` set makes one more element lookup per submit up to the first warning and none after it (under nodriver a `Runtime.evaluate`, under Selenium a `find_element`). To silence it, choose a `success` element that appears only after login.
+2. **`gp observe digest --endpoints-json`'s `login` block gains a `success_candidates` key** (#268): a list of selectors the recording suggests for `LoginConfig.success`, best first, empty when there are none (always for a run that recorded no credential post). The key is added within schema 1, as schema 1 allows; the test that pins schema 1's `login` field set (`tests/unit/test_har_report.py`) now includes it, so a reader that compares the block's keys with an exact set sees one more; a reader that ignores unknown keys needs no change. `gp observe digest --json` carries it too, as `success_candidates`. A scaffold made again from a run with suggestions carries them commented out, so the generated plugin logs in exactly as it would without them until you uncomment one; for a run without any, the scaffold is the one 1.28.0 wrote (a test pins the generated `login_config` block for both backends).
+3. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Added
+
+- **The digest suggests `success` selectors from a recording, and `gp plugin new` writes them commented out** (#268). For a run that recorded a credential post, up to three `#id` or `tag.class` selectors are suggested: elements on the run's logged-in page and on none of its logged-out pages (the login page, pages loaded before it, and login steps such as an MFA page). They appear as commented `success="..."` lines under a `GP-FILL` in the generated `login_config`, and as `login.success_candidates` in `gp observe digest --endpoints-json`. Nothing is set live: before you uncomment one, check on a fresh, logged-out visit to the login URL that it is absent there and present once you log in. An MFA step the recording cannot detect (a scripted code, or a form with no step word) can make a suggestion pass that check and still be wrong; such a login fails on its first real call. The login engine also warns when `success` is already on the page before a submit (Upgrading, item 1). The rules are in docs/HOW_IT_WORKS.md. New API: `graftpunk.har.login_signals.success_candidates`, `graftpunk.har.login_signals.is_login_step_post`, `graftpunk.har.digest.body_values`, `graftpunk.session_identity.identifier_key`, and `RunDigest.success_candidates`.
+- **The login engine warns when `success` is already on the page before a submit** (#268): see Upgrading, item 1. New API: `graftpunk.plugins.login_settle.success_shown_before_submit_nodriver` and `success_shown_before_submit_selenium`.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.16 and needs graftpunk 1.29.0 or later** (#268). Its guide and references describe the `success` selectors the recording suggests, the fresh-visit check before uncommenting one (the skill asks the user about each suggestion in order and uncomments the first confirmed one), the login steps a recording cannot see, and the `login_success_present_before_submit` warning.
+- **The recorder redacts more of a credential post's values from the DOM snapshot it saves** (#268). `gp observe go` and `gp observe interactive` now read the post with the digest's body reader, `graftpunk.har.digest.body_values`, so a snapshot is also scrubbed of the value of an identifier field such as `username` or `email` when it sits nested in a JSON body or a JSON list, or inside a field whose value is itself JSON. It still reads every value it read before. A run already recorded keeps the snapshots it has. `graftpunk.har.digest.body_params` reads a JSON body nested past the parser's limit as no body, where it raised `RecursionError`.
+
 ## [1.28.0] - 2026-10-29
 
 This is a minor release. Three changes reach a program on the first run after the upgrade:
