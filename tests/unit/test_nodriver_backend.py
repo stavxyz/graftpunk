@@ -2550,8 +2550,9 @@ def _exited_now(child: Any) -> bool:
     (#340). This asks the kernel instead, at once and without waiting, so a
     stop that returned while the child still ran still reads as running.
     ``waitid`` with ``WNOWAIT`` sees a zombie as exited without reaping it
-    (Linux); without it (macOS) ``kill(pid, 0)`` answers for a zombie too,
-    as it does for the backend there.
+    (Linux, and macOS on Python 3.13 and later); without it (macOS on 3.11 and
+    3.12) ``kill(pid, 0)`` answers for a zombie too, as it does for the backend
+    there.
     """
     if child.returncode is not None:
         return True
@@ -2731,7 +2732,7 @@ class TestNoDriverBackendEndingChromeWithoutItsLoop:
 
     @pytest.mark.skipif(
         not hasattr(os, "waitid"),
-        reason="CPython has no os.waitid on macOS, where asyncio reaps from a thread",
+        reason="os.waitid is missing (macOS before Python 3.13)",
     )
     def test_an_exited_chrome_nothing_has_reaped_ends_promptly_and_stays_unreaped(
         self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch

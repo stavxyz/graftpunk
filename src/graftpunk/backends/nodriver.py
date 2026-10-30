@@ -350,8 +350,8 @@ def _exited_unreaped(pid: int) -> bool | None:
     ``waitid`` with ``WNOWAIT`` leaves the exit status for asyncio's child
     watcher. On Linux that watcher reaps from a callback on the browser's
     loop, which is blocked or closed whenever Chrome is ended without it, so
-    an exited Chrome would keep answering ``kill(pid, 0)``. CPython has no
-    ``os.waitid`` on macOS, where asyncio reaps from a thread instead.
+    an exited Chrome would keep answering ``kill(pid, 0)``. ``os.waitid`` is
+    missing on macOS before Python 3.13, where asyncio reaps from a thread.
     """
     waitid = getattr(os, "waitid", None)
     if waitid is None:
