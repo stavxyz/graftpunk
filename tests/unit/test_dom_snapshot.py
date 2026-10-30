@@ -741,6 +741,20 @@ class TestSanitizerGuards:
         )
         assert password not in out
 
+    @pytest.mark.parametrize("structure_only", [False, True], ids=["default", "structure-only"])
+    def test_a_value_the_post_sent_escaped_is_caught_as_escaped(self, structure_only: bool) -> None:
+        """The second pass reads each value as it is written back, escaped: a
+        password sent as ``a&quot;bc123`` is found in an attribute value ``a"bc123``,
+        as 1.29.0's pass over the stored markup found it."""
+        password = "a&quot;bc123"  # noqa: S105 - a test value, not a credential
+        out = stored_dom_snapshot(
+            "<a class='a\"bc123'>x</a>",
+            json.dumps({"password": password}),
+            "application/json",
+            structure_only=structure_only,
+        )
+        assert '<a class="***REDACTED***">' in out
+
     def test_a_value_split_across_elements_is_the_documented_limit(self) -> None:
         """Redaction reads one text at a time: a value the page renders across
         elements is kept. HOW_IT_WORKS names this limit."""
@@ -1588,6 +1602,17 @@ def test_an_unbounded_email_run_is_not_matched_whole() -> None:
     match = _EMAIL_RE.search(value)
     assert match is not None
     assert len(match.group(0)) == 64 + len("@example.com")
+
+
+def test_the_email_host_is_bounded_too() -> None:
+    """A host is 2 to 10 labels of at most 63 characters (DNS's limit), so a run of
+    letters after an "@" is never scanned past that."""
+    from graftpunk.observe.snapshot import _EMAIL_RE
+
+    assert _EMAIL_RE.fullmatch("x@" + "a" * 63 + ".com")
+    assert _EMAIL_RE.search("x@" + "a" * 64 + ".com") is None
+    assert _EMAIL_RE.fullmatch("x@" + ".".join(["a"] * 10))
+    assert _EMAIL_RE.fullmatch("x@" + ".".join(["a"] * 11)) is None
 
 
 class TestEmailsInAStructureOnlyRead:
