@@ -353,8 +353,8 @@ def failed_password_values(body_text: str | None, content_type: str = "") -> lis
 
 # A multipart/form-data part's field name, as graftpunk.har.digest reads it.
 _MULTIPART_NAME_RE = re.compile(r'\bname="([^"]*)"', re.IGNORECASE)
-# A JSON string token, or a bracket outside one.
-_JSON_TOKEN_RE = re.compile(r'"(?:[^"\\]|\\.)*"|[{}\[\]]')
+# A JSON string token, a JSON number, or a bracket outside a string.
+_JSON_TOKEN_RE = re.compile(r'"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\]]')
 # What follows a JSON string that is an object key.
 _KEY_END_RE = re.compile(r"\s*:")
 _LINE_BREAK_RE = re.compile(r"\r?\n")
@@ -379,7 +379,8 @@ def scrub_failed_password(body: str, content_type: str, values: Iterable[str]) -
     writes: a form field's value, an ``&``-separated piece percent-decoded to
     compare (a line break ending it is kept after the redaction); a ``text/plain``
     field, a line and the lines after it holding no ``=``, compared as written; a
-    ``multipart/form-data`` part's text; a JSON string that is no object key; and
+    ``multipart/form-data`` part's text; a JSON string that is no object key, or a
+    JSON number (written as the redaction string, so the JSON stays valid); and
     the same inside JSON held in a field, a part, or a JSON string, one level down.
     The rest of the body is kept character for character, and a field holding JSON
     that changed is encoded again as it was written (a form field's
@@ -489,10 +490,11 @@ def _scrub_multipart(body: str, content_type: str, wanted: frozenset[str]) -> st
 
 
 def _scrub_json(text: str, wanted: frozenset[str], outer: str | None, *, nested: bool) -> str:
-    """*text*, JSON, with each string that is no object key, equals one of *wanted*,
-    and has a password-like nearest name replaced: the key it is the value of, else
-    the key of the nearest object around the list holding it, else *outer* (the
-    field holding *text*). With *nested*, a string holding JSON is scrubbed the same
+    """*text*, JSON, with each string that is no object key, or number, that equals
+    one of *wanted* (a number as the reader writes it, ``str`` of its parsed value)
+    and has a password-like nearest name replaced by the redaction string: the key
+    it is the value of, else the key of the nearest object around the list holding
+    it, else *outer* (the field holding *text*). With *nested*, a string holding JSON is scrubbed the same
     way one level down and, when it changed, written back escaped as before. Each
     string token is decoded on its own, so no depth of nesting is parsed at once."""
     # The key each open object is at (None before its first key), and None for each
@@ -511,6 +513,11 @@ def _scrub_json(text: str, wanted: frozenset[str], outer: str | None, *, nested:
         try:
             value = json.loads(token)
         except ValueError:
+            return token
+        if not isinstance(value, str):
+            name = next((key for key in reversed(keys) if key is not None), outer)
+            if str(value) in wanted and _password_like(name):
+                return json.dumps(REDACTED)
             return token
         if _KEY_END_RE.match(text, match.end()) is not None:
             if keys:

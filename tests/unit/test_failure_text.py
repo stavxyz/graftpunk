@@ -559,6 +559,8 @@ class TestScrubFailedPassword:
             ("password=pa&ss9", "text/plain"),
             ("username=jsmith&password=p%26ss+9&password=x%0Ay", _FORM),
             (json.dumps({"user": {"password": "wrong-abc123"}}), _JSON),
+            ('{"username": "jsmith", "password": 12345678}', _JSON),
+            ('{"pin": 1, "password": -1.5e3}', _JSON),
             (
                 '--b\r\nContent-Disposition: form-data; name="password"\r\n\r\n'
                 "ab\n--cd\r\n--b--\r\n",
@@ -588,6 +590,16 @@ class TestScrubFailedPassword:
             '"creds": {"pwd": "***REDACTED***"}, "passwords": ["***REDACTED***"], '
             '"note": "login"}'
         )
+
+    def test_a_json_number_under_a_password_name(self) -> None:
+        """The reader reads a number as its text, so a typed all-digit password is
+        replaced, by a string, keeping the JSON valid; a number under another name
+        stays."""
+        body = '{"username": "jsmith", "id": 12345678, "password": 12345678}'
+        assert failed_password_values(body, _JSON) == ["12345678"]
+        scrubbed = scrub_failed_password(body, _JSON, ["12345678"])
+        assert scrubbed == '{"username": "jsmith", "id": 12345678, "password": "***REDACTED***"}'
+        assert json.loads(scrubbed)["password"] == self._R
 
     def test_a_key_spelled_as_the_password_is_kept(self) -> None:
         body = '{"wrong-x7k2q9": 1, "password": "wrong-x7k2q9"}'
