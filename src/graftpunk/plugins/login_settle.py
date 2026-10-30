@@ -144,6 +144,15 @@ def _warn_failure_text(site_name: str, failure_text: str) -> None:
     )
 
 
+def failure_text_on_page(page_text: str, failure_text: str) -> bool:
+    """Whether the configured failure text *failure_text* is on the page: a
+    case-insensitive substring of *page_text*, the raw serialized document (inline
+    scripts, templates, and escaped characters as written). The one rule every
+    failure check uses, and the one the recorder's failure-text suggestions are
+    checked by (:mod:`graftpunk.observe.failure_text`). An empty one never is."""
+    return bool(failure_text) and failure_text.lower() in page_text.lower()
+
+
 def _check_login_result(*, page_text: str, failure_text: str, site_name: str) -> bool:
     """Rule on the last page a login with no success signal was able to read.
 
@@ -161,8 +170,6 @@ def _check_login_result(*, page_text: str, failure_text: str, site_name: str) ->
     Returns:
         True if login appears successful, False if it failed.
     """
-    lowered = page_text.lower()
-
     # A rate-limited response is a page from the site's limiter, not a verdict on
     # the credentials, and nothing on this path speaks for the login, so the
     # marker rules.
@@ -170,7 +177,7 @@ def _check_login_result(*, page_text: str, failure_text: str, site_name: str) ->
         _warn_rate_limited(site_name)
         return False
 
-    if failure_text and failure_text.lower() in lowered:
+    if failure_text_on_page(page_text, failure_text):
         _warn_failure_text(site_name, failure_text)
         return False
 
@@ -291,7 +298,6 @@ def _login_tick_verdict(
         ``_TICK_SUCCESS``, ``_TICK_PENDING``, or the reason the tick failed:
         ``_TICK_FAILURE_TEXT`` or ``_TICK_RATE_LIMITED``.
     """
-    lowered = page_text.lower()
     signal_holds = bool(success_selector or success_url) and not _missing_login_signals(
         url=url,
         pre_submit_url=pre_submit_url,
@@ -299,7 +305,7 @@ def _login_tick_verdict(
         success_selector=success_selector,
         success_url=success_url,
     )
-    if failure_text and failure_text.lower() in lowered:
+    if failure_text_on_page(page_text, failure_text):
         return _TICK_FAILURE_TEXT
     if success_found is not True and _rate_limit_marker_in(page_text):
         return _TICK_RATE_LIMITED
