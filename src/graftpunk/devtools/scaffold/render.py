@@ -1404,6 +1404,17 @@ def _render_command_stub(
         lines.append("")
         lines.extend(wrapped_docstring_lines(shape_line))
     lines.append(f'{L2}"""')
+    family_identifier = _family_identifier(endpoint, path_params)
+    if family_identifier is not None:
+        lines.extend(
+            wrapped_comment_lines(
+                f"{endpoint.template} stands for {len(endpoint.family_members)} recorded "
+                f"templates that differ only in the segment {family_identifier} fills (gp "
+                f"observe digest lists them); {family_identifier} is a neutral name: rename it "
+                "here and in its test to what that segment names.",
+                indent=len(L2),
+            )
+        )
     for note in [*_recording_gap_notes(endpoint, bodies_where), *flag_notes]:
         lines.extend(wrapped_comment_lines(note, indent=len(L2)))
     for field_name, reason in sorted(undeclared.items()):
@@ -1428,10 +1439,35 @@ def _render_command_stub(
     return lines
 
 
+def _family_identifier(endpoint: Endpoint, path_params: list[str]) -> str | None:
+    """The stub's identifier for *endpoint*'s family placeholder, among *path_params*
+    (``_templated_url``'s, in template order); None for an endpoint that is no
+    family."""
+    if not endpoint.family_members:
+        return None
+    names = [match.group(1) for match in URL_PLACEHOLDER_RE.finditer(endpoint.template)]
+    return path_params[names.index(endpoint.family_placeholder)]
+
+
+def _fixture_template(endpoint: Endpoint) -> str:
+    """The template *endpoint*'s generated test reads a fixture for: its own, or for a
+    family row the member its fixture recording came from. That test passes the
+    member's value (``Endpoint.family_fixture_value``), so the request it issues is
+    one the run recorded, answered by the fixture ``gp observe fixtures`` writes for
+    that member."""
+    if not endpoint.family_members:
+        return endpoint.template
+    return endpoint.template.replace(
+        "{" + endpoint.family_placeholder + "}", endpoint.family_fixture_value
+    )
+
+
 def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
     """The endpoints the scaffold renders a stub for, most useful first. The login
-    flow's own endpoints are skipped by the digest's ``login_flow`` flag."""
-    kept = [e for e in d.endpoints if not e.login_flow]
+    flow's own endpoints are skipped by the digest's ``login_flow`` flag, and a family
+    row is only a suggestion: it is rendered when a ``--command`` names it, never by
+    default, so a run renders the same stubs whether or not it holds a family."""
+    kept = [e for e in d.endpoints if not e.login_flow and not e.family_members]
     return sorted(kept, key=lambda e: (not _is_json_endpoint(e), -e.count, e.template))
 
 
@@ -1502,7 +1538,9 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
         None
         if _no_fixture_is_written(command.endpoint)
         else capture_filename(
-            command.method, command.endpoint.template, _fixture_type(command.endpoint)
+            command.method,
+            _fixture_template(command.endpoint),
+            _fixture_type(command.endpoint),
         )
     )
     return RenderedCommand(
@@ -1782,13 +1820,16 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
         if _no_fixture_is_written(endpoint):
             continue  # no generated test reads one (see _render_test_module)
         # Case-folded, as a case-insensitive filesystem compares them.
-        stem = capture_slug(command.method, endpoint.template).casefold()
+        template = _fixture_template(endpoint)
+        stem = capture_slug(command.method, template).casefold()
         if stem in stems:
-            continue  # no generated test reads it (see _render_test_module)
+            # Either the file another test already reads (a family and its fixture
+            # member) or one no generated test reads (see _render_test_module).
+            continue
         stems.add(stem)
         paths.append(
             f"{fixtures_root_for(spec)}"
-            f"{capture_filename(command.method, endpoint.template, _fixture_type(endpoint))}"
+            f"{capture_filename(command.method, template, _fixture_type(endpoint))}"
         )
     return paths
 
@@ -1854,7 +1895,11 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
     # the collisions this module can still create: a command named the same as
     # the fixed plugin_instantiates test, or as one of SitePlugin's own attributes.
     seen_tests: set[str] = set(_FIXED_TEST_NAMES) | set(policy.RESERVED_COMMAND_NAMES)
-    stems: dict[str, str] = {}
+    # Each stem taken so far: the request its fixture answers, whether a family
+    # command took it, and the label the collision note names.
+    # Per stem: the recorded request its fixture holds, whether a literal command's
+    # test already reads it, and the first command's label for the note.
+    stems: dict[str, list[object]] = {}
     for command in planned:
         endpoint = command.endpoint
         method = command.method
@@ -1870,26 +1915,46 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
             lines.append("")
             lines.append("")
             continue
-        stem = capture_slug(method, endpoint.template)
-        if stem.casefold() in stems:
-            # FixtureSession looks a fixture up by stem, so this endpoint's test
-            # would read the other endpoint's fixture.
+        fixture_request = (method, _fixture_template(endpoint))
+        stem = capture_slug(*fixture_request)
+        family = bool(endpoint.family_members)
+        taken = stems.get(stem.casefold())
+        # A family command and a literal command for its fixture member issue the
+        # same recorded request, so both tests read that member's own fixture and
+        # both stay; a second literal command on that member gets the note, as it did
+        # before families, whatever the order. Any other shared stem means
+        # FixtureSession, which looks a fixture up by stem, would hand this test the
+        # other endpoint's fixture.
+        if taken is not None and not (taken[0] == fixture_request and (family or not taken[1])):
             note = (
                 f"{GP_FILL_MARKER}: no test for {name} ({method} {endpoint.template}): its "
-                f"fixture would share the stem {stem} with {stems[stem.casefold()]}; write its "
+                f"fixture would share the stem {stem} with {taken[2]}; write its "
                 "test against a fixture of its own."
             )
             lines.extend(wrapped_comment_lines(note, indent=0))
             lines.append("")
             lines.append("")
             continue
-        stems[stem.casefold()] = f"{method} {endpoint.template}"
+        if taken is None:
+            stems[stem.casefold()] = [fixture_request, not family, f"{method} {endpoint.template}"]
+        elif not family:
+            taken[1] = True
         test_name = _deduped(name, seen_tests)
         # The same seeding as _render_command_stub, so the identifiers here are
         # the ones the stub actually declares.
         _, path_params = _templated_url(
             endpoint.template, {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
         )
+        # A family's placeholder gets the value its fixture recording sent, so the
+        # request is one the run recorded, answered from that member's own fixture
+        # (_fixture_template).
+        family_identifier = _family_identifier(endpoint, path_params)
+        arguments = [
+            f"{p}={quoted_literal(endpoint.family_fixture_value)}"
+            if p == family_identifier
+            else f'{p}="1001"'
+            for p in path_params
+        ]
         # "1001" round-trips through the naming rule (paths.looks_dynamic
         # treats a digit run of 3 or more as dynamic; "1" stays literal, like
         # /page/1): the request this test issues
@@ -1909,7 +1974,7 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
         lines.extend(
             call_expression_lines(
                 f"result = plugin.{name}",
-                ["ctx", *(f'{p}="1001"' for p in path_params)],
+                ["ctx", *arguments],
                 indent=len(L1),
             )
         )

@@ -570,6 +570,60 @@ literal, and so does a word with one or two digits after it (`smith42`,
 `mary12`). A family of many sibling segments that each carry a digit
 (`red-widget-1`, `red-widget-2`, ...) collapses by count.
 
+Letters-only siblings, which the path rule keeps literal, are reported as a
+family beside their own rows. Two or more endpoints form a family when they share
+their method, host, content type, top-level response shape (its kind, a JSON
+object's top-level keys, a JSON array's element kind; a JSON body too large to
+read never joins), number of segments (two or more), and trailing slash, and
+their templates differ in exactly one segment, which in each is letters-only:
+every part of it, split on `_`, `.`, `-`, `~`, and `$`, is ASCII letters, and
+percent-encoding it as the generated command does (`urllib.parse.quote` with no
+safe characters) leaves it unchanged, so a segment holding `$` never joins.
+Values that differ only in letter case (`North`, `north`) are one word, so none
+of those members joins. The varying segment is never a routing word (`admin`, `ajax`, `api`, `apis`,
+`assets`, `auth`, `graphql`, `internal`, `oauth`, `public`, `rest`, `rpc`,
+`search`, `static`, or `www`, in any case), and as a path's last segment it never
+holds a `.` (`intro.html` and `setup.html` are two documents). A single-segment
+path never joins a family, since every root route (`/about`, `/contact`) would,
+and neither does an endpoint of the login flow. An endpoint that fits two
+families, differing from some siblings in one segment and from others in
+another, joins neither, and a family left with one member by that is dropped.
+Two families that would have the same method and template are both dropped:
+HTML pages and JSON endpoints under one prefix (`/account/profile` and
+`/account/settings`, `/account/status` and `/account/balance`) would each give
+`/account/{account_slug}`, and that template cannot name both. Each family is one
+more endpoint beside its members, whose rows stay exactly as
+they are: `/search/north-region/items/` and `/search/south-region/items/` also
+give `/search/{search_slug}/items/`. A recording cannot know what the segment
+names, so the placeholder's name is neutral, for the author to rename: the
+singular of the segment before it (a final `ies` becomes `y`, except in
+`series` and `species`, which keep their spelling, and in a few words whose
+singular ends in `ie`, such as `movies`; a final `s` is dropped unless it follows
+`s`, `u`, or `i`) plus `_slug` when that segment is a
+plain word of ASCII letters (`/categories/{category_slug}/items/`), else `slug`
+(`/stores/{store_id}/{slug}/items`), with a number from 2 appended when the
+template already holds a placeholder of that name. The markdown digest lists a
+family row just before its first member, with a line giving its member count and
+each member's value of the varying segment. Its summary line and its "N more"
+footer both count literal endpoints and family rows apart, and `--limit` counts
+literal endpoints only: a family row is shown with its first member and never
+takes a literal row's place. `--json` and `--endpoints-json` carry the members'
+templates in `family_members` on the family row only, so a run with no family
+prints what it printed before. A family row is a suggestion: `gp plugin new` and
+`gp plugin add-command` render a stub for it only when `--command` names it, and
+that stub takes the placeholder as a parameter and builds its request from it.
+Its generated test passes the varying segment's value from the member whose
+recording is the family's fixture (`search_slug="north-region"`), so the request
+it issues is a recorded one, answered by that member's own fixture
+(`get_search_north-region_items.json`). `gp observe fixtures --match` with the
+family's template writes each member's recordings under the member's own
+template, as naming every member would (a glob never names a family row); no
+fixture is written under a family template's name, and `FixtureSession` looks a
+request up by its own template only, as before. When one project names both a
+family and its fixture member, both generated tests read that member's fixture.
+A command naming a member's own template behaves as it did before families
+existed.
+
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
 response keys; request header names; cookie and token candidate names; and a

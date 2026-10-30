@@ -249,7 +249,11 @@ class TestRenderJson:
         entries = [_entry("GET", f"https://api.myshop.example.com/api/{name}") for name in names]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         parsed = json.loads(render_json(result))
-        assert len(parsed["endpoints"]) == len(result.endpoints) == 80
+        # The eighty literal rows, and the one family row they form (#271).
+        assert len(parsed["endpoints"]) == len(result.endpoints) == 81
+        families = [e for e in parsed["endpoints"] if "family_members" in e]
+        assert [e["template"] for e in families] == ["/api/{api_slug}"]
+        assert len(families[0]["family_members"]) == 80
 
 
 _SAMPLE_HAR = Path(__file__).resolve().parents[1] / "fixtures" / "sample.har"
@@ -269,6 +273,8 @@ _ENDPOINT_V1 = {
     "body_not_captured",
     "custom_headers",
 }
+# A family row (#271) carries one field more, added within schema 1.
+_FAMILY_ENDPOINT_V1 = _ENDPOINT_V1 | {"family_members"}
 _LOGIN_V1 = {"auth_urls", "forms", "success_candidates", "failure_candidates"}
 _AUTH_URL_V1 = {"method", "url", "kind"}
 _FORM_V1 = {"action", "fields", "submit", "neutral_roles", "unresolved_roles", "opener_candidate"}
@@ -366,6 +372,16 @@ class TestEndpointsProjection:
         for form in payload["login"]["forms"]:
             assert set(form) == _FORM_V1
 
+    def test_a_family_row_s_field_set(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", f"https://myshop.example.com/search/{region}/items/")
+            for region in ("north-region", "south-region")
+        ]
+        payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
+        assert payload["schema"] == 1
+        fields = sorted((sorted(entry) for entry in payload["endpoints"]), key=len)
+        assert [set(f) for f in fields] == [_ENDPOINT_V1, _ENDPOINT_V1, _FAMILY_ENDPOINT_V1]
+
     def test_no_cookie_name_token_candidate_example_path_or_body(self, tmp_path: Path) -> None:
         result = digest(DigestSource.from_har(_planted_run(tmp_path)))
         # The digest itself holds all four, so the assertions below are not vacuous.
@@ -420,7 +436,10 @@ class TestEndpointsProjection:
             for word in words
         ]
         payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
-        assert len(payload["endpoints"]) == 70
+        # The seventy literal rows, and the one family row they form (#271).
+        assert len(payload["endpoints"]) == 71
+        literal = [e["template"] for e in payload["endpoints"] if "family_members" not in e]
+        assert sorted(literal) == sorted(f"/api/{word}" for word in words)
 
     def test_a_pathless_form_action_is_printed_as_it_is_and_stays_scoped(
         self, tmp_path: Path

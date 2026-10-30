@@ -222,8 +222,43 @@ def _capture_text(entry: HAREntry) -> str | None:
     return capture_text(entry.response.body, entry.response.status)
 
 
+def _family_patterns(
+    run_digest: RunDigest, endpoints: list[tuple[str, str]]
+) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    """Each ``(method, member template)`` of a family row whose own template a
+    ``--match`` names exactly, to those patterns. The member's recordings are written
+    under the member's own template: a generated family command's test passes a
+    recorded member's value, so it reads that member's fixture. A glob never names a
+    family row."""
+    named = set(endpoints)
+    patterns: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for endpoint in run_digest.endpoints:
+        for method in endpoint.methods:
+            pattern = (method, endpoint.template)
+            if endpoint.family_members and pattern in named:
+                for member in endpoint.family_members:
+                    patterns.setdefault((method, member), []).append(pattern)
+    return patterns
+
+
+def _hits(
+    method: str,
+    template: str,
+    endpoints: list[tuple[str, str]],
+    families: dict[tuple[str, str], list[tuple[str, str]]],
+) -> list[tuple[str, str]]:
+    """The ``--match`` patterns an entry filed under *method* and *template* answers:
+    each one matching its template, and each family row it is a member of
+    (:func:`_family_patterns`)."""
+    hits = [e for e in endpoints if _matches_template(method, template, e)]
+    return hits + families.get((method, template), [])
+
+
 def _colliding_file_names(
-    entries: list[HAREntry], run_digest: RunDigest, endpoints: list[tuple[str, str]]
+    entries: list[HAREntry],
+    run_digest: RunDigest,
+    endpoints: list[tuple[str, str]],
+    families: dict[tuple[str, str], list[tuple[str, str]]],
 ) -> dict[str, set[str]]:
     """The capture stems two or more matched endpoints would share (``/a_b`` and
     ``/a/b`` both name ``get_a_b``, whatever each one's extension), each with those
@@ -238,9 +273,7 @@ def _colliding_file_names(
             continue
         template = endpoint_template(run_digest, path)
         method = entry.request.method.upper()
-        if _capture_text(entry) is None or not any(
-            _matches_template(method, template, e) for e in endpoints
-        ):
+        if _capture_text(entry) is None or not _hits(method, template, endpoints, families):
             continue
         # Case-folded: on a case-insensitive filesystem get_Users and get_users
         # are one file.
@@ -342,7 +375,8 @@ def fixtures_cmd(
             "from being committed.[/yellow]"
         )
 
-    collisions = _colliding_file_names(entries, run_digest, endpoints)
+    families = _family_patterns(run_digest, endpoints)
+    collisions = _colliding_file_names(entries, run_digest, endpoints, families)
     if collisions:
         for filename, keys in sorted(collisions.items()):
             console.print(
@@ -403,7 +437,7 @@ def fixtures_cmd(
         # named after it.
         template = endpoint_template(run_digest, path)
         method = entry.request.method.upper()
-        hits = [e for e in endpoints if _matches_template(method, template, e)]
+        hits = _hits(method, template, endpoints, families)
         if not hits:
             continue
         matched.update(hits)

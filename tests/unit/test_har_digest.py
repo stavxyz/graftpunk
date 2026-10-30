@@ -1483,8 +1483,11 @@ class TestHighCardinalityEligibility:
         assert len(names) > _HIGH_CARDINALITY_THRESHOLD
         entries = [_entry("GET", f"https://api.myshop.example.com/api/{name}") for name in names]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
-        templates = {e.template for e in result.endpoints}
+        templates = {e.template for e in result.endpoints if not e.family_members}
         assert templates == {f"/api/{name}" for name in names}
+        # Beside them, the family row the siblings form (#271): a suggestion only.
+        (family,) = (e for e in result.endpoints if e.family_members)
+        assert family.template == "/api/{api_slug}"
 
     def test_digit_bearing_slug_family_still_collapses(self, tmp_path: Path) -> None:
         count = _HIGH_CARDINALITY_THRESHOLD + 1
@@ -1506,8 +1509,14 @@ class TestHighCardinalityEligibility:
             _entry("GET", f"https://api.myshop.example.com/products/{slug}") for slug in slugs
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
-        templates = {e.template for e in result.endpoints}
+        templates = {e.template for e in result.endpoints if not e.family_members}
         assert templates == {f"/products/{slug}" for slug in slugs}
+        # The letters-only slugs also form one family row (#271); the digit-bearing
+        # ones are not letters-only, so they are not in it.
+        (family,) = (e for e in result.endpoints if e.family_members)
+        assert set(family.family_members) == {
+            f"/products/{slug}" for slug in slugs if not slug[-1].isdigit()
+        }
 
 
 class TestCollapseIsScopedToTheFamilyThatQualified:
@@ -1529,13 +1538,16 @@ class TestCollapseIsScopedToTheFamilyThatQualified:
             _entry("GET", "https://api.myshop.example.com/account/settings"),
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
-        templates = {e.template for e in result.endpoints}
+        templates = {e.template for e in result.endpoints if not e.family_members}
         assert templates == {
             "/products/{product_id}",
             "/api/health",
             "/account/profile",
             "/account/settings",
         }
+        # Beside them, the family row the two account pages form (#271).
+        families = [e.template for e in result.endpoints if e.family_members]
+        assert families == ["/account/{account_slug}"]
 
     def test_an_ineligible_value_inside_the_family_stays_literal(self, tmp_path: Path) -> None:
         """The family qualifies on its values as a whole; a word-like member of
