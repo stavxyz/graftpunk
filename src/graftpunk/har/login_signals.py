@@ -104,7 +104,8 @@ _ONE_TIME_CODE = "one-time-code"
 # remember_filters) to be among them: "code" counts in a field name alone or with
 # only _CODE_COMPANIONS beside it (sms_code, one_time_code, passCode), and
 # "remember" with only _REMEMBER_COMPANIONS beside it (remember_me, rememberDevice,
-# remember_for_30_days).
+# remember_for_30_days). A step word needs no companion, so neither set holds one
+# (remember_login and auth_code are steps by "login" and "auth" alone).
 _STEP_WORDS = frozenset(
     {
         "otp",
@@ -127,7 +128,7 @@ _STEP_WORDS = frozenset(
     }
 )
 _REMEMBER_COMPANIONS = frozenset(
-    {"me", "my", "this", "device", "browser", "computer", "login", "for", "days"}
+    {"me", "my", "this", "device", "browser", "computer", "for", "days"}
 )
 _CODE_COMPANIONS = frozenset(
     {
@@ -138,16 +139,8 @@ _CODE_COMPANIONS = frozenset(
         "time",
         "backup",
         "recovery",
-        "verification",
-        "auth",
         "pass",
         "access",
-        "login",
-        "otp",
-        "totp",
-        "mfa",
-        "tfa",
-        "twofactor",
     }
 )
 # A token-named field (a CSRF field a framework puts in every form) is not read for

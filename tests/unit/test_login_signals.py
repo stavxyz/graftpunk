@@ -510,11 +510,15 @@ class TestALoginStepPost:
             ("/x", ("remember_login",)),
             ("/x", ("remember_device_30_days",)),
             ("/x", ("remember_for_30_days",)),
+            # A path segment counts for "remember" as a field name does.
+            ("/session/remember-me", ()),
             # A token-named field that names a one-time code is read.
             ("/x", ("totpToken",)),
             ("/x", ("otp_token",)),
             ("/x", ("mfa_token",)),
             ("/x", ("2FA_token",)),
+            ("/x", ("two_factor_token",)),
+            ("/x", ("twoFactorToken",)),
             ("/x", ("trust_device",)),
             ("/x", ("stay_signed_in",)),
             ("/x", ("SignIn",)),
@@ -543,14 +547,19 @@ class TestALoginStepPost:
             ("/x", ("staying",)),
             ("/x", ("authority",)),
             # "code" counts only alone or beside words saying what code it is,
-            # "remember" only beside me, my, this, device, browser, computer, login,
-            # for, or days.
+            # "remember" only beside me, my, this, device, browser, computer, for,
+            # or days ("remember_login" is a step by the step word "login").
             ("/x", ("postal_code",)),
             ("/x", ("coupon_code",)),
             ("/x", ("zipCode",)),
             ("/x", ("currencyCode",)),
             ("/x", ("promo_code",)),
             ("/x", ("pinCode",)),
+            # "2fa" is a word only with no letter or digit before it and no
+            # lowercase letter after it.
+            ("/x", ("enable2fa",)),
+            ("/x", ("v2fa",)),
+            ("/x", ("2fast_checkout",)),
             ("/checkout/promo-code", ()),
             # A path segment "code" alone is no step; only a field name is.
             ("/promo/code", ()),
