@@ -7513,9 +7513,19 @@ class TestTheRecordingSuggestsASuccessSelector:
         assert _scalar_values({"username": value}) == [(("username", *["a"] * 5_000), "jsmith")]
 
     def test_a_body_too_deep_for_the_json_parser_does_not_fail_the_digest(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """How deep json.loads goes before RecursionError depends on the Python
+        version and the platform's stack (3.11 stops near 1,000; 3.14 on Linux read
+        100,000), so the parser's refusal is stood in for."""
+        body = json.dumps({"username": {"a": "jsmith"}, "password": "x"})
+
+        def too_deep(_text: str) -> object:
+            raise RecursionError("maximum recursion depth exceeded")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(json, "loads", too_deep)
+            assert body_values(body, "application/json") == []
         depth = 100_000
-        body = '{"username": ' + '{"a": ' * depth + '"jsmith"' + "}" * depth + "}"
-        assert body_values(body, "application/json") == []
-        self._valued_run(tmp_path, body, "application/json")
+        deep = '{"username": ' + '{"a": ' * depth + '"jsmith"' + "}" * depth + "}"
+        self._valued_run(tmp_path, deep, "application/json")
