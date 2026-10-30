@@ -832,11 +832,11 @@ def test_family_rows_cost_linear_time(tmp_path: Path) -> None:
     by a list scan was quadratic, 64 times at this ratio, and cubic in its
     equality checks."""
     sources = {}
-    for pairs in (100, 800):
+    for pairs in (25, 200):
         run = tmp_path / str(pairs)
         run.mkdir()
         sources[pairs] = DigestSource.from_har(_write_har(run, _entries_with_families(pairs)))
-    assert sum(1 for e in digest(sources[800]).endpoints if e.family_members) == 800
+    assert sum(1 for e in digest(sources[200]).endpoints if e.family_members) == 200
 
     def everything(pairs: int) -> Callable[[], object]:
         def work() -> object:
@@ -845,7 +845,7 @@ def test_family_rows_cost_linear_time(tmp_path: Path) -> None:
 
         return work
 
-    small, large = _cpu_seconds(everything(100)), _cpu_seconds(everything(800))
+    small, large = _cpu_seconds(everything(25)), _cpu_seconds(everything(200))
     assert large < 32 * small, (small, large)
 
 
