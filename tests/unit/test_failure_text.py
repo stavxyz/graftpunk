@@ -413,8 +413,10 @@ class TestValuesOfOtherRequests:
 
 
 class TestCost:
-    """CPU time for a page eight times as long stays near eight times as much, well
-    under the 64 times a search of the whole page per text node would take."""
+    """CPU time for a page sixteen times as long stays near sixteen times as much,
+    well under the 256 times a search of the whole page per text node would take. The
+    bound is 64, halfway on a log scale; at eight times, with a bound of 16, a loaded CI
+    runner measured 16.006 once."""
 
     _ALERT = "<div role='alert'>Sign-in failed, sorry.</div>"
 
@@ -436,7 +438,7 @@ class TestCost:
         return best
 
     def _ratio(self, pages: Callable[[int], tuple[str, str]]) -> float:
-        return self._cpu(pages, 16_000) / self._cpu(pages, 2_000)
+        return self._cpu(pages, 32_000) / self._cpu(pages, 2_000)
 
     def test_text_the_page_at_the_post_shares(self) -> None:
         """The usual read: the login page again, with the error added."""
@@ -445,7 +447,7 @@ class TestCost:
             before = _BEFORE.replace("<form>", f"{self._filler(paragraphs)}<form>")
             return before, before.replace("<form>", f"{self._ALERT}<form>")
 
-        assert self._ratio(pages) < 16
+        assert self._ratio(pages) < 64
 
     def test_text_only_the_read_holds(self) -> None:
         """A read whose every text is new (a page the server rendered anew)."""
@@ -453,7 +455,7 @@ class TestCost:
         def pages(paragraphs: int) -> tuple[str, str]:
             return _BEFORE, _after(self._ALERT, extra=self._filler(paragraphs))
 
-        assert self._ratio(pages) < 16
+        assert self._ratio(pages) < 64
 
 
 class TestWithoutSuccessPage:
