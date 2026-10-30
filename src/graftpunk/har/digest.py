@@ -28,9 +28,8 @@ from graftpunk.har.documents import (
     form_action_targets,
     looks_like_new_password_name,
     looks_like_token_name,
-    looks_like_username_name,
 )
-from graftpunk.har.login_signals import success_candidates
+from graftpunk.har.login_signals import is_login_step_post, success_candidates
 from graftpunk.har.naming import capture_text, fixture_rank, normalize_media_type
 from graftpunk.har.parser import HAREntry, LoginInteraction, parse_har_file
 from graftpunk.har.paths import (
@@ -48,6 +47,7 @@ from graftpunk.har.paths import (
 )
 from graftpunk.har.selectors import bounded_selector, selector_holds_an_id, selector_keys
 from graftpunk.logging import get_logger
+from graftpunk.session_identity import identifier_key, is_identifier_field
 
 LOG = get_logger(__name__)
 
@@ -652,15 +652,20 @@ def _plausible_field_name(name: str) -> bool:
     return _field_name_shaped(name) and not holds_an_id(name)
 
 
-def _declared_request_content_type(entry: HAREntry) -> str:
-    """What the request said its body was: the ``Content-Type`` request header,
-    or HAR's own ``postData.mimeType`` when the capture carries no such header.
-    Empty when the request declared neither."""
+def _request_content_type(entry: HAREntry) -> str:
+    """The request's ``Content-Type`` header as sent, parameters included, or HAR's
+    own ``postData.mimeType`` when the capture carries no such header. Empty when
+    the request declared neither."""
     for name, value in entry.request.headers.items():
         if name.lower() == "content-type":
-            return value.split(";")[0].strip().lower()
-    declared = entry.request.post_data_mime_type or ""
-    return declared.split(";")[0].strip().lower()
+            return value
+    return entry.request.post_data_mime_type or ""
+
+
+def _declared_request_content_type(entry: HAREntry) -> str:
+    """What the request said its body was (:func:`_request_content_type`), lowered
+    and without parameters."""
+    return _request_content_type(entry).split(";")[0].strip().lower()
 
 
 def _json_body_types(parsed: dict[str, Any]) -> tuple[dict[str, str], set[str]]:
@@ -730,7 +735,7 @@ def _parse_body_text(
 
 def _decoded_body(post_data: str | None, declared: str) -> tuple[BodyKind, Any]:
     """The one JSON-then-form reading of a body's text, for its names
-    (:func:`_parse_body_text`) and its values (:func:`_body_values`): ``("json",
+    (:func:`_parse_body_text`) and its values (:func:`body_values`): ``("json",
     <the JSON value>)``, ``("form", <parse_qs of it>)`` when it reads as a form, or
     ``("none", None)``."""
     if not post_data:
@@ -755,52 +760,61 @@ _MULTIPART_CONTENT_TYPE = "multipart/form-data"
 # A multipart part's field name, from its Content-Disposition; "filename=" holds
 # "name=" after a word character, so \b keeps it out.
 _MULTIPART_NAME_RE = re.compile(r'\bname="([^"]*)"', re.IGNORECASE)
+_BOUNDARY_RE = re.compile(r'\bboundary=(?:"([^"]+)"|([^\s;]+))', re.IGNORECASE)
 
 
-def _multipart_fields(text: str) -> list[tuple[str, str]]:
-    """The (name, value) of each text part of a ``multipart/form-data`` body, its
-    boundary read from the first line; a file part is skipped."""
+def _multipart_values(text: str, content_type: str) -> list[tuple[tuple[str, ...], str]]:
+    """The (name,) and value of each text part of a ``multipart/form-data`` body,
+    split on the boundary its *content_type* names, or, when it names none, on the
+    first non-blank line of the body. A file part is skipped."""
     newline = "\r\n" if "\r\n" in text else "\n"
-    boundary = text.split(newline, 1)[0].strip()
-    if not boundary.startswith("--") or len(boundary) < 3:
-        return []
-    found: list[tuple[str, str]] = []
-    for part in text.split(boundary)[1:]:
+    declared = _BOUNDARY_RE.search(content_type)
+    if declared:
+        delimiter = "--" + (declared.group(1) or declared.group(2))
+    else:
+        delimiter = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        if not delimiter.startswith("--") or len(delimiter) < 3:
+            return []
+    found: list[tuple[tuple[str, ...], str]] = []
+    for part in text.split(delimiter)[1:]:
         if part.startswith("--"):
             break
         head, separator, value = part.lstrip("\r\n").partition(newline * 2)
         name = _MULTIPART_NAME_RE.search(head)
         if separator and name and "filename=" not in head.lower():
-            found.append((name.group(1), value.removesuffix(newline)))
+            found.append(((name.group(1),), value.removesuffix(newline)))
     return found
 
 
-def _body_values(entry: HAREntry) -> list[tuple[str, str]]:
-    """The (field name, value) of each scalar in *entry*'s request body, read as
-    :func:`body_params` reads its names (:func:`_decoded_body`): a JSON value at any
-    depth under its nearest key (a boolean and ``null`` skipped), each value of a
-    form field, and, which :func:`body_params` does not read, each text part of a
-    ``multipart/form-data`` body."""
-    declared = _declared_request_content_type(entry)
-    text = entry.request.post_data
-    kind, parsed = _decoded_body(text, declared)
+def body_values(post_data: str | None, content_type: str = "") -> list[tuple[tuple[str, ...], str]]:
+    """Each scalar value of a request body, with the field names that lead to it,
+    outermost first: read as :func:`body_params` reads its names
+    (:func:`_decoded_body`), a JSON value at any depth (a boolean and ``null``
+    skipped, a list adding no name), each value of a form field, and, which
+    :func:`body_params` does not read, each text part of a ``multipart/form-data``
+    body. *content_type* is the request's ``Content-Type`` as sent, parameters
+    included. The one reader of a credential post's values, for the digest's
+    suggestions (:func:`_account_values`) and the recorder's snapshot redaction
+    (:func:`graftpunk.observe.snapshot.snapshot_redaction`). JSON is walked without
+    recursion, so a body nested thousands deep is read like any other."""
+    declared = content_type.split(";")[0].strip().lower()
+    kind, parsed = _decoded_body(post_data, declared)
     if kind == "form":
-        return [(name, value) for name, values in parsed.items() for value in values]
+        return [((name,), value) for name, values in parsed.items() for value in values]
     if kind == "none":
-        return _multipart_fields(text) if text and declared == _MULTIPART_CONTENT_TYPE else []
-    found: list[tuple[str, str]] = []
-
-    def walk(value: object, key: str) -> None:
+        if post_data and declared == _MULTIPART_CONTENT_TYPE:
+            return _multipart_values(post_data, content_type)
+        return []
+    found: list[tuple[tuple[str, ...], str]] = []
+    stack: list[tuple[object, tuple[str, ...]]] = [(parsed, ())]
+    while stack:
+        value, path = stack.pop()
         if isinstance(value, dict):
-            for name, inner in value.items():
-                walk(inner, str(name))
+            stack.extend((inner, (*path, str(name))) for name, inner in reversed(value.items()))
         elif isinstance(value, list):
-            for inner in value:
-                walk(inner, key)
+            stack.extend((inner, path) for inner in reversed(value))
         elif isinstance(value, str | int | float) and not isinstance(value, bool):
-            found.append((key, str(value)))
-
-    walk(parsed, "")
+            found.append((path, str(value)))
     return found
 
 
@@ -1339,24 +1353,36 @@ def _is_top_level_page_load(entry: HAREntry, method: str, content_type: str) -> 
     return dest not in _FRAME_DESTINATIONS and _is_page_load(entry, method, content_type)
 
 
-# A value written as an email address.
-_EMAIL_VALUE_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+# An email address inside a value.
+_EMAIL_IN_VALUE_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 
 
-def _credential_values(entry: HAREntry) -> list[str]:
-    """The values of credential post *entry*'s username and password fields (a field
-    whose name holds a password hint, :data:`PASSWORD_NAME_HINTS`, or a username
-    hint, :func:`graftpunk.har.documents.looks_like_username_name`) and any value
-    written as an email address, read by :func:`_body_values`, for
-    :func:`graftpunk.har.login_signals.success_candidates` to keep out of a
-    suggested name. Held in memory only, never written."""
-    return [
-        value
-        for name, value in _body_values(entry)
-        if _password_like([name])
-        or looks_like_username_name(name)
-        or _EMAIL_VALUE_RE.fullmatch(value.strip())
-    ]
+def _account_values(entry: HAREntry, username_names: frozenset[str]) -> list[str]:
+    """The values of credential post *entry* (read by :func:`body_values`) that no
+    suggested name may hold, for :func:`graftpunk.har.login_signals.success_candidates`:
+    the password field's (a name with a :data:`PASSWORD_NAME_HINTS` hint); the
+    username's, a field the recorded login form takes as its username
+    (*username_names*, ``LoginForm.username_name``) or one
+    :func:`graftpunk.session_identity.is_identifier_field` accepts, by any name on
+    the way to a nested value; and each email address inside any value. When no
+    field is a username by those rules, every value is one, but a token field's
+    (:func:`graftpunk.har.documents.looks_like_token_name`). Held in memory only,
+    never written."""
+    values = body_values(entry.request.post_data, _request_content_type(entry))
+
+    def names_a_username(path: tuple[str, ...]) -> bool:
+        return any(
+            name in username_names or is_identifier_field(identifier_key(name)) for name in path
+        )
+
+    usernames = [value for path, value in values if names_a_username(path)]
+    if not usernames:
+        usernames = [
+            value for path, value in values if not any(looks_like_token_name(name) for name in path)
+        ]
+    passwords = [value for path, value in values if path and _password_like([path[-1]])]
+    emails = [email for _path, value in values for email in _EMAIL_IN_VALUE_RE.findall(value)]
+    return [*usernames, *passwords, *emails]
 
 
 def _path_segments(url: str) -> int:
@@ -1961,17 +1987,17 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # the run saw logged out (a response holding a login form, a credential post's
     # DOM snapshot, any page loaded before the first credential post); each page
     # loaded after one that holds no login form, in order, the last of which is the
-    # final logged-in page when page-source.html is not; the indexes of those after
-    # which the browser sent a top-level document POST before loading another page
-    # (a step of the login, such as an MFA or "stay signed in" form); the index of
-    # the after-post page that is the latest page load, if one is; and the
-    # credential posts' username, password, and email values, which no suggested
-    # name may hold.
+    # final page when page-source.html is not; the indexes of those after which the
+    # browser sent a step-shaped top-level document POST (login_signals.
+    # is_login_step_post: an MFA or "stay signed in" form) before loading another
+    # page; the index of the after-post page that is the latest page load, if one
+    # is; and the credential posts, whose account values (_account_values) no
+    # suggested name may hold.
     logged_out_pages: list[str] = []
     after_post_pages: list[str] = []
-    submitted_from: set[int] = set()
+    submitted_a_step: set[int] = set()
     latest_after_post: int | None = None
-    account_values: list[str] = []
+    credential_entries: list[HAREntry] = []
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
     script_driven: set[int] = set()
@@ -2110,8 +2136,24 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if _is_page_load(entry, method, content_type):
             page_loads.append(entry.timestamp)
         if _is_top_level_page_load(entry, method, content_type):
-            if method == "POST" and latest_after_post is not None:
-                submitted_from.add(latest_after_post)
+            if (
+                method == "POST"
+                and latest_after_post is not None
+                and is_login_step_post(
+                    path,
+                    {
+                        *body_params(entry),
+                        *(
+                            name
+                            for names, _value in body_values(
+                                entry.request.post_data, _request_content_type(entry)
+                            )
+                            for name in names
+                        ),
+                    },
+                )
+            ):
+                submitted_a_step.add(latest_after_post)
             latest_after_post = None
         forms_in_entry: tuple[LoginForm, ...] = ()
         if "html" in content_type and entry.response.body:
@@ -2245,7 +2287,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 chain_next[step] = _redirect_target(entry)
                 posts.append((step, post_target, frozenset(body_params(entry)), not by_target))
                 post_interactions.append((entry.timestamp, entry.request.login_interactions))
-                account_values.extend(_credential_values(entry))
+                credential_entries.append(entry)
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must
         # not make that POST, or a later one to the same page, the credential post.
@@ -2357,6 +2399,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         login_forms.extend(page_forms)
         for candidate in extract_token_candidates(page_html, source=page_label):
             token_seen.setdefault((candidate.kind, candidate.name), []).extend(candidate.seen_on)
+    # The body field names any recorded login form takes as its username, so a
+    # credential post's username is known whatever the field is named.
+    username_names = frozenset(form.username_name for form in login_forms if form.username_name)
 
     ranked_forms = _unique_forms(
         _used_forms_first(login_forms, page_of, credential_posts, script_driven)
@@ -2510,21 +2555,19 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         collapsed_templates=collapse_map,
         cookie_names_dropped_as_ids=len(id_cookie_names),
         token_names_dropped_as_ids=len(id_token_names),
-        # Only for a run that recorded a login. The final logged-in page is the
-        # last of after_post_pages (page-source.html when it went there); an
-        # earlier one is logged out when a form was submitted from it, and logged
-        # in otherwise (success_candidates also reads one asking for a one-time
-        # code as logged out).
+        # Only for a run that recorded a login. The final page is the last of
+        # after_post_pages (page-source.html when it went there); success_candidates
+        # finds the leading run of login steps among them.
         success_candidates=success_candidates(
-            logged_out_pages
-            + [
-                after_post_pages[i] for i in sorted(submitted_from) if i < len(after_post_pages) - 1
-            ],
+            logged_out_pages,
             after_post_pages[-1],
-            earlier_logged_in=[
-                page for i, page in enumerate(after_post_pages[:-1]) if i not in submitted_from
+            earlier=after_post_pages[:-1],
+            submitted_a_step=submitted_a_step,
+            account_values=[
+                value
+                for entry in credential_entries
+                for value in _account_values(entry, username_names)
             ],
-            account_values=account_values,
         )
         if credential_post_steps and after_post_pages
         else (),

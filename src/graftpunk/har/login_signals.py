@@ -4,10 +4,18 @@ A run usually holds the page it ended on logged in (``page-source.html`` at stop
 or the last page the browser loaded after the credential post), often other pages
 it loaded logged in on the way, and several pages it saw logged out (the login
 page as served, the DOM snapshot taken as the password was submitted, any page
-loaded before the login, and any step of the login after the post, such as an MFA
+loaded before the login, and the steps of the login after the post, such as an MFA
 or "stay signed in" page). An element on the final logged-in page and on none of
 the logged-out pages is a candidate for the ``success`` signal, which the engine
 tests as element presence.
+
+The steps of the login are the leading run of the pages loaded after the post: a
+page there is a step when it asks for a one-time code or the browser submitted a
+step-shaped form from it (:func:`is_login_step_post`). The first page that is
+neither ends the run, and it and every later page are logged in, whatever they
+submit or hold (a search, a cart, a 2FA settings page). An MFA page whose code a
+script sends, with no one-time-code input and no step-shaped form, cannot be told
+from a logged-in page by a recording, and counts as one.
 
 Only ever a suggestion. One recording cannot show that an element is absent from
 the login page the engine opens on a fresh visit (a modal on the home page in the
@@ -31,7 +39,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
@@ -39,7 +47,7 @@ from urllib.parse import urlsplit
 from graftpunk.har.paths import holds_an_id
 from graftpunk.har.selectors import bounded_selector
 
-__all__ = ["MAX_SUCCESS_CANDIDATES", "success_candidates"]
+__all__ = ["MAX_SUCCESS_CANDIDATES", "is_login_step_post", "success_candidates"]
 
 MAX_SUCCESS_CANDIDATES = 3
 
@@ -80,6 +88,30 @@ _FOREIGN = frozenset({"svg", "math"})
 _RENAMED_TAGS = frozenset({"image"})
 # The autocomplete token of an input asking for an MFA or emailed code.
 _ONE_TIME_CODE = "one-time-code"
+# A form posted from a page after the credential post is a step of the login when a
+# body field's name or a segment of its URL path holds one of these words.
+_STEP_WORDS = frozenset(
+    {
+        "otp",
+        "totp",
+        "mfa",
+        "2fa",
+        "twofactor",
+        "code",
+        "verify",
+        "verification",
+        "challenge",
+        "remember",
+        "trust",
+        "kmsi",
+        "stay",
+        "signin",
+        "login",
+        "auth",
+        "sso",
+        "consent",
+    }
+)
 # A credential value this short, or one of these words, is in too many names to
 # say anything about the account.
 _MIN_VALUE_LENGTH = 3
@@ -112,7 +144,9 @@ _GENERATED_RULES: tuple[tuple[str, Callable[[str], bool]], ...] = (
 
 
 def _compact(text: str) -> str:
-    return re.sub(r"[-_.]", "", text.lower())
+    """*text* lower-cased without ``-``, ``_``, ``.``, or whitespace: a name holds
+    no whitespace, so a value is compared as a name could spell it."""
+    return re.sub(r"[-_.\s]", "", text.lower())
 
 
 def _words(name: str) -> list[str]:
@@ -126,6 +160,22 @@ def _holds_word(name: str, wanted: frozenset[str]) -> bool:
     words = _words(name)
     joined = {first + second for first, second in zip(words, words[1:], strict=False)}
     return not wanted.isdisjoint({*words, *joined})
+
+
+def is_login_step_post(path: str, field_names: Iterable[str]) -> bool:
+    """Whether a form posted to *path* with body fields *field_names* looks like a
+    step of a login (an MFA code, "stay signed in", a consent): a field name or a
+    path segment holds a word of :data:`_STEP_WORDS`, by :func:`_holds_word`, or as
+    a whole run of letters and digits (how ``2fa`` is found, since a name's words
+    split at digits). A search or a cart form is not one."""
+
+    def holds(name: str) -> bool:
+        runs = re.split(r"[^0-9a-z]+", name.lower())
+        return _holds_word(name, _STEP_WORDS) or not _STEP_WORDS.isdisjoint(runs)
+
+    return any(holds(segment) for segment in path.split("/")) or any(
+        holds(name) for name in field_names
+    )
 
 
 @dataclass(frozen=True)
@@ -224,8 +274,8 @@ def _read(html: str) -> _Page:
 
 def _needles(values: Iterable[str]) -> frozenset[str]:
     """The credential post's *values*, and an email's local part, as a name is
-    compared with them: lower-cased with ``-``, ``_``, and ``.`` removed
-    (:func:`_compact`), leaving out a short one or a boolean word. Comparing the
+    compared with them: lower-cased with ``-``, ``_``, ``.``, and whitespace
+    removed (:func:`_compact`), leaving out a short one or a boolean word. Comparing the
     compact forms finds every name that holds a value as written too."""
     found: set[str] = set()
     for value in values:
@@ -285,18 +335,24 @@ def success_candidates(
     logged_out: Sequence[str],
     logged_in: str,
     *,
-    earlier_logged_in: Sequence[str] = (),
+    earlier: Sequence[str] = (),
+    submitted_a_step: Collection[int] = (),
     account_values: Iterable[str] = (),
 ) -> tuple[str, ...]:
     """Up to :data:`MAX_SUCCESS_CANDIDATES` selectors for an element on the final
     logged-in page and on no logged-out page: each selects exactly one element of
-    *logged_in* (the HTML of the page the run ended on logged in) and none of any
-    page of *logged_out*. Empty when *logged_in* is.
+    *logged_in* (the HTML of the page the run ended on) and none of any page of
+    *logged_out*. Empty when *logged_in* is.
 
-    *earlier_logged_in* are the pages loaded after the credential post, before the
-    final one, that the caller did not find to be a step of the login. One of them
-    with an input for a one-time code (``autocomplete="one-time-code"``) is a step
-    all the same and counts as logged out; the rest are logged in.
+    *earlier* are the pages loaded after the credential post before *logged_in*, in
+    order, and *submitted_a_step* the indexes into ``[*earlier, logged_in]`` of the
+    pages the browser submitted a step-shaped form from
+    (:func:`is_login_step_post`) before loading the next. The leading run of those
+    pages that either submitted a step or hold an input asking for a one-time code
+    (``autocomplete="one-time-code"``) are steps of the login, and count as logged
+    out. The first page that is neither, and every page after it, are logged in.
+    When every page is a step, the final one included, there is no logged-in page
+    and nothing is suggested.
 
     A selector is ``#id`` or ``tag.token`` over a plain CSS identifier (the tag form
     only for a plain tag outside ``svg`` and ``math`` that the parser does not
@@ -304,9 +360,10 @@ def success_candidates(
     account value by :func:`graftpunk.har.paths.holds_an_id` among them), has a
     word saying signed out, signing in, or a guest (a sign-out word counts only on
     a link, a button, or a form), or holds one of *account_values* (the credential
-    post's username, password, and email values) or an email's local part, without
-    case. An element that renders nothing (in the head, a script, a template's or a
-    noscript's content) is not suggested. Ids and class tokens are counted without
+    post's account values, :func:`graftpunk.har.digest._account_values`) or an
+    email's local part, compared by :func:`_compact`. An element that renders
+    nothing (in the head, a script, a template's or a noscript's content) is not
+    suggested. Ids and class tokens are counted without
     case on every page; a selector keeps its element's case.
 
     Ranked: a selector on every logged-in page first; then a name with a word
@@ -316,12 +373,20 @@ def success_candidates(
     document order. Only selectors are returned, never text or attribute values."""
     if not logged_in:
         return ()
-    final = _read(logged_in)
-    others = [_read(html) for html in logged_out]
-    also_logged_in: list[_Page] = []
-    for html in earlier_logged_in:
-        page = _read(html)
-        (others if page.asks_for_a_code else also_logged_in).append(page)
+    after_post = [_read(html) for html in (*earlier, logged_in)]
+    landing = next(
+        (
+            index
+            for index, page in enumerate(after_post)
+            if index not in submitted_a_step and not page.asks_for_a_code
+        ),
+        None,
+    )
+    if landing is None:
+        return ()
+    final = after_post[-1]
+    others = [_read(html) for html in logged_out] + after_post[:landing]
+    also_logged_in = after_post[landing:-1]
     needles = _needles(account_values)
     ranked: dict[str, tuple[int, int, int, int]] = {}
     seen: set[str] = set()

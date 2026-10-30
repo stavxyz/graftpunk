@@ -86,6 +86,14 @@ def is_identifier_field(field_name: str) -> bool:
     return normalize_field_name(field_name) in IDENTIFIER_FIELD_NAMES
 
 
+def identifier_key(name: str) -> str:
+    """The part of a body field *name* that says what it holds, for
+    :func:`is_identifier_field`: the last bracketed part of a Rails-style name
+    (``user[email]`` is ``email``), else the name."""
+    parts = re.findall(r"\[([^\[\]]*)\]", name)
+    return parts[-1] if parts and parts[-1] else name
+
+
 def split_session_name(name: str) -> tuple[str, str | None]:
     """Split ``base@label`` into its halves; a bare name has ``label=None``."""
     base, sep, label = name.partition("@")

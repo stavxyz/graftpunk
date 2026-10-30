@@ -13,7 +13,12 @@ import time
 import lxml.html
 import pytest
 
-from graftpunk.har.login_signals import _GENERATED_RULES, _words, success_candidates
+from graftpunk.har.login_signals import (
+    _GENERATED_RULES,
+    _words,
+    is_login_step_post,
+    success_candidates,
+)
 
 _DOCTYPE = "<!DOCTYPE html>"
 _LOGIN = (
@@ -328,7 +333,7 @@ class TestSuccessCandidates:
         header the engine will see on the page the login lands on."""
         landing = _page("<div id='nav-shell'></div><div id='welcome'></div>")
         after = _page("<div id='nav-shell'></div>", "<div id='user-orders'></div>")
-        assert _checked([_LOGIN], after, earlier_logged_in=[landing]) == (
+        assert _checked([_LOGIN], after, earlier=[landing]) == (
             "#nav-shell",
             "#user-orders",
         )
@@ -340,7 +345,78 @@ class TestSuccessCandidates:
         )
         after = _page("<div id='account-menu'></div><div id='main-panel'></div>")
         assert _checked([_LOGIN, mfa], after) == ("#main-panel",)
-        assert success_candidates([_LOGIN], after, earlier_logged_in=[mfa]) == ("#main-panel",)
+        assert success_candidates([_LOGIN], after, earlier=[mfa]) == ("#main-panel",)
+
+    # Review round 3 (#325): the login's steps are only the leading run of the
+    # pages after the post.
+
+    def test_a_page_asking_for_a_code_after_the_landing_is_logged_in(self) -> None:
+        """A 2FA settings page browsed after landing holds a one-time-code input, and
+        is a logged-in page all the same."""
+        landing = _page("<div id='nav-shell'></div>", "<div id='welcome'></div>")
+        settings = _page(
+            "<div id='nav-shell'></div>", "<input name='otp' autocomplete='one-time-code'>"
+        )
+        after = _page("<div id='nav-shell'></div>", "<div id='orders-table'></div>")
+        assert _checked([_LOGIN], after, earlier=[landing, settings]) == (
+            "#nav-shell",
+            "#orders-table",
+        )
+
+    def test_a_step_form_from_a_page_after_the_landing_leaves_it_logged_in(self) -> None:
+        landing = _page("<div id='nav-shell'></div>", "<div id='welcome'></div>")
+        after = _page("<div id='nav-shell'></div>", "<div id='orders-table'></div>")
+        # A step form from the first page makes it a step, and the final page lands.
+        found = _checked([_LOGIN], after, earlier=[landing], submitted_a_step={0})
+        assert found == ("#orders-table",)
+        # From the final page, after the run ended, it changes nothing.
+        assert _checked([_LOGIN], after, earlier=[landing], submitted_a_step={1}) == (
+            "#nav-shell",
+            "#orders-table",
+        )
+
+    def test_a_run_of_only_steps_suggests_nothing(self) -> None:
+        mfa = _page("<div id='brand-bar'></div>", "<input autocomplete='one-time-code'>")
+        assert success_candidates([_LOGIN], mfa) == ()
+        assert success_candidates([_LOGIN], mfa, earlier=[mfa]) == ()
+        plain = _page("<div id='brand-bar'></div>")
+        assert success_candidates([_LOGIN], plain, submitted_a_step={0}) == ()
+        assert success_candidates([_LOGIN], plain, earlier=[plain], submitted_a_step={0, 1}) == ()
+        assert success_candidates([_LOGIN], plain, earlier=[mfa], submitted_a_step={1}) == ()
+
+    def test_a_step_is_left_out_of_the_every_page_rank(self) -> None:
+        """An MFA step, the landing, then /orders: the step is logged out, so what
+        the landing and /orders share still ranks first. Names hold no keyword, so
+        the keyword rank cannot hide the order."""
+        step = _page("<div id='step-box'></div>")
+        landing = _page("<div class='site-header'></div>", "<div id='welcome'></div>")
+        after = _page("<div class='site-header'></div>", "<div id='orders-table'></div>")
+        found = _checked([_LOGIN], after, earlier=[step, landing], submitted_a_step={0})
+        assert found == ("div.site-header", "#orders-table")
+
+    def test_every_logged_in_page_is_needed_for_the_first_rank(self) -> None:
+        """Three pages after the post: #promo is on the second and the final page
+        only, so it is not on every logged-in page; the id-before-class rule would
+        otherwise put it first."""
+        landing = _page("<div class='site-header'></div>")
+        second = _page("<div class='site-header'></div><div id='promo'></div>")
+        after = _page("<div class='site-header'></div><div id='promo'></div>")
+        assert _checked([_LOGIN], after, earlier=[landing, second]) == (
+            "div.site-header",
+            "#promo",
+        )
+
+    def test_only_an_input_asks_for_a_one_time_code(self) -> None:
+        earlier = _page("<div id='nav-shell' autocomplete='one-time-code'></div>")
+        after = _page("<div id='nav-shell'></div><div id='orders-table'></div>")
+        assert _checked([_LOGIN], after, earlier=[earlier]) == ("#nav-shell", "#orders-table")
+
+    def test_a_credential_value_with_a_space_matches_a_name(self) -> None:
+        after = _page(
+            "<div id='jo-smith-badge'></div><div id='josmith'></div><div id='account-menu'></div>"
+        )
+        assert _checked([_LOGIN], after, account_values=("Jo Smith",)) == ("#account-menu",)
+        assert _checked([_LOGIN], after, account_values=("jo\tsmith",)) == ("#account-menu",)
 
     def test_unparseable_markup_does_not_raise(self) -> None:
         assert success_candidates(["<div <<"], "<div id='account-menu'><<<") == ("#account-menu",)
@@ -377,3 +453,56 @@ class TestSuccessCandidates:
 
         small, large = cost(1500), cost(6000)
         assert large / small < 8, (small, large)
+
+
+class TestALoginStepPost:
+    """Round 3 (#325): a form posted from a page after the credential post makes it
+    a step of the login only when the post looks like one."""
+
+    @pytest.mark.parametrize(
+        ("path", "names"),
+        [
+            ("/mfa", ()),
+            ("/session/verify", ()),
+            ("/u/two-factor", ()),
+            ("/api/v1/2fa", ()),
+            ("/kmsi", ()),
+            ("/oauth2/consent", ()),
+            ("/login.php", ()),
+            ("/x", ("otp",)),
+            ("/x", ("totpToken",)),
+            ("/x", ("two_factor_code",)),
+            ("/x", ("verify-2fa",)),
+            ("/x", ("2fa",)),
+            ("/x", ("rememberMe",)),
+            ("/x", ("trust_device",)),
+            ("/x", ("stay_signed_in",)),
+            ("/x", ("SignIn",)),
+            ("/x", ("sso_state",)),
+            ("/x", ("challenge_id",)),
+            ("/x", ("verification",)),
+            ("/x", ("auth",)),
+            ("/x", ("mfa",)),
+        ],
+    )
+    def test_a_step_shaped_post(self, path: str, names: tuple[str, ...]) -> None:
+        assert is_login_step_post(path, names)
+
+    @pytest.mark.parametrize(
+        ("path", "names"),
+        [
+            ("/search", ("q",)),
+            ("/cart/add", ("sku", "qty")),
+            ("/Default.aspx", ("__EVENTTARGET", "__VIEWSTATE", "__EVENTVALIDATION")),
+            ("/logout", ("_token",)),
+            ("/oauth", ()),
+            ("/author/7", ()),
+            ("/x", ("barcode",)),
+            ("/x", ("encoded",)),
+            ("/x", ("trustee",)),
+            ("/x", ("staying",)),
+            ("/x", ("authority",)),
+        ],
+    )
+    def test_any_other_post(self, path: str, names: tuple[str, ...]) -> None:
+        assert not is_login_step_post(path, names)

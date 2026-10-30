@@ -128,6 +128,28 @@ class TestRedaction:
         assert redaction.secrets == ("pa55word",)
         assert redaction.identifiers == ("alice",)
 
+    def test_a_nested_identifier_is_redacted(self) -> None:
+        """Round 3 (#325): the snapshot reads the post's values with the digest's
+        reader, so an identifier under a nested JSON name is redacted; reading the
+        top level only, the snapshot kept it."""
+        body = json.dumps({"user": {"email": _EMAIL}, "password": _PASSWORD})
+        assert _EMAIL in snapshot_redaction(body, "application/json").identifiers
+        out = stored_dom_snapshot(f"<button>Not {_EMAIL}?</button>", body, "application/json")
+        assert _EMAIL not in out
+
+    def test_a_multipart_identifier_is_redacted(self) -> None:
+        body = (
+            "--XyZ\r\n"
+            'Content-Disposition: form-data; name="username"\r\n\r\n'
+            "alice\r\n"
+            "--XyZ\r\n"
+            'Content-Disposition: form-data; name="password"\r\n\r\n'
+            "hunter2hunter2\r\n"
+            "--XyZ--\r\n"
+        )
+        redaction = snapshot_redaction(body, "multipart/form-data; boundary=XyZ")
+        assert redaction.identifiers == ("alice",)
+
     def test_a_body_with_no_fields_redacts_nothing(self) -> None:
         assert not snapshot_redaction("not a body", "text/plain")
         assert not snapshot_redaction(None, "")
