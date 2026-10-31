@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.3] - 2026-11-01
+
+This is a patch release. `gp observe digest` no longer fails on a run holding a JSON request or response body nested thousands of levels deep (#327). In 1.36.2 such a body raised `RecursionError` and the digest of the whole run failed; now the run's digest completes. A digest that completed before is unchanged. Item 1 is about upgrading itself. The format of a run's files and of the digest is unchanged.
+
+### Upgrading
+
+1. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Fixed
+
+- **The digest reads a deeply nested JSON body without `RecursionError`** (#327). A request body whose field held an array nested about 2,000 levels deep (`{"items": [[[...]]]}`) failed the digest in `body_params` and the endpoint grouping, because the field's type was read by recursing into every inner array. An array inside an array is recorded as the bare element `list` whatever it holds, so it is no longer walked, and the field's type is `list[list]` as before. A response body nested past the JSON parser's own limit (which depends on the Python version and the platform, about 1,000 levels on Python 3.11) also failed the digest; its shape now reads as unavailable, the label a large body that does not parse already had, and it records no falsy first response. A request body past that limit already read as no body. Tested with bodies 2,000 and 100,000 levels deep through `body_params`, the digest, and `gp observe digest` on a run.
+
 ## [1.36.2] - 2026-11-01
 
 This is a patch release with two fixes to how the digest reads a login page's controls. A page with many controls that join their form through `form="id"` from outside it is read in linear time (#321), and an `autocomplete` value is read as the HTML autofill token list, so `username webauthn` names a username field (#322). A digest regenerated from a run recorded before the upgrade can differ: a login form can gain or lose a username or password role, a sign-up form can drop out of the login forms, and the `success` suggestions can change (Upgrading, item 1). Item 2 is about upgrading itself. The format of a run's files and of the digest is unchanged.
