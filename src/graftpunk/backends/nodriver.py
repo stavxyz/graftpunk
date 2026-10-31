@@ -1255,6 +1255,7 @@ class NoDriverBackend:
         default_timeout: int = 15,
         call_timeout: float | None = DEFAULT_CALL_TIMEOUT_S,
         navigate_timeout: float | None = DEFAULT_NAVIGATE_TIMEOUT_S,
+        answer_dialogs: bool = True,
         **options: Any,
     ) -> None:
         """Initialize the NoDriver backend.
@@ -1281,6 +1282,13 @@ class NoDriverBackend:
                 waiting, tells Chrome to stop loading the URL, and raises
                 ``BrowserError``; the tab stays on the page it showed
                 before. None waits without a limit. Default 120.
+            answer_dialogs: When headless, accept each JavaScript dialog
+                (``alert()``, ``confirm()``, ``prompt()``, ``beforeunload``) a
+                page opens, through CDP
+                (``graftpunk.dialogs``), since nobody can answer one and an
+                open one stops the page. False leaves dialogs open, as before
+                1.36.1, for a program that answers them itself. Ignored when
+                visible. Default True.
             **options: Additional options passed to nodriver.start():
                 - browser_args: List of Chrome arguments
                 - browser_executable_path: Path to Chrome binary
@@ -1304,6 +1312,7 @@ class NoDriverBackend:
                     f" no larger than {threading.TIMEOUT_MAX:g}: {value!r}"
                 )
         self._headless = headless
+        self._answer_dialogs = answer_dialogs
         self._profile_dir = profile_dir
         self._default_timeout = default_timeout
         self._call_timeout = call_timeout
@@ -1323,6 +1332,12 @@ class NoDriverBackend:
         # _holding tells that caller apart instead.
         self._lock = threading.Lock()
         self._clear_lock_state()
+
+    @property
+    def answers_dialogs(self) -> bool:
+        """Whether this backend accepts the JavaScript dialogs its pages open: when
+        headless and not built with ``answer_dialogs=False`` (#320)."""
+        return bool(self._headless and self._answer_dialogs)
 
     def _clear_lock_state(self) -> None:
         """Record the lock as free, with no hold given up on."""
@@ -1817,7 +1832,7 @@ class NoDriverBackend:
                     # Get initial page/tab - navigate to blank page
                     self._page = await self._browser.get("about:blank")
                     self._raise_if_given_up(hold)
-                    if self._headless:
+                    if self.answers_dialogs:
                         # Before the caller's first navigation, on the tab
                         # Browser.get navigates: nobody can answer a page's
                         # alert in a headless browser, and one left open stops
@@ -2979,6 +2994,7 @@ class NoDriverBackend:
             "default_timeout": self._default_timeout,
             "call_timeout": self._call_timeout,
             "navigate_timeout": self._navigate_timeout,
+            "answer_dialogs": self._answer_dialogs,
         }
         if self._profile_dir is not None:
             state["profile_dir"] = str(self._profile_dir)
@@ -3011,6 +3027,7 @@ class NoDriverBackend:
         default_timeout = state.get("default_timeout", 15)
         call_timeout = state.get("call_timeout", DEFAULT_CALL_TIMEOUT_S)
         navigate_timeout = state.get("navigate_timeout", DEFAULT_NAVIGATE_TIMEOUT_S)
+        answer_dialogs = state.get("answer_dialogs", True)
 
         profile_dir = state.get("profile_dir")
         if profile_dir is not None:
@@ -3023,6 +3040,7 @@ class NoDriverBackend:
             "default_timeout",
             "call_timeout",
             "navigate_timeout",
+            "answer_dialogs",
             "profile_dir",
         )
         options = {k: v for k, v in state.items() if k not in known_keys}
@@ -3033,6 +3051,7 @@ class NoDriverBackend:
             default_timeout=default_timeout,
             call_timeout=call_timeout,
             navigate_timeout=navigate_timeout,
+            answer_dialogs=answer_dialogs,
             **options,
         )
 

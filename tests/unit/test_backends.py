@@ -190,7 +190,7 @@ class TestSeleniumBackend:
         backend = SeleniumBackend(headless=True, use_stealth=True)
         backend.start()
 
-        mock_create.assert_called_once_with(headless=True, profile_dir=None)
+        mock_create.assert_called_once_with(headless=True, profile_dir=None, answer_dialogs=True)
         assert backend.is_running is True
         assert backend._driver is mock_driver
 
@@ -688,6 +688,7 @@ class TestSeleniumBackendStandardMode:
         assert any("headless" in str(arg) for arg in options.arguments)
 
     @pytest.mark.parametrize("headless", [True, False])
+    @pytest.mark.parametrize("answer_dialogs", [None, True, False])
     @patch("selenium.webdriver.Chrome")
     @patch("graftpunk.backends.selenium.webdriver_manager.chrome.ChromeDriverManager")
     @patch("graftpunk.backends.selenium.get_chrome_version")
@@ -697,18 +698,35 @@ class TestSeleniumBackendStandardMode:
         mock_manager: MagicMock,
         mock_chrome: MagicMock,
         headless: bool,
+        answer_dialogs: bool | None,
     ) -> None:
-        """#320: nobody can answer a dialog in a headless browser; a visible one
-        keeps ChromeDriver's default."""
+        """#320: nobody can answer a dialog in a headless browser, unless the caller
+        opts out (None is the default); a visible one keeps ChromeDriver's default."""
         mock_version.return_value = "120"
         mock_manager.return_value.install.return_value = "/path/to/chromedriver"
         mock_chrome.return_value = MagicMock()
 
-        backend = SeleniumBackend(use_stealth=False, headless=headless)
+        opt = {} if answer_dialogs is None else {"answer_dialogs": answer_dialogs}
+        backend = SeleniumBackend(use_stealth=False, headless=headless, **opt)
         backend.start()
 
         capabilities = mock_chrome.call_args[1]["options"].to_capabilities()
-        assert (capabilities.get("unhandledPromptBehavior") == "accept") is headless
+        accepts = headless and answer_dialogs is not False
+        assert (capabilities.get("unhandledPromptBehavior") == "accept") is accepts
+        if not accepts:
+            assert "unhandledPromptBehavior" not in capabilities
+
+    @pytest.mark.parametrize("answer_dialogs", [True, False])
+    def test_the_stealth_driver_gets_the_choice_and_keeps_it_in_its_state(
+        self, answer_dialogs: bool
+    ) -> None:
+        with patch("graftpunk.stealth.create_stealth_driver") as create:
+            backend = SeleniumBackend(headless=True, answer_dialogs=answer_dialogs)
+            backend.start()
+
+        assert create.call_args.kwargs["answer_dialogs"] is answer_dialogs
+        restored = SeleniumBackend.from_state(backend.get_state())
+        assert restored._answer_dialogs is answer_dialogs
 
     @patch("graftpunk.backends.selenium.get_chrome_version")
     def test_standard_mode_chrome_detection_error(self, mock_version: MagicMock) -> None:

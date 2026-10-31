@@ -302,7 +302,9 @@ class _PerfLogDriver:
 def _stealth_session(observe_mode: str) -> Any:
     from graftpunk.session import BrowserSession
 
-    def create(*, headless: bool, performance_log: bool = False) -> _PerfLogDriver:
+    def create(
+        *, headless: bool, performance_log: bool = False, answer_dialogs: bool = True
+    ) -> _PerfLogDriver:
         return _PerfLogDriver(performance_log)
 
     with (
@@ -353,13 +355,16 @@ class TestSeleniumSessionRecordsTheNetwork:
 
     @pytest.mark.parametrize("headless", [True, False])
     @pytest.mark.parametrize("performance_log", [True, False])
+    @pytest.mark.parametrize("answer_dialogs", [None, True, False])
     def test_a_headless_browser_accepts_the_page_dialogs(
-        self, headless: bool, performance_log: bool
+        self, headless: bool, performance_log: bool, answer_dialogs: bool | None
     ) -> None:
         """#320: ChromeDriver answers a dialog nobody can answer in a headless
-        browser, recorded or not; a visible browser keeps its default."""
+        browser, recorded or not, unless the caller opts out (None is the default);
+        a visible browser keeps its default."""
         from graftpunk import stealth
 
+        opt = {} if answer_dialogs is None else {"answer_dialogs": answer_dialogs}
         with (
             patch.object(stealth.uc, "Chrome") as chrome,
             patch.object(stealth, "stealth"),
@@ -370,11 +375,26 @@ class TestSeleniumSessionRecordsTheNetwork:
                 headless=headless,
                 profile_dir=Path("/nonexistent-unused"),
                 performance_log=performance_log,
+                **opt,
             )
 
         capabilities = chrome.call_args.kwargs["options"].to_capabilities()
         accepts = capabilities.get("unhandledPromptBehavior") == "accept"
-        assert accepts is headless
+        assert accepts is (headless and answer_dialogs is not False)
+        if not accepts:
+            assert "unhandledPromptBehavior" not in capabilities
+
+    @pytest.mark.parametrize("answer_dialogs", [True, False])
+    def test_a_selenium_session_passes_its_choice_to_the_driver(self, answer_dialogs: bool) -> None:
+        from graftpunk.session import BrowserSession
+
+        with (
+            patch("graftpunk.stealth.create_stealth_driver") as create,
+            patch("requestium.Session.__init__"),
+        ):
+            BrowserSession(backend="selenium", headless=True, answer_dialogs=answer_dialogs)
+
+        assert create.call_args.kwargs["answer_dialogs"] is answer_dialogs
 
     @pytest.mark.parametrize(
         ("mime", "kept"),

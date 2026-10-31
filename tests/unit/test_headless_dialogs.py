@@ -136,6 +136,38 @@ class TestTheHeadlessBackendAnswersFromItsStart:
         assert tab.sent == []
 
 
+class TestAProgramCanOptOut:
+    async def test_a_headless_backend_built_with_answer_dialogs_false_leaves_them_open(
+        self, dialog_chrome: FakeChrome
+    ) -> None:
+        backend = NoDriverBackend(headless=True, answer_dialogs=False)
+        await backend._start_async()
+        try:
+            (browser,) = dialog_chrome.browsers
+            tab = browser.tabs[0]
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(browser.get(LOGIN_URL), timeout=0.2)
+        finally:
+            await backend.stop_async()
+
+        assert JavascriptDialogOpening not in tab.handlers
+        assert tab.sent == []
+
+    def test_the_session_passes_the_choice_to_the_backend(self) -> None:
+        from graftpunk.session import BrowserSession
+
+        for choice in (True, False):
+            session = BrowserSession(backend="nodriver", headless=True, answer_dialogs=choice)
+            assert session._backend_instance.answers_dialogs is choice
+
+    def test_the_choice_survives_the_backend_state(self) -> None:
+        backend = NoDriverBackend(headless=True, answer_dialogs=False)
+        restored = NoDriverBackend.from_state(backend.get_state())
+
+        assert restored.answers_dialogs is False
+        assert "answer_dialogs" not in restored._options
+
+
 def _plugin(*, headless: bool) -> SitePlugin:
     class P(SitePlugin):
         site_name = "dlg"
