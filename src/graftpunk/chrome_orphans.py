@@ -270,8 +270,14 @@ def _is_marked_chromedriver(args: str) -> bool:
     """
     if _switch_value(args, OWNER_SWITCH) is None:
         return False
-    name = os.path.basename(args.split(" --", 1)[0])
-    return "chromedriver" in name and not any(char.isspace() for char in name)
+    executable = args.split(" --", 1)[0]
+    name = os.path.basename(executable)
+    if "chromedriver" not in name or any(char.isspace() for char in name):
+        return False
+    # A prefix with a space in it is either an executable whose path holds
+    # one or a command naming such a path as an argument (``grep <path>``,
+    # ``sh -c "<path>``). Only the first is a file on disk.
+    return not any(char.isspace() for char in executable) or os.path.isfile(executable)
 
 
 def _parse_row(row: str) -> ChromeProcess | None:

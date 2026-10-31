@@ -700,14 +700,23 @@ class TestTheReaper:
         marker = owner_switch(gone.pid)
         chromedriver_path = tmp_path / "Application Support" / "undetected_chromedriver"
         chromedriver_path.parent.mkdir()
-        chromedriver_path.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
-        chromedriver_path.chmod(0o755)
+        chromedriver_path.write_text("")
+        # The reaper matches chromedriver by its executable, which ps shows as
+        # argv[0]; a script would show its interpreter there. So the stand-in
+        # is cat under chromedriver's argv[0], blocked opening a FIFO named
+        # like chromedriver's first switch ("--" ends cat's options).
+        os.mkfifo(tmp_path / "--port=0")
+        (tmp_path / marker).write_text("")
         with selenium_in_own_session():
             chrome = _sleeper(
                 undetected_chromedriver.subprocess.Popen, "--remote-debugging-port=0", marker
             )
-            chromedriver = subprocess.Popen(  # noqa: S603 - a script this test wrote
-                [str(chromedriver_path), "--port=0", marker], start_new_session=True
+            chromedriver = subprocess.Popen(  # noqa: S603 - cat, under a stand-in argv[0]
+                [str(chromedriver_path), "--", "--port=0", marker],
+                executable="/bin/cat",
+                cwd=tmp_path,
+                stdout=subprocess.DEVNULL,
+                start_new_session=True,
             )
         ours = {str(chrome.pid), str(chromedriver.pid)}
         # The real table, cut to this test's two rows: a reap here must not
