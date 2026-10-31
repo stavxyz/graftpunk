@@ -10,6 +10,7 @@ import ast
 import hashlib
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -223,6 +224,10 @@ class TestCheckedNamesOfValuesUnderTheName:
             f'{{"csrftoken": {{"value": "{_ROTATED}"}}}}',
             f'{{"csrftoken": ["a", "{_ROTATED}"]}}',
             "csrftoken=7Xq9WzT8823LmPk",
+            f'{{"csrftoken": {{"{_ROTATED}": true}}, "n": 1}}',
+            '{"csrftoken": 8237498273492}',
+            '{"csrftoken": 827364918273649182736491}',
+            '{"next": "/orders?csrftoken=918273645546372819&page=2"}',
         ],
         ids=[
             "json",
@@ -238,6 +243,10 @@ class TestCheckedNamesOfValuesUnderTheName:
             "nested-object",
             "array",
             "number-run-on",
+            "opaque-key",
+            "long-number",
+            "24-digit-number",
+            "digits-in-a-query",
         ],
     )
     def test_a_value_under_the_name_that_is_not_form_state_keeps_it_checked(
@@ -249,30 +258,100 @@ class TestCheckedNamesOfValuesUnderTheName:
     @pytest.mark.parametrize(
         "body",
         [
+            f"<script>Cookies.set('csrftoken', '{_ROTATED}');</script>",
+            "<script>var t = getCookie('csrftoken');</script>",
+            f'{{"cookies": [{{"name": "csrftoken", "value": "{_ROTATED}"}}], "n": 1}}',
+            f'[{{"key": "csrftoken", "val": "{_ROTATED}"}}]',
+            f"<r><csrftoken>{_ROTATED}</csrftoken><n>1</n></r>",
+            f'<textarea name="csrftoken">{_ROTATED}</textarea>',
+            f"<script>window.cfg = {{csrftoken: {{value: '{_ROTATED}'}}}};</script>",
+            f'<script>window.cookies["csrftoken"] = "{_ROTATED}";</script>',
+            f"<tr><td>csrftoken</td><td>{_ROTATED}</td></tr>",
+            json.dumps({"y": json.dumps({"x": json.dumps({"csrftoken": _ROTATED})})}),
+            '{"csrftoken": 7, "note": "see csrftoken"}',
+            '<input name="csrftoken">',
+            '<input data-name="csrftoken" value="Ann Lee">',
+            json.dumps({"x": json.dumps({"csrftoken": json.dumps({"v": _ROTATED})})}),
+            '<script>var c = {csrftoken: "" + token};</script>',
+            "<script>var c = {csrftoken: readToken()};</script>",
+            f"csrftoken=({_ROTATED})",
+            '{"csrftoken": "Ann\\q"}',
+            json.dumps({"log": f'csrftoken: \\"{_ROTATED}\\"'}),
+            f"csrftoken='{_ROTATED}",
+            f'<input name="csrftoken" value="Ann Lee"><input name="csrftoken" value="{_ROTATED}">',
+        ],
+        ids=[
+            "js-call",
+            "js-call-name-only",
+            "name-value-pair",
+            "key-value-pair",
+            "element-body",
+            "textarea",
+            "nested-js-literal",
+            "js-bracket",
+            "table-cell",
+            "double-escaped",
+            "an-honest-pair-and-a-mention",
+            "a-named-element-with-no-value",
+            "an-element-named-by-another-attribute",
+            "escaped-json-in-an-escaped-string",
+            "a-concatenation",
+            "a-call",
+            "a-value-in-brackets",
+            "a-string-that-is-not-json",
+            "a-doubly-escaped-value",
+            "an-unclosed-quote",
+            "a-second-named-element",
+        ],
+    )
+    def test_an_occurrence_the_reader_cannot_pair_with_a_value_keeps_it_checked(
+        self, body: str
+    ) -> None:
+        """A name leaves the checked names only when every whole-name occurrence of
+        it is a name-value pair the reader parses: any other mention may sit
+        beside a value no recorded header carried (#313)."""
+        values = {"csrftoken": frozenset({"Recorded55Xc2Lp9"})}
+        assert checked_names_of(values, body) == ("csrftoken",)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
             '{"csrftoken": 7}',
-            '{"csrftoken": 8237498273492}',
+            '{"csrftoken": 4411}',
+            '{"csrftoken": 1.5}',
             '{"csrftoken": true, "n": 1}',
             '{"csrftoken": null}',
             '{"csrftoken": ""}',
             '{"csrftoken": "alice"}',
             '{"csrftoken": {"name": "Ann Lee", "count": 2}}',
             "a=1&csrftoken=en-US",
+            "/orders?csrftoken=2&a=1",
             '<input name="csrftoken" value="Ann Lee">',
-            "<script>var t = getCookie('csrftoken');</script>",
+            '{"csrftoken": {"csrftoken": 1}}',
+            '{"csrftoken": {"label": "csrftoken"}}',
+            '{"note": "' + "ß" * 12 + '", "csrftoken": 7}',
+            "/a?csrftoken=10.5.2&n=1",
+            '<script>var s = "{\\"csrftoken\\": \\"en\\"}";</script>',
             f'<script>window.csrftoken = "{_ROTATED}";</script>',
             f'{{"x-csrftoken": "{_ROTATED}"}}',
         ],
         ids=[
             "number",
-            "long-number",
+            "four-digit-number",
+            "float",
             "boolean",
             "null",
             "empty",
             "word",
             "object-of-form-state",
             "form-state-in-a-form",
+            "digit-in-a-query",
             "name-in-an-input",
-            "name-with-no-value",
+            "a-key-inside-its-own-value",
+            "a-string-inside-its-own-value",
+            "after-characters-casefolded-to-two",
+            "a-version-in-a-query",
+            "json-in-a-script-string",
             "not-a-whole-name-after-a-dot",
             "not-a-whole-name-after-a-hyphen",
         ],
@@ -284,6 +363,38 @@ class TestCheckedNamesOfValuesUnderTheName:
         fixtures check looks for it, so a value after them does not count."""
         values = {"csrftoken": frozenset({"Recorded55Xc2Lp9"})}
         assert checked_names_of(values, body) == ()
+
+    @pytest.mark.parametrize("attribute", ["name", "id", "property", "itemprop", "http-equiv"])
+    @pytest.mark.parametrize("holder", ["value", "content"])
+    def test_an_element_named_by_any_naming_attribute_is_judged_by_its_value(
+        self, attribute: str, holder: str
+    ) -> None:
+        values = {"csrftoken": frozenset({"Recorded55Xc2Lp9"})}
+        honest = f'<meta {attribute}="csrftoken" {holder}="Ann Lee">'
+        opaque = f'<meta {attribute}="csrftoken" {holder}="{_ROTATED}">'
+        assert checked_names_of(values, honest) == ()
+        assert checked_names_of(values, opaque) == ("csrftoken",)
+
+    def test_the_cost_grows_linearly_with_the_body(self) -> None:
+        """Each occurrence is read once, and one inside a value already read is
+        not read again, so many or nested occurrences stay linear."""
+        values = {"csrftoken": frozenset({"Recorded55Xc2Lp9"}), "id": frozenset({_VALUE})}
+        unit = (
+            '<input name="csrftoken" value="Ann Lee"> {"csrftoken": [1, {"csrftoken": 2}]} '
+            "/a?csrftoken=en&id=7 "
+        )
+
+        def cost(n: int) -> float:
+            body = unit * n
+            best = float("inf")
+            for _ in range(3):
+                start = time.process_time()
+                assert checked_names_of(values, body) == ()
+                best = min(best, time.process_time() - start)
+            return best
+
+        small, large = cost(1000), cost(8000)
+        assert large / small < 16, (small, large)
 
     def test_names_not_known_are_not_judged_by_what_the_body_holds(self) -> None:
         assert checked_names_of({"csrftoken": None}, '{"csrftoken": 7}') == ("csrftoken",)

@@ -1516,7 +1516,65 @@ class TestFlaggedNamesAreJudgedByTheirValues:
         (tree / "get_orders_{order_id}.json").write_text(json.dumps({"order": 2, "id": rotated}))
         (problem,) = check_fixtures_tree(tree).problems
         assert "contains the flagged name 'id'" in problem
-        assert "under which the capture held a value that is not form state" in problem
+        assert "other than in a name-value pair holding nothing" in problem
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<script>Cookies.set('id', 'Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf');</script>",
+            {"cookies": [{"name": "id", "value": "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf"}], "n": 1},
+            "<r><id>Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</id><n>1</n></r>",
+            '<textarea name="id">Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</textarea>',
+            "<script>window.cfg = {id: {value: 'Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf'}};</script>",
+            "<tr><td>id</td><td>Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</td></tr>",
+            {"next": "/orders?id=918273645546372819&page=2"},
+            {"id": {"Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf": True}, "n": 1},
+            {"id": 827364918273649182736491},
+        ],
+        ids=[
+            "js-call",
+            "name-value-pair",
+            "element-body",
+            "textarea",
+            "nested-js-literal",
+            "table-cell",
+            "query-digits",
+            "opaque-key",
+            "long-number",
+        ],
+    )
+    def test_a_value_beside_the_name_in_a_shape_not_read_keeps_the_name_checked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: object
+    ) -> None:
+        """A token rotated or set by a script, beside the cookie's name in a shape
+        the reader cannot pair with a value or with a value that is not harmless:
+        the name stays checked and the fixture keeping it fails, as under a
+        schema 2 sidecar."""
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, body)
+        assert sidecar["checked_names"] == ["id"]
+        (tree / "get_orders_{order_id}.json").write_text(json.dumps([body, "edited"]))
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "contains the flagged name 'id'" in problem
+
+    def test_a_cookie_sent_empty_and_then_set_stays_checked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Its one value came from a Set-Cookie, so what the browser held later is
+        unknown, and the empty send does not make it known."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        home = _entry("GET", "https://api.myshop.example.com/", body="{}")
+        home["request"]["cookies"] = [{"name": "myshop_session", "value": ""}]
+        home["response"]["cookies"] = [{"name": "myshop_session", "value": _SESSION_VALUE}]
+        home["response"]["headers"].append(
+            {"name": "Set-Cookie", "value": f"myshop_session={_SESSION_VALUE}; Path=/"}
+        )
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"n": 1}')
+        _write_run(observe_base, "myshop", "run-1", [home, order])
+        out_dir = tmp_path / "captures"
+        assert _invoke_fixtures(out_dir).exit_code == 0
+        (meta,) = out_dir.glob("*.meta.json")
+        assert json.loads(meta.read_text())["checked_names"] == ["myshop_session"]
 
     @pytest.mark.parametrize(
         "body",

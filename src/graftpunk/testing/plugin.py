@@ -307,8 +307,8 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     outside its declared format (through the owner,
     :mod:`graftpunk.testing.sidecar`), a fixture that cannot be read, a
     fixture that is byte for byte its capture, and a flagged cookie or token
-    name in a fixture, a cookie name only where the capture held its value or a
-    value under it that is not form state (the sidecar's ``checked_names``;
+    name in a fixture, a cookie name only where the capture held its value or held
+    the name other than in a name-value pair holding nothing (the sidecar's ``checked_names``;
     every flagged name for a sidecar from before schema 3).
     It does not judge
     whether invented content is invented well. A sidecar with no capture hash
@@ -387,11 +387,12 @@ def _flagged_name_pattern(name: str) -> re.Pattern[str]:
 def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> list[str]:
     """One problem per name to check (:attr:`Sidecar.names_to_check`) found in the
     fixture's body. A schema 3 sidecar names every flagged token name, and each
-    flagged cookie name whose recorded value the capture held, under which the
-    capture held a value that is not form state, or whose values gp did not know
-    in full (:func:`graftpunk.devtools.captures.checked_names_of`). So an honest
+    flagged cookie name whose recorded value the capture held, that the capture
+    held anywhere but in a name-value pair whose value holds nothing, or whose
+    values gp did not know in full
+    (:func:`graftpunk.devtools.captures.checked_names_of`). So an honest
     ``"id": 7`` key passes when a recording sent a cookie named ``id`` and its
-    capture held only numbers or form state under ``id``. A schema 1 or 2 sidecar
+    capture held ``id`` only as keys of numbers or form state. A schema 1 or 2 sidecar
     records no such list, so every flagged name is looked for, as before, and the
     problem says how to regenerate it.
 
@@ -417,16 +418,16 @@ def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> lis
     if sidecar.checked_names is None:
         regenerate = (
             " Or regenerate the sidecar with gp observe fixtures (sidecar schema 3), "
-            "which looks for a flagged cookie name only where the capture held its value "
-            "or a value under it that is not form state."
+            "which leaves a flagged cookie name out where the capture held none of its "
+            "values and held the name only in name-value pairs holding nothing."
         )
         source = "a cookie or token name the capture's digest recorded"
     else:
         regenerate = ""
         source = (
             "a token name, or a cookie name whose recorded value the capture held, "
-            "under which the capture held a value that is not form state, or whose "
-            "value the recording did not keep"
+            "that the capture held other than in a name-value pair holding nothing, "
+            "or whose value the recording did not keep"
         )
     for name in sidecar.names_to_check:
         if not name:
