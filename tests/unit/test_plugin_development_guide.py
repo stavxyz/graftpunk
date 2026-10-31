@@ -29,7 +29,7 @@ from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.selection import command_identifier
 from graftpunk.har.naming import parse_command_spec
-from graftpunk.testing.sidecar import Sidecar, sidecar_text
+from graftpunk.testing.sidecar import ObserveRun, Sidecar, sidecar_text
 from tests.unit.guide_harness import (
     GUIDE,
     GUIDE_TEXT,
@@ -83,6 +83,7 @@ def test_the_sidecar_json_example_matches_sidecar_text_byte_for_byte() -> None:
         flagged_names=tuple(doc_json["flagged_names"]),
         flagged_reasons={name: tuple(why) for name, why in doc_json["flagged_reasons"].items()},
         checked_names=tuple(doc_json["checked_names"]),
+        observe_run=ObserveRun(**doc_json["observe_run"]),
         redacted_names=doc_json["redacted_names"],
     )
     assert block.strip() == sidecar_text(sidecar).strip()

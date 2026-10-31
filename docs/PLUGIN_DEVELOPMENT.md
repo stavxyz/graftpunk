@@ -2420,8 +2420,12 @@ is kept: read both lists before you commit a sidecar.
       "session_name"
     ]
   },
+  "observe_run": {
+    "run": "20261006-101500-4242",
+    "session": "myshop"
+  },
   "redacted_names": 0,
-  "schema": 3,
+  "schema": 4,
   "status": 200
 }
 ```

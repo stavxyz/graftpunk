@@ -83,7 +83,10 @@ body never held, which the fixtures check in the suite does not: it holds names
 only, and from sidecar schema 3 it looks for a flagged cookie name only where the
 capture held one of that cookie's recorded values or held the name other than
 in a name-value pair holding nothing, so a recorded cookie value pasted into a fixture from
-elsewhere, even under its cookie's name, passes the suite.
+elsewhere, even under its cookie's name, passes the suite in CI. From sidecar schema 4
+the suite makes this same comparison itself when the sidecar's own observe run is on
+the machine running it: graftpunk.testing.recorded is the package's copy of
+recorded_values and recorded_leaks, and a test holds the two to the same output.
 
 Exit 0 when nothing survived and the sidecar matches, 1 when something survived,
 a recorded value of a flagged name is in the fixture, or the sidecar differs, 2 on
@@ -203,7 +206,7 @@ def body_values(text: str) -> list[str]:
     or the text parts of anything else."""
     try:
         return _json_values(json.loads(text))
-    except ValueError:
+    except (ValueError, RecursionError):
         parser = _TextParts()
         parser.feed(text)
         parser.close()

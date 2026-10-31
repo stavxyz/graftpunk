@@ -15,9 +15,11 @@ import pytest
 
 from graftpunk.contracts import current_schema
 from graftpunk.testing.sidecar import (
+    CONTEXT_REASONS,
     FIXTURES_PLACEHOLDER,
     FLAGGED_REASONS,
     SIDECAR_FIELDS,
+    ObserveRun,
     Sidecar,
     SidecarError,
     is_sidecar,
@@ -65,6 +67,9 @@ class TestTheFormat:
 
     def test_version_three_adds_checked_names(self) -> None:
         assert SIDECAR_FIELDS[3] == SIDECAR_FIELDS[2] | {"checked_names"}
+
+    def test_version_four_adds_observe_run(self) -> None:
+        assert SIDECAR_FIELDS[4] == SIDECAR_FIELDS[3] | {"observe_run"}
 
     def test_every_version_up_to_the_current_one_has_a_key_set(self) -> None:
         assert set(SIDECAR_FIELDS) == set(range(1, current_schema("sidecar") + 1))
@@ -195,6 +200,108 @@ class TestLoad:
         )
         with pytest.raises(SidecarError, match=match):
             load_sidecar(_write(tmp_path / "x.json.meta.json", payload))
+
+    def test_a_schema_3_key_set_is_refused_under_schema_4(self, tmp_path: Path) -> None:
+        payload = _v1(schema=4, flagged_reasons={}, checked_names=[])
+        with pytest.raises(SidecarError, match="missing keys: observe_run"):
+            load_sidecar(_write(tmp_path / "x.json.meta.json", payload))
+
+    def test_a_schema_3_sidecar_names_no_run(self, tmp_path: Path) -> None:
+        """A sidecar committed by 1.33.0 or 1.34.0 loads unchanged, with no run to
+        compare its fixture with."""
+        payload = _v1(schema=3, flagged_reasons={}, checked_names=[])
+        assert load_sidecar(_write(tmp_path / "x.json.meta.json", payload)).observe_run is None
+
+    def test_schema_4_round_trips_its_observe_run(self, tmp_path: Path) -> None:
+        sidecar = Sidecar(
+            status=200,
+            content_type="application/json",
+            capture_sha256="ab" * 32,
+            flagged_reasons={"NID": ("out_of_scope_only", "sent_only", "value_not_form_state")},
+            checked_names=(),
+            observe_run=ObserveRun(session="myshop", run="20261006-101500-4242"),
+        )
+        path = _write(tmp_path / "x.json.meta.json", json.loads(sidecar_text(sidecar)))
+        assert json.loads(path.read_text())["observe_run"] == {
+            "run": "20261006-101500-4242",
+            "session": "myshop",
+        }
+        assert load_sidecar(path) == sidecar
+
+    def test_a_hand_made_schema_4_sidecar_names_no_run(self, tmp_path: Path) -> None:
+        payload = _v1(schema=4, flagged_reasons={}, checked_names=[], observe_run=None)
+        assert load_sidecar(_write(tmp_path / "x.json.meta.json", payload)).observe_run is None
+
+    @pytest.mark.parametrize(
+        ("observe_run", "match"),
+        [
+            ({"session": "myshop", "run": "../other/run-1"}, "observe_run.run must be a run id"),
+            ({"session": "myshop", "run": "a/b"}, "observe_run.run must be a run id"),
+            ({"session": "myshop", "run": ".hidden"}, "observe_run.run must be a run id"),
+            ({"session": "myshop", "run": ""}, "observe_run.run must be a run id"),
+            ({"session": "", "run": "run-1"}, "observe_run.session must be a non-empty"),
+            ({"session": "my\nshop", "run": "run-1"}, "observe_run.session must be a non-empty"),
+            ({"session": 1, "run": "run-1"}, "observe_run.session must be a non-empty"),
+            ({"session": "myshop"}, "exactly session and run"),
+            ({"session": "myshop", "run": "run-1", "path": "/x"}, "exactly session and run"),
+            ("myshop/run-1", "exactly session and run"),
+        ],
+        ids=[
+            "climbs",
+            "two-components",
+            "dotfile",
+            "empty-run",
+            "empty-session",
+            "control-character",
+            "number",
+            "missing-run",
+            "extra-key",
+            "string",
+        ],
+    )
+    def test_schema_4_observe_run_is_a_session_and_one_run_id(
+        self, tmp_path: Path, observe_run: object, match: str
+    ) -> None:
+        """The run id is a single path component, so a committed sidecar cannot
+        point the local value check outside its session's runs."""
+        payload = _v1(schema=4, flagged_reasons={}, checked_names=[], observe_run=observe_run)
+        with pytest.raises(SidecarError, match=match):
+            load_sidecar(_write(tmp_path / "x.json.meta.json", payload))
+
+    @pytest.mark.parametrize(
+        "reasons",
+        [["out_of_scope_only"], ["out_of_scope_only", "sent_only"]],
+        ids=["alone", "with-sent-only"],
+    )
+    def test_out_of_scope_only_never_flags_a_name_alone(
+        self, tmp_path: Path, reasons: list[str]
+    ) -> None:
+        payload = _v1(
+            schema=4,
+            flagged_names=["NID"],
+            flagged_reasons={"NID": reasons},
+            checked_names=[],
+            observe_run=None,
+        )
+        with pytest.raises(SidecarError, match="must name a reason that flags it"):
+            load_sidecar(_write(tmp_path / "x.json.meta.json", payload))
+
+    def test_out_of_scope_only_is_refused_in_a_schema_3_sidecar(self, tmp_path: Path) -> None:
+        """A schema 3 reader does not know the reason, so a schema 3 sidecar that
+        holds it was not written by gp."""
+        payload = _v1(
+            schema=3,
+            flagged_names=["NID"],
+            flagged_reasons={"NID": ["out_of_scope_only", "value_not_form_state"]},
+            checked_names=[],
+        )
+        with pytest.raises(SidecarError, match="sidecar schema 3 does not hold: out_of_scope_only"):
+            load_sidecar(_write(tmp_path / "x.json.meta.json", payload))
+
+    def test_the_context_reasons_are_the_digests(self) -> None:
+        from graftpunk.har.digest import CONTEXT_REASONS as DIGEST_CONTEXT_REASONS
+
+        assert DIGEST_CONTEXT_REASONS == CONTEXT_REASONS
 
     def test_a_sidecar_built_without_checked_names_writes_every_flagged_name(self) -> None:
         """A Sidecar that does not say which names to check is written to check

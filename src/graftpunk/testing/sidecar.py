@@ -33,6 +33,13 @@ the ones its ``Cookie`` and ``Set-Cookie`` headers carried, so a value it took
 that no header recorded (a token a script set after the last request) is caught
 only through the name beside it, while a token's value can come from sources
 the recording does not hold (``graftpunk.devtools.captures.checked_names_of``).
+From schema 4, ``observe_run`` names the ``gp observe`` run the capture came
+from, as ``{"session": ..., "run": ...}``, the session name and run id
+``gp observe`` names a run by, so the fixtures check can also compare a fixture
+with every value that run recorded when the run is on the machine running the
+suite (:mod:`graftpunk.testing.recorded`); null for a fixture that came off no
+run. It is never a path and holds nothing derived from a recorded value. Schema 4
+also adds the context reason ``out_of_scope_only``.
 A name that holds an account value
 (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``
@@ -67,8 +74,10 @@ from graftpunk.contracts import UnknownSchemaError, current_schema, refuse_unkno
 from graftpunk.exceptions import GraftpunkError
 
 __all__ = [
+    "CONTEXT_REASONS",
     "FIXTURES_PLACEHOLDER",
     "FLAGGED_REASONS",
+    "ObserveRun",
     "SIDECAR_FIELDS",
     "SIDECAR_SUFFIX",
     "Sidecar",
@@ -122,6 +131,19 @@ SIDECAR_FIELDS: dict[int, frozenset[str]] = {
             "redacted_names",
         }
     ),
+    4: frozenset(
+        {
+            "status",
+            "content_type",
+            "body_params",
+            "capture_sha256",
+            "flagged_names",
+            "flagged_reasons",
+            "checked_names",
+            "observe_run",
+            "redacted_names",
+        }
+    ),
 }
 """The keys each schema version holds besides ``schema`` itself."""
 
@@ -135,13 +157,26 @@ FLAGGED_REASONS: frozenset[str] = frozenset(
         "value_not_kept",
         "no_value_seen",
         "sent_only",
+        "out_of_scope_only",
     }
 )
-"""The reasons a schema 2 sidecar may give for a flagged name, as
+"""The reasons a sidecar may give for a flagged name, as
 ``graftpunk.har.digest.flagged_reasons_of`` writes them (a test holds the two
 equal; this module imports nothing from the digest). The set is closed like the
 key set: a new reason is a new schema version, so an older graftpunk never
-reads a reason it cannot explain."""
+reads a reason it cannot explain. :data:`_REASON_SINCE` names the schema a
+reason joined in, and the loader refuses it in an earlier one."""
+
+CONTEXT_REASONS: frozenset[str] = frozenset({"sent_only", "out_of_scope_only"})
+"""The reasons that say where a cookie was seen and never flag a name alone, so
+a sidecar may not give one of them, or both, as a name's only reasons."""
+
+_REASON_SINCE: dict[str, int] = {"out_of_scope_only": 4}
+"""The schema each reason added after schema 2 joined in."""
+
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+"""A run id as ``graftpunk.observe.storage.ObserveStorage`` accepts one: a single
+path component that cannot climb out of its session's directory."""
 
 _CAPTURE_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -152,6 +187,34 @@ class SidecarError(GraftpunkError):
     A ``GraftpunkError``, not a ``ValueError``: plugin command code routinely
     catches ``ValueError`` around a fixture-backed ``.json()`` call in a test,
     and a malformed sidecar must not be swallowed by that catch."""
+
+
+@dataclass(frozen=True)
+class ObserveRun:
+    """The ``gp observe`` run a capture came from: the session name and the run id
+    ``gp observe`` names it by (``gp observe show SESSION RUN_ID``). Neither is a
+    path, and the run id is one path component (:data:`_RUN_ID_RE`), so a
+    committed sidecar cannot point the fixtures check anywhere but a run
+    directory of the session it names."""
+
+    session: str
+    run: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.session, str)
+            or not self.session.strip()
+            or not self.session.isprintable()
+        ):
+            raise SidecarError(
+                "observe_run.session must be a non-empty string of printable characters, "
+                f"got {self.session!r}"
+            )
+        if not isinstance(self.run, str) or not _RUN_ID_RE.fullmatch(self.run):
+            raise SidecarError(
+                "observe_run.run must be a run id (letters, digits, '.', '_' and '-', "
+                f"starting with a letter or digit), got {self.run!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -178,6 +241,9 @@ class Sidecar:
     # in flagged_names; None for a schema 1 or 2 sidecar, which did not record it,
     # and then every flagged name is looked for (names_to_check).
     checked_names: tuple[str, ...] | None = None
+    # The observe run the capture came from; None for a sidecar from before schema
+    # 4, a hand-made fixture's, or one whose writer was not given the run.
+    observe_run: ObserveRun | None = None
 
     def __post_init__(self) -> None:
         """Hold every field to the loader's own type and sign checks, sort and dedupe
@@ -220,6 +286,10 @@ class Sidecar:
                     f"{list(self.flagged_names)!r}"
                 )
             object.__setattr__(self, "checked_names", checked)
+        if self.observe_run is not None and not isinstance(self.observe_run, ObserveRun):
+            raise SidecarError(
+                f"observe_run must be an ObserveRun or None, got {self.observe_run!r}"
+            )
 
     @property
     def declared(self) -> bool:
@@ -238,7 +308,8 @@ def _checked_reasons(sidecar: Sidecar) -> dict[str, tuple[str, ...]]:
     """*sidecar*'s ``flagged_reasons`` with each list sorted and deduplicated, after
     refusing a mapping that is not keyed by exactly its flagged names (an empty
     one is a schema 1 sidecar's) or that holds a reason outside
-    :data:`FLAGGED_REASONS`, an empty list, or ``sent_only`` alone."""
+    :data:`FLAGGED_REASONS`, an empty list, or context reasons
+    (:data:`CONTEXT_REASONS`) alone."""
     reasons = sidecar.flagged_reasons
     if not isinstance(reasons, Mapping):
         raise SidecarError(f"flagged_reasons must be a mapping, got {reasons!r}")
@@ -259,7 +330,7 @@ def _checked_reasons(sidecar: Sidecar) -> dict[str, tuple[str, ...]]:
             raise SidecarError(
                 f"flagged_reasons[{name!r}] has unknown reasons: {', '.join(unknown)}"
             )
-        if not set(why) - {"sent_only"}:
+        if not set(why) - CONTEXT_REASONS:
             raise SidecarError(
                 f"flagged_reasons[{name!r}] must name a reason that flags it, got {list(why)!r}"
             )
@@ -304,6 +375,11 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
         "flagged_names": list(sidecar.flagged_names),
         "flagged_reasons": {name: list(why) for name, why in reasons.items()},
         "checked_names": list(sidecar.names_to_check),
+        "observe_run": (
+            None
+            if sidecar.observe_run is None
+            else {"run": sidecar.observe_run.run, "session": sidecar.observe_run.session}
+        ),
         "redacted_names": sidecar.redacted_names,
     }
 
@@ -355,6 +431,14 @@ def load_sidecar(path: Path) -> Sidecar:
     redacted_names = _integer(data, "redacted_names", path)
     flagged_reasons = _reasons(data, path) if "flagged_reasons" in fields else {}
     checked_names = _names(data, "checked_names", path) if "checked_names" in fields else None
+    observe_run = _observe_run(data, path) if "observe_run" in fields else None
+    for name, why in flagged_reasons.items():
+        newer = sorted(r for r in why if _REASON_SINCE.get(r, 0) > version)
+        if newer:
+            raise SidecarError(
+                f"{path}: flagged_reasons[{name!r}] has reasons sidecar schema {version} "
+                f"does not hold: {', '.join(newer)}"
+            )
     if "flagged_reasons" in fields and set(flagged_reasons) != set(flagged_names):
         # Sidecar reads an empty mapping as a schema 1 sidecar's; from schema 2
         # every flagged name carries its reasons.
@@ -371,6 +455,7 @@ def load_sidecar(path: Path) -> Sidecar:
             redacted_names=redacted_names,
             flagged_reasons=flagged_reasons,
             checked_names=checked_names,
+            observe_run=observe_run,
         )
     except SidecarError as exc:
         raise SidecarError(f"{path}: {exc}") from exc
@@ -406,6 +491,21 @@ def _reasons(data: dict[str, object], path: Path) -> dict[str, tuple[str, ...]]:
             f"{path}: flagged_reasons must be an object of lists of strings, got {value!r}"
         )
     return {name: tuple(why) for name, why in value.items()}
+
+
+def _observe_run(data: dict[str, object], path: Path) -> ObserveRun | None:
+    value = data["observe_run"]
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"session", "run"}:
+        raise SidecarError(
+            f"{path}: observe_run must be null or an object of exactly session and run, "
+            f"got {value!r}"
+        )
+    try:
+        return ObserveRun(session=value["session"], run=value["run"])
+    except SidecarError as exc:
+        raise SidecarError(f"{path}: {exc}") from exc
 
 
 def _names(data: dict[str, object], key: str, path: Path) -> tuple[str, ...]:

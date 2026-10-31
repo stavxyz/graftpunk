@@ -14,6 +14,7 @@ import pytest
 from graftpunk.har.digest import DigestSource, digest, flagged_values_of
 from graftpunk.har.parser import parse_har_file
 from graftpunk.testing.decoding import combined_forms, decoded_forms, value_forms
+from graftpunk.testing.recorded import recorded_leaks, recorded_values
 from tests.unit.guide_harness import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "skills" / "graft" / "scripts" / "fixture-leaks.py"
@@ -144,3 +145,107 @@ def test_the_skill_script_reads_every_value_gp_observe_fixtures_reads(tmp_path: 
     assert script["csrf-token"] == {"OldTok9Qv2Rt7", "NewTok3Lp9"}
     assert script["csrfmiddlewaretoken"] == {"Hk4Rt8Wz3Ny6"}
     assert script["X-CSRF-Token"] == {"Hd5Ks0Gf2Lq8", "Wq3Lk6Pd9Xc2"}
+
+
+def _run_with_every_source(tmp_path: Path) -> object:
+    """A run whose HAR records flagged values in every place ``--har`` reads: a body
+    kept in bodies/, a page source, a Content-Type header in lower case, cookie
+    arrays, Cookie and Set-Cookie headers, a header token in two cases, a request
+    body in postData and one kept in a file, a DOM snapshot, and a snapshot
+    reference that climbs out of the run, which is not read."""
+    html = [{"name": "content-type", "value": "text/html"}]
+    kept = _page(
+        "https://myshop.example.com/account",
+        html,
+        {"mimeType": "text/html", "_bodyFile": "bodies/1.html"},
+    )
+    (tmp_path / "bodies").mkdir()
+    (tmp_path / "bodies" / "1.html").write_text(
+        '<form><input type="hidden" name="csrfmiddlewaretoken" value="Hk4Rt8Wz3Ny6"></form>'
+    )
+    kept["request"]["_domSnapshot"] = "bodies/snap.html"
+    kept["request"]["_domAfter"] = "../outside.html"
+    (tmp_path / "bodies" / "snap.html").write_text('<meta name="csrf-token" content="Snap5Qv2Rt7">')
+    (tmp_path.parent / "outside.html").write_text('<meta name="csrf-token" content="Outside9">')
+    inline = _page(
+        "https://myshop.example.com/cart",
+        [*html, {"name": "Set-Cookie", "value": "sessionid=SetByHeader88; HttpOnly"}],
+        {"mimeType": "text/html", "text": '<meta name="csrf-token" content="OldTok9Qv2Rt7">'},
+    )
+    inline["response"]["cookies"] = [{"name": "sessionid", "value": "FromArray66"}]
+    inline["request"]["headers"] = [
+        {"name": "Cookie", "value": "sessionid=FromHeader77; id=Xk3Lp9Qv2Rt7"},
+        {"name": "x-csrf-token", "value": "Wq3Lk6Pd9Xc2"},
+    ]
+    api = _page("https://myshop.example.com/api/cart", [], {"mimeType": "application/json"})
+    api["request"]["headers"] = [{"name": "X-CSRF-Token", "value": "Hd5Ks0Gf2Lq8"}]
+    api["request"]["postData"] = {"text": '{"login": {"password_token": "Pw8Tk2Lm5Qx"}}'}
+    form = _page("https://myshop.example.com/api/form", [], {"mimeType": "application/json"})
+    form["request"]["_postDataFile"] = "bodies/post.txt"
+    (tmp_path / "bodies" / "post.txt").write_text("csrfmiddlewaretoken=Fm3Kp7Lq2Wz&q=shoes")
+    (tmp_path / "page-source.html").write_text('<meta name="csrf-token" content="NewTok3Lp9">')
+    return {"log": {"version": "1.2", "entries": [kept, inline, api, form]}}
+
+
+_FLAGGED = {
+    "X-CSRF-Token",
+    "csrf-token",
+    "csrfmiddlewaretoken",
+    "id",
+    "password_token",
+    "sessionid",
+    "x-csrf-token",
+}
+
+
+def test_the_package_reads_every_value_the_skill_script_reads(tmp_path: Path) -> None:
+    """graftpunk.testing.recorded is the package's copy of ``fixture-leaks.py
+    --har``; the script cannot import graftpunk, so the two readers are held to
+    the same output here."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    har = _run_with_every_source(run_dir)
+    package = recorded_values(har, _FLAGGED, run_dir)
+    assert package == _load_script().recorded_values(har, set(_FLAGGED), run_dir)
+    assert package["csrf-token"] == {"OldTok9Qv2Rt7", "NewTok3Lp9", "Snap5Qv2Rt7"}
+    assert package["csrfmiddlewaretoken"] == {"Hk4Rt8Wz3Ny6", "Fm3Kp7Lq2Wz"}
+    assert package["password_token"] == {"Pw8Tk2Lm5Qx"}
+    assert package["sessionid"] == {"FromArray66", "FromHeader77", "SetByHeader88"}
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        '{"id": 7, "sessionid": "FromHeader77"}',
+        '{\n  "a": 1,\n  "b": "x FromArray66 y",\n  "c": "FromArray66"\n}',
+        '{"u": "/x?t=Wq3Lk6Pd9Xc2"}',
+        '{"u": "/x?t=Wq%33Lk6Pd9Xc2"}',
+        '<div data-x="{&quot;t&quot;:&quot;Hd5Ks0Gf2Lq8&quot;}">',
+        '{"s": "\\u0048d5Ks0Gf2Lq8"}',
+        "\n".join(f"line {n} OldTok9Qv2Rt7" for n in range(8)),
+        '{"id": "Xk3Lp9", "short": "Xk"}',
+        '{"nothing": "recorded"}',
+        "",
+    ],
+    ids=[
+        "json",
+        "lines",
+        "url",
+        "percent",
+        "html-escaped-json",
+        "unicode-escape",
+        "many-lines",
+        "partial",
+        "clean",
+        "empty",
+    ],
+)
+def test_the_package_reports_a_leak_as_the_skill_script_does(tmp_path: Path, fixture: str) -> None:
+    script = _load_script()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    values = recorded_values(_run_with_every_source(run_dir), _FLAGGED, run_dir)
+    expected = script.recorded_leaks(script._Fixture(fixture), values)
+    assert recorded_leaks(fixture, values) == expected
+    for line in expected:
+        assert not any(value in line for found in values.values() for value in found)

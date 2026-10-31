@@ -574,9 +574,11 @@ class TestFixturesCommand:
             "flagged_names",
             "flagged_reasons",
             "checked_names",
+            "observe_run",
             "redacted_names",
         }
-        assert sidecar["schema"] == 3
+        assert sidecar["schema"] == 4
+        assert sidecar["observe_run"] == {"run": "run-1", "session": "myshop"}
         assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
         assert sidecar["flagged_names"] == ["shop_session"]
         assert sidecar["flagged_reasons"] == {
@@ -587,6 +589,23 @@ class TestFixturesCommand:
         assert sidecar["checked_names"] == ["shop_session"]
         assert _SESSION_VALUE not in json.dumps(sidecar)
         assert "page=2" not in json.dumps(sidecar)
+
+    def test_a_run_directory_gp_did_not_name_is_named_in_no_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A run id is one path component of letters, digits, '.', '_' and '-'; a
+        directory made by hand under another name is written as no run, and the
+        command says so."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
+        _write_run(observe_base, "myshop", "copied run", [order])
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        assert "is not named as gp observe names a run" in strip_ansi(result.output)
+        (meta,) = out_dir.glob("*.meta.json")
+        assert json.loads(meta.read_text())["observe_run"] is None
 
     def test_the_sidecar_counts_an_id_cookie_name_and_holds_no_trace_of_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1495,14 +1514,30 @@ class TestFlaggedNamesAreJudgedByTheirValues:
         """A sidecar committed by 1.32.x keeps today's behaviour: every flagged
         name is looked for, and the problem says how to regenerate it."""
         tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411, "total": "12.50"})
-        del sidecar["checked_names"]
+        del sidecar["checked_names"], sidecar["observe_run"]
         sidecar["schema"] = 2
         (meta,) = tree.glob("*.meta.json")
         meta.write_text(json.dumps(sidecar))
         (tree / "get_orders_{order_id}.json").write_text(json.dumps({"id": 7, "total": "1.00"}))
         (problem,) = check_fixtures_tree(tree).problems
         assert "contains the flagged name 'id'" in problem
-        assert "regenerate the sidecar with gp observe fixtures (sidecar schema 3)" in problem
+        assert "regenerate the sidecar with gp observe fixtures (sidecar schema 4)" in problem
+
+    def test_the_run_gp_observe_fixtures_names_is_the_one_the_check_reads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#345 end to end: the sidecar names the run it was written from, and the
+        fixtures check finds that run by the same lookup and fails a recorded value
+        pasted into the fixture, which the name check alone passes."""
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411, "total": "12.50"})
+        assert sidecar["observe_run"] == {"run": "run-1", "session": "myshop"}
+        pasted = {"id": 7, "myshop_session": _SESSION_VALUE}
+        (tree / "get_orders_{order_id}.json").write_text(json.dumps(pasted))
+        assert check_fixtures_tree(tree).problems == ()
+        report = check_fixtures_tree(tree, observe_dir=tmp_path / "observe")
+        (problem,) = report.problems
+        assert "the recorded value of flagged 'myshop_session'" in problem
+        assert _SESSION_VALUE not in problem
 
     @pytest.mark.parametrize(
         "body",

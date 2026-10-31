@@ -25,7 +25,7 @@ from graftpunk.devtools.captures_rule import with_ignored
 from graftpunk.har.digest import form_state
 from graftpunk.logging import get_logger
 from graftpunk.testing.decoding import combined_forms, value_forms, whole_name_regex
-from graftpunk.testing.sidecar import Sidecar, sidecar_path, sidecar_text
+from graftpunk.testing.sidecar import ObserveRun, Sidecar, sidecar_path, sidecar_text
 
 LOG = get_logger(__name__)
 
@@ -619,6 +619,7 @@ def write_sidecar(
     flagged_reasons: Mapping[str, Iterable[str]],
     flagged_values: Mapping[str, frozenset[str] | None] | None = None,
     redacted_names: int = 0,
+    observe_run: ObserveRun | None = None,
 ) -> Path:
     """Write *fixture*'s committable sidecar beside it and return its path.
 
@@ -632,7 +633,8 @@ def write_sidecar(
     (``graftpunk.har.digest.flagged_values_of``); ``checked_names`` is the names
     :func:`checked_names_of` finds in *fixture*'s text. Without it every flagged
     name is checked, as a sidecar from before schema 3 is read. A name in it that
-    is not flagged is ignored.
+    is not flagged is ignored. *observe_run* is the run the capture came from,
+    written as the sidecar's ``observe_run`` (null without it).
     """
     body = fixture.read_bytes()
     names = tuple(flagged_reasons)
@@ -655,6 +657,7 @@ def write_sidecar(
         flagged_reasons={name: tuple(why) for name, why in flagged_reasons.items()},
         checked_names=checked,
         redacted_names=redacted_names,
+        observe_run=observe_run,
     )
     path = sidecar_path(fixture)
     path.write_text(sidecar_text(sidecar), encoding="utf-8")

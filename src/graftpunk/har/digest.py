@@ -111,6 +111,7 @@ __all__ = [
     "posted_account_values",
     "endpoint_template",
     "family_values",
+    "CONTEXT_REASONS",
     "FLAGGED_REASONS",
     "FlaggedReason",
     "flagged_names_of",
@@ -3667,11 +3668,18 @@ FlaggedReason = Literal[
     "value_not_kept",
     "no_value_seen",
     "sent_only",
+    "out_of_scope_only",
 ]
-"""Why :func:`flagged_reasons_of` flags a name. Every reason but ``sent_only`` is
-enough on its own to flag a name; ``sent_only`` says no response in the
-recording set the cookie (a recording made with a cached session) and is only
-ever written beside a reason that flagged it."""
+"""Why :func:`flagged_reasons_of` flags a name. Every reason but the two context
+reasons is enough on its own to flag a name. The context reasons are only ever
+written beside a reason that flagged it: ``sent_only`` says no response in the
+recording set the cookie (a recording made with a cached session), and
+``out_of_scope_only`` says every request that sent or set it went to a host
+outside the run's scope (an ad or analytics host's cookie the browser carried
+into the recording)."""
+
+CONTEXT_REASONS: frozenset[FlaggedReason] = frozenset({"sent_only", "out_of_scope_only"})
+"""The reasons that say where a flagged cookie was seen and never flag a name alone."""
 
 FLAGGED_REASONS: tuple[FlaggedReason, ...] = get_args(FlaggedReason)
 
@@ -3696,9 +3704,18 @@ def flagged_reasons_of(
       request sent it empty that no response sets, which is every cookie when
       *entries* is empty;
     - ``sent_only``: alongside another reason, no response in *entries* set the
-      cookie and the digest's own list does not name it."""
+      cookie and the digest's own list does not name it;
+    - ``out_of_scope_only``: alongside another reason, every entry of *entries*
+      whose request sent the cookie or whose response set it was addressed to a
+      host outside the run's scope (:func:`_in_scope` of the scope root of
+      ``d.primary_host``), at least one such entry exists, and the digest's own
+      list, which holds the in-scope hosts' cookies, does not name it. A cookie
+      set by an out-of-scope response and sent to an in-scope host is in scope.
+      Never written for a digest with no primary host, which has no scope.
+      It changes no name's being flagged or checked."""
     entries = tuple(entries)
     seen = _cookies_seen(entries)
+    out_of_scope = _out_of_scope_cookies(d, entries)
     entry_cookies = {
         name for entry in entries for name in _entry_cookie_names(entry) if not holds_an_id(name)
     }
@@ -3723,10 +3740,43 @@ def flagged_reasons_of(
             # d.cookies stands in for responses a partial *entries* leaves out.
             if name not in seen.set_by_response and name not in d.cookies:
                 why.add("sent_only")
+            if name in out_of_scope:
+                why.add("out_of_scope_only")
             reasons[name] = why
     for token in d.tokens:
         reasons.setdefault(token.name, set()).add("token_candidate")
     return {name: tuple(sorted(why)) for name, why in sorted(reasons.items())}
+
+
+def _out_of_scope_cookies(d: RunDigest, entries: Sequence[HAREntry]) -> set[str]:
+    """The cookie names every entry of *entries* that sends or sets them was
+    addressed to a host outside the scope of ``d.primary_host``, less the names
+    the digest's own list holds. A cookie counts as sent by its request's cookie
+    array or ``Cookie`` header, and as set by its response's cookie array or
+    ``Set-Cookie`` header. An entry whose URL has no host the digest reads (one
+    ``urlparse`` refuses, or a scheme other than HTTP) is not known to be out of
+    scope, so its cookies are not named."""
+    if not d.primary_host:
+        return set()
+    root = _scope_root(d.primary_host)
+    outside: set[str] = set()
+    inside: set[str] = set(d.cookies)
+    for entry in entries:
+        names = set(_entry_cookie_names(entry))
+        names.update(name for name, _ in _sent_cookie_values(entry))
+        names.update(name for name, _ in _set_cookie_values(entry))
+        if not names:
+            continue
+        try:
+            parsed = urlparse(entry.request.url)
+        except ValueError:
+            inside.update(names)
+            continue
+        host = ""
+        if parsed.scheme.lower() in _HTTP_SCHEMES:
+            host = normal_host(parsed.scheme, parsed.netloc)
+        (outside if host and not _in_scope(host, root) else inside).update(names)
+    return outside - inside
 
 
 # The parts of a cookie name that say it holds a session or a credential, so the

@@ -35,6 +35,17 @@ def session_dirname(session_name: str) -> str:
     return slugify(session_name) or "default"
 
 
+def run_dir_of(session_name: str, run_id: str, *, base_dir: Path) -> Path:
+    """Where the run *run_id* of the session *session_name* lives under *base_dir*.
+
+    The one lookup of a named run: ``gp observe``'s run resolver and the fixtures
+    check's local value check (``graftpunk.testing.plugin``) both go through it,
+    so a sidecar's ``observe_run`` finds the directory ``gp observe show`` would.
+    It builds the path and touches nothing on disk.
+    """
+    return base_dir / session_dirname(session_name) / run_id
+
+
 #: A run holds the session's cookies and headers in plaintext, so only its
 #: owner may read it.
 PRIVATE_DIR_MODE = 0o700

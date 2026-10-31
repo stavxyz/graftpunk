@@ -4772,6 +4772,79 @@ class TestFlaggedNamesOf:
         later = parse_har_file(har).entries[1:]
         assert flagged_reasons_of(result, later) == {"visit": ("value_not_form_state",)}
 
+    @staticmethod
+    def _scoped_recording(tmp_path: Path) -> Path:
+        """A recording against myshop.example.com (it serves the page) that also
+        reaches ads.example.net, every cookie value opaque: ``NID`` is sent only to
+        the ad host, ``shop_ref`` only to the shop, ``both`` to each, ``crossed``
+        is set by the ad host and sent to the shop, and ``pixel`` is only set by
+        the ad host."""
+        page = _entry(
+            "GET", "https://www.myshop.example.com/account", content_type="text/html", body="<p>"
+        )
+        page["request"]["cookies"] = [
+            {"name": "shop_ref", "value": "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"},
+            {"name": "both", "value": "Hn8Ks3JdZq9XkLmPwR4t7Bv2"},
+            {"name": "crossed", "value": "Pw4Rt7Bv2Hn8Ks3JdZq9XkL"},
+        ]
+        ad = _entry(
+            "GET",
+            "https://ads.example.net/collect",
+            set_cookies=[
+                "crossed=Pw4Rt7Bv2Hn8Ks3JdZq9XkL; Path=/",
+                "pixel=Bv2Hn8Ks3JdZq9X; Path=/",
+            ],
+        )
+        ad["response"]["cookies"] = [
+            {"name": "crossed", "value": "Pw4Rt7Bv2Hn8Ks3JdZq9XkL"},
+            {"name": "pixel", "value": "Bv2Hn8Ks3JdZq9X"},
+        ]
+        ad["request"]["cookies"] = [
+            {"name": "NID", "value": "Ks3JdZq9XkLmPwR4t7Bv2Hn8"},
+            {"name": "both", "value": "Hn8Ks3JdZq9XkLmPwR4t7Bv2"},
+        ]
+        return _write_har(tmp_path, [page, ad])
+
+    def test_a_cookie_only_out_of_scope_hosts_saw_says_so(self, tmp_path: Path) -> None:
+        """#316: a cookie every request that sent or set it addressed to a host
+        outside the run's scope gets out_of_scope_only beside the reasons that
+        flag it; one any in-scope request carried does not, whoever set it."""
+        har = self._scoped_recording(tmp_path)
+        result = digest(DigestSource.from_har(har))
+        assert result.primary_host == "www.myshop.example.com"
+        entries = parse_har_file(har).entries
+        assert flagged_reasons_of(result, entries) == {
+            "NID": ("out_of_scope_only", "sent_only", "value_not_form_state"),
+            "both": ("sent_only", "value_not_form_state"),
+            "crossed": ("value_not_form_state",),
+            "pixel": ("out_of_scope_only", "value_not_form_state"),
+            "shop_ref": ("sent_only", "value_not_form_state"),
+        }
+
+    def test_out_of_scope_only_changes_no_flagged_or_checked_name(self, tmp_path: Path) -> None:
+        """The reason says where a cookie went; the names flagged, and the values
+        that decide which are checked, are what they were without it."""
+        har = self._scoped_recording(tmp_path)
+        result = digest(DigestSource.from_har(har))
+        entries = parse_har_file(har).entries
+        reasons = flagged_reasons_of(result, entries)
+        assert tuple(reasons) == flagged_names_of(result, entries)
+        assert set(reasons) == {"NID", "both", "crossed", "pixel", "shop_ref"}
+        assert flagged_values_of(result, entries)["NID"] == frozenset({"Ks3JdZq9XkLmPwR4t7Bv2Hn8"})
+
+    def test_a_recording_with_no_primary_host_has_no_out_of_scope_cookie(
+        self, tmp_path: Path
+    ) -> None:
+        """With every entry static there is no scope to be outside of."""
+        asset = _entry("GET", "https://ads.example.net/a.png", content_type="image/png")
+        asset["request"]["cookies"] = [{"name": "NID", "value": "Ks3JdZq9XkLmPwR4t7Bv2Hn8"}]
+        har = _write_har(tmp_path, [asset])
+        result = digest(DigestSource.from_har(har))
+        assert result.primary_host == ""
+        assert flagged_reasons_of(result, parse_har_file(har).entries) == {
+            "NID": ("sent_only", "value_not_form_state")
+        }
+
     def test_without_entries_every_digest_cookie_is_flagged_for_no_value_seen(
         self, tmp_path: Path
     ) -> None:

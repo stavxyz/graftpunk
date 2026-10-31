@@ -75,6 +75,17 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def _isolated_observe_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the observe storage directory a caller reads at call time
+    (``graftpunk.observe.OBSERVE_BASE_DIR``) at an empty directory of the test's own.
+
+    The fixtures check looks up a schema 4 sidecar's observe run there, and a
+    test must never find, or read, a run under the developer's real
+    ``~/.local/share/graftpunk``. A test that wants a run patches it again."""
+    monkeypatch.setattr("graftpunk.observe.OBSERVE_BASE_DIR", tmp_path / ".graftpunk-test-observe")
+
+
+@pytest.fixture(autouse=True)
 def _reset_structlog():
     """Reset structlog after each test to prevent closed file handle errors.
 
