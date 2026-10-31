@@ -260,6 +260,41 @@ class TestDigestCommand:
 
 
 class TestFixturesCommand:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("{", id="not-json"),
+            pytest.param(
+                '{"log": {"version": "1.2", "entries": [], "_custom": '
+                + "[" * 100_000
+                + "]" * 100_000
+                + "}}",
+                id="nested-past-the-parsers-limit",
+            ),
+        ],
+    )
+    def test_an_unreadable_har_is_a_one_line_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+    ) -> None:
+        """A run whose network.har the JSON parser refuses is a red line and exit
+        1, not a traceback, and nothing is written."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(observe_base, "myshop", "run-1", [_entry("GET", "https://myshop.example/a")])
+        (har_path,) = observe_base.rglob("network.har")
+        har_path.write_text(text)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /a", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        output = strip_ansi(result.output)
+        assert "Could not read the HAR" in output
+        assert "Traceback" not in output
+        assert not out_dir.exists()
+
     def test_writes_matching_files_with_sidecars(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

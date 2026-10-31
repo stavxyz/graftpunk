@@ -325,8 +325,14 @@ def fixtures_cmd(
 
     # Everything read from the run comes before any write: a digest that fails
     # must not leave an edited .gitignore or an empty target behind.
-    entries = parse_har_file(har_path).entries
-    run_digest = digest(DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name))
+    try:
+        entries = parse_har_file(har_path).entries
+        run_digest = digest(
+            DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name)
+        )
+    except HARParseError as exc:
+        console.print(f"[red]Could not read the HAR: {escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
     flagged = flagged_reasons_of(run_digest, entries)
     # Held in memory only: the sidecar records names, never these values.
     recorded_values = flagged_values_of(run_digest, entries)
