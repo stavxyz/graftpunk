@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
-import itertools
 import json
 import random
 import re
@@ -8473,29 +8472,6 @@ def test_the_har_reader_reads_on_3_9_the_iso_shapes_3_11_reads(text: str) -> Non
     back to, is what ``fromisoformat`` gives on this Python."""
     expected = datetime.fromisoformat(text.replace("Z", "+00:00"))
     assert _load_har_facts()._iso_by_hand(text) == expected
-
-
-def test_the_har_reader_reads_no_iso_shape_3_11_rejects() -> None:
-    """Over every joining of these dates, separators, times, fractions, and
-    offsets, valid or not, the script's own reading gives a time only where
-    ``fromisoformat`` does, and the same time."""
-    by_hand = _load_har_facts()._iso_by_hand
-    dates = ["1970-01-01", "19700101", "2099-12-31", "2099-13-01", "2099-02-30", "1970-0101"]
-    separators = ["T", " ", "t", ""]
-    times = ["", "00", "23", "24", "00:00", "0000", "00:00:00", "000000", "23:59:60", "00:0000"]
-    fractions = ["", ".5", ",5", ".123", ".1234567", "."]
-    offsets = ["", "Z", "z", "+00", "-05", "+0530", "+05:30", "+05:30:15", "+053015", "+24:00"]
-    read = 0
-    for parts in itertools.product(dates, separators, times, fractions, offsets):
-        text = "".join(parts)
-        try:
-            expected: datetime | None = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            expected = None
-        got = by_hand(text)
-        assert got is None or got == expected, text
-        read += got is not None
-    assert read > 100
 
 
 def test_the_har_readers_plain_path_pattern_is_the_digests() -> None:

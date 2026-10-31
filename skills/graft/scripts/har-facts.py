@@ -120,7 +120,7 @@ import json
 import re
 import sys
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -746,61 +746,194 @@ def _past_or_persistent(when: datetime, sent_at: datetime | None) -> str:
     return "past" if when <= sent else "persistent"
 
 
-# ISO 8601 shapes datetime.fromisoformat reads from Python 3.11 on and not
-# before: a basic-format date or time, a fraction of other than 3 or 6 digits or
-# after a comma, and a +HH or +HHMM offset. Each part is extended or basic alone,
-# as 3.11 has it.
-_ISO_DATETIME_RE = re.compile(
-    r"(?P<date>\d{4}-\d{2}-\d{2}|\d{8})"
-    r"(?:[T ](?P<time>\d{2}:\d{2}:\d{2}(?:[.,]\d+)?|\d{2}:\d{2}|\d{6}(?:[.,]\d+)?|\d{4}|\d{2})"
-    r"(?P<offset>Z|[+-]\d{2}(?::\d{2}(?::\d{2})?|\d{2}(?:\d{2})?)?)?)?"
-)
+# Before Python 3.11, datetime.fromisoformat reads only isoformat's own output.
+# _iso_by_hand and the helpers below read every string 3.11's reader reads, with
+# the same result, its leniencies included (any one character between the date
+# and the time, a fraction after any part of the time or the offset, one stray
+# character before an offset); a test holds it equal to fromisoformat on 3.11 to
+# 3.13 over a generated corpus. 3.14 changed the reader (it reads an hour of 24
+# and rejects some strings 3.11 reads), so from 3.11 on the script uses the
+# running Python's reader, as the digest does.
+
+
+def _iso_byte(raw: bytes, at: int) -> int:
+    """The byte at *at*, or 0 past the end, as the C reader sees its NUL."""
+    return raw[at] if at < len(raw) else 0
+
+
+def _iso_digits(raw: bytes, at: int, count: int) -> int | None:
+    """The number the *count* ASCII digits from *at* spell, or None."""
+    chunk = raw[at : at + count]
+    if len(chunk) != count or not all(48 <= byte <= 57 for byte in chunk):
+        return None
+    return int(chunk) if chunk else 0
+
+
+def _iso_separator_at(raw: bytes) -> int | None:
+    """Where the date ends: 3.11 decides it from the date's shape alone, so
+    any one character may separate the date from the time."""
+    size = len(raw)
+    if size == 7:
+        return 7
+    if raw[4:5] == b"-":
+        if raw[5:6] != b"W":
+            return 10
+        if size > 8 and raw[8:9] == b"-":
+            if size == 9:
+                return None
+            return 8 if size > 10 and raw[10:11].isdigit() else 10
+        return 8
+    if raw[4:5] == b"W":
+        end = 7
+        while end < size and raw[end : end + 1].isdigit():
+            end += 1
+        if end < 9:
+            return end
+        return 7 if end % 2 == 0 else 8
+    return 8
+
+
+def _iso_date(raw: bytes, size: int) -> tuple[int, int, int] | None:
+    """The year, month, and day of the date in ``raw[:size]``: extended or basic,
+    and a week date with or without its day."""
+    year = _iso_digits(raw, 0, 4)
+    if year is None:
+        return None
+    dashed = _iso_byte(raw, 4) == 0x2D
+    at = 5 if dashed else 4
+    if _iso_byte(raw, at) == 0x57:  # W
+        week = _iso_digits(raw, at + 1, 2)
+        at += 3
+        day: int | None = 1
+        if at < size:
+            if dashed:
+                if _iso_byte(raw, at) != 0x2D:
+                    return None
+                at += 1
+            day = _iso_digits(raw, at, 1)
+        if week is None or day is None:
+            return None
+        try:
+            found = date.fromisocalendar(year, week, day)
+        except ValueError:
+            return None
+        return found.year, found.month, found.day
+    month = _iso_digits(raw, at, 2)
+    at += 2
+    if dashed:
+        if _iso_byte(raw, at) != 0x2D:
+            return None
+        at += 1
+    day = _iso_digits(raw, at, 2)
+    if month is None or day is None:
+        return None
+    return year, month, day
+
+
+def _iso_clock(raw: bytes, at: int, end: int) -> tuple[list[int], bool] | None:
+    """Hours, minutes, seconds, and microseconds read from *at* up to *end*, and
+    whether anything follows them, or None. Each part is two digits, the parts
+    joined by ``:`` throughout or not at all, and a ``.`` or ``,`` fraction may
+    follow any part; one character after the last part counts as following."""
+    parts = [0, 0, 0, 0]
+    colons = True
+    for index in range(3):
+        value = _iso_digits(raw, at, 2)
+        if value is None:
+            return None
+        parts[index] = value
+        mark = _iso_byte(raw, at + 2)
+        at += 3
+        if index == 0:
+            colons = mark == 0x3A
+        if at >= end:
+            return parts, mark != 0
+        if colons and mark == 0x3A:
+            continue
+        if mark in (0x2C, 0x2E):
+            break
+        if colons:
+            return None
+        at -= 1
+    count = min(end - at, 6)
+    fraction = _iso_digits(raw, at, count)
+    if fraction is None:
+        return None
+    parts[3] = fraction * 10 ** (6 - count)
+    at += count
+    while 48 <= _iso_byte(raw, at) <= 57:
+        at += 1
+    return parts, _iso_byte(raw, at) != 0
 
 
 def _iso_by_hand(text: str) -> datetime | None:
-    """*text* read as one of :data:`_ISO_DATETIME_RE`'s shapes, as
-    ``datetime.fromisoformat`` reads it from Python 3.11 on (a fraction past six
-    digits is cut), or None when it is not one or names no real time."""
-    match = _ISO_DATETIME_RE.fullmatch(text)
-    if match is None:
+    """*text* read as ``datetime.fromisoformat(text.replace("Z", "+00:00"))``
+    reads it on Python 3.11 to 3.13, or None where that raises."""
+    text = text.replace("Z", "+00:00")
+    if len(text) < 7:
         return None
-    date = re.sub(r"\D", "", match["date"])
-    clock, _, fraction = (match["time"] or "").replace(",", ".").partition(".")
-    clock = clock.replace(":", "")
-    offset = match["offset"]
+    for at in (7, 8, 10):
+        if at >= len(text):
+            break
+        if "\ud800" <= text[at] <= "\udfff":
+            # 3.11 reads a surrogate as the separator only.
+            text = text[:at] + "T" + text[at + 1 :]
+            break
     try:
-        zone = None
-        if offset == "Z":
-            zone = timezone.utc  # noqa: UP017 - Python 3.9 has no datetime.UTC
-        elif offset:
-            digits = offset[1:].replace(":", "")
-            delta = timedelta(
-                hours=int(digits[:2]), minutes=int(digits[2:4] or 0), seconds=int(digits[4:] or 0)
-            )
-            zone = timezone(-delta if offset[0] == "-" else delta)
-        return datetime(
-            int(date[:4]),
-            int(date[4:6]),
-            int(date[6:]),
-            int(clock[:2] or 0),
-            int(clock[2:4] or 0),
-            int(clock[4:] or 0),
-            int(fraction[:6].ljust(6, "0")),
-            tzinfo=zone,
-        )
+        raw = text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    split = _iso_separator_at(raw)
+    if split is None:
+        return None
+    ymd = _iso_date(raw, split)
+    if ymd is None:
+        return None
+    clock = [0, 0, 0, 0]
+    zone = None
+    if len(raw) > split:
+        # The date is ASCII, so the separator is the character at split, of
+        # however many bytes.
+        rest = text[split + 1 :].encode("utf-8")
+        sign_at = 0
+        while sign_at < len(rest) and rest[sign_at] not in (0x2B, 0x2D):
+            sign_at += 1
+        read = _iso_clock(rest, 0, sign_at)
+        if read is None:
+            return None
+        clock, trailing = read
+        if sign_at >= len(rest):
+            if trailing:
+                return None
+        else:
+            offset = _iso_clock(rest, sign_at + 1, len(rest))
+            if offset is None or offset[1]:
+                return None
+            hours, minutes, seconds, micros = offset[0]
+            # 3.11 drops the fraction of an offset of zero whole seconds.
+            if hours == minutes == seconds == 0:
+                micros = 0
+            delta = timedelta(hours=hours, minutes=minutes, seconds=seconds, microseconds=micros)
+            try:
+                zone = timezone(-delta if rest[sign_at] == 0x2D else delta)
+            except ValueError:
+                return None
+    try:
+        return datetime(*ymd, *clock, tzinfo=zone)
     except ValueError:
         return None
 
 
 def _iso_datetime(text: str) -> datetime | None:
     """*text* read as graftpunk reads an ISO 8601 time (``fromisoformat`` after a
-    ``Z`` becomes ``+00:00``), on any Python 3.9 or later: before 3.11,
-    ``fromisoformat`` reads only its own output, so :func:`_iso_by_hand` reads
-    the other shapes 3.11 accepts. A week date, which 3.11 also reads, is None
-    here before 3.11."""
+    ``Z`` becomes ``+00:00``). Before Python 3.11, ``fromisoformat`` reads only
+    its own output, so :func:`_iso_by_hand` reads every string 3.11 reads; from
+    3.11 on the running Python's reader decides, as it does for the digest."""
     try:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
+        if sys.version_info >= (3, 11):  # noqa: UP036 - the script runs on 3.9 and 3.10
+            return None
         return _iso_by_hand(text)
 
 
