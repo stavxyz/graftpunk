@@ -15,7 +15,7 @@ import html
 import re
 from urllib.parse import unquote, unquote_plus
 
-__all__ = ["combined_forms", "decoded_forms", "value_forms"]
+__all__ = ["combined_forms", "decoded_forms", "value_forms", "whole_name_regex"]
 
 _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
@@ -89,3 +89,31 @@ def value_forms(value: str) -> frozenset[str]:
     quotes, so a quote sent percent-encoded (``%22``) is taken off too."""
     forms = {value, unquote(value), unquote_plus(value)}
     return frozenset(forms | {_without_quotes(form) for form in forms})
+
+
+# Where a flagged name ends in a fixture. RFC 6265 makes a cookie name an RFC 2616
+# token: letters, digits, and !#$%&'*+-.^_`|~. Letters, digits, _ and - always
+# continue a name. The token's other punctuation continues a name only between two
+# of those, as in connect.sid or text.v2; anywhere else it is text around the name:
+# a full stop ending a sentence, Markdown's backticks and asterisks, an exclamation
+# mark, or a $ starting a variable. & ' % + # and | always end a name: in a
+# fixture the first four separate query pairs, quote strings, and encode text, #
+# starts a URL fragment (cb#access_token=), | separates fields, and no common
+# cookie name holds # or |. Anything outside the token, US-ASCII or not, ends a
+# name.
+_NAME_CORE = r"A-Za-z0-9_\-"
+_NAME_PUNCTUATION = r"!$*.^`~"
+
+
+def whole_name_regex(name: str) -> str:
+    """The regular expression for *name*, casefolded, as a whole name in a
+    casefolded text, by the rule the comment above gives. The fixtures check
+    finds a flagged name with it, and ``gp observe fixtures`` finds the values a
+    capture holds under a flagged cookie name with it, so both read a name at
+    the same places."""
+    core, punctuation = _NAME_CORE, _NAME_PUNCTUATION
+    return (
+        rf"(?<![{core}])(?<![{core}][{punctuation}])"
+        rf"{re.escape(name.casefold())}"
+        rf"(?![{core}])(?![{punctuation}][{core}])"
+    )

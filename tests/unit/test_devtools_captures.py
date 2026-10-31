@@ -197,6 +197,103 @@ class TestCheckedNamesOf:
         assert checked_names_of({"id": frozenset({"a&b/cdefgh"})}, body) == ("id",)
 
 
+# A token the cookie took after the last recorded request that sent it: in no
+# recorded header, so not among the values checked_names_of is given.
+_ROTATED = "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf"
+
+
+class TestCheckedNamesOfValuesUnderTheName:
+    """A recording knows the values its cookie headers carried, not every value
+    the cookie held, so a name stays checked when the capture holds a value under
+    it that is not form state (#313)."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            f'{{"order": 1, "csrftoken": "{_ROTATED}"}}',
+            f'{{"CSRFTOKEN": "{_ROTATED}"}}',
+            f"a=1&csrftoken={_ROTATED}",
+            f"/next?csrftoken%3D{_ROTATED}",
+            f"{{'csrftoken': '{_ROTATED}'}}",
+            f'<input type="hidden" name="csrftoken" value="{_ROTATED}">',
+            f'<meta name="csrftoken" content="{_ROTATED}">',
+            f'<div csrftoken="{_ROTATED}"></div>',
+            '<script>var s = "{\\"csrftoken\\":\\"' + _ROTATED + '\\"}";</script>',
+            "<div data-x='{&quot;csrftoken&quot;:&quot;" + _ROTATED + "&quot;}'></div>",
+            f'{{"csrftoken": {{"value": "{_ROTATED}"}}}}',
+            f'{{"csrftoken": ["a", "{_ROTATED}"]}}',
+            "csrftoken=7Xq9WzT8823LmPk",
+        ],
+        ids=[
+            "json",
+            "json-other-case",
+            "form",
+            "percent-encoded-query",
+            "single-quoted",
+            "hidden-input",
+            "meta",
+            "attribute",
+            "json-in-a-script-string",
+            "json-in-an-html-attribute",
+            "nested-object",
+            "array",
+            "number-run-on",
+        ],
+    )
+    def test_a_value_under_the_name_that_is_not_form_state_keeps_it_checked(
+        self, body: str
+    ) -> None:
+        values = {"csrftoken": frozenset({"Recorded55Xc2Lp9"})}
+        assert checked_names_of(values, body) == ("csrftoken",)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '{"csrftoken": 7}',
+            '{"csrftoken": 8237498273492}',
+            '{"csrftoken": true, "n": 1}',
+            '{"csrftoken": null}',
+            '{"csrftoken": ""}',
+            '{"csrftoken": "alice"}',
+            '{"csrftoken": {"name": "Ann Lee", "count": 2}}',
+            "a=1&csrftoken=en-US",
+            '<input name="csrftoken" value="Ann Lee">',
+            "<script>var t = getCookie('csrftoken');</script>",
+            f'<script>window.csrftoken = "{_ROTATED}";</script>',
+            f'{{"x-csrftoken": "{_ROTATED}"}}',
+        ],
+        ids=[
+            "number",
+            "long-number",
+            "boolean",
+            "null",
+            "empty",
+            "word",
+            "object-of-form-state",
+            "form-state-in-a-form",
+            "name-in-an-input",
+            "name-with-no-value",
+            "not-a-whole-name-after-a-dot",
+            "not-a-whole-name-after-a-hyphen",
+        ],
+    )
+    def test_a_name_holding_only_form_state_numbers_or_booleans_is_not_checked(
+        self, body: str
+    ) -> None:
+        """``window.csrftoken`` and ``x-csrftoken`` are not the name where the
+        fixtures check looks for it, so a value after them does not count."""
+        values = {"csrftoken": frozenset({"Recorded55Xc2Lp9"})}
+        assert checked_names_of(values, body) == ()
+
+    def test_names_not_known_are_not_judged_by_what_the_body_holds(self) -> None:
+        assert checked_names_of({"csrftoken": None}, '{"csrftoken": 7}') == ("csrftoken",)
+
+    def test_a_value_too_deeply_nested_to_judge_keeps_the_name_checked(self) -> None:
+        body = '{"csrftoken": ' + "[" * 100_000 + "]" * 100_000 + "}"
+        values = {"csrftoken": frozenset({"Recorded55Xc2Lp9"})}
+        assert checked_names_of(values, body) == ("csrftoken",)
+
+
 class TestWriteSidecarCheckedNames:
     def test_without_values_every_flagged_name_is_checked(self, tmp_path: Path) -> None:
         fixture = tmp_path / "get_orders.json"

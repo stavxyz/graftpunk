@@ -14,10 +14,15 @@ a reviewer can tell a form-state cookie flagged by its name from a session
 value without the recording. From schema 3, ``checked_names`` is the part of
 ``flagged_names`` the fixtures check looks for in this fixture: every token name,
 each cookie name whose recorded value this capture's body held, in any form the
-check reads, and each cookie name whose values ``gp observe fixtures`` did not
-know in full (``graftpunk.har.digest.flagged_values_of``). Only a cookie's values
-are all in a recording, so only a cookie name can be left out: one whose value
-the body did not hold cannot have been copied into a fixture derived from it.
+check reads, each cookie name under which the body held a value that is not a
+number, a boolean or form state, and each cookie name whose values ``gp observe
+fixtures`` did not know (``graftpunk.har.digest.flagged_values_of``; a cookie no
+recorded request sent is one). Only a cookie name can be left out: a cookie's
+recorded values are the ones its ``Cookie`` and ``Set-Cookie`` headers carried,
+and a value it took that no header recorded (a token a script set after the
+last request) is caught by the body holding a non-form-state value under its
+name, while a token's value can come from sources the recording does not hold
+(``graftpunk.devtools.captures.checked_names_of``).
 A name that holds an account value
 (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``

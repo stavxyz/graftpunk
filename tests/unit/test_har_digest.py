@@ -33,7 +33,6 @@ from graftpunk.har.digest import (
     LoginObservation,
     ObservationKind,
     _account_values,
-    _form_state,
     _login_opener,
     _parse_body,
     _scalar_values,
@@ -45,6 +44,7 @@ from graftpunk.har.digest import (
     flagged_names_of,
     flagged_reasons_of,
     flagged_values_of,
+    form_state,
     post_every_value,
     redacted_names_of,
 )
@@ -4584,7 +4584,7 @@ class TestFlaggedNamesOf:
             quote(bytes(rng.randrange(low, 0x100) for _ in range(length)), safe="")
             for _ in range(10_000)
         ]
-        assert [v for v in values if _form_state(v) and not reads_as_words(v)] == []
+        assert [v for v in values if form_state(v) and not reads_as_words(v)] == []
 
     @pytest.mark.parametrize(
         "value",
@@ -4603,13 +4603,13 @@ class TestFlaggedNamesOf:
         """#296's reporter sent case masks, never values: a cleared "", a quoted
         "AAA Aaaaaaaa" (it failed only on its quotes), capitals of 7 and 9 and
         an AAAAaaaaAaaaaa tab name. These are invented values with those masks."""
-        assert _form_state(value)
+        assert form_state(value)
 
     @pytest.mark.parametrize("value", ["%00", "%00%00", "%01%02", "\x01", '"%00"', "-%00-"])
     def test_a_control_character_is_not_punctuation(self, tmp_path: Path, value: str) -> None:
         """Only ASCII punctuation and spaces hold nothing; a control character is
         a byte of a value, so the cookie stays flagged."""
-        assert not _form_state(value)
+        assert not form_state(value)
         har = _write_har(tmp_path, [self._with_cookies([("visit", value)])])
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
@@ -4795,7 +4795,7 @@ class TestFlaggedNamesOf:
         printed by scripts/cookie_value_rates.py."""
         generate = _rate_shapes(f"296-{shape}")[shape]
         values = [generate() for _ in range(10_000)]
-        lost = [v for v in values if _form_state(v) and not reads_as_words(v)]
+        lost = [v for v in values if form_state(v) and not reads_as_words(v)]
         assert len(lost) / len(values) <= _FORM_STATE_LOSS_CEILINGS[shape]
 
 
@@ -5004,6 +5004,67 @@ class TestFlaggedValuesOf:
         ]
         assert self._values(tmp_path, [entry])["sessionid"] == frozenset(
             {"FromArray66", "SetLater88"}
+        )
+
+    def test_a_cookie_no_request_sent_is_not_known(self, tmp_path: Path) -> None:
+        """A cookie seen only where a response set it: no recorded request's
+        Cookie header carried it (a request-side event the recorder dropped, or a
+        cookie set after the last request), so what the browser held later is
+        unknown and the name stays checked."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/login",
+            set_cookies=["sessionid=SetOnly55Xc2; Path=/"],
+        )
+        entry["response"]["cookies"] = [{"name": "sessionid", "value": "SetOnly55Xc2"}]
+        assert self._values(tmp_path, [entry]) == {"sessionid": None}
+
+    def test_a_cookie_sent_only_in_a_cookie_header_is_known(self, tmp_path: Path) -> None:
+        """A request that sends the cookie in its Cookie header, its cookie array
+        empty, sent it: a value set before is joined by the one sent."""
+        login = _entry(
+            "POST",
+            "https://myshop.example.com/login",
+            set_cookies=["sessionid=SetAtLogin55; Path=/"],
+        )
+        login["response"]["cookies"] = [{"name": "sessionid", "value": "SetAtLogin55"}]
+        orders = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"Cookie": "sessionid=FromHeader77"},
+        )
+        assert self._values(tmp_path, [login, orders]) == {
+            "sessionid": frozenset({"SetAtLogin55", "FromHeader77"})
+        }
+
+    def test_every_cookie_header_of_an_entry_is_read(self, tmp_path: Path) -> None:
+        """A HAR from another recorder splits the cookies over two Cookie headers
+        and lists only the second in the array: the first header's value is a
+        recorded value too, not only the last header of the name."""
+        cart = _entry("GET", "https://myshop.example.com/cart")
+        cart["request"]["cookies"] = [{"name": "sessionid", "value": "InArray66"}]
+        entry = _entry("GET", "https://myshop.example.com/api/orders")
+        entry["request"]["headers"] = [
+            {"name": "cookie", "value": "sessionid=FirstHeader77"},
+            {"name": "cookie", "value": "theme=dark"},
+        ]
+        entry["request"]["cookies"] = [{"name": "theme", "value": "dark"}]
+        assert self._values(tmp_path, [cart, entry])["sessionid"] == frozenset(
+            {"InArray66", "FirstHeader77"}
+        )
+
+    def test_every_set_cookie_header_of_an_entry_is_read(self, tmp_path: Path) -> None:
+        """Two Set-Cookie headers set one name on two paths, and the array keeps
+        the second: the first header's value is a recorded value too."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            set_cookies=["sessionid=OnAppPath88; Path=/app", "sessionid=OnRoot66; Path=/"],
+        )
+        entry["request"]["cookies"] = [{"name": "sessionid", "value": "OnRoot66"}]
+        entry["response"]["cookies"] = [{"name": "sessionid", "value": "OnRoot66", "path": "/"}]
+        assert self._values(tmp_path, [entry])["sessionid"] == frozenset(
+            {"OnAppPath88", "OnRoot66"}
         )
 
 

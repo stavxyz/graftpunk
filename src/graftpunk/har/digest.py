@@ -104,6 +104,7 @@ __all__ = [
     "flagged_names_of",
     "flagged_reasons_of",
     "flagged_values_of",
+    "form_state",
     "redacted_names_of",
 ]
 
@@ -3388,7 +3389,7 @@ def flagged_reasons_of(
             why.add("http_only")
         if name in seen.unseen:
             why.add("value_not_kept")
-        if any(not _form_state(value) for value in values):
+        if any(not form_state(value) for value in values):
             why.add("value_not_form_state")
         if not values and not sent_empty:
             why.add("no_value_seen")
@@ -3462,7 +3463,7 @@ class _CookiesSeen:
 _PUNCTUATION_AND_SPACE = frozenset(string.punctuation + " ")
 
 
-def _form_state(value: str) -> bool:
+def form_state(value: str) -> bool:
     """True when *value*, a non-empty cookie value, holds no credential by
     :func:`flagged_names_of`'s rule: once decoded it is ASCII punctuation and
     spaces alone, or, with one pair of surrounding double quotes taken off (RFC
@@ -3553,20 +3554,36 @@ def redacted_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> int:
     return cookies + d.token_names_dropped_as_ids
 
 
-def _header_cookie_values(entry: HAREntry) -> Iterable[tuple[str, str]]:
-    """``(name, value)`` for each cookie *entry*'s ``Cookie`` request headers send
-    and its ``Set-Cookie`` response headers set, read from the header text, in
-    any case: a value the HAR's cookie arrays leave out or spell otherwise is
-    still a recorded value. The headers dict keeps one header of each spelling,
-    which is all gp's recorder writes."""
-    for name, value in entry.request.headers.items():
-        if name.casefold() == "cookie" and isinstance(value, str):
-            for cookie in cookie_header_pairs([value]):
-                yield cookie["name"], cookie["value"]
-    for name, value in entry.response.headers.items():
-        if name.casefold() != "set-cookie" or not isinstance(value, str):
-            continue
-        for line in re.split(r"\r\n|\r|\n", value):
+def _sent_cookie_values(entry: HAREntry) -> Iterable[tuple[str, str]]:
+    """``(name, value)`` for each cookie *entry*'s request sends, by its
+    ``request.cookies`` array and by the text of every ``Cookie`` header it
+    carries, in any case: a value the array leaves out or spells otherwise is
+    still a sent value. Empty values included."""
+    for cookie in entry.request.cookies:
+        name, value = cookie.get("name"), cookie.get("value")
+        if isinstance(name, str) and name and isinstance(value, str):
+            yield name, value
+    texts = list(entry.request.cookie_headers)
+    texts += [
+        value
+        for name, value in entry.request.headers.items()
+        if name.casefold() == "cookie" and isinstance(value, str)
+    ]
+    for cookie in cookie_header_pairs(texts):
+        yield cookie["name"], cookie["value"]
+
+
+def _set_cookie_values(entry: HAREntry) -> Iterable[tuple[str, str]]:
+    """``(name, value)`` for each cookie the text of every ``Set-Cookie`` header of
+    *entry*'s response sets, in any case, every line of a joined value."""
+    texts = list(entry.response.set_cookie_headers)
+    texts += [
+        value
+        for name, value in entry.response.headers.items()
+        if name.casefold() == "set-cookie" and isinstance(value, str)
+    ]
+    for text in texts:
+        for line in re.split(r"\r\n|\r|\n", text):
             cookie_name, sep, cookie_value = line.split(";", 1)[0].partition("=")
             if sep and cookie_name.strip():
                 yield cookie_name.strip(), cookie_value.strip()
@@ -3575,25 +3592,31 @@ def _header_cookie_values(entry: HAREntry) -> Iterable[tuple[str, str]]:
 def flagged_values_of(
     d: RunDigest, entries: Iterable[HAREntry] = ()
 ) -> dict[str, frozenset[str] | None]:
-    """Each name :func:`flagged_reasons_of` returns, with every non-empty value
-    the recording holds for it when it is a cookie's name alone, or None.
+    """Each name :func:`flagged_reasons_of` returns, with the non-empty values the
+    recording's cookie headers carry for it when it is a cookie's name alone and
+    a request sent it, or None.
 
-    Only a cookie's values are all in a recording: a browser sends every cookie
-    in a request's ``Cookie`` header and a response sets one in a ``Set-Cookie``
-    header, so a cookie a script set is in the next request that sends it, and
-    one never sent or set has no value seen. A cookie's values are the ones
-    :func:`_cookies_seen` reads from the HAR's cookie arrays, sent and set, and
-    the ones the ``Cookie`` and ``Set-Cookie`` headers of *entries* carry.
+    A cookie's values are the ones :func:`_cookies_seen` reads from the HAR's
+    cookie arrays, sent and set, and the ones the text of every ``Cookie`` and
+    ``Set-Cookie`` header of *entries* carries. They are what the recording
+    knows, not every value the cookie held: a value a script set after the last
+    request that sent the cookie, a value a later response rotated it to, or a
+    header the recorder did not keep is in no recorded header. So
+    :func:`graftpunk.devtools.captures.checked_names_of` also keeps a name
+    checked when the capture holds a value under it that is not form state.
 
     None, the values not all known, for any name the digest found as a meta tag,
     hidden input, or header token: such a value can come from a source the
     recording does not hold in full (a page a script changed, a request body, a
     response header), so the fixtures check looks for that name as it did before
-    sidecar schema 3. None too for a cookie the recording carried without a value
-    kept (``value_not_kept``) or with none seen (``no_value_seen``), and for a
-    cookie token candidate *entries* show neither a value nor an empty send of.
-    A cookie a request only ever sent empty, flagged by its name alone, is known
-    to have held nothing: an empty set.
+    sidecar schema 3. None too for a cookie no recorded request sent (in its
+    ``Cookie`` header or its cookie array), since a value seen only in a
+    ``Set-Cookie`` header says nothing of what the browser held later; for a
+    cookie the recording carried without a value kept (``value_not_kept``) or
+    with none seen (``no_value_seen``); and for a cookie token candidate
+    *entries* show neither a value nor an empty send of. A cookie a request only
+    ever sent empty, flagged by its name alone, is known to have held nothing
+    the recording saw: an empty set.
 
     ``gp observe fixtures`` reads this to record which flagged names a capture
     holds the value of (the sidecar's ``checked_names``). The values never leave
@@ -3602,8 +3625,13 @@ def flagged_values_of(
     reasons = flagged_reasons_of(d, entries)
     seen = _cookies_seen(entries)
     values: dict[str, set[str]] = {name: set(found) for name, found in seen.values.items()}
+    sent: set[str] = set()
     for entry in entries:
-        for name, value in _header_cookie_values(entry):
+        for name, value in _sent_cookie_values(entry):
+            sent.add(name)
+            if value:
+                values.setdefault(name, set()).add(value)
+        for name, value in _set_cookie_values(entry):
             if value:
                 values.setdefault(name, set()).add(value)
     not_cookies = {token.name for token in d.tokens if token.kind != "cookie"}
@@ -3611,9 +3639,9 @@ def flagged_values_of(
     for name, why in reasons.items():
         known = (
             name not in not_cookies
+            and name in sent
             and name not in seen.unseen
             and "no_value_seen" not in why
-            and (name in values or name in seen.sent_empty)
         )
         result[name] = frozenset(values.get(name, ())) if known else None
     return result

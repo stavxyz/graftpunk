@@ -33,7 +33,7 @@ from typing import Any, Literal
 import pytest
 
 from graftpunk.contracts import current_schema
-from graftpunk.testing.decoding import decoded_forms
+from graftpunk.testing.decoding import decoded_forms, whole_name_regex
 from graftpunk.testing.sidecar import (
     FIXTURES_PLACEHOLDER,
     Sidecar,
@@ -307,9 +307,9 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     outside its declared format (through the owner,
     :mod:`graftpunk.testing.sidecar`), a fixture that cannot be read, a
     fixture that is byte for byte its capture, and a flagged cookie or token
-    name in a fixture, a cookie name only where the capture held its value (the
-    sidecar's ``checked_names``; every flagged name for a sidecar from before
-    schema 3).
+    name in a fixture, a cookie name only where the capture held its value or a
+    value under it that is not form state (the sidecar's ``checked_names``;
+    every flagged name for a sidecar from before schema 3).
     It does not judge
     whether invented content is invented well. A sidecar with no capture hash
     is the author's declaration that the file came off no account (or gp's,
@@ -376,39 +376,22 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     return FixturesTreeReport(problems=tuple(problems), verified=verified, declared=declared)
 
 
-# Where a flagged name ends in a fixture. RFC 6265 makes a cookie name an RFC 2616
-# token: letters, digits, and !#$%&'*+-.^_`|~. Letters, digits, _ and - always
-# continue a name. The token's other punctuation continues a name only between two
-# of those, as in connect.sid or text.v2; anywhere else it is text around the name:
-# a full stop ending a sentence, Markdown's backticks and asterisks, an exclamation
-# mark, or a $ starting a variable. & ' % + # and | always end a name: in a
-# fixture the first four separate query pairs, quote strings, and encode text, #
-# starts a URL fragment (cb#access_token=), | separates fields, and no common
-# cookie name holds # or |. Anything outside the token, US-ASCII or not, ends a
-# name.
-_NAME_CORE = r"A-Za-z0-9_\-"
-_NAME_PUNCTUATION = r"!$*.^`~"
-
-
 def _flagged_name_pattern(name: str) -> re.Pattern[str]:
-    """*name*, casefolded, as a whole name (see ``_NAME_CORE``): a flagged
-    ``text`` matches ``"text":``, ``text=``, ``text.`` at a sentence's end, and
-    ``$text``, but not ``context``, ``text-align`` or ``text.v2``."""
-    core, punctuation = _NAME_CORE, _NAME_PUNCTUATION
-    return re.compile(
-        rf"(?<![{core}])(?<![{core}][{punctuation}])"
-        rf"{re.escape(name.casefold())}"
-        rf"(?![{core}])(?![{punctuation}][{core}])"
-    )
+    """*name*, casefolded, as a whole name
+    (:func:`graftpunk.testing.decoding.whole_name_regex`): a flagged ``text``
+    matches ``"text":``, ``text=``, ``text.`` at a sentence's end, and ``$text``,
+    but not ``context``, ``text-align`` or ``text.v2``."""
+    return re.compile(whole_name_regex(name))
 
 
 def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> list[str]:
     """One problem per name to check (:attr:`Sidecar.names_to_check`) found in the
     fixture's body. A schema 3 sidecar names every flagged token name, and each
-    flagged cookie name whose value the capture held or whose value gp did not
-    know in full; a cookie name whose value the capture did not hold cannot have
-    been copied into a fixture derived from it, so an honest ``"id": 7`` key
-    passes when a recording sent a cookie named ``id``. A schema 1 or 2 sidecar
+    flagged cookie name whose recorded value the capture held, under which the
+    capture held a value that is not form state, or whose values gp did not know
+    in full (:func:`graftpunk.devtools.captures.checked_names_of`). So an honest
+    ``"id": 7`` key passes when a recording sent a cookie named ``id`` and its
+    capture held only numbers or form state under ``id``. A schema 1 or 2 sidecar
     records no such list, so every flagged name is looked for, as before, and the
     problem says how to regenerate it.
 
@@ -434,13 +417,15 @@ def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> lis
     if sidecar.checked_names is None:
         regenerate = (
             " Or regenerate the sidecar with gp observe fixtures (sidecar schema 3), "
-            "which looks for a flagged cookie name only where the capture held its value."
+            "which looks for a flagged cookie name only where the capture held its value "
+            "or a value under it that is not form state."
         )
         source = "a cookie or token name the capture's digest recorded"
     else:
         regenerate = ""
         source = (
-            "a token name, or a cookie name whose value the capture held or whose "
+            "a token name, or a cookie name whose recorded value the capture held, "
+            "under which the capture held a value that is not form state, or whose "
             "value the recording did not keep"
         )
     for name in sidecar.names_to_check:

@@ -582,8 +582,9 @@ class TestFixturesCommand:
         assert sidecar["flagged_reasons"] == {
             "shop_session": ["session_name", "value_not_form_state"]
         }
-        # The body, {"id": 1}, does not hold the session's value.
-        assert sidecar["checked_names"] == []
+        # The body, {"id": 1}, does not hold the session's value, but no request
+        # sent the cookie: a value seen only in a Set-Cookie leaves it checked.
+        assert sidecar["checked_names"] == ["shop_session"]
         assert _SESSION_VALUE not in json.dumps(sidecar)
         assert "page=2" not in json.dumps(sidecar)
 
@@ -1255,7 +1256,7 @@ class TestPlainWordCookies:
         page.write_text('<meta name="csrf-token" content="invented">')
         (problem,) = check_fixtures_tree(tree).problems
         assert "'csrf-token'" in problem
-        assert "whose value the capture held" in problem
+        assert "whose recorded value the capture held" in problem
         # The csrf-token name in the API fixture, whose capture held no token
         # value: a token name is looked for wherever it is.
         page.write_text("<p>Searching.</p>")
@@ -1499,7 +1500,34 @@ class TestFlaggedNamesAreJudgedByTheirValues:
         (tree / "get_orders_{order_id}.json").write_text(json.dumps({"id": 7}))
         (problem,) = check_fixtures_tree(tree).problems
         assert "contains the flagged name 'id'" in problem
-        assert "whose value the capture held" in problem
+        assert "whose recorded value the capture held" in problem
+
+    def test_a_value_no_recorded_header_carried_keeps_the_name_checked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The capture hands the page a value under the cookie's name that no
+        recorded Cookie or Set-Cookie header carried (a token rotated after the
+        last request, or set by a script): the recording cannot know it, and the
+        body holds an opaque value under the name, so the name stays checked and
+        a fixture keeping that value fails as under a schema 2 sidecar."""
+        rotated = "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf"
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"order": 1, "id": rotated})
+        assert sidecar["checked_names"] == ["id"]
+        (tree / "get_orders_{order_id}.json").write_text(json.dumps({"order": 2, "id": rotated}))
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "contains the flagged name 'id'" in problem
+        assert "under which the capture held a value that is not form state" in problem
+
+    @pytest.mark.parametrize(
+        "body",
+        [{"id": 4411, "total": "12.50"}, {"id": "alice"}, {"id": True, "myshop_session": None}],
+        ids=["number", "word", "boolean-and-null"],
+    )
+    def test_numbers_booleans_and_form_state_under_the_name_leave_it_unchecked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: dict
+    ) -> None:
+        _tree, sidecar = self._sidecar(tmp_path, monkeypatch, body)
+        assert sidecar["checked_names"] == []
 
     def test_the_sidecar_holds_no_recorded_value(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
