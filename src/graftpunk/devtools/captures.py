@@ -165,20 +165,56 @@ _JSON_CUT_MARGIN = 16
 # What may come before a query or form pair: the start of the text, a URL's or
 # form body's boundary, or a quote.
 _PAIR_BOUNDARIES = frozenset("?&;\"'")
-# A query or form pair after the name: "=", a run of URL characters, then "&",
-# "#", ";", the end of the text, or a quote (escaped included) that ends its
-# string, so neither a token's next character nor a concatenation
-# ("csrftoken=" + t) follows it.
-_PAIR_VALUE_RE = re.compile(
-    r"""=([^\s<>="'&#;\\]*)(?:[&#;]|\Z|\\?["'](?=[\s,;:)}\]>/&?\\]|\Z)(?!\s*[+.]))"""
-)
-# Elements that hold no text: the start tag of one of these, or a self-closing
-# tag, is the whole element.
+# A query or form pair after the name: "=" and a run of URL characters. What
+# must follow the run is decided by _read: "&", "#" or ";" after any run, and
+# the end of the text, of an attribute value or of a JSON string value after a
+# run that is not empty.
+_PAIR_VALUE_RE = re.compile(r"""=([^\s<>="'&#;\\]*)""")
+_PAIR_ENDS = frozenset("&#;")
+# Elements that hold no text, written with or without "/>": the start tag of
+# one of these is the whole element.
 _VOID_ELEMENTS = frozenset({"input", "meta", "param", "link"})
 # Attributes naming an element, and the attributes one must have to be read:
 # <input name="x" value="...">, <meta name="x" content="...">.
 _NAMING_ATTRIBUTES = frozenset({"name", "id", "property", "itemprop", "http-equiv"})
 _VALUE_ATTRIBUTES = frozenset({"value", "content"})
+# The HTML attribute names of each void element read, global ones included. Any
+# other attribute name of a read element is judged as its values are.
+_GLOBAL_ATTRIBUTES = frozenset(
+    {
+        *("accesskey", "autocapitalize", "autocorrect", "autofocus", "class"),
+        *("contenteditable", "dir", "draggable", "enterkeyhint", "hidden", "id"),
+        *("inert", "inputmode", "is", "itemid", "itemprop", "itemref", "itemscope"),
+        *("itemtype", "lang", "nonce", "popover", "slot", "spellcheck", "style"),
+        *("tabindex", "title", "translate", "writingsuggestions"),
+    }
+)
+_KNOWN_ATTRIBUTES = {
+    tag: _GLOBAL_ATTRIBUTES | _NAMING_ATTRIBUTES | _VALUE_ATTRIBUTES | frozenset(own)
+    for tag, own in (
+        (
+            "input",
+            (
+                *("accept", "alpha", "alt", "autocomplete", "checked", "colorspace"),
+                *("dirname", "disabled", "form", "formaction", "formenctype"),
+                *("formmethod", "formnovalidate", "formtarget", "height", "list", "max"),
+                *("maxlength", "min", "minlength", "multiple", "pattern", "placeholder"),
+                *("popovertarget", "popovertargetaction", "readonly", "required"),
+                *("size", "src", "step", "type", "width"),
+            ),
+        ),
+        ("meta", ("charset", "media")),
+        ("param", ()),
+        (
+            "link",
+            (
+                *("as", "blocking", "color", "crossorigin", "disabled", "fetchpriority"),
+                *("href", "hreflang", "imagesizes", "imagesrcset", "integrity", "media"),
+                *("referrerpolicy", "rel", "sizes", "type"),
+            ),
+        ),
+    )
+}
 # One attribute in a start tag's text as HTMLParser reads one: a name, then
 # optionally "=" and a double-quoted, single-quoted or bare value.
 _ATTRIBUTE_RE = re.compile(
@@ -188,44 +224,75 @@ _ATTRIBUTE_RE = re.compile(
 _Attributes = tuple[tuple[str, str], ...]
 
 
+class _Tag:
+    """A start tag :class:`_Elements` read: its name, where it ends in the text,
+    and its attributes (values unescaped, an attribute without one as empty)."""
+
+    __slots__ = ("attributes", "end", "name")
+
+    def __init__(self, name: str, end: int, attributes: _Attributes) -> None:
+        self.name = name
+        self.end = end
+        self.attributes = attributes
+
+    def read_as(self, name: str) -> bool | None:
+        """How the element reader reads this tag for *name*: None unless it is a
+        void element (:data:`_VOID_ELEMENTS`) with a value or content attribute
+        and a naming attribute whose value is *name*; else True when every
+        other attribute value, and every attribute name that is not one of the
+        element's (:data:`_KNOWN_ATTRIBUTES`), holds nothing and no attribute is
+        named *name*."""
+        if self.name not in _VOID_ELEMENTS:
+            return None
+        folded = name.casefold()
+        keys = {key for key, _ in self.attributes}
+        naming = {
+            at
+            for at, (key, value) in enumerate(self.attributes)
+            if key in _NAMING_ATTRIBUTES and value.casefold() == folded
+        }
+        if not naming or _VALUE_ATTRIBUTES.isdisjoint(keys):
+            return None
+        known = _KNOWN_ATTRIBUTES[self.name]
+        return folded not in keys and all(
+            (key in known or _holds_nothing(key)) and (at in naming or _holds_nothing(value))
+            for at, (key, value) in enumerate(self.attributes)
+        )
+
+
 class _Elements(HTMLParser):
-    """Each void element (:data:`_VOID_ELEMENTS`) or self-closing tag of an HTML
-    text with a naming and a value or content attribute: the span in the text of
-    each of its attribute values, in order, with the attribute's index and the
-    element's attributes (values unescaped, an attribute without one as empty)."""
+    """The start tags of an HTML text, each read once: the span in the text of
+    each attribute value of each tag whose attributes :data:`_ATTRIBUTE_RE` reads
+    as HTMLParser did, in order, with its :class:`_Tag`."""
 
     def __init__(self, text: str) -> None:
         super().__init__()
         self.line_starts = [0, *(m.end() for m in re.finditer("\n", text))]
         self.starts: list[int] = []
-        self.spans: list[tuple[int, int, int, _Attributes]] = []
+        self.spans: list[tuple[int, int, _Tag]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in _VOID_ELEMENTS:
-            self._read(tag, attrs)
+        self._read(tag, attrs)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self._read(tag, attrs)
 
     def _read(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        keys = [key for key, _ in attrs]
-        if _NAMING_ATTRIBUTES.isdisjoint(keys) or _VALUE_ATTRIBUTES.isdisjoint(keys):
+        if not attrs:
             return
         source = self.get_starttag_text() or ""
         matches = list(_ATTRIBUTE_RE.finditer(source, 1 + len(tag)))
         # A tag this expression reads otherwise than HTMLParser did is not read.
-        if [match.group(1).lower() for match in matches] != keys:
+        if [match.group(1).lower() for match in matches] != [key for key, _ in attrs]:
             return
         line, offset = self.getpos()
         start = self.line_starts[line - 1] + offset
-        element = tuple((key, value or "") for key, value in attrs)
-        for index, match in enumerate(matches):
+        read = _Tag(tag, start + len(source), tuple((key, value or "") for key, value in attrs))
+        for match in matches:
             group = next((g for g in (2, 3, 4) if match.group(g) is not None), None)
             if group is not None:
                 self.starts.append(start + match.start(group))
-                self.spans.append(
-                    (start + match.start(group), start + match.end(group), index, element)
-                )
+                self.spans.append((start + match.start(group), start + match.end(group), read))
 
 
 def _opened(value: object) -> _Form | None:
@@ -277,8 +344,10 @@ def _json_values(text: str) -> list[tuple[int, int, _Form | None]]:
     or array that parses, with None, and each string whose text is a JSON object
     or array, with that text's form (:func:`_opened`). A string that is not
     opened is looked into, so ``"{"a": 1}"`` with its escapes decoded still
-    yields the object. Failed parses stop the search once they have scanned
-    :data:`_JSON_FAILURE_BUDGET` times the text's length, so the cost stays linear."""
+    yields the object. A quote before the end of a string or value already
+    parsed never starts a string, and failed parses stop the search once they
+    have scanned :data:`_JSON_FAILURE_BUDGET` times the text's length, so the
+    cost stays linear."""
     found: list[tuple[int, int, _Form | None]] = []
     budget = _JSON_FAILURE_BUDGET * len(text)
     pos = 0
@@ -300,14 +369,14 @@ def _json_values(text: str) -> list[tuple[int, int, _Form | None]]:
         value, end = parsed
         if not quote:
             found.append((start, end, None))
-            pos = quotes_from = end
+            pos, quotes_from = end, max(quotes_from, end)
             continue
         opened = _opened(value)
         if opened is None:
-            quotes_from = end - 1
+            quotes_from = max(quotes_from, end - 1)
             continue
         found.append((start, end, opened))
-        pos = quotes_from = end
+        pos, quotes_from = end, max(quotes_from, end)
     return found
 
 
@@ -371,9 +440,9 @@ class _Form:
                 self._opened[start] = None
         return self._opened[start]
 
-    def element_at(self, pos: int) -> tuple[int, int, int, _Attributes] | None:
-        """The attribute value span holding *pos* of an element :class:`_Elements`
-        reads, with the attribute's index and the element's attributes, or None."""
+    def element_at(self, pos: int) -> tuple[int, int, _Tag] | None:
+        """The span of the attribute value holding *pos* in a tag :class:`_Elements`
+        read, with the tag, or None."""
         if self._elements is None:
             self._elements = _Elements(self.text)
             if "<" in self.text:
@@ -413,11 +482,17 @@ def _read(name: str, form: _Form, start: int, end: int) -> tuple[bool | None, in
       is such a string, whose text is a JSON object or array, read as that text
       is (:func:`_is_accounted_for`).
     - A query or form pair: the start of the text or one of ``?&;"'`` before the
-      name, then :data:`_PAIR_VALUE_RE`, the value judged as a string.
-    - An element attribute: the occurrence is in an attribute value of an
-      element :class:`_Elements` reads, and a naming attribute of that element
-      is the name; every other attribute value of it is judged."""
+      name, then ``=`` and a run of URL characters (:data:`_PAIR_VALUE_RE`)
+      followed by ``&``, ``#`` or ``;``; or a run that is not empty and ends
+      the text, an attribute value of a tag :class:`_Elements` read, or a JSON
+      string value (not a key) of a value :func:`_json_values` parsed. The run
+      is judged as a string.
+    - An element attribute: the occurrence is in an attribute value of a tag
+      :class:`_Elements` read, which :meth:`_Tag.read_as` reads; the reading
+      ends at the end of the tag, so the tag is judged once."""
     text = form.text
+    # Where a parser found a value to end: a pair's run that is not empty may end there.
+    boundaries = {len(text)}
     held = form.json_value_at(start)
     if held is not None:
         index, value_start, value_end, opened = held
@@ -436,22 +511,22 @@ def _read(name: str, form: _Form, start: int, end: int) -> tuple[bool | None, in
             inner = form.opened_string(string_start, string_end)
             if inner is not None:
                 return _is_accounted_for(name, [inner]), string_end
+            if colon is None:
+                boundaries.add(string_end - 1)
+    element = form.element_at(start)
+    if element is not None:
+        boundaries.add(element[1])
     if start == 0 or text[start - 1] in _PAIR_BOUNDARIES:
         pair = _PAIR_VALUE_RE.match(text, end)
         if pair is not None:
-            return _holds_nothing(pair.group(1)), pair.end(1)
-    element = form.element_at(start)
+            run, after = pair.group(1), pair.end()
+            if (after < len(text) and text[after] in _PAIR_ENDS) or (run and after in boundaries):
+                return _holds_nothing(run), after
     if element is not None:
-        _, span_end, _, attributes = element
-        folded = name.casefold()
-        naming = {
-            at
-            for at, (key, value) in enumerate(attributes)
-            if key in _NAMING_ATTRIBUTES and value.casefold() == folded
-        }
-        if naming:
-            others = (value for at, (_, value) in enumerate(attributes) if at not in naming)
-            return all(_holds_nothing(value) for value in others), span_end
+        tag = element[2]
+        verdict = tag.read_as(name)
+        if verdict is not None:
+            return verdict, tag.end
     return None, end
 
 
@@ -463,8 +538,8 @@ def _is_accounted_for(name: str, forms: Sequence[_Form]) -> bool:
     a value already read is part of that value, judged whole. Any other
     occurrence (``name: value`` in text that is not JSON, a call's argument, a
     ``{"name": ..., "value": ...}`` pair, an element's text, a table cell, an
-    attribute's name, a string the reader cannot open) is read by none, so the
-    name is not accounted for."""
+    attribute's name outside an element read, a string the reader cannot open)
+    is read by none, so the name is not accounted for."""
     folded = name.casefold()
     pattern = re.compile(whole_name_regex(name))
     for form in forms:
@@ -518,24 +593,31 @@ def checked_names_of(
     - JSON: the name is a key of a JSON object that parses where it starts in
       the text (the whole body, or an object or array within it, such as inline
       state in a script), or of one that is the text of a JSON string there,
-      read with the key's parsed value;
+      read with the key's parsed value; a JSON string inside that text whose
+      text is a JSON object or array is opened again, at any depth, while a
+      string whose text is another JSON string is not opened;
     - a query or form pair: ``name=v`` at the start of the text or after one of
-      ``?&;"'``, where ``v`` is empty or a run of URL characters (no ``<``,
-      ``>``, ``=``, whitespace, quote or backslash) followed by ``&``, ``#``,
-      ``;``, the end of the text, or a quote that ends its string, ``v`` judged
+      ``?&;"'``, where ``v`` is a run of URL characters (no ``<``, ``>``, ``=``,
+      whitespace, quote or backslash) followed by ``&``, ``#`` or ``;``, or a
+      run that is not empty and ends the text, an attribute value of a tag the
+      HTML parser read, or a JSON string value (not a key) the JSON reader
+      parsed; a pair ended by any other quote is not read, and ``v`` is judged
       as a string;
     - an element attribute: a void ``input``, ``meta``, ``param`` or ``link``
-      element, or a self-closing tag, with a ``value`` or ``content`` attribute,
-      whose ``name``, ``id``, ``property``, ``itemprop`` or ``http-equiv`` is
-      the name, its attributes in any order; every other attribute value of it
-      is judged.
+      element, written with or without ``/>``, with a ``value`` or ``content``
+      attribute, whose ``name``, ``id``, ``property``, ``itemprop`` or
+      ``http-equiv`` is the name, its attributes in any order; every other
+      attribute value of it is judged, and so is every attribute name that is
+      not an HTML attribute of that element, and an attribute named by the name
+      keeps it checked.
 
     A value holds nothing when it is a boolean, null, empty, or form state by
     the rule that flags a cookie by its value
     (:func:`graftpunk.har.digest.form_state`), a number judged by its text, an
     object by its keys and values. Any other occurrence (``name: v`` in text
     that is not JSON, an attribute named by the name, an element that holds
-    text, a call's argument) keeps the name checked. An honest ``"id": 7`` or
+    text whether or not written with ``/>``, a call's argument, ``"name="`` in
+    a script string) keeps the name checked. An honest ``"id": 7`` or
     ``"user": "alice"`` leaves the name unchecked;
     ``"csrftoken": "<an opaque value>"``, ``setCookie('csrftoken', ...)``,
     ``{"name": "csrftoken", ...}`` and ``<li>csrftoken: <code>...</code></li>``

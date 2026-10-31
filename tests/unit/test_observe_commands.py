@@ -1557,6 +1557,11 @@ class TestFlaggedNamesAreJudgedByTheirValues:
             '<form><textarea name="id" value="">Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</textarea></form>',
             '<ol><li itemprop="id" value="1">Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</li></ol>',
             '<input name="id" value="" data-token="Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf">',
+            '<p><a href="/orders?id=">Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</a> n 1</p>',
+            '<script>u = ["/x?id=", "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf"].join("");</script>',
+            {"id=": "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf", "n": 1},
+            '<p><span itemprop="id" content=""/>Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf n 1</p>',
+            '<input name="id" value="" Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf>',
         ],
         ids=[
             "js-call",
@@ -1573,6 +1578,11 @@ class TestFlaggedNamesAreJudgedByTheirValues:
             "a-textarea-with-a-value-attribute",
             "a-list-item-with-a-value-attribute",
             "another-attribute-of-the-named-element",
+            "an-empty-pair-in-a-link-before-its-text",
+            "an-empty-pair-in-an-array-before-a-token",
+            "an-empty-pair-as-a-json-key",
+            "a-self-closing-span",
+            "an-attribute-name-of-the-named-element",
         ],
     )
     def test_a_value_beside_the_name_in_a_shape_not_read_keeps_the_name_checked(

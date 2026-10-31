@@ -299,6 +299,27 @@ class TestCheckedNamesOfValuesUnderTheName:
             f'<input data-token="{_ROTATED}" value="" name="csrftoken"/>',
             f'<div csrftoken="1" class="a">{_ROTATED}</div>',
             '{"csrftoken": 7, "n": 1',
+            '<script>var name = "csrftoken=";</script>',
+            "a=1&csrftoken=",
+            f'<p>Send "csrftoken=2" with <code>{_ROTATED}</code></p>',
+            f'<p><a href="/orders?csrftoken=">{_ROTATED}</a> n 1</p>',
+            f'<p>Send "csrftoken=" with <code>{_ROTATED}</code>, n 1</p>',
+            f'<script>go(url("/orders?csrftoken=", "{_ROTATED}"), 1);</script>',
+            f'<form action="/orders?csrftoken=" data-token="{_ROTATED}" data-n="1"></form>',
+            f'{{"csrftoken=": "{_ROTATED}", "n": 1}}',
+            f'{{"/x?csrftoken=1": "{_ROTATED}", "n": 1}}',
+            f'<script>u = ["/x?csrftoken=", "{_ROTATED}"].join("");</script>',
+            f'<script>setCookie("csrftoken=", "{_ROTATED}"); x = 1;</script>',
+            f"<script>u = {{'csrftoken=': '{_ROTATED}'}};</script>",
+            f'<script>u = enc("csrftoken=")+"{_ROTATED}";</script>',
+            f'<p><span id="csrftoken" content=""/>{_ROTATED} n 1</p>',
+            f'<div id="csrftoken" content=""/>{_ROTATED}</div>',
+            f'<textarea name="csrftoken" value=""/>{_ROTATED}</textarea>',
+            f'<ol><li id="csrftoken" value="1"/>{_ROTATED}</ol>',
+            f'<input name="csrftoken" value="" {_ROTATED}>',
+            f'<input name="csrftoken" value="" {_ROTATED}="">',
+            f'<input name="csrftoken" value=""/{_ROTATED}>',
+            '<input name="csrftoken" value="" csrftoken>',
         ],
         ids=[
             "js-call",
@@ -341,6 +362,27 @@ class TestCheckedNamesOfValuesUnderTheName:
             "another-attribute-first-and-self-closing",
             "an-attribute-named-by-the-name",
             "an-object-left-open",
+            "an-empty-pair-in-a-script-string",
+            "an-empty-pair-at-the-end",
+            "a-pair-ended-by-a-quote-in-text",
+            "an-empty-pair-in-a-link-before-its-text",
+            "an-empty-pair-in-quotes-in-prose",
+            "an-empty-pair-in-a-call-argument",
+            "an-empty-pair-in-an-attribute-before-another",
+            "an-empty-pair-as-a-json-key",
+            "a-pair-in-a-json-key",
+            "an-empty-pair-in-a-json-array",
+            "an-empty-pair-before-a-second-argument",
+            "an-empty-pair-as-a-js-key",
+            "an-empty-pair-in-a-call-before-a-concatenation",
+            "a-self-closing-span",
+            "a-self-closing-div",
+            "a-self-closing-textarea",
+            "a-self-closing-list-item",
+            "an-attribute-name-of-the-named-element",
+            "an-attribute-name-with-a-value",
+            "an-attribute-name-after-a-slash",
+            "an-attribute-of-the-named-element-named-by-the-name",
         ],
     )
     def test_an_occurrence_the_reader_cannot_pair_with_a_value_keeps_it_checked(
@@ -375,11 +417,12 @@ class TestCheckedNamesOfValuesUnderTheName:
             f'{{"x-csrftoken": "{_ROTATED}"}}',
             '{"next": "/o?csrftoken=2"}',
             '<a href="/o?csrftoken=en&amp;page=2" class="x">',
-            '<script>var name = "csrftoken=";</script>',
+            '<a href="/o?csrftoken=2" class="x">',
             '<input type="hidden" name="csrftoken" value="">',
             '<input value="" type="hidden" name="csrftoken">',
             '<input name="csrftoken" value="" type="hidden"/>',
             '<meta content="Ann Lee" itemprop="csrftoken" />',
+            '<input autocomplete="off" value="" data-role="token" name="csrftoken" type="hidden">',
             '<script>window.s = {"csrftoken": "en", "n": 1};</script>',
             json.dumps(
                 {"items": [{"n": n, "label": "Ann Lee"} for n in range(40)], "csrftoken": 7}
@@ -409,11 +452,12 @@ class TestCheckedNamesOfValuesUnderTheName:
             "not-a-whole-name-after-a-hyphen",
             "a-query-in-a-json-string",
             "a-query-in-an-attribute",
-            "an-empty-pair-in-a-script-string",
+            "a-pair-ending-an-attribute",
             "a-hidden-input",
             "a-hidden-input-named-last",
             "a-self-closing-input",
             "a-self-closing-meta",
+            "a-hidden-input-with-more-attributes",
             "json-in-a-script",
             "a-long-json-body",
             "long-json-in-a-script-string",
@@ -461,29 +505,46 @@ class TestCheckedNamesOfValuesUnderTheName:
         assert checked_names_of({"id": frozenset({_VALUE})}, body) == ("id",)
 
     @pytest.mark.parametrize(
-        ("head", "unit"),
+        ("head", "unit", "tail"),
         [
             (
                 "",
                 '<input value="Ann Lee" name="csrftoken"> {"csrftoken": [1, {"csrftoken": 2}]} '
-                '"/a?csrftoken=en&id=7" <meta content="" property="csrftoken"/> '
+                '["/a?csrftoken=en&id=7"] <meta content="" property="csrftoken"/> '
                 '<script>var s = "{\\"csrftoken\\": \\"en\\"}";</script> ',
+                "",
             ),
-            ('{"csrftoken": 1} ', '{"a": '),
-            ('{"csrftoken": 1} ', '{"a": [1, "x'),
-            ('{"csrftoken": 1} ', 'a\\"'),
+            ('{"csrftoken": 1} ', '{"a": ', ""),
+            ('{"csrftoken": 1} ', '{"a": [1, "x', ""),
+            ('{"csrftoken": 1} ', 'a\\"', ""),
+            ('<input name="csrftoken" value=""> "', '{} \\" ', '"'),
+            (
+                '<script>var t = "',
+                '<a onclick=\\"go({})\\">x</a>',
+                '";</script><input name="csrftoken" value="">',
+            ),
+            ('<input name="csrftoken" value=""', ' data-x="csrftoken"', ">"),
         ],
-        ids=["read", "objects-left-open", "strings-left-open", "escaped-quotes-left-open"],
+        ids=[
+            "read",
+            "objects-left-open",
+            "strings-left-open",
+            "escaped-quotes-left-open",
+            "objects-and-escaped-quotes-in-a-string",
+            "escaped-markup-in-a-script-string",
+            "the-name-in-many-attributes-of-one-element",
+        ],
     )
-    def test_the_cost_grows_linearly_with_the_body(self, head: str, unit: str) -> None:
-        """Each occurrence is read once, one inside a value already read is not
-        read again, a quote inside a string already parsed does not start
-        another, and failed JSON parses stop once they have scanned a few times
-        the body's length, so many, nested or unclosed values stay linear."""
+    def test_the_cost_grows_linearly_with_the_body(self, head: str, unit: str, tail: str) -> None:
+        """Each occurrence is read once, one inside a value or an element already
+        read is not read again, a quote inside a string already parsed does not
+        start another, and failed JSON parses stop once they have scanned a few
+        times the body's length, so many, nested or unclosed values and many
+        occurrences in one element stay linear."""
         values = {"csrftoken": frozenset({"Recorded55Xc2Lp9"}), "id": frozenset({_VALUE})}
 
         def cost(n: int) -> float:
-            body = head + unit * n
+            body = head + unit * n + tail
             best = float("inf")
             for _ in range(3):
                 start = time.process_time()
