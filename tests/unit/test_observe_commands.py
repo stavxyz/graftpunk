@@ -134,6 +134,29 @@ class TestDigestCommand:
         assert result.exit_code == 0, result.output
         assert "## Summary" in result.output
 
+    @pytest.mark.parametrize("depth", [2_000, 100_000])
+    def test_digest_over_a_run_holding_deeply_nested_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, depth: int
+    ) -> None:
+        """#327: a JSON body nested thousands of levels deep, in a request or a
+        response, failed the whole digest with RecursionError."""
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path)
+        deep_list = "[" * depth + "]" * depth
+        post = _entry(
+            "POST", "https://api.myshop.example.com/cart", body='{"items": ' + deep_list + "}"
+        )
+        post["request"]["postData"] = {
+            "mimeType": "application/json",
+            "text": '{"items": ' + deep_list + ', "quantity": 3}',
+        }
+        entries = [post, _entry("GET", "https://api.myshop.example.com/orders", body=deep_list)]
+        _write_run(tmp_path, "myshop", "run-1", entries)
+        result = runner.invoke(_build_app(), ["observe", "digest", "myshop"])
+        assert result.exit_code == 0, result.output
+        assert "## Summary" in result.output
+        assert "/cart" in result.output
+        assert "/orders" in result.output
+
     @pytest.mark.usefixtures("gp_logging")
     def test_digest_json_flag(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path)

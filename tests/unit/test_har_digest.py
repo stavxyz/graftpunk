@@ -37,6 +37,7 @@ from graftpunk.har.digest import (
     _array_expiry,
     _expiry,
     _in_scope,
+    _json_body_types,
     _login_opener,
     _parse_body,
     _response_cookie_attributes,
@@ -670,6 +671,122 @@ class TestBodyParams:
         ]
         (entry,) = parse_har_file(_write_har(tmp_path, entries)).entries
         assert body_params(entry) == {"quantity": "int"}
+
+
+def _deep_list(depth: int) -> list[Any]:
+    """A list nested *depth* levels deep, built without the JSON parser."""
+    value: list[Any] = []
+    for _ in range(depth - 1):
+        value = [value]
+    return value
+
+
+def _deep_object(depth: int) -> dict[str, Any]:
+    """An object nested *depth* levels deep, built without the JSON parser."""
+    value: dict[str, Any] = {"a": 1}
+    for _ in range(depth - 1):
+        value = {"a": value}
+    return value
+
+
+class TestDeeplyNestedJsonBodies:
+    """#327: a JSON request body nested about 2,000 levels deep raised
+    RecursionError in the body's type walk and failed the whole digest. How deep
+    json.loads itself goes depends on the Python version and the platform's stack
+    (3.11 stops near 1,000), so the walk is checked on values built without it, and
+    the digest on bodies the parser may or may not refuse."""
+
+    @pytest.mark.parametrize("depth", [2_000, 100_000])
+    def test_a_deep_list_in_a_field_is_typed_without_recursion(self, depth: int) -> None:
+        body = {"items": _deep_list(depth), "quantity": 3}
+        assert _json_body_types(body) == ({"items": "list[list]", "quantity": "int"}, set())
+
+    @pytest.mark.parametrize("depth", [2_000, 100_000])
+    def test_a_deep_list_of_objects_in_a_field_is_typed_without_recursion(self, depth: int) -> None:
+        value: Any = {"a": 1}
+        for _ in range(depth):
+            value = [value]
+        assert _json_body_types({"items": [{"a": 1}, value]}) == ({"items": "list[mixed]"}, set())
+
+    @pytest.mark.parametrize("depth", [2_000, 100_000])
+    def test_a_deep_object_in_a_field_is_an_object(self, depth: int) -> None:
+        assert _json_body_types({"filter": _deep_object(depth)}) == ({"filter": "object"}, set())
+
+    def test_a_list_holding_lists_is_typed_as_before(self) -> None:
+        body = {"grid": [[1, 2], [3]], "tags": ["a", None, "b"], "ids": [1, 2.5], "none": None}
+        assert _json_body_types(body) == (
+            {"grid": "list[list]", "tags": "list[str]", "ids": "list[float]"},
+            set(),
+        )
+
+    @staticmethod
+    def _bodies(depth: int) -> list[str]:
+        return [
+            "[" * depth + "]" * depth,
+            '{"a": ' * depth + "1" + "}" * depth,
+            '{"items": ' + "[" * depth + "]" * depth + ', "quantity": 3}',
+            '{"filter": ' + '{"a": ' * depth + "1" + "}" * depth + ', "quantity": 3}',
+        ]
+
+    @pytest.mark.parametrize("depth", [2_000, 100_000])
+    def test_body_params_reads_a_deep_body_without_raising(
+        self, tmp_path: Path, depth: int
+    ) -> None:
+        entries = [
+            _entry("POST", "https://api.myshop.example.com/orders", post_data=body)
+            for body in self._bodies(depth)
+        ]
+        har = parse_har_file(_write_har(tmp_path, entries))
+        found = [body_params(entry) for entry in har.entries]
+        # A top-level array or a body the parser refuses has no field names; a
+        # field holding a deep value keeps its type when the parser reads it.
+        assert found[0] == {}
+        assert found[1] in ({"a": "object"}, {})
+        assert found[2] in ({"items": "list[list]", "quantity": "int"}, {})
+        assert found[3] in ({"filter": "object", "quantity": "int"}, {})
+
+    @pytest.mark.parametrize("depth", [2_000, 100_000])
+    def test_the_digest_groups_endpoints_holding_deep_bodies(
+        self, tmp_path: Path, depth: int
+    ) -> None:
+        deep = self._bodies(depth)
+        entries = [
+            *(
+                _entry("POST", f"https://api.myshop.example.com/orders/{n}", post_data=body)
+                for n, body in enumerate(deep)
+            ),
+            _entry("GET", "https://api.myshop.example.com/deep", body=deep[0]),
+            _entry("GET", "https://api.myshop.example.com/deeper", body=deep[3]),
+            _entry("GET", "https://api.myshop.example.com/cart", body='{"total": 3}'),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        templates = {(method, e.template) for e in result.endpoints for method in e.methods}
+        assert {("GET", "/deep"), ("GET", "/deeper"), ("GET", "/cart")} <= templates
+        assert any(m == "POST" and t.startswith("/orders") for m, t in templates)
+        cart = next(e for e in result.endpoints if e.template == "/cart")
+        assert cart.shape is not None
+        assert cart.shape.kind == "object"
+        assert "## Summary" in render_markdown(result)
+
+    def test_a_response_too_deep_for_the_parser_has_an_unavailable_shape(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The parser's refusal is stood in for, as where it falls depends on the
+        platform; the HAR's own decode is left alone."""
+        body = '{"a": [[1]]}'
+        entries = [_entry("GET", "https://api.myshop.example.com/deep", body=body)]
+        source = DigestSource.from_har(_write_har(tmp_path, entries))
+        loads = json.loads
+
+        def too_deep(text: str | bytes, *args: Any, **kwargs: Any) -> object:
+            if text == body:
+                raise RecursionError("maximum recursion depth exceeded")
+            return loads(text, *args, **kwargs)
+
+        monkeypatch.setattr(json, "loads", too_deep)
+        (endpoint,) = digest(source).endpoints
+        assert endpoint.shape == SHAPE_UNAVAILABLE
+        assert endpoint.falsy_first_response is None
 
 
 class TestNonFormBodiesHaveNoFieldNames:

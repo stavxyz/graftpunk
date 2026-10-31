@@ -803,11 +803,12 @@ def _json_value_type(value: Any) -> str | None:
     if isinstance(value, list):
         element = _UNKNOWN_ELEMENT
         for item in value:
-            item_type = _json_value_type(item)
-            if item_type is None:
+            # An array inside an array is recorded as the bare element ``list``,
+            # whatever it holds, so it is not walked: a body nested thousands of
+            # levels deep would otherwise exhaust the recursion limit.
+            item_element = "list" if isinstance(item, list) else _json_value_type(item)
+            if item_element is None:
                 continue
-            # An array inside an array is recorded as the bare element ``list``.
-            item_element = "list" if _element_of(item_type) is not None else item_type
             element = _merged_json_element(element, item_element)
         return _list_label(element)
     return _MIXED
@@ -1213,8 +1214,8 @@ def _body_missing(entry: HAREntry) -> bool:
 
 def _response_shape(entry: HAREntry) -> ShapeNode | None:
     """The shape of *entry*'s JSON response body, ``SHAPE_UNAVAILABLE`` when a
-    body over ``_BODY_SAMPLE_THRESHOLD`` does not parse, or ``None`` when the
-    endpoint does not return JSON.
+    body over ``_BODY_SAMPLE_THRESHOLD`` does not parse or the body is nested past
+    the JSON parser's limit, or ``None`` when the endpoint does not return JSON.
 
     The body is parsed whole; it is already in memory. Parsing a fixed-size
     prefix of it could never succeed, so every large body reported non-JSON and
@@ -1231,6 +1232,10 @@ def _response_shape(entry: HAREntry) -> ShapeNode | None:
         if len(text.encode("utf-8", errors="ignore")) > _BODY_SAMPLE_THRESHOLD:
             return SHAPE_UNAVAILABLE
         return None
+    except RecursionError:
+        # JSON nested past the parser's limit (platform-dependent): its shape
+        # cannot be read, but it is a JSON response.
+        return SHAPE_UNAVAILABLE
     return _shape_of(parsed)
 
 
@@ -2598,7 +2603,9 @@ def _falsy_value(body: str | None) -> str | None:
         return None
     try:
         value = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # A body nested past the parser's limit holds a nested value, so it is
+        # not a falsy one.
         return None
     return None if value else json.dumps(value)
 
