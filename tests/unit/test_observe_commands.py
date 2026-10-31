@@ -1562,6 +1562,8 @@ class TestFlaggedNamesAreJudgedByTheirValues:
             {"id=": "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf", "n": 1},
             '<p><span itemprop="id" content=""/>Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf n 1</p>',
             '<input name="id" value="" Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf>',
+            {"next": "/orders?id=2&page=1", "token": "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf"},
+            '<p><a href="/orders?id=2"Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf>x</a> n 1</p>',
         ],
         ids=[
             "js-call",
@@ -1583,6 +1585,8 @@ class TestFlaggedNamesAreJudgedByTheirValues:
             "an-empty-pair-as-a-json-key",
             "a-self-closing-span",
             "an-attribute-name-of-the-named-element",
+            "a-pair-in-a-query",
+            "a-quote-run-on-after-a-query",
         ],
     )
     def test_a_value_beside_the_name_in_a_shape_not_read_keeps_the_name_checked(

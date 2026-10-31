@@ -162,15 +162,6 @@ _JSON_FAILURE_BUDGET = 4
 # the slice cut the value short (a literal, a number or an escape cut in two).
 _JSON_FIRST_SLICE = 64
 _JSON_CUT_MARGIN = 16
-# What may come before a query or form pair: the start of the text, a URL's or
-# form body's boundary, or a quote.
-_PAIR_BOUNDARIES = frozenset("?&;\"'")
-# A query or form pair after the name: "=" and a run of URL characters. What
-# must follow the run is decided by _read: "&", "#" or ";" after any run, and
-# the end of the text, of an attribute value or of a JSON string value after a
-# run that is not empty.
-_PAIR_VALUE_RE = re.compile(r"""=([^\s<>="'&#;\\]*)""")
-_PAIR_ENDS = frozenset("&#;")
 # Elements that hold no text, written with or without "/>": the start tag of
 # one of these is the whole element.
 _VOID_ELEMENTS = frozenset({"input", "meta", "param", "link"})
@@ -344,14 +335,17 @@ def _json_values(text: str) -> list[tuple[int, int, _Form | None]]:
     or array that parses, with None, and each string whose text is a JSON object
     or array, with that text's form (:func:`_opened`). A string that is not
     opened is looked into, so ``"{"a": 1}"`` with its escapes decoded still
-    yields the object. A quote before the end of a string or value already
-    parsed never starts a string, and failed parses stop the search once they
-    have scanned :data:`_JSON_FAILURE_BUDGET` times the text's length, so the
-    cost stays linear."""
+    yields the object. A quote inside a value already parsed, or inside a
+    string already parsed other than its closing quote, never starts a string,
+    and failed parses stop the search once they have scanned
+    :data:`_JSON_FAILURE_BUDGET` times the text's length, so the cost stays
+    linear. A string that is not opened may have paired a stray quote with the
+    next string's opening quote, so its closing quote may still start one."""
     found: list[tuple[int, int, _Form | None]] = []
     budget = _JSON_FAILURE_BUDGET * len(text)
     pos = 0
-    # A quote inside a string already parsed is not a string's start.
+    # A quote before this, other than a closing quote of a string not opened, is
+    # inside a value or string already parsed and is not a string's start.
     quotes_from = 0
     while budget > 0:
         match = _JSON_START_RE.search(text, pos)
@@ -481,18 +475,10 @@ def _read(name: str, form: _Form, start: int, end: int) -> tuple[bool | None, in
       read with the key's parsed value; or it is in a string of such a value, or
       is such a string, whose text is a JSON object or array, read as that text
       is (:func:`_is_accounted_for`).
-    - A query or form pair: the start of the text or one of ``?&;"'`` before the
-      name, then ``=`` and a run of URL characters (:data:`_PAIR_VALUE_RE`)
-      followed by ``&``, ``#`` or ``;``; or a run that is not empty and ends
-      the text, an attribute value of a tag :class:`_Elements` read, or a JSON
-      string value (not a key) of a value :func:`_json_values` parsed. The run
-      is judged as a string.
     - An element attribute: the occurrence is in an attribute value of a tag
       :class:`_Elements` read, which :meth:`_Tag.read_as` reads; the reading
       ends at the end of the tag, so the tag is judged once."""
     text = form.text
-    # Where a parser found a value to end: a pair's run that is not empty may end there.
-    boundaries = {len(text)}
     held = form.json_value_at(start)
     if held is not None:
         index, value_start, value_end, opened = held
@@ -511,17 +497,7 @@ def _read(name: str, form: _Form, start: int, end: int) -> tuple[bool | None, in
             inner = form.opened_string(string_start, string_end)
             if inner is not None:
                 return _is_accounted_for(name, [inner]), string_end
-            if colon is None:
-                boundaries.add(string_end - 1)
     element = form.element_at(start)
-    if element is not None:
-        boundaries.add(element[1])
-    if start == 0 or text[start - 1] in _PAIR_BOUNDARIES:
-        pair = _PAIR_VALUE_RE.match(text, end)
-        if pair is not None:
-            run, after = pair.group(1), pair.end()
-            if (after < len(text) and text[after] in _PAIR_ENDS) or (run and after in boundaries):
-                return _holds_nothing(run), after
     if element is not None:
         tag = element[2]
         verdict = tag.read_as(name)
@@ -536,7 +512,8 @@ def _is_accounted_for(name: str, forms: Sequence[_Form]) -> bool:
     :func:`graftpunk.testing.decoding.whole_name_regex`) is read by a strict
     reader (:func:`_read`) with a value that holds nothing. An occurrence inside
     a value already read is part of that value, judged whole. Any other
-    occurrence (``name: value`` in text that is not JSON, a call's argument, a
+    occurrence (``name=value`` in a URL or query string, ``name: value`` in text
+    that is not JSON, a call's argument, a
     ``{"name": ..., "value": ...}`` pair, an element's text, a table cell, an
     attribute's name outside an element read, a string the reader cannot open)
     is read by none, so the name is not accounted for."""
@@ -587,7 +564,7 @@ def checked_names_of(
     (:func:`graftpunk.har.digest.flagged_values_of`): a value the cookie took
     after the last request that sent it is in none of them. So a name is left
     out only when every whole-name occurrence of it in *text*, in each of those
-    forms, is read by one of three strict readers, and every value read so holds
+    forms, is read by one of two strict readers, and every value read so holds
     nothing:
 
     - JSON: the name is a key of a JSON object that parses where it starts in
@@ -596,13 +573,6 @@ def checked_names_of(
       read with the key's parsed value; a JSON string inside that text whose
       text is a JSON object or array is opened again, at any depth, while a
       string whose text is another JSON string is not opened;
-    - a query or form pair: ``name=v`` at the start of the text or after one of
-      ``?&;"'``, where ``v`` is a run of URL characters (no ``<``, ``>``, ``=``,
-      whitespace, quote or backslash) followed by ``&``, ``#`` or ``;``, or a
-      run that is not empty and ends the text, an attribute value of a tag the
-      HTML parser read, or a JSON string value (not a key) the JSON reader
-      parsed; a pair ended by any other quote is not read, and ``v`` is judged
-      as a string;
     - an element attribute: a void ``input``, ``meta``, ``param`` or ``link``
       element, written with or without ``/>``, with a ``value`` or ``content``
       attribute, whose ``name``, ``id``, ``property``, ``itemprop`` or
@@ -614,15 +584,14 @@ def checked_names_of(
     A value holds nothing when it is a boolean, null, empty, or form state by
     the rule that flags a cookie by its value
     (:func:`graftpunk.har.digest.form_state`), a number judged by its text, an
-    object by its keys and values. Any other occurrence (``name: v`` in text
-    that is not JSON, an attribute named by the name, an element that holds
-    text whether or not written with ``/>``, a call's argument, ``"name="`` in
-    a script string) keeps the name checked. An honest ``"id": 7`` or
-    ``"user": "alice"`` leaves the name unchecked;
-    ``"csrftoken": "<an opaque value>"``, ``setCookie('csrftoken', ...)``,
-    ``{"name": "csrftoken", ...}`` and ``<li>csrftoken: <code>...</code></li>``
-    keep it
-    checked."""
+    object by its keys and values. Any other occurrence keeps the name checked:
+    ``name=v`` in a URL, a query string or a form body (``?csrftoken=2``
+    included), ``name: v`` in text that is not JSON, an attribute named by the
+    name, an element that holds text whether or not written with ``/>``, a
+    call's argument. An honest ``"id": 7`` or ``"user": "alice"`` leaves the
+    name unchecked; ``"csrftoken": "<an opaque value>"``,
+    ``setCookie('csrftoken', ...)``, ``{"name": "csrftoken", ...}`` and
+    ``<li>csrftoken: <code>...</code></li>`` keep it checked."""
     texts = (text, *combined_forms(text))
     forms = [_Form(form) for form in dict.fromkeys(texts)]
     checked: list[str] = []
