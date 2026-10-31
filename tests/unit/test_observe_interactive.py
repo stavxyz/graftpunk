@@ -468,6 +468,7 @@ class TestSetupObserveSessionTakesDomSnapshots:
         mock_nodriver.start = fake_nodriver_start
         mock_storage = MagicMock()
         mock_storage.run_dir = tmp_path / "run"
+        new_tabs = AsyncMock()
 
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
@@ -475,12 +476,15 @@ class TestSetupObserveSessionTakesDomSnapshots:
                 "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
             ) as backend_cls,
             patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
+            patch("graftpunk.dialogs.answer_dialogs_in_new_tabs", new_tabs),
         ):
             await setup_observe_session(
                 "test-ns", "https://example.com", 1024, headless=headless, session_name=None
             )
 
         assert backend_cls.call_args.kwargs["answer_dialogs"] is headless
+        # A popup the page opens is answered too, in a headless run only.
+        assert new_tabs.await_args_list == ([((mock_browser,),)] if headless else [])
 
 
 class TestSetupObserveSessionSigintIsolation:

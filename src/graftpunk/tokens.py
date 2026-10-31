@@ -19,7 +19,7 @@ from graftpunk.browser_launch import (
     prepare_browser_launch,
 )
 from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
-from graftpunk.dialogs import answer_dialogs
+from graftpunk.dialogs import answer_dialogs, answer_dialogs_in_new_tabs
 from graftpunk.exceptions import (
     SessionInvalidatedError,
     TokenExtractionError,
@@ -188,6 +188,7 @@ async def _extract_tokens_browser(
         # page and every DevTools call to it (#320). Browser.get navigates the
         # first page target, which main_tab may not be on nodriver 0.48.
         await answer_dialogs(browser.tabs[0] if browser.tabs else tab)
+        await answer_dialogs_in_new_tabs(browser)
         injected, _skipped = await inject_cookies_to_nodriver(tab, session.cookies)
         LOG.debug("token_extraction_cookies_injected", count=injected)
 

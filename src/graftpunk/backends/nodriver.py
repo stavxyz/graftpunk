@@ -67,7 +67,7 @@ from graftpunk.chrome_orphans import (
     remove_browser_temp_profile,
     terminate_nodriver_browser,
 )
-from graftpunk.dialogs import answer_dialogs
+from graftpunk.dialogs import answer_dialogs, answer_dialogs_in_new_tabs
 from graftpunk.exceptions import BrowserError
 from graftpunk.logging import get_logger, suppress_asyncio_noise
 from graftpunk.signals import (
@@ -1284,7 +1284,7 @@ class NoDriverBackend:
                 before. None waits without a limit. Default 120.
             answer_dialogs: When headless, accept each JavaScript dialog
                 (``alert()``, ``confirm()``, ``prompt()``, ``beforeunload``) a
-                page opens, through CDP
+                page in any of the browser's tabs opens, through CDP
                 (``graftpunk.dialogs``), since nobody can answer one and an
                 open one stops the page. False leaves dialogs open, as before
                 1.36.1, for a program that answers them itself. Ignored when
@@ -1834,10 +1834,12 @@ class NoDriverBackend:
                     self._raise_if_given_up(hold)
                     if self.answers_dialogs:
                         # Before the caller's first navigation, on the tab
-                        # Browser.get navigates: nobody can answer a page's
-                        # alert in a headless browser, and one left open stops
-                        # the page and every DevTools call to it (#320).
+                        # Browser.get navigates, and on each tab or popup opened
+                        # later: nobody can answer a page's alert in a headless
+                        # browser, and one left open stops the page and every
+                        # DevTools call to it (#320).
                         await answer_dialogs(self._page)
+                        await answer_dialogs_in_new_tabs(self._browser)
                     return
                 except Exception as exc:
                     last_exc = exc

@@ -655,6 +655,9 @@ class TestBrowserExtractionAnswersDialogs:
         async def answer(tab: object) -> None:
             order.append(tab)
 
+        async def answer_new_tabs(watched: object) -> None:
+            order.append(("new tabs", watched))
+
         async def get(url: str) -> object:
             order.append(url)
             return browser.main_tab
@@ -664,12 +667,13 @@ class TestBrowserExtractionAnswersDialogs:
         with (
             _patched_nodriver(AsyncMock(return_value=browser)),
             patch("graftpunk.tokens.answer_dialogs", answer),
+            patch("graftpunk.tokens.answer_dialogs_in_new_tabs", answer_new_tabs),
         ):
             await _extract_tokens_browser(
                 requests.Session(), [_HYGIENE_TOKEN], "https://example.com"
             )
 
-        assert order == [navigated, "https://example.com/app"]
+        assert order == [navigated, ("new tabs", browser), "https://example.com/app"]
 
 
 class TestBrowserExtractionHygiene:
