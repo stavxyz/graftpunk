@@ -1044,8 +1044,10 @@ class TestDigestSourceFromHar:
         outside = tmp_path / "elsewhere.html"
         outside.write_text("<html></html>")
         (run_dir / "page-source.html").symlink_to(outside)
-        source = DigestSource.from_run_dir(run_dir, session="s", run_id="r")
+        with capture_logs() as events:
+            source = DigestSource.from_run_dir(run_dir, session="s", run_id="r")
         assert source.page_source is None
+        assert [e["event"] for e in events] == ["digest_page_source_outside_run_dir"]
 
     def test_run_dir_picks_up_bodies_and_page_source(self, tmp_path: Path) -> None:
         run_dir = tmp_path / "myshop" / "20260910-100000-1"
@@ -1744,6 +1746,29 @@ class TestParseErrorsAndMissingBodies:
             digest(DigestSource.from_har(har_path))
         (event,) = [e for e in events if e["event"] == "digest_body_file_missing"]
         assert event["url"] == "https://api.myshop.example.com/big"
+
+    def test_a_body_file_outside_the_har_directory_logs_its_own_reason(
+        self, tmp_path: Path
+    ) -> None:
+        """The file may exist; the parser refused it, so the warning says why
+        rather than that it is missing."""
+        (tmp_path / "elsewhere.json").write_text("{}")
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        entry = _entry("GET", "https://api.myshop.example.com/big?q=QUERYVALUE")
+        entry["response"]["content"] = {
+            "mimeType": "application/json",
+            "size": 0,
+            "_bodyFile": "../elsewhere.json",
+        }
+        har_path = _write_har(run_dir, [entry])
+        with capture_logs() as events:
+            result = digest(DigestSource.from_har(har_path))
+        names = [e["event"] for e in events]
+        assert "digest_body_file_missing" not in names
+        (event,) = [e for e in events if e["event"] == "digest_body_file_outside_har_dir"]
+        assert event["url"] == "https://api.myshop.example.com/big"
+        assert result.endpoints == ()
 
     def test_a_malformed_form_action_is_recorded_as_empty(self, tmp_path: Path) -> None:
         """urlsplit raises on an unclosed IPv6 bracket; the digest must still complete,

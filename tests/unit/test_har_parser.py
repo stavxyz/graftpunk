@@ -717,6 +717,7 @@ class TestHARParserBodyFile:
 
         assert result.body is None
         assert result.body_file == "nonexistent.html"
+        assert result.body_file_outside is False
 
     @pytest.mark.parametrize("how", ["dotdot", "symlink"])
     def test_a_body_file_outside_the_har_directory_is_not_read(
@@ -745,6 +746,7 @@ class TestHARParserBodyFile:
 
         assert result.body is None
         assert result.body_file == ref
+        assert result.body_file_outside is True
 
     def test_parse_har_file_passes_base_dir(self, tmp_path: Path) -> None:
         """parse_har_file passes its directory as base_dir for body resolution."""

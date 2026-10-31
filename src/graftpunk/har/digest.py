@@ -258,6 +258,8 @@ class DigestSource:
         # A page source that resolves outside the run (a symlink) is not read, as
         # the HAR parser reads no body file outside the HAR's directory.
         inside = page_source.resolve().is_relative_to(run_dir.resolve())
+        if not inside:
+            LOG.warning("digest_page_source_outside_run_dir", run_id=run_id)
         return cls(
             har_path=run_dir / "network.har",
             bodies_dir=bodies_dir if bodies_dir.is_dir() else None,
@@ -2516,7 +2518,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             continue
         if _body_missing(entry):
             dropped["error"] += 1
-            LOG.warning("digest_body_file_missing", url=bare_url(entry.request.url))
+            if entry.response.body_file_outside:
+                LOG.warning("digest_body_file_outside_har_dir", url=bare_url(entry.request.url))
+            else:
+                LOG.warning("digest_body_file_missing", url=bare_url(entry.request.url))
             continue
 
         method = entry.request.method.upper()

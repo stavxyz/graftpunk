@@ -137,6 +137,9 @@ class HARResponse:
     # when the header carries it, so the array alone cannot say a cookie was not
     # HttpOnly
     set_cookie_http_only: tuple[str, ...] = ()
+    # the _bodyFile resolves outside the HAR's directory (a reference or a
+    # symlink that leaves it), so the body was not read
+    body_file_outside: bool = False
     # where a redirect sent the client: the HAR's own redirectURL when the
     # recorder filled it in, else the Location header, else empty
     redirect_url: str = ""
@@ -507,6 +510,7 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
     body = None
     body_size = 0
     body_file = None
+    body_file_outside = False
     content = response_data.get("content", {})
     if isinstance(content, dict):
         body = content.get("text")
@@ -520,7 +524,8 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
             body_path = (root / body_file_ref).resolve()
             # The same refusal as a request body file's: a reference or a symlink
             # that leaves the HAR's directory is not read.
-            if body_path.is_relative_to(root) and body_path.exists():
+            body_file_outside = not body_path.is_relative_to(root)
+            if not body_file_outside and body_path.exists():
                 mime = content.get("mimeType", "")
                 if _is_text_content(mime):
                     body = body_path.read_text(encoding="utf-8", errors="replace")
@@ -541,6 +546,7 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
         body_file=body_file,
         set_cookie_names=set_cookie_names,
         set_cookie_http_only=set_cookie_http_only,
+        body_file_outside=body_file_outside,
         redirect_url=_redirect_url(response_data, headers),
     )
 
