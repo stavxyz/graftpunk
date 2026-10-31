@@ -12,8 +12,9 @@ here falls under the Secrets rule in `SKILL.md`.
 
 Run the `--json` line of the Understand block of `references/commands.md` on
 the chosen session and run first. It is the whole digest model: header, cookie,
-token-candidate, form field, and query parameter names, observed types, and
-response shapes. It holds no header, cookie, or query value, and only one kind
+token-candidate, form field, and query parameter names, observed types,
+response shapes, and in `cookie_facts` each cookie's attributes and the
+endpoints that set it (no `Domain`). It holds no header, cookie, or query value, and only one kind
 of body value: for an endpoint whose recorded JSON body is `{}`, `[]`, `""`,
 `0`, `false`, or `null`, that value. It does print paths as recorded, though:
 up to three example paths per endpoint (the query string stripped and a segment
@@ -44,9 +45,11 @@ header, query, or body value; answer from its output:
 
 - `cookies`: for each cookie a response sets, every response that sets it (by
   method and templated URL, with a count) and that setting's `HttpOnly`,
-  `Secure`, `SameSite`, `Path`, `Domain`, and whether it expires, read from the
-  raw `Set-Cookie` header and the entry's `response.cookies` array, with a note
-  when they disagree. A recording made by another tool or an older graftpunk
+  `Secure`, `SameSite`, `Path`, `Domain`, and `expiry` (`session`,
+  `persistent`, or `past` when the response deletes it), read from the raw
+  `Set-Cookie` header and the entry's `response.cookies` array, with a note
+  when they disagree; `unknown` is what the recording does not settle, in the
+  digest's words. A recording made by another tool or an older graftpunk
   has shown the array lacking `httpOnly` where the header carried it (cause
   unverified), so trust the header's line. It then names the cookies the
   recording only sends. With `--name '<cookie>'` it prints that one cookie's

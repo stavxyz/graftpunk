@@ -385,8 +385,8 @@ def test_cookie_flags_come_from_the_header_and_name_the_array_disagreement(tmp_p
     sid = _block(_lines("cookies", str(_har(tmp_path))), "cookie sid")
     login = [line for line in sid if "POST https://shop.test/session" in line]
     assert len(login) == 1
-    assert "HttpOnly=yes Secure=yes SameSite=Lax Path=/ Domain=- expiry=no" in login[0]
-    assert "the response.cookies array differs: HttpOnly is no there" in login[0]
+    assert "HttpOnly=yes Secure=yes SameSite=Lax Path=/ Domain=- expiry=session" in login[0]
+    assert "the response.cookies array differs: HttpOnly is unknown there" in login[0]
 
 
 def test_a_joined_header_gives_each_cookie_its_own_attributes(tmp_path: Path) -> None:
@@ -423,10 +423,10 @@ def test_cookie_attributes_print_as_placeholders_unless_they_are_site_properties
 ) -> None:
     lines = _lines("cookies", str(_har(tmp_path)))
     (a,) = _block(lines, "cookie a")[1:]
-    assert "SameSite=an unknown value Path=/acct/{}/{id}" in a
+    assert "SameSite=unknown Path=/acct/{}/{id}" in a
     assert "Domain=a domain outside the response's host" in a
     (parent,) = _block(lines, "cookie parent")[1:]
-    assert "Domain=shop.test expiry=yes" in parent
+    assert "Domain=shop.test expiry=persistent" in parent
 
 
 def test_cookie_names_that_read_as_values_are_counted(tmp_path: Path) -> None:
@@ -891,7 +891,7 @@ def test_cookies_by_name_prints_a_name_the_gate_would_hide(tmp_path: Path) -> No
     assert lines == [
         "cookie uid_SAMCOOKIE_X",
         "  set by GET https://shop.test/setck (1 time); header: HttpOnly=no Secure=no "
-        "SameSite=- Path=/ Domain=- expiry=no; not in the response.cookies array",
+        "SameSite=- Path=/ Domain=- expiry=session; not in the response.cookies array",
     ]
     assert _lines("cookies", har, "--name", "pre") == [
         "cookie pre: sent in requests and never set in this recording"
@@ -1023,3 +1023,34 @@ def test_a_request_body_in_bodies_prints_no_value(tmp_path: Path) -> None:
 )
 def test_a_body_size_prints_as_a_binary_unit_class(size: object, label: str) -> None:
     assert _load_script()._byte_class(size) == label
+
+
+def test_cookie_words_are_the_digests() -> None:
+    """``unknown`` for what the recording does not settle, and ``session``,
+    ``persistent``, or ``past`` for the expiry, as the markdown digest prints them."""
+    entry = _entry(
+        "POST",
+        "https://shop.test/logout",
+        response_headers=[
+            _h("Set-Cookie", "gone=; Expires=Thu, 01 Jan 1970 00:00:00 GMT"),
+            _h("Set-Cookie", "odd=1; SameSite=Sometimes; Path=account; Max-Age=soon"),
+        ],
+        response_cookies=[
+            {"name": "gone", "value": ""},
+            {"name": "odd", "value": "1"},
+            {"name": "only", "value": "1"},
+        ],
+    )
+    entry["startedDateTime"] = "2026-10-31T10:00:00.000Z"
+    assert _load_script().cookies([entry]) == [
+        "cookie gone",
+        "  set by POST https://shop.test/logout (1 time); header: HttpOnly=no Secure=no "
+        "SameSite=- Path=- Domain=- expiry=past",
+        "cookie odd",
+        "  set by POST https://shop.test/logout (1 time); header: HttpOnly=no Secure=no "
+        "SameSite=unknown Path=unknown Domain=- expiry=unknown",
+        "cookie only",
+        "  set by POST https://shop.test/logout (1 time); response.cookies array only (no "
+        "Set-Cookie header line): HttpOnly=unknown Secure=unknown SameSite=unknown "
+        "Path=unknown Domain=- expiry=unknown",
+    ]

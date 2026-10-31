@@ -33,6 +33,7 @@ from graftpunk.har.digest import (
     LoginObservation,
     ObservationKind,
     _account_values,
+    _expiry,
     _login_opener,
     _parse_body,
     _scalar_values,
@@ -53,6 +54,7 @@ from graftpunk.har.parser import LoginInteraction, parse_har_file
 from graftpunk.har.paths import reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from tests.unit.guide_harness import REPO_ROOT
+from tests.unit.test_har_parser import _load_har_facts
 
 
 def _entry(
@@ -8383,3 +8385,29 @@ class TestPostEveryValue:
 
         monkeypatch.setattr(json, "loads", too_deep)
         assert post_every_value(body, "application/json") == []
+
+
+_SENT_AT = datetime(2026, 10, 31, 10, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("attributes", "sent_at"),
+    [
+        ({}, _SENT_AT),
+        ({"max-age": "60"}, _SENT_AT),
+        ({"max-age": "0"}, _SENT_AT),
+        ({"max-age": "-1"}, _SENT_AT),
+        ({"max-age": "soon"}, _SENT_AT),
+        ({"max-age": "soon", "expires": "Wed, 21 Oct 2037 07:28:00 GMT"}, _SENT_AT),
+        ({"max-age": "60", "expires": "Thu, 01 Jan 1970 00:00:00 GMT"}, _SENT_AT),
+        ({"expires": "Thu, 01 Jan 1970 00:00:00 GMT"}, _SENT_AT),
+        ({"expires": "Wed, 21-Oct-2037 07:28:00 GMT"}, _SENT_AT),
+        ({"expires": "Sat, 31 Oct 2026 10:00:00 GMT"}, _SENT_AT),
+        ({"expires": "not a date"}, _SENT_AT),
+        ({"expires": ""}, _SENT_AT),
+        ({"expires": "Wed, 21 Oct 2037 07:28:00 GMT"}, datetime(2026, 10, 31, 10, 0)),
+    ],
+)
+def test_the_expiry_rule_is_the_digests(attributes: dict[str, str], sent_at: datetime) -> None:
+    """The script's ``expiry`` word for a Set-Cookie line is the digest's."""
+    assert _load_har_facts().expiry_of(attributes, sent_at) == _expiry(attributes, sent_at)
