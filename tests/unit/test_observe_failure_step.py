@@ -707,6 +707,9 @@ class TestARedirectedFailedPost:
         assert "wrongpass1" not in json.dumps(entries)
         assert backend._failed is not None
         assert backend._failed.secrets == ()
+        # Kept for the save's run-wide scrub, and handed over once.
+        assert backend.take_marked_failed_secrets() == ("wrongpass1",)
+        assert backend.take_marked_failed_secrets() == ()
 
     @pytest.mark.asyncio
     async def test_two_resends_before_the_mark_are_scrubbed(self, tmp_path: Path) -> None:

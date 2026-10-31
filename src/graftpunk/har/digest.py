@@ -102,6 +102,8 @@ __all__ = [
     "body_values",
     "digest",
     "is_credential_body",
+    "is_credential_post",
+    "login_form_targets",
     "multipart_delimiter",
     "password_field_names",
     "post_account_values",
@@ -2351,6 +2353,39 @@ def is_credential_body(body_text: str | None, content_type: str = "") -> bool:
     return bool(names) and not _asks_for_a_new_password(names)
 
 
+def login_form_targets(
+    html: str | None, source: str = "", *, base: str | None = None, snapshot: bool = False
+) -> frozenset[tuple[str, str]]:
+    """Where the login forms of the page *html* post, host and path
+    (``LoginForm.action_target``), each read as :func:`extract_login_forms` reads
+    the page (*source*, *base* and *snapshot* passed on): the targets
+    :func:`is_credential_post` takes a POST for a login by. A form with no target of
+    its own gives none."""
+    if not html:
+        return frozenset()
+    forms = extract_login_forms(html, source=source, base=base, snapshot=snapshot)
+    return frozenset(form.action_target for form in forms if form.action_target[1])
+
+
+def is_credential_post(
+    body_text: str | None,
+    content_type: str,
+    url: str,
+    login_targets: Iterable[tuple[str, str]],
+) -> bool:
+    """The digest's rule for reporting a POST as a credential post: its body has a
+    password-like field and none asking for a new password
+    (:func:`is_credential_body`), or it is sent where a recorded login form posts
+    (*login_targets*, :func:`login_form_targets`), whatever its fields are named,
+    since the form's ``type="password"`` input already names the password. The
+    digest reports a POST by this rule, and ``gp observe interactive`` scrubs a
+    typed login from the posts it accepts."""
+    if is_credential_body(body_text, content_type):
+        return True
+    targets = set(login_targets)
+    return bool(targets) and _posts_to_a_login_form(_request_target(url), targets)
+
+
 def _count_ids(names: set[str]) -> int:
     """How many of the dropped *names* were dropped because they hold an id; the
     rest were dropped for not being field names."""
@@ -3064,7 +3099,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         )
         if method == "GET" and forms_in_entry and not lands_a_chain:
             kind = "form_page"
-        elif method == "POST" and (credential_hint_fields or by_target):
+        elif method == "POST" and is_credential_post(
+            entry.request.post_data,
+            _request_content_type(entry),
+            entry.request.url,
+            login_action_targets,
+        ):
             # Report every body field name, not only the password-hinted
             # ones: a credential post's username/email field is part of the
             # observation too.

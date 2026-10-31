@@ -1746,6 +1746,9 @@ class NodriverCaptureBackend:
         self._step_reads: dict[str, str] = {}
         self._step_read_tasks: dict[str, asyncio.Task[Any]] = {}
         self._failed: _FailedLogin | None = None
+        # The marked post's password values from stop until the save takes them
+        # (take_marked_failed_secrets), so the run is scrubbed of them everywhere.
+        self._marked_secrets: tuple[str, ...] = ()
         # Top-level documents committed (Page.frameNavigated with no parent frame),
         # and whether the latest has fired its load event.
         self._top_documents = 0
@@ -3112,12 +3115,23 @@ class NodriverCaptureBackend:
     def _scrub_failed_resends(self) -> None:
         """At stop: scrub the failed post's request id once more
         (:meth:`_scrub_failed_post`), for a 307 or 308 resend recorded or fetched
-        after the mark, then drop its password values."""
+        after the mark, then hand its password values to
+        :meth:`take_marked_failed_secrets`."""
         failed = self._failed
         if failed is None:
             return
         self._scrub_failed_post(failed)
+        self._marked_secrets = failed.secrets
         failed.secrets = ()
+
+    def take_marked_failed_secrets(self) -> tuple[str, ...]:
+        """The password values of the post the user marked failed, once, after stop,
+        for the save to scrub from the whole run: a wrong password is often the real
+        one with a typo, and when Enter came after the real login, the marked post is
+        the real login. Empty when no post was marked or the values were taken. In
+        memory only."""
+        values, self._marked_secrets = self._marked_secrets, ()
+        return values
 
     def _close_after_read_state(self) -> list[asyncio.Task[Any]]:
         """Start no read after a credential post from now on, drop the body text kept

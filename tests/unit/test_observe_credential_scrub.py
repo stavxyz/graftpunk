@@ -15,7 +15,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from graftpunk.har.digest import DigestSource, digest
-from graftpunk.observe.run import REDACTED, credential_post_redaction, save_observe_run
+from graftpunk.observe.run import (
+    REDACTED,
+    credential_post_redaction,
+    names_a_password,
+    save_observe_run,
+)
 from graftpunk.observe.storage import ObserveStorage
 
 _HOST = "https://myshop.example"
@@ -229,6 +234,7 @@ class TestCredentialPostsAreScrubbed:
             "values_post_only": 0,
             "values_left": 0,
             "bodies_unread": 0,
+            "logins_missed": 0,
         }
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "Scrubbed 3 typed credential values from the run" in printed
@@ -368,13 +374,26 @@ class TestEdgeCases:
     ) -> None:
         (tmp_path / "bodies").mkdir()
         (tmp_path / "bodies" / "1.bin").write_bytes(b"\xff\xfepassword=x")
+        post = _entry("POST", "/upload")
+        post["request"]["_postDataFile"] = "bodies/1.bin"
+
+        with patch("graftpunk.observe.run.LOG") as log:
+            found = credential_post_redaction([_login_page(), post], tmp_path)
+
+        assert (found.posts, found.unread, found.missed, bool(found.redaction)) == (0, 1, 0, False)
+        assert log.info.call_args.args[0] == "credential_scrub_body_unread"
+        assert not log.warning.called
+
+    def test_an_unread_body_sent_to_the_login_form_is_a_missed_login(self, tmp_path: Path) -> None:
+        (tmp_path / "bodies").mkdir()
+        (tmp_path / "bodies" / "1.bin").write_bytes(b"\xff\xfepassword=x")
         post = _entry("POST", "/session")
         post["request"]["_postDataFile"] = "bodies/1.bin"
 
         with patch("graftpunk.observe.run.LOG") as log:
-            found = credential_post_redaction([post], tmp_path)
+            found = credential_post_redaction([_login_page(), post], tmp_path)
 
-        assert (found.posts, found.unread, bool(found.redaction)) == (0, 1, False)
+        assert (found.posts, found.unread, found.missed) == (0, 1, 1)
         assert log.warning.call_args.args[0] == "credential_scrub_body_unread"
 
     def test_a_rule_that_raises_on_one_post_skips_only_that_post(self, tmp_path: Path) -> None:
@@ -397,7 +416,7 @@ class TestEdgeCases:
         assert _JSON_PASSWORD not in found.redaction.secrets
         assert log.warning.call_args.kwargs["exc_type"] == "RecursionError"
 
-    def test_a_multipart_login_is_no_credential_post_by_the_shared_rule(
+    def test_a_multipart_login_is_no_credential_post_by_the_shared_rule_and_is_missed(
         self, tmp_path: Path
     ) -> None:
         body = (
@@ -410,7 +429,7 @@ class TestEdgeCases:
 
         found = credential_post_redaction([post], tmp_path)
 
-        assert (found.posts, bool(found.redaction)) == (0, False)
+        assert (found.posts, found.missed, bool(found.redaction)) == (0, 1, False)
 
 
 class TestObserveGoScrubs:
@@ -436,3 +455,316 @@ class TestObserveGoScrubs:
             await run_observe_go("myshop", f"{_HOST}/login", 0.0, 1024)
 
         assert save.await_args.kwargs["scrub_credential_posts"] is True
+
+
+def _har(storage: ObserveStorage) -> list[dict[str, Any]]:
+    return json.loads((storage.run_dir / "network.har").read_text())["log"]["entries"]
+
+
+def _printed(console: MagicMock) -> str:
+    return " ".join(str(c.args[0]) for c in console.print.call_args_list)
+
+
+def _credential_posts(storage: ObserveStorage) -> list[Any]:
+    result = digest(DigestSource.from_run_dir(storage.run_dir, session="sess", run_id="run1"))
+    return [step for step in result.login if step.kind == "credential_post"]
+
+
+class TestFileReferencesAreKept:
+    @pytest.mark.asyncio
+    async def test_a_password_inside_a_body_file_name_keeps_the_reference(
+        self, tmp_path: Path
+    ) -> None:
+        """A password that is part of graftpunk's own file reference (the word
+        ``request`` in ``bodies/<id>.request.txt``) leaves the reference as written,
+        and the body file is still found and scrubbed."""
+        storage = _storage(tmp_path)
+        bodies = storage.run_dir / "bodies"
+        bodies.mkdir(parents=True)
+        snapshots = storage.run_dir / "snapshots"
+        snapshots.mkdir()
+        post = _form_post("request")
+        ref = "bodies/4711.12.request.txt"
+        (storage.run_dir / ref).write_text(post["request"].pop("postData")["text"])
+        post["request"]["_postDataFile"] = ref
+        post["request"]["_domSnapshot"] = "snapshots/4711.12.request.html"
+        post["request"]["_domAfter"] = "snapshots/4711.12.request.after.html"
+        (snapshots / "4711.12.request.html").write_text("<p>request</p>")
+        post["response"]["content"]["_bodyFile"] = "bodies/4711.12.request.html"
+
+        await _save(storage, _Backend([_login_page(), post]))
+
+        entry = _har(storage)[1]
+        assert entry["request"]["_postDataFile"] == ref
+        assert entry["request"]["_domSnapshot"] == "snapshots/4711.12.request.html"
+        assert entry["request"]["_domAfter"] == "snapshots/4711.12.request.after.html"
+        assert entry["response"]["content"]["_bodyFile"] == "bodies/4711.12.request.html"
+        body = (storage.run_dir / ref).read_text()
+        assert body == f"email={REDACTED}&password={REDACTED}"
+        assert entry["request"]["_postDataSize"] == len(body)
+        assert (snapshots / "4711.12.request.html").read_text() == f"<p>{REDACTED}</p>"
+
+
+class TestTheBodyIsScrubbedByItsStructure:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("password", "posted"),
+        [("hunter~22", "hunter%7E22"), ("my pass*word", "my+pass*word")],
+    )
+    async def test_a_browser_form_spelling_is_scrubbed(
+        self, tmp_path: Path, password: str, posted: str
+    ) -> None:
+        """A browser's form posts ``~`` as ``%7E`` and a space as ``+`` with ``*``
+        raw (the WHATWG form serializer): scrubbed in the login's own body, and in an
+        echo of the same spelling elsewhere."""
+        storage = _storage(tmp_path)
+        post = _form_post()
+        post["request"]["postData"]["text"] = f"email=alice%40example.com&password={posted}"
+        echo = _entry(
+            "POST",
+            "/profile",
+            post_data=f"hint={posted}&x=1",
+            post_type="application/x-www-form-urlencoded",
+        )
+
+        await _save(storage, _Backend([_login_page(), post, echo]))
+
+        entries = _har(storage)
+        assert entries[1]["request"]["postData"]["text"] == (
+            f"email={REDACTED}&password={REDACTED}"
+        )
+        assert entries[2]["request"]["postData"]["text"] == f"hint={REDACTED}&x=1"
+        everything = _everything(storage.run_dir)
+        assert posted.encode() not in everything
+        assert password.encode() not in everything
+        assert _credential_posts(storage)
+
+    @pytest.mark.asyncio
+    async def test_a_numeric_json_password_leaves_valid_json_in_the_har_and_bodies(
+        self, tmp_path: Path
+    ) -> None:
+        storage = _storage(tmp_path)
+        bodies = storage.run_dir / "bodies"
+        bodies.mkdir(parents=True)
+        inline = _json_post()
+        inline["request"]["postData"]["text"] = json.dumps({"email": _EMAIL, "password": 482916})
+        on_disk = _json_post()
+        on_disk["request"].pop("postData")
+        (bodies / "2.request.json").write_text(json.dumps({"email": _EMAIL, "password": 482916}))
+        on_disk["request"]["_postDataFile"] = "bodies/2.request.json"
+
+        await _save(storage, _Backend([_login_page(), inline, on_disk]))
+
+        entries = _har(storage)
+        expected = {"email": REDACTED, "password": REDACTED}
+        assert json.loads(entries[1]["request"]["postData"]["text"]) == expected
+        assert json.loads((bodies / "2.request.json").read_text()) == expected
+        assert b"482916" not in _everything(storage.run_dir)
+        posts = _credential_posts(storage)
+        assert len(posts) == 2
+        assert all({"email", "password"} <= set(step.fields) for step in posts)
+
+    @pytest.mark.asyncio
+    async def test_crlf_line_endings_are_kept(self, tmp_path: Path) -> None:
+        storage = _storage(tmp_path)
+        backend = _Backend([_login_page(), _json_post()])
+        backend.page_source = f"<html>\r\n<body>{_JSON_PASSWORD}</body>\r\n</html>"
+
+        await _save(storage, backend)
+
+        assert (storage.run_dir / "page-source.html").read_bytes() == (
+            f"<html>\r\n<body>{REDACTED}</body>\r\n</html>".encode()
+        )
+
+
+class TestTheDigestsRule:
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("password", True),
+            ("j_passwd", True),
+            ("user[pass]", True),
+            ("PW", True),
+            ("userPin", True),
+            ("pin_code", True),
+            ("passcode", True),
+            ("client_secret", True),
+            ("bypass", False),
+            ("spinner", False),
+            ("email", False),
+            (None, False),
+        ],
+    )
+    def test_names_a_password(self, name: str | None, expected: bool) -> None:
+        assert names_a_password(name) is expected
+
+    @pytest.mark.asyncio
+    async def test_a_nested_json_login_to_the_login_form_is_scrubbed(self, tmp_path: Path) -> None:
+        storage = _storage(tmp_path)
+        post = _json_post()
+        post["request"]["postData"]["text"] = json.dumps(
+            {"user": {"email": _EMAIL, "password": "sunflower99"}}
+        )
+
+        await _save(storage, _Backend([_login_page(), post]))
+
+        assert json.loads(_har(storage)[1]["request"]["postData"]["text"]) == {
+            "user": {"email": REDACTED, "password": REDACTED}
+        }
+        assert b"sunflower99" not in _everything(storage.run_dir)
+        assert _credential_posts(storage)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["pass", "pw", "pin", "passcode", "userSecret"])
+    async def test_a_password_under_another_name_posted_to_the_login_form_is_scrubbed(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        storage = _storage(tmp_path)
+        page = _login_page()
+        page["response"]["content"]["text"] = _LOGIN_PAGE.replace(
+            "name='password'", f"name='{name}'"
+        )
+        post = _form_post()
+        post["request"]["postData"]["text"] = f"email=alice%40example.com&{name}=sunflower99"
+
+        await _save(storage, _Backend([page, post]))
+
+        assert _har(storage)[1]["request"]["postData"]["text"] == (
+            f"email={REDACTED}&{name}={REDACTED}"
+        )
+        assert b"sunflower99" not in _everything(storage.run_dir)
+
+    @pytest.mark.asyncio
+    async def test_a_login_the_scrub_cannot_read_is_warned_about(self, tmp_path: Path) -> None:
+        """No login form in the run, so a nested JSON login is no credential post by
+        the digest's rule: the terminal and the log say the run may hold it."""
+        storage = _storage(tmp_path)
+        post = _json_post()
+        post["request"]["postData"]["text"] = json.dumps(
+            {"user": {"email": _EMAIL, "password": "sunflower99"}}
+        )
+        console = MagicMock()
+
+        with patch("graftpunk.observe.run.LOG") as log:
+            await _save(storage, _Backend([post]), console)
+
+        assert (
+            "1 request looks like a login the scrub could not read: the run may still hold "
+            "the password typed into it"
+        ) in _printed(console)
+        warned = [c for c in log.warning.call_args_list if c.args[0].startswith("observe_")]
+        assert warned[0].kwargs == {"logins_missed": 1}
+        assert "sunflower99" not in repr(log.mock_calls) + _printed(console)
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_login_prints_nothing_about_credentials(
+        self, tmp_path: Path
+    ) -> None:
+        storage = _storage(tmp_path)
+        bodies = storage.run_dir / "bodies"
+        bodies.mkdir(parents=True)
+        (bodies / "up.bin").write_bytes(b"\x89PNG\xff\xfe")
+        upload = _entry("POST", "/upload")
+        upload["request"]["_postDataFile"] = "bodies/up.bin"
+        console = MagicMock()
+
+        with patch("graftpunk.observe.run.LOG") as log:
+            await _save(storage, _Backend([_entry("GET", "/"), upload]), console)
+
+        printed = _printed(console)
+        assert "credential" not in printed
+        assert "could not read" not in printed
+        assert not log.warning.called
+
+    @pytest.mark.asyncio
+    async def test_an_identifier_first_login_scrubs_the_username_too(self, tmp_path: Path) -> None:
+        storage = _storage(tmp_path)
+        first = _entry(
+            "POST",
+            "/login/identifier",
+            post_data=json.dumps({"username": "alice.example"}),
+            started="2026-10-31T10:00:03.000Z",
+        )
+        second = _entry(
+            "POST",
+            "/login/password",
+            post_data=json.dumps({"password": _JSON_PASSWORD}),
+            started="2026-10-31T10:00:05.000Z",
+        )
+        account = _entry("GET", "/account", body=json.dumps({"name": "alice.example"}))
+
+        await _save(storage, _Backend([first, second, account]))
+
+        everything = _everything(storage.run_dir)
+        assert b"alice.example" not in everything
+        assert _JSON_PASSWORD.encode() not in everything
+
+
+class TestEchoesAreScrubbed:
+    @pytest.mark.asyncio
+    async def test_basic_auth_query_string_and_cookie(self, tmp_path: Path) -> None:
+        import base64
+
+        storage = _storage(tmp_path)
+        basic = base64.b64encode(f"{_EMAIL}:{_JSON_PASSWORD}".encode()).decode()
+        echo = _entry("GET", f"/api?token={_JSON_PASSWORD}")
+        echo["request"]["queryString"] = [{"name": "token", "value": _JSON_PASSWORD}]
+        echo["request"]["headers"].append({"name": "Authorization", "value": f"Basic {basic}"})
+        cookie = base64.b64encode(_JSON_PASSWORD.encode()).decode()
+        echo["request"]["cookies"].append({"name": "remember", "value": cookie})
+
+        await _save(storage, _Backend([_login_page(), _json_post(), echo]))
+
+        request = _har(storage)[2]["request"]
+        assert request["url"] == f"{_HOST}/api?token={REDACTED}"
+        assert request["queryString"] == [{"name": "token", "value": REDACTED}]
+        assert {"name": "Authorization", "value": f"Basic {REDACTED}"} in request["headers"]
+        assert request["cookies"] == [{"name": "remember", "value": REDACTED}]
+        everything = _everything(storage.run_dir)
+        for value in (_JSON_PASSWORD, basic, cookie):
+            assert value.encode() not in everything
+
+
+class _MarkedBackend(_Backend):
+    """A backend whose user marked a post failed: the recorder kept its password."""
+
+    def __init__(self, entries: list[dict[str, Any]], marked: tuple[str, ...]) -> None:
+        super().__init__(entries)
+        self._marked = marked
+
+    def take_marked_failed_secrets(self) -> tuple[str, ...]:
+        marked, self._marked = self._marked, ()
+        return marked
+
+
+class TestWrongPasswordFirst:
+    @pytest.mark.asyncio
+    async def test_the_marked_password_is_scrubbed_from_the_whole_run(self, tmp_path: Path) -> None:
+        storage = _storage(tmp_path)
+        typo = "hunter2-jsn-pass"  # noqa: S105 - placeholder, not a credential
+        echo = _entry("GET", f"/retry?last={typo}")
+        entries = [_login_page(), _json_post(REDACTED), _json_post(), echo]
+
+        await _save(storage, _MarkedBackend(entries, (typo,)))
+
+        everything = _everything(storage.run_dir)
+        assert typo.encode() not in everything
+        assert _JSON_PASSWORD.encode() not in everything
+
+    @pytest.mark.asyncio
+    async def test_enter_after_the_real_login_still_scrubs_the_real_password(
+        self, tmp_path: Path
+    ) -> None:
+        """Enter pressed after the real login: the marked post is the real one, its
+        body already scrubbed by the recorder, and the save scrubs its password from
+        everything else (a header, a later URL, the page source)."""
+        storage = _storage(tmp_path)
+        echo = _entry("GET", f"/welcome?pw={_JSON_PASSWORD}")
+        echo["request"]["headers"].append({"name": "X-Pass", "value": _JSON_PASSWORD})
+        backend = _MarkedBackend([_login_page(), _json_post(REDACTED), echo], (_JSON_PASSWORD,))
+        backend.page_source = f"<html><body>{_JSON_PASSWORD}</body></html>"
+
+        await _save(storage, backend)
+
+        assert _JSON_PASSWORD.encode() not in _everything(storage.run_dir)
+        assert _har(storage)[2]["request"]["url"] == f"{_HOST}/welcome?pw={REDACTED}"
