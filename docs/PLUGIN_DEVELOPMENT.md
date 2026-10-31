@@ -2327,25 +2327,30 @@ body (the value as recorded, percent-decoded, or without the double quotes a
 cookie value may carry, found in the body as written or with its backslash
 escapes, HTML character references, or percent-encoding decoded, alone or two
 together), or when the recording did not keep or show the cookie's value, or no
-recorded request sent the cookie, which `gp observe fixtures` cannot compare. A
+recorded request sent the cookie a value, which `gp observe fixtures` cannot compare. A
 cookie's recorded values are the HAR's cookie arrays and every `Cookie` and
 `Set-Cookie` header: what the recorded headers carried, not every value the
 cookie held, since a token rotated or set by a script after the last request
-that sent the cookie is in none of them. So a cookie name is also in it when the
-captured body holds a value under that name (a JSON key, a form field or query
-parameter, an HTML attribute, or an HTML element's `name`) that is not a number,
-a boolean, null, empty, or form state by the rule above; an object or array
-under the name is judged by every value in it. An honest `"id": 7` or `"user":
-"alice"` leaves the name out, while `"csrftoken": "<an opaque token>"` and
-`"user": {"email": "ann@myshop.example"}` keep it in. The values are compared in
+that sent the cookie is in none of them. So a cookie name is left out only when
+every occurrence of it in the captured body is a name-value pair the check reads
+(`"name": v` in JSON, `name=v` in a query or form body, `name="v"` as an HTML
+attribute, or an HTML element whose `name`, `id`, `property`, `itemprop` or
+`http-equiv` is the name, with a `value` or `content`) and every value read so
+holds nothing: a boolean, null, empty, form state by the rule above, a number
+whose text is form state, or an object or array whose keys and values all hold
+nothing. Any other mention of the name (`Cookies.set('csrftoken', ...)`, a
+`{"name": "csrftoken", "value": ...}` pair, an element's text, a table cell)
+keeps it in. An honest `"id": 7` or `"user": "alice"` leaves the name out, while
+`"csrftoken": "<an opaque token>"` and `"user": {"email": "ann@myshop.example"}`
+keep it in. The values are compared in
 memory and never written; the list is names only. Where the name stays checked
 (an endpoint that returns a `csrftoken` token), the check fails on the name in
 the fixture, since it cannot tell an invented value from the recorded one;
 rename the key where the plugin does not read it. A sidecar written before
 1.33.0 has no `checked_names` (schema 2 or 1), and the check looks for every
 flagged name in its fixture, as before; regenerate it with `gp observe
-fixtures` to have a cookie name looked for only where the capture held its
-value or a value under it that is not form state. That also means the suite no longer
+fixtures` to have a cookie name left out where the capture held none of its
+values and held the name only in name-value pairs holding nothing. That also means the suite no longer
 catches a recorded cookie value pasted into a fixture from anywhere other than
 its capture, even under its cookie's name: `{"id": 7, "myshop_session": "<the
 recorded session value>"}` passes a schema 3 sidecar whose capture never held
@@ -2476,7 +2481,7 @@ on every run (a `.DS_Store` or an editor swap file is skipped, like `.gitkeep`)
 and fails when a fixture has no sidecar, when a fixture is still byte for byte
 its capture, when a name in the sidecar's `checked_names` turns up in the
 fixture (every token name, and a cookie name whose recorded value the capture
-held, or under which it held a value that is not form state; any flagged name,
+held, or held other than in a name-value pair holding nothing; any flagged name,
 for a sidecar written before 1.33.0), when a
 sidecar is outside its declared format, or when a fixture, or a directory under
 `tests/fixtures/`, cannot be read. A checked name is matched case-insensitively

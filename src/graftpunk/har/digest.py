@@ -3603,7 +3603,8 @@ def flagged_values_of(
     request that sent the cookie, a value a later response rotated it to, or a
     header the recorder did not keep is in no recorded header. So
     :func:`graftpunk.devtools.captures.checked_names_of` also keeps a name
-    checked when the capture holds a value under it that is not form state.
+    checked when the capture holds it anywhere but in a name-value pair whose
+    value holds nothing.
 
     None, the values not all known, for any name the digest found as a meta tag,
     hidden input, or header token: such a value can come from a source the
