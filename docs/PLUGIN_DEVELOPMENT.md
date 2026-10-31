@@ -750,9 +750,12 @@ a response set shows the endpoints that set it and the attributes they gave it:
 `HttpOnly`, `Secure`, `SameSite`, `Path`, and `expiry` (`session`,
 `persistent`, or `past` for a response that deletes it). When responses gave it
 different attributes, each set follows its own `set by`, separated by `;`.
-`unknown` is an attribute the recording does not settle, and `-` one the
-response did not set. A cookie the recording only sent (a recording made with a
-cached session never sees the session set) says so. See
+`unknown` is an attribute the recording does not settle, `-` one the response
+did not set, and `Path=(not shown)` a path holding anything outside a plain
+path. A cookie no response the digest kept set says so (a recording made with a
+cached session never sees the session set, and the digest leaves static and
+third-party responses out). A name that reads as a value is counted, not
+printed. See
 [How graftpunk Works](HOW_IT_WORKS.md#building-a-plugin-from-a-recording) for
 each word.
 

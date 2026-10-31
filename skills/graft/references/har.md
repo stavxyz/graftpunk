@@ -14,13 +14,15 @@ Run the `--json` line of the Understand block of `references/commands.md` on
 the chosen session and run first. It is the whole digest model: header, cookie,
 token-candidate, form field, and query parameter names, observed types,
 response shapes, and in `cookie_facts` each cookie's attributes and the
-endpoints that set it (no `Domain`). It holds no header, cookie, or query value, and only one kind
-of body value: for an endpoint whose recorded JSON body is `{}`, `[]`, `""`,
-`0`, `false`, or `null`, that value. It does print paths as recorded, though:
-up to three example paths per endpoint (the query string stripped and a segment
-holding an email address replaced, but an account or order id kept), each login
-step's URL and redirect target, each login form's action and the page it was
-on, and the page each token was seen on.
+endpoints that set it (no `Domain`). A cookie name that reads as a value is
+left out of `cookies` and `cookie_facts` and counted in
+`cookie_names_not_shown`. It holds no header, cookie, or query value, and only
+one kind of body value: for an endpoint whose recorded JSON body is `{}`, `[]`,
+`""`, `0`, `false`, or `null`, that value. It does print paths as recorded,
+though: up to three example paths per endpoint (the query string stripped and a
+segment holding an email address replaced, but an account or order id kept),
+each login step's URL and redirect target, each login form's action and the
+page it was on, and the page each token was seen on.
 
 ## Where the HAR is
 
@@ -48,8 +50,9 @@ header, query, or body value; answer from its output:
   `Secure`, `SameSite`, `Path`, `Domain`, and `expiry` (`session`,
   `persistent`, or `past` when the response deletes it), read from the raw
   `Set-Cookie` header and the entry's `response.cookies` array, with a note
-  when they disagree; `unknown` is what the recording does not settle, in the
-  digest's words. A recording made by another tool or an older graftpunk
+  when they disagree; `unknown` is what the recording does not settle, and
+  `(not shown)` a `Path` carrying a query, a comma, a space, or the like, in
+  the digest's words. A recording made by another tool or an older graftpunk
   has shown the array lacking `httpOnly` where the header carried it (cause
   unverified), so trust the header's line. It then names the cookies the
   recording only sends. With `--name '<cookie>'` it prints that one cookie's

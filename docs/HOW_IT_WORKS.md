@@ -725,27 +725,56 @@ given, each after the endpoints that gave it (`set by POST /login, GET /account:
 as `METHOD template` in the digest's own templates), separated by `;`, so one
 line shows a cookie a login sets `HttpOnly` and a logout deletes. An attribute
 set is `HttpOnly` and `Secure` (`yes`, `no`, or `unknown`), `SameSite` (`Lax`,
-`Strict`, `None`, `-` when not set, or `unknown`), `Path` (templated as an
-endpoint's path is, `-` when not set, or `unknown` when it does not start with
-`/`), and `expiry`: `session` with neither `Max-Age` nor `Expires`,
-`persistent`, `past` when `Max-Age` is 0 or less or `Expires` is no later than
-the request (the response deletes the cookie), or `unknown` when neither is a
-number or a date. `Max-Age` wins over `Expires`, as in RFC 6265. The attributes
-are read from every `Set-Cookie` header line by the parser's one `Set-Cookie`
-parse (`graftpunk.har.parser._set_cookie_lines`: any header case, several
-headers per entry, newline-joined lines, attribute names in any case); a
-`response.cookies` entry past the header lines of its name, as a HAR from
-another tool can carry with no header, adds its own flags, and one it leaves
-out reads `unknown`. A cookie no kept response set and a kept request sent
-reads `sent in requests and never set in this recording`, as a recording made
-with a cached session shows its session cookie. A name that holds an id is
-left out, as everywhere. The words are those of the graft skill's `har-facts.py
-cookies`, which also prints the `Domain` and each response's full URL. `--json`
-carries the same facts as `cookie_facts`: one object per cookie with its `name`
-and its `settings`, each with `http_only`, `secure`, `same_site`, `path`,
-`expiry`, and `set_by` in the words above, and an empty `settings` for a cookie
-only sent; a run with no cookie leaves the key out. `--endpoints-json` carries
-no cookie name.
+`Strict`, `None`, `-` when not set, or `unknown`), `Path`, and `expiry`. `Path`
+is templated and collapsed into its endpoint family as an endpoint's path is
+(`/p/alice2` beside the family `/p/{p_id}/reviews` prints `/p/{p_id}`), `-`
+when not set or empty, `unknown` when it does not start with `/`, and
+`(not shown)` when it holds anything outside a plain path (a `,`, `?`, `#`, `=`,
+`;`, quote, or whitespace), since a comma-folded second cookie or a query can
+carry a value there. `expiry` is `session` with neither `Max-Age` nor
+`Expires`, `persistent`, `past` when `Max-Age` is 0 or less or `Expires` is no
+later than the request (the response deletes the cookie), or `unknown`.
+`Max-Age` wins over `Expires`, as in RFC 6265. The attributes are read from
+every `Set-Cookie` header line by the parser's one `Set-Cookie` parse
+(`graftpunk.har.parser._set_cookie_lines`: any header case, several headers per
+entry, newline-joined lines, attribute names in any case); a `response.cookies`
+entry past the header lines of its name, as a HAR from another tool can carry
+with no header, is read too.
+
+`unknown` is an attribute the recording does not settle, and the rule is the
+same for every attribute. On a header line, a missing `HttpOnly` or `Secure` is
+`no` and a present one, bare or with any value, is `yes`; a missing `SameSite`
+or `Path` is `-`, an empty or bare `Path` is `-`, and an empty, bare, or
+unrecognised `SameSite` is `unknown`. `expiry` is `unknown` when `Max-Age` is
+present but not a number and there is no `Expires`, when `Expires` is not a
+date, and when the entry's `startedDateTime` does not parse, which leaves an
+`Expires` nothing to be compared with (`Max-Age` still decides alone). In an
+array entry, every attribute the entry leaves out is `unknown`, since the
+array often drops one the header carried: a missing or non-boolean `httpOnly`
+or `secure`, a missing `sameSite` or `path`, and a missing or empty `expires`.
+An array `expires` is read as an ISO 8601 date (HAR 1.2) or an HTTP date (as
+gp's recorder copies it from the header) and compared with the request as a
+header's `Expires` is; one that is neither is `unknown`.
+
+A cookie no kept response set and a kept request sent reads `sent in requests
+and never set by a response the digest kept`: a recording made with a cached
+session shows its session cookie so, and so does a cookie a static,
+third-party, or failed response set, since the digest leaves those responses
+out. A cookie name prints only when it passes the name gate the graft skill's
+`har-facts.py` prints names through (`graftpunk.har.paths.printable_name`, held
+equal to the script's copy by a test), set or only sent: a name that holds an
+id or otherwise reads as a value (a short random token a foreign HAR records
+as a name) is left out of the section, `cookie_facts`, and `--json`'s
+`cookies`, and the section ends with a count (`1 cookie whose name reads as a
+value is not shown`), which `--json` carries as `cookie_names_not_shown`. The
+fixture safety net (`flagged_names`) still holds every name. The words are those
+of the graft skill's `har-facts.py cookies`, which also prints the `Domain` and
+each response's full URL, and says `never set in this recording`, since it
+reads every entry. `--json` carries the same facts as `cookie_facts`: one
+object per cookie with its `name` and its `settings`, each with `http_only`,
+`secure`, `same_site`, `path`, `expiry`, and `set_by` in the words above, and
+an empty `settings` for a cookie only sent; a run with no cookie leaves the key
+out. `--endpoints-json` carries no cookie name.
 
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
