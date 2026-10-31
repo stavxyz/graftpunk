@@ -81,8 +81,9 @@ value is a credential. It reports and never decides what the suite checks:
 reading one more source can only find more. This catches a value the capture's
 body never held, which the fixtures check in the suite does not: it holds names
 only, and from sidecar schema 3 it looks for a flagged cookie name only where the
-capture held that cookie's value, so a recorded cookie value pasted into a
-fixture from elsewhere, even under its cookie's name, passes the suite.
+capture held one of that cookie's recorded values or a value under its name that
+is not form state, so a recorded cookie value pasted into a fixture from
+elsewhere, even under its cookie's name, passes the suite.
 
 Exit 0 when nothing survived and the sidecar matches, 1 when something survived,
 a recorded value of a flagged name is in the fixture, or the sidecar differs, 2 on

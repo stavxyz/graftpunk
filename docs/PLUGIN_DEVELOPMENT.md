@@ -2326,19 +2326,26 @@ cookie name is in it when one of the cookie's recorded values is in the captured
 body (the value as recorded, percent-decoded, or without the double quotes a
 cookie value may carry, found in the body as written or with its backslash
 escapes, HTML character references, or percent-encoding decoded, alone or two
-together), or when the recording did not keep or show the cookie's value, which
-`gp observe fixtures` cannot compare. A cookie's recorded values are the HAR's
-cookie arrays and its `Cookie` and `Set-Cookie` headers, which hold every value
-a cookie was sent or set with. A cookie name whose value the body does not hold
-cannot have been copied into a fixture derived from it, so the check does not
-look for it. The values are compared in memory and never written; the list is
-names only. Where the body holds the value (an endpoint that returns the
-`csrftoken` cookie's value), the check still fails on the name, since it cannot
-tell an invented value from the recorded one; rename the key where the plugin
-does not read it. A sidecar written before 1.33.0 has no `checked_names`
-(schema 2 or 1), and the check looks for every flagged name in its fixture, as
-before; regenerate it with `gp observe fixtures` to have a cookie name looked
-for only where the capture held its value. That also means the suite no longer
+together), or when the recording did not keep or show the cookie's value, or no
+recorded request sent the cookie, which `gp observe fixtures` cannot compare. A
+cookie's recorded values are the HAR's cookie arrays and every `Cookie` and
+`Set-Cookie` header: what the recorded headers carried, not every value the
+cookie held, since a token rotated or set by a script after the last request
+that sent the cookie is in none of them. So a cookie name is also in it when the
+captured body holds a value under that name (a JSON key, a form field or query
+parameter, an HTML attribute, or an HTML element's `name`) that is not a number,
+a boolean, null, empty, or form state by the rule above; an object or array
+under the name is judged by every value in it. An honest `"id": 7` or `"user":
+"alice"` leaves the name out, while `"csrftoken": "<an opaque token>"` and
+`"user": {"email": "ann@myshop.example"}` keep it in. The values are compared in
+memory and never written; the list is names only. Where the name stays checked
+(an endpoint that returns a `csrftoken` token), the check fails on the name in
+the fixture, since it cannot tell an invented value from the recorded one;
+rename the key where the plugin does not read it. A sidecar written before
+1.33.0 has no `checked_names` (schema 2 or 1), and the check looks for every
+flagged name in its fixture, as before; regenerate it with `gp observe
+fixtures` to have a cookie name looked for only where the capture held its
+value or a value under it that is not form state. That also means the suite no longer
 catches a recorded cookie value pasted into a fixture from anywhere other than
 its capture, even under its cookie's name: `{"id": 7, "myshop_session": "<the
 recorded session value>"}` passes a schema 3 sidecar whose capture never held
@@ -2468,8 +2475,9 @@ The generated suite holds you to part of that. Its `tests/conftest.py` wires in
 on every run (a `.DS_Store` or an editor swap file is skipped, like `.gitkeep`)
 and fails when a fixture has no sidecar, when a fixture is still byte for byte
 its capture, when a name in the sidecar's `checked_names` turns up in the
-fixture (every token name, and a cookie name whose value the capture held; any
-flagged name, for a sidecar written before 1.33.0), when a
+fixture (every token name, and a cookie name whose recorded value the capture
+held, or under which it held a value that is not form state; any flagged name,
+for a sidecar written before 1.33.0), when a
 sidecar is outside its declared format, or when a fixture, or a directory under
 `tests/fixtures/`, cannot be read. A checked name is matched case-insensitively
 and only as a whole name. Letters, digits, `_` and `-` continue a name. The rest
