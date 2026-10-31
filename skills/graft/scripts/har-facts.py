@@ -911,7 +911,8 @@ def _iso_by_hand(text: str) -> datetime | None:
             if offset is None or offset[1]:
                 return None
             hours, minutes, seconds, micros = offset[0]
-            # 3.11 drops the fraction of an offset of zero whole seconds.
+            # 3.11.15, 3.12.13 and 3.13.14 drop the fraction of an offset of zero
+            # whole seconds; 3.13.18 keeps it. The script follows the older readers.
             if hours == minutes == seconds == 0:
                 micros = 0
             delta = timedelta(hours=hours, minutes=minutes, seconds=seconds, microseconds=micros)

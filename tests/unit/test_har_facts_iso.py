@@ -15,7 +15,7 @@ import importlib.util
 import itertools
 import random
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 
@@ -114,6 +114,12 @@ def _fromisoformat(text: str) -> datetime | None:
 def _same(got: datetime | None, expected: datetime | None) -> bool:
     if got is None or expected is None:
         return got is expected
+    if got.utcoffset() == timedelta(0) and expected.utcoffset() != timedelta(0):
+        # Patch releases differ on an offset of zero whole seconds with a
+        # fraction: 3.13.14 reads it as UTC, 3.13.18 keeps the fraction.
+        offset = expected.utcoffset()
+        if offset is not None and abs(offset) < timedelta(seconds=1):
+            expected = expected.replace(tzinfo=got.tzinfo)
     return got == expected and got.utcoffset() == expected.utcoffset()
 
 
