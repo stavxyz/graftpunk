@@ -219,12 +219,12 @@ class TestLoad:
             capture_sha256="ab" * 32,
             flagged_reasons={"NID": ("out_of_scope_only", "sent_only", "value_not_form_state")},
             checked_names=(),
-            observe_run=ObserveRun(session="myshop", run="20261006-101500-4242"),
+            observe_run=ObserveRun(plugin="myshop", run="20261006-101500-4242"),
         )
         path = _write(tmp_path / "x.json.meta.json", json.loads(sidecar_text(sidecar)))
         assert json.loads(path.read_text())["observe_run"] == {
+            "plugin": "myshop",
             "run": "20261006-101500-4242",
-            "session": "myshop",
         }
         assert load_sidecar(path) == sidecar
 
@@ -235,35 +235,42 @@ class TestLoad:
     @pytest.mark.parametrize(
         ("observe_run", "match"),
         [
-            ({"session": "myshop", "run": "../other/run-1"}, "observe_run.run must be a run id"),
-            ({"session": "myshop", "run": "a/b"}, "observe_run.run must be a run id"),
-            ({"session": "myshop", "run": ".hidden"}, "observe_run.run must be a run id"),
-            ({"session": "myshop", "run": ""}, "observe_run.run must be a run id"),
-            ({"session": "", "run": "run-1"}, "observe_run.session must be a non-empty"),
-            ({"session": "my\nshop", "run": "run-1"}, "observe_run.session must be a non-empty"),
-            ({"session": 1, "run": "run-1"}, "observe_run.session must be a non-empty"),
-            ({"session": "myshop"}, "exactly session and run"),
-            ({"session": "myshop", "run": "run-1", "path": "/x"}, "exactly session and run"),
-            ("myshop/run-1", "exactly session and run"),
+            ({"plugin": "myshop", "run": "../other/run-1"}, "observe_run.run must be a run id"),
+            ({"plugin": "myshop", "run": "a/b"}, "observe_run.run must be a run id"),
+            ({"plugin": "myshop", "run": ".hidden"}, "observe_run.run must be a run id"),
+            ({"plugin": "myshop", "run": ""}, "observe_run.run must be a run id"),
+            ({"plugin": "", "run": "run-1"}, "observe_run.plugin must be"),
+            ({"plugin": "my\nshop", "run": "run-1"}, "observe_run.plugin must be"),
+            ({"plugin": 1, "run": "run-1"}, "observe_run.plugin must be"),
+            ({"plugin": "myshop@alice", "run": "run-1"}, "observe_run.plugin must be"),
+            ({"plugin": "../x", "run": "run-1"}, "observe_run.plugin must be"),
+            ({"session": "myshop@alice", "run": "run-1"}, "exactly plugin and run"),
+            ({"plugin": "myshop"}, "exactly plugin and run"),
+            ({"plugin": "myshop", "run": "run-1", "path": "/x"}, "exactly plugin and run"),
+            ("myshop/run-1", "exactly plugin and run"),
         ],
         ids=[
             "climbs",
             "two-components",
             "dotfile",
             "empty-run",
-            "empty-session",
+            "empty-plugin",
             "control-character",
             "number",
+            "account-label",
+            "plugin-path",
+            "session-key",
             "missing-run",
             "extra-key",
             "string",
         ],
     )
-    def test_schema_4_observe_run_is_a_session_and_one_run_id(
+    def test_schema_4_observe_run_is_a_plugin_and_one_run_id(
         self, tmp_path: Path, observe_run: object, match: str
     ) -> None:
         """The run id is a single path component, so a committed sidecar cannot
-        point the local value check outside its session's runs."""
+        point the local value check outside the plugin's runs, and the plugin part
+        holds no account label."""
         payload = _v1(schema=4, flagged_reasons={}, checked_names=[], observe_run=observe_run)
         with pytest.raises(SidecarError, match=match):
             load_sidecar(_write(tmp_path / "x.json.meta.json", payload))

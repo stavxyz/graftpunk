@@ -578,7 +578,7 @@ class TestFixturesCommand:
             "redacted_names",
         }
         assert sidecar["schema"] == 4
-        assert sidecar["observe_run"] == {"run": "run-1", "session": "myshop"}
+        assert sidecar["observe_run"] == {"plugin": "myshop", "run": "run-1"}
         assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
         assert sidecar["flagged_names"] == ["shop_session"]
         assert sidecar["flagged_reasons"] == {
@@ -589,6 +589,27 @@ class TestFixturesCommand:
         assert sidecar["checked_names"] == ["shop_session"]
         assert _SESSION_VALUE not in json.dumps(sidecar)
         assert "page=2" not in json.dumps(sidecar)
+
+    def test_an_account_sessions_sidecar_names_the_plugin_and_no_label(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sidecar is committed, so a run of ``myshop@alice`` is named by the
+        plugin part and the run id; the label is nowhere in it."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
+        _write_run(observe_base, "myshop-alice", "run-1", [order])
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop@alice", "--match", "GET /orders/{order_id}"]
+            + ["--out", str(out_dir)],
+        )
+        assert result.exit_code == 0, result.output
+        (meta,) = out_dir.glob("*.meta.json")
+        text = meta.read_text()
+        assert json.loads(text)["observe_run"] == {"plugin": "myshop", "run": "run-1"}
+        assert "alice" not in text
 
     def test_a_run_directory_gp_did_not_name_is_named_in_no_sidecar(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -603,7 +624,7 @@ class TestFixturesCommand:
         out_dir = tmp_path / "out"
         result = _invoke_fixtures(out_dir)
         assert result.exit_code == 0, result.output
-        assert "is not named as gp observe names a run" in strip_ansi(result.output)
+        assert "cannot be named in a sidecar" in strip_ansi(result.output)
         (meta,) = out_dir.glob("*.meta.json")
         assert json.loads(meta.read_text())["observe_run"] is None
 
@@ -1530,7 +1551,7 @@ class TestFlaggedNamesAreJudgedByTheirValues:
         fixtures check finds that run by the same lookup and fails a recorded value
         pasted into the fixture, which the name check alone passes."""
         tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411, "total": "12.50"})
-        assert sidecar["observe_run"] == {"run": "run-1", "session": "myshop"}
+        assert sidecar["observe_run"] == {"plugin": "myshop", "run": "run-1"}
         pasted = {"id": 7, "myshop_session": _SESSION_VALUE}
         (tree / "get_orders_{order_id}.json").write_text(json.dumps(pasted))
         assert check_fixtures_tree(tree).problems == ()

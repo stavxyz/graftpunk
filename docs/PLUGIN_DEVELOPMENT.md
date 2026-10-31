@@ -2206,8 +2206,8 @@ request's body parameter names, every cookie name the recording set or sent
 except a cookie that only ever held form state, the reasons each of those names
 is flagged, the token names the digest found, which of those names the
 fixtures check looks for in this fixture (`checked_names`, below), and the
-session name and run id of the `gp observe` run the capture came from
-(`observe_run`, below).
+plugin part of the session name and the run id of the `gp observe` run the
+capture came from, never an account label (`observe_run`, below).
 
 A cookie whose every non-empty value in the recording (in any request or
 response) is form state holds no credential, so its name is left out of
@@ -2380,8 +2380,9 @@ sidecar whose capture never held that value. On your machine the value check
 below catches it.
 
 `observe_run` (from schema 4, graftpunk 1.35.0) names the run the capture came
-from as `gp observe show` takes it, a session name and a run id, never a path.
-When the suite runs where that run is on disk, which is the machine you ran
+from by the plugin part of its session name and its run id: a run of
+`myshop@alice` is `{"plugin": "myshop", "run": "<run id>"}`. It never holds the
+account label or a path. When the suite runs where that run is on disk, which is the machine you ran
 `gp observe fixtures` on, `fixtures_are_sanitised` also compares the fixture
 with every value the run recorded for each flagged name (a cookie sent or set,
 a request or response header, a field a request body sent, a meta or
@@ -2391,16 +2392,18 @@ and fails on a match with the flagged name and the fixture's line numbers,
 never the value:
 
 ```text
-get_orders.json: the recorded value of flagged 'myshop_session' is still in the fixture (line 3), as its observe run myshop/20261006-101500-4242 on this machine recorded it; invent a value in its place.
+get_orders.json: the recorded value of flagged 'myshop_session' is still in the fixture (line 3), as its observe run 20261006-101500-4242 of myshop on this machine recorded it; invent a value in its place.
 ```
 
-It looks the run up as `gp observe` does and reads only that run's files. In CI
+It looks for the run id in each of the plugin's session directories (`myshop`,
+`myshop-alice`, and so on) and reads only that run's files. In CI
 and on a teammate's checkout the run is not there, and the check is the name
 check alone, with no warning; the line the check prints on every run ends with
 `N compared with the values their observe run recorded`, so you can see which
 check ran. When the run is there but cannot be read (a damaged `network.har`, a
-permission error), the suite fails with one line naming the run, since a value
-check that quietly did not run reads as a pass; make the run readable, or move
+permission error, or the same run id under two of the plugin's sessions), the
+suite fails with one line naming the run id, since a value check that quietly
+did not run reads as a pass; make the run readable and the only one of its id, or move
 its directory out of `~/.local/share/graftpunk/observe/` to have the fixture
 checked by its names alone. A sidecar written before 1.35.0 names no run, so its
 fixture gets the name check only; regenerate it with `gp observe fixtures` while
@@ -2454,8 +2457,8 @@ is kept: read both lists before you commit a sidecar.
     ]
   },
   "observe_run": {
-    "run": "20261006-101500-4242",
-    "session": "myshop"
+    "plugin": "myshop",
+    "run": "20261006-101500-4242"
   },
   "redacted_names": 0,
   "schema": 4,

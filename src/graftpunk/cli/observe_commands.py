@@ -64,6 +64,7 @@ from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.storage import run_dir_of, session_dirname
 from graftpunk.plugins import infer_site_name
 from graftpunk.session_context import resolve_session
+from graftpunk.session_identity import split_session_name
 from graftpunk.testing.sidecar import ObserveRun, SidecarError
 
 console = Console()
@@ -326,17 +327,19 @@ def fixtures_cmd(
     # Held in memory only: the sidecar records names, never these values.
     recorded_values = flagged_values_of(run_digest, entries)
     redacted = redacted_names_of(run_digest, entries)
-    # The run as gp observe names it, so the fixtures check can find it on this
-    # machine by the same lookup (run_dir_of) and compare the fixture with its values.
+    # The run as the fixtures check finds it on this machine (the plugin's session
+    # directories, then the run id), to compare the fixture with its values.
     try:
-        observe_run: ObserveRun | None = ObserveRun(session=session, run=run_dir.name)
+        # The plugin part only: an account label is never committed.
+        plugin_part, _label = split_session_name(session)
+        observe_run: ObserveRun | None = ObserveRun(plugin=plugin_part, run=run_dir.name)
     except SidecarError:
         # A directory gp observe did not name (one made by hand): the sidecars
         # name no run, and the fixtures check compares names only.
         observe_run = None
         console.print(
-            f"[yellow]Run '{escape(run_dir.name)}' is not named as gp observe names a run; "
-            "the sidecars will not name it.[/yellow]",
+            f"[yellow]Run '{escape(run_dir.name)}' of session '{escape(session)}' cannot "
+            "be named in a sidecar; the sidecars will not name it.[/yellow]",
             soft_wrap=True,
         )
 

@@ -826,7 +826,7 @@ class TestCheckFixturesTree:
 
 
 _RECORDED_SESSION = "Qz7XkLmPwR4t7Bv2Hn8Ks3JdVv"
-_RUN = ObserveRun(session="myshop", run="20261006-101500-4242")
+_RUN = ObserveRun(plugin="myshop", run="20261006-101500-4242")
 
 
 def _write_run(observe: Path, session_dir: str, run_id: str, cookie_value: str) -> Path:
@@ -886,7 +886,7 @@ class TestTheLocalValueCheck:
         (problem,) = report.problems
         assert problem.startswith("get_orders.json: the recorded value of flagged 'myshop_session'")
         assert "(line 3)" in problem
-        assert "myshop/20261006-101500-4242" in problem
+        assert "20261006-101500-4242 of myshop" in problem
         assert _RECORDED_SESSION not in problem
         assert _RECORDED_SESSION not in report.summary
         assert report.run_checked == 1
@@ -914,28 +914,62 @@ class TestTheLocalValueCheck:
         assert report.problems == ()
         assert report.run_checked == 1
 
-    def test_a_run_of_another_session_is_not_used(self, tmp_path: Path) -> None:
-        """The run id names a run of the sidecar's own session; the same id under
-        another session's directory is that session's run, and is not read."""
+    def test_a_run_of_another_plugin_is_not_used(self, tmp_path: Path) -> None:
+        """Only the plugin's own session directories are looked in: the same run id
+        under another plugin's directory, or under a directory that merely starts
+        with the plugin's name, is not read."""
         observe = tmp_path / "observe"
         _write_run(observe, "othershop", _RUN.run, _RECORDED_SESSION)
+        _write_run(observe, "myshopping", _RUN.run, _RECORDED_SESSION)
         tree = tmp_path / "fixtures"
         _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
         report = check_fixtures_tree(tree, observe_dir=observe)
         assert report.problems == ()
         assert report.run_checked == 0
 
-    def test_the_session_is_looked_up_as_gp_observe_names_its_directory(
-        self, tmp_path: Path
-    ) -> None:
-        """``myshop@alice`` is stored as ``myshop-alice`` (session_dirname)."""
+    def test_a_run_of_an_account_session_is_found_by_the_plugin_alone(self, tmp_path: Path) -> None:
+        """The sidecar names ``myshop``, never the account label; the run of
+        ``myshop@alice`` is stored under ``myshop-alice`` (session_dirname) and is
+        found there, and nothing printed names the label."""
         observe = tmp_path / "observe"
         _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        (observe / "myshop-bob").mkdir()
         tree = tmp_path / "fixtures"
-        run = ObserveRun(session="myshop@alice", run=_RUN.run)
-        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED, run))
-        (problem,) = check_fixtures_tree(tree, observe_dir=observe).problems
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        (problem,) = report.problems
         assert "'myshop_session'" in problem
+        assert "alice" not in problem
+        assert report.run_checked == 1
+
+    def test_a_run_id_under_two_of_the_plugins_sessions_is_reported(self, tmp_path: Path) -> None:
+        """Which account's run the capture came from cannot be told, so the check
+        reports a run it could not read, naming the run id and no account."""
+        observe = tmp_path / "observe"
+        _write_run(observe, "myshop", _RUN.run, "SomeOtherValue123")
+        _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        (problem,) = report.problems
+        assert problem.startswith("get_orders.json: the observe run 20261006-101500-4242 of myshop")
+        assert "2 of the plugin's session directories hold a run 20261006-101500-4242" in problem
+        assert "alice" not in problem
+        assert _RECORDED_SESSION not in problem
+        assert report.run_checked == 0
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root lists a directory whatever its mode")
+    def test_an_observe_directory_that_cannot_be_listed_is_reported(self, tmp_path: Path) -> None:
+        observe = tmp_path / "observe"
+        _write_run(observe, "myshop", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        observe.chmod(0)
+        try:
+            (problem,) = check_fixtures_tree(tree, observe_dir=observe).problems
+        finally:
+            observe.chmod(0o700)
+        assert "the observe directory cannot be listed" in problem
 
     def test_a_sidecar_naming_no_run_is_not_compared(self, tmp_path: Path) -> None:
         observe = tmp_path / "observe"
@@ -978,7 +1012,9 @@ class TestTheLocalValueCheck:
         report = check_fixtures_tree(tree, observe_dir=observe)
         name_problem, run_problem = report.problems
         assert name_problem.startswith("get_token.json: contains the flagged name 'csrftoken'")
-        assert run_problem.startswith("get_orders.json and 1 more: the observe run myshop/")
+        assert run_problem.startswith(
+            "get_orders.json and 1 more: the observe run 20261006-101500-4242 of myshop"
+        )
         assert f"cannot be read ({reason}" in run_problem
         assert "was not compared" in run_problem
         assert report.run_checked == 0
@@ -1003,15 +1039,16 @@ class TestTheLocalValueCheck:
             (problem,) = check_fixtures_tree(tree, observe_dir=observe).problems
         finally:
             run_dir.chmod(0o700)
-        assert "myshop/20261006-101500-4242" in problem
+        assert "20261006-101500-4242 of myshop" in problem
         assert "cannot be read" in problem
         assert _RECORDED_SESSION not in problem
 
     def test_only_the_runs_own_files_are_read(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The check opens files under the named run's directory and lists no
-        directory of the storage."""
+        """The check opens files under the named run's directory only, and lists
+        only the observe directory itself (the names of its entries), never a
+        directory inside it."""
         observe = tmp_path / "observe"
         run_dir = _write_run(observe, "myshop", _RUN.run, _RECORDED_SESSION)
         _write_run(observe, "myshop", "20261007-090000-1111", "OtherRunValue1234")
@@ -1022,6 +1059,7 @@ class TestTheLocalValueCheck:
         real_read_text = Path.read_text
         real_iterdir = Path.iterdir
         real_scandir = os.scandir
+        real_listdir = os.listdir
 
         def read_text(self: Path, *args: object, **kwargs: object) -> str:
             opened.append(self)
@@ -1037,12 +1075,18 @@ class TestTheLocalValueCheck:
 
         monkeypatch.setattr(Path, "read_text", read_text)
         monkeypatch.setattr(Path, "iterdir", iterdir)
+
+        def listdir(path: object = ".") -> list[str]:
+            listed.append(Path(str(path)))
+            return real_listdir(path)  # type: ignore[arg-type]
+
         monkeypatch.setattr(os, "scandir", scandir)
+        monkeypatch.setattr(os, "listdir", listdir)
         check_fixtures_tree(tree, observe_dir=observe)
         under_observe = [p for p in opened if p.is_relative_to(observe)]
         assert under_observe
         assert all(p.resolve().is_relative_to(run_dir.resolve()) for p in under_observe)
-        assert not [p for p in listed if p.is_relative_to(observe)]
+        assert [p for p in listed if p.is_relative_to(observe)] == [observe]
 
 
 _LOCAL_CHECK_CONFTEST = """

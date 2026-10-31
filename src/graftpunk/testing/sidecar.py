@@ -34,12 +34,13 @@ that no header recorded (a token a script set after the last request) is caught
 only through the name beside it, while a token's value can come from sources
 the recording does not hold (``graftpunk.devtools.captures.checked_names_of``).
 From schema 4, ``observe_run`` names the ``gp observe`` run the capture came
-from, as ``{"session": ..., "run": ...}``, the session name and run id
-``gp observe`` names a run by, so the fixtures check can also compare a fixture
-with every value that run recorded when the run is on the machine running the
-suite (:mod:`graftpunk.testing.recorded`); null for a fixture that came off no
-run. It is never a path and holds nothing derived from a recorded value. Schema 4
-also adds the context reason ``out_of_scope_only``.
+from, as ``{"plugin": ..., "run": ...}``: the plugin part of the session name
+(the part before any ``@`` account label, which the plugin's own code already
+commits) and the run id, so the fixtures check can also compare a fixture with
+every value that run recorded when the run is on the machine running the suite
+(:mod:`graftpunk.testing.recorded`); null for a fixture that came off no run. It
+is never a path, never holds an account label, and holds nothing derived from a
+recorded value. Schema 4 also adds the context reason ``out_of_scope_only``.
 A name that holds an account value
 (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``
@@ -191,24 +192,27 @@ class SidecarError(GraftpunkError):
 
 @dataclass(frozen=True)
 class ObserveRun:
-    """The ``gp observe`` run a capture came from: the session name and the run id
-    ``gp observe`` names it by (``gp observe show SESSION RUN_ID``). Neither is a
-    path, and the run id is one path component (:data:`_RUN_ID_RE`), so a
+    """The ``gp observe`` run a capture came from: the plugin part of its session
+    name (``myshop`` for ``myshop@alice``; never the account label, so a committed
+    sidecar names no account) and the run id ``gp observe`` names it by. Neither
+    is a path, and the run id is one path component (:data:`_RUN_ID_RE`), so a
     committed sidecar cannot point the fixtures check anywhere but a run
-    directory of the session it names."""
+    directory of one of the plugin's sessions."""
 
-    session: str
+    plugin: str
     run: str
 
     def __post_init__(self) -> None:
         if (
-            not isinstance(self.session, str)
-            or not self.session.strip()
-            or not self.session.isprintable()
+            not isinstance(self.plugin, str)
+            or not self.plugin.strip()
+            or not self.plugin.isprintable()
+            or "@" in self.plugin
+            or "/" in self.plugin
         ):
             raise SidecarError(
-                "observe_run.session must be a non-empty string of printable characters, "
-                f"got {self.session!r}"
+                "observe_run.plugin must be a session name's plugin part (printable, "
+                f"non-empty, without '@' or '/'), got {self.plugin!r}"
             )
         if not isinstance(self.run, str) or not _RUN_ID_RE.fullmatch(self.run):
             raise SidecarError(
@@ -378,7 +382,7 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
         "observe_run": (
             None
             if sidecar.observe_run is None
-            else {"run": sidecar.observe_run.run, "session": sidecar.observe_run.session}
+            else {"plugin": sidecar.observe_run.plugin, "run": sidecar.observe_run.run}
         ),
         "redacted_names": sidecar.redacted_names,
     }
@@ -497,13 +501,13 @@ def _observe_run(data: dict[str, object], path: Path) -> ObserveRun | None:
     value = data["observe_run"]
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {"session", "run"}:
+    if not isinstance(value, dict) or set(value) != {"plugin", "run"}:
         raise SidecarError(
-            f"{path}: observe_run must be null or an object of exactly session and run, "
+            f"{path}: observe_run must be null or an object of exactly plugin and run, "
             f"got {value!r}"
         )
     try:
-        return ObserveRun(session=value["session"], run=value["run"])
+        return ObserveRun(plugin=value["plugin"], run=value["run"])
     except SidecarError as exc:
         raise SidecarError(f"{path}: {exc}") from exc
 
