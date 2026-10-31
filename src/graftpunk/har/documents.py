@@ -72,6 +72,10 @@ _AUTOFILL_CONTACT_FIELDS = frozenset(
 _AUTOFILL_CONTACT_TOKENS = frozenset({"home", "work", "mobile", "fax", "pager"})
 _AUTOFILL_MODE_TOKENS = frozenset({"shipping", "billing"})
 _ASCII_WHITESPACE_RE = re.compile(r"[\t\n\f\r ]+")
+# What a stored DOM snapshot writes in place of an autocomplete token outside the
+# HTML vocabulary, a section-* token included (graftpunk.observe.snapshot, with
+# graftpunk.observe.run.REDACTED, which this module does not import), lowercased.
+_SNAPSHOT_REDACTION_MARK = "***redacted***"
 
 
 def autofill_field_name(value: str) -> str:
@@ -87,6 +91,11 @@ def autofill_field_name(value: str) -> str:
     to its default, so no field name, as does ``on`` or ``off`` with another token.
     The field name itself is not checked against the spec's list: one graftpunk
     does not know (a lone ``section-*`` token, say) matches nothing it compares.
+
+    A stored DOM snapshot writes a section token as ``***REDACTED***``, so that
+    marker in first place counts as a section token. It also stands for any other
+    unknown token there, which the browser would reject; reading it as a section
+    is a judgment that a section token is the likelier one, not a measurement.
     """
     tokens = [token for token in _ASCII_WHITESPACE_RE.split(value.lower()) if token]
     if not tokens:
@@ -101,7 +110,7 @@ def autofill_field_name(value: str) -> str:
         tokens.pop()
     if tokens and tokens[-1] in _AUTOFILL_MODE_TOKENS:
         tokens.pop()
-    if tokens and tokens[-1].startswith("section-"):
+    if tokens and (tokens[-1].startswith("section-") or tokens[-1] == _SNAPSHOT_REDACTION_MARK):
         tokens.pop()
     return "" if tokens else field_name
 

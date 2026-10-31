@@ -20,6 +20,7 @@ from graftpunk.har.documents import (
     printable_selectors,
     printable_unresolved_roles,
 )
+from graftpunk.observe.snapshot import stored_dom_snapshot
 from tests.unit.test_dom_snapshot import _snapshot_parse_seconds
 
 _LOGIN_PAGE = """
@@ -883,6 +884,8 @@ class TestAutocompleteIsATokenList:
             ("bogus username", ""),
             ("home username", ""),
             ("billing section-a username", ""),
+            ("***REDACTED*** username", "username"),
+            ("***REDACTED*** ***REDACTED*** username", ""),
         ],
     )
     def test_the_field_name_token(self, value: str, field_name: str) -> None:
@@ -939,6 +942,21 @@ class TestAutocompleteIsATokenList:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#login", "password": "#secret"}  # noqa: S105
+
+    @pytest.mark.parametrize("structure_only", [False, True], ids=["default", "structure-only"])
+    def test_a_stored_snapshot_s_section_token_still_leaves_the_username(
+        self, structure_only: bool
+    ) -> None:
+        """A stored snapshot writes the section token as ***REDACTED***."""
+        html = (
+            '<html><body><form action="/login"><input type="text" name="q" id="q">'
+            '<input type="password" name="password" id="pw">'
+            '<input type="text" id="who" name="who" autocomplete="section-login username">'
+            "</form></body></html>"
+        )
+        stored = stored_dom_snapshot(html, None, structure_only=structure_only)
+        (form,) = extract_login_forms(stored, source="s", snapshot=True)
+        assert form.fields["username"] == "#who"
 
     def test_a_text_input_with_another_password_token_is_no_password(self) -> None:
         html = (
