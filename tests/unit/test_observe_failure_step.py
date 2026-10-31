@@ -1015,9 +1015,12 @@ class TestThePrompt:
             terminal.close()
         assert run.setup.await_args.kwargs["failure_step"] is True
         run.backend.mark_failed_login.assert_called_once_with()
-        # The recorder scrubbed the failed post's own body at the mark: the save
-        # redacts nothing more, as without the flag.
-        assert run.save.await_args.kwargs == {"console": run.console}
+        # The recorder scrubbed the failed post's own body at the mark; the save
+        # scrubs the run of its credential posts' values, as without the flag (#318).
+        assert run.save.await_args.kwargs == {
+            "console": run.console,
+            "scrub_credential_posts": True,
+        }
 
     @pytest.mark.asyncio
     async def test_enter_before_any_credential_post_asks_again(self) -> None:
@@ -1141,7 +1144,10 @@ class TestThePrompt:
             "Saving capture..."
         )
         run.backend.mark_failed_login.assert_not_called()
-        assert run.save.await_args.kwargs == {"console": run.console}
+        assert run.save.await_args.kwargs == {
+            "console": run.console,
+            "scrub_credential_posts": True,
+        }
 
     @pytest.mark.asyncio
     async def test_a_chrome_sharing_the_session_gets_a_warning_in_place_of_the_tip(

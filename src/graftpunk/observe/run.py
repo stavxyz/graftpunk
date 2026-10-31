@@ -412,6 +412,200 @@ def redact_request_body_files(
             )
 
 
+@dataclass(frozen=True)
+class CredentialScrub:
+    """What :func:`credential_post_redaction` found in a recorded run.
+
+    Attributes:
+        redaction: The values to scrub from the whole run, each with its other
+            spellings.
+        post_only: Password values that are also part of a credential post's
+            field name (``password``, ``pass``, ``login``): scrubbing them
+            everywhere would rename the fields the digest finds the login by, so
+            they are replaced only where they are a whole value under a
+            password-like name in a credential post's own body
+            (:func:`scrub_credential_post_bodies`).
+        post_indices: The HAR entry indices of the credential posts.
+        values: How many distinct values are scrubbed from the whole run.
+        left: How many distinct values are left in the run: shorter than the
+            scrub's minimum (``_MIN_REDACT_LEN``, 3 characters), or an
+            identifier that is part of a field name.
+        unread: How many POST bodies could not be read, so were not checked.
+    """
+
+    redaction: Redaction
+    post_only: tuple[str, ...]
+    post_indices: tuple[int, ...]
+    values: int
+    left: int
+    unread: int
+
+    @property
+    def posts(self) -> int:
+        """How many requests were credential posts."""
+        return len(self.post_indices)
+
+
+def _request_body_text(request: dict[str, Any], root: Path) -> tuple[str | None, str, bool]:
+    """A HAR request's body as text, its ``Content-Type``, and whether a body file
+    it names could not be read as UTF-8 text."""
+    content_type = next(
+        (
+            str(header.get("value", ""))
+            for header in request.get("headers") or ()
+            if isinstance(header, dict) and str(header.get("name", "")).lower() == "content-type"
+        ),
+        "",
+    )
+    post_data = request.get("postData")
+    if isinstance(post_data, dict) and isinstance(post_data.get("text"), str):
+        return post_data["text"], str(post_data.get("mimeType") or content_type), False
+    ref = request.get("_postDataFile")
+    if not isinstance(ref, str):
+        return None, content_type, False
+    path = (root / ref).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        return None, content_type, False
+    try:
+        return path.read_bytes().decode("utf-8"), content_type, False
+    except (OSError, UnicodeDecodeError):
+        return None, content_type, True
+
+
+def credential_post_redaction(entries: Iterable[dict[str, Any]], run_dir: Path) -> CredentialScrub:
+    """What to scrub from a run recorded without known credentials (``gp observe
+    interactive``, ``gp observe go``): the values of its own credential posts.
+
+    A POST is a credential post by the digest's rule
+    (:func:`graftpunk.har.digest.is_credential_body`); its values are the ones its
+    DOM snapshot is redacted of (:func:`graftpunk.observe.snapshot.post_redaction_values`):
+    a password-like field's as a secret, an identifier field's as an identifier.
+    Its body is read from ``postData`` or from its file under ``bodies/``. A body
+    file that is not UTF-8 text, or cannot be read, and a body the rule fails on,
+    are counted in ``unread``, logged, and not checked; a body the rule reads no
+    field names from (malformed JSON, a multipart body) is no credential post.
+    The placeholder ``***REDACTED***`` (a post the user marked failed, whose
+    password the recorder already replaced) is never a value. A value inside one
+    of the credential posts' field names is kept out of the run-wide scrub
+    (:class:`CredentialScrub`).
+    """
+    from graftpunk.har.digest import body_values, is_credential_body
+    from graftpunk.observe.snapshot import post_redaction_values, spelled_redaction
+
+    root = run_dir.resolve()
+    secrets: dict[str, None] = {}
+    identifiers: dict[str, None] = {}
+    names: set[str] = set()
+    indices: list[int] = []
+    unread = 0
+    for index, entry in enumerate(entries):
+        request = entry.get("request") if isinstance(entry, dict) else None
+        if not isinstance(request, dict) or str(request.get("method", "")).upper() != "POST":
+            continue
+        text, content_type, failed = _request_body_text(request, root)
+        if failed:
+            unread += 1
+            LOG.warning("credential_scrub_body_unread", entry=index, file=request["_postDataFile"])
+            continue
+        if not text:
+            continue
+        try:
+            if not is_credential_body(text, content_type):
+                continue
+            post_secrets, post_identifiers = post_redaction_values(text, content_type)
+            post_names = {name for path, _value in body_values(text, content_type) for name in path}
+        except Exception as exc:  # noqa: BLE001 - one post's body never stops the save
+            unread += 1
+            LOG.warning("credential_scrub_body_unread", entry=index, exc_type=type(exc).__name__)
+            continue
+        indices.append(index)
+        names |= post_names
+        secrets.update(dict.fromkeys(v for v in post_secrets if v != REDACTED))
+        identifiers.update(dict.fromkeys(v for v in post_identifiers if v != REDACTED))
+
+    def in_a_name(value: str) -> bool:
+        return any(value in name for name in names)
+
+    run_secrets = [v for v in _kept_secrets(secrets) if not in_a_name(v)]
+    run_identifiers = [v for v in _kept_secrets(identifiers) if not in_a_name(v)]
+    post_only = tuple(v for v in secrets if in_a_name(v))
+    every = dict.fromkeys([*secrets, *identifiers])
+    return CredentialScrub(
+        redaction=spelled_redaction(run_secrets, run_identifiers),
+        post_only=post_only,
+        post_indices=tuple(indices),
+        values=len(dict.fromkeys([*run_secrets, *run_identifiers])),
+        left=len(every) - len(dict.fromkeys([*run_secrets, *run_identifiers, *post_only])),
+        unread=unread,
+    )
+
+
+def scrub_credential_post_bodies(
+    entries: list[dict[str, Any]], found: CredentialScrub, run_dir: Path
+) -> None:
+    """Replace ``found.post_only`` in each credential post's own body (its
+    ``postData`` text, or its file under ``bodies/``) where a value is whole under
+    a password-like name (:func:`graftpunk.observe.failure_text.scrub_failed_password`,
+    the rule a post marked failed is scrubbed by). *entries* is mutated. A body
+    file that cannot be read or rewritten is logged and left."""
+    if not found.post_only:
+        return
+    from graftpunk.observe.failure_text import scrub_failed_password
+
+    root = run_dir.resolve()
+    for index in found.post_indices:
+        request = entries[index].get("request") if index < len(entries) else None
+        if not isinstance(request, dict):
+            continue
+        text, content_type, _failed = _request_body_text(request, root)
+        if not text:
+            continue
+        scrubbed = scrub_failed_password(text, content_type, found.post_only)
+        if scrubbed == text:
+            continue
+        post_data = request.get("postData")
+        if isinstance(post_data, dict) and isinstance(post_data.get("text"), str):
+            post_data["text"] = scrubbed
+            continue
+        ref = str(request["_postDataFile"])
+        try:
+            data = scrubbed.encode("utf-8")
+            _replace_file((root / ref).resolve(), data)
+            request["_postDataSize"] = len(data)
+        except OSError as exc:
+            LOG.warning("credential_post_body_not_scrubbed", file=ref, exc_type=type(exc).__name__)
+
+
+def redact_run_text_files(run_dir: Path, redact: Redaction | Iterable[str]) -> int:
+    """Scrub *redact* from the run's ``page-source.html`` and its DOM snapshots
+    (``snapshots/*.html``), as :func:`redact_text` scrubs one HAR string. A file is
+    rewritten only when something was found, atomically and keeping its mode; one
+    that cannot be read or rewritten is logged and left. Returns how many files
+    changed."""
+    scrub = text_redactor(redact)
+    paths = [run_dir / "page-source.html"]
+    snapshots = run_dir / "snapshots"
+    if snapshots.is_dir():
+        paths.extend(sorted(snapshots.glob("*.html")))
+    changed = 0
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            scrubbed = scrub(text)
+            if scrubbed != text:
+                _replace_file(path, scrubbed.encode("utf-8"))
+                changed += 1
+        except (OSError, UnicodeDecodeError) as exc:
+            LOG.warning(
+                "run_text_file_not_scrubbed",
+                file=path.relative_to(run_dir).as_posix(),
+                exc_type=type(exc).__name__,
+            )
+    return changed
+
+
 def write_capture_data(
     storage: ObserveStorage, capture: Any, redact: Redaction | Iterable[str] = ()
 ) -> int:
@@ -476,6 +670,44 @@ def write_capture_data(
     return written
 
 
+def _report_credential_scrub(found: CredentialScrub, say: Callable[[str], None]) -> None:
+    """Log and print how many values the scrub of a run's credential posts found,
+    never a value."""
+    LOG.info(
+        "observe_credential_scrub",
+        credential_posts=found.posts,
+        values_scrubbed=found.values,
+        values_post_only=len(found.post_only),
+        values_left=found.left,
+        bodies_unread=found.unread,
+    )
+    if found.values:
+        say(
+            f"[green]Scrubbed {found.values} typed credential "
+            f"value{'' if found.values == 1 else 's'} from the run[/green] "
+            f"({found.posts} credential post{'' if found.posts == 1 else 's'})"
+        )
+    if found.post_only:
+        say(
+            f"[yellow]{len(found.post_only)} password "
+            f"value{' is' if len(found.post_only) == 1 else 's are'} also part of a field "
+            "name: scrubbed from the login's own body only[/yellow]"
+        )
+    if found.left:
+        say(
+            f"[yellow]{found.left} credential value{' is' if found.left == 1 else 's are'} "
+            f"left in the run (under {_MIN_REDACT_LEN} characters, or a username that is "
+            "part of a field name)[/yellow]"
+        )
+    if found.unread:
+        say(
+            f"[yellow]{found.unread} POST "
+            f"bod{'y' if found.unread == 1 else 'ies'} could not be read, so "
+            f"{'it was' if found.unread == 1 else 'they were'} not checked for "
+            "credentials[/yellow]"
+        )
+
+
 async def save_observe_run(
     storage: ObserveStorage,
     backend: Any,
@@ -483,6 +715,7 @@ async def save_observe_run(
     *,
     console: Any | None = None,
     redact: Redaction | Iterable[str] = (),
+    scrub_credential_posts: bool = False,
 ) -> None:
     """Persist a nodriver observe run: screenshot, page source, HAR, console logs.
 
@@ -504,6 +737,12 @@ async def save_observe_run(
             the HAR before it is written, and from the request bodies written
             to ``bodies/`` (:func:`redact_request_body_files`). Response bodies
             on disk are not scanned. A generator is read once and kept.
+        scrub_credential_posts: For a run recorded without known credentials (a
+            login typed by hand): also scrub the values of the run's own
+            credential posts (:func:`credential_post_redaction`) from the HAR,
+            the request bodies in ``bodies/``, the page source and the DOM snapshots
+            (:func:`redact_run_text_files`). How many values were scrubbed is
+            logged and printed, never a value.
     """
 
     def say(msg: str) -> None:
@@ -561,11 +800,33 @@ async def save_observe_run(
         LOG.error("observe_stop_capture_failed", error=str(exc), exc_type=type(exc).__name__)
 
     redact = as_redaction(redact)
-    har_entries = redact_har_entries(backend.get_har_entries(), redact)
+    raw_entries = backend.get_har_entries()
+    found: CredentialScrub | None = None
+    if scrub_credential_posts:
+        found = step(
+            "credential scrub",
+            lambda: credential_post_redaction(raw_entries, storage.run_dir),
+        )
+        if found is not None:
+            redact = Redaction(
+                redact.secrets + found.redaction.secrets,
+                redact.identifiers + found.redaction.identifiers,
+            )
+            step(
+                "page source and snapshot redaction",
+                lambda: redact_run_text_files(storage.run_dir, found.redaction),
+            )
+            _report_credential_scrub(found, say)
+    har_entries = redact_har_entries(raw_entries, redact)
     step(
         "request body redaction",
         lambda: redact_request_body_files(har_entries, redact, storage.run_dir),
     )
+    if scrub_credential_posts and found is not None:
+        step(
+            "credential post scrub",
+            lambda: scrub_credential_post_bodies(har_entries, found, storage.run_dir),
+        )
     if har_entries and step("HAR", lambda: storage.write_har(har_entries)) is not None:
         say(f"[green]HAR data saved:[/green] {len(har_entries)} entries")
 

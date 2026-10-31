@@ -258,7 +258,13 @@ async def run_observe_go(
 
     try:
         await observed.tab.sleep(wait)
-        await save_observe_run(observed.storage, observed.backend, "observe-go", console=console)
+        await save_observe_run(
+            observed.storage,
+            observed.backend,
+            "observe-go",
+            console=console,
+            scrub_credential_posts=True,
+        )
     finally:
         stop_observe_browser(observed.browser, observed.handle)
 
@@ -419,7 +425,11 @@ async def run_observe_interactive(
                     "the generated plugin's failure text is yours to fill in.[/yellow]"
                 )
         await save_observe_run(
-            observed.storage, observed.backend, "interactive-final", console=console
+            observed.storage,
+            observed.backend,
+            "interactive-final",
+            console=console,
+            scrub_credential_posts=True,
         )
     finally:
         stop_observe_browser(observed.browser, observed.handle)
