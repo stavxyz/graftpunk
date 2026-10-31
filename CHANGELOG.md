@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A JavaScript dialog no longer stalls a headless recording** (#320). A page that called `alert()`, `confirm()`, or `prompt()`, or left through a `beforeunload` handler, during `gp observe go` stopped its own script, the save then timed out, and no `network.har` was written. A headless nodriver recording (`gp observe go`, and a headless login with `--observe full`) now accepts each dialog through CDP, a prompt with its default text, and logs the dialog's type, the choice, and the page's host, never its text; `observe_run_saved` counts them as `dialogs_answered`. A headless Selenium login recording launches ChromeDriver with `unhandledPromptBehavior` set to `accept`. `gp observe interactive` leaves dialogs to the user, as before. docs/HOW_IT_WORKS.md has the details.
+
 ## [1.36.0] - 2026-11-01
 
 This is a minor release. One change reaches a program on the first run after the upgrade: a run of `gp observe interactive` or `gp observe go` is scrubbed at save of the login typed into it, and, when a recorded page held a password field, the terminal prints a note saying how many values were scrubbed and what the run can still hold (Upgrading, item 1). Item 2 is about upgrading itself.
