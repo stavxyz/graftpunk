@@ -1317,14 +1317,22 @@ starts in that form (the whole body, an object or array inside it such as
 inline state in a script, or the text of a JSON string there that is itself a
 JSON object or array), read with the key's parsed value. A query or form pair:
 `name=v` at the start of the form or after `?`, `&`, `;` or a quote, where `v` is
-empty or a run of URL characters (no `<`, `>`, `=`, whitespace, quote or
-backslash) followed by `&`, `#`, `;`, the end, or a quote that ends its string
-(not one followed by a `+` or another character of the token). An element
-attribute: a void `input`, `meta`, `param` or `link` element, or a self-closing
-tag, with a `value` or `content` attribute, whose `name`, `id`, `property`,
-`itemprop` or `http-equiv` is the name, read with an HTML parser so the order of
-its attributes does not matter; every other attribute value of that element is
-judged too. Every value read so must hold nothing: a boolean, null, empty, a
+a run of URL characters (no `<`, `>`, `=`, whitespace, quote or backslash)
+followed by `&`, `#` or `;`, or a run that is not empty and ends the form, an
+attribute value of a tag the HTML parser read, or a JSON string value (not a
+key) the JSON reader parsed. A pair ended by any other quote (in prose, in a
+script's call or concatenation) is not read, and an empty `v` at the end of a
+string, an attribute or the form is not read either, since a token can sit
+right after it. An element attribute: a void `input`, `meta`, `param` or `link`
+element, written with or without `/>`, with a `value` or `content` attribute,
+whose `name`, `id`, `property`, `itemprop` or `http-equiv` is the name, read
+with an HTML parser so the order of its attributes does not matter; every other
+attribute value of that element is judged too, so is every attribute name that
+is not an HTML attribute of that element (a bare token written as an attribute),
+and an attribute named by the name keeps it checked. A JSON string whose text is
+a JSON object or array is opened and read as JSON, and so is such a string
+inside that text, at any depth; a JSON string whose text is another JSON string
+is not opened, so a name inside it stays checked. Every value read so must hold nothing: a boolean, null, empty, a
 string that is form state by the rule above, a number whose text is form state
 (`7` and `4411` are, an 18-digit id is not; a value after `=` is read as text,
 never as a JSON number), or an object or array whose every key and value holds
@@ -1334,12 +1342,16 @@ text that is not JSON (`<li>csrftoken: <code>...</code></li>`,
 `<dt>csrftoken:</dt><dd>...</dd>`), `name == "v"` or `name => "v"` in a script,
 `name=<b>v</b>`, a call's argument as in `Cookies.set('name', ...)`, a
 `{"name": "name", "value": ...}` pair, an attribute named by the name, an
-element that holds text (`textarea`, `li`, `button`) whatever its attributes,
-a table cell, and a string escaped twice. So a cookie named `id` stays checked
+element that holds text (`textarea`, `li`, `button`, `span`) whatever its
+attributes and whether or not written with `/>`, and a table cell. So a cookie named `id` stays checked
 in nearly every HTML capture, where `id="..."` names an attribute. The JSON
 reader stops looking for values once its failed parses have scanned four times
-the form's length, so an object left open many levels deep costs linear time;
-an occurrence it did not reach is read only by the other two readers. An honest
+the form's length, so an object left open many levels deep costs linear time,
+and a quote before the end of a string or value it already parsed never starts
+a string, so a long string of escaped markup costs linear time too; an
+occurrence it did not reach is read only by the other two readers. The HTML
+parser reads each tag once, and an element is judged once for a name however
+many occurrences of the name it holds. An honest
 `"id": 7` or `"user": "alice"` leaves the name out;
 `"csrftoken": "<an opaque token>"`, `setCookie('csrftoken', ...)` and
 `getCookie('csrftoken')` keep it, and so does

@@ -2336,12 +2336,14 @@ every occurrence of it in the captured body is read by one of three strict
 readers: a key of a JSON object that parses where it starts in the body (or in
 the text of a JSON string there), read with its parsed value; a query or form
 pair `name=v` at the start of the text or after `?`, `&`, `;` or a quote, with
-`v` empty or a run of URL characters ending at `&`, `#`, `;`, the end, or a quote
-that ends its string; or a void `input`, `meta`, `param` or `link` element, or a
-self-closing tag, with a `value` or `content` attribute, whose `name`, `id`,
-`property`, `itemprop` or `http-equiv` is the name, in any attribute order. Every
-value read so must hold nothing (for an element, every attribute value but the
-naming one): a boolean, null, empty, form state by the rule above, a number
+`v` a run of URL characters ending at `&`, `#` or `;`, or a run that is not
+empty ending the text, an attribute value or a JSON string value (a pair ended
+by a quote in prose or a script's call is not read); or a void `input`, `meta`,
+`param` or `link` element, with or without `/>`, with a `value` or `content`
+attribute, whose `name`, `id`, `property`, `itemprop` or `http-equiv` is the
+name, in any attribute order. Every value read so must hold nothing (for an
+element, every attribute value but the naming one, and every attribute name
+that is not an HTML attribute of that element): a boolean, null, empty, form state by the rule above, a number
 whose text is form state, or an object or array whose keys and values all hold
 nothing. Any other mention of the name (`csrftoken: <code>...</code>` in a page,
 `Cookies.set('csrftoken', ...)`, a `{"name": "csrftoken", "value": ...}` pair, an
