@@ -1311,9 +1311,9 @@ also the reasons each of those cookie and token names is flagged
 (`flagged_reasons`, which the fixtures check repeats in its problem line); from
 schema 3, also the flagged names the fixtures check looks for in this fixture
 (`checked_names`, below); from schema 4, also the observe run the capture came
-from, as the session name and run id `gp observe` names it by (`observe_run`,
+from, as the plugin part of its session name and its run id (`observe_run`,
 below), and the context reason `out_of_scope_only`; it
-never holds the URL, the capture time, a path, or any value, in any form), written to be
+never holds the URL, the capture time, a path, an account label, or any value, in any form), written to be
 committed beside the fixture derived from it once you have read its body
 parameter names and its `flagged_names`: a body key that does not read as a
 field name or holds an id is dropped, but the rule is lexical, so an account
@@ -1461,11 +1461,13 @@ that hands a single-page app its token, whether or not a recorded header
 carried that token.
 
 The local value check (#345, 1.35.0). A schema 4 sidecar names its observe run
-(`observe_run`: `{"session": "myshop", "run": "20261006-101500-4242"}`), the
-two names `gp observe show` takes, never a path and nothing derived from a
-value; the run id is held to one path component of letters, digits, `.`, `_`
-and `-` that does not start with a dot, so a committed sidecar cannot point the
-check outside its session's runs. When the suite runs on a machine that holds
+(`observe_run`: `{"plugin": "myshop", "run": "20261006-101500-4242"}`): the
+plugin part of the session name (the part before `@`, which the plugin's own
+code already commits) and the run id, never the account label, never a path,
+and nothing derived from a value. The plugin part holds no `@` or `/`, and the
+run id is held to one path component of letters, digits, `.`, `_` and `-` that
+does not start with a dot, so a committed sidecar cannot point the check
+outside the plugin's runs. When the suite runs on a machine that holds
 that run (the developer's own, where `gp observe fixtures` wrote the sidecar),
 `fixtures_are_sanitised` also compares the fixture with every value the run
 recorded for each of the sidecar's `flagged_names`, read and matched as
@@ -1477,15 +1479,25 @@ implementation of that comparison; the script keeps a copy because it runs with
 the standard library alone, and a test holds the two to the same output on the
 same run.
 
-The run is found by the lookup `gp observe` itself uses
-(`graftpunk.observe.storage.run_dir_of`: the observe directory, the session's
-directory as `session_dirname` names it, then the run id), and the check reads
-only that run's `network.har`, the files it names inside the run (a kept body,
-a request body, a DOM snapshot), and its `page-source.html`, the files the
-digest reads. It lists no directory and reads no other run, so a run id that
-exists only under another session is not used. Two session names that
-`session_dirname` maps to one directory (`myshop@alice` and `myshop-alice`)
-share their runs, as they do for every `gp observe` command.
+Since the sidecar does not say which account recorded the run, the check
+finds the run among the plugin's session directories. It lists the names of the
+observe directory's own entries, and nothing inside them; keeps each name that
+is a session directory of the plugin by the mapping `session_dirname` uses (the
+plugin part alone, `myshop`, or the plugin part with an account label,
+`myshop-alice` for `myshop@alice`;
+`graftpunk.observe.storage.is_session_dir_of`); and stats `<that
+directory>/<run id>` in each. One hit is the run. None means the run is not on
+this machine. More than one is reported as a run the check could not read
+(below), naming the run id and no account, since the check cannot tell which
+account's run the capture came from; a run id is `%Y%m%d-%H%M%S-<pid>`, so two
+of a plugin's accounts rarely share one. The check then reads only that run's
+`network.har`, the files it names inside the run (a kept body, a request body,
+a DOM snapshot), and its `page-source.html`, the files the digest reads, so a
+run id that exists only under another plugin's directory is not used. What the
+directory names cannot settle: `session_dirname` is not one to one, so a plugin
+named as another plugin's name, a hyphen and more (`myshop-eu` beside `myshop`)
+has its session directories counted as the other plugin's too, and its run of
+the same id would make the run ambiguous.
 
 Where the run is absent, as in CI or on a teammate's checkout, the check is
 exactly schema 3's, with no warning: the line the check prints on every run
@@ -1493,15 +1505,17 @@ ends with how many fixtures were compared with their run's values, so `0
 compared` in CI and a positive count on the developer's machine say which check
 ran without a line per fixture. Where the run is present but cannot be read (no
 `network.har`, a HAR that is not JSON or has no `log.entries` list, a
-permission error, a file or a dangling symlink in the run's place), the check
+permission error, a file or a dangling symlink in the run's place, an observe
+directory that cannot be listed, or a run id under more than one of the
+plugin's session directories), the check
 reports one problem per run, naming the first fixture whose sidecar names it,
 and fails the suite; the name check still runs on those fixtures. A warning was
 the alternative. It was not chosen because the check exists for the machine
 that holds the run, and a passing run with a warning line is read as a pass: a
 damaged run would switch the value check off without anyone deciding to. The
-problem says how to proceed: make the run readable, or move its directory out
-of the observe directory, after which the fixture is checked by its names
-alone, as in CI.
+problem says how to proceed: make the run readable and the only one of its
+id, or move its directory out of the observe directory, after which the
+fixture is checked by its names alone, as in CI.
 
 `out_of_scope_only` (#316, schema 4) is a context reason like `sent_only`:
 `flagged_reasons_of` writes it beside the reasons that flag a cookie when every

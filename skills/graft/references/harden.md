@@ -27,14 +27,14 @@ fixture-leaks line on the capture, the fixture, its sidecar, and `<har>`. It
 prints each captured value or piece of one left in the fixture, its line, and
 the match marked `»` `«` (`found decoded:` for an escaped or encoded copy), and
 the sidecar's names and reasons (tell the user when `value_not_form_state` is a
-name's only reason but the context ones); past fifty values, names only (`not
-placed`); past 500, a `more values not shown` count. A `recorded value` line
-places a cookie or token value: rewrite it without printing or copying it. Exit
-1 naming keys means the sidecar differs from gp's: write gp's text again. Read
-by eye for what it cannot see: a word in lower case on its own, a number written
-another way (`12345` as `12,345`), digits split across fields, and a copy
-re-encoded (base64). Exit 2 names what it could not read: rewrite a file you
-wrote, check a missing path. For the capture's sidecar, rerun `gp observe
+name's only reason but `sent_only` or `out_of_scope_only`); past fifty values,
+names only (`not placed`); past 500, a `more values not shown` count. A
+`recorded value` line places a cookie or token value: rewrite it without printing or
+copying it. Exit 1 naming keys means the sidecar differs from gp's: write gp's text again.
+Read by eye for a lower-case word alone, a number written another way (`12345` as
+`12,345`), digits split across fields, and a copy re-encoded (base64). Exit 2
+names what it could not read: rewrite a file you wrote, check a missing path. For
+the capture's sidecar, rerun `gp observe
 fixtures` and the check; tell the user if it repeats. A capture that is not text
 (a PDF) was not compared: invent its fixture whole, read the module by eye for
 it, and tell the user. Rewrite each value it prints unless it holds no account
