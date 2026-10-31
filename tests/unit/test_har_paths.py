@@ -930,6 +930,50 @@ def test_the_har_readers_spelling_rule_is_graftpunks() -> None:
     assert [w for w in words if script._spelled(w) != paths_module._spelled(w)] == []
 
 
+# The abbreviations cookie and token names use, several spelled with no vowel.
+_TOKEN_WORDS = (  # noqa: SIM905 - one compact string on purpose: the list is data
+    "csrf xsrf jwt sid sess auth oidc saml nonce sso mfa otp totp hotp tfa jti pkce hmac "
+    "tkn idp jsid ssid"
+).split()
+# Names the review rounds of #315 found the gate must hold back: a nameless
+# cookie's value recorded as its name, capitals dropped into a name, and token
+# words with a random tail.
+_HELD_BACK_PROBES = (
+    "SECRETVALUEq7",
+    "uid_SAMCOOKIE_X",
+    "xsrfQz9XvKw",
+    "authTokenQx7vK",
+    "sessionZq9vLm2x",
+    "XSRF_ZQVLKMXT",
+)
+
+
+@pytest.mark.parametrize("word", _TOKEN_WORDS)
+def test_a_token_word_reads_as_a_name_in_any_case(word: str) -> None:
+    for spelling in (word, word.capitalize(), word.upper()):
+        assert printable_name(spelling), spelling
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["X-Csrf", "XCsrf", "csrf_token", "Csrf-Token", "xsrfToken", "JwtToken", "OidcState"],
+)
+def test_a_token_name_built_of_token_words_reads_as_a_name(name: str) -> None:
+    assert printable_name(name)
+
+
+@pytest.mark.parametrize("name", _HELD_BACK_PROBES)
+def test_a_probe_the_reviews_held_back_is_still_held_back(name: str) -> None:
+    assert not printable_name(name)
+
+
+@pytest.mark.parametrize("name", ["QCsrf", "Os", "Js", "XQz", "Jsx"])
+def test_a_lone_capital_or_a_short_acronym_in_lower_case_is_not_a_name_part(name: str) -> None:
+    """Only ``X`` stands alone before a word, and an acronym of two letters
+    counts in camel case only in capitals."""
+    assert not printable_name(name)
+
+
 def _name_corpus() -> list[str]:
     rng = random.Random(277)  # noqa: S311 - a fixed sample, not a secret
     name_alphabet = string.ascii_letters + string.digits + "_.-$[]"
@@ -954,6 +998,12 @@ def _name_corpus() -> list[str]:
         "user[password]",
         "a" * 48,
         "a" * 49,
+        *_HELD_BACK_PROBES,
+    ]
+    corpus += [
+        spelling
+        for word in _TOKEN_WORDS
+        for spelling in (word, word.capitalize(), word.upper(), f"X-{word.capitalize()}")
     ]
     return corpus
 
@@ -975,6 +1025,7 @@ _COPIED_GATE = [
     "_MAX_CAPITALS",
     "_LONG_LOWER",
     "_FRAMEWORK_NAMES",
+    "_MIN_CASELESS_ACRONYM_LEN",
 ]
 _COPIED_GATE_PATTERNS = [
     "_NAME_CHARS_RE",

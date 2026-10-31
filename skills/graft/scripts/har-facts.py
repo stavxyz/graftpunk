@@ -16,7 +16,10 @@ it. A name passes when it is a fixed framework name (below), or at most 48
 characters of words joined by ``_``, ``-``, ``.``, ``$``, brackets, or camel case,
 with every word spelled with the consonant pairs English uses (graftpunk's
 ``har.paths`` spelling rule), a short or capitalised word holding a vowel,
-capitals only as a known acronym or in a name all in capitals, digits only as a
+capitals only as a known acronym or in a name all in capitals (an acronym of
+three letters or more also passes in lower or capitalised case inside camel
+case, so ``Csrf``, ``xsrfToken``, and ``JwtToken`` pass, and a lone ``X`` may
+stand before a word, as in ``XCsrf``), digits only as a
 run of at most 2 ending a word, and nothing graftpunk's ``holds_an_id`` reads as
 an id. The spelling pairs and rule, and ``holds_an_id``, are copied here (the
 script cannot import graftpunk) and held equal to graftpunk's by tests. A path
@@ -246,17 +249,25 @@ def _spelled(letters: str) -> bool:
 # number, capitals (PHPSESSID), or words in lower or camel case (startDate,
 # XMLHttpRequest) with a digit run of at most 2 at its end (name1). Every word is
 # spelled; a short lower-case word, and every capitalised word, also holds a
-# vowel; a capitals run inside camel case is a known acronym. Random tokens break
+# vowel, unless it is a known acronym of three letters or more in any case (Csrf,
+# xsrfToken); a capitals run inside camel case is a known acronym. Random tokens break
 # into short unspelled or vowel-less words and fail.
 _NAME_CHARS_RE = re.compile(r"[A-Za-z0-9_.$\-\[\]]+")
 _NAME_SPLIT_RE = re.compile(r"[_.$\-\[\]]+")
-_CAMEL_WORD_RE = re.compile(r"[A-Z]{2,5}(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+")
+# A lone capital before a capitalised word (XCsrf) is a word of its own, which
+# must then be an acronym.
+_CAMEL_WORD_RE = re.compile(r"[A-Z]{2,5}(?=[A-Z][a-z]|$)|[A-Z](?=[A-Z][a-z])|[A-Z]?[a-z]+")
 _ACRONYMS = frozenset(
     (  # noqa: SIM905 - one compact string on purpose: the set is data
         "ID IDS URL URI API XML HTML JSON CSRF XSRF UUID IP UI SSO MFA OTP SMS PDF CSV UTC "
-        "OS DOB SSN ZIP CVV CVC TOS GDPR HTTP HTTPS JWT SAML AJAX DOM CSS JS ISO VAT SKU"
+        "OS DOB SSN ZIP CVV CVC TOS GDPR HTTP HTTPS JWT SAML AJAX DOM CSS JS ISO VAT SKU "
+        # the abbreviations cookie and token names use, some spelled with no vowel
+        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP"
     ).split()
 )
+# An acronym this long or longer reads as one in any case inside camel case
+# (Csrf, xsrfToken, JwtToken); a shorter one (Js, Os) stays capitals only.
+_MIN_CASELESS_ACRONYM_LEN = 3
 # A capitalised word of two letters in camel case must be one of these (userId).
 _SHORT_WORDS = frozenset(
     "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am".split()  # noqa: SIM905
@@ -264,6 +275,12 @@ _SHORT_WORDS = frozenset(
 _MAX_PARTS = 8
 _MAX_CAPITALS = 16
 _LONG_LOWER = 9
+
+
+def _camel_acronym(word: str) -> bool:
+    if word.isupper():
+        return word in _ACRONYMS
+    return len(word) >= _MIN_CASELESS_ACRONYM_LEN and word.upper() in _ACRONYMS
 
 
 def _lower_word(word: str) -> bool:
@@ -308,15 +325,16 @@ def _plain_part(part: str) -> bool:
         return _lower_word(words[0])
     # Random text splits into many short words; a camel name holds at most one
     # word of three letters or fewer that is not a listed short word or acronym.
-    short = [w for w in words if len(w) <= 3 and w not in _SHORT_WORDS and w not in _ACRONYMS]
+    short = [w for w in words if len(w) <= 3 and w not in _SHORT_WORDS and not _camel_acronym(w)]
     if len(short) > 1:
         return False
     for word in words:
         lowered = word.lower()
+        if _camel_acronym(word):
+            continue
         if word.isupper():
-            if word not in _ACRONYMS:
-                return False
-        elif len(word) == 2 and word[0].isupper():
+            return False
+        if len(word) == 2 and word[0].isupper():
             if word not in _SHORT_WORDS:
                 return False
         elif len(word) < 2 or not _spelled(lowered) or not any(ch in _VOWELS for ch in lowered):
