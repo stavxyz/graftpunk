@@ -1449,6 +1449,23 @@ class TestPluginModuleWithTokens:
         assert 'cookie_name="X-Csrf",' in plugin_code
         assert 'header="X-Csrf",' in plugin_code
 
+    def test_a_held_back_cookie_name_is_paired_with_no_header(self) -> None:
+        """A cookie candidate whose name reads as a value pairs with no header, so
+        the plugin holds no ``Token.from_cookie`` naming it. The header candidate
+        of the same name is a header name and still prints (#347)."""
+        header = TokenCandidate(kind="header", name="xsrfQz9XvKw", seen_on=("GET /a",))
+        cookie = TokenCandidate(kind="cookie", name="xsrfQz9XvKw", seen_on=("GET /a",))
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(tokens=(header, cookie)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "Token.from_cookie(" not in plugin_code
+        assert "cookie_name=" not in plugin_code
+
     def test_unpaired_candidate_is_a_gp_fill_line(self) -> None:
         lone = TokenCandidate(kind="header", name="X-Lonely", seen_on=("GET /a",))
         spec = ScaffoldSpec(
