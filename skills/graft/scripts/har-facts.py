@@ -751,8 +751,10 @@ def _past_or_persistent(when: datetime, sent_at: datetime | None) -> str:
 # the same result, its leniencies included (any one character between the date
 # and the time, a fraction after any part of the time or the offset, one stray
 # character before an offset where 3.11 allows one, which is not after a short
-# fraction); a test holds it equal to fromisoformat on 3.11 to
-# 3.13 over a generated corpus. 3.14 changed the reader (it reads an hour of 24
+# fraction); a test holds it equal to fromisoformat on 3.11 and 3.12 over a
+# generated corpus. 3.13 patch releases changed a few lenient readings (3.13.18
+# rejects a bare comma before an offset and keeps the fraction of a zero offset,
+# which 3.13.14 reads like 3.11), and 3.14 changed the reader (it reads an hour of 24
 # and rejects some strings 3.11 reads), so from 3.11 on the script uses the
 # running Python's reader, as the digest does.
 
@@ -869,7 +871,7 @@ def _iso_clock(raw: bytes, at: int, end: int) -> tuple[list[int], bool] | None:
 
 def _iso_by_hand(text: str) -> datetime | None:
     """*text* read as ``datetime.fromisoformat(text.replace("Z", "+00:00"))``
-    reads it on Python 3.11 to 3.13, or None where that raises."""
+    reads it on Python 3.11 and 3.12, or None where that raises."""
     text = text.replace("Z", "+00:00")
     if len(text) < 7:
         return None
@@ -911,8 +913,7 @@ def _iso_by_hand(text: str) -> datetime | None:
             if offset is None or offset[1]:
                 return None
             hours, minutes, seconds, micros = offset[0]
-            # 3.11.15, 3.12.13 and 3.13.14 drop the fraction of an offset of zero
-            # whole seconds; 3.13.18 keeps it. The script follows the older readers.
+            # 3.11 drops the fraction of an offset of zero whole seconds.
             if hours == minutes == seconds == 0:
                 micros = 0
             delta = timedelta(hours=hours, minutes=minutes, seconds=seconds, microseconds=micros)

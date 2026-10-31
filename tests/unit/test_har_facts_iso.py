@@ -1,6 +1,8 @@
 """The graft skill's har-facts.py reads ISO 8601 times as Python 3.11's
-``datetime.fromisoformat`` does on Python 3.9 to 3.13; from 3.14 on it uses the
-running Python's reader, which 3.14 changed.
+``datetime.fromisoformat`` does on Python 3.9 and 3.10; from 3.11 on it uses the
+running Python's reader. The reference is 3.11 and 3.12, which take security fixes
+only: 3.13 patch releases read a few lenient shapes differently (3.13.18 rejects a
+bare comma before an offset that 3.13.14 reads), and 3.14 changed the reader.
 
 This module imports only the standard library and pytest, so it also runs under
 Python 3.9 and 3.10, which CI does not run::
@@ -15,7 +17,7 @@ import importlib.util
 import itertools
 import random
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -114,21 +116,15 @@ def _fromisoformat(text: str) -> datetime | None:
 def _same(got: datetime | None, expected: datetime | None) -> bool:
     if got is None or expected is None:
         return got is expected
-    if got.utcoffset() == timedelta(0) and expected.utcoffset() != timedelta(0):
-        # Patch releases differ on an offset of zero whole seconds with a
-        # fraction: 3.13.14 reads it as UTC, 3.13.18 keeps the fraction.
-        offset = expected.utcoffset()
-        if offset is not None and abs(offset) < timedelta(seconds=1):
-            expected = expected.replace(tzinfo=got.tzinfo)
     return got == expected and got.utcoffset() == expected.utcoffset()
 
 
 @pytest.mark.skipif(
-    sys.version_info >= (3, 14),
-    reason="3.14's fromisoformat reads an hour of 24 and rejects strings 3.11 reads",
+    sys.version_info >= (3, 13),
+    reason="3.13 patch releases and 3.14 read some lenient shapes differently from 3.11",
 )
 def test_the_har_reader_reads_what_fromisoformat_reads_on_3_11() -> None:
-    """On 3.11 to 3.13 (one reader, measured), the script's own reading gives the
+    """On 3.11 and 3.12 (one reader, measured), the script's own reading gives the
     same time and offset as ``fromisoformat`` for every string, and no time where
     it raises. Before 3.11, where ``fromisoformat`` reads only its own output, the
     script reads every string it reads, with the same time and offset."""
