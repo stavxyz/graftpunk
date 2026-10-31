@@ -9,9 +9,10 @@ from typing import Any
 
 import pytest
 
-from graftpunk.har.digest import SHAPE_UNAVAILABLE, DigestSource, Endpoint, digest
+from graftpunk.har.digest import SHAPE_TOO_DEEP, SHAPE_UNAVAILABLE, DigestSource, Endpoint, digest
 from graftpunk.har.documents import LoginForm
 from graftpunk.har.report import (
+    SHAPE_TOO_DEEP_SUMMARY,
     SHAPE_UNAVAILABLE_SUMMARY,
     endpoints_projection,
     render_endpoints_json,
@@ -195,6 +196,25 @@ class TestUnavailableShape:
     def test_summarize_shape_names_it_rather_than_calling_it_non_json(self) -> None:
         assert summarize_shape(SHAPE_UNAVAILABLE) == SHAPE_UNAVAILABLE_SUMMARY
         assert summarize_shape(None) == "non-JSON"
+
+    def test_a_body_too_deep_to_parse_says_so_and_not_that_it_was_large(self) -> None:
+        assert summarize_shape(SHAPE_TOO_DEEP) == SHAPE_TOO_DEEP_SUMMARY
+        assert SHAPE_TOO_DEEP_SUMMARY != SHAPE_UNAVAILABLE_SUMMARY
+        assert "threshold" not in SHAPE_TOO_DEEP_SUMMARY
+
+    def test_the_json_digest_marks_only_the_too_deep_node(self, tmp_path: Path) -> None:
+        """The over-threshold node renders as it did before ``too_deep`` existed."""
+        truncated = '{"orders": [' + '{"id": 1},' * 40000
+        entries = [_entry("GET", "https://api.myshop.example.com/big", body=truncated)]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        parsed = json.loads(render_json(result))
+        (endpoint,) = parsed["endpoints"]
+        assert endpoint["shape"] == {
+            "kind": "unavailable",
+            "children": None,
+            "item": None,
+            "truncated": False,
+        }
 
     def test_the_markdown_digest_prints_the_message(self, tmp_path: Path) -> None:
         truncated = '{"orders": [' + '{"id": 1},' * 40000

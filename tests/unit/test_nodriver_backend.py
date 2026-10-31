@@ -43,6 +43,19 @@ def temp_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
+# The fake Chrome's pid where the backend asks the kernel whether Chrome exited.
+# No process can hold it: Linux allocates pids below PID_MAX_LIMIT (4 * 1024 *
+# 1024 on 64-bit), and macOS's are smaller. A pid such as 4242 can belong to a
+# live process on a runner, and the backend then keeps the profile of a Chrome
+# it thinks still runs (#324).
+_NO_SUCH_PID = 4 * 1024 * 1024 + 4242
+
+
+def test_the_fake_chrome_pid_belongs_to_no_process() -> None:
+    with pytest.raises(ProcessLookupError):
+        os.kill(_NO_SUCH_PID, 0)
+
+
 class TestNoDriverBackendProtocol:
     """Tests for NoDriverBackend Protocol compliance."""
 
@@ -1250,7 +1263,7 @@ class TestNoDriverBackendFailedStartAttempts:
     """A start attempt that half succeeded used to leave its Chrome running (#192)."""
 
     @staticmethod
-    def _browser(profile: Path, pid: int = 4242) -> MagicMock:
+    def _browser(profile: Path, pid: int = _NO_SUCH_PID) -> MagicMock:
         """A browser that starts fine and then fails its first CDP call."""
         browser = MagicMock()
         browser._process = MagicMock()
@@ -1456,7 +1469,7 @@ class TestNoDriverBackendTerminateForSignal:
     """The loop-free path the signal handler takes (#96)."""
 
     @staticmethod
-    def _browser(profile: Path, pid: int = 4242) -> MagicMock:
+    def _browser(profile: Path, pid: int = _NO_SUCH_PID) -> MagicMock:
         browser = MagicMock()
         browser._process = MagicMock()
         browser._process.pid = pid

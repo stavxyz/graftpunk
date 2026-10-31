@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -60,6 +61,22 @@ def minimal_har() -> str:
             }
         }
     )
+
+
+_TOO_DEEP_HAR = '{"log": {"version": "1.2", "entries": [], "_custom": [[[]]]}}'
+
+
+def _refuse_as_too_deep(monkeypatch: pytest.MonkeyPatch, document: str) -> None:
+    """Make ``json.loads`` raise RecursionError for *document* alone, standing in
+    for the parser's depth refusal, which falls at a different depth per platform."""
+    loads = json.loads
+
+    def too_deep(text: str | bytes, *args: Any, **kwargs: Any) -> object:
+        if text == document:
+            raise RecursionError("maximum recursion depth exceeded")
+        return loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", too_deep)
 
 
 class TestValidateHarSchema:
@@ -153,6 +170,19 @@ class TestParseHarFile:
             parse_har_file(bad_file)
         assert str(caught.value).count(str(bad_file)) == 1
 
+    def test_json_nested_past_the_parsers_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The parser's refusal is stood in for, as where it falls depends on the
+        platform and Python version."""
+        deep_file = tmp_path / "deep.har"
+        deep_file.write_text(_TOO_DEEP_HAR)
+        _refuse_as_too_deep(monkeypatch, _TOO_DEEP_HAR)
+
+        with pytest.raises(HARParseError, match="nested too deep to parse") as caught:
+            parse_har_file(deep_file)
+        assert str(caught.value).count(str(deep_file)) == 1
+
     def test_invalid_schema(self, tmp_path: Path) -> None:
         """HARParseError names the file, once, for an invalid schema too:
         validate_har_schema's own messages carry no path, so parse_har_file
@@ -201,6 +231,11 @@ class TestParseHarString:
         """HARParseError for invalid JSON string."""
         with pytest.raises(HARParseError, match="Invalid JSON"):
             parse_har_string("not json")
+
+    def test_json_nested_past_the_parsers_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _refuse_as_too_deep(monkeypatch, _TOO_DEEP_HAR)
+        with pytest.raises(HARParseError, match="nested too deep to parse"):
+            parse_har_string(_TOO_DEEP_HAR)
 
     def test_empty_entries(self) -> None:
         """Empty entries array returns empty list."""

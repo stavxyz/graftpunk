@@ -25,6 +25,18 @@ from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
 
 pytestmark = pytest.mark.usefixtures("_fast_login_timings")
 
+# A readiness cap no loaded runner outlasts before a page that hydrates in a few
+# reads is ready (#326): under the fast timings' 0.05 s cap, two slow reads could
+# end the wait, and the step acted before the page hydrated.
+_GENEROUS_READY_CAP = 30.0
+
+
+@pytest.fixture
+def _generous_ready_cap(_fast_login_timings: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Requested after the fast timings, so this cap wins."""
+    monkeypatch.setattr("graftpunk.plugins.login_ready._READY_MAX_WAIT", _GENEROUS_READY_CAP)
+
+
 _URL = "https://app.example.com/"
 
 
@@ -347,14 +359,19 @@ class TestAmbiguousSelector:
 
 class TestReadinessBeforeActing:
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_generous_ready_cap")
     async def test_a_click_waits_for_the_page_to_hydrate(self) -> None:
         """The reported failure: the link was in the server HTML before its handler."""
         page = _FakePage(hydrate_after=3)
         page.add("a.signin", "signin")
 
-        await _login(_plugin(LoginStep(submit="a.signin")), page)
+        with patch("graftpunk.plugins.login_ready.LOG") as log:
+            await _login(_plugin(LoginStep(submit="a.signin")), page)
 
         assert page.clicks == [("signin", True)]
+        assert page.ready_reads >= 4
+        # The wait ended because the page was ready, not at its cap.
+        assert not [c for c in log.info.call_args_list if c.args[0] == "login_page_not_quiet"]
 
     @pytest.mark.asyncio
     async def test_a_page_that_never_goes_quiet_costs_the_cap_and_no_more(self) -> None:
@@ -655,13 +672,18 @@ class TestSeleniumTwin:
         with pytest.raises(PluginError, match=r"matches 3 elements and none of them is visible"):
             self._login(page, LoginStep(submit="a.signin"))
 
+    @pytest.mark.usefixtures("_generous_ready_cap")
     def test_the_readiness_wait_runs_until_the_page_is_quiet(self) -> None:
         page = _FakePage(hydrate_after=2)
         page.add("#go", "go")
 
-        self._login(page, LoginStep(submit="#go"))
+        with patch("graftpunk.plugins.login_ready.LOG") as log:
+            self._login(page, LoginStep(submit="#go"))
 
-        assert page.ready_reads == 3
+        assert page.ready_reads >= 3
+        assert page.clicks == [("go", True)]
+        # The wait ended because the page was ready, not at its cap.
+        assert not [c for c in log.info.call_args_list if c.args[0] == "login_page_not_quiet"]
 
     def test_a_field_with_a_hidden_copy_first_is_typed_into_the_visible_one(self) -> None:
         page = _FakePage()

@@ -92,6 +92,7 @@ __all__ = [
     "OMIT_EMPTY",
     "LoginObservation",
     "ObservationKind",
+    "SHAPE_TOO_DEEP",
     "SHAPE_UNAVAILABLE",
     "RunDigest",
     "ShapeNode",
@@ -298,14 +299,18 @@ class ShapeNode:
 
     ``kind="unavailable"`` is the one node that is not a JSON value: it marks a
     JSON response whose shape could not be read (see
-    :data:`SHAPE_UNAVAILABLE`), distinct from ``shape=None``, which means the
-    endpoint does not return JSON at all.
+    :data:`SHAPE_UNAVAILABLE` and :data:`SHAPE_TOO_DEEP`), distinct from
+    ``shape=None``, which means the endpoint does not return JSON at all.
     """
 
     kind: Literal["object", "array", "string", "number", "boolean", "null", "unavailable"]
     children: dict[str, ShapeNode] | None = None  # objects: key -> node, at most _SHAPE_MAX_KEYS
     item: ShapeNode | None = None  # arrays: the first element's node
     truncated: bool = False  # keys beyond the cap or depth beyond the cap were dropped
+    # An unavailable node only: the body was nested past the JSON parser's limit,
+    # not too large. Left out of --json while False, so every other node renders
+    # as it did before the field existed.
+    too_deep: bool = field(default=False, metadata={OMIT_EMPTY: True})
 
 
 @dataclass(frozen=True)
@@ -324,6 +329,11 @@ SHAPE_UNAVAILABLE = ShapeNode(kind="unavailable")
 
 Reporting it as non-JSON would be a false claim about the endpoint, and the
 generated docstring said ``Shape: non-JSON.`` for every one of them."""
+
+SHAPE_TOO_DEEP = ShapeNode(kind="unavailable", too_deep=True)
+"""A JSON response nested past the JSON parser's limit, at any size: its shape
+is unknown. It is an unavailable shape like :data:`SHAPE_UNAVAILABLE`, labelled
+apart so a digest does not say a small body was over the sampling threshold."""
 
 
 @dataclass(frozen=True)
@@ -803,11 +813,12 @@ def _json_value_type(value: Any) -> str | None:
     if isinstance(value, list):
         element = _UNKNOWN_ELEMENT
         for item in value:
-            item_type = _json_value_type(item)
-            if item_type is None:
+            # An array inside an array is recorded as the bare element ``list``,
+            # whatever it holds, so it is not walked: a body nested thousands of
+            # levels deep would otherwise exhaust the recursion limit.
+            item_element = "list" if isinstance(item, list) else _json_value_type(item)
+            if item_element is None:
                 continue
-            # An array inside an array is recorded as the bare element ``list``.
-            item_element = "list" if _element_of(item_type) is not None else item_type
             element = _merged_json_element(element, item_element)
         return _list_label(element)
     return _MIXED
@@ -1213,7 +1224,8 @@ def _body_missing(entry: HAREntry) -> bool:
 
 def _response_shape(entry: HAREntry) -> ShapeNode | None:
     """The shape of *entry*'s JSON response body, ``SHAPE_UNAVAILABLE`` when a
-    body over ``_BODY_SAMPLE_THRESHOLD`` does not parse, or ``None`` when the
+    body over ``_BODY_SAMPLE_THRESHOLD`` does not parse, ``SHAPE_TOO_DEEP`` when
+    the body is nested past the JSON parser's limit, or ``None`` when the
     endpoint does not return JSON.
 
     The body is parsed whole; it is already in memory. Parsing a fixed-size
@@ -1231,6 +1243,10 @@ def _response_shape(entry: HAREntry) -> ShapeNode | None:
         if len(text.encode("utf-8", errors="ignore")) > _BODY_SAMPLE_THRESHOLD:
             return SHAPE_UNAVAILABLE
         return None
+    except RecursionError:
+        # JSON nested past the parser's limit (platform-dependent): its shape
+        # cannot be read, but it is a JSON response.
+        return SHAPE_TOO_DEEP
     return _shape_of(parsed)
 
 
@@ -2598,7 +2614,9 @@ def _falsy_value(body: str | None) -> str | None:
         return None
     try:
         value = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # A body nested past the parser's limit holds a nested value, so it is
+        # not a falsy one.
         return None
     return None if value else json.dumps(value)
 
@@ -3515,7 +3533,8 @@ def _top_level_shape(shape: ShapeNode | None) -> tuple[object, ...] | None:
     """What two family members must share of their response shape: its kind, an
     object's top-level keys (and whether they were cut at the cap), and an array's
     element kind; ``("none",)`` for an endpoint that returns no JSON. None for a
-    shape that could not be read (``SHAPE_UNAVAILABLE``), which matches nothing."""
+    shape that could not be read (``SHAPE_UNAVAILABLE`` or ``SHAPE_TOO_DEEP``),
+    which matches nothing."""
     if shape is None:
         return ("none",)
     if shape.kind == "unavailable":

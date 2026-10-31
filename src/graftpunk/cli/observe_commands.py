@@ -52,7 +52,7 @@ from graftpunk.har.naming import (
     fixture_order,
     parse_endpoint,
 )
-from graftpunk.har.parser import HAREntry, parse_har_file
+from graftpunk.har.parser import HAREntry, HARParseError, parse_har_file
 from graftpunk.har.report import (
     DEFAULT_ENDPOINT_LIMIT,
     render_endpoints_json,
@@ -176,7 +176,11 @@ def digest_cmd(
         err_console.print("[red]Pass --json or --endpoints-json, not both.[/red]")
         raise typer.Exit(1)
     source = _digest_source(session, run, har)
-    result = digest(source, all_hosts=all_hosts)
+    try:
+        result = digest(source, all_hosts=all_hosts)
+    except HARParseError as exc:
+        console.print(f"[red]Could not read the HAR: {escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
     if endpoints_json:
         text = render_endpoints_json(result)
     elif as_json:
@@ -321,8 +325,14 @@ def fixtures_cmd(
 
     # Everything read from the run comes before any write: a digest that fails
     # must not leave an edited .gitignore or an empty target behind.
-    entries = parse_har_file(har_path).entries
-    run_digest = digest(DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name))
+    try:
+        entries = parse_har_file(har_path).entries
+        run_digest = digest(
+            DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name)
+        )
+    except HARParseError as exc:
+        console.print(f"[red]Could not read the HAR: {escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
     flagged = flagged_reasons_of(run_digest, entries)
     # Held in memory only: the sidecar records names, never these values.
     recorded_values = flagged_values_of(run_digest, entries)

@@ -32,6 +32,7 @@ from graftpunk.har.paths import printable_name, templated_url, templates_a_segme
 
 __all__ = [
     "DEFAULT_ENDPOINT_LIMIT",
+    "SHAPE_TOO_DEEP_SUMMARY",
     "SHAPE_UNAVAILABLE_SUMMARY",
     "endpoints_projection",
     "render_endpoints_json",
@@ -45,6 +46,9 @@ _DEFAULT_SUMMARY_DEPTH = 3
 
 SHAPE_UNAVAILABLE_SUMMARY = "shape unavailable: body over the sampling threshold"
 """How :data:`graftpunk.har.digest.SHAPE_UNAVAILABLE` reads in a digest."""
+
+SHAPE_TOO_DEEP_SUMMARY = "shape unavailable: body nested too deep to parse"
+"""How :data:`graftpunk.har.digest.SHAPE_TOO_DEEP` reads in a digest."""
 
 
 def summarize_shape(shape: ShapeNode | None, *, depth: int = _DEFAULT_SUMMARY_DEPTH) -> str:
@@ -60,7 +64,7 @@ def summarize_shape(shape: ShapeNode | None, *, depth: int = _DEFAULT_SUMMARY_DE
     if shape is None:
         return "non-JSON"
     if shape.kind == "unavailable":
-        return SHAPE_UNAVAILABLE_SUMMARY
+        return SHAPE_TOO_DEEP_SUMMARY if shape.too_deep else SHAPE_UNAVAILABLE_SUMMARY
     if shape.kind in ("string", "number", "boolean", "null"):
         return shape.kind
     if shape.kind == "array":

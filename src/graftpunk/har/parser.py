@@ -720,9 +720,10 @@ def parse_har_file(filepath: Path | str) -> HARParseResult:
         HARParseResult containing parsed entries and any errors.
 
     Raises:
-        HARParseError: If file structure is invalid (not valid JSON or missing
-            required HAR structure), the file is not valid UTF-8, or it cannot
-            be read for another OS reason (for example, it is a directory).
+        HARParseError: If file structure is invalid (not valid JSON, JSON nested
+            past the parser's limit, or missing required HAR structure), the
+            file is not valid UTF-8, or it cannot be read for another OS reason
+            (for example, it is a directory).
         FileNotFoundError: If file does not exist.
     """
     filepath = Path(filepath)
@@ -736,6 +737,9 @@ def parse_har_file(filepath: Path | str) -> HARParseResult:
             data = json.load(f)
     except json.JSONDecodeError as exc:
         raise HARParseError(f"{filepath}: not valid JSON ({exc})") from exc
+    except RecursionError as exc:
+        # Where the parser gives up depends on the Python version and platform.
+        raise HARParseError(f"{filepath}: JSON nested too deep to parse") from exc
     except UnicodeDecodeError as exc:
         raise HARParseError(f"{filepath}: not valid UTF-8 ({exc})") from exc
     except OSError as exc:
@@ -776,13 +780,15 @@ def parse_har_string(content: str) -> HARParseResult:
         HARParseResult containing parsed entries and any errors.
 
     Raises:
-        HARParseError: If content structure is invalid (not valid JSON or
-            missing required HAR structure).
+        HARParseError: If content structure is invalid (not valid JSON, JSON
+            nested past the parser's limit, or missing required HAR structure).
     """
     try:
         data = json.loads(content)
     except json.JSONDecodeError as exc:
         raise HARParseError(f"Invalid JSON in HAR content: {exc}") from exc
+    except RecursionError as exc:
+        raise HARParseError("Invalid JSON in HAR content: nested too deep to parse") from exc
 
     validate_har_schema(data)
     return _parse_entries(data)

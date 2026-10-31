@@ -10,6 +10,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 import typer
@@ -29,6 +30,22 @@ from tests.unit.cli_harness import strip_ansi
 from tests.unit.guide_harness import REPO_ROOT
 
 runner = CliRunner()
+
+_TOO_DEEP_HAR = '{"log": {"version": "1.2", "entries": [], "_custom": [[[]]]}}'
+
+
+def _refuse_as_too_deep(monkeypatch: pytest.MonkeyPatch, document: str) -> None:
+    """Make ``json.loads`` raise RecursionError for *document* alone, standing in
+    for the parser's depth refusal, which falls at a different depth per platform."""
+    loads = json.loads
+
+    def too_deep(text: str | bytes, *args: Any, **kwargs: Any) -> object:
+        if text == document:
+            raise RecursionError("maximum recursion depth exceeded")
+        return loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", too_deep)
+
 
 # A cookie value shaped like a session id: flagged_names leaves out a cookie whose
 # every value is form state, so a cookie that must be flagged needs one like it.
@@ -134,6 +151,29 @@ class TestDigestCommand:
         assert result.exit_code == 0, result.output
         assert "## Summary" in result.output
 
+    @pytest.mark.parametrize("depth", [2_000, 100_000])
+    def test_digest_over_a_run_holding_deeply_nested_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, depth: int
+    ) -> None:
+        """#327: a JSON body nested thousands of levels deep, in a request or a
+        response, failed the whole digest with RecursionError."""
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path)
+        deep_list = "[" * depth + "]" * depth
+        post = _entry(
+            "POST", "https://api.myshop.example.com/cart", body='{"items": ' + deep_list + "}"
+        )
+        post["request"]["postData"] = {
+            "mimeType": "application/json",
+            "text": '{"items": ' + deep_list + ', "quantity": 3}',
+        }
+        entries = [post, _entry("GET", "https://api.myshop.example.com/orders", body=deep_list)]
+        _write_run(tmp_path, "myshop", "run-1", entries)
+        result = runner.invoke(_build_app(), ["observe", "digest", "myshop"])
+        assert result.exit_code == 0, result.output
+        assert "## Summary" in result.output
+        assert "/cart" in result.output
+        assert "/orders" in result.output
+
     @pytest.mark.usefixtures("gp_logging")
     def test_digest_json_flag(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path)
@@ -169,6 +209,29 @@ class TestDigestCommand:
         )
         assert result.exit_code == 1
         assert "not both" in result.output.lower()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("{", id="not-json"),
+            pytest.param(_TOO_DEEP_HAR, id="nested-past-the-parsers-limit"),
+        ],
+    )
+    def test_an_unreadable_har_is_a_one_line_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+    ) -> None:
+        """A HAR the JSON parser refuses, for its syntax or for its depth, is a
+        red line and exit 1, not a traceback. The depth refusal is stood in for,
+        as where it falls depends on the platform."""
+        har_path = tmp_path / "network.har"
+        har_path.write_text(text)
+        _refuse_as_too_deep(monkeypatch, _TOO_DEEP_HAR)
+        result = runner.invoke(_build_app(), ["observe", "digest", "--har", str(har_path)])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        output = strip_ansi(result.output)
+        assert "Could not read the HAR" in output
+        assert "Traceback" not in output
 
     def test_digest_missing_har_file_is_one_line_error(self, tmp_path: Path) -> None:
         app = _build_app()
@@ -212,6 +275,36 @@ class TestDigestCommand:
 
 
 class TestFixturesCommand:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("{", id="not-json"),
+            pytest.param(_TOO_DEEP_HAR, id="nested-past-the-parsers-limit"),
+        ],
+    )
+    def test_an_unreadable_har_is_a_one_line_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+    ) -> None:
+        """A run whose network.har the JSON parser refuses is a red line and exit
+        1, not a traceback, and nothing is written."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(observe_base, "myshop", "run-1", [_entry("GET", "https://myshop.example/a")])
+        (har_path,) = observe_base.rglob("network.har")
+        har_path.write_text(text)
+        _refuse_as_too_deep(monkeypatch, _TOO_DEEP_HAR)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /a", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        output = strip_ansi(result.output)
+        assert "Could not read the HAR" in output
+        assert "Traceback" not in output
+        assert not out_dir.exists()
+
     def test_writes_matching_files_with_sidecars(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
