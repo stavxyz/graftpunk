@@ -30,7 +30,11 @@ group; a terminal SIGHUP and ``kill -- -<pgid>`` reach it without any
 process-group code here. ``gp observe``, and the backend when the handlers are
 installed, start their Chrome in a session of its own
 (:func:`graftpunk.browser_launch.chrome_in_own_session`, #333), so the Ctrl+C
-that stops a recording or a login reaches only Python.
+that stops a recording or a login reaches only Python. So does a selenium
+launch when the handlers are installed
+(:func:`graftpunk.browser_launch.selenium_in_own_session`, #335): its
+chromedriver and its Chrome both carry the owner marker then, which is how a
+chromedriver, which has no debugging port, is found here at all.
 Nothing in this module depends on the session: the marker and the pid are the
 same either way.
 
@@ -62,6 +66,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterable
@@ -207,7 +212,8 @@ DEFAULT_OPS = ProcessOps()
 
 @dataclass(frozen=True)
 class ChromeProcess:
-    """One row of the process table that looks like a CDP-controlled browser.
+    """One row of the process table that looks like a CDP-controlled browser,
+    or the marked chromedriver of a selenium launch.
 
     Attributes:
         pid: The process id.
@@ -252,6 +258,59 @@ def _switch_value(args: str, switch: str) -> str | None:
     return None
 
 
+def _uc_data_dir(platform: str = sys.platform) -> str:
+    """Where undetected-chromedriver keeps its patched chromedriver.
+
+    ``Patcher.data_path`` in undetected-chromedriver 3.5.5
+    (``undetected_chromedriver/patcher.py:29-40``), computed here rather than
+    imported, so the sweep runs without that library. ``Patcher.auto()``
+    unlinks the binary there and downloads a new one on each launch
+    (``patcher.py:159-160``), so a chromedriver left running may name a file
+    that is, for a while, not on disk.
+    """
+    if platform.endswith("win32"):
+        directory = "~/appdata/roaming/undetected_chromedriver"
+    elif "LAMBDA_TASK_ROOT" in os.environ:
+        directory = "/tmp/undetected_chromedriver"  # noqa: S108 - the library's own path
+    elif platform.startswith(("linux", "linux2")):
+        directory = "~/.local/share/undetected_chromedriver"
+    elif platform.endswith("darwin"):
+        directory = "~/Library/Application Support/undetected_chromedriver"
+    else:
+        directory = "~/.undetected_chromedriver"
+    return os.path.abspath(os.path.expanduser(directory))
+
+
+_UC_DATA_DIR = _uc_data_dir()
+
+
+def _is_marked_chromedriver(args: str) -> bool:
+    """Whether *args* is a chromedriver that a graftpunk selenium launch marked.
+
+    chromedriver takes no ``--remote-debugging-port``, so the browser filter
+    misses it. A selenium launch in a session of its own passes the owner
+    marker to chromedriver too (chromedriver starts with a switch it does not
+    know), and the executable is everything before the first switch, since
+    its path can hold a space (``~/Library/Application Support/...``). A
+    name with a space in it is a command line such as ``sh -c "chromedriver
+    ..."``, not chromedriver itself.
+    """
+    if _switch_value(args, OWNER_SWITCH) is None:
+        return False
+    executable = args.split(" --", 1)[0]
+    name = os.path.basename(executable)
+    if "chromedriver" not in name or any(char.isspace() for char in name):
+        return False
+    # A prefix with a space in it is either an executable whose path holds
+    # one or a command naming such a path as an argument (``grep <path>``,
+    # ``sh -c "<path>``). Only the first is a file on disk, or, while
+    # undetected-chromedriver has unlinked its binary to download a new one,
+    # starts with that library's own data directory.
+    if not any(char.isspace() for char in executable):
+        return True
+    return os.path.isfile(executable) or executable.startswith(_UC_DATA_DIR + os.sep)
+
+
 def _parse_row(row: str) -> ChromeProcess | None:
     """One ``pid ppid args`` line as a :class:`ChromeProcess`, or None to skip it."""
     fields = row.strip().split(maxsplit=2)
@@ -261,7 +320,7 @@ def _parse_row(row: str) -> ChromeProcess | None:
     # The same switch parser the marker and the profile use, not a substring
     # of the argv: a process merely mentioning the switch name is not one that
     # was given a debugging port.
-    if _switch_value(args, _DEBUG_PORT_SWITCH) is None:
+    if _switch_value(args, _DEBUG_PORT_SWITCH) is None and not _is_marked_chromedriver(args):
         return None
     try:
         pid = int(pid_text)
@@ -284,7 +343,7 @@ def _parse_row(row: str) -> ChromeProcess | None:
 
 
 def list_chrome_processes(ops: ProcessOps | None = None) -> list[ChromeProcess]:
-    """Every process whose argv carries ``--remote-debugging-port``.
+    """Every process whose argv carries ``--remote-debugging-port``, and every marked chromedriver.
 
     The debugging port is the filter that separates automated browsers from the
     user's own: a Chrome the user opened has no CDP port and never appears
@@ -292,7 +351,9 @@ def list_chrome_processes(ops: ProcessOps | None = None) -> list[ChromeProcess]:
     ``--remote-debugging-port=<port>``). Renderer and GPU helpers inherit
     ``--user-data-dir`` but not the vendor marker, so a helper is identified by
     the reparented-profile rule or not at all; in practice the browser process
-    is what gets ended, and its helpers follow it.
+    is what gets ended, and its helpers follow it. A chromedriver is listed
+    only when it carries graftpunk's owner marker, which a selenium launch in
+    a session of its own gives it.
 
     Args:
         ops: The operating system calls to use. Defaults to the real ones.
@@ -684,10 +745,26 @@ def terminate_nodriver_browser(browser: Any, *, ops: ProcessOps | None = None) -
         is not POSIX, has no pid to signal, or the kill failed (including a
         process that had already exited).
     """
-    if not _armed_for("terminate"):
-        return False
     pid = getattr(getattr(browser, "_process", None), "pid", None)
     if not isinstance(pid, int):
+        return False
+    return terminate_pid(pid, ops=ops)
+
+
+def terminate_pid(pid: int, *, ops: ProcessOps | None = None) -> bool:
+    """Send *pid* one SIGTERM, the step :func:`terminate_nodriver_browser` takes. Never raises.
+
+    For a process graftpunk knows by pid alone: the chromedriver and Chrome
+    of a selenium launch in a session of their own
+    (:class:`graftpunk.browser_launch.SeleniumProcesses`).
+
+    Returns:
+        Whether the signal was delivered, on the terms of
+        :func:`terminate_nodriver_browser`.
+    """
+    if not _armed_for("terminate"):
+        return False
+    if pid <= 0:
         return False
     try:
         (ops or DEFAULT_OPS).kill(pid, signal.SIGTERM)

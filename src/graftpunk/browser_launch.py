@@ -21,7 +21,10 @@ run with Ctrl+C and still expects it saved, ``gp observe`` and
 ``NoDriverBackend`` (a login recorded with ``--observe full``): it starts
 Chrome outside the terminal's foreground process group (#333). The backend
 uses it only when graftpunk's termination handlers are installed, since
-nothing else would end that Chrome on a hangup.
+nothing else would end that Chrome on a hangup. :func:`selenium_in_own_session`
+does the same for the selenium backend's undetected-chromedriver launch, which
+starts chromedriver as well as Chrome (#335), under the same rule
+(:func:`prepare_selenium_launch`).
 """
 
 from __future__ import annotations
@@ -31,10 +34,12 @@ import contextlib
 import contextvars
 import importlib
 import os
+import signal
+import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -454,3 +459,364 @@ def check_chrome_in_own_session(browser: Any) -> bool:
         consequence=CHROME_SHARES_SESSION_CONSEQUENCE,
     )
     return False
+
+
+# The selenium launch (#335). undetected-chromedriver starts Chrome itself and
+# then has Selenium start chromedriver, each with one subprocess.Popen call
+# through the ``subprocess`` name bound in its own module. The value says
+# whether a process spawned there gets the owner marker appended: Chrome gets
+# it through its options, and chromedriver, whose Service undetected-chromedriver
+# builds without arguments a caller could add to, gets it here.
+_SELENIUM_LAUNCHERS = {
+    "undetected_chromedriver": False,
+    "selenium.webdriver.common.service": True,
+}
+
+
+class SeleniumProcesses:
+    """The chromedriver and Chrome of one selenium launch in a session of its own (#335).
+
+    A :class:`graftpunk.signals.TerminatableBrowser`: registered with the
+    SIGTERM and SIGHUP handlers as soon as its first process is added, and
+    released by the code that quits the driver. A process graftpunk's launch
+    spawned is held as its ``Popen``, so a handler never signals one that has
+    exited and been reaped. A Chrome that chromedriver spawned is known by pid
+    only, so it is signaled only while the process table still shows that pid
+    with this process's owner marker or as the child of a held chromedriver
+    (:meth:`_still_ours`); a pid reused by another program meanwhile is left
+    alone.
+    """
+
+    def __init__(self) -> None:
+        self._processes: list[subprocess.Popen[Any]] = []
+        self._pids: list[int] = []
+
+    def add(self, process: subprocess.Popen[Any]) -> None:
+        """Hold *process*, and make sure the handlers can end it."""
+        self._processes.append(process)
+        signals.register_live_browser(self)
+
+    def add_pid(self, pid: int) -> None:
+        """Hold a process this program did not spawn (a Chrome under chromedriver)."""
+        self._pids.append(pid)
+        signals.register_live_browser(self)
+
+    @property
+    def pids(self) -> list[int]:
+        """Every process held, the spawned ones first."""
+        return [process.pid for process in self._processes] + list(self._pids)
+
+    def _live_drivers(self) -> set[int]:
+        """The pids of the held processes still running (an exited one's pid is free for reuse)."""
+        return {process.pid for process in self._processes if process.poll() is None}
+
+    def _still_ours(self, drivers: set[int], *, adopted: bool = False) -> list[int]:
+        """The processes known by pid that are still this launch's, from one ``ps`` listing.
+
+        A pid held by :meth:`add_pid` counts while it is listed with this
+        process's owner marker or as the child of a chromedriver in *drivers*;
+        a browser whose parent is in *drivers* counts too, which is how a
+        Chrome spawned by a start that then failed is found. With *adopted*,
+        so does a process carrying this process's marker whose parent is gone
+        (ppid 1): the Chrome of a chromedriver the handler has just ended.
+        That is the reaper's matching (the marker, the debugging port), so a
+        pid that another program has reused since is skipped. An unreadable
+        process table yields nothing: not signaling is the safe direction.
+        """
+        held = set(self._pids)
+        me = os.getpid()
+        return [
+            proc.pid
+            for proc in chrome_orphans.list_chrome_processes()
+            if proc.ppid in drivers
+            or (proc.owner_pid == me and (proc.pid in held or (adopted and proc.ppid == 1)))
+        ]
+
+    def _terminate_for_signal(self) -> None:
+        """Send each process still running, and still ours, one SIGTERM, and nothing else.
+
+        The processes held as ``Popen`` first, with no ``ps``: graftpunk
+        spawned them, so a slow ``ps``, or a Ctrl+C that interrupts it, cannot
+        delay or cancel their signal. Then one ``ps`` listing for the
+        processes known by pid; anything raised there skips only those.
+        """
+        drivers = self._live_drivers()
+        for pid in drivers:
+            chrome_orphans.terminate_pid(pid)
+        try:
+            by_pid = self._still_ours(drivers, adopted=True)
+        except BaseException as exc:  # noqa: BLE001 - a handler has nowhere to raise
+            LOG.warning("termination_pid_lookup_failed", error=repr(exc))
+            return
+        for pid in by_pid:
+            chrome_orphans.terminate_pid(pid)
+
+    def end(self) -> None:
+        """End every process, for a start that failed or was interrupted. Never raises.
+
+        The processes known by pid, the Chromes a held chromedriver spawned
+        among them, are looked up first (:meth:`_still_ours`): a SIGTERM to
+        chromedriver leaves its Chrome running. Then SIGTERM to all, up to
+        ``_END_TERM_TIMEOUT_S`` for each spawned process to exit, and SIGKILL
+        for one that has not.
+        """
+        try:
+            for pid in self._still_ours(self._live_drivers()):
+                with contextlib.suppress(OSError):
+                    os.kill(pid, signal.SIGTERM)
+            for process in self._processes:
+                if process.poll() is None:
+                    with contextlib.suppress(OSError):
+                        process.terminate()
+            for process in self._processes:
+                try:
+                    process.wait(_END_TERM_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    with contextlib.suppress(OSError):
+                        process.kill()
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        process.wait(_END_KILL_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 - best-effort: this runs on a failure path
+            LOG.warning("failed_launch_end_failed", pids=self.pids, error=str(exc))
+        finally:
+            self.release()
+
+    def release(self) -> None:
+        """Leave the signal registry: the driver was quit, or the start failed."""
+        signals.unregister_live_browser(self)
+
+
+# The attribute a selenium driver started in a session of its own carries its
+# SeleniumProcesses under, so whoever quits the driver can release them, and
+# the registry entry (held weakly) lives no longer than the driver object.
+_DRIVER_PROCESSES_ATTR = "_graftpunk_processes"
+
+
+def attach_selenium_processes(driver: Any, processes: SeleniumProcesses) -> None:
+    """Keep *processes* on *driver*, for :func:`release_selenium_processes`."""
+    setattr(driver, _DRIVER_PROCESSES_ATTR, processes)
+
+
+def release_selenium_processes(driver: Any) -> None:
+    """Take a quit *driver*'s processes out of the signal registry. Never raises."""
+    processes = getattr(driver, _DRIVER_PROCESSES_ATTR, None)
+    if isinstance(processes, SeleniumProcesses):
+        processes.release()
+
+
+def chromes_started_by(pid: int) -> list[int]:
+    """The browser processes, those given a debugging port, whose parent is *pid*."""
+    return [
+        proc.pid
+        for proc in chrome_orphans.list_chrome_processes()
+        if proc.ppid == pid and "--remote-debugging-port=" in proc.args
+    ]
+
+
+@dataclass
+class SeleniumLaunch:
+    """One :func:`selenium_in_own_session` block.
+
+    Attributes:
+        applied: Whether a launch in the block starts in a new session.
+        processes: What the block spawned, registered with the handlers.
+    """
+
+    applied: bool
+    processes: SeleniumProcesses = field(default_factory=SeleniumProcesses)
+
+
+class _SubprocessStartingNewSessions:
+    """``subprocess`` as a selenium launcher module sees it while a block is open.
+
+    Every attribute is the real module's. ``Popen`` in a context with an open
+    :func:`selenium_in_own_session` block starts the process in a new session,
+    appends the owner marker when *mark* is set, and records the process on
+    the block; in any other context, another thread's launch included, it is
+    the real ``Popen`` called unchanged.
+    """
+
+    def __init__(self, *, mark: bool) -> None:
+        self._mark = mark
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(subprocess, name)
+
+    def Popen(self, args: Any, *rest: Any, **kwargs: Any) -> subprocess.Popen[Any]:  # noqa: N802
+        launch = _CURRENT_SELENIUM_LAUNCH.get()
+        if launch is None:
+            return subprocess.Popen(args, *rest, **kwargs)  # noqa: S603 - the library's own call
+        kwargs["start_new_session"] = True
+        if self._mark and isinstance(args, list | tuple):
+            args = [*args, chrome_orphans.owner_switch()]
+        process = subprocess.Popen(args, *rest, **kwargs)  # noqa: S603 - the library's own call
+        launch.processes.add(process)
+        return process
+
+
+_SELENIUM_PROXIES = {
+    name: _SubprocessStartingNewSessions(mark=mark) for name, mark in _SELENIUM_LAUNCHERS.items()
+}
+_CURRENT_SELENIUM_LAUNCH: contextvars.ContextVar[SeleniumLaunch | None] = contextvars.ContextVar(
+    "graftpunk_selenium_launch", default=None
+)
+# How many open blocks share the selenium proxies, as _proxy_users counts the
+# nodriver one, under the same lock.
+_selenium_proxy_users = 0
+
+
+def _install_selenium_proxies() -> bool:
+    """Bind the proxies in both launcher modules, or join the blocks already using them."""
+    global _selenium_proxy_users
+    modules = {}
+    for name in _SELENIUM_PROXIES:
+        try:
+            modules[name] = importlib.import_module(name)
+        except ImportError as exc:
+            LOG.warning(
+                "chrome_own_session_unavailable",
+                reason="import",
+                module=name,
+                error=str(exc),
+                consequence=CHROME_SHARES_SESSION_CONSEQUENCE,
+            )
+            return False
+    with _PROXY_LOCK:
+        for name, module in modules.items():
+            current = getattr(module, "subprocess", None)
+            if current is not _SELENIUM_PROXIES[name] and current is not subprocess:
+                LOG.warning(
+                    "chrome_own_session_unavailable",
+                    reason="launcher_changed",
+                    module=name,
+                    consequence=CHROME_SHARES_SESSION_CONSEQUENCE,
+                )
+                return False
+        for name, module in modules.items():
+            setattr(module, "subprocess", _SELENIUM_PROXIES[name])  # noqa: B010
+        _selenium_proxy_users += 1
+        return True
+
+
+def _remove_selenium_proxies() -> None:
+    """Leave the proxies; the last block out puts the real module back."""
+    global _selenium_proxy_users
+    with _PROXY_LOCK:
+        _selenium_proxy_users -= 1
+        if _selenium_proxy_users:
+            return
+        for name, proxy in _SELENIUM_PROXIES.items():
+            module = sys.modules.get(name)
+            # Only the proxy is replaced: a name something else bound
+            # meanwhile is not this block's to overwrite.
+            if getattr(module, "subprocess", None) is proxy:
+                setattr(module, "subprocess", subprocess)  # noqa: B010
+
+
+def prepare_selenium_launch() -> bool:
+    """Arm the handlers, and say whether this selenium launch gets a session of its own.
+
+    The selenium backend's rule is the nodriver backend's (#335): a new
+    session only when graftpunk's SIGTERM and SIGHUP handlers are installed
+    (:func:`graftpunk.signals.termination_cleanup_installed`), since nothing
+    else would end a chromedriver and a Chrome outside the process group on a
+    hangup. When they are, the orphan sweep runs first, as before every
+    nodriver launch, and a sweep that did something is logged. Without them
+    the launch is exactly what it was before.
+
+    Call it from the main thread: arming sets signal dispositions.
+    """
+    arm_termination_handlers()
+    if os.name != "posix" or not signals.termination_cleanup_installed():
+        return False
+    report = prepare_browser_launch()
+    if report:
+        LOG.info(
+            "chrome_orphans_cleaned",
+            reaped=len(report.reaped),
+            profiles_removed=len(report.profiles_removed),
+        )
+    return True
+
+
+@contextlib.contextmanager
+def selenium_in_own_session() -> Iterator[SeleniumLaunch]:
+    """While open, an undetected-chromedriver launch in this context starts in a new session (#335).
+
+    The selenium twin of :func:`chrome_in_own_session`. A terminal delivers
+    Ctrl+C to its whole foreground process group, and undetected-chromedriver
+    starts Chrome and chromedriver in Python's, so a Ctrl+C meant to stop a
+    login recorded with ``--observe full`` killed both before the run could
+    take its screenshot or read the network log through chromedriver.
+
+    undetected-chromedriver has no option for this and builds chromedriver's
+    ``Service`` itself, so Selenium's ``popen_kw`` cannot be passed. This
+    rebinds the ``subprocess`` name in ``undetected_chromedriver`` (Chrome's
+    ``Popen``) and in ``selenium.webdriver.common.service`` (chromedriver's)
+    to an object that adds ``start_new_session=True``, and gives chromedriver
+    the owner marker, for a ``Popen`` in this block's context only; one
+    anywhere else, another thread's included, goes through unchanged. Blocks
+    may overlap: the first in installs the objects and the last out restores
+    the modules. A module whose ``subprocess`` is neither the real module nor
+    that object is left alone with a warning, and the launch then starts where
+    it always did. ``tests/unit/test_selenium_own_session.py`` pins the two calls
+    this relies on, and :func:`check_in_own_session` checks the outcome.
+
+    Each process is registered with the SIGTERM and SIGHUP handlers as it is
+    spawned, on :attr:`SeleniumLaunch.processes`, which stays registered after
+    the block until the code that quits the driver releases it
+    (:func:`release_selenium_processes`). An exception leaving the block ends
+    every process it spawned (:meth:`SeleniumProcesses.end`). As with
+    :func:`chrome_in_own_session`, only a program with graftpunk's handlers
+    installed should open it (:func:`prepare_selenium_launch`).
+
+    Yields:
+        The block's :class:`SeleniumLaunch`.
+    """
+    applied = os.name == "posix" and _install_selenium_proxies()
+    launch = SeleniumLaunch(applied=applied)
+    token = _CURRENT_SELENIUM_LAUNCH.set(launch if applied else None)
+    try:
+        yield launch
+    except BaseException:
+        launch.processes.end()
+        raise
+    finally:
+        _CURRENT_SELENIUM_LAUNCH.reset(token)
+        if applied:
+            _remove_selenium_proxies()
+
+
+def _shares_this_session(pid: int) -> bool | None:
+    """Whether *pid* is in this process's session; None when that cannot be told."""
+    getsid = getattr(os, "getsid", None)
+    if getsid is None:
+        return None
+    try:
+        return getsid(pid) == getsid(0)
+    except OSError:
+        return None
+
+
+def check_in_own_session(pids: Iterable[int]) -> bool:
+    """Check that no process in *pids* (chromedriver, Chrome) shares this session.
+
+    The outcome check after :func:`selenium_in_own_session`, and after the
+    standard Selenium path's ``popen_kw``. A Chrome that chromedriver spawned
+    is in chromedriver's session rather than leading one, which is as good:
+    what matters is that the terminal's Ctrl+C does not reach it. Logs
+    ``chrome_not_in_own_session``, with what a Ctrl+C will cost, for each
+    process that does share it; one that cannot be asked counts as fine, as in
+    :func:`check_chrome_in_own_session`.
+
+    Returns:
+        False when a process is known to share the session, True otherwise.
+    """
+    shared = [pid for pid in pids if _shares_this_session(pid) is True]
+    for pid in shared:
+        LOG.warning(
+            "chrome_not_in_own_session",
+            pid=pid,
+            consequence=CHROME_SHARES_SESSION_CONSEQUENCE,
+        )
+    return not shared

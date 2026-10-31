@@ -35,6 +35,7 @@ import slugify as slugify_lib
 
 from graftpunk import console as gp_console
 from graftpunk.backends.nodriver import DEFAULT_CALL_TIMEOUT_S, DEFAULT_NAVIGATE_TIMEOUT_S
+from graftpunk.browser_launch import release_selenium_processes
 from graftpunk.cookies import (
     BrowserCookiesMixin,
     _browser_cookie_domain,
@@ -214,6 +215,8 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             except Exception as exc:
                 LOG.error("failed_to_create_nodriver_session", error=str(exc))
                 raise BrowserError(f"Failed to create nodriver browser session: {exc}") from exc
+            # This branch initializes requests.Session directly, past the mixin.
+            self._give_new_jar_the_browser_cookie_policy()
         else:
             # Use stealth driver (undetected-chromedriver + selenium-stealth)
             from graftpunk.stealth import create_stealth_driver
@@ -227,21 +230,26 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                     headless=headless, performance_log=observe_mode != "off"
                 )
 
-                # Initialize requestium Session without creating a new driver
-                # We'll override the driver property to use our stealth driver
-                kwargs_minimal = kwargs.copy()
-                kwargs_minimal["webdriver_path"] = None  # Skip driver creation
-                super().__init__(*args, **kwargs_minimal)
+                try:
+                    # Initialize requestium Session without creating a new driver
+                    # We'll override the driver property to use our stealth driver
+                    kwargs_minimal = kwargs.copy()
+                    kwargs_minimal["webdriver_path"] = None  # Skip driver creation
+                    super().__init__(*args, **kwargs_minimal)
 
-                # Replace requestium's driver with our stealth driver
-                self._webdriver = self._stealth_driver
+                    # Replace requestium's driver with our stealth driver
+                    self._webdriver = self._stealth_driver
 
-                LOG.info("stealth_browser_session_initialized", headless=headless)
+                    LOG.info("stealth_browser_session_initialized", headless=headless)
+                except BaseException:
+                    # A Ctrl+C no longer reaches chromedriver and Chrome
+                    # (#335), so a session that failed to come up quits them.
+                    self._webdriver = self._stealth_driver
+                    self._quit_selenium()
+                    raise
             except (selenium.common.exceptions.WebDriverException, OSError) as exc:
                 LOG.error("failed_to_create_stealth_session", error=str(exc))
                 raise BrowserError(f"Failed to create stealth browser session: {exc}") from exc
-        # The nodriver branch initializes requests.Session directly, past the mixin.
-        self._give_new_jar_the_browser_cookie_policy()
 
     @property
     def session_name(self) -> str:
@@ -610,20 +618,34 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         self._write_observe_data()
         LOG.info("observe_capture_stopped")
 
+    # Since 1.31.1 (nodriver) and 1.32.1 (selenium) a Ctrl+C reaches Python
+    # only, not Chrome, so every way out of the four methods below quits the
+    # browser, a second Ctrl+C during the observe save included.
+
     def __enter__(self) -> "BrowserSession":
-        self._start_observe()
+        try:
+            self._start_observe()
+        except BaseException:
+            self.quit()
+            raise
         return self
 
     def __exit__(self, *args: object) -> None:
         # Same shape as requests.Session.__exit__(self, *args); the first
         # positional is the exception type (or None).
         exc_type = cast("type[BaseException] | None", args[0] if args else None)
-        self._stop_observe(exc_type)
-        self.quit()
+        try:
+            self._stop_observe(exc_type)
+        finally:
+            self.quit()
 
     async def __aenter__(self) -> "BrowserSession":
         await self.start_async()
-        await self._start_observe_async()
+        try:
+            await self._start_observe_async()
+        except BaseException:
+            await self._quit_async()
+            raise
         return self
 
     async def __aexit__(
@@ -632,8 +654,10 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         exc_val: BaseException | None,
         exc_tb: Any,
     ) -> None:
-        await self._stop_observe_async(exc_type)
-        await self._quit_async()
+        try:
+            await self._stop_observe_async(exc_type)
+        finally:
+            await self._quit_async()
 
     def _quit_selenium(self) -> None:
         """Stop the selenium WebDriver if present."""
@@ -645,6 +669,9 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 LOG.error(
                     "error_stopping_selenium_session", error=str(exc), exc_type=type(exc).__name__
                 )
+            finally:
+                # Out of the termination handlers' registry (#335).
+                release_selenium_processes(self._webdriver)
             self._webdriver = None
 
     def quit(self) -> None:

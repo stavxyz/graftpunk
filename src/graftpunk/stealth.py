@@ -7,12 +7,20 @@ Combines multiple anti-detection techniques:
 """
 
 import platform as platform_mod
+from contextlib import nullcontext
 from pathlib import Path
 
 import undetected_chromedriver as uc
 from selenium_stealth import stealth
 
+from graftpunk.browser_launch import (
+    attach_selenium_processes,
+    check_in_own_session,
+    prepare_selenium_launch,
+    selenium_in_own_session,
+)
 from graftpunk.chrome import get_chrome_version
+from graftpunk.chrome_orphans import owner_switch
 from graftpunk.config import get_settings
 from graftpunk.exceptions import ChromeDriverError
 from graftpunk.logging import get_logger
@@ -49,6 +57,48 @@ def _get_platform_fingerprint() -> tuple[str, str, str]:
         return ("Linux x86_64", "Google Inc.", "Mesa Intel(R) UHD Graphics")
 
 
+def _driver_pids(driver: uc.Chrome) -> list[int]:
+    """The pids of *driver*'s chromedriver and Chrome, as undetected-chromedriver records them."""
+    pids = [
+        getattr(getattr(getattr(driver, "service", None), "process", None), "pid", None),
+        getattr(driver, "browser_pid", None),
+    ]
+    return [pid for pid in pids if isinstance(pid, int)]
+
+
+def _apply_stealth(driver: uc.Chrome) -> None:
+    """Size the first window and inject selenium-stealth's overrides."""
+    # Resize the initial window (decoy tab) to match login window size
+    # undetected-chromedriver opens a blank window that goes to google.com
+    # We make it the same size as our actual login window instead of full screen
+    driver.set_window_size(1920, 1080)
+    driver.set_window_position(0, 0)
+
+    # Note: We do NOT inject CDP code to hide navigator.webdriver
+    # On Chrome 143+, navigator.webdriver is set at a level that JavaScript cannot override
+    LOG.info("skipping_cdp_injection_chrome_143_limitation")
+
+    # Get platform-specific fingerprint
+    plat, webgl_vendor, renderer = _get_platform_fingerprint()
+    LOG.info(
+        "using_platform_fingerprint",
+        platform=plat,
+        vendor=webgl_vendor,
+        renderer=renderer,
+    )
+
+    # Apply selenium-stealth for additional JavaScript-level anti-detection
+    stealth(
+        driver,
+        languages=["en-US", "en"],
+        vendor=webgl_vendor,
+        platform=plat,
+        webgl_vendor=webgl_vendor,
+        renderer=renderer,
+        fix_hairline=True,
+    )
+
+
 def create_stealth_driver(
     headless: bool = False,
     profile_dir: Path | None = None,
@@ -67,6 +117,14 @@ def create_stealth_driver(
         performance_log: Have ChromeDriver keep Chrome's performance log, which
             the Selenium observe capture reads its network events from.
             ChromeDriver keeps it only when the capability is set at launch.
+
+    With graftpunk's SIGTERM and SIGHUP handlers installed (always in ``gp``;
+    in a program, after ``install_termination_cleanup()``), chromedriver and
+    Chrome start in a session of their own and are registered with those
+    handlers (#335). ``driver.quit()`` still ends both; call
+    :func:`graftpunk.browser_launch.release_selenium_processes` after it to
+    leave the handlers' registry at once rather than when the driver object
+    is collected.
 
     Returns:
         Configured undetected Chrome driver with stealth settings applied.
@@ -103,44 +161,31 @@ def create_stealth_driver(
         LOG.warning("chrome_version_detection_failed", error=str(exc))
         chrome_version = None
 
-    # Create undetected driver
-    # Pass user_data_dir directly (recommended by undetected-chromedriver)
-    # Pass version_main to ensure matching ChromeDriver is used
-    driver = uc.Chrome(
-        options=options,
-        user_data_dir=str(profile_dir),
-        version_main=chrome_version,
-    )
+    # With graftpunk's termination handlers installed (the gp CLI, or a
+    # program that called install_termination_cleanup()), chromedriver and
+    # Chrome start in a session of their own, so a terminal's Ctrl+C reaches
+    # only Python, and a login recorded with --observe full still takes its
+    # screenshot and reads its network log through chromedriver (#335). Both
+    # carry the owner marker then, so the orphan sweep can find them if
+    # Python dies without ending them. Without the handlers nothing would end
+    # them on a hangup, so they launch in Python's group as before.
+    own_session = prepare_selenium_launch()
+    if own_session:
+        options.add_argument(owner_switch())
 
-    # Resize the initial window (decoy tab) to match login window size
-    # undetected-chromedriver opens a blank window that goes to google.com
-    # We make it the same size as our actual login window instead of full screen
-    driver.set_window_size(1920, 1080)
-    driver.set_window_position(0, 0)
+    with selenium_in_own_session() if own_session else nullcontext() as launch:
+        # Pass user_data_dir directly (recommended by undetected-chromedriver)
+        # Pass version_main to ensure matching ChromeDriver is used
+        driver = uc.Chrome(
+            options=options,
+            user_data_dir=str(profile_dir),
+            version_main=chrome_version,
+        )
+        if launch is not None:
+            attach_selenium_processes(driver, launch.processes)
+            check_in_own_session(_driver_pids(driver))
+        _apply_stealth(driver)
+        # Inside the block, so a failure here still ends both processes.
+        LOG.info("stealth_driver_created", navigator_webdriver_limitation=True)
 
-    # Note: We do NOT inject CDP code to hide navigator.webdriver
-    # On Chrome 143+, navigator.webdriver is set at a level that JavaScript cannot override
-    LOG.info("skipping_cdp_injection_chrome_143_limitation")
-
-    # Get platform-specific fingerprint
-    plat, webgl_vendor, renderer = _get_platform_fingerprint()
-    LOG.info(
-        "using_platform_fingerprint",
-        platform=plat,
-        vendor=webgl_vendor,
-        renderer=renderer,
-    )
-
-    # Apply selenium-stealth for additional JavaScript-level anti-detection
-    stealth(
-        driver,
-        languages=["en-US", "en"],
-        vendor=webgl_vendor,
-        platform=plat,
-        webgl_vendor=webgl_vendor,
-        renderer=renderer,
-        fix_hairline=True,
-    )
-
-    LOG.info("stealth_driver_created", navigator_webdriver_limitation=True)
     return driver
