@@ -729,9 +729,11 @@ set is `HttpOnly` and `Secure` (`yes`, `no`, or `unknown`), `SameSite` (`Lax`,
 is templated and collapsed into its endpoint family as an endpoint's path is
 (`/p/alice2` beside the family `/p/{p_id}/reviews` prints `/p/{p_id}`), `-`
 when not set or empty, `unknown` when it does not start with `/`, and
-`(not shown)` when it holds anything outside a plain path (a `,`, `?`, `#`, `=`,
-`;`, quote, or whitespace), since a comma-folded second cookie or a query can
-carry a value there. `expiry` is `session` with neither `Max-Age` nor
+`(not shown)` when it is not a plain path: one leading `/`, then letters,
+digits, `.`, `_`, `~`, `-`, and single `/`. A `,`, `?`, `#`, `=`, `;`, `%`, `:`,
+`@`, `+`, quote, whitespace, or `//` gives `(not shown)`, since a comma-folded
+second cookie, a query, or a user or host, plain or percent-encoded, can carry a
+value there. `expiry` is `session` with neither `Max-Age` nor
 `Expires`, `persistent`, `past` when `Max-Age` is 0 or less or `Expires` is no
 later than the request (the response deletes the cookie), or `unknown`.
 `Max-Age` wins over `Expires`, as in RFC 6265. The attributes are read from
@@ -764,9 +766,11 @@ out. A cookie name prints only when it passes the name gate the graft skill's
 `har-facts.py` prints names through (`graftpunk.har.paths.printable_name`, held
 equal to the script's copy by a test), set or only sent: a name that holds an
 id or otherwise reads as a value (a short random token a foreign HAR records
-as a name) is left out of the section, `cookie_facts`, and `--json`'s
-`cookies`, and the section ends with a count (`1 cookie whose name reads as a
-value is not shown`), which `--json` carries as `cookie_names_not_shown`. The
+as a name) is left out of the section, `cookie_facts`, `--json`'s `cookies`,
+the Login section's `set_cookie` steps and `--json`'s `login`, the Tokens
+section's cookie candidates and `--json`'s `tokens`, and the `token_config` a
+generated plugin gets, and the section ends with a count (`1 cookie whose name
+reads as a value is not shown`), which `--json` carries as `cookie_names_not_shown`. The
 fixture safety net (`flagged_names`) still holds every name. The words are those
 of the graft skill's `har-facts.py cookies`, which also prints the `Domain` and
 each response's full URL, and says `never set in this recording`, since it
