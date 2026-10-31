@@ -1438,12 +1438,23 @@ class TestFlaggedNamesAreJudgedByTheirValues:
     def _sidecar(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: object
     ) -> tuple[Path, dict]:
-        """gp's sidecar for one `GET /orders/1001` capture of *body*, the request
-        sending `id` and `myshop_session` as a cached session does (no response sets
-        them), copied into a fixtures tree. Returns the tree and the sidecar."""
+        """gp's sidecar for one `GET /orders/1001` capture of *body* (a string as
+        written, an HTML page; anything else as JSON), the request sending `id` and
+        `myshop_session` as a cached session does (no response sets them), copied
+        into a fixtures tree. Returns the tree and the sidecar."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
-        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body=json.dumps(body))
+        if isinstance(body, str):
+            order = _entry(
+                "GET",
+                "https://api.myshop.example.com/orders/1001",
+                content_type="text/html",
+                body=body,
+            )
+        else:
+            order = _entry(
+                "GET", "https://api.myshop.example.com/orders/1001", body=json.dumps(body)
+            )
         order["request"]["cookies"] = [
             {"name": "id", "value": _OPAQUE_ID},
             {"name": "myshop_session", "value": _SESSION_VALUE},
@@ -1465,6 +1476,17 @@ class TestFlaggedNamesAreJudgedByTheirValues:
         assert sidecar["flagged_names"] == ["id", "myshop_session"]
         assert sidecar["checked_names"] == []
         (tree / "get_orders_{order_id}.json").write_text(json.dumps({"id": 7, "total": "1.00"}))
+        assert check_fixtures_tree(tree).problems == ()
+
+    def test_an_empty_hidden_input_named_id_passes_with_its_attributes_in_any_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        page = '<form><input value="" type="hidden" name="id"><p>Order 1001</p></form>'
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, page)
+        assert sidecar["checked_names"] == []
+        (meta,) = tree.glob("*.meta.json")
+        fixture = tree / meta.name.removesuffix(".meta.json")
+        fixture.write_text(page.replace("1001", "7"))
         assert check_fixtures_tree(tree).problems == ()
 
     def test_the_same_fixture_under_the_schema_2_sidecar_still_fails_with_the_way_out(
@@ -1530,6 +1552,11 @@ class TestFlaggedNamesAreJudgedByTheirValues:
             {"next": "/orders?id=918273645546372819&page=2"},
             {"id": {"Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf": True}, "n": 1},
             {"id": 827364918273649182736491},
+            "<ul><li>id: <code>Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</code></li><li>n: 1</li></ul>",
+            "<script>if (id == 'Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf') go();</script>",
+            '<form><textarea name="id" value="">Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</textarea></form>',
+            '<ol><li itemprop="id" value="1">Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</li></ol>',
+            '<input name="id" value="" data-token="Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf">',
         ],
         ids=[
             "js-call",
@@ -1541,6 +1568,11 @@ class TestFlaggedNamesAreJudgedByTheirValues:
             "query-digits",
             "opaque-key",
             "long-number",
+            "a-label-and-a-colon",
+            "a-comparison",
+            "a-textarea-with-a-value-attribute",
+            "a-list-item-with-a-value-attribute",
+            "another-attribute-of-the-named-element",
         ],
     )
     def test_a_value_beside_the_name_in_a_shape_not_read_keeps_the_name_checked(
@@ -1552,7 +1584,9 @@ class TestFlaggedNamesAreJudgedByTheirValues:
         schema 2 sidecar."""
         tree, sidecar = self._sidecar(tmp_path, monkeypatch, body)
         assert sidecar["checked_names"] == ["id"]
-        (tree / "get_orders_{order_id}.json").write_text(json.dumps([body, "edited"]))
+        (meta,) = tree.glob("*.meta.json")
+        fixture = tree / meta.name.removesuffix(".meta.json")
+        fixture.write_text(json.dumps([body, "edited"]))
         (problem,) = check_fixtures_tree(tree).problems
         assert "contains the flagged name 'id'" in problem
 

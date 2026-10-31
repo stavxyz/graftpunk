@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import itertools
 import json
 import subprocess
 import time
@@ -279,6 +280,25 @@ class TestCheckedNamesOfValuesUnderTheName:
             json.dumps({"log": f'csrftoken: \\"{_ROTATED}\\"'}),
             f"csrftoken='{_ROTATED}",
             f'<input name="csrftoken" value="Ann Lee"><input name="csrftoken" value="{_ROTATED}">',
+            f"<li>csrftoken: <code>{_ROTATED}</code></li>",
+            f"<p><b>csrftoken:</b> {_ROTATED}</p>",
+            f"<dl><dt>csrftoken:</dt><dd>{_ROTATED}</dd></dl>",
+            f"<tr><td>csrftoken:</td><td>{_ROTATED}</td></tr>",
+            f"<pre>csrftoken:\n</pre><pre>{_ROTATED}</pre>",
+            f"<p>csrftoken=<b>{_ROTATED}</b></p>",
+            f'<script>if (csrftoken == "{_ROTATED}") go();</script>',
+            f"<script>ok = csrftoken === '{_ROTATED}';</script>",
+            f'<script>f = csrftoken => "{_ROTATED}";</script>',
+            f"csrftoken= {_ROTATED}",
+            f'<script>var t = "{_ROTATED}"; document.cookie = "csrftoken=" + t;</script>',
+            f'<a title="csrftoken=abc"{_ROTATED}">',
+            f'<form><textarea name="csrftoken" value="">{_ROTATED}</textarea></form>',
+            f'<ol><li id="csrftoken" value="1">{_ROTATED}</li></ol>',
+            f'<button name="csrftoken" value="1">{_ROTATED}</button>',
+            f'<input name="csrftoken" value="" data-token="{_ROTATED}">',
+            f'<input data-token="{_ROTATED}" value="" name="csrftoken"/>',
+            f'<div csrftoken="1" class="a">{_ROTATED}</div>',
+            '{"csrftoken": 7, "n": 1',
         ],
         ids=[
             "js-call",
@@ -302,6 +322,25 @@ class TestCheckedNamesOfValuesUnderTheName:
             "a-doubly-escaped-value",
             "an-unclosed-quote",
             "a-second-named-element",
+            "a-label-and-a-colon-before-a-tag",
+            "a-label-and-a-colon-in-bold",
+            "a-colon-in-a-definition-term",
+            "a-colon-in-a-table-cell",
+            "a-colon-before-a-line-break",
+            "an-equals-sign-before-a-tag",
+            "a-comparison",
+            "a-strict-comparison",
+            "an-arrow-function",
+            "a-space-after-the-equals-sign",
+            "a-concatenation-after-a-pair",
+            "a-quote-run-on-into-a-token",
+            "a-textarea-with-a-value-attribute",
+            "a-list-item-with-a-value-attribute",
+            "a-button-with-a-value-attribute",
+            "another-attribute-of-the-named-element",
+            "another-attribute-first-and-self-closing",
+            "an-attribute-named-by-the-name",
+            "an-object-left-open",
         ],
     )
     def test_an_occurrence_the_reader_cannot_pair_with_a_value_keeps_it_checked(
@@ -334,6 +373,14 @@ class TestCheckedNamesOfValuesUnderTheName:
             '<script>var s = "{\\"csrftoken\\": \\"en\\"}";</script>',
             f'<script>window.csrftoken = "{_ROTATED}";</script>',
             f'{{"x-csrftoken": "{_ROTATED}"}}',
+            '{"next": "/o?csrftoken=2"}',
+            '<a href="/o?csrftoken=en&amp;page=2" class="x">',
+            '<script>var name = "csrftoken=";</script>',
+            '<input type="hidden" name="csrftoken" value="">',
+            '<input value="" type="hidden" name="csrftoken">',
+            '<input name="csrftoken" value="" type="hidden"/>',
+            '<meta content="Ann Lee" itemprop="csrftoken" />',
+            '<script>window.s = {"csrftoken": "en", "n": 1};</script>',
         ],
         ids=[
             "number",
@@ -354,6 +401,14 @@ class TestCheckedNamesOfValuesUnderTheName:
             "json-in-a-script-string",
             "not-a-whole-name-after-a-dot",
             "not-a-whole-name-after-a-hyphen",
+            "a-query-in-a-json-string",
+            "a-query-in-an-attribute",
+            "an-empty-pair-in-a-script-string",
+            "a-hidden-input",
+            "a-hidden-input-named-last",
+            "a-self-closing-input",
+            "a-self-closing-meta",
+            "json-in-a-script",
         ],
     )
     def test_a_name_holding_only_form_state_numbers_or_booleans_is_not_checked(
@@ -375,17 +430,52 @@ class TestCheckedNamesOfValuesUnderTheName:
         assert checked_names_of(values, honest) == ()
         assert checked_names_of(values, opaque) == ("csrftoken",)
 
-    def test_the_cost_grows_linearly_with_the_body(self) -> None:
-        """Each occurrence is read once, and one inside a value already read is
-        not read again, so many or nested occurrences stay linear."""
+    @pytest.mark.parametrize(
+        "attributes",
+        list(itertools.permutations(['type="hidden"', 'name="csrftoken"', 'value=""'])),
+    )
+    @pytest.mark.parametrize("end", [">", "/>", " />"])
+    def test_a_hidden_input_is_read_with_its_attributes_in_any_order(
+        self, attributes: tuple[str, ...], end: str
+    ) -> None:
+        values = {"csrftoken": frozenset({"Recorded55Xc2Lp9"})}
+        assert checked_names_of(values, f"<input {' '.join(attributes)}{end}") == ()
+
+    @pytest.mark.parametrize(
+        "body",
+        ['<div id="main" class="x"></div>', '<div class="x" id="main"></div>', '<br id="main"/>'],
+    )
+    def test_an_attribute_named_by_the_name_keeps_it_checked_wherever_it_is(
+        self, body: str
+    ) -> None:
+        """No reader reads an attribute's name, so its place in the tag does not
+        change the verdict."""
+        assert checked_names_of({"id": frozenset({_VALUE})}, body) == ("id",)
+
+    @pytest.mark.parametrize(
+        ("head", "unit"),
+        [
+            (
+                "",
+                '<input value="Ann Lee" name="csrftoken"> {"csrftoken": [1, {"csrftoken": 2}]} '
+                '"/a?csrftoken=en&id=7" <meta content="" property="csrftoken"/> '
+                '<script>var s = "{\\"csrftoken\\": \\"en\\"}";</script> ',
+            ),
+            ('{"csrftoken": 1} ', '{"a": '),
+            ('{"csrftoken": 1} ', '{"a": [1, "x'),
+            ('{"csrftoken": 1} ', 'a\\"'),
+        ],
+        ids=["read", "objects-left-open", "strings-left-open", "escaped-quotes-left-open"],
+    )
+    def test_the_cost_grows_linearly_with_the_body(self, head: str, unit: str) -> None:
+        """Each occurrence is read once, one inside a value already read is not
+        read again, a quote inside a string already parsed does not start
+        another, and failed JSON parses stop once they have scanned a few times
+        the body's length, so many, nested or unclosed values stay linear."""
         values = {"csrftoken": frozenset({"Recorded55Xc2Lp9"}), "id": frozenset({_VALUE})}
-        unit = (
-            '<input name="csrftoken" value="Ann Lee"> {"csrftoken": [1, {"csrftoken": 2}]} '
-            "/a?csrftoken=en&id=7 "
-        )
 
         def cost(n: int) -> float:
-            body = unit * n
+            body = head + unit * n
             best = float("inf")
             for _ in range(3):
                 start = time.process_time()
