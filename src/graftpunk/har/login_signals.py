@@ -302,9 +302,9 @@ class _ElementReader(HTMLParser):
         for name, value in attrs:
             # A browser keeps the first of a duplicated attribute.
             values.setdefault(name, value or "")
-        if tag == "input" and _ONE_TIME_CODE in _ASCII_WHITESPACE_RE.split(
-            values.get("autocomplete", "").lower()
-        ):
+        # Split on any whitespace, wider than the spec's ASCII whitespace: a code
+        # page missed here passes an MFA page as logged in.
+        if tag == "input" and _ONE_TIME_CODE in values.get("autocomplete", "").lower().split():
             self.asks_for_a_code = True
         self.elements.append(
             _Element(

@@ -368,6 +368,7 @@ class TestSuccessCandidates:
             ("bogus one-time-code", True),
             ("section-x one-time-code", True),
             ("ONE-TIME-CODE\tsms", True),
+            ("one-time-code sms", True),
             ("one-time-codes", False),
             ("otp", False),
         ],
