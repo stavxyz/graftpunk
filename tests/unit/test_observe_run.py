@@ -134,6 +134,21 @@ class TestSaveObserveRun:
         assert (storage.run_dir / "network.har").exists()
 
     @pytest.mark.asyncio
+    async def test_the_saved_line_counts_the_dialogs_answered(self, tmp_path: Path) -> None:
+        """#320: a headless nodriver recording says how many dialogs it answered."""
+        from structlog.testing import capture_logs
+
+        storage = ObserveStorage(tmp_path, "sess", "run5")
+        backend = _backend()
+        backend.dialogs_answered = 3
+
+        with capture_logs() as logs:
+            await save_observe_run(storage, backend, "go")
+
+        (saved,) = [e for e in logs if e["event"] == "observe_run_saved"]
+        assert saved["dialogs_answered"] == 3
+
+    @pytest.mark.asyncio
     async def test_console_none_is_silent(self, tmp_path: Path) -> None:
         storage = ObserveStorage(tmp_path, "sess", "run4")
         await save_observe_run(storage, _backend(), "go")  # no console -> no error

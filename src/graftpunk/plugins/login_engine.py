@@ -521,6 +521,7 @@ def _start_login_capture(
     observe_mode: str,
     get_tab: Any = None,
     session_name: str | None = None,
+    headless: bool = False,
 ) -> tuple[Any, Any]:
     """Create the capture backend for a login run.
 
@@ -530,7 +531,9 @@ def _start_login_capture(
     storage is an ``ObserveStorage`` under the OPERATING session name --
     ``session_name`` when the CLI computed one (``base@label``), else the
     plugin's base name -- so ``gp --observe=full <plugin> login`` files the run
-    where the reader looks for that account (#151).
+    where the reader looks for that account (#151). A full capture of a
+    *headless* login accepts each JavaScript dialog the pages open, as a
+    headless ``gp observe go`` does (#320).
     """
     from graftpunk.observe.capture import create_capture_backend
 
@@ -566,6 +569,7 @@ def _start_login_capture(
         driver,
         get_tab=get_tab,
         bodies_dir=storage.run_dir / "bodies",
+        answer_dialogs=headless,
     )
     LOG.info(
         "login_observe_capture_started",
@@ -778,6 +782,7 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                 observe_mode,
                 get_tab=lambda: tab,
                 session_name=session_name,
+                headless=run_headless,
             )
             await _header_capture.start_capture_async()
             # After the capture: its start enables the Network domain these events need.

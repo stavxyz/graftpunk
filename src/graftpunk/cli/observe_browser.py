@@ -229,6 +229,9 @@ async def setup_observe_session(
             # renders is in no recorded HTML response (#267).
             dom_snapshots_dir=storage.run_dir / "snapshots",
             failure_step=failure_step,
+            # Nobody can answer a dialog in a headless run; in a visible one the
+            # user does (#320).
+            answer_dialogs=headless,
         )
         await backend.start_capture_async()
 

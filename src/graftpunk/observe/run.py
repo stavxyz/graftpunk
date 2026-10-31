@@ -1254,10 +1254,13 @@ async def save_observe_run(
     ):
         say(f"[green]Console logs saved:[/green] {len(console_logs)} entries")
 
+    # A headless nodriver recording answers the page's JavaScript dialogs (#320).
+    dialogs = getattr(backend, "dialogs_answered", None)
     LOG.info(
         "observe_run_saved",
         run_dir=str(storage.run_dir),
         har_entries=len(har_entries),
         console_logs=len(console_logs),
+        **({"dialogs_answered": dialogs} if isinstance(dialogs, int) else {}),
     )
     say(f"\n[bold]Observe run:[/bold] {storage.run_dir}")
