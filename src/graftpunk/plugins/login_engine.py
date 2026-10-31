@@ -1014,11 +1014,18 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         browser_session = BrowserSession(
             backend="selenium", headless=run_headless, observe_mode=observe_mode
         )
-        # The operating name the CLI computed, so the write-back and any
-        # observe run land under this account's session (#151).
-        browser_session.session_name = session_name or plugin.session_name
-        # The observe HAR carries the login POST; scrub the credentials.
-        browser_session.observe_redact = Redaction.from_credentials(credentials)
+        # The driver is up from here on, and a Ctrl+C no longer reaches its
+        # chromedriver and Chrome (#335): until the with block owns them,
+        # anything that leaves this function quits them.
+        try:
+            # The operating name the CLI computed, so the write-back and any
+            # observe run land under this account's session (#151).
+            browser_session.session_name = session_name or plugin.session_name
+            # The observe HAR carries the login POST; scrub the credentials.
+            browser_session.observe_redact = Redaction.from_credentials(credentials)
+        except BaseException:
+            browser_session.quit()
+            raise
         with browser_session as session:
             # Header capture for role extraction: reuse the session's observe
             # capture when it has one, else start a lightweight one.

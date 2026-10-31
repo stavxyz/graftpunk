@@ -228,11 +228,18 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                     headless=headless, performance_log=observe_mode != "off"
                 )
 
-                # Initialize requestium Session without creating a new driver
-                # We'll override the driver property to use our stealth driver
-                kwargs_minimal = kwargs.copy()
-                kwargs_minimal["webdriver_path"] = None  # Skip driver creation
-                super().__init__(*args, **kwargs_minimal)
+                try:
+                    # Initialize requestium Session without creating a new driver
+                    # We'll override the driver property to use our stealth driver
+                    kwargs_minimal = kwargs.copy()
+                    kwargs_minimal["webdriver_path"] = None  # Skip driver creation
+                    super().__init__(*args, **kwargs_minimal)
+                except BaseException:
+                    # A Ctrl+C no longer reaches chromedriver and Chrome
+                    # (#335), so a session that failed to come up quits them.
+                    self._webdriver = self._stealth_driver
+                    self._quit_selenium()
+                    raise
 
                 # Replace requestium's driver with our stealth driver
                 self._webdriver = self._stealth_driver
@@ -611,20 +618,34 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         self._write_observe_data()
         LOG.info("observe_capture_stopped")
 
+    # Since 1.31.1 (nodriver) and 1.32.1 (selenium) a Ctrl+C reaches Python
+    # only, not Chrome, so every way out of the four methods below quits the
+    # browser, a second Ctrl+C during the observe save included.
+
     def __enter__(self) -> "BrowserSession":
-        self._start_observe()
+        try:
+            self._start_observe()
+        except BaseException:
+            self.quit()
+            raise
         return self
 
     def __exit__(self, *args: object) -> None:
         # Same shape as requests.Session.__exit__(self, *args); the first
         # positional is the exception type (or None).
         exc_type = cast("type[BaseException] | None", args[0] if args else None)
-        self._stop_observe(exc_type)
-        self.quit()
+        try:
+            self._stop_observe(exc_type)
+        finally:
+            self.quit()
 
     async def __aenter__(self) -> "BrowserSession":
         await self.start_async()
-        await self._start_observe_async()
+        try:
+            await self._start_observe_async()
+        except BaseException:
+            await self._quit_async()
+            raise
         return self
 
     async def __aexit__(
@@ -633,8 +654,10 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         exc_val: BaseException | None,
         exc_tb: Any,
     ) -> None:
-        await self._stop_observe_async(exc_type)
-        await self._quit_async()
+        try:
+            await self._stop_observe_async(exc_type)
+        finally:
+            await self._quit_async()
 
     def _quit_selenium(self) -> None:
         """Stop the selenium WebDriver if present."""

@@ -531,6 +531,161 @@ class TestAPlainSeleniumLogin:
         self._assert_ended(fake_uc.created[0])
 
 
+class _InterruptedCapture:
+    """An observe capture whose error screenshot meets a second Ctrl+C."""
+
+    def take_screenshot_sync(self) -> Any:
+        raise KeyboardInterrupt
+
+    def stop_capture(self) -> None:
+        pass
+
+    async def stop_capture_async(self) -> None:
+        pass
+
+
+class TestEveryWayOutOfASessionEndsTheBrowser:
+    """A Ctrl+C no longer ends chromedriver and Chrome by itself, so each way a
+    session can be left before its quit, or before its ``with`` owns it, has
+    to end them."""
+
+    def test_a_second_ctrl_c_during_the_observe_save(
+        self, handlers_installed: None, fake_uc: type[_FakeUcChrome]
+    ) -> None:
+        from graftpunk.session import BrowserSession
+
+        with pytest.raises(KeyboardInterrupt), BrowserSession(
+            backend="selenium", headless=True
+        ) as session:
+            session._capture = _InterruptedCapture()
+            raise KeyboardInterrupt  # the first Ctrl+C
+
+        TestAPlainSeleniumLogin._assert_ended(fake_uc.created[0])
+
+    def test_a_second_ctrl_c_during_the_async_observe_save(
+        self, handlers_installed: None, fake_uc: type[_FakeUcChrome]
+    ) -> None:
+        import asyncio
+
+        from graftpunk.session import BrowserSession
+
+        async def started() -> None:
+            pass
+
+        async def login() -> None:
+            session = BrowserSession(backend="selenium", headless=True)
+            session.start_async = started  # type: ignore[method-assign]
+            async with session:
+                session._capture = _InterruptedCapture()
+                raise KeyboardInterrupt  # the first Ctrl+C
+
+        with pytest.raises(KeyboardInterrupt):
+            asyncio.run(login())
+
+        TestAPlainSeleniumLogin._assert_ended(fake_uc.created[0])
+
+    def test_a_ctrl_c_while_the_observe_capture_starts(
+        self,
+        handlers_installed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_uc: type[_FakeUcChrome],
+    ) -> None:
+        """``__exit__`` never runs when ``__enter__`` raises."""
+        from graftpunk.session import BrowserSession
+
+        def interrupted(self: Any) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(BrowserSession, "_start_observe", interrupted)
+
+        with pytest.raises(KeyboardInterrupt), BrowserSession(backend="selenium", headless=True):
+            pass
+
+        TestAPlainSeleniumLogin._assert_ended(fake_uc.created[0])
+
+    def test_a_ctrl_c_while_the_async_observe_capture_starts(
+        self,
+        handlers_installed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_uc: type[_FakeUcChrome],
+    ) -> None:
+        import asyncio
+
+        from graftpunk.session import BrowserSession
+
+        async def started() -> None:
+            pass
+
+        async def interrupted(self: Any) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(BrowserSession, "_start_observe_async", interrupted)
+
+        async def login() -> None:
+            session = BrowserSession(backend="selenium", headless=True)
+            session.start_async = started  # type: ignore[method-assign]
+            async with session:
+                pass
+
+        with pytest.raises(KeyboardInterrupt):
+            asyncio.run(login())
+
+        TestAPlainSeleniumLogin._assert_ended(fake_uc.created[0])
+
+    def test_a_requestium_session_that_fails_to_come_up(
+        self,
+        handlers_installed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_uc: type[_FakeUcChrome],
+    ) -> None:
+        """The driver is up before requestium's ``__init__`` runs."""
+        import requestium
+
+        from graftpunk.session import BrowserSession
+
+        def interrupted(self: Any, *args: Any, **kwargs: Any) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(requestium.Session, "__init__", interrupted)
+
+        with pytest.raises(KeyboardInterrupt):
+            BrowserSession(backend="selenium", headless=True)
+
+        TestAPlainSeleniumLogin._assert_ended(fake_uc.created[0])
+
+    def test_a_ctrl_c_in_a_login_before_its_with_block(
+        self,
+        handlers_installed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_uc: type[_FakeUcChrome],
+    ) -> None:
+        """The login engine sets the session's name and redaction between the
+        launch and the ``with``."""
+        from graftpunk.plugins import login_engine
+        from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
+
+        class Plugin(SitePlugin):
+            site_name = "probe"
+            session_name = "probe"
+            help_text = "t"
+            base_url = "https://example.invalid"
+
+        Plugin.login_config = LoginConfig(
+            steps=[LoginStep(fields={"username": "#u"}, submit="#s")], url="/login"
+        )
+
+        def interrupted(credentials: Any) -> Any:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(login_engine.Redaction, "from_credentials", interrupted)
+        login = login_engine._generate_selenium_login(Plugin())
+
+        with pytest.raises(KeyboardInterrupt):
+            login({"username": "someone"}, headless=True)
+
+        TestAPlainSeleniumLogin._assert_ended(fake_uc.created[0])
+
+
 _FAKE_CHROMEDRIVER = """#!{python}
 import subprocess, sys, time
 subprocess.Popen([sys.executable, "-c", {sleep!r}, "--remote-debugging-port=0"])
@@ -658,6 +813,34 @@ class TestTheStandardSeleniumPath:
         assert _exited_within(seen["service"].process, 10) == -signal.SIGTERM
         assert _gone_within(seen["chrome"], 10)
         assert seen["service"]._graftpunk_processes not in signals.live_browsers()
+
+    def test_a_signal_while_the_driver_starts_ends_the_chrome_chromedriver_spawned(
+        self,
+        handlers_installed: None,
+        armed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_chromedriver: dict[str, Any],
+    ) -> None:
+        """Before ``webdriver.Chrome`` returns, Chrome's pid is not yet held, and a
+        SIGTERM to chromedriver alone leaves its Chrome running: the handler
+        looks up chromedriver's children itself."""
+        from graftpunk.backends.selenium import SeleniumBackend
+
+        seen = fake_chromedriver
+        fake = _fake_webdriver(seen)
+
+        class SignaledWhileStarting(fake):  # type: ignore[misc, valid-type]
+            def __init__(self, service: Any, options: Any) -> None:
+                super().__init__(service, options)
+                service._graftpunk_processes._terminate_for_signal()
+
+        monkeypatch.setattr("selenium.webdriver.Chrome", SignaledWhileStarting)
+        backend = SeleniumBackend(use_stealth=False, headless=True)
+        backend.start()
+
+        assert _exited_within(seen["service"].process, 10) == -signal.SIGTERM
+        assert _gone_within(seen["chrome"], 10)
+        backend._driver._graftpunk_processes.release()
 
     def test_a_chromedriver_left_in_this_session_is_logged_with_what_it_costs(
         self,
