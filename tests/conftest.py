@@ -1,6 +1,7 @@
 """Pytest configuration for graftpunk tests."""
 
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -55,6 +56,12 @@ os.environ.setdefault(
 _SESSION_HOME = tempfile.mkdtemp(prefix="graftpunk-test-home-")
 os.environ["HOME"] = _SESSION_HOME
 os.environ["USERPROFILE"] = _SESSION_HOME
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Remove the session HOME. pytest runs this hook in the controller and in
+    each xdist worker, each of which made its own."""
+    shutil.rmtree(_SESSION_HOME, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
