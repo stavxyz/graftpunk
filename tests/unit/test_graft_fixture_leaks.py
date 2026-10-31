@@ -1094,6 +1094,16 @@ def test_a_set_cookie_header_of_several_lines_is_read_line_by_line(
     assert lines == ["the recorded value of flagged 'id' is still in the fixture (line 1)"]
 
 
+def test_a_lower_case_set_cookie_header_is_read(tmp_path: Path) -> None:
+    """HTTP/2 lowercases header names, and the response's cookie array is empty,
+    so the value is only in the lower-case header."""
+    headers = [{"name": "set-cookie", "value": "id=LowerCase8Kd; Path=/"}]
+    lines = _run_with_page(
+        tmp_path, "token LowerCase8Kd end", {"mimeType": "text/plain"}, headers, {}
+    )
+    assert lines == ["the recorded value of flagged 'id' is still in the fixture (line 1)"]
+
+
 def test_a_quoted_cookie_value_is_found_without_its_quotes(tmp_path: Path) -> None:
     headers = [{"name": "Set-Cookie", "value": 'id="Quoted9Value7"; Path=/'}]
     lines = _run_with_page(

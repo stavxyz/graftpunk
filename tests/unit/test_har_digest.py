@@ -5067,6 +5067,19 @@ class TestFlaggedValuesOf:
             {"OnAppPath88", "OnRoot66"}
         )
 
+    def test_a_cookie_named_as_a_header_token_too_is_not_known(self, tmp_path: Path) -> None:
+        """A request header token and a cookie of the same name: the header's
+        value can differ from every cookie value the HAR holds."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"X-CSRF-Token": "Hd5Ks0Gf2Lq8", "Cookie": "X-CSRF-Token=Hd5Ks0Gf2Lq8"},
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert ("header", "X-CSRF-Token") in [(t.kind, t.name) for t in result.tokens]
+        assert flagged_values_of(result, parse_har_file(har).entries)["X-CSRF-Token"] is None
+
 
 class TestEveryNamePositionGoesThroughTheIdRule:
     """Response keys, header names, and cookie names go through
