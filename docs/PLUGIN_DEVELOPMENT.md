@@ -2332,15 +2332,22 @@ cookie's recorded values are the HAR's cookie arrays and every `Cookie` and
 `Set-Cookie` header: what the recorded headers carried, not every value the
 cookie held, since a token rotated or set by a script after the last request
 that sent the cookie is in none of them. So a cookie name is left out only when
-every occurrence of it in the captured body is a name-value pair the check reads
-(`"name": v` in JSON, `name=v` in a query or form body, `name="v"` as an HTML
-attribute, or an HTML element whose `name`, `id`, `property`, `itemprop` or
-`http-equiv` is the name, with a `value` or `content`) and every value read so
-holds nothing: a boolean, null, empty, form state by the rule above, a number
+every occurrence of it in the captured body is read by one of three strict
+readers: a key of a JSON object that parses where it starts in the body (or in
+the text of a JSON string there), read with its parsed value; a query or form
+pair `name=v` at the start of the text or after `?`, `&`, `;` or a quote, with
+`v` empty or a run of URL characters ending at `&`, `#`, `;`, the end, or a quote
+that ends its string; or a void `input`, `meta`, `param` or `link` element, or a
+self-closing tag, with a `value` or `content` attribute, whose `name`, `id`,
+`property`, `itemprop` or `http-equiv` is the name, in any attribute order. Every
+value read so must hold nothing (for an element, every attribute value but the
+naming one): a boolean, null, empty, form state by the rule above, a number
 whose text is form state, or an object or array whose keys and values all hold
-nothing. Any other mention of the name (`Cookies.set('csrftoken', ...)`, a
-`{"name": "csrftoken", "value": ...}` pair, an element's text, a table cell)
-keeps it in. An honest `"id": 7` or `"user": "alice"` leaves the name out, while
+nothing. Any other mention of the name (`csrftoken: <code>...</code>` in a page,
+`Cookies.set('csrftoken', ...)`, a `{"name": "csrftoken", "value": ...}` pair, an
+attribute named `csrftoken`, a `textarea` or other element that holds text, a
+table cell) keeps it in, so a cookie named `id` stays in for nearly every HTML
+capture, where `id="..."` names an attribute. An honest `"id": 7` or `"user": "alice"` leaves the name out, while
 `"csrftoken": "<an opaque token>"` and `"user": {"email": "ann@myshop.example"}`
 keep it in. The values are compared in
 memory and never written; the list is names only. Where the name stays checked

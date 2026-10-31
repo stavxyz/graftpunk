@@ -1311,20 +1311,36 @@ cookie name out only when every occurrence of the name in the capture's body is
 accounted for. It finds each whole-name occurrence the way the fixtures check
 finds a flagged name (without regard to case, so `x-name` and `window.name` are
 not it), in the body as written and in each decoded form above, and counts one
-as accounted for only when it is a name-value pair it parses: the name followed
-by `:` or `=` and a value (`"name": v` in JSON or a script's object, `name=v` in
-a query or form body, `name="v"` as an HTML attribute), or the `name`, `id`,
-`property`, `itemprop` or `http-equiv` of an HTML element with a `value` or
-`content`. Every value read so must hold nothing: a boolean, null, empty, a
+as accounted for only when one of three strict readers reads it as a
+name-value pair. JSON: the name is a key of a JSON object that parses where it
+starts in that form (the whole body, an object or array inside it such as
+inline state in a script, or the text of a JSON string there that is itself a
+JSON object or array), read with the key's parsed value. A query or form pair:
+`name=v` at the start of the form or after `?`, `&`, `;` or a quote, where `v` is
+empty or a run of URL characters (no `<`, `>`, `=`, whitespace, quote or
+backslash) followed by `&`, `#`, `;`, the end, or a quote that ends its string
+(not one followed by a `+` or another character of the token). An element
+attribute: a void `input`, `meta`, `param` or `link` element, or a self-closing
+tag, with a `value` or `content` attribute, whose `name`, `id`, `property`,
+`itemprop` or `http-equiv` is the name, read with an HTML parser so the order of
+its attributes does not matter; every other attribute value of that element is
+judged too. Every value read so must hold nothing: a boolean, null, empty, a
 string that is form state by the rule above, a number whose text is form state
 (`7` and `4411` are, an 18-digit id is not; a value after `=` is read as text,
 never as a JSON number), or an object or array whose every key and value holds
-nothing. An occurrence inside a value already read under the name is part of
-that value. Any other occurrence (a call's argument as in
-`Cookies.set('name', ...)`, a `{"name": "name", "value": ...}` pair, an
-element's text, a table cell, a string escaped twice, a value followed by more
-than a delimiter, as in `"" + token`) keeps the name checked, whatever sits
-beside it. An honest `"id": 7` or `"user": "alice"` leaves the name out;
+nothing. An occurrence inside a value already read is part of that value. Any
+other occurrence keeps the name checked, whatever sits beside it: `name: v` in
+text that is not JSON (`<li>csrftoken: <code>...</code></li>`,
+`<dt>csrftoken:</dt><dd>...</dd>`), `name == "v"` or `name => "v"` in a script,
+`name=<b>v</b>`, a call's argument as in `Cookies.set('name', ...)`, a
+`{"name": "name", "value": ...}` pair, an attribute named by the name, an
+element that holds text (`textarea`, `li`, `button`) whatever its attributes,
+a table cell, and a string escaped twice. So a cookie named `id` stays checked
+in nearly every HTML capture, where `id="..."` names an attribute. The JSON
+reader stops looking for values once its failed parses have scanned four times
+the form's length, so an object left open many levels deep costs linear time;
+an occurrence it did not reach is read only by the other two readers. An honest
+`"id": 7` or `"user": "alice"` leaves the name out;
 `"csrftoken": "<an opaque token>"`, `setCookie('csrftoken', ...)` and
 `getCookie('csrftoken')` keep it, and so does
 `"user": {"email": "ann@myshop.example"}`, since an address is not form state.
@@ -1334,8 +1350,8 @@ seen only in a `Set-Cookie` says nothing of what the browser held later),
 unless a request sent it empty and no non-empty value of it is recorded
 anywhere; and a cookie the recording carried without a value kept, or with none
 seen in the cookie arrays. A cookie name left out is one whose recorded values
-the body did not hold and every occurrence of which is a name-value pair the
-reader parsed with a value that holds nothing, so an honest `"id": 7` key passes
+the body did not hold and every occurrence of which one of those readers read
+with a value that holds nothing, so an honest `"id": 7` key passes
 when a recording made with a cached session sent a cookie named `id`. This is
 the whole rule: a token the cookie took after the last recorded request is
 caught when the body holds the cookie's name anywhere outside such a pair, and
