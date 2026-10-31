@@ -758,6 +758,38 @@ class TestInitNodriverBackend:
         assert session._backend_type == "nodriver"
         assert session._backend_instance._headless is True
 
+    @pytest.mark.parametrize(
+        ("headless", "answer_dialogs", "answers"),
+        [(True, None, True), (True, True, True), (True, False, False), (False, True, False)],
+    )
+    async def test_the_observe_capture_answers_dialogs_exactly_when_the_backend_does(
+        self, tmp_path: Path, headless: bool, answer_dialogs: bool | None, answers: bool
+    ):
+        """#320: the capture shares the answerer a headless backend installed, and
+        counts its answers, only when the backend answers (None is the default)."""
+        from types import SimpleNamespace
+
+        from graftpunk.session import BrowserSession
+
+        opt = {} if answer_dialogs is None else {"answer_dialogs": answer_dialogs}
+        session = BrowserSession(backend="nodriver", headless=headless, observe_mode="full", **opt)
+        capture = MagicMock()
+        capture.start_capture_async = AsyncMock()
+        made = MagicMock(return_value=capture)
+        with (
+            patch.object(BrowserSession, "_observe_driver", return_value=MagicMock()),
+            patch.object(
+                BrowserSession,
+                "_open_observe_storage",
+                return_value=SimpleNamespace(run_dir=tmp_path),
+            ),
+            patch("graftpunk.session.create_capture_backend", made),
+        ):
+            await session._start_observe_async()
+
+        assert made.call_args.kwargs["answer_dialogs"] is answers
+        capture.start_capture_async.assert_awaited_once()
+
     def test_the_call_timeouts_reach_the_nodriver_backend(self):
         from graftpunk.session import BrowserSession
 
@@ -823,7 +855,9 @@ class TestInitStealthBackend:
             session = BrowserSession(backend="selenium", headless=True, use_stealth=True)
 
         # Observe off: Chrome is not asked to keep a performance log.
-        mock_create.assert_called_once_with(headless=True, performance_log=False)
+        mock_create.assert_called_once_with(
+            headless=True, performance_log=False, answer_dialogs=True
+        )
         assert session._backend_type == "selenium"
         assert session._use_stealth is True
         assert session._webdriver is mock_stealth_driver

@@ -124,6 +124,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         observe_mode: str = "off",
         call_timeout: float | None = DEFAULT_CALL_TIMEOUT_S,
         navigate_timeout: float | None = DEFAULT_NAVIGATE_TIMEOUT_S,
+        answer_dialogs: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize browser session.
@@ -149,6 +150,12 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 the URL and raises ``BrowserError``; the tab stays on the
                 page it showed before. None waits without a limit. Default
                 120.
+            answer_dialogs: When headless, accept each JavaScript dialog
+                (``alert()``, ``confirm()``, ``prompt()``, ``beforeunload``) a
+                page opens: on nodriver through CDP, in every tab; on Selenium
+                by ChromeDriver's ``unhandledPromptBehavior`` capability. False
+                leaves dialogs as before 1.36.1, for a program that answers
+                them itself. Ignored when visible. Default True.
             **kwargs: Additional keyword arguments passed to requestium.Session.
 
         Raises:
@@ -197,6 +204,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                     "headless": headless,
                     "call_timeout": call_timeout,
                     "navigate_timeout": navigate_timeout,
+                    "answer_dialogs": answer_dialogs,
                 }
                 # Allow pointing nodriver at a specific Chrome/Chromium binary
                 # (e.g. Chrome-for-Testing) via GRAFTPUNK_BROWSER_EXECUTABLE_PATH,
@@ -227,7 +235,9 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 # The observe capture reads Chrome's performance log, which
                 # ChromeDriver keeps only when asked at launch; off mode pays nothing.
                 self._stealth_driver = create_stealth_driver(
-                    headless=headless, performance_log=observe_mode != "off"
+                    headless=headless,
+                    performance_log=observe_mode != "off",
+                    answer_dialogs=answer_dialogs,
                 )
 
                 try:
@@ -542,6 +552,10 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 driver,
                 get_tab=lambda: tab,
                 bodies_dir=self._observe_storage.run_dir / "bodies",
+                # A headless backend answers the page's dialogs from its start
+                # (#320), unless built with answer_dialogs=False; the capture
+                # shares that answerer and counts its answers.
+                answer_dialogs=getattr(self._backend_instance, "answers_dialogs", False) is True,
             )
             await self._capture.start_capture_async()
         except Exception as exc:  # noqa: BLE001 - opt-in diagnostics are best-effort

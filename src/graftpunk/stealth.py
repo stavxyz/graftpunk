@@ -103,6 +103,7 @@ def create_stealth_driver(
     headless: bool = False,
     profile_dir: Path | None = None,
     performance_log: bool = False,
+    answer_dialogs: bool = True,
 ) -> uc.Chrome:
     """Create a stealth Chrome driver with anti-detection measures.
 
@@ -113,10 +114,16 @@ def create_stealth_driver(
 
     Args:
         headless: Run in headless mode (less stealthy, use with caution).
+            ChromeDriver then accepts each JavaScript dialog a page opens,
+            unless ``answer_dialogs`` is False.
         profile_dir: Custom profile directory (default: ~/.config/graftpunk/chrome_profile).
         performance_log: Have ChromeDriver keep Chrome's performance log, which
             the Selenium observe capture reads its network events from.
             ChromeDriver keeps it only when the capability is set at launch.
+        answer_dialogs: When headless, launch with the ``unhandledPromptBehavior``
+            capability set to ``accept``. False leaves ChromeDriver's default,
+            as before 1.36.1, for a program that answers dialogs itself.
+            Ignored when visible. Default True.
 
     With graftpunk's SIGTERM and SIGHUP handlers installed (always in ``gp``;
     in a program, after ``install_termination_cleanup()``), chromedriver and
@@ -149,6 +156,13 @@ def create_stealth_driver(
 
     if headless:
         options.add_argument("--headless=new")
+        # A headless browser has nobody to answer a page's alert, confirm, prompt
+        # or beforeunload (#320), recorded or not. ChromeDriver answers an open one
+        # when the next WebDriver command runs, by this capability; the default
+        # dismisses it and fails that command. ChromeDriver reports no dialog
+        # event, so none is logged or counted.
+        if answer_dialogs:
+            options.set_capability("unhandledPromptBehavior", "accept")
 
     if performance_log:
         options.set_capability("goog:loggingPrefs", {"performance": "ALL"})

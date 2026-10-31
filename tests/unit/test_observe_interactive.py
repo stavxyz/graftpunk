@@ -445,6 +445,47 @@ class TestSetupObserveSessionTakesDomSnapshots:
         assert backend_cls.call_args.kwargs["dom_snapshots_dir"] == tmp_path / "run" / "snapshots"
         assert "dom_snapshots_dir" not in inspect.signature(create_capture_backend).parameters
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("headless", [True, False])
+    async def test_only_a_headless_run_answers_dialogs(
+        self, tmp_path: Path, headless: bool
+    ) -> None:
+        """#320: gp observe go answers the page's JavaScript dialogs; interactive
+        leaves them to the user in the visible window."""
+        from graftpunk.cli.observe_browser import setup_observe_session
+
+        mock_tab = MagicMock()
+        mock_browser = MagicMock()
+        mock_browser.main_tab = mock_tab
+        mock_browser.get = AsyncMock(return_value=mock_tab)
+        mock_backend = MagicMock()
+        mock_backend.start_capture_async = AsyncMock()
+
+        async def fake_nodriver_start(**kwargs: object) -> MagicMock:
+            return mock_browser
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = fake_nodriver_start
+        mock_storage = MagicMock()
+        mock_storage.run_dir = tmp_path / "run"
+        new_tabs = AsyncMock()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
+            ) as backend_cls,
+            patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
+            patch("graftpunk.dialogs.answer_dialogs_in_new_tabs", new_tabs),
+        ):
+            await setup_observe_session(
+                "test-ns", "https://example.com", 1024, headless=headless, session_name=None
+            )
+
+        assert backend_cls.call_args.kwargs["answer_dialogs"] is headless
+        # A popup the page opens is answered too, in a headless run only.
+        assert new_tabs.await_args_list == ([((mock_browser,),)] if headless else [])
+
 
 class TestSetupObserveSessionSigintIsolation:
     """SIGINT is ignored while nodriver.start() runs, and Chrome starts in its own session."""

@@ -175,7 +175,7 @@ class TestSeleniumBackendStartOverrides:
         backend = SeleniumBackend(headless=True, use_stealth=True)
         backend.start(headless=False)
 
-        mock_create.assert_called_once_with(headless=False, profile_dir=None)
+        mock_create.assert_called_once_with(headless=False, profile_dir=None, answer_dialogs=True)
 
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_start_overrides_profile_dir(self, mock_create: MagicMock, tmp_path: Path) -> None:
@@ -186,4 +186,4 @@ class TestSeleniumBackendStartOverrides:
         backend = SeleniumBackend(use_stealth=True)
         backend.start(profile_dir=profile)
 
-        mock_create.assert_called_once_with(headless=True, profile_dir=profile)
+        mock_create.assert_called_once_with(headless=True, profile_dir=profile, answer_dialogs=True)

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
+from graftpunk.dialogs import DialogAnswerer, answer_dialogs
 from graftpunk.har.parser import cookie_header_pairs
 from graftpunk.har.paths import bare_path, holds_an_id
 from graftpunk.har.selectors import MAX_SELECTOR_LENGTH, MAX_SHOWN_FIELDS, bounded_selector
@@ -1688,8 +1689,18 @@ class NodriverCaptureBackend:
         record_request_bodies: bool = True,
         dom_snapshots_dir: Path | None = None,
         failure_step: bool = False,
+        answer_dialogs: bool = False,
     ) -> None:
         self._browser = browser
+        # Set for a headless recording (#320): nobody can answer a page's alert,
+        # confirm, prompt or beforeunload there, and one left open stops the page's
+        # script and every DevTools read of the page, so the run is never saved.
+        # Each is accepted through CDP (graftpunk.dialogs), by the tab's one answerer,
+        # which a headless NoDriverBackend installs before its first navigation.
+        self._answer_dialogs = answer_dialogs
+        self._dialogs: DialogAnswerer | None = None
+        # (answered, failed) as stop ended, so the run log's count is the summary's.
+        self._dialog_counts: tuple[int, int] | None = None
         self._get_tab = get_tab
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
@@ -1770,6 +1781,19 @@ class NodriverCaptureBackend:
     def _tab(self) -> Any | None:
         """Get the current tab via the get_tab callable."""
         return self._get_tab() if self._get_tab else None
+
+    @property
+    def dialogs_answered(self) -> int:
+        """How many JavaScript dialogs the tab's answerer accepted (only a headless
+        capture has one), as counted when stop ended."""
+        return self._current_dialog_counts()[0]
+
+    def _current_dialog_counts(self) -> tuple[int, int]:
+        if self._dialog_counts is not None:
+            return self._dialog_counts
+        if self._dialogs is None:
+            return (0, 0)
+        return (self._dialogs.answered, self._dialogs.failed)
 
     def start_capture(self) -> None:
         """Begin capturing browser data."""
@@ -1914,6 +1938,9 @@ class NodriverCaptureBackend:
                 continue
             tab.add_handler(event_cls, handler)
 
+        if self._answer_dialogs:
+            self._dialogs = await answer_dialogs(tab)
+
         if self._dom_snapshots_dir is not None:
             await self._install_dom_listener(tab)
             self._watch_top_level_loads(tab)
@@ -1995,6 +2022,10 @@ class NodriverCaptureBackend:
             if self._record_request_bodies:
                 _flag_uncaptured_post_data(self._request_map)
             self._scrub_failed_resends()
+            if self._dialogs is not None:
+                self._dialog_counts = self._current_dialog_counts()
+                answered, failed = self._dialog_counts
+                LOG.info("nodriver_dialog_summary", answered=answered, failed=failed)
 
     async def _settle_request_time_fetches(self) -> None:
         """Let the request-time body fetches still running finish first.
@@ -3290,6 +3321,7 @@ def create_capture_backend(
     max_body_size: int = MAX_RESPONSE_BODY_SIZE,
     bodies_dir: Path | None = None,
     record_request_bodies: bool = True,
+    answer_dialogs: bool = False,
 ) -> CaptureBackend:
     """Factory to create the appropriate capture backend.
 
@@ -3303,6 +3335,10 @@ def create_capture_backend(
             disk. Without one, such a request body is left out and marked.
         record_request_bodies: False for a capture whose HAR is never written:
             request bodies are then neither kept, fetched nor logged about.
+        answer_dialogs: For a headless nodriver recording, accept each
+            JavaScript dialog through CDP (``NodriverCaptureBackend``). Selenium
+            gets its equivalent at driver launch instead
+            (``graftpunk.stealth.create_stealth_driver``), so it is ignored there.
 
     Returns:
         A CaptureBackend implementation.
@@ -3314,6 +3350,7 @@ def create_capture_backend(
             max_body_size=max_body_size,
             bodies_dir=bodies_dir,
             record_request_bodies=record_request_bodies,
+            answer_dialogs=answer_dialogs,
         )
     if backend_type == "selenium":
         if not _HAS_SELENIUM:

@@ -110,6 +110,7 @@ async def setup_observe_session(
     import nodriver
 
     from graftpunk import load_session
+    from graftpunk.dialogs import answer_dialogs_in_new_tabs
     from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
     from graftpunk.observe.capture import NodriverCaptureBackend
     from graftpunk.observe.storage import ObserveStorage
@@ -229,8 +230,15 @@ async def setup_observe_session(
             # renders is in no recorded HTML response (#267).
             dom_snapshots_dir=storage.run_dir / "snapshots",
             failure_step=failure_step,
+            # Nobody can answer a dialog in a headless run; in a visible one the
+            # user does (#320).
+            answer_dialogs=headless,
         )
         await backend.start_capture_async()
+        if headless:
+            # A tab or popup the page opens gets an answerer of its own, whose
+            # answers are logged but not in the capture's count (#320).
+            await answer_dialogs_in_new_tabs(browser)
 
         tab = await browser.get(url)
         return ObserveSession(

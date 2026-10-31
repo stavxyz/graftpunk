@@ -358,6 +358,25 @@ class TestEngineObserve:
         assert capture._bodies_dir == storage.run_dir / "bodies"
         assert storage.run_dir.parent == tmp_path / "hl-session"
 
+    @pytest.mark.parametrize("headless", [True, False])
+    def test_a_headless_login_recording_answers_dialogs(
+        self, tmp_path: Path, headless: bool
+    ) -> None:
+        """#320: nobody can answer a page's alert in a headless login."""
+        from graftpunk.observe import capture as capture_mod
+        from graftpunk.plugins.login_engine import _start_login_capture
+
+        plugin = _make_plugin("nodriver")
+        with (
+            patch("graftpunk.observe.OBSERVE_BASE_DIR", tmp_path),
+            patch.object(capture_mod, "create_capture_backend", _real_create_capture_backend),
+        ):
+            capture, _storage = _start_login_capture(
+                plugin, "nodriver", MagicMock(), "full", get_tab=lambda: None, headless=headless
+            )
+
+        assert capture._answer_dialogs is headless
+
     def test_start_login_capture_slugifies_session_name(self, tmp_path: Path) -> None:
         from graftpunk.plugins.login_engine import _start_login_capture
 

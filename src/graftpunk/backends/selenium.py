@@ -122,6 +122,7 @@ class SeleniumBackend:
         profile_dir: Path | None = None,
         use_stealth: bool = True,
         default_timeout: int = 15,
+        answer_dialogs: bool = True,
         **options: Any,
     ) -> None:
         """Initialize the Selenium backend.
@@ -135,9 +136,15 @@ class SeleniumBackend:
             default_timeout: Default timeout for element waits in seconds.
                 Note: Currently stored for serialization but not actively
                 enforced for all operations.
+            answer_dialogs: When headless, launch ChromeDriver with the
+                ``unhandledPromptBehavior`` capability set to ``accept``, so a
+                page's JavaScript dialogs are accepted. False leaves
+                ChromeDriver's default, as before 1.36.1. Ignored when visible.
+                Default True.
             **options: Additional options (window_size, etc.).
         """
         self._headless = headless
+        self._answer_dialogs = answer_dialogs
         self._profile_dir = profile_dir
         self._use_stealth = use_stealth
         self._default_timeout = default_timeout
@@ -221,6 +228,7 @@ class SeleniumBackend:
         self._driver = create_stealth_driver(
             headless=self._headless,
             profile_dir=self._profile_dir,
+            answer_dialogs=self._answer_dialogs,
         )
 
     def _start_standard_driver(self) -> None:
@@ -248,6 +256,10 @@ class SeleniumBackend:
 
         if self._headless:
             chrome_options.add_argument("--headless=new")
+            # Nobody can answer a page's dialog in a headless browser (#320); see
+            # graftpunk.stealth.create_stealth_driver.
+            if self._answer_dialogs:
+                chrome_options.set_capability("unhandledPromptBehavior", "accept")
 
         # Window size from options or default
         window_size = self._options.get("window_size", "800,600")
@@ -513,6 +525,7 @@ class SeleniumBackend:
             "headless": self._headless,
             "use_stealth": self._use_stealth,
             "default_timeout": self._default_timeout,
+            "answer_dialogs": self._answer_dialogs,
         }
         if self._profile_dir is not None:
             state["profile_dir"] = str(self._profile_dir)
@@ -544,6 +557,7 @@ class SeleniumBackend:
         headless = state.get("headless", True)
         use_stealth = state.get("use_stealth", True)
         default_timeout = state.get("default_timeout", 15)
+        answer_dialogs = state.get("answer_dialogs", True)
 
         profile_dir = state.get("profile_dir")
         if profile_dir is not None:
@@ -555,6 +569,7 @@ class SeleniumBackend:
             "headless",
             "use_stealth",
             "default_timeout",
+            "answer_dialogs",
             "profile_dir",
         )
         options = {k: v for k, v in state.items() if k not in known_keys}
@@ -564,6 +579,7 @@ class SeleniumBackend:
             profile_dir=profile_dir,
             use_stealth=use_stealth,
             default_timeout=default_timeout,
+            answer_dialogs=answer_dialogs,
             **options,
         )
 
