@@ -208,15 +208,17 @@ an export. The recording is only as good as what you clicked. Press Ctrl+C in
 the terminal to stop and save.
 
 When it saves, graftpunk reads the password and username you typed from the
-run's credential posts only: each POST, PUT, or PATCH the digest reports as a
-login, by a password field in its body or by being sent where a recorded login
-form posts. It takes a value whose own field name holds `password`, `passwd`,
+run's credential posts only: each POST, PUT, or PATCH that meets the digest's
+rule for a login, by a password field in its body or by being sent where a
+recorded login form posts (the digest itself reports POSTs only; the scrub
+applies the same rule to PUT and PATCH). It takes a value whose own field name holds `password`, `passwd`,
 or `pwd` and no setting's word (`rememberPassword`, `savePassword`,
 `passwordless`), or is the name of a recorded page's password input (`pin`),
 when it is at least three characters and not `true`, `false`, `yes`, `no`,
-`on`, `off`, or `null`; each value under a username or email field; the
-username of an earlier step posted at a path or with field names holding a
-step word such as `login` or `signin`; and with `--wrong-password-first` the
+`on`, `off`, or `null`; an email address under an identifier field's own
+name (`username`, `email`, `login`, `user`, `account`); the email address of an
+earlier step posted at a path or with field names holding a step word such as
+`login` or `signin`; and with `--wrong-password-first` the
 password of the post marked failed. It scrubs them from `network.har`, the
 request bodies in `bodies/`, `page-source.html`, and `snapshots/`, keeping the
 field names so the digest still finds the login. It leaves any password sent
@@ -225,17 +227,25 @@ sign-up, a password change); a password under a name without `password`,
 `passwd`, or `pwd` that is not the name of a recorded password input; a
 password under three characters, a boolean one, or a flag word; a password
 that is part of a field name (`pass`), which it replaces only in its request's
-own body; the username of an earlier step with no step word (`POST
-/identify`); a credential post whose body it could not read; and response
+own body; a username that is not an email address (`admin`); the email
+address of an earlier step with no step word (`POST /identify`); a credential post whose body it could not read; and response
 bodies in `bodies/`, `console.jsonl`, and the screenshots. It prints a line
 when a credential post's body could not be read (not valid JSON, a body file
 it cannot read, or a body not captured). When a recorded page had a password
-field, it always prints a note saying how many values it scrubbed from how
-many credential posts and that the run can still hold a password it did not
-recognise; the note never says the run is clean. A password that is also an
-ordinary word is scrubbed everywhere it appears, URLs included, and a numeric
-one inside every number that holds its digits, which leaves such a JSON body
-invalid. The run still holds the session's cookies and tokens, so keep it on
+field, it always prints a note saying how many values it scrubbed and where
+from (credential posts, earlier login steps, the post marked failed), and that
+the run can still hold a password it did not recognise; the note never says the
+run is clean. The note names some of what can remain (a password sent by a
+request that is no credential post, one under a name with no hint that is no
+password input's name, a boolean or under-three-character one, a username that
+is not an email address, and copies in response bodies, `console.jsonl`, and
+the screenshots); docs/HOW_IT_WORKS.md lists the rest. A password that is also
+an ordinary word is scrubbed everywhere it appears, URLs included, an email
+address everywhere but the HAR's URL fields, and a numeric password inside
+every number that holds its digits, which leaves such a JSON body invalid. A
+password input's name counts on its own page too: a form with no `action`
+holding a password input named `code` makes a coupon `code` posted to that page
+a password, scrubbed everywhere. The run still holds the session's cookies and tokens, so keep it on
 your machine and delete it when you are done.
 
 To have the recording suggest the `failure` text, add `--wrong-password-first`
