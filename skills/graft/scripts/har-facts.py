@@ -16,7 +16,10 @@ it. A name passes when it is a fixed framework name (below), or at most 48
 characters of words joined by ``_``, ``-``, ``.``, ``$``, brackets, or camel case,
 with every word spelled with the consonant pairs English uses (graftpunk's
 ``har.paths`` spelling rule), a short or capitalised word holding a vowel,
-capitals only as a known acronym or in a name all in capitals, digits only as a
+capitals only as a known acronym or in a name all in capitals (an acronym of
+three letters or more also passes in lower or capitalised case inside camel
+case, so ``Csrf``, ``xsrfToken``, and ``JwtToken`` pass, and a lone ``X`` may
+stand before a word, as in ``XCsrf``), digits only as a
 run of at most 2 ending a word, and nothing graftpunk's ``holds_an_id`` reads as
 an id. The spelling pairs and rule, and ``holds_an_id``, are copied here (the
 script cannot import graftpunk) and held equal to graftpunk's by tests. A path
@@ -49,7 +52,8 @@ What fails the gate is replaced or counted:
   read as values; an HTML control whose name fails keeps its type and position;
 - an HTML page's title prints as its length class only, and a control's type
   prints only when it is a standard input type;
-- a cookie's ``Path`` prints templated like a URL path, its ``Domain`` only when
+- a cookie's ``Path`` prints templated like a URL path (``(not shown)`` when it
+  holds anything outside a plain path, such as a query), its ``Domain`` only when
   it is the setting response's host or a parent of it, and its ``SameSite`` only
   as ``Lax``, ``Strict``, or ``None``;
 - a value's type and a string's length class (empty, short up to 16 characters,
@@ -71,13 +75,22 @@ lower or upper case, 14.59% at 8 letters, 10.84% at 9, 5.20% at 12, and 1.97% at
 
 ``cookies`` prints one block per cookie a response sets: each response that sets
 it (method and templated URL) with a count, and each setting's ``HttpOnly``,
-``Secure``, ``SameSite``, ``Path``, ``Domain``, and whether it expires, read from
-the raw ``Set-Cookie`` header, every line of a newline-joined value, parsed as
+``Secure``, ``SameSite``, ``Path``, ``Domain``, and ``expiry``, read from the
+raw ``Set-Cookie`` header, every line of a newline-joined value, parsed as
 graftpunk's own HAR parser does (``set_cookie_lines``, held equal by a test), and
 from the entry's ``response.cookies`` array, paired by position within a name; a
-line says when the two disagree. Then it names the cookies the recording only
-sends. With ``--name``, it prints only the block of that exact name, whatever
-the gate says, since the caller already holds the name.
+line says when the two disagree. The words are the markdown digest's, held
+equal to it by a test: ``yes``, ``no``, or ``unknown`` for a flag (an attribute
+the array leaves out is ``unknown``); ``Lax``, ``Strict``, ``None``, ``-`` (not
+set), or ``unknown`` (empty, bare, or not recognised) for ``SameSite``; ``-``
+(not set or empty), ``unknown`` (not starting with ``/``), or ``(not shown)``
+for a ``Path``; and ``session``, ``persistent``, ``past`` (``Max-Age`` 0 or
+less, or an ``Expires`` or array ``expires`` no later than the request: the
+response deletes the cookie), or ``unknown`` (not a number or a date, or an
+entry whose ``startedDateTime`` does not parse) for ``expiry``. Then it names
+the cookies the recording only sends. With ``--name``, it prints only the block
+of that exact name, whatever the gate says, since the caller already holds the
+name.
 
 ``request`` and ``response`` match URL_PART against each entry's own request URL
 path, as recorded or templated (never a ``Referer`` or ``Location`` header), and
@@ -107,6 +120,8 @@ import json
 import re
 import sys
 from collections import Counter
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -234,17 +249,25 @@ def _spelled(letters: str) -> bool:
 # number, capitals (PHPSESSID), or words in lower or camel case (startDate,
 # XMLHttpRequest) with a digit run of at most 2 at its end (name1). Every word is
 # spelled; a short lower-case word, and every capitalised word, also holds a
-# vowel; a capitals run inside camel case is a known acronym. Random tokens break
+# vowel, unless it is a known acronym of three letters or more in any case (Csrf,
+# xsrfToken); a capitals run inside camel case is a known acronym. Random tokens break
 # into short unspelled or vowel-less words and fail.
 _NAME_CHARS_RE = re.compile(r"[A-Za-z0-9_.$\-\[\]]+")
 _NAME_SPLIT_RE = re.compile(r"[_.$\-\[\]]+")
-_CAMEL_WORD_RE = re.compile(r"[A-Z]{2,5}(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+")
+# A lone capital before a capitalised word (XCsrf) is a word of its own, which
+# must then be an acronym.
+_CAMEL_WORD_RE = re.compile(r"[A-Z]{2,5}(?=[A-Z][a-z]|$)|[A-Z](?=[A-Z][a-z])|[A-Z]?[a-z]+")
 _ACRONYMS = frozenset(
     (  # noqa: SIM905 - one compact string on purpose: the set is data
         "ID IDS URL URI API XML HTML JSON CSRF XSRF UUID IP UI SSO MFA OTP SMS PDF CSV UTC "
-        "OS DOB SSN ZIP CVV CVC TOS GDPR HTTP HTTPS JWT SAML AJAX DOM CSS JS ISO VAT SKU"
+        "OS DOB SSN ZIP CVV CVC TOS GDPR HTTP HTTPS JWT SAML AJAX DOM CSS JS ISO VAT SKU "
+        # the abbreviations cookie and token names use, some spelled with no vowel
+        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP"
     ).split()
 )
+# An acronym this long or longer reads as one in any case inside camel case
+# (Csrf, xsrfToken, JwtToken); a shorter one (Js, Os) stays capitals only.
+_MIN_CASELESS_ACRONYM_LEN = 3
 # A capitalised word of two letters in camel case must be one of these (userId).
 _SHORT_WORDS = frozenset(
     "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am".split()  # noqa: SIM905
@@ -252,6 +275,12 @@ _SHORT_WORDS = frozenset(
 _MAX_PARTS = 8
 _MAX_CAPITALS = 16
 _LONG_LOWER = 9
+
+
+def _camel_acronym(word: str) -> bool:
+    if word.isupper():
+        return word in _ACRONYMS
+    return len(word) >= _MIN_CASELESS_ACRONYM_LEN and word.upper() in _ACRONYMS
 
 
 def _lower_word(word: str) -> bool:
@@ -296,15 +325,16 @@ def _plain_part(part: str) -> bool:
         return _lower_word(words[0])
     # Random text splits into many short words; a camel name holds at most one
     # word of three letters or fewer that is not a listed short word or acronym.
-    short = [w for w in words if len(w) <= 3 and w not in _SHORT_WORDS and w not in _ACRONYMS]
+    short = [w for w in words if len(w) <= 3 and w not in _SHORT_WORDS and not _camel_acronym(w)]
     if len(short) > 1:
         return False
     for word in words:
         lowered = word.lower()
+        if _camel_acronym(word):
+            continue
         if word.isupper():
-            if word not in _ACRONYMS:
-                return False
-        elif len(word) == 2 and word[0].isupper():
+            return False
+        if len(word) == 2 and word[0].isupper():
             if word not in _SHORT_WORDS:
                 return False
         elif len(word) < 2 or not _spelled(lowered) or not any(ch in _VOWELS for ch in lowered):
@@ -662,36 +692,301 @@ def _domain(domain: str, host: str) -> str:
     return "a domain outside the response's host"
 
 
-def _same_site(value: str) -> str:
-    if not value:
+def _same_site(value: str | None) -> str:
+    if value is None:
         return "-"
     known = {"lax": "Lax", "strict": "Strict", "none": "None"}
-    return known.get(value.strip().lower(), "an unknown value")
+    return known.get(value.strip().lower(), "unknown")
+
+
+# graftpunk.har.digest._PLAIN_COOKIE_PATH_RE, copied (a test holds the two equal):
+# one leading slash, then letters, digits, ``.``, ``_``, ``~``, ``-``, and single
+# slashes alone. Anything else (a comma, query, fragment, ``=``, ``;``, quote,
+# space, percent escape, ``:``, ``@``, ``+``, or ``//``) can carry a second cookie
+# folded into the header, a value, a host, or a user.
+_PLAIN_COOKIE_PATH_RE = re.compile(r"(?!.*//)/[A-Za-z0-9._~/-]*")
 
 
 def _cookie_path(value: str) -> str:
-    return templated_path(value) if value.startswith("/") else ("-" if not value else "{}")
+    if not value:
+        return "-"
+    if not value.startswith("/"):
+        return "unknown"
+    return templated_path(value) if _PLAIN_COOKIE_PATH_RE.fullmatch(value) else "(not shown)"
 
 
-def _header_view(attributes: dict[str, str], host: str) -> dict[str, str]:
+_MAX_AGE_RE = re.compile(r"-?[0-9]+")
+
+
+def expiry_of(attributes: dict[str, str], sent_at: datetime | None) -> str:
+    """``session``, ``persistent``, ``past``, or ``unknown`` for a ``Set-Cookie``
+    line's attributes, by graftpunk.har.digest._expiry's rule (a test holds the
+    two equal): ``Max-Age`` wins over ``Expires``, and an ``Expires`` is compared
+    with *sent_at*, when the request was sent (``unknown`` without one)."""
+    max_age = attributes.get("max-age")
+    if max_age is not None and _MAX_AGE_RE.fullmatch(max_age):
+        return "past" if int(max_age) <= 0 else "persistent"
+    expires = attributes.get("expires")
+    if expires is None:
+        return "session" if max_age is None else "unknown"
+    try:
+        when = parsedate_to_datetime(expires)
+    except (TypeError, ValueError, IndexError):
+        return "unknown"
+    return _past_or_persistent(when, sent_at)
+
+
+def _past_or_persistent(when: datetime, sent_at: datetime | None) -> str:
+    if sent_at is None:
+        return "unknown"
+    # timezone.utc, not datetime.UTC: the script runs on Python 3.9, which lacks it.
+    utc = timezone.utc  # noqa: UP017
+    sent = sent_at if sent_at.tzinfo else sent_at.replace(tzinfo=utc)
+    when = when if when.tzinfo else when.replace(tzinfo=utc)
+    return "past" if when <= sent else "persistent"
+
+
+# Before Python 3.11, datetime.fromisoformat reads only isoformat's own output.
+# _iso_by_hand and the helpers below read every string 3.11's reader reads, with
+# the same result, its leniencies included (any one character between the date
+# and the time, a fraction after any part of the time or the offset, one stray
+# character before an offset where 3.11 allows one, which is not after a short
+# fraction); a test holds it equal to fromisoformat on 3.11 and 3.12 over a
+# generated corpus. 3.13 patch releases changed a few lenient readings (3.13.18
+# rejects a bare comma before an offset and keeps the fraction of a zero offset,
+# which 3.13.14 reads like 3.11), and 3.14 changed the reader (it reads an hour of 24
+# and rejects some strings 3.11 reads), so from 3.11 on the script uses the
+# running Python's reader, as the digest does.
+
+
+def _iso_byte(raw: bytes, at: int) -> int:
+    """The byte at *at*, or 0 past the end, as the C reader sees its NUL."""
+    return raw[at] if at < len(raw) else 0
+
+
+def _iso_digits(raw: bytes, at: int, count: int) -> int | None:
+    """The number the *count* ASCII digits from *at* spell, or None."""
+    chunk = raw[at : at + count]
+    if len(chunk) != count or not all(48 <= byte <= 57 for byte in chunk):
+        return None
+    return int(chunk) if chunk else 0
+
+
+def _iso_separator_at(raw: bytes) -> int | None:
+    """Where the date ends: 3.11 decides it from the date's shape alone, so
+    any one character may separate the date from the time."""
+    size = len(raw)
+    if size == 7:
+        return 7
+    if raw[4:5] == b"-":
+        if raw[5:6] != b"W":
+            return 10
+        if size > 8 and raw[8:9] == b"-":
+            if size == 9:
+                return None
+            return 8 if size > 10 and raw[10:11].isdigit() else 10
+        return 8
+    if raw[4:5] == b"W":
+        end = 7
+        while end < size and raw[end : end + 1].isdigit():
+            end += 1
+        if end < 9:
+            return end
+        return 7 if end % 2 == 0 else 8
+    return 8
+
+
+def _iso_date(raw: bytes, size: int) -> tuple[int, int, int] | None:
+    """The year, month, and day of the date in ``raw[:size]``: extended or basic,
+    and a week date with or without its day."""
+    year = _iso_digits(raw, 0, 4)
+    if year is None:
+        return None
+    dashed = _iso_byte(raw, 4) == 0x2D
+    at = 5 if dashed else 4
+    if _iso_byte(raw, at) == 0x57:  # W
+        week = _iso_digits(raw, at + 1, 2)
+        at += 3
+        day: int | None = 1
+        if at < size:
+            if dashed:
+                if _iso_byte(raw, at) != 0x2D:
+                    return None
+                at += 1
+            day = _iso_digits(raw, at, 1)
+        if week is None or day is None:
+            return None
+        try:
+            found = date.fromisocalendar(year, week, day)
+        except ValueError:
+            return None
+        return found.year, found.month, found.day
+    month = _iso_digits(raw, at, 2)
+    at += 2
+    if dashed:
+        if _iso_byte(raw, at) != 0x2D:
+            return None
+        at += 1
+    day = _iso_digits(raw, at, 2)
+    if month is None or day is None:
+        return None
+    return year, month, day
+
+
+def _iso_clock(raw: bytes, at: int, end: int) -> tuple[list[int], bool] | None:
+    """Hours, minutes, seconds, and microseconds read from *at* up to *end*, and
+    whether anything follows them, or None. Each part is two digits, the parts
+    joined by ``:`` throughout or not at all, and a ``.`` or ``,`` fraction may
+    follow any part; one character after the last part counts as following."""
+    parts = [0, 0, 0, 0]
+    colons = True
+    for index in range(3):
+        value = _iso_digits(raw, at, 2)
+        if value is None:
+            return None
+        parts[index] = value
+        mark = _iso_byte(raw, at + 2)
+        at += 3
+        if index == 0:
+            colons = mark == 0x3A
+        if at >= end:
+            return parts, mark != 0
+        if colons and mark == 0x3A:
+            continue
+        if mark in (0x2C, 0x2E):
+            break
+        if colons:
+            return None
+        at -= 1
+    count = min(end - at, 6)
+    fraction = _iso_digits(raw, at, count)
+    if fraction is None:
+        return None
+    parts[3] = fraction * 10 ** (6 - count)
+    at += count
+    while 48 <= _iso_byte(raw, at) <= 57:
+        at += 1
+    return parts, _iso_byte(raw, at) != 0
+
+
+def _iso_by_hand(text: str) -> datetime | None:
+    """*text* read as ``datetime.fromisoformat(text.replace("Z", "+00:00"))``
+    reads it on Python 3.11 and 3.12, or None where that raises."""
+    text = text.replace("Z", "+00:00")
+    if len(text) < 7:
+        return None
+    for at in (7, 8, 10):
+        if at >= len(text):
+            break
+        if "\ud800" <= text[at] <= "\udfff":
+            # 3.11 reads a surrogate as the separator only.
+            text = text[:at] + "T" + text[at + 1 :]
+            break
+    try:
+        raw = text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    split = _iso_separator_at(raw)
+    if split is None:
+        return None
+    ymd = _iso_date(raw, split)
+    if ymd is None:
+        return None
+    clock = [0, 0, 0, 0]
+    zone = None
+    if len(raw) > split:
+        # The date is ASCII, so the separator is the character at split, of
+        # however many bytes.
+        rest = text[split + 1 :].encode("utf-8")
+        sign_at = 0
+        while sign_at < len(rest) and rest[sign_at] not in (0x2B, 0x2D):
+            sign_at += 1
+        read = _iso_clock(rest, 0, sign_at)
+        if read is None:
+            return None
+        clock, trailing = read
+        if sign_at >= len(rest):
+            if trailing:
+                return None
+        else:
+            offset = _iso_clock(rest, sign_at + 1, len(rest))
+            if offset is None or offset[1]:
+                return None
+            hours, minutes, seconds, micros = offset[0]
+            # 3.11 drops the fraction of an offset of zero whole seconds.
+            if hours == minutes == seconds == 0:
+                micros = 0
+            delta = timedelta(hours=hours, minutes=minutes, seconds=seconds, microseconds=micros)
+            try:
+                zone = timezone(-delta if rest[sign_at] == 0x2D else delta)
+            except ValueError:
+                return None
+    try:
+        return datetime(*ymd, *clock, tzinfo=zone)
+    except ValueError:
+        return None
+
+
+def _iso_datetime(text: str) -> datetime | None:
+    """*text* read as graftpunk reads an ISO 8601 time (``fromisoformat`` after a
+    ``Z`` becomes ``+00:00``). Before Python 3.11, ``fromisoformat`` reads only
+    its own output, so :func:`_iso_by_hand` reads every string 3.11 reads; from
+    3.11 on the running Python's reader decides, as it does for the digest."""
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        if sys.version_info >= (3, 11):  # noqa: UP036 - the script runs on 3.9 and 3.10
+            return None
+        return _iso_by_hand(text)
+
+
+def array_expiry_of(expires: Any, sent_at: datetime | None) -> str:
+    """The ``expiry`` word for a ``response.cookies`` entry's ``expires``, by
+    graftpunk.har.digest._array_expiry's rule (a test holds the two equal): an
+    ISO 8601 or HTTP date compared with *sent_at*, and ``unknown`` when it is
+    missing, empty, or neither."""
+    if not isinstance(expires, str) or not expires:
+        return "unknown"
+    when = _iso_datetime(expires)
+    if when is None:
+        try:
+            when = parsedate_to_datetime(expires)
+        except (TypeError, ValueError, IndexError):
+            return "unknown"
+    return _past_or_persistent(when, sent_at)
+
+
+def _sent_at(entry: dict[str, Any]) -> datetime | None:
+    started = entry.get("startedDateTime")
+    return _iso_datetime(started) if isinstance(started, str) else None
+
+
+def _array_flag(value: Any) -> str:
+    if value is True:
+        return "yes"
+    return "no" if value is False else "unknown"
+
+
+def _header_view(attributes: dict[str, str], host: str, sent_at: datetime | None) -> dict[str, str]:
     return {
         "HttpOnly": "yes" if "httponly" in attributes else "no",
         "Secure": "yes" if "secure" in attributes else "no",
-        "SameSite": _same_site(attributes.get("samesite", "")),
+        "SameSite": _same_site(attributes.get("samesite")),
         "Path": _cookie_path(attributes.get("path", "")),
         "Domain": _domain(attributes.get("domain", ""), host),
-        "expiry": "yes" if ("expires" in attributes or "max-age" in attributes) else "no",
+        "expiry": expiry_of(attributes, sent_at),
     }
 
 
-def _array_view(cookie: dict[str, Any], host: str) -> dict[str, str]:
+def _array_view(cookie: dict[str, Any], host: str, sent_at: datetime | None) -> dict[str, str]:
+    same_site, path = cookie.get("sameSite"), cookie.get("path")
     return {
-        "HttpOnly": "yes" if cookie.get("httpOnly") is True else "no",
-        "Secure": "yes" if cookie.get("secure") is True else "no",
-        "SameSite": _same_site(str(cookie.get("sameSite") or "")),
-        "Path": _cookie_path(str(cookie.get("path") or "")),
+        "HttpOnly": _array_flag(cookie.get("httpOnly")),
+        "Secure": _array_flag(cookie.get("secure")),
+        "SameSite": _same_site(same_site) if isinstance(same_site, str) else "unknown",
+        "Path": _cookie_path(path) if isinstance(path, str) else "unknown",
         "Domain": _domain(str(cookie.get("domain") or ""), host),
-        "expiry": "yes" if cookie.get("expires") else "no",
+        "expiry": array_expiry_of(cookie.get("expires"), sent_at),
     }
 
 
@@ -722,16 +1017,21 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
                 array.setdefault(str(cookie["name"]), []).append(cookie)
         seen: Counter[str] = Counter()
         for name, attributes in set_cookie_lines(_list(response, "headers")):
-            view = _header_view(attributes, host)
+            view = _header_view(attributes, host, _sent_at(entry))
             text = f"header: {_describe(view)}"
             matches = array.get(name, [])
             if seen[name] < len(matches):
-                other = _array_view(matches[seen[name]], host)
+                other = _array_view(matches[seen[name]], host, _sent_at(entry))
+                # An attribute the array leaves out is a disagreement only for a
+                # flag the header sets: the array often drops one it carried.
                 differ = [
                     f"{key} is {other[key]} there"
                     for key in ("HttpOnly", "Secure", "Path", "Domain")
                     if other[key] != view[key]
-                    and (key in ("HttpOnly", "Secure") or other[key] != "-")
+                    and (
+                        other[key] not in ("-", "unknown")
+                        or (key in ("HttpOnly", "Secure") and view[key] == "yes")
+                    )
                 ]
                 if differ:
                     text += f"; the response.cookies array differs: {', '.join(differ)}"
@@ -751,7 +1051,7 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
                 if not shown(name):
                     hidden_set.add(name)
                     continue
-                view = _describe(_array_view(cookie, host))
+                view = _describe(_array_view(cookie, host, _sent_at(entry)))
                 text = f"response.cookies array only (no Set-Cookie header line): {view}"
                 settings.setdefault(name, Counter())[(where, text)] += 1
     lines: list[str] = []

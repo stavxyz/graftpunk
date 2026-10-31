@@ -510,7 +510,8 @@ def golden_outputs(base: Path) -> dict[str, dict[str, str]]:
 
 def test_a_run_without_an_after_read_digests_as_1_29_0_did(tmp_path: Path) -> None:
     """The golden file was written by graftpunk 1.29.0 (main at cd8b06be) from these
-    runs; every output must match it byte for byte."""
+    runs, and rewritten when #315 gave the markdown Cookies section and --json each
+    cookie's attributes; every output must match it byte for byte."""
     golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
     assert _without_failure_candidates(golden_outputs(tmp_path)) == golden
 

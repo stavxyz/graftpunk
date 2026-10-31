@@ -144,6 +144,9 @@ class HARResponse:
     # the value of every Set-Cookie header, in any case, from the raw headers
     # list, for the same reason as set_cookie_names
     set_cookie_headers: tuple[str, ...] = ()
+    # (name, attributes) for every cookie a Set-Cookie header line sets, in order,
+    # attribute names in lower case (_set_cookie_lines); never a cookie's value
+    set_cookie_attributes: tuple[tuple[str, dict[str, str]], ...] = ()
     # the _bodyFile resolves outside the HAR's directory (a reference or a
     # symlink that leaves it), so the body was not read
     body_file_outside: bool = False
@@ -230,7 +233,7 @@ def _parse_cookies(cookies_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "value": cookie.get("value"),
         }
         # Include optional attributes if present
-        for attr in ["path", "domain", "expires", "httpOnly", "secure"]:
+        for attr in ["path", "domain", "expires", "httpOnly", "secure", "sameSite"]:
             if attr in cookie:
                 parsed[attr] = cookie[attr]
         result.append(parsed)
@@ -240,36 +243,50 @@ def _parse_cookies(cookies_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
 _LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 
 
-def _set_cookie_lines(headers_list: list[dict[str, str]]) -> list[tuple[str, bool]]:
-    """``(name, http_only)`` for every cookie a ``Set-Cookie`` header in
-    *headers_list* sets, in order: the one parse both ``set_cookie_names`` and
-    ``set_cookie_http_only`` read, so they cannot drift.
+def _set_cookie_lines(headers_list: list[Any]) -> list[tuple[str, dict[str, str]]]:
+    """``(name, attributes)`` for every cookie a ``Set-Cookie`` header in
+    *headers_list* sets, in order: the one ``Set-Cookie`` parse of the package,
+    which ``set_cookie_names``, ``set_cookie_http_only``, and
+    ``set_cookie_attributes`` all read, so they cannot drift.
 
     Reads the raw headers list (not the ``_parse_headers`` dict), because that
     dict collapses duplicate header names to the last value and a response can
-    carry more than one ``Set-Cookie`` header. Each line of a header value is
-    one cookie, since Chromium joins several ``Set-Cookie`` headers into one
-    value with newlines; a line ends at ``\\r\\n``, a bare ``\\r`` or ``\\n``,
-    and an empty line sets nothing. A cookie's name is before the first ``=`` of the part
-    before the first ``;``; a line whose part holds no ``=`` sets no cookie. Its
-    attributes are the ``;``-separated parts after it, matched by attribute name
-    without regard to case. Values are never returned.
+    carry more than one ``Set-Cookie`` header; a header is matched by name in
+    any case, and one that is not an object, or whose name or value is not a
+    string, is skipped. Each line of a header value is one cookie, since
+    Chromium joins several ``Set-Cookie`` headers into one value with newlines;
+    a line ends at ``\\r\\n``, a bare ``\\r`` or ``\\n``, and an empty line sets
+    nothing. A cookie's name is before the first ``=`` of the part before the
+    first ``;``; a line whose part holds no ``=`` sets no cookie. Its attributes
+    are the ``;``-separated parts after it, keyed by the attribute name in lower
+    case with the text after its first ``=`` stripped (empty for a flag such as
+    ``HttpOnly``); a later attribute of one name replaces an earlier one, and a
+    part with no name is skipped. The cookie's value is never returned.
+
+    The standard library's ``http.cookies.SimpleCookie`` is not used: on Python
+    3.12 it drops, without an error, a cookie whose value holds a space or is
+    JSON text, or whose name holds a bracket, and it reads an
+    attribute it does not know (``Priority=High``) as a new cookie of that name,
+    so the attributes after it are given to a cookie no response set. It also
+    reads one header, not Chromium's newline-joined lines. The parse here never
+    reads the value, so a value of any shape cannot lose a cookie.
     """
-    cookies: list[tuple[str, bool]] = []
-    for header in headers_list:
-        if header.get("name", "").lower() != "set-cookie":
-            continue
-        for line in _LINE_BREAK_RE.split(header.get("value", "")):
-            pair, *attributes = line.split(";")
+    cookies: list[tuple[str, dict[str, str]]] = []
+    for value in _header_values_named(headers_list, "set-cookie"):
+        for line in _LINE_BREAK_RE.split(value):
+            pair, *parts = line.split(";")
             if "=" not in pair:
                 continue
             name = pair.split("=", 1)[0].strip()
             if not name:
                 continue
-            http_only = any(
-                attribute.split("=", 1)[0].strip().lower() == "httponly" for attribute in attributes
-            )
-            cookies.append((name, http_only))
+            attributes: dict[str, str] = {}
+            for part in parts:
+                key, _sep, attribute_value = part.partition("=")
+                key = key.strip().lower()
+                if key:
+                    attributes[key] = attribute_value.strip()
+            cookies.append((name, attributes))
     return cookies
 
 
@@ -312,19 +329,21 @@ def _cookie_header_values(headers_list: list[Any]) -> list[str]:
     return _header_values_named(headers_list, "cookie")
 
 
-def _parse_set_cookie_names(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
+def _parse_set_cookie_names(headers_list: list[Any]) -> tuple[str, ...]:
     """The NAME of every cookie a ``Set-Cookie`` header in *headers_list* sets,
     every line of a newline-joined value included (:func:`_set_cookie_lines`),
     in order, deduplicated."""
-    return tuple(dict.fromkeys(name for name, _http_only in _set_cookie_lines(headers_list)))
+    return tuple(dict.fromkeys(name for name, _attributes in _set_cookie_lines(headers_list)))
 
 
-def _parse_set_cookie_http_only(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
+def _parse_set_cookie_http_only(headers_list: list[Any]) -> tuple[str, ...]:
     """The NAME of every cookie a ``Set-Cookie`` header in *headers_list* sets with
     the ``HttpOnly`` attribute (:func:`_set_cookie_lines`), in order,
     deduplicated."""
     return tuple(
-        dict.fromkeys(name for name, http_only in _set_cookie_lines(headers_list) if http_only)
+        dict.fromkeys(
+            name for name, attributes in _set_cookie_lines(headers_list) if "httponly" in attributes
+        )
     )
 
 
@@ -562,6 +581,7 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
         body_file=body_file,
         set_cookie_names=set_cookie_names,
         set_cookie_http_only=set_cookie_http_only,
+        set_cookie_attributes=tuple(_set_cookie_lines(raw_headers)),
         set_cookie_headers=tuple(_header_values_named(raw_headers, "set-cookie")),
         body_file_outside=body_file_outside,
         redirect_url=_redirect_url(response_data, headers),
@@ -584,6 +604,12 @@ def _redirect_url(response_data: dict[str, Any], headers: dict[str, str]) -> str
     return ""
 
 
+# The time an entry whose startedDateTime does not parse is given: it sorts such
+# an entry first, and a reader comparing a time with it (the digest's cookie
+# expiry) must treat it as no time at all.
+UNPARSED_TIMESTAMP = datetime.min.replace(tzinfo=UTC)
+
+
 def _parse_timestamp(started: str) -> datetime:
     """Parse ISO 8601 timestamp from HAR.
 
@@ -603,7 +629,7 @@ def _parse_timestamp(started: str) -> datetime:
     except ValueError:
         # Use epoch as fallback - makes failures visible in chronological ordering
         LOG.warning("timestamp_parse_failed", timestamp=started)
-        return datetime.min.replace(tzinfo=UTC)
+        return UNPARSED_TIMESTAMP
 
 
 def validate_har_schema(data: dict[str, Any]) -> None:

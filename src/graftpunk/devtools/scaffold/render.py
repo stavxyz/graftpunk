@@ -59,6 +59,7 @@ from graftpunk.har.digest import (
     LoginObservation,
     RunDigest,
     TokenCandidate,
+    printable_tokens,
 )
 from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
 from graftpunk.har.naming import capture_filename, capture_slug
@@ -600,7 +601,7 @@ def _render_failure_hint(candidates: tuple[str, ...], *, indent: int) -> list[st
 
 def _paired_token_candidates(d: RunDigest) -> list[tuple[TokenCandidate, TokenCandidate]]:
     by_name: dict[str, list[TokenCandidate]] = {}
-    for candidate in d.tokens:
+    for candidate in printable_tokens(d.tokens):
         by_name.setdefault(candidate.name.lower(), []).append(candidate)
     pairs: list[tuple[TokenCandidate, TokenCandidate]] = []
     for candidates in by_name.values():
@@ -619,7 +620,7 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
         ]
     pairs = _paired_token_candidates(spec.digest)
     paired = {candidate for pair in pairs for candidate in pair}
-    unpaired = [c for c in spec.digest.tokens if c not in paired]
+    unpaired = [c for c in printable_tokens(spec.digest.tokens) if c not in paired]
     lines: list[str] = []
     if pairs:
         lines.append("    token_config = TokenConfig(")

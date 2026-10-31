@@ -12,14 +12,18 @@ here falls under the Secrets rule in `SKILL.md`.
 
 Run the `--json` line of the Understand block of `references/commands.md` on
 the chosen session and run first. It is the whole digest model: header, cookie,
-token-candidate, form field, and query parameter names, observed types, and
-response shapes. It holds no header, cookie, or query value, and only one kind
-of body value: for an endpoint whose recorded JSON body is `{}`, `[]`, `""`,
-`0`, `false`, or `null`, that value. It does print paths as recorded, though:
-up to three example paths per endpoint (the query string stripped and a segment
-holding an email address replaced, but an account or order id kept), each login
-step's URL and redirect target, each login form's action and the page it was
-on, and the page each token was seen on.
+token-candidate, form field, and query parameter names, observed types,
+response shapes, and in `cookie_facts` each cookie's attributes and the
+endpoints that set it (no `Domain`). A cookie name that reads as a value is
+left out of `cookies`, `cookie_facts`, a `set_cookie` step's `fields` in
+`login`, and the cookie candidates in `tokens`, and counted in
+`cookie_names_not_shown`. It holds no header, cookie, or query value, and only
+one kind of body value: for an endpoint whose recorded JSON body is `{}`, `[]`,
+`""`, `0`, `false`, or `null`, that value. It does print paths as recorded,
+though: up to three example paths per endpoint (the query string stripped and a
+segment holding an email address replaced, but an account or order id kept),
+each login step's URL and redirect target, each login form's action and the
+page it was on, and the page each token was seen on.
 
 ## Where the HAR is
 
@@ -44,9 +48,13 @@ header, query, or body value; answer from its output:
 
 - `cookies`: for each cookie a response sets, every response that sets it (by
   method and templated URL, with a count) and that setting's `HttpOnly`,
-  `Secure`, `SameSite`, `Path`, `Domain`, and whether it expires, read from the
-  raw `Set-Cookie` header and the entry's `response.cookies` array, with a note
-  when they disagree. A recording made by another tool or an older graftpunk
+  `Secure`, `SameSite`, `Path`, `Domain`, and `expiry` (`session`,
+  `persistent`, or `past` when the response deletes it), read from the raw
+  `Set-Cookie` header and the entry's `response.cookies` array, with a note
+  when they disagree; `unknown` is what the recording does not settle, and
+  `(not shown)` a `Path` carrying a query, a comma, a space, a percent escape,
+  or the like, in
+  the digest's words. A recording made by another tool or an older graftpunk
   has shown the array lacking `httpOnly` where the header carried it (cause
   unverified), so trust the header's line. It then names the cookies the
   recording only sends. With `--name '<cookie>'` it prints that one cookie's

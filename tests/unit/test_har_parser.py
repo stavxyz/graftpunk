@@ -899,17 +899,22 @@ def _header(name: str, value: str) -> dict[str, str]:
             _header("Set-Cookie", "f=2; HttpOnly"),
         ],
         [_header("Set-Cookie", "noequals; HttpOnly"), _header("Set-Cookie", "h=a=b; Secure")],
+        [
+            _header(
+                "SET-COOKIE",
+                "i=1; SameSite=Strict; Max-Age=60; Expires=Wed, 21 Oct 2026 07:28:00 GMT;"
+                " Path=/a; path=/b; ; =x; Priority = High ",
+            )
+        ],
         [],
     ],
 )
 def test_the_set_cookie_parse_is_graftpunks(headers: list[dict[str, str]]) -> None:
     """The script cannot import graftpunk, so it carries its own copy of the parse
-    the digest reads cookie flags with; the two must agree."""
+    the digest reads cookie attributes with; the two must agree, attribute by
+    attribute."""
     script = _load_har_facts()
-    ours = [
-        (name, "httponly" in attributes) for name, attributes in script.set_cookie_lines(headers)
-    ]
-    assert ours == _set_cookie_lines(headers)
+    assert script.set_cookie_lines(headers) == _set_cookie_lines(headers)
 
 
 class TestDomSnapshotFields:

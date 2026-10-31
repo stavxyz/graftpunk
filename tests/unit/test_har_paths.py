@@ -22,6 +22,7 @@ from graftpunk.har.paths import (
     keys_are_ids,
     looks_dynamic,
     param_name_for_segment,
+    printable_name,
     reads_as_cased_words,
     reads_as_words,
     template_path,
@@ -927,3 +928,123 @@ def test_the_har_readers_spelling_rule_is_graftpunks() -> None:
     words = ["".join(rng.choices(string.ascii_letters, k=rng.randint(1, 12))) for _ in range(5_000)]
     words += ["csrf", "CSRF", "ABC", "ABCD", "upgrade", "jsessionid", "JSESSIONID", ""]
     assert [w for w in words if script._spelled(w) != paths_module._spelled(w)] == []
+
+
+# The abbreviations cookie and token names use, several spelled with no vowel.
+_TOKEN_WORDS = (  # noqa: SIM905 - one compact string on purpose: the list is data
+    "csrf xsrf jwt sid sess auth oidc saml nonce sso mfa otp totp hotp tfa jti pkce hmac "
+    "tkn idp jsid ssid"
+).split()
+# Names the review rounds of #315 found the gate must hold back: a nameless
+# cookie's value recorded as its name, capitals dropped into a name, and token
+# words with a random tail.
+_HELD_BACK_PROBES = (
+    "SECRETVALUEq7",
+    "uid_SAMCOOKIE_X",
+    "xsrfQz9XvKw",
+    "authTokenQx7vK",
+    "sessionZq9vLm2x",
+    "XSRF_ZQVLKMXT",
+)
+
+
+@pytest.mark.parametrize("word", _TOKEN_WORDS)
+def test_a_token_word_reads_as_a_name_in_any_case(word: str) -> None:
+    for spelling in (word, word.capitalize(), word.upper()):
+        assert printable_name(spelling), spelling
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["X-Csrf", "XCsrf", "csrf_token", "Csrf-Token", "xsrfToken", "JwtToken", "OidcState"],
+)
+def test_a_token_name_built_of_token_words_reads_as_a_name(name: str) -> None:
+    assert printable_name(name)
+
+
+@pytest.mark.parametrize("name", _HELD_BACK_PROBES)
+def test_a_probe_the_reviews_held_back_is_still_held_back(name: str) -> None:
+    assert not printable_name(name)
+
+
+@pytest.mark.parametrize("name", ["QCsrf", "Os", "Js", "XQz", "Jsx"])
+def test_a_lone_capital_or_a_short_acronym_in_lower_case_is_not_a_name_part(name: str) -> None:
+    """Only ``X`` stands alone before a word, and an acronym of two letters
+    counts in camel case only in capitals."""
+    assert not printable_name(name)
+
+
+def _name_corpus() -> list[str]:
+    rng = random.Random(277)  # noqa: S311 - a fixed sample, not a secret
+    name_alphabet = string.ascii_letters + string.digits + "_.-$[]"
+    words = ["user", "Name", "ID", "session", "csrf", "Token", "txt", "ctl00", "form", "0", "12"]
+    corpus = _id_corpus()
+    corpus += ["".join(rng.choices(name_alphabet, k=rng.randint(1, 50))) for _ in range(5_000)]
+    corpus += [
+        rng.choice(["", "_", "__", "."]).join(rng.choices(words, k=rng.randint(1, 4)))
+        + rng.choice(["", "1", "22", "333"])
+        for _ in range(2_000)
+    ]
+    corpus += [
+        "PHPSESSID",
+        "__Host-sid",
+        "XSRF-TOKEN",
+        "SECRETVALUEq7",
+        "uid_SAMCOOKIE_X",
+        "ctl00$MainContent$txtUserName",
+        "form-TOTAL_FORMS",
+        "bvp-0-book",
+        "xqzkvbtrwamplhab-0-name",
+        "user[password]",
+        "a" * 48,
+        "a" * 49,
+        *_HELD_BACK_PROBES,
+    ]
+    corpus += [
+        spelling
+        for word in _TOKEN_WORDS
+        for spelling in (word, word.capitalize(), word.upper(), f"X-{word.capitalize()}")
+    ]
+    return corpus
+
+
+def test_the_har_readers_name_gate_is_graftpunks() -> None:
+    """The digest prints a cookie name only when har-facts.py would."""
+    script = _load_har_facts()
+    differ = [
+        name for name in _name_corpus() if script.printable_name(name) != printable_name(name)
+    ]
+    assert differ == []
+
+
+_COPIED_GATE = [
+    "_MAX_NAME_LEN",
+    "_ACRONYMS",
+    "_SHORT_WORDS",
+    "_MAX_PARTS",
+    "_MAX_CAPITALS",
+    "_LONG_LOWER",
+    "_FRAMEWORK_NAMES",
+    "_MIN_CASELESS_ACRONYM_LEN",
+]
+_COPIED_GATE_PATTERNS = [
+    "_NAME_CHARS_RE",
+    "_NAME_SPLIT_RE",
+    "_CAMEL_WORD_RE",
+    "_WEBFORMS_CONTAINER_RE",
+    "_HUNGARIAN_RE",
+    "_FORMSET_FIELD_RE",
+    "_FORMSET_MANAGEMENT_RE",
+    "_SHORT_PREFIX_RE",
+]
+
+
+@pytest.mark.parametrize("name", _COPIED_GATE)
+def test_the_har_readers_name_gate_constants_are_graftpunks(name: str) -> None:
+    assert getattr(_load_har_facts(), name) == getattr(paths_module, name)
+
+
+@pytest.mark.parametrize("name", _COPIED_GATE_PATTERNS)
+def test_the_har_readers_name_gate_patterns_are_graftpunks(name: str) -> None:
+    ours, theirs = getattr(_load_har_facts(), name), getattr(paths_module, name)
+    assert (ours.pattern, ours.flags) == (theirs.pattern, theirs.flags)

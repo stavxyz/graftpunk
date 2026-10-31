@@ -43,6 +43,7 @@ __all__ = [
     "looks_dynamic",
     "normal_host",
     "param_name_for_segment",
+    "printable_name",
     "reads_as_cased_words",
     "reads_as_words",
     "split_parts",
@@ -895,3 +896,188 @@ def templated_url(url: str) -> str:
     path = parts.path or ("/" if parts.netloc else "")
     template = template_path(path)[0] if path else ""
     return urlunsplit((parts.scheme, bare_host(parts.netloc), template, "", ""))
+
+
+# The name gate graft's har-facts.py prints names through, copied from it so the
+# digest prints a cookie name only when the script would (a test holds the two
+# equal). A name longer than this reads as a value.
+_MAX_NAME_LEN = 48
+
+# The gate's own shape. A name is parts joined by _ - . [ ]; each part is a short
+# number, capitals (PHPSESSID), or words in lower or camel case (startDate,
+# XMLHttpRequest) with a digit run of at most 2 at its end (name1). Every word is
+# spelled; a short lower-case word, and every capitalised word, also holds a
+# vowel, unless it is a known acronym of three letters or more in any case (Csrf,
+# xsrfToken); a capitals run inside camel case is a known acronym. Random tokens break
+# into short unspelled or vowel-less words and fail.
+_NAME_CHARS_RE = re.compile(r"[A-Za-z0-9_.$\-\[\]]+")
+_NAME_SPLIT_RE = re.compile(r"[_.$\-\[\]]+")
+# A lone capital before a capitalised word (XCsrf) is a word of its own, which
+# must then be an acronym.
+_CAMEL_WORD_RE = re.compile(r"[A-Z]{2,5}(?=[A-Z][a-z]|$)|[A-Z](?=[A-Z][a-z])|[A-Z]?[a-z]+")
+_ACRONYMS = frozenset(
+    (  # noqa: SIM905 - one compact string on purpose: the set is data
+        "ID IDS URL URI API XML HTML JSON CSRF XSRF UUID IP UI SSO MFA OTP SMS PDF CSV UTC "
+        "OS DOB SSN ZIP CVV CVC TOS GDPR HTTP HTTPS JWT SAML AJAX DOM CSS JS ISO VAT SKU "
+        # the abbreviations cookie and token names use, some spelled with no vowel
+        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP"
+    ).split()
+)
+# An acronym this long or longer reads as one in any case inside camel case
+# (Csrf, xsrfToken, JwtToken); a shorter one (Js, Os) stays capitals only.
+_MIN_CASELESS_ACRONYM_LEN = 3
+# A capitalised word of two letters in camel case must be one of these (userId).
+_SHORT_WORDS = frozenset(
+    "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am".split()  # noqa: SIM905
+)
+_MAX_PARTS = 8
+_MAX_CAPITALS = 16
+_LONG_LOWER = 9
+
+
+def _camel_acronym(word: str) -> bool:
+    if word.isupper():
+        return word in _ACRONYMS
+    return len(word) >= _MIN_CASELESS_ACRONYM_LEN and word.upper() in _ACRONYMS
+
+
+def _lower_word(word: str) -> bool:
+    if word.upper() in _ACRONYMS:
+        return True
+    if len(word) >= _LONG_LOWER:
+        return _spelled(word) and any(ch in _VOWELS for ch in word)
+    return _spelled(word) and (len(word) <= 3 or any(ch in _VOWELS for ch in word))
+
+
+def _part_reads_as_words(part: str) -> bool:
+    if _WEBFORMS_CONTAINER_RE.fullmatch(part):
+        return True
+    hungarian = _HUNGARIAN_RE.fullmatch(part)
+    if hungarian and (hungarian.group(2) == "Pwd" or _plain_part(hungarian.group(2))):
+        return True
+    return _plain_part(part)
+
+
+def _plain_part(part: str) -> bool:
+    letters = part.rstrip("0123456789")
+    digits = len(part) - len(letters)
+    if not letters:
+        return 1 <= digits <= 2
+    if digits > 2 or not letters.isalpha():
+        return False
+    if letters.isupper():
+        if letters in _ACRONYMS or len(letters) == 1:
+            return True
+        lowered = letters.lower()
+        if len(letters) <= _MAX_CAPITALS and len(letters) >= _LONG_LOWER:
+            return _lower_word(lowered)
+        return (
+            len(letters) <= _MAX_CAPITALS
+            and _spelled(lowered)
+            and (len(letters) <= 2 or any(ch in _VOWELS for ch in lowered))
+        )
+    words = _CAMEL_WORD_RE.findall(letters)
+    if "".join(words) != letters:
+        return False
+    if len(words) == 1 and words[0].islower():
+        return _lower_word(words[0])
+    # Random text splits into many short words; a camel name holds at most one
+    # word of three letters or fewer that is not a listed short word or acronym.
+    short = [w for w in words if len(w) <= 3 and w not in _SHORT_WORDS and not _camel_acronym(w)]
+    if len(short) > 1:
+        return False
+    for word in words:
+        lowered = word.lower()
+        if _camel_acronym(word):
+            continue
+        if word.isupper():
+            return False
+        if len(word) == 2 and word[0].isupper():
+            if word not in _SHORT_WORDS:
+                return False
+        elif len(word) < 2 or not _spelled(lowered) or not any(ch in _VOWELS for ch in lowered):
+            return False
+    return True
+
+
+# Names a framework, a browser, a CDN, or a bot manager fixes, which no account
+# varies: they pass by exact name, compared without regard to case.
+_FRAMEWORK_NAMES = frozenset(
+    (  # noqa: SIM905 - one compact string on purpose: the set is data
+        # header names
+        "upgrade-insecure-requests www-authenticate proxy-authenticate etag x-xss-protection "
+        "alt-svc nel dnt cf-ray cf-cache-status cf-connecting-ip x-amz-cf-id x-amz-cf-pop "
+        "x-amz-date x-amz-request-id x-amzn-requestid x-amzn-trace-id x-amz-id-2 x-fb-debug "
+        "x-aspnet-version x-aspnetmvc-version x-dtpc grpc-status grpc-message x-cdn "
+        "x-akamai-transformed akamai-grn x-iinfo x-sucuri-id apollographql-client-name "
+        "apollographql-client-version "
+        # cookie names
+        ".aspxauth asp.net_sessionid .aspnetcore.session .aspnetcore.antiforgery "
+        ".aspnetcore.cookies __cf_bm cf_clearance __cfruid __cflb _cfuvid _abck bm_sz bm_sv "
+        "bm_mi ak_bmsc _fbp _fbc _gcl_au _gcl_aw _gcl_dc phpsessid jsessionid django_language "
+        "dtcookie rxvisitor rxvt arraffinity arraffinitysamesite _hjid _clck _clsk anonchk "
+        "srm_b nlbi visid_incap awsalb awsalbcors awselb hubspotutk __hstc __hssc __hssrc "
+        "_uetsid _uetvid muid csrftoken sessionid csrfmiddlewaretoken "
+        # ASP.NET WebForms page state
+        "__viewstate __viewstategenerator __viewstateencrypted __eventvalidation "
+        "__eventtarget __eventargument __lastfocus __previouspage __requestverificationtoken"
+    ).split()
+)
+# ASP.NET WebForms: a naming container (ctl00) and a control-type prefix before a
+# name that itself passes the gate (txtUserName, btnLogin, chkRememberMe).
+_WEBFORMS_CONTAINER_RE = re.compile(r"ctl\d{2}")
+_HUNGARIAN_RE = re.compile(
+    r"(txt|btn|chk|ddl|lbl|hdn|pwd|rdo|rbl|cbl|lnk|img|pnl|cbo|cmb|lst|gv|rpt|hl)([A-Z]\w*)"
+)
+# Django formsets: <prefix>-<index>-<field> and the four management fields. The
+# suffixes are code's; the field goes through the gate, and so does the prefix
+# unless it is 1 to 4 lower-case letters (bvp): formset prefixes are short by
+# convention, and 4 random letters carry under 19 bits, too few for a token.
+_FORMSET_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z_]{0,23})-(\d{1,2})-(.+)")
+_FORMSET_MANAGEMENT_RE = re.compile(
+    r"[A-Za-z][A-Za-z_]{0,23}-(?:TOTAL_FORMS|INITIAL_FORMS|MIN_NUM_FORMS|MAX_NUM_FORMS)"
+)
+
+
+_SHORT_PREFIX_RE = re.compile(r"[a-z]{1,4}")
+
+
+def _formset_prefix(prefix: str) -> bool:
+    return bool(_SHORT_PREFIX_RE.fullmatch(prefix)) or printable_name(prefix)
+
+
+def printable_name(text: str) -> bool:
+    """True when recorded *text* may be printed as a name: it reads as a name, not
+    as a value. A fixed framework name passes; otherwise *text* is at most 48
+    characters of parts joined by ``_ . $ - [ ]``, each a short number, capitals,
+    or words in lower or camel case spelled with the consonant pairs English uses
+    (:func:`_spelled`), and :func:`holds_an_id` does not hold it. The graft skill's
+    ``har-facts.py`` prints a name only when its copy of this rule passes it (a
+    test holds the two equal); the digest prints a cookie name only when it
+    passes, and counts the rest."""
+    if not text or len(text) > _MAX_NAME_LEN or not _NAME_CHARS_RE.fullmatch(text):
+        return False
+    if text.lower() in _FRAMEWORK_NAMES:
+        return True
+    if _FORMSET_MANAGEMENT_RE.fullmatch(text):
+        return _formset_prefix(text.rpartition("-")[0])
+    formset = _FORMSET_FIELD_RE.fullmatch(text)
+    if formset:
+        return _formset_prefix(formset.group(1)) and printable_name(formset.group(3))
+    parts = [part for part in _NAME_SPLIT_RE.split(text) if part]
+    if not parts or len(parts) > _MAX_PARTS or not any(_has_letter(part) for part in parts):
+        return False
+    if not all(_part_reads_as_words(part) for part in parts):
+        return False
+    # Capitals beside lower case (uid_SAMCOOKIE, addr[ADDRKEY]) read as a value
+    # dropped into a name; a name all in capitals (PHPSESSID, XSRF-TOKEN) does not.
+    if any(_long_capitals(part) for part in parts) and not all(
+        part.rstrip("0123456789").isupper() or part.isdigit() for part in parts
+    ):
+        return False
+    return not holds_an_id(text)
+
+
+def _long_capitals(part: str) -> bool:
+    letters = part.rstrip("0123456789")
+    return letters.isupper() and len(letters) > 3 and letters not in _ACRONYMS

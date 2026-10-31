@@ -13,7 +13,8 @@ import re
 import string
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Literal, get_args
 from urllib.parse import parse_qs, unquote, unquote_plus, urljoin, urlparse, urlunparse
@@ -40,7 +41,13 @@ from graftpunk.har.login_signals import (
     success_candidates,
 )
 from graftpunk.har.naming import capture_text, fixture_rank, normalize_media_type
-from graftpunk.har.parser import HAREntry, LoginInteraction, cookie_header_pairs, parse_har_file
+from graftpunk.har.parser import (
+    UNPARSED_TIMESTAMP,
+    HAREntry,
+    LoginInteraction,
+    cookie_header_pairs,
+    parse_har_file,
+)
 from graftpunk.har.paths import (
     bare_host,
     bare_path,
@@ -52,6 +59,7 @@ from graftpunk.har.paths import (
     looks_dynamic,
     normal_host,
     param_name_for_segment,
+    printable_name,
     reads_as_cased_words,
     reads_as_words,
     split_parts,
@@ -72,6 +80,8 @@ DropReason = Literal["static", "third_party", "error", "other_scheme"]
 __all__ = [
     "BodyKind",
     "BodyLayout",
+    "CookieFacts",
+    "CookieSetting",
     "DigestSource",
     "DropReason",
     "Endpoint",
@@ -95,6 +105,8 @@ __all__ = [
     "password_field_names",
     "post_account_values",
     "post_every_value",
+    "printable_login_fields",
+    "printable_tokens",
     "post_identifier_values",
     "posted_account_values",
     "endpoint_template",
@@ -454,6 +466,53 @@ class LoginObservation:
 
 
 @dataclass(frozen=True)
+class CookieSetting:
+    """One distinct set of attributes the responses of a run gave a cookie, and
+    the endpoints that set it so, as ``METHOD template`` in the digest's own
+    templates (high-cardinality collapse included), in the order first seen.
+
+    Each attribute is a word, never a value: ``http_only`` and ``secure`` are
+    ``yes``, ``no``, or ``unknown``; ``same_site`` is ``Lax``, ``Strict``,
+    ``None``, ``-`` (not set), or ``unknown``; ``path`` is the ``Path``
+    attribute templated and collapsed into its endpoint family as an endpoint's
+    path is, ``-`` (not set or empty), ``unknown`` (not starting with ``/``),
+    or ``(not shown)`` (holding a character outside a plain path, such as
+    ``,``, ``?``, ``#``, ``=``, ``;``, or whitespace); ``expiry`` is ``session``
+    (neither ``Max-Age`` nor ``Expires``), ``persistent``, ``past`` (a
+    ``Max-Age`` of 0 or less, or an ``Expires`` no later than the request: the
+    response deletes the cookie), or ``unknown``.
+
+    ``unknown`` is an attribute the recording does not settle. On a
+    ``Set-Cookie`` header line a missing flag is ``no`` and a missing
+    ``SameSite`` or ``Path`` is ``-``; a ``SameSite`` that is empty, bare, or not
+    recognised is ``unknown``, and so is an ``expiry`` whose ``Max-Age`` is not
+    a number, whose ``Expires`` is not a date, or whose ``Expires`` the request
+    gives no time to compare with (a ``startedDateTime`` that does not parse).
+    A ``response.cookies`` entry without a ``Set-Cookie`` header line gives
+    ``unknown`` for every attribute it leaves out (the array often drops one the
+    header carried), and for an ``expires`` that is not an ISO 8601 or HTTP
+    date."""
+
+    http_only: str
+    secure: str
+    same_site: str
+    path: str
+    expiry: str
+    set_by: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CookieFacts:
+    """What a run shows of one cookie, by name, never its value: each distinct
+    set of attributes a response gave it (:class:`CookieSetting`), or none when
+    the recording only sent it (a recording made with a cached session sends a
+    session cookie no response sets)."""
+
+    name: str
+    settings: tuple[CookieSetting, ...] = ()
+
+
+@dataclass(frozen=True)
 class RunDigest:
     source: DigestSource
     primary_host: str
@@ -488,6 +547,21 @@ class RunDigest:
     # interactive --wrong-password-first (_failure_candidates). Suggestions only: the
     # generator writes them commented out.
     failure_candidates: tuple[str, ...] = ()
+    # What the run shows of each cookie, never a value or a Domain: every cookie of
+    # ``cookies`` with its attribute sets, then each one a request of a kept host
+    # sent and no response of one set, never one whose name reads as a value
+    # (_cookie_facts). The markdown Cookies section prints it, and --json
+    # carries it (#315); a run with no cookie renders as it did before it.
+    cookie_facts: tuple[CookieFacts, ...] = field(default=(), metadata={OMIT_EMPTY: True})
+    # How many distinct cookie names, set or sent, read as a value
+    # (graftpunk.har.paths.printable_name, the graft skill's har-facts.py gate)
+    # and so print nowhere: not in ``cookie_facts``, a login step's cookie
+    # names (printable_login_fields), a cookie token candidate
+    # (printable_tokens), or --json's ``cookies``, so in no section of the
+    # markdown, --json, --endpoints-json, or a scaffolded plugin. The model's
+    # ``cookies``, ``login``, and ``tokens`` keep every name for the fixture
+    # safety net. A name holding an id counts here too.
+    cookie_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
 
 
 def _scope_root(primary_host: str) -> str:
@@ -1179,6 +1253,246 @@ def _entry_cookie_names(entry: HAREntry) -> list[str]:
         if name and name not in names:
             names.append(name)
     return names
+
+
+_SAME_SITE = {"lax": "Lax", "strict": "Strict", "none": "None"}
+_MAX_AGE_RE = re.compile(r"-?[0-9]+")
+
+# (HttpOnly, Secure, SameSite, Path, expiry) as CookieSetting spells them, the
+# path not yet templated.
+_CookieAttributes = tuple[str, str, str, str, str]
+
+
+def _yes_no(attributes: dict[str, str], flag: str) -> str:
+    return "yes" if flag in attributes else "no"
+
+
+def _same_site(value: str | None) -> str:
+    if value is None:
+        return "-"
+    return _SAME_SITE.get(value.strip().lower(), "unknown")
+
+
+# A Path that prints, after templating: one leading slash, then letters, digits,
+# ``.``, ``_``, ``~``, ``-``, and single slashes alone. A comma, query, fragment,
+# ``=``, ``;``, quote, or space can be a second cookie folded into the header or a
+# value, and so can its percent-encoded form; ``:``, ``@``, ``+``, and a ``//``
+# can carry a host or a user. Any of them gives ``(not shown)``.
+_PLAIN_COOKIE_PATH_RE = re.compile(r"(?!.*//)/[A-Za-z0-9._~/-]*")
+_PATH_NOT_SHOWN = "(not shown)"
+
+
+def _cookie_path(value: str | None) -> str:
+    """A ``Path`` attribute as recorded: ``-`` when it is missing or empty (the
+    browser then uses the response's own path), ``unknown`` when it does not
+    start with ``/`` (RFC 6265 has the browser ignore it), ``(not shown)`` when
+    it holds a character outside a plain path, and the path otherwise, which
+    :func:`_cookie_facts` templates."""
+    if not value:
+        return "-"
+    if not value.startswith("/"):
+        return "unknown"
+    return value if _PLAIN_COOKIE_PATH_RE.fullmatch(value) else _PATH_NOT_SHOWN
+
+
+def _expiry(attributes: dict[str, str], sent_at: datetime | None) -> str:
+    """``session``, ``persistent``, ``past``, or ``unknown`` for a ``Set-Cookie``
+    line's attributes (:class:`CookieSetting`). ``Max-Age`` wins over
+    ``Expires``, as RFC 6265 has it; an ``Expires`` is compared with *sent_at*,
+    when the request was sent, since a deleting response writes a date long
+    gone, and is ``unknown`` without one."""
+    max_age = attributes.get("max-age")
+    if max_age is not None and _MAX_AGE_RE.fullmatch(max_age):
+        return "past" if int(max_age) <= 0 else "persistent"
+    expires = attributes.get("expires")
+    if expires is None:
+        return "session" if max_age is None else "unknown"
+    try:
+        when = parsedate_to_datetime(expires)
+    except (TypeError, ValueError, IndexError):
+        return "unknown"
+    return _past_or_persistent(when, sent_at)
+
+
+def _past_or_persistent(when: datetime, sent_at: datetime | None) -> str:
+    if sent_at is None:
+        return "unknown"
+    sent = sent_at if sent_at.tzinfo else sent_at.replace(tzinfo=UTC)
+    when = when if when.tzinfo else when.replace(tzinfo=UTC)
+    return "past" if when <= sent else "persistent"
+
+
+def _array_expiry(expires: Any, sent_at: datetime | None) -> str:
+    """The ``expiry`` word for a ``response.cookies`` entry's ``expires``: an ISO
+    8601 date, as HAR 1.2 has it, or an HTTP date, as some recorders copy from
+    the header, compared with *sent_at* as :func:`_expiry` compares one; and
+    ``unknown`` when it is missing, empty, or neither."""
+    if not isinstance(expires, str) or not expires:
+        return "unknown"
+    try:
+        when = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(expires)
+        except (TypeError, ValueError, IndexError):
+            return "unknown"
+    return _past_or_persistent(when, sent_at)
+
+
+def _sent_at(entry: HAREntry) -> datetime | None:
+    """When *entry*'s request was sent, or None when its ``startedDateTime`` did
+    not parse (the parser then gives :data:`UNPARSED_TIMESTAMP`)."""
+    return None if entry.timestamp == UNPARSED_TIMESTAMP else entry.timestamp
+
+
+def _array_flag(value: Any) -> str:
+    """A ``response.cookies`` entry's ``httpOnly`` or ``secure``: the array often
+    leaves a flag out when the header carried it, so a missing one is unknown."""
+    if value is True:
+        return "yes"
+    return "no" if value is False else "unknown"
+
+
+def _response_cookie_attributes(entry: HAREntry) -> list[tuple[str, _CookieAttributes]]:
+    """``(name, attributes)`` for each cookie *entry*'s response sets, in order:
+    one per ``Set-Cookie`` header line (``response.set_cookie_attributes``),
+    then one per ``response.cookies`` entry past the header lines of its name,
+    paired by position within a name as the graft skill's ``har-facts.py
+    cookies`` pairs them. A header line is what the server sent, so it wins over
+    the array, whose flags a recorder can leave out. A name holding an account
+    value is skipped. Never a value."""
+    settings: list[tuple[str, _CookieAttributes]] = []
+    lines_of: dict[str, int] = {}
+    sent_at = _sent_at(entry)
+    for name, attributes in entry.response.set_cookie_attributes:
+        lines_of[name] = lines_of.get(name, 0) + 1
+        if holds_an_id(name):
+            continue
+        settings.append(
+            (
+                name,
+                (
+                    _yes_no(attributes, "httponly"),
+                    _yes_no(attributes, "secure"),
+                    _same_site(attributes.get("samesite")),
+                    _cookie_path(attributes.get("path")),
+                    _expiry(attributes, sent_at),
+                ),
+            )
+        )
+    for cookie in entry.response.cookies:
+        name = cookie.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if lines_of.get(name, 0) > 0:
+            lines_of[name] -= 1
+            continue
+        if holds_an_id(name):
+            continue
+        same_site = cookie.get("sameSite")
+        path = cookie.get("path")
+        settings.append(
+            (
+                name,
+                (
+                    _array_flag(cookie.get("httpOnly")),
+                    _array_flag(cookie.get("secure")),
+                    _same_site(same_site) if isinstance(same_site, str) else "unknown",
+                    _cookie_path(path) if isinstance(path, str) else "unknown",
+                    _array_expiry(cookie.get("expires"), sent_at),
+                ),
+            )
+        )
+    return settings
+
+
+def _collapsed_cookie_path(raw: str, collapse_map: dict[str, str]) -> str:
+    """*raw*, a templated cookie ``Path``, carried through the high-cardinality
+    collapse as an endpoint's template is: the collapsed template of a member it
+    equals, or the leading segments of one whose leading segments it equals, so
+    ``/p/alice2`` beside the family ``/p/{p_id}/reviews`` prints ``/p/{p_id}``. A
+    trailing ``/`` is kept."""
+    if raw in collapse_map:
+        return collapse_map[raw]
+    trailing = "/" if raw.endswith("/") and raw != "/" else ""
+    segments = (raw[:-1] if trailing else raw).split("/")
+    for member, template in collapse_map.items():
+        member_segments, template_segments = member.split("/"), template.split("/")
+        if (
+            len(member_segments) == len(template_segments) >= len(segments)
+            and member_segments[: len(segments)] == segments
+            and template_segments[: len(segments)] != segments
+        ):
+            return "/".join(template_segments[: len(segments)]) + trailing
+    return raw
+
+
+def _cookie_facts(
+    set_names: Sequence[str],
+    settings: Iterable[tuple[str, _CookieAttributes, str, str]],
+    sent: Iterable[str],
+    collapse_map: dict[str, str],
+) -> tuple[CookieFacts, ...]:
+    """One :class:`CookieFacts` per cookie of *set_names* (the digest's
+    ``cookies``, in order), with each distinct attribute set *settings* records
+    for it and the endpoints that set it so, the raw templates and the ``Path``
+    carried through *collapse_map* as the endpoints are; then one with no
+    settings for each name of *sent* that no response set. A name that reads as
+    a value (:func:`graftpunk.har.paths.printable_name`, the graft skill's
+    ``har-facts.py`` gate) is left out; :func:`_cookie_names_not_shown` counts
+    them."""
+    grouped: dict[str, dict[_CookieAttributes, dict[str, None]]] = {}
+    for name, attributes, method, raw_template in settings:
+        http_only, secure, same_site, path, expiry = attributes
+        if path.startswith("/"):
+            raw_path, _ = template_path(path)
+            path = _collapsed_cookie_path(raw_path, collapse_map)
+        endpoint = f"{method} {collapse_map.get(raw_template, raw_template)}"
+        key = (http_only, secure, same_site, path, expiry)
+        grouped.setdefault(name, {}).setdefault(key, {})[endpoint] = None
+    facts = [
+        CookieFacts(
+            name=name,
+            settings=tuple(
+                CookieSetting(*key, set_by=tuple(endpoints))
+                for key, endpoints in grouped.get(name, {}).items()
+            ),
+        )
+        for name in set_names
+        if printable_name(name)
+    ]
+    known = set(set_names)
+    for name in dict.fromkeys(sent):
+        if name not in known and printable_name(name):
+            facts.append(CookieFacts(name=name))
+    return tuple(facts)
+
+
+def _cookie_names_not_shown(*names: Iterable[str]) -> int:
+    """How many distinct names of *names* (the cookies a run set, set holding an
+    id, and sent) read as a value (:func:`graftpunk.har.paths.printable_name`),
+    and so print in no form."""
+    return len({name for group in names for name in group if not printable_name(name)})
+
+
+def printable_tokens(tokens: Iterable[TokenCandidate]) -> tuple[TokenCandidate, ...]:
+    """*tokens* as every output prints them: without a cookie candidate whose name
+    reads as a value (:func:`graftpunk.har.paths.printable_name`), which
+    ``RunDigest.cookie_names_not_shown`` counts. A header candidate is a header
+    name and prints as the endpoints' custom headers do. ``RunDigest.tokens``
+    keeps them all: :func:`flagged_names_of` reads it."""
+    return tuple(t for t in tokens if t.kind != "cookie" or printable_name(t.name))
+
+
+def printable_login_fields(observation: LoginObservation) -> tuple[str, ...]:
+    """*observation*'s ``fields`` as every output prints them: a ``set_cookie``
+    step's cookie names without one that reads as a value
+    (:func:`graftpunk.har.paths.printable_name`), which
+    ``RunDigest.cookie_names_not_shown`` counts. ``LoginObservation.fields`` keeps
+    them all."""
+    if observation.kind != "set_cookie":
+        return observation.fields
+    return tuple(name for name in observation.fields if printable_name(name))
 
 
 def _redirect_target(entry: HAREntry) -> tuple[str, str]:
@@ -2425,6 +2739,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     token_seen: dict[tuple[TokenKind, str], list[str]] = {}
     cookies_seen: dict[str, None] = {}
     id_cookie_names: set[str] = set()
+    # Each cookie a kept response set: its attributes, method, and raw template,
+    # in order; and each cookie a kept request sent.
+    cookie_settings: list[tuple[str, _CookieAttributes, str, str]] = []
+    cookies_sent: dict[str, None] = {}
     login: list[LoginObservation] = []
     # Each observation with the step it was classified at, the kind it falls back
     # to when it is a form page no credential post claims, its forms' targets, and
@@ -2603,6 +2921,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 id_cookie_names.add(cookie_name)
                 continue
             cookies_seen.setdefault(cookie_name, None)
+        for cookie_name, attributes in _response_cookie_attributes(entry):
+            cookie_settings.append((cookie_name, attributes, method, raw_template))
+        for cookie_name, _value in _sent_cookie_values(entry):
+            cookies_sent.setdefault(cookie_name, None)
 
         here = urlparse(url)
         here_host = normal_host(here.scheme, here.netloc)
@@ -3018,6 +3340,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         collapsed_templates=collapse_map,
         cookie_names_dropped_as_ids=len(id_cookie_names),
         token_names_dropped_as_ids=len(id_token_names),
+        cookie_facts=_cookie_facts(
+            tuple(cookies_seen), cookie_settings, cookies_sent, collapse_map
+        ),
+        cookie_names_not_shown=_cookie_names_not_shown(cookies_seen, id_cookie_names, cookies_sent),
         # Only for a run that recorded a login. The final page is the last of
         # after_post_pages (page-source.html when it went there); success_candidates
         # finds the leading run of login steps among them. The last credential post's

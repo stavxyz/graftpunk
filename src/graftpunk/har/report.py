@@ -19,13 +19,16 @@ from graftpunk.contracts import current_schema
 from graftpunk.har.digest import (
     INTERNAL,
     OMIT_EMPTY,
+    CookieSetting,
     Endpoint,
     RunDigest,
     ShapeNode,
     family_values,
+    printable_login_fields,
+    printable_tokens,
 )
 from graftpunk.har.documents import LoginForm, printable_selectors, printable_unresolved_roles
-from graftpunk.har.paths import templated_url, templates_a_segment
+from graftpunk.har.paths import printable_name, templated_url, templates_a_segment
 
 __all__ = [
     "DEFAULT_ENDPOINT_LIMIT",
@@ -76,6 +79,48 @@ def summarize_shape(shape: ShapeNode | None, *, depth: int = _DEFAULT_SUMMARY_DE
 def _size_note(size: int | None) -> str:
     """`` (N bytes)`` for a size the HAR recorded, and nothing for one it did not."""
     return "" if size is None else f" ({size} bytes)"
+
+
+def _cookie_setting(setting: CookieSetting) -> str:
+    """One attribute set, in the words and order the graft skill's
+    ``har-facts.py cookies`` prints them, with the expiry as a word."""
+    return (
+        f"set by {', '.join(setting.set_by)}: HttpOnly={setting.http_only} "
+        f"Secure={setting.secure} SameSite={setting.same_site} Path={setting.path} "
+        f"expiry={setting.expiry}"
+    )
+
+
+_ONLY_SENT = "sent in requests and never set by a response the digest kept"
+
+
+def _cookie_lines(d: RunDigest) -> list[str]:
+    """The Cookies section: one line per cookie, by name, never a value. A cookie a
+    response set lists each distinct attribute set with the endpoints that set it
+    so, separated by ``;``; one only requests carried says so (a static,
+    third-party, or failed response the digest left out may have set it). A name
+    in ``d.cookies`` with no facts (a digest built without them) prints alone. A
+    name that reads as a value (:func:`graftpunk.har.paths.printable_name`) is
+    left out and counted on a line of its own."""
+    facts = {fact.name: fact for fact in d.cookie_facts}
+    names = [name for name in dict.fromkeys([*d.cookies, *facts]) if printable_name(name)]
+    hidden = max(d.cookie_names_not_shown, sum(1 for name in d.cookies if not printable_name(name)))
+    lines: list[str] = []
+    for name in names:
+        fact = facts.get(name)
+        if fact is None:
+            lines.append(f"- `{name}`")
+        elif fact.settings:
+            lines.append(f"- `{name}`: {'; '.join(map(_cookie_setting, fact.settings))}")
+        else:
+            lines.append(f"- `{name}`: {_ONLY_SENT}")
+    if hidden:
+        lines.append(
+            "- 1 cookie whose name reads as a value is not shown"
+            if hidden == 1
+            else f"- {hidden} cookies whose names read as values are not shown"
+        )
+    return lines or ["(none)"]
 
 
 def _endpoint_block(endpoint: Endpoint) -> list[str]:
@@ -196,7 +241,8 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     lines.append("## Login")
     if d.login:
         for obs in d.login:
-            field_note = f" ({', '.join(obs.fields)})" if obs.fields else ""
+            fields = printable_login_fields(obs)
+            field_note = f" ({', '.join(fields)})" if fields else ""
             redirect_note = f" -> {obs.redirect_to}" if obs.redirect_to else ""
             # A login-shaped observation outside the login the generator uses (a
             # password change, a later redirect) says so.
@@ -223,15 +269,16 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     lines.append("")
 
     lines.append("## Tokens")
-    if d.tokens:
-        for token in d.tokens:
+    tokens = printable_tokens(d.tokens)
+    if tokens:
+        for token in tokens:
             lines.append(f"- {token.kind} `{token.name}`, seen on: {', '.join(token.seen_on)}")
     else:
         lines.append("(none found)")
     lines.append("")
 
     lines.append("## Cookies")
-    lines.append(", ".join(d.cookies) if d.cookies else "(none)")
+    lines.extend(_cookie_lines(d))
     lines.append("")
 
     lines.append("## Endpoints")
@@ -279,8 +326,17 @@ def _jsonable(value: Any) -> Any:
 def render_json(d: RunDigest) -> str:
     """The complete digest as JSON: nothing capped, nothing summarised. A field
     marked :data:`graftpunk.har.digest.INTERNAL` is a lookup for code and is left
-    out."""
-    return json.dumps(_jsonable(d), indent=2, sort_keys=True)
+    out, and so is a cookie name that reads as a value
+    (:func:`graftpunk.har.paths.printable_name`), which
+    ``cookie_names_not_shown`` counts: in ``cookies``, in ``login`` fields
+    (:func:`graftpunk.har.digest.printable_login_fields`), and in ``tokens``
+    (:func:`graftpunk.har.digest.printable_tokens`)."""
+    rendered = _jsonable(d)
+    rendered["cookies"] = [name for name in d.cookies if printable_name(name)]
+    rendered["tokens"] = _jsonable(printable_tokens(d.tokens))
+    for observation, login in zip(d.login, rendered["login"], strict=True):
+        login["fields"] = list(printable_login_fields(observation))
+    return json.dumps(rendered, indent=2, sort_keys=True)
 
 
 _LOGIN_SHAPED_KINDS = frozenset({"form_page", "credential_post", "redirect", "set_cookie"})

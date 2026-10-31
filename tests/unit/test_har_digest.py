@@ -25,6 +25,7 @@ from graftpunk.har.digest import (
     _LOGIN_WINDOW,
     _MAX_ENDPOINT_EXAMPLES,
     _MAX_FIELD_NAME_LEN,
+    _PLAIN_COOKIE_PATH_RE,
     _SHAPE_MAX_DEPTH,
     _SHAPE_MAX_KEYS,
     SHAPE_UNAVAILABLE,
@@ -33,8 +34,11 @@ from graftpunk.har.digest import (
     LoginObservation,
     ObservationKind,
     _account_values,
+    _array_expiry,
+    _expiry,
     _login_opener,
     _parse_body,
+    _response_cookie_attributes,
     _scalar_values,
     _with_login_flow,
     body_params,
@@ -53,6 +57,7 @@ from graftpunk.har.parser import LoginInteraction, parse_har_file
 from graftpunk.har.paths import reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from tests.unit.guide_harness import REPO_ROOT
+from tests.unit.test_har_parser import _load_har_facts
 
 
 def _entry(
@@ -8383,3 +8388,196 @@ class TestPostEveryValue:
 
         monkeypatch.setattr(json, "loads", too_deep)
         assert post_every_value(body, "application/json") == []
+
+
+_SENT_AT = datetime(2026, 10, 31, 10, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("attributes", "sent_at"),
+    [
+        ({}, _SENT_AT),
+        ({"max-age": "60"}, _SENT_AT),
+        ({"max-age": "0"}, _SENT_AT),
+        ({"max-age": "-1"}, _SENT_AT),
+        ({"max-age": "soon"}, _SENT_AT),
+        ({"max-age": "soon", "expires": "Wed, 21 Oct 2037 07:28:00 GMT"}, _SENT_AT),
+        ({"max-age": "60", "expires": "Thu, 01 Jan 1970 00:00:00 GMT"}, _SENT_AT),
+        ({"expires": "Thu, 01 Jan 1970 00:00:00 GMT"}, _SENT_AT),
+        ({"expires": "Wed, 21-Oct-2037 07:28:00 GMT"}, _SENT_AT),
+        ({"expires": "Sat, 31 Oct 2026 10:00:00 GMT"}, _SENT_AT),
+        ({"expires": "not a date"}, _SENT_AT),
+        ({"expires": ""}, _SENT_AT),
+        ({"expires": "Wed, 21 Oct 2037 07:28:00 GMT"}, datetime(2026, 10, 31, 10, 0)),
+        # No request time: an Expires is unknown, and Max-Age still decides.
+        ({"expires": "Thu, 01 Jan 1970 00:00:00 GMT"}, None),
+        ({"expires": "Wed, 21 Oct 2037 07:28:00 GMT"}, None),
+        ({"expires": "not a date"}, None),
+        ({"max-age": "0", "expires": "Wed, 21 Oct 2037 07:28:00 GMT"}, None),
+        ({"max-age": "60"}, None),
+        ({}, None),
+    ],
+)
+def test_the_expiry_rule_is_the_digests(
+    attributes: dict[str, str], sent_at: datetime | None
+) -> None:
+    """The script's ``expiry`` word for a Set-Cookie line is the digest's."""
+    assert _load_har_facts().expiry_of(attributes, sent_at) == _expiry(attributes, sent_at)
+
+
+# ISO 8601 times datetime.fromisoformat reads from Python 3.11 on and not on 3.9
+# or 3.10, where the graft skill's har-facts.py also runs.
+_ISO_SHAPES_BEFORE_3_11 = [
+    "1970-01-01T00:00:00.12Z",
+    "1970-01-01T00:00:00.1234Z",
+    "2099-01-01T00:00:00.1234567Z",
+    "1970-01-01T00:00:00,5Z",
+    "19700101T000000Z",
+    "20990101",
+    "2099-01-01T0000",
+    "2099-01-01T000000.5",
+    "2099-01-01T00:00:00.000+0000",
+    "2099-01-01T00:00:00+00",
+    "2099-01-01T00:00:00-0530",
+    "2099-01-01T00:00:00+05:30:15",
+]
+
+
+@pytest.mark.parametrize(
+    "expires",
+    [
+        None,
+        "",
+        1,
+        "1970-01-01T00:00:00.000Z",
+        "2037-10-21T07:28:00.000Z",
+        "2026-10-31T10:00:00+00:00",
+        "2026-10-31T10:00:00",
+        *_ISO_SHAPES_BEFORE_3_11,
+        "Thu, 01 Jan 1970 00:00:00 GMT",
+        "Wed, 21 Oct 2037 07:28:00 GMT",
+        "not a date",
+    ],
+)
+@pytest.mark.parametrize("sent_at", [_SENT_AT, None])
+def test_the_array_expiry_rule_is_the_digests(expires: object, sent_at: datetime | None) -> None:
+    """The script's ``expiry`` word for a ``response.cookies`` entry is the digest's."""
+    assert _load_har_facts().array_expiry_of(expires, sent_at) == _array_expiry(expires, sent_at)
+
+
+@pytest.mark.parametrize("text", _ISO_SHAPES_BEFORE_3_11)
+def test_the_har_reader_reads_on_3_9_the_iso_shapes_3_11_reads(text: str) -> None:
+    """``fromisoformat`` before 3.11 rejects each of these, and the script runs on
+    3.9, while CI runs 3.11 on: the script's own reading of them, which it falls
+    back to, is what ``fromisoformat`` gives on this Python."""
+    expected = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    assert _load_har_facts()._iso_by_hand(text) == expected
+
+
+def test_the_har_readers_plain_path_pattern_is_the_digests() -> None:
+    ours = _load_har_facts()._PLAIN_COOKIE_PATH_RE
+    assert (ours.pattern, ours.flags) == (
+        _PLAIN_COOKIE_PATH_RE.pattern,
+        _PLAIN_COOKIE_PATH_RE.flags,
+    )
+
+
+# Each attribute missing, empty, bare, recognised, and malformed, on a header line
+# and in a response.cookies entry the header does not carry.
+_PARITY_SET_COOKIES = [
+    "a=1",
+    "a=1; HttpOnly",
+    "a=1; HttpOnly=",
+    "a=1; httponly=yes",
+    "a=1; Secure",
+    "a=1; Secure=",
+    "a=1; SameSite",
+    "a=1; SameSite=",
+    "a=1; SameSite=  ",
+    "a=1; SameSite=lax",
+    "a=1; SameSite=Strict",
+    "a=1; SameSite=NONE",
+    "a=1; SameSite=Sometimes",
+    "a=1; Path",
+    "a=1; Path=",
+    "a=1; Path=/",
+    "a=1; Path=/account",
+    "a=1; Path=account",
+    "a=1; Path=/cb?next=home",
+    "a=1; Path=/x#frag",
+    "a=1; Path=/, b=2",
+    "a=1; Path=/a b",
+    "a=1; Path=/a%2Cb%3Dbobsmith",
+    "a=1; Path=/cb%3Fnext%3Dbobsmith",
+    "a=1; Path=/x:bobsmith@host",
+    "a=1; Path=/x+bobsmith",
+    "a=1; Path=//bobsmith.example/x",
+    "a=1; Path=/a//b",
+    "a=1; Path=/a/b/",
+    "a=1; Expires",
+    "a=1; Expires=",
+    "a=1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    "a=1; Expires=Wed, 21 Oct 2037 07:28:00 GMT",
+    "a=1; Expires=not a date",
+    "a=1; Max-Age",
+    "a=1; Max-Age=",
+    "a=1; Max-Age=0",
+    "a=1; Max-Age=60",
+    "a=1; Max-Age=soon",
+    "a=1; Max-Age=60; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+]
+_PARITY_ARRAY_COOKIES: list[dict[str, Any]] = [
+    {},
+    {"httpOnly": True, "secure": True},
+    {"httpOnly": False, "secure": False},
+    {"httpOnly": "", "secure": ""},
+    {"httpOnly": None, "secure": None},
+    {"sameSite": ""},
+    {"sameSite": "Lax"},
+    {"sameSite": "strict"},
+    {"sameSite": "Sometimes"},
+    {"sameSite": 1},
+    {"path": ""},
+    {"path": "/"},
+    {"path": "/account"},
+    {"path": "account"},
+    {"path": "/a;theme=dark"},
+    {"path": "/cb?next=home"},
+    {"path": "/%3Fq%3Dbobsmith"},
+    {"path": "//bobsmith.example/x"},
+    {"path": 1},
+    {"expires": ""},
+    {"expires": "1970-01-01T00:00:00.000Z"},
+    {"expires": "2037-10-21T07:28:00.000Z"},
+    {"expires": "Thu, 01 Jan 1970 00:00:00 GMT"},
+    {"expires": "not a date"},
+]
+
+
+@pytest.mark.parametrize("started", ["2026-10-31T10:00:00.000Z", "garbled"])
+def test_every_cookie_attribute_word_is_the_scripts(tmp_path: Path, started: str) -> None:
+    """For each attribute missing, empty, bare, or malformed, on a header line and
+    in an array-only entry, the digest's words are ``har-facts.py cookies``'s."""
+    script = _load_har_facts()
+    entry = _entry(
+        "POST", "https://myshop.example/login", set_cookies=_PARITY_SET_COOKIES, started=started
+    )
+    entry["response"]["cookies"] = [
+        {"name": f"arr{index}", "value": "1", **fields}
+        for index, fields in enumerate(_PARITY_ARRAY_COOKIES)
+    ]
+    (parsed,) = parse_har_file(_write_har(tmp_path, [entry])).entries
+    ours = [attributes for _name, attributes in _response_cookie_attributes(parsed)]
+    sent_at = script._sent_at(entry)
+    host = "myshop.example"
+    keys = ("HttpOnly", "Secure", "SameSite", "Path", "expiry")
+    headers = entry["response"]["headers"]
+    theirs = [
+        tuple(script._header_view(attributes, host, sent_at)[key] for key in keys)
+        for _name, attributes in script.set_cookie_lines(headers)
+    ] + [
+        tuple(script._array_view(cookie, host, sent_at)[key] for key in keys)
+        for cookie in entry["response"]["cookies"]
+    ]
+    assert len(ours) == len(_PARITY_SET_COOKIES) + len(_PARITY_ARRAY_COOKIES)
+    assert ours == theirs
