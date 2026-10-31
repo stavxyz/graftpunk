@@ -347,10 +347,13 @@ class TestSuccessCandidates:
             "#user-orders",
         )
 
-    def test_an_earlier_page_asking_for_a_one_time_code_is_logged_out(self) -> None:
+    @pytest.mark.parametrize(
+        "value", ["One-Time-Code", "one-time-code webauthn", "section-mfa one-time-code"]
+    )
+    def test_an_earlier_page_asking_for_a_one_time_code_is_logged_out(self, value: str) -> None:
         mfa = _page(
             "<div id='account-menu'></div>",
-            "<input name='code' autocomplete='One-Time-Code'>",
+            f"<input name='code' autocomplete='{value}'>",
         )
         after = _page("<div id='account-menu'></div><div id='main-panel'></div>")
         assert _checked([_LOGIN, mfa], after) == ("#main-panel",)

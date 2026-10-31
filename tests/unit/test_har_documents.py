@@ -11,6 +11,7 @@ import pytest
 
 from graftpunk.har.documents import (
     _parse,
+    autofill_field_name,
     extract_login_forms,
     extract_token_candidates,
     form_action_targets,
@@ -853,6 +854,99 @@ class TestLoginRolesFromAutocompleteAndControls:
         (form,) = extract_login_forms(html, source="s")
         assert form.neutral_roles == ("field_1", "field_2")
         assert form.nameless_roles == ("field_1",)
+
+
+class TestAutocompleteIsATokenList:
+    """#322: an autocomplete value is read as the HTML autofill grammar's token
+    list and compared by its field-name token."""
+
+    @pytest.mark.parametrize(
+        ("value", "field_name"),
+        [
+            ("username", "username"),
+            ("username webauthn", "username"),
+            ("current-password webauthn", "current-password"),
+            ("section-login username", "username"),
+            ("USERNAME", "username"),
+            ("\tUsername\n", "username"),
+            ("section-a billing work email webauthn", "email"),
+            ("home email", "email"),
+            ("email", "email"),
+            ("one-time-code webauthn", "one-time-code"),
+            ("off", "off"),
+            ("on", "on"),
+            ("", ""),
+            ("   ", ""),
+            ("section-login", "section-login"),
+            ("off username", ""),
+            ("username off", ""),
+            ("bogus username", ""),
+            ("home username", ""),
+            ("billing section-a username", ""),
+        ],
+    )
+    def test_the_field_name_token(self, value: str, field_name: str) -> None:
+        assert autofill_field_name(value) == field_name
+
+    @pytest.mark.parametrize(
+        ("value", "username"),
+        [
+            ("username", "#who"),
+            ("username webauthn", "#who"),
+            ("section-login username", "#who"),
+            ("USERNAME", "#who"),
+            ("off", "#q"),
+            ("", "#q"),
+            ("section-login", "#q"),
+            ("bogus username", "#q"),
+            # An email hint counts only before the password, as before.
+            ("email", "#q"),
+        ],
+    )
+    @pytest.mark.parametrize("snapshot", [False, True], ids=["html", "snapshot"])
+    def test_a_username_field_name_counts_after_the_password(
+        self, value: str, username: str, snapshot: bool
+    ) -> None:
+        html = (
+            '<form action="/login"><input type="text" name="q" id="q">'
+            '<input type="password" name="password">'
+            f'<input type="text" id="who" name="who" autocomplete="{value}"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s", snapshot=snapshot)
+        assert form.fields["username"] == username
+
+    @pytest.mark.parametrize(
+        ("value", "username"),
+        [("email", "#who"), ("home email", "#who"), ("email webauthn", "#who"), ("", "#nick")],
+    )
+    def test_an_email_field_name_before_the_password_is_the_username(
+        self, value: str, username: str
+    ) -> None:
+        html = (
+            '<form action="/login"><input type="text" name="q" id="q">'
+            f'<input type="text" id="who" name="who" autocomplete="{value}">'
+            '<input type="text" name="nick" id="nick">'
+            '<input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["username"] == username
+
+    @pytest.mark.parametrize("value", ["current-password", "current-password webauthn"])
+    def test_a_current_password_field_name_marks_the_password(self, value: str) -> None:
+        html = (
+            '<form action="/login"><input type="email" name="login" id="login">'
+            f'<input type="text" id="secret" name="secret" autocomplete="{value}"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"username": "#login", "password": "#secret"}  # noqa: S105
+
+    def test_a_text_input_with_another_password_token_is_no_password(self) -> None:
+        html = (
+            '<form action="/login"><input type="email" name="login" id="login">'
+            '<input type="text" id="secret" name="secret" autocomplete="bogus current-password">'
+            "</form>"
+        )
+        assert extract_login_forms(html, source="s") == ()
 
 
 class TestRegistrationFormsAndControlsOutsideTheirForm:
