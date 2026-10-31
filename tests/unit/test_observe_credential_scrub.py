@@ -231,15 +231,17 @@ class TestCredentialPostsAreScrubbed:
         summary = [c for c in log.info.call_args_list if c.args[0] == "observe_credential_scrub"]
         assert summary[0].kwargs == {
             "credential_posts": 2,
+            "value_posts": 2,
             "values_scrubbed": 3,
             "values_post_only": 0,
+            "values_marked_failed": 0,
             "values_left": 0,
             "bodies_unread": 0,
-            "logins_missed": 0,
-            "password_input_unmatched": False,
+            "credential_posts_unread": 0,
+            "password_input": True,
         }
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "Scrubbed 3 typed credential values from the run" in printed
+        assert "Scrubbed 3 values from 2 credential posts. The run can still hold" in printed
         said = repr(log.mock_calls) + printed
         for value in (_EMAIL, _JSON_PASSWORD, _FORM_PASSWORD):
             assert value not in said
@@ -277,17 +279,25 @@ class TestEdgeCases:
         assert body == {"email": REDACTED, "password": ""}
 
     @pytest.mark.asyncio
-    async def test_a_password_under_three_characters_is_left_and_said(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("password", "taken", "said"),
+        [("pw", False, "Scrubbed 1 value from 1"), ("pwx", True, "Scrubbed 2 values from 1")],
+    )
+    async def test_a_password_under_three_characters_is_not_taken(
+        self, tmp_path: Path, password: str, taken: bool, said: str
+    ) -> None:
         storage = _storage(tmp_path)
         console = MagicMock()
+        echo = _entry("GET", "/account", body=json.dumps({"last": f"{password}-1"}))
 
-        await _save(storage, _Backend([_login_page(), _json_post("pw")]), console)
+        await _save(storage, _Backend([_login_page(), _json_post(password), echo]), console)
 
-        har = json.loads((storage.run_dir / "network.har").read_text())
-        body = json.loads(har["log"]["entries"][1]["request"]["postData"]["text"])
-        assert body == {"email": REDACTED, "password": "pw"}
-        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "1 credential value is left in the run (under 3 characters" in printed
+        entries = _har(storage)
+        body = json.loads(entries[1]["request"]["postData"]["text"])
+        assert body == {"email": REDACTED, "password": REDACTED if taken else password}
+        last = json.loads(entries[2]["response"]["content"]["text"])["last"]
+        assert last == (f"{REDACTED}-1" if taken else f"{password}-1")
+        assert said in _printed(console)
 
     @pytest.mark.asyncio
     async def test_every_attempt_is_scrubbed_and_a_marked_one_is_left_as_marked(
@@ -312,9 +322,7 @@ class TestEdgeCases:
         }
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         # The email, and three passwords; the placeholder is no value.
-        assert "Scrubbed 4 typed credential values from the run[/green] (4 credential posts)" in (
-            printed
-        )
+        assert "Scrubbed 4 values from 4 credential posts." in printed
 
     @pytest.mark.asyncio
     async def test_a_password_that_is_also_an_ordinary_word_is_scrubbed_everywhere(
@@ -355,8 +363,8 @@ class TestEdgeCases:
         posts = [step for step in result.login if step.kind == "credential_post"]
         assert posts
         assert all({"email", "password"} <= set(step.fields) for step in posts)
-        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "scrubbed from the login's own body only" in printed
+        # The email from the whole run, and the password from the posts' own bodies.
+        assert "Scrubbed 2 values from 2 credential posts." in _printed(console)
 
     @pytest.mark.asyncio
     async def test_a_body_the_rule_cannot_parse_is_left_and_nothing_breaks(
@@ -396,16 +404,13 @@ class TestEdgeCases:
             found = credential_post_redaction([_login_page(), post], tmp_path)
 
         assert (found.posts, found.unread, found.missed) == (0, 1, 1)
-        assert log.warning.call_args.args[0] == "credential_scrub_body_unread"
+        assert log.info.call_args.args[0] == "credential_scrub_body_unread"
 
     def test_a_rule_that_raises_on_one_post_skips_only_that_post(self, tmp_path: Path) -> None:
-        calls = iter([RecursionError("deep"), True])
-
-        def flaky(_text: str, _type: str) -> bool:
-            result = next(calls)
-            if isinstance(result, BaseException):
-                raise result
-            return result
+        def flaky(text: str | None, _type: str) -> bool:
+            if text and _JSON_PASSWORD in text:
+                raise RecursionError("deep")
+            return bool(text) and "password" in str(text)
 
         with (
             patch("graftpunk.har.digest.is_credential_body", side_effect=flaky),
@@ -413,12 +418,13 @@ class TestEdgeCases:
         ):
             found = credential_post_redaction([_json_post(), _form_post()], tmp_path)
 
-        assert (found.posts, found.unread) == (1, 1)
+        assert (found.posts, found.unread, found.missed) == (1, 1, 0)
         assert _FORM_PASSWORD in found.redaction.secrets
         assert _JSON_PASSWORD not in found.redaction.secrets
-        assert log.warning.call_args.kwargs["exc_type"] == "RecursionError"
+        unread = [c for c in log.info.call_args_list if c.args[0] == "credential_scrub_body_unread"]
+        assert unread[0].kwargs["exc_type"] == "RecursionError"
 
-    def test_a_multipart_login_is_no_credential_post_but_its_password_is_taken(
+    def test_a_multipart_login_with_no_login_form_is_no_credential_post_and_is_left(
         self, tmp_path: Path
     ) -> None:
         body = (
@@ -431,7 +437,20 @@ class TestEdgeCases:
 
         found = credential_post_redaction([post], tmp_path)
 
-        assert (found.posts, found.missed, found.body_indices) == (0, 0, (0,))
+        assert (found.posts, found.missed, bool(found.redaction)) == (0, 0, False)
+
+    def test_a_multipart_login_to_the_login_form_is_scrubbed(self, tmp_path: Path) -> None:
+        body = (
+            '--b\r\nContent-Disposition: form-data; name="password"\r\n\r\n'
+            f"{_JSON_PASSWORD}\r\n--b--\r\n"
+        )
+        post = _entry(
+            "POST", "/session", post_data=body, post_type="multipart/form-data; boundary=b"
+        )
+
+        found = credential_post_redaction([_login_page(), post], tmp_path)
+
+        assert (found.posts, found.missed, found.post_indices) == (1, 0, (1,))
         assert _JSON_PASSWORD in found.redaction.secrets
 
 
@@ -586,12 +605,14 @@ class TestTheDigestsRule:
         [
             ("password", True),
             ("j_passwd", True),
-            ("user[pass]", True),
-            ("PW", True),
-            ("userPin", True),
-            ("pin_code", True),
-            ("passcode", True),
-            ("client_secret", True),
+            ("USER_PWD", True),
+            ("user[password]", True),
+            ("user[pass]", False),
+            ("PW", False),
+            ("userPin", False),
+            ("pin_code", False),
+            ("passcode", False),
+            ("client_secret", False),
             ("bypass", False),
             ("spinner", False),
             ("email", False),
@@ -619,9 +640,12 @@ class TestTheDigestsRule:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("name", ["pass", "pw", "pin", "passcode", "userSecret"])
-    async def test_a_password_under_another_name_posted_to_the_login_form_is_scrubbed(
+    async def test_a_password_under_a_name_with_no_hint_is_left_and_the_note_printed(
         self, tmp_path: Path, name: str
     ) -> None:
+        """A credential post by its target, whose password field holds no
+        ``password``, ``passwd`` or ``pwd``: its email is scrubbed and its password
+        left, and the note says the run can still hold one."""
         storage = _storage(tmp_path)
         page = _login_page()
         page["response"]["content"]["text"] = _LOGIN_PAGE.replace(
@@ -629,37 +653,34 @@ class TestTheDigestsRule:
         )
         post = _form_post()
         post["request"]["postData"]["text"] = f"email=alice%40example.com&{name}=sunflower99"
-
-        await _save(storage, _Backend([page, post]))
-
-        assert _har(storage)[1]["request"]["postData"]["text"] == (
-            f"email={REDACTED}&{name}={REDACTED}"
-        )
-        assert b"sunflower99" not in _everything(storage.run_dir)
-
-    @pytest.mark.asyncio
-    async def test_a_nested_json_login_with_no_login_form_is_scrubbed_without_a_warning(
-        self, tmp_path: Path
-    ) -> None:
-        """No login form in the run, so a nested JSON login is no credential post by
-        the digest's rule: its password is still taken by its name, and its username
-        with it."""
-        storage = _storage(tmp_path)
-        post = _json_post()
-        post["request"]["postData"]["text"] = json.dumps(
-            {"user": {"email": _EMAIL, "password": "sunflower99"}}
-        )
         console = MagicMock()
 
-        await _save(storage, _Backend([post]), console)
+        await _save(storage, _Backend([page, post]), console)
 
-        assert json.loads(_har(storage)[0]["request"]["postData"]["text"]) == {
-            "user": {"email": REDACTED, "password": REDACTED}
-        }
-        everything = _everything(storage.run_dir)
-        assert b"sunflower99" not in everything
-        assert _EMAIL.encode() not in everything
-        assert "could not read" not in _printed(console)
+        assert _har(storage)[1]["request"]["postData"]["text"] == (
+            f"email={REDACTED}&{name}=sunflower99"
+        )
+        assert "Scrubbed 1 value from 1 credential post. The run can still hold" in (
+            _printed(console)
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_nested_json_login_with_no_login_form_is_left(self, tmp_path: Path) -> None:
+        """No login form in the run, and the digest reads no password field in a
+        nested JSON body, so it is no credential post and nothing is taken."""
+        entries = [_json_post()]
+        entries[0]["request"]["postData"]["text"] = json.dumps(
+            {"user": {"email": _EMAIL, "password": "sunflower99"}}
+        )
+        plain, scrubbed = _storage(tmp_path / "a"), _storage(tmp_path / "b")
+        console = MagicMock()
+
+        await _save(plain, _Backend(entries), scrub=False)
+        await _save(scrubbed, _Backend(entries), console)
+
+        assert _run_bytes(scrubbed.run_dir) == _run_bytes(plain.run_dir)
+        assert "Scrubbed" not in _printed(console)
+        assert "could not be read" not in _printed(console)
 
     @pytest.mark.asyncio
     async def test_a_run_with_no_login_prints_nothing_about_credentials(
@@ -678,7 +699,7 @@ class TestTheDigestsRule:
 
         printed = _printed(console)
         assert "credential" not in printed
-        assert "could not read" not in printed
+        assert "Scrubbed" not in printed
         assert not log.warning.called
 
     @pytest.mark.asyncio
@@ -776,17 +797,32 @@ class TestWrongPasswordFirst:
 
 
 _API_ME = {"verified": True, "admin": False, "id": 312, "plan": "standard"}
-_MISSED_LINE = "looks like a login the scrub could not read"
-_UNMATCHED_LINE = "A recorded page has a password field, but no request of the run sent a password"
+_UNREAD_LINE = "could not be read by the scrub: the run may still hold the password sent in"
+_NOTE = "The run can still hold a password the scrub did not recognise"
+_MODAL = (
+    "<html><body><header><form action='/session' method='post'><input name='email'>"
+    "<input type='password' name='password'></form></header><main>Shop</main></body></html>"
+)
 
 
-def _api_me() -> dict[str, Any]:
-    return _entry("GET", "/api/me?active=true&standard=1", body=json.dumps(_API_ME))
-
-
-def _warnings(log: MagicMock) -> list[Any]:
+def _ordinary() -> list[dict[str, Any]]:
+    """Responses holding words, numbers and keys a wrongly taken value would rewrite."""
     return [
-        c for c in log.warning.call_args_list if c.args[0] == "observe_credential_scrub_incomplete"
+        _entry("GET", "/api/me?active=true&standard=1", body=json.dumps(_API_ME)),
+        _entry(
+            "GET", "/offers/yesterday?eyes=1", body=json.dumps({"office": "coffee", "yes_votes": 3})
+        ),
+        _entry("GET", "/api/items", body=json.dumps({"id": 41253, "price": 125})),
+        _entry("GET", "/api/orders?year=2026", body=json.dumps({"orders": [{"id": 1}]})),
+        _entry("GET", "/pin/8123456789/", body=json.dumps({"answer": "yes", "eyes": 2})),
+    ]
+
+
+def _unread_warnings(log: MagicMock) -> list[Any]:
+    return [
+        c
+        for c in log.warning.call_args_list
+        if c.args[0] == "observe_credential_scrub_posts_unread"
     ]
 
 
@@ -796,19 +832,26 @@ class TestWhichValuesArePasswords:
         [
             "rememberPassword",
             "showPassword",
-            "pw_visible",
-            "secret_question",
             "passwordStrength",
-            "pass_type",
             "forgot-password",
             "password.reset",
             "user[password_hint]",
+            "savePassword",
+            "save_password",
+            "passwordless",
+            "has_password",
+            "password_enabled",
+            "passwordMode",
+            "password_count",
+            "pw_visible",
+            "secret_question",
+            "pass_type",
         ],
     )
     def test_a_setting_about_the_password_names_none(self, name: str) -> None:
         assert names_a_password(name) is False
 
-    @pytest.mark.parametrize("name", ["password", "pin", "newPassword", "user[pass]"])
+    @pytest.mark.parametrize("name", ["password", "newPassword", "user[password]", "PWD"])
     def test_the_password_itself_is_named(self, name: str) -> None:
         assert names_a_password(name) is True
 
@@ -818,8 +861,16 @@ class TestWhichValuesArePasswords:
         [
             "rememberPassword=true",
             "showPassword=false",
-            "secret_question=312",
             "passwordStrength=4",
+            "savePassword=yes",
+            "passwordless=yes",
+            "has_password=yes",
+            "password_enabled=yes",
+            "passwordMode=off",
+            "password_count=125",
+            "pin_enabled=yes",
+            "secretMode=off",
+            "secret_question=312",
         ],
     )
     async def test_a_setting_beside_the_password_leaves_the_rest_of_the_run_unchanged(
@@ -828,15 +879,19 @@ class TestWhichValuesArePasswords:
         storage = _storage(tmp_path)
         post = _form_post()
         post["request"]["postData"]["text"] = f"email=alice%40example.com&password=hunter12&{extra}"
+        ordinary = _ordinary()
 
-        await _save(storage, _Backend([_login_page(), post, _api_me()]))
+        await _save(storage, _Backend([_login_page(), post, *ordinary]))
 
         entries = _har(storage)
         assert entries[1]["request"]["postData"]["text"] == (
             f"email={REDACTED}&password={REDACTED}&{extra}"
         )
-        assert entries[2]["request"]["url"] == f"{_HOST}/api/me?active=true&standard=1"
-        assert json.loads(entries[2]["response"]["content"]["text"]) == _API_ME
+        for written, recorded in zip(entries[2:], ordinary, strict=True):
+            assert written["request"]["url"] == recorded["request"]["url"]
+            assert (
+                written["response"]["content"]["text"] == (recorded["response"]["content"]["text"])
+            )
         assert b"hunter12" not in _everything(storage.run_dir)
 
     @pytest.mark.asyncio
@@ -844,11 +899,11 @@ class TestWhichValuesArePasswords:
         ("body", "secret"),
         [
             ({"email": _EMAIL, "password": "hunter12"}, "hunter12"),
-            ({"email": _EMAIL, "pin": 4417}, "4417"),
+            ({"email": _EMAIL, "user_pwd": 44178}, "44178"),
             ({"email": _EMAIL, "newPassword": "Fresh-Pass-31"}, "Fresh-Pass-31"),
         ],
     )
-    async def test_a_password_pin_or_new_password_is_scrubbed(
+    async def test_a_password_or_new_password_is_scrubbed(
         self, tmp_path: Path, body: dict[str, Any], secret: str
     ) -> None:
         storage = _storage(tmp_path)
@@ -862,21 +917,99 @@ class TestWhichValuesArePasswords:
             body, REDACTED
         )
 
-    def test_a_form_flag_value_under_a_password_name_is_no_password(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("flag", ["true", "FALSE", "yes", "No", "on", "OFF", "null"])
+    def test_a_form_flag_value_under_a_password_name_is_no_password(
+        self, tmp_path: Path, flag: str
+    ) -> None:
         post = _form_post()
-        post["request"]["postData"]["text"] = "email=alice%40example.com&password=true"
+        post["request"]["postData"]["text"] = f"email=alice%40example.com&password={flag}"
 
         found = credential_post_redaction([_login_page(), post], tmp_path)
 
         assert found.redaction.secrets == ()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["PUT", "PATCH"])
+    async def test_a_put_or_patch_login_is_scrubbed(self, tmp_path: Path, method: str) -> None:
+        storage = _storage(tmp_path)
+        post = _entry(
+            method,
+            "/api/session",
+            post_data=json.dumps({"username": "alice.example", "password": "Zebra-Plum-77"}),
+        )
+        echo = _entry("GET", "/account", body=json.dumps({"name": "alice.example"}))
 
-class TestWhenTheScrubWarns:
+        await _save(storage, _Backend([_login_page(), post, echo]))
+
+        assert json.loads(_har(storage)[1]["request"]["postData"]["text"]) == {
+            "username": REDACTED,
+            "password": REDACTED,
+        }
+        everything = _everything(storage.run_dir)
+        assert b"Zebra-Plum-77" not in everything
+        assert b"alice.example" not in everything
+
+
+class TestNoValueIsTakenFromARequestThatIsNoCredentialPost:
+    """Each request below is no credential post: the run is written byte for byte as
+    without the scrub, and no line says a credential post could not be read."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("path", "post_data", "post_type"),
+        [
+            ("/api/pins/save", json.dumps({"pinId": "8123456789", "board": "recipes"}), None),
+            ("/forum/thread/7", "pin=yes&title=Rules", "application/x-www-form-urlencoded"),
+            ("/checkout/giftcard", json.dumps({"card": "6006491234", "pin": 2026}), None),
+            ("/api/webhooks", json.dumps({"url": "https://h.example/x", "secret": "orders"}), None),
+            (
+                "/v1/payment_intents/pi_1/confirm",
+                "client_secret=pi_1_secret_xyz&return_url=x",
+                "application/x-www-form-urlencoded",
+            ),
+            ("/api/board", json.dumps({"pin_count": 125, "title": "x"}), None),
+            ("/collect", json.dumps({"event": "view", "userId": "anon-5f2a"}), None),
+            ("/api/cart", json.dumps({"account": {"tier": "guest"}, "sku": "A1"}), None),
+            ("/cart", "sku=A-100&account=guest", "application/x-www-form-urlencoded"),
+            (
+                "/api/1/envelope/",
+                '{"event_id":"abc"}\n{"type":"event"}\n'
+                '{"request":{"url":"https://myshop.example/account/password"}}\n',
+                "text/plain;charset=UTF-8",
+            ),
+            ("/beacon", "<?xml version='1.0'?><event name='pin-board-view'/>", "application/xml"),
+        ],
+    )
+    async def test_on_a_page_with_a_header_login_form(
+        self, tmp_path: Path, path: str, post_data: str, post_type: str | None
+    ) -> None:
+        page = _entry("GET", "/", body=_MODAL, content_type="text/html")
+        post = _entry("POST", path, post_data=post_data, post_type=post_type or "application/json")
+        entries = [page, post, *_ordinary()]
+        plain, scrubbed = _storage(tmp_path / "a"), _storage(tmp_path / "b")
+        console = MagicMock()
+
+        await _save(plain, _Backend(entries), scrub=False)
+        with patch("graftpunk.observe.run.LOG") as log:
+            await _save(scrubbed, _Backend(entries), console)
+
+        assert _run_bytes(scrubbed.run_dir) == _run_bytes(plain.run_dir)
+        printed = _printed(console)
+        assert _UNREAD_LINE not in printed
+        assert "Scrubbed 0 values from 0 credential posts." in printed
+        assert not log.warning.called
+
+
+class TestWhatTheScrubSays:
     async def _run(
-        self, tmp_path: Path, entries: list[dict[str, Any]], page_source: str | None = None
+        self,
+        tmp_path: Path,
+        entries: list[dict[str, Any]],
+        page_source: str | None = None,
+        backend: _Backend | None = None,
     ) -> tuple[ObserveStorage, str, MagicMock]:
         storage = _storage(tmp_path)
-        backend = _Backend(entries)
+        backend = backend or _Backend(entries)
         if page_source is not None:
             backend.page_source = page_source
         console = MagicMock()
@@ -885,7 +1018,7 @@ class TestWhenTheScrubWarns:
         return storage, _printed(console), log
 
     @pytest.mark.asyncio
-    async def test_an_identifier_first_login_to_one_target_does_not_warn(
+    async def test_an_identifier_first_login_to_one_target_scrubs_both(
         self, tmp_path: Path
     ) -> None:
         first = _entry("POST", "/session", post_data=json.dumps({"email": _EMAIL}))
@@ -895,17 +1028,19 @@ class TestWhenTheScrubWarns:
 
         storage, printed, log = await self._run(tmp_path, [_login_page(), first, second])
 
-        assert _MISSED_LINE not in printed
-        assert _UNMATCHED_LINE not in printed
-        assert not _warnings(log)
+        assert _UNREAD_LINE not in printed
+        assert "Scrubbed 2 values from 2 credential posts." in printed
+        assert not _unread_warnings(log)
         everything = _everything(storage.run_dir)
         assert b"sunflower99" not in everything
         assert _EMAIL.encode() not in everything
 
     @pytest.mark.asyncio
-    async def test_a_cart_post_to_a_page_whose_login_form_has_no_action_does_not_warn(
+    async def test_a_cart_post_to_a_page_whose_login_form_has_no_action(
         self, tmp_path: Path
     ) -> None:
+        """The cart POST is a credential post by its target, with nothing to take: the
+        run is unchanged, and the note says so with no warning."""
         modal = (
             "<html><body><form method='post'><input name='email'>"
             "<input type='password' name='password'></form></body></html>"
@@ -915,16 +1050,15 @@ class TestWhenTheScrubWarns:
 
         _storage_, printed, log = await self._run(tmp_path, [page, cart])
 
-        assert "credential" not in printed
-        assert _MISSED_LINE not in printed
-        assert _UNMATCHED_LINE not in printed
+        assert _UNREAD_LINE not in printed
+        assert "Scrubbed 0 values from 0 credential posts." in printed
         assert not log.warning.called
 
     def test_a_login_form_in_a_post_response_makes_no_later_post_a_login(
         self, tmp_path: Path
     ) -> None:
         """A form in a POST's own response is skipped, as the digest skips it: the
-        later POST to where it posts is no credential post, and nothing warns."""
+        later POST to where it posts is no credential post."""
         header = _entry("POST", "/search", post_data=json.dumps({"q": "boots"}))
         header["response"]["content"] = {
             "mimeType": "text/html",
@@ -934,68 +1068,141 @@ class TestWhenTheScrubWarns:
 
         found = credential_post_redaction([header, cart], tmp_path)
 
-        assert (found.posts, found.missed, found.password_input_unmatched) == (0, 0, False)
+        assert (found.posts, found.missed, found.password_input) == (0, 0, True)
 
     @pytest.mark.asyncio
-    async def test_a_sign_up_whose_password_is_taken_does_not_warn(self, tmp_path: Path) -> None:
-        signup = _entry(
-            "POST",
-            "/register",
-            post_data=json.dumps(
-                {"email": _EMAIL, "password": "Sign-Up-77", "password_confirmation": "Sign-Up-77"}
+    @pytest.mark.parametrize(
+        ("page_html", "path", "body"),
+        [
+            (
+                "<form id='f'><input type='email' name='username'>"
+                "<input type='password' name='credential'></form>",
+                "/api/auth",
+                {"username": _EMAIL, "credential": "Zebra-Plum-77"},
             ),
-        )
-
-        storage, printed, log = await self._run(tmp_path, [_entry("GET", "/"), signup])
-
-        assert _MISSED_LINE not in printed
-        assert _UNMATCHED_LINE not in printed
-        assert not _warnings(log)
-        assert b"Sign-Up-77" not in _everything(storage.run_dir)
-        assert json.loads(_har(storage)[1]["request"]["postData"]["text"]) == {
-            "email": REDACTED,
-            "password": REDACTED,
-            "password_confirmation": REDACTED,
-        }
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["credential", "passwort", "p"])
-    async def test_a_script_posted_login_under_an_unread_name_warns(
-        self, tmp_path: Path, name: str
+            (
+                "<form id='f'><input type='email' name='username'>"
+                "<input type='password' name='passwort'></form>",
+                "/api/auth",
+                {"username": _EMAIL, "passwort": "Zebra-Plum-77"},
+            ),
+            (
+                "<form action='/session' method='post'><input name='username'>"
+                "<input type='password' name='password'></form>",
+                "/session",
+                {"u": "alice.example", "p": "Zebra-Plum-77"},
+            ),
+            (
+                "<div id=app><input type='tel'><input type='password'></div>",
+                "/api/auth",
+                {"phone": "+15550101", "passwort": "Zebra-Plum-77"},
+            ),
+        ],
+    )
+    async def test_a_script_posted_login_under_other_names_is_left_with_the_note(
+        self, tmp_path: Path, page_html: str, path: str, body: dict[str, str]
     ) -> None:
-        """The login form has no action and its password input a name the scrub does
-        not read as one; a script posts it elsewhere. The value stays, and the run
-        says so, with no value."""
-        page_html = (
-            "<html><body><form id='f'><input type='email' name='username'>"
-            f"<input type='password' name='{name}'><button>Sign in</button></form></body></html>"
-        )
-        page = _entry("GET", "/login", body=page_html, content_type="text/html")
-        post = _entry(
-            "POST", "/api/auth", post_data=json.dumps({"username": _EMAIL, name: "Zebra-Plum-77"})
-        )
+        """The value stays, and the standing note, with no value, is all the run
+        says: no warning claims to know a login was missed."""
+        html = f"<html><body>{page_html}</body></html>"
+        page = _entry("GET", "/login", body=html, content_type="text/html")
+        post = _entry("POST", path, post_data=json.dumps(body))
 
-        storage, printed, log = await self._run(tmp_path, [page, post], page_source=page_html)
+        storage, printed, log = await self._run(tmp_path, [page, post], page_source=html)
 
-        assert _UNMATCHED_LINE in printed
-        assert _warnings(log)[0].kwargs == {"logins_missed": 0, "password_input_unmatched": True}
-        assert "Zebra-Plum-77" not in repr(log.mock_calls) + printed
-        # Pinned: the value is left; the warning is all the scrub gives.
         assert b"Zebra-Plum-77" in _everything(storage.run_dir)
+        assert "Scrubbed 0 values from 0 credential posts. " + _NOTE in printed
+        assert _UNREAD_LINE not in printed
+        assert not log.warning.called
+        assert "Zebra-Plum-77" not in repr(log.mock_calls) + printed
 
     @pytest.mark.asyncio
-    async def test_a_login_post_whose_body_was_not_captured_warns(self, tmp_path: Path) -> None:
+    async def test_the_note_names_the_post_marked_failed_when_it_alone_gave_a_value(
+        self, tmp_path: Path
+    ) -> None:
+        html = (
+            "<html><body><form id='f'><input type='email' name='username'>"
+            "<input type='password' name='credential'></form></body></html>"
+        )
+        page = _entry("GET", "/login", body=html, content_type="text/html")
+        marked = _entry(
+            "POST", "/api/auth", post_data=json.dumps({"username": _EMAIL, "credential": REDACTED})
+        )
+        login = _entry(
+            "POST",
+            "/api/auth",
+            post_data=json.dumps({"username": _EMAIL, "credential": "Zebra-Plum-77"}),
+        )
+        backend = _MarkedBackend([page, marked, login], ("Wrong-Typo-11",))
+
+        storage, printed, _log = await self._run(tmp_path, [], page_source=html, backend=backend)
+
+        assert "Scrubbed 1 value from the post marked failed. " + _NOTE in printed
+        everything = _everything(storage.run_dir)
+        assert b"Wrong-Typo-11" not in everything
+        assert b"Zebra-Plum-77" in everything
+
+    @pytest.mark.asyncio
+    async def test_the_note_counts_credential_posts_and_the_post_marked_failed(
+        self, tmp_path: Path
+    ) -> None:
+        backend = _MarkedBackend([_login_page(), _json_post(REDACTED), _json_post()], ("Typo-44",))
+
+        _storage_, printed, _log = await self._run(tmp_path, [], backend=backend)
+
+        # The email, the password, and the marked typo.
+        assert "Scrubbed 3 values from 2 credential posts and the post marked failed." in printed
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_password_input_gets_no_note(self, tmp_path: Path) -> None:
+        storage, printed, log = await self._run(tmp_path, [_json_post()])
+
+        assert _JSON_PASSWORD.encode() not in _everything(storage.run_dir)
+        assert "Scrubbed" not in printed
+        assert _NOTE not in printed
+        assert not log.warning.called
+
+    @pytest.mark.asyncio
+    async def test_a_login_post_whose_body_was_not_captured_is_said(self, tmp_path: Path) -> None:
         post = _entry("POST", "/session")
         post["request"]["_postDataNotCaptured"] = True
 
         _storage_, printed, log = await self._run(tmp_path, [_login_page(), post])
 
-        assert f"1 request {_MISSED_LINE}" in printed
-        assert _warnings(log)[0].kwargs == {"logins_missed": 1, "password_input_unmatched": False}
-        assert log.warning.call_args_list[0].args[0] == "credential_scrub_body_not_captured"
+        assert f"1 credential post {_UNREAD_LINE} it" in printed
+        assert _unread_warnings(log)[0].kwargs == {"credential_posts": 1}
+        assert any(
+            c.args[0] == "credential_scrub_body_not_captured" for c in log.info.call_args_list
+        )
 
     @pytest.mark.asyncio
-    async def test_an_uncaptured_body_sent_where_no_login_form_posts_does_not_warn(
+    async def test_a_login_body_file_that_cannot_be_read_is_said(self, tmp_path: Path) -> None:
+        storage = _storage(tmp_path)
+        (storage.run_dir / "bodies").mkdir(parents=True)
+        (storage.run_dir / "bodies" / "1.bin").write_bytes(b"\xff\xfepassword=x")
+        post = _entry("POST", "/session")
+        post["request"]["_postDataFile"] = "bodies/1.bin"
+        console = MagicMock()
+
+        with patch("graftpunk.observe.run.LOG") as log:
+            await _save(storage, _Backend([_login_page(), post]), console)
+
+        assert f"1 credential post {_UNREAD_LINE} it" in _printed(console)
+        assert _unread_warnings(log)[0].kwargs == {"credential_posts": 1}
+
+    @pytest.mark.asyncio
+    async def test_a_login_body_that_cannot_be_split_is_said(self, tmp_path: Path) -> None:
+        post = _entry(
+            "POST", "/session", post_data='{"email": "alice@example.com", "password": "hun'
+        )
+
+        _storage_, printed, log = await self._run(tmp_path, [_login_page(), post])
+
+        assert f"1 credential post {_UNREAD_LINE} it" in printed
+        assert _unread_warnings(log)[0].kwargs == {"credential_posts": 1}
+
+    @pytest.mark.asyncio
+    async def test_an_uncaptured_body_sent_where_no_login_form_posts_is_not_said(
         self, tmp_path: Path
     ) -> None:
         post = _entry("POST", "/upload")
@@ -1003,21 +1210,8 @@ class TestWhenTheScrubWarns:
 
         _storage_, printed, log = await self._run(tmp_path, [_entry("GET", "/"), post])
 
-        assert _MISSED_LINE not in printed
+        assert _UNREAD_LINE not in printed
         assert not log.warning.called
-
-    @pytest.mark.asyncio
-    async def test_a_body_that_cannot_be_split_and_names_a_password_warns(
-        self, tmp_path: Path
-    ) -> None:
-        post = _entry(
-            "POST", "/api/auth", post_data='{"email": "alice@example.com", "password": "hun'
-        )
-
-        _storage_, printed, log = await self._run(tmp_path, [_entry("GET", "/"), post])
-
-        assert f"1 request {_MISSED_LINE}" in printed
-        assert _warnings(log)[0].kwargs == {"logins_missed": 1, "password_input_unmatched": False}
 
 
 class TestKnownGaps:
@@ -1035,8 +1229,24 @@ class TestKnownGaps:
             "email": REDACTED,
             "password": True,
         }
-        # The page held a password input and no password was taken.
-        assert _UNMATCHED_LINE in _printed(console)
+        assert "Scrubbed 1 value from 1 credential post. " + _NOTE in _printed(console)
+
+    @pytest.mark.asyncio
+    async def test_a_sign_up_is_no_credential_post_and_is_left(self, tmp_path: Path) -> None:
+        signup = _entry(
+            "POST",
+            "/register",
+            post_data=json.dumps(
+                {"email": _EMAIL, "password": "Sign-Up-77", "password_confirmation": "Sign-Up-77"}
+            ),
+        )
+        storage = _storage(tmp_path)
+        console = MagicMock()
+
+        await _save(storage, _Backend([_entry("GET", "/"), signup]), console)
+
+        assert b"Sign-Up-77" in _everything(storage.run_dir)
+        assert "Scrubbed" not in _printed(console)
 
     @pytest.mark.asyncio
     async def test_an_identifier_step_with_no_step_word_keeps_the_username(
@@ -1052,8 +1262,7 @@ class TestKnownGaps:
         everything = _everything(storage.run_dir)
         assert b"alice.example" in everything
         assert b"sunflower99" not in everything
-        assert _MISSED_LINE not in _printed(console)
-        assert _UNMATCHED_LINE not in _printed(console)
+        assert _UNREAD_LINE not in _printed(console)
 
     @pytest.mark.asyncio
     async def test_a_numeric_password_is_replaced_inside_other_numbers(

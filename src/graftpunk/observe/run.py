@@ -429,14 +429,10 @@ def redact_request_body_files(
             )
 
 
-# Words of a field name that name a password, beside the digest's substrings
-# (graftpunk.har.documents.PASSWORD_NAME_HINTS: "password", "passwd", "pwd"): a POST
-# the digest takes for a login by its form's target (is_credential_post) can name its
-# password anything.
-_PASSWORD_WORDS = frozenset({"pass", "pw", "pin", "pincode", "passcode", "passphrase", "secret"})
 # Words that make a password-like name a setting about the password, not the password
-# (rememberPassword, showPassword, pw_visible, secret_question, passwordStrength):
-# its value is a flag, or a word or number that ordinary responses hold too.
+# (rememberPassword, showPassword, passwordStrength, savePassword, passwordless,
+# has_password, password_count): its value is a flag, or a word or number that
+# ordinary responses hold too.
 _PASSWORD_FLAG_WORDS = frozenset(
     {
         "remember",
@@ -454,60 +450,64 @@ _PASSWORD_FLAG_WORDS = frozenset(
         "expiry",
         "length",
         "type",
+        "save",
+        "has",
+        "enabled",
+        "less",
+        "mode",
+        "count",
     }
 )
-# A form's spelling of a flag under a password-like name; a JSON boolean or null is
-# never read as a value (graftpunk.har.digest.body_values).
-_FLAG_VALUES = frozenset({"true", "false", "null"})
+# A form's spelling of a flag under a password-like name, in any letter case; a JSON
+# boolean or null is never read as a value (graftpunk.har.digest.body_values).
+_FLAG_VALUES = frozenset({"true", "false", "yes", "no", "on", "off", "null"})
 # The words of a field name: runs of lower-case letters (one capital before them
-# allowed), of capitals, and of digits, so "userPin", "user_pin" and "PIN" each hold
-# "pin", and "_", "-", ".", "[" and "]" separate words.
+# allowed), of capitals, and of digits, so "savePassword" and "save_password" each
+# hold "save", and "_", "-", ".", "[" and "]" separate words.
 _NAME_WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
-# A name-like run of a body that could not be split into fields.
-_RAW_NAME_RE = re.compile(r"[A-Za-z0-9_.\[\]-]+")
 
 
 def names_a_password(name: str | None) -> bool:
-    """Whether a body field *name* names a password for the scrub of a typed login: it
-    holds a :data:`graftpunk.har.documents.PASSWORD_NAME_HINTS` hint, as the digest
-    reads a password field, or a word of :data:`_PASSWORD_WORDS` (``pass``, ``pw``,
-    ``pin``, ``passcode``, ``passphrase``, ``secret``), any letter case, and none of
-    its words names a setting (:data:`_PASSWORD_FLAG_WORDS`), so ``rememberPassword``,
-    ``showPassword``, ``secret_question`` and ``passwordStrength`` name none."""
+    """Whether a body field *name* names a password for the scrub of a typed login:
+    it holds a :data:`graftpunk.har.documents.PASSWORD_NAME_HINTS` hint
+    (``password``, ``passwd``, ``pwd``), the digest's own rule for a password field
+    (:func:`graftpunk.har.digest.password_field_names`), in any letter case, and none
+    of its words, each hint taken out of the word it sits in, names a setting
+    (:data:`_PASSWORD_FLAG_WORDS`), so ``rememberPassword``, ``passwordless``,
+    ``has_password`` and ``password_count`` name none."""
     from graftpunk.har.documents import PASSWORD_NAME_HINTS
 
     if not name:
         return False
-    words = [word.lower() for word in _NAME_WORD_RE.findall(name)]
-    if any(word in _PASSWORD_FLAG_WORDS for word in words):
+    if not any(hint in name.lower() for hint in PASSWORD_NAME_HINTS):
         return False
-    lowered = name.lower()
-    if any(hint in lowered for hint in PASSWORD_NAME_HINTS):
-        return True
-    return any(word in _PASSWORD_WORDS for word in words)
+    hints = "|".join(re.escape(hint) for hint in PASSWORD_NAME_HINTS)
+    words = [
+        part
+        for word in _NAME_WORD_RE.findall(name)
+        for part in re.split(hints, word.lower())
+        if part
+    ]
+    return not any(word in _PASSWORD_FLAG_WORDS for word in words)
 
 
 def _password_value(value: str) -> bool:
-    """A value under a password-like name that is taken as a password: not empty, not
-    the placeholder the recorder wrote, and not ``true``, ``false`` or ``null``. One
-    under 3 characters is taken, then left by the run-wide scrub and counted in
-    ``CredentialScrub.left`` (``_MIN_REDACT_LEN``)."""
-    return _not_redacted(value) and value.strip().lower() not in _FLAG_VALUES
-
-
-def _text_names_a_password(text: str) -> bool:
-    """Whether a body that could not be split into fields holds a password-like name
-    (:func:`names_a_password`) anywhere in its text."""
-    return any(names_a_password(name) for name in _RAW_NAME_RE.findall(text))
+    """A value under a password-like name that is taken as a password: at least 3
+    characters (``_MIN_REDACT_LEN``), not the placeholder the recorder wrote, and not
+    a flag word (:data:`_FLAG_VALUES`) in any letter case."""
+    return (
+        _not_redacted(value)
+        and len(value) >= _MIN_REDACT_LEN
+        and value.strip().lower() not in _FLAG_VALUES
+    )
 
 
 class _PasswordInputs(html.parser.HTMLParser):
-    """Whether one page holds an ``<input type="password">``, and each one's name."""
+    """Whether one page holds an ``<input type="password">``."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.found = False
-        self.names: set[str] = set()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag != "input":
@@ -515,8 +515,6 @@ class _PasswordInputs(html.parser.HTMLParser):
         values = {key: value or "" for key, value in attrs}
         if values.get("type", "").strip().lower() == "password":
             self.found = True
-            if values.get("name"):
-                self.names.add(values["name"])
 
 
 @dataclass(frozen=True)
@@ -535,26 +533,21 @@ class CredentialScrub:
             they are replaced only where they are a whole value under a
             password-like name (:func:`names_a_password`) in a credential post's
             own body.
-        post_indices: The HAR entry indices of the credential posts.
+        post_indices: The HAR entry indices of the credential posts, each of
+            whose own body is scrubbed by its structure.
         values: How many distinct values are scrubbed from the whole run.
-        left: How many distinct values are left in the run: shorter than the
-            scrub's minimum (``_MIN_REDACT_LEN``, 3 characters), or an
-            identifier that is part of a field name.
-        unread: How many POST bodies could not be read, so were not checked.
-        missed: How many POSTs may hold a password the scrub could not take: a
-            body that could not be split into fields and holds a password-like
-            name (or is a credential post by its target), a body file that could
-            not be read, or a body the recorder did not capture
-            (``_postDataNotCaptured``), each of the last two sent where a login form
-            the run recorded posts.
-        body_indices: The HAR entry indices whose own body is scrubbed by its
-            structure: the credential posts, and each other POST a password was
-            taken from (a sign-up).
-        password_input_unmatched: A page the run recorded held an ``<input
-            type="password">``, a POST sent a value under an identifier field's
-            name or that input's name, the scrub took no password at all, and no
-            POST is counted in ``missed``: a script may have posted the password
-            under a name the scrub does not read as one.
+        left: How many distinct values taken are left in the run: an identifier
+            shorter than the scrub's minimum (``_MIN_REDACT_LEN``, 3 characters),
+            or an identifier that is part of a field name.
+        unread: How many request bodies could not be read, so were not checked.
+        missed: How many credential posts have a body the scrub could not read: one
+            that could not be split into fields, a body file that could not be
+            read, or a body the recorder did not capture (``_postDataNotCaptured``).
+        value_posts: How many credential posts a value was taken from.
+        marked_failed: How many values came only from the post the user marked
+            failed (*typed*), and from no credential post.
+        password_input: Whether a page the run recorded held an ``<input
+            type="password">``.
     """
 
     redaction: Redaction
@@ -565,13 +558,20 @@ class CredentialScrub:
     left: int
     unread: int
     missed: int = 0
-    body_indices: tuple[int, ...] = ()
-    password_input_unmatched: bool = False
+    value_posts: int = 0
+    marked_failed: int = 0
+    password_input: bool = False
 
     @property
     def posts(self) -> int:
         """How many requests were credential posts."""
         return len(self.post_indices)
+
+    @property
+    def scrubbed(self) -> int:
+        """How many distinct values are scrubbed: from the whole run, or only from
+        their credential post's own body (``post_only``)."""
+        return self.values + len(self.post_only)
 
 
 def _content_type(request: dict[str, Any]) -> str:
@@ -625,12 +625,10 @@ class _RunPages:
         targets: Where every login form posts
             (:func:`graftpunk.har.digest.login_form_targets`).
         password_input: Whether any page holds an ``<input type="password">``.
-        password_input_names: The names of those inputs.
     """
 
     targets: frozenset[tuple[str, str]]
     password_input: bool
-    password_input_names: frozenset[str]
 
 
 def _run_pages(entries: list[dict[str, Any]], root: Path) -> _RunPages:
@@ -644,7 +642,6 @@ def _run_pages(entries: list[dict[str, Any]], root: Path) -> _RunPages:
     from graftpunk.har.digest import login_form_targets
 
     targets: set[tuple[str, str]] = set()
-    names: set[str] = set()
     found = False
 
     def add(
@@ -660,7 +657,6 @@ def _run_pages(entries: list[dict[str, Any]], root: Path) -> _RunPages:
             inputs.feed(page_html)
             inputs.close()
             found = found or inputs.found
-            names.update(inputs.names)
         except Exception as exc:  # noqa: BLE001 - one page never stops the save
             LOG.info("credential_scrub_page_unread", exc_type=type(exc).__name__)
 
@@ -688,7 +684,12 @@ def _run_pages(entries: list[dict[str, Any]], root: Path) -> _RunPages:
         if snapshot is not None:
             page = str(request.get("_domSnapshotUrl") or url)
             add(snapshot, page, page, snapshot=True)
-    return _RunPages(frozenset(targets), found, frozenset(names))
+    return _RunPages(frozenset(targets), found)
+
+
+# The methods whose body can carry a login: a POST, and a PUT or PATCH, as an API
+# login or a password change sends one.
+_BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
 
 def _not_redacted(value: str) -> bool:
@@ -700,34 +701,32 @@ def credential_post_redaction(
     entries: Iterable[dict[str, Any]], run_dir: Path, *, typed: Iterable[str] = ()
 ) -> CredentialScrub:
     """What to scrub from a run recorded without known credentials (``gp observe
-    interactive``, ``gp observe go``): the passwords of its POSTs, and the usernames
-    of its logins.
+    interactive``, ``gp observe go``): the passwords and usernames of its credential
+    posts.
 
-    A POST is a credential post by the rule the digest reports one by
-    (:func:`graftpunk.har.digest.is_credential_post`): a password-like field, or a
-    post to where a login form the run recorded posts (:func:`_run_pages`). Each
-    POST's values are read by :func:`graftpunk.har.digest.body_values` (a JSON value
-    at any depth under its nearest name). One under a password-like name
-    (:func:`names_a_password`) is a secret (:func:`_password_value`: never ``true``,
-    ``false`` or ``null``), from any POST, so a sign-up's password or a nested JSON
-    login with no login form recorded is taken too. One under an identifier field's
-    name (:func:`graftpunk.session_identity.is_identifier_field`) in a credential
-    post, or in a POST a password was taken from, is an identifier. An
-    identifier-first login posts its username in an earlier step: the identifier
-    values of each POST before the last credential post that the digest reads as a
-    step of a login
+    A request is a credential post by the rule the digest reports one by
+    (:func:`graftpunk.har.digest.is_credential_post`): a POST, PUT or PATCH whose body
+    has a password-like field, or one sent to where a login form the run recorded
+    posts (:func:`_run_pages`). Values are taken from credential posts only. Each
+    one's values are read by :func:`graftpunk.har.digest.read_body_values` (a JSON
+    value at any depth under its nearest name). One whose own field name is
+    password-like (:func:`names_a_password`) is a secret when it is at least 3
+    characters and no flag word (:func:`_password_value`); one whose own field name
+    is an identifier field's (:func:`graftpunk.session_identity.is_identifier_field`)
+    is an identifier. An identifier-first login posts its username in an earlier
+    step: the identifier values of each other request before the last credential
+    post that the digest reads as a step of a login
     (:func:`graftpunk.har.login_signals.is_login_step_post`) are taken too. *typed*
     adds secrets the recorder knew of (the password of a post the user marked
     failed, which it already replaced in that post's own body).
 
     The body is read from ``postData`` or from its file under ``bodies/``. A body
     file that is not UTF-8 text, or cannot be read, and a body the rule fails on,
-    are counted in ``unread`` and logged, and not checked. ``missed`` counts each
-    POST that may hold a password the scrub could not take
-    (:class:`CredentialScrub`), and ``password_input_unmatched`` says a recorded
-    password input's value may have gone out under a name the scrub does not read.
-    The placeholder ``***REDACTED***`` is never a value. A value inside one of the
-    field names of a post it was taken from is kept out of the run-wide scrub.
+    are counted in ``unread`` and logged, and not checked; ``missed`` counts each
+    credential post among them, and each credential post whose body could not be
+    split into fields or was not captured. The placeholder ``***REDACTED***`` is
+    never a value. A value inside one of the field names of a credential post is
+    kept out of the run-wide scrub.
     """
     from graftpunk.har.digest import (
         is_credential_post,
@@ -745,25 +744,23 @@ def credential_post_redaction(
     identifiers: dict[str, None] = {}
     names: set[str] = set()
     indices: list[int] = []
-    bodies: list[int] = []
-    # The POSTs that are no credential post, for an identifier-first login's step.
+    value_posts = 0
+    # The requests that are no credential post, for an identifier-first login's step.
     others: list[tuple[int, str, str, str, list[tuple[tuple[str, ...], str]]]] = []
     unread = missed = 0
-    # Whether a POST may have sent what was typed into a recorded password input: it
-    # holds a value under an identifier field's name or under that input's name.
-    sent_a_login = False
     for index, entry in enumerate(entries):
         request = entry.get("request") if isinstance(entry, dict) else None
-        if not isinstance(request, dict) or str(request.get("method", "")).upper() != "POST":
+        if not isinstance(request, dict):
+            continue
+        if str(request.get("method", "")).upper() not in _BODY_METHODS:
             continue
         url = str(request.get("url", ""))
         text, content_type, failed = _request_body_text(request, root)
         if failed or (not text and request.get("_postDataNotCaptured") is True):
             unread += failed
             # A login by its target alone, since its fields cannot be read.
-            login = is_credential_post(None, "", url, targets)
-            missed += login
-            (LOG.warning if login else LOG.info)(
+            missed += is_credential_post(None, "", url, targets)
+            LOG.info(
                 "credential_scrub_body_unread" if failed else "credential_scrub_body_not_captured",
                 entry=index,
                 file=request.get("_postDataFile"),
@@ -771,48 +768,43 @@ def credential_post_redaction(
             continue
         if not text:
             continue
+        credential: bool | None = None
         try:
             credential = is_credential_post(text, content_type, url, targets)
             read, by_names = read_body_values(text, content_type)
         except Exception as exc:  # noqa: BLE001 - one post's body never stops the save
             unread += 1
-            missed += 1
-            LOG.warning("credential_scrub_body_unread", entry=index, exc_type=type(exc).__name__)
+            if credential is None:
+                credential = is_credential_post(None, "", url, targets)
+            missed += credential
+            LOG.info("credential_scrub_body_unread", entry=index, exc_type=type(exc).__name__)
             continue
         values = [(path, value) for path, value, _own in read]
+        if not credential:
+            others.append((index, text, content_type, url, values))
+            continue
+        indices.append(index)
         passwords = [
             value
             for path, value in values
             if path and names_a_password(path[-1]) and _password_value(value)
         ]
-        post_names = {name for path, _value in values for name in path}
-        if any(
-            name in pages.password_input_names or is_identifier_field(identifier_key(name))
-            for name in post_names
-        ):
-            sent_a_login = True
-        if not passwords and not by_names and (credential or _text_names_a_password(text)):
-            # Not split into fields (a broken JSON body, XML): a password may be in it.
+        if not passwords and not by_names:
+            # Not split into fields (a broken JSON body, XML): its password may be in it.
             missed += 1
-            LOG.warning("credential_scrub_body_unsplit", entry=index)
-        if credential:
-            indices.append(index)
-        elif not passwords:
-            others.append((index, text, content_type, url, values))
-            continue
+            LOG.info("credential_scrub_body_unsplit", entry=index)
+        users = [
+            value
+            for path, value in values
+            if path
+            and _not_redacted(value)
+            and not names_a_password(path[-1])
+            and is_identifier_field(identifier_key(path[-1]))
+        ]
+        value_posts += bool(passwords or users)
         secrets.update(dict.fromkeys(passwords))
-        names |= post_names
-        bodies.append(index)
-        identifiers.update(
-            dict.fromkeys(
-                value
-                for path, value in values
-                if path
-                and _not_redacted(value)
-                and not names_a_password(path[-1])
-                and is_identifier_field(identifier_key(path[-1]))
-            )
-        )
+        identifiers.update(dict.fromkeys(users))
+        names |= {name for path, _value in values for name in path}
     for index, text, content_type, url, values in others:
         if not indices or index > indices[-1]:
             continue
@@ -826,11 +818,8 @@ def credential_post_redaction(
                     if _not_redacted(value)
                 )
             )
-    secrets.update(dict.fromkeys(value for value in typed if _not_redacted(value)))
-    # Said only when no POST was counted missed, which already warns of the same.
-    unmatched = pages.password_input and sent_a_login and not secrets and not missed
-    if unmatched:
-        LOG.warning("credential_scrub_password_input_unmatched")
+    marked = [value for value in typed if _not_redacted(value) and value not in secrets]
+    secrets.update(dict.fromkeys(marked))
 
     def in_a_name(value: str) -> bool:
         return any(value in name for name in names)
@@ -849,8 +838,9 @@ def credential_post_redaction(
         left=len(every) - len(dict.fromkeys([*run_values, *post_only])),
         unread=unread,
         missed=missed,
-        body_indices=tuple(sorted(bodies)),
-        password_input_unmatched=unmatched,
+        value_posts=value_posts,
+        marked_failed=len([v for v in dict.fromkeys(marked) if v in run_values or v in post_only]),
+        password_input=pages.password_input,
     )
 
 
@@ -861,14 +851,12 @@ def _any_name(_name: str | None) -> bool:
 def scrub_credential_post_bodies(
     entries: list[dict[str, Any]], found: CredentialScrub, run_dir: Path
 ) -> list[dict[str, Any]]:
-    """*entries* with the own body of each POST in ``found.body_indices`` (a
-    credential post, or another POST a password was taken from: its ``postData``
-    text, or its file under ``bodies/``, rewritten in place) scrubbed by its
-    structure, before the
-    run-wide scrub: split into fields as the digest reads them, each value equal to
-    one of ``found.run_values`` replaced by ``***REDACTED***`` under any name and one
-    of ``found.post_only`` under a password-like name (:func:`names_a_password`), and
-    written back in its own format
+    """*entries* with the own body of each credential post in ``found.post_indices``
+    (its ``postData`` text, or its file under ``bodies/``, rewritten in place)
+    scrubbed by its structure, before the run-wide scrub: split into fields as the
+    digest reads them, each value equal to one of ``found.run_values`` replaced by
+    ``***REDACTED***`` under any name and one of ``found.post_only`` under a
+    password-like name (:func:`names_a_password`), and written back in its own format
     (:func:`graftpunk.observe.failure_text.scrub_failed_password`): a form keeps its
     pairs and encoding, and JSON stays valid JSON (a number becomes the redaction
     string). A value is found however the body spelled it (``%7E`` for ``~``), and a
@@ -885,7 +873,7 @@ def scrub_credential_post_bodies(
 
     root = run_dir.resolve()
     out = list(entries)
-    for index in found.body_indices:
+    for index in found.post_indices:
         entry = out[index] if index < len(out) else None
         request = entry.get("request") if isinstance(entry, dict) else None
         if not isinstance(request, dict):
@@ -1008,57 +996,64 @@ def write_capture_data(
     return written
 
 
+# Where the standing note points: the paragraph that lists what the scrub takes and leaves.
+_SCRUB_DOCS = 'the paragraph "The run is sensitive" under Interactive Mode in docs/HOW_IT_WORKS.md'
+
+
+def _scrub_note(found: CredentialScrub) -> str:
+    """The note a run whose pages held a password input always gets: how many values
+    were scrubbed and from where, and what the run can still hold. It never says the
+    run is clean."""
+    count = found.scrubbed
+    posts = found.value_posts
+    from_posts = f"{posts} credential post{'' if posts == 1 else 's'}"
+    if found.marked_failed and posts:
+        source = f"{from_posts} and the post marked failed"
+    elif found.marked_failed:
+        source = "the post marked failed"
+    else:
+        source = from_posts
+    return (
+        f"[yellow]Scrubbed {count} value{'' if count == 1 else 's'} from {source}. "
+        "The run can still hold a password the scrub did not recognise: one sent by a "
+        "request that is no credential post (a login a script posts elsewhere, a sign-up, "
+        "a password change), one under a name without password, passwd or pwd in it, a "
+        f"boolean one or one under {_MIN_REDACT_LEN} characters, and any copy in response "
+        f"bodies, console.jsonl or the screenshots. See {_SCRUB_DOCS}.[/yellow]"
+    )
+
+
 def _report_credential_scrub(found: CredentialScrub, say: Callable[[str], None]) -> None:
-    """Log and print how many values the scrub of a run's credential posts found,
-    never a value."""
+    """Log and print what the scrub of a run's credential posts did, never a value:
+    a line when a credential post's body could not be read, and the standing note
+    (:func:`_scrub_note`) when a recorded page held a password input."""
     LOG.info(
         "observe_credential_scrub",
         credential_posts=found.posts,
+        value_posts=found.value_posts,
         values_scrubbed=found.values,
         values_post_only=len(found.post_only),
+        values_marked_failed=found.marked_failed,
         values_left=found.left,
         bodies_unread=found.unread,
-        logins_missed=found.missed,
-        password_input_unmatched=found.password_input_unmatched,
+        credential_posts_unread=found.missed,
+        password_input=found.password_input,
     )
-    if found.missed or found.password_input_unmatched:
-        LOG.warning(
-            "observe_credential_scrub_incomplete",
-            logins_missed=found.missed,
-            password_input_unmatched=found.password_input_unmatched,
-        )
-    if found.values:
-        # The posts read: the credential posts, and any other a password came from.
-        posts = len(found.body_indices)
-        say(
-            f"[green]Scrubbed {found.values} typed credential "
-            f"value{'' if found.values == 1 else 's'} from the run[/green] "
-            f"({posts} credential post{'' if posts == 1 else 's'})"
-        )
-    if found.post_only:
-        say(
-            f"[yellow]{len(found.post_only)} password "
-            f"value{' is' if len(found.post_only) == 1 else 's are'} also part of a field "
-            "name: scrubbed from the login's own body only[/yellow]"
-        )
-    if found.left:
-        say(
-            f"[yellow]{found.left} credential value{' is' if found.left == 1 else 's are'} "
-            f"left in the run (under {_MIN_REDACT_LEN} characters, or a username that is "
-            "part of a field name)[/yellow]"
-        )
     if found.missed:
+        LOG.warning("observe_credential_scrub_posts_unread", credential_posts=found.missed)
         say(
-            f"[yellow]{found.missed} request{' looks' if found.missed == 1 else 's look'} "
-            "like a login the scrub could not read: the run may still hold the password "
-            "typed into it[/yellow]"
+            f"[yellow]{found.missed} credential post{'' if found.missed == 1 else 's'} "
+            f"could not be read by the scrub: the run may still hold the password sent in "
+            f"{'it' if found.missed == 1 else 'them'}[/yellow]"
         )
-    if found.password_input_unmatched:
-        say(
-            "[yellow]A recorded page has a password field, but no request of the run sent "
-            "a password the scrub could read: the run may still hold the password typed "
-            "into it[/yellow]"
+    if found.password_input:
+        LOG.info(
+            "observe_credential_scrub_note",
+            values_scrubbed=found.scrubbed,
+            value_posts=found.value_posts,
+            values_marked_failed=found.marked_failed,
         )
+        say(_scrub_note(found))
 
 
 def _marked_failed_secrets(backend: Any) -> tuple[str, ...]:
@@ -1113,9 +1108,10 @@ async def save_observe_run(
             from each credential post's own body by its structure
             (:func:`scrub_credential_post_bodies`), then from the HAR, the request
             bodies in ``bodies/``, the page source and the DOM snapshots
-            (:func:`redact_run_text_files`). How many values were scrubbed, and
-            how many requests look like a login the scrub could not read, is
-            logged and printed, never a value.
+            (:func:`redact_run_text_files`). How many credential posts the scrub
+            could not read, and, when a recorded page held a password input, how
+            many values were scrubbed and what the run can still hold, is logged
+            and printed (:func:`_report_credential_scrub`), never a value.
     """
 
     def say(msg: str) -> None:
