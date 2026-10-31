@@ -35,7 +35,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qsl
 
-from graftpunk.har.digest import form_state
 from graftpunk.testing.decoding import combined_forms, decoded_forms, value_forms
 
 __all__ = ["RunUnreadableError", "read_run_har", "recorded_leaks", "recorded_values"]
@@ -43,8 +42,13 @@ __all__ = ["RunUnreadableError", "read_run_har", "recorded_leaks", "recorded_val
 HAR_NAME = "network.har"
 PAGE_SOURCE_NAME = "page-source.html"
 
-# A value shorter than this is too common to report: it is in most fixtures by chance.
-_MIN_LENGTH = 3
+# A recorded value's form shorter than this is too common to report: it is in
+# most fixtures by chance.
+_MIN_RECORDED_LENGTH = 4
+# A recorded value that, in any of its forms, is one of these JSON literals (in
+# any case) is not looked for: a name flagged by its name alone records them
+# (logged_in=true), and a fixture cannot invent the literal away.
+_LITERALS = frozenset(("true", "false", "null"))
 # Lines named per leaked name before the rest are counted.
 _MOST_PLACES = 5
 _DIGITS = re.compile(r"\d{3,}")
@@ -184,13 +188,17 @@ def _header(headers: list[tuple[str, str]], name: str) -> str | None:
     return spelled.get(name) or spelled.get(name.lower())
 
 
-def _file_text(ref: object, base: Path | None, unreadable: list[str]) -> str | None:
+def _file_text(
+    ref: object, base: Path | None, unreadable: list[str], *, optional: bool = False
+) -> str | None:
     """The text of the file *ref* names, relative to the HAR's directory *base*,
     read as UTF-8 as graftpunk's HAR parser reads it. A file that resolves outside
-    *base* (a ``..``, an absolute path, or a symlink) or is not there gives None.
-    A file inside *base* that is there and cannot be read (a permission error, a
-    symlink loop, a directory) gives None and is added to *unreadable*, as its
-    path relative to *base* and the reason."""
+    *base* (a ``..``, an absolute path, or a symlink) gives None. A file inside
+    *base* that cannot be read (a permission error, a symlink loop, a directory)
+    or is not there (a dangling symlink included) gives None and is added to
+    *unreadable*, as its path relative to *base* and the reason, unless it is
+    *optional* and not there. gp names a file in the HAR only after writing it,
+    so a named file that is gone means the run was changed since."""
     if base is None or not isinstance(ref, str) or not ref:
         return None
     try:
@@ -207,7 +215,8 @@ def _file_text(ref: object, base: Path | None, unreadable: list[str]) -> str | N
             return None
         return path.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        return None
+        if not optional:
+            unreadable.append(f"{named.relative_to(root)} (missing)")
     except OSError as exc:
         reason = "a symlink loop" if exc.errno == errno.ELOOP else exc.strerror
         unreadable.append(f"{named.relative_to(root)} ({reason or type(exc).__name__})")
@@ -277,9 +286,10 @@ def recorded_values(
     ``page-source.html`` beside the HAR, each only inside *base*.
 
     Raises:
-        RunUnreadableError: A file inside *base* that the HAR names, or the
-            run's ``page-source.html``, is there and cannot be read; the message
-            names each such file by its path relative to *base*.
+        RunUnreadableError: A file inside *base* that the HAR names cannot be
+            read or is missing, or the run's ``page-source.html`` is there and
+            cannot be read; the message names each such file by its path
+            relative to *base*.
     """
     wanted = set(names)
     unreadable: list[str] = []
@@ -330,16 +340,22 @@ def recorded_values(
             continue
         content = _object(response.get("content"))
         add_page(_body_text(content, base, unreadable))
-    add_page(_file_text(PAGE_SOURCE_NAME, base, unreadable))
+    # gp writes page-source.html only when the browser gave the page at stop.
+    add_page(_file_text(PAGE_SOURCE_NAME, base, unreadable, optional=True))
     if unreadable:
         raise RunUnreadableError(_cannot_read(unreadable))
     return found
 
 
+def _is_literal(value: str) -> bool:
+    """True when one of *value*'s forms is a JSON literal, in any case."""
+    return any(form.strip().casefold() in _LITERALS for form in value_forms(value))
+
+
 def recorded_leaks(text: str, values: Mapping[str, Iterable[str]]) -> list[str]:
-    """One line per name in *values* whose recorded value of three or more
-    characters is in the fixture *text*, naming the lines of *text* that hold it
-    (``line 3``, up to five, then a count) or ``found decoded``, never the value.
+    """One line per name in *values* whose recorded value is in the fixture
+    *text*, naming the lines of *text* that hold it (``line 3``, up to five,
+    then a count) or ``found decoded``, never the value.
 
     Each of a value's forms (:func:`graftpunk.testing.decoding.value_forms`) is
     looked for, compatibility-normalised and case-sensitively, in *text*, in its
@@ -347,12 +363,12 @@ def recorded_leaks(text: str, values: Mapping[str, Iterable[str]]) -> list[str]:
     and in its decoded forms (:func:`graftpunk.testing.decoding.decoded_forms`),
     then in :func:`graftpunk.testing.decoding.combined_forms`.
 
-    A recorded value that holds nothing is not looked for: an empty one, or form
-    state by the rule a cookie value is judged by
-    (:func:`graftpunk.har.digest.form_state`), the rule
-    :func:`graftpunk.devtools.captures.checked_names_of` judges a value by. A
-    name flagged by its name alone records such values (``logged_in=true``,
-    ``currency=USD``), and a fixture cannot invent ``true`` away."""
+    A recorded value is not looked for when it is empty or, in any of those
+    forms, ``true``, ``false`` or ``null`` in any case: a name flagged by its
+    name alone records such values (``logged_in=true``), and a fixture cannot
+    invent the literal away. A form shorter than four characters is not looked
+    for either, since it is in most fixtures by chance. Every other value is
+    looked for, a username, a name or a four-digit PIN included."""
     haystack = _normal("\n".join([text, "\n".join(_body_values(text)), *decoded_forms(text)]))
     raw_lines = text.split("\n")
     combined: str | None = None
@@ -361,9 +377,9 @@ def recorded_leaks(text: str, values: Mapping[str, Iterable[str]]) -> list[str]:
         wanted = {
             _normal(form)
             for value in values[name]
-            if value and not form_state(value)
+            if value and not _is_literal(value)
             for form in value_forms(value)
-            if len(form) >= _MIN_LENGTH
+            if len(form) >= _MIN_RECORDED_LENGTH
         }
         hits = [value for value in wanted if value in haystack]
         if not hits and wanted:

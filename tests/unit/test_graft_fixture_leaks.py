@@ -997,6 +997,25 @@ def test_a_page_source_that_cannot_be_read_is_a_read_error_naming_it(tmp_path: P
     )
 
 
+def test_a_body_file_the_har_names_that_is_gone_is_a_read_error_naming_it(tmp_path: Path) -> None:
+    """gp names a body file only after writing it, so one that is gone means the
+    run was changed since, and the values only it held cannot be compared."""
+    entry = {
+        "request": {"method": "GET", "url": "https://myshop.example.com/", "headers": []},
+        "response": {
+            "status": 200,
+            "headers": [{"name": "Content-Type", "value": "text/html"}],
+            "content": {"mimeType": "text/html", "_bodyFile": "bodies/gone.html"},
+        },
+    }
+    har = json.dumps({"log": {"entries": [entry]}})
+    result = _run_har(tmp_path, json.dumps({"t": "invented"}), har=har)
+    assert result.returncode == 2
+    assert result.stderr == (
+        "fixture-leaks: the HAR's run: cannot read bodies/gone.html (missing)\n"
+    )
+
+
 def test_a_looping_page_source_is_a_read_error_not_a_traceback(tmp_path: Path) -> None:
     (tmp_path / "page-source.html").symlink_to("page-source.html")
     result = _run_har(tmp_path, json.dumps({"t": "invented"}))

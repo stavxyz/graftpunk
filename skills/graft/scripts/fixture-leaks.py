@@ -70,29 +70,32 @@ response whose ``Content-Type`` header says HTML (a body kept in a file beside
 the HAR, ``_bodyFile``, included), in a DOM snapshot gp took at a credential
 post (``_domSnapshot``, ``_domAfter``), and in the run's ``page-source.html``
 beside the HAR. A file that resolves outside the HAR's directory, through a
-symlink or a ``..``, is not read. A file inside it that is there and cannot be
-read (a permission error, a symlink loop) is a read error, named by its path
-relative to the HAR's directory.
-It reports a flagged name whose recorded value of three or more characters is in
-the fixture, as recorded, percent-decoded, or without the double quotes a cookie
-value may carry, case-sensitively, in any of the forms above or two of them
+symlink or a ``..``, is not read. A file inside it that cannot be read (a
+permission error, a symlink loop) is a read error, named by its path relative to
+the HAR's directory, and so is a file the HAR names that is missing (a dangling
+symlink included), since gp names a file only after writing it; a missing
+``page-source.html`` is not, as gp writes it only when the browser gave the page.
+It reports a flagged name whose recorded value is in the fixture, as recorded,
+percent-decoded, or without the double quotes a cookie value may carry,
+case-sensitively, in any of the forms above or two of them
 applied one after the other (JSON-escaped inside an HTML attribute), as ``the
 recorded value of flagged 'sessionid' is still in the fixture (line 3)``, or
 ``(found decoded)``. It never prints the value or the text around it: such a
-value is a credential. A recorded value that holds nothing by graftpunk's rule
-(form state: ``true``, a word such as ``USD``, a date, punctuation) is not looked
-for, since a name flagged by its name alone records such values and a fixture
-cannot invent ``true`` away; the rule is copied from graftpunk, and a test holds
-the copy to it. It reports and never decides what the suite checks:
-reading one more source can only find more. This catches a value the capture's
-body never held, which the fixtures check in the suite does not: it holds names
-only, and from sidecar schema 3 it looks for a flagged cookie name only where the
-capture held one of that cookie's recorded values or held the name other than
-in a name-value pair holding nothing, so a recorded cookie value pasted into a fixture from
-elsewhere, even under its cookie's name, passes the suite in CI. From sidecar schema 4
-the suite makes this same comparison itself when the sidecar's own observe run is on
-the machine running it: graftpunk.testing.recorded is the package's copy of
-recorded_values and recorded_leaks, and a test holds the two to the same output.
+value is a credential. A recorded value is not looked for only when it is empty,
+or ``true``, ``false`` or ``null`` in any case, or shorter than four characters,
+each after the decodings above: a name flagged by its name alone records such
+values, and a fixture cannot invent ``true`` away. Every other value is looked
+for, a username, a name or a four-digit PIN included. It reports and never
+decides what the suite checks: reading one more source can only find more.
+This catches a value the capture's body never held, which the fixtures check in
+the suite does not: it holds names only, and from sidecar schema 3 it looks for a
+flagged cookie name only where the capture held one of that cookie's recorded
+values or held the name other than in a name-value pair holding nothing, so a
+recorded cookie value pasted into a fixture from elsewhere, even under its
+cookie's name, passes the suite in CI. From sidecar schema 4 the suite makes this
+same comparison itself when the sidecar's own observe run is on the machine
+running it: graftpunk.testing.recorded is the package's copy of recorded_values
+and recorded_leaks, and a test holds the two to the same output.
 
 Exit 0 when nothing survived and the sidecar matches, 1 when something survived,
 a recorded value of a flagged name is in the fixture, or the sidecar differs, 2 on
@@ -105,11 +108,9 @@ Standard library only, so it runs under any Python 3.9 or later.
 from __future__ import annotations
 
 import errno
-import functools
 import json
 import os
 import re
-import string
 import sys
 import unicodedata
 from array import array
@@ -621,6 +622,12 @@ class RunUnreadableError(Exception):
 
 
 _MOST_FILES = 3
+PAGE_SOURCE_NAME = "page-source.html"
+# A recorded value's form shorter than this is too common to report, and a value
+# that in any of its forms is one of these JSON literals (in any case) is not
+# looked for (graftpunk.testing.recorded; a test holds the copies equal).
+_MIN_RECORDED_LENGTH = 4
+_LITERALS = frozenset(("true", "false", "null"))
 
 
 def _cannot_read(unreadable: list[str]) -> str:
@@ -657,13 +664,17 @@ def _header(headers: list[tuple[str, str]], name: str) -> str | None:
     return spelled.get(name) or spelled.get(name.lower())
 
 
-def _file_text(ref: object, base: Path | None, unreadable: list[str]) -> str | None:
+def _file_text(
+    ref: object, base: Path | None, unreadable: list[str], *, optional: bool = False
+) -> str | None:
     """The text of the file *ref* names, relative to the HAR's directory *base*,
     read as UTF-8 as graftpunk's HAR parser reads it. A file that resolves outside
-    *base* (a ``..``, an absolute path, or a symlink) or is not there gives None.
-    A file inside *base* that is there and cannot be read (a permission error, a
-    symlink loop, a directory) gives None and is added to *unreadable*, as its
-    path relative to *base* and the reason."""
+    *base* (a ``..``, an absolute path, or a symlink) gives None. A file inside
+    *base* that cannot be read (a permission error, a symlink loop, a directory)
+    or is not there (a dangling symlink included) gives None and is added to
+    *unreadable*, as its path relative to *base* and the reason, unless it is
+    *optional* and not there. gp names a file in the HAR only after writing it,
+    so a named file that is gone means the run was changed since."""
     if base is None or not isinstance(ref, str) or not ref:
         return None
     try:
@@ -680,7 +691,8 @@ def _file_text(ref: object, base: Path | None, unreadable: list[str]) -> str | N
             return None
         return path.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        return None
+        if not optional:
+            unreadable.append(f"{named.relative_to(root)} (missing)")
     except OSError as exc:
         reason = "a symlink loop" if exc.errno == errno.ELOOP else exc.strerror
         unreadable.append(f"{named.relative_to(root)} ({reason or type(exc).__name__})")
@@ -744,8 +756,9 @@ def recorded_values(har: object, names: set[str], base: Path | None = None) -> d
     HAR's directory, a body or request body the HAR keeps in a file is read, and
     so are gp's DOM snapshots (``_domSnapshot``, ``_domAfter``) and the run's
     ``page-source.html`` beside the HAR, each only inside *base*. Raises
-    :class:`RunUnreadableError` when a file inside *base* that the HAR names, or
-    the run's ``page-source.html``, is there and cannot be read."""
+    :class:`RunUnreadableError` when a file inside *base* that the HAR names
+    cannot be read or is missing, or the run's ``page-source.html`` is there and
+    cannot be read."""
     found: dict[str, set[str]] = {}
     unreadable: list[str] = []
     # Several flagged names can differ in case alone (X-CSRF-Token, x-csrf-token).
@@ -794,321 +807,26 @@ def recorded_values(har: object, names: set[str], base: Path | None = None) -> d
             continue
         content = response.get("content") if isinstance(response.get("content"), dict) else {}
         add_page(_body_text(content, base, unreadable))
-    add_page(_file_text("page-source.html", base, unreadable))
+    # gp writes page-source.html only when the browser gave the page at stop.
+    add_page(_file_text(PAGE_SOURCE_NAME, base, unreadable, optional=True))
     if unreadable:
         raise RunUnreadableError(_cannot_read(unreadable))
     return found
 
 
-# graftpunk.har.digest.form_state and the graftpunk.har.paths rules it reads,
-# copied: the script cannot import graftpunk, and tests hold the copy to
-# graftpunk's answers. A recorded value that is form state holds no credential,
-# so the --har comparison skips it as the suite's local check does.
-_MIN_HEX_LEN = 12
-_MIN_PREFIXED_TAIL = 12
-_MIN_BASE64_LEN = 24
-_EMAIL_SEARCH_RE = re.compile(r"[^@\s/]+@[^@\s/]+\.[^@\s/.]+")
-_PART_SPLIT_RE = re.compile(r"[_.\-~$]")
-_DIGIT_RUN_RE = re.compile(r"\d{6,}")
-_MIXED_HEX_RE = re.compile(rf"[0-9a-fA-F]{{{_MIN_HEX_LEN},}}")
-_PREFIXED_ID_RE = re.compile(
-    rf"(?:^|(?<=[_\-]))[A-Za-z]{{2,8}}[_.\-]([A-Za-z0-9]{{{_MIN_PREFIXED_TAIL},}})(?=$|[_.\-~$])"
-)
-_BASE64_RE = re.compile(rf"[A-Za-z0-9+/_\-]{{{_MIN_BASE64_LEN},}}=*")
-_MIN_BASE64_SWITCHES = 5
-_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_PARENTHESISED_PHONE_RE = re.compile(r"\(\d{3}\)\s?\d{3}[-.\s]?\d{4}")
-_PREFIXED_HEX_RE = re.compile(rf"0[xX][0-9a-fA-F]{{{_MIN_HEX_LEN},}}")
-
-
-def _has_digit(text: str) -> bool:
-    return any(ch.isdigit() for ch in text)
-
-
-def _has_letter(text: str) -> bool:
-    return any(ch.isalpha() for ch in text)
-
-
-def _parts(text: str) -> list[str]:
-    return [part for part in _PART_SPLIT_RE.split(text) if part]
-
-
-def _letter_digit_switches(text: str) -> int:
-    kinds = [ch.isdigit() for ch in text if ch.isalnum()]
-    # No strict=: the script runs on Python 3.9, which lacks it.
-    return sum(1 for before, after in zip(kinds, kinds[1:]) if before != after)  # noqa: B905
-
-
-def _mixed_hex(text: str) -> bool:
-    return any(
-        _MIXED_HEX_RE.fullmatch(part) and _has_digit(part) and _has_letter(part)
-        for part in _parts(text)
-    )
-
-
-def _digit_groups(text: str) -> bool:
-    groups = [part for part in _parts(text) if part.isascii() and part.isdigit()]
-    return len(groups) >= 3 and sum(len(g) for g in groups) >= 7 and not _DATE_RE.fullmatch(text)
-
-
-def _prefixed_id(text: str) -> bool:
-    return any(
-        any(ch.isupper() for ch in tail) and any(ch.islower() for ch in tail) and _has_digit(tail)
-        for tail in (match.group(1) for match in _PREFIXED_ID_RE.finditer(text))
-    )
-
-
-def _base64_token(text: str) -> bool:
-    return any(
-        _BASE64_RE.fullmatch(candidate)
-        and _letter_digit_switches(candidate) >= _MIN_BASE64_SWITCHES
-        for candidate in (text, *_parts(text))
-    )
-
-
-def holds_an_id(text: str) -> bool:
-    """Whether *text* carries an account value: graftpunk's rule."""
-    text = unquote(text)
-    if not text:
-        return False
-    return (
-        bool(_EMAIL_SEARCH_RE.search(text))
-        or bool(_DIGIT_RUN_RE.search(text))
-        or _mixed_hex(text)
-        or _digit_groups(text)
-        or bool(_PARENTHESISED_PHONE_RE.search(text))
-        or any(_PREFIXED_HEX_RE.fullmatch(part) for part in _parts(text))
-        or _prefixed_id(text)
-        or _base64_token(text)
-    )
-
-
-_WORD_CONSONANT_PAIRS = frozenset(
-    (  # noqa: SIM905 - one compact string on purpose: the set is data
-        "bb bd bh bk bl bm bn bp br bs bt bv bw cb cc ch ck cl cm cn cr cs ct db dd dg dh "
-        "dl dm dn dp dr ds dt dv dw ff fl fn fr fs ft gg gh gl gm gn gr gs gt hb hd hf "
-        "hl hm hn hp hr hs ht hw kb kd kf kg kh kl km kn kp kr ks kt kw lb lc ld lf lg "
-        "lh lk ll lm ln lp lr ls lt lv lw mb md mf mh ml mm mn mp mr ms mt mw nb nc nd "
-        "nf ng nh nk nl nm nn np nr ns nt nv nw nx pb pc pd pf ph pl pm pn pp pr ps pt "
-        "pw rb rc rd rf rg rh rk rl rm rn rp rr rs rt rv rw sb sc sd sf sg sh sk sl sm "
-        "sn sp sq sr ss st sv sw tb tc td tf tg th tl tm tn tp tr ts tt tv tw wb wc wd "
-        "wf wh wk wl wm wn wp wr ws wt xc xp xs xt zz"
-    ).split()
-)
-_VOWELS = frozenset("aeiouyAEIOUY")
-_MAX_CAPITALS_RUN = 3
-_WORD_WITH_DIGITS_RE = re.compile(r"([A-Za-z]+)\d{1,2}")
-_VERSION_RE = re.compile(r"v\d{1,2}(?:alpha|beta|rc)?\d{0,2}")
-
-
-def _spelled(letters: str) -> bool:
-    if len(letters) > _MAX_CAPITALS_RUN and letters.isupper():
-        return False
-    lowered = letters.lower()
-    return all(
-        a in _VOWELS or b in _VOWELS or a + b in _WORD_CONSONANT_PAIRS
-        for a, b in zip(lowered, lowered[1:])  # noqa: B905 - Python 3.9 has no strict=
-    )
-
-
-_VALUE_PART_RE = re.compile(r"[^\W_]+")
-_MAX_VALUE_WORD_LEN = 15
-
-
-def _word_cased(letters: str) -> bool:
-    return letters.islower() or letters.isupper() or letters.istitle()
-
-
-def _plain_value_part(part: str) -> bool:
-    if not part.isascii():
-        return False
-    if part.isdigit():
-        return True
-    if part.isalpha():
-        return len(part) <= _MAX_VALUE_WORD_LEN and _word_cased(part) and _spelled(part)
-    if _VERSION_RE.fullmatch(part):
-        return True
-    match = _WORD_WITH_DIGITS_RE.fullmatch(part)
-    return match is not None and _word_cased(match.group(1)) and _spelled(match.group(1))
-
-
-def reads_as_words(value: str) -> bool:
-    """graftpunk.har.paths.reads_as_words: *value* is plain words, short numbers,
-    or a date."""
-    text = unquote_plus(value)
-    parts = _VALUE_PART_RE.findall(text)
-    if not parts or holds_an_id(text):
-        return False
-    words = text.split()
-    if len(words) > 1 or any(ch.isalpha() and not ch.isascii() for ch in text):
-        has_punctuation_word = any(not any(ch.isalnum() for ch in word) for word in words)
-        return (
-            not any(holds_an_id(word) for word in words)
-            and (not has_punctuation_word or any(ch.isalpha() for ch in text))
-            and all(_typed_word(word) for word in words)
-        )
-    return all(_plain_value_part(part) for part in parts)
-
-
-_TYPED_SHORT_WORD_LEN = 3
-_BRAND_CASED_RE = re.compile(r"[a-z]?[A-Z]?[a-z]+")
-_QUANTITY_UNITS = (  # noqa: SIM905 - one compact string on purpose: the set is data
-    "kb mb gb tb mah mm cm km in inch ft yd ml cl oz lb lbs kg mg g l pk ct pc pcs "
-    "pack w kw v hz ghz mhz"
-).split()
-_QUANTITY_RE = re.compile(rf"\d{{1,4}}(?:{'|'.join(_QUANTITY_UNITS)})|\d{{1,3}}x\d{{1,3}}")
-
-
-def _typed_word(word: str) -> bool:
-    if not any(ch.isalnum() for ch in word):
-        return True
-    runs = _VALUE_PART_RE.findall(word)
-    if runs and all(_plain_value_part(run) for run in runs):
-        return True
-    if len(word) <= _TYPED_SHORT_WORD_LEN and word.isalnum():
-        return True
-    if _QUANTITY_RE.fullmatch(word):
-        return True
-    letters = word.rstrip("0123456789")
-    if (
-        len(word) - len(letters) <= 2
-        and len(letters) > _TYPED_SHORT_WORD_LEN
-        and _BRAND_CASED_RE.fullmatch(letters)
-        and _spelled(letters)
-    ):
-        return True
-    return len(word) <= _MAX_VALUE_WORD_LEN and any(
-        ch.isalpha() and not ch.isascii() for ch in word
-    )
-
-
-_CASE_RUN_RE = re.compile(r"[A-Z]+|[a-z]+")
-_MIN_CAMEL_WORD_LEN = 3
-_MIN_CAMEL_TITLE_LEN = 3
-_CAMEL_JOINING_WORDS = frozenset(("At", "By", "In", "Is", "Of", "On", "Or", "To", "Up"))
-_MIN_CAMEL_CAPS_LEN = 2
-_MAX_UNSPELLED_CAPS = 3
-_MAX_CAMEL_PARTS = 3
-_MIN_UPPER_CAMEL_LEN = 12
-_MAX_CAMEL_RUNS = 2 * _MAX_CAMEL_PARTS
-_MAX_CAMEL_LEN = _MAX_CAMEL_PARTS * _MAX_VALUE_WORD_LEN
-_NAME_RE = re.compile(r"[A-Za-z]+(?:(?:, |\. |[ ,.'-])[A-Za-z]+){1,3}\.?")
-_NAME_WORD_RE = re.compile(r"[A-Za-z]+")
-
-
-def _camel_part(part: str, *, strict: bool = False, last: bool = False) -> bool:
-    if len(part) > _MAX_VALUE_WORD_LEN:
-        return False
-    if part.islower():
-        return len(part) >= _MIN_CAMEL_WORD_LEN and _a_word(part)
-    if part.isupper():
-        return len(part) >= _MIN_CAMEL_CAPS_LEN and (
-            (not strict and last and len(part) <= _MAX_UNSPELLED_CAPS) or _spelled(part.lower())
-        )
-    if not strict and part in _CAMEL_JOINING_WORDS:
-        return True
-    return part[1:].islower() and len(part) >= _MIN_CAMEL_TITLE_LEN and _a_word(part.lower())
-
-
-def _a_word(letters: str) -> bool:
-    return _spelled(letters) and any(ch in _VOWELS for ch in letters)
-
-
-def _reads_as_camel_case(text: str) -> bool:
-    strict = text[0].isupper()
-    if strict and len(text) < _MIN_UPPER_CAMEL_LEN:
-        return False
-    if len(text) > _MAX_CAMEL_LEN:
-        return False
-    runs = _CASE_RUN_RE.findall(text)
-    if len(runs) > _MAX_CAMEL_RUNS:
-        return False
-
-    def part(piece: str, *, last: bool = False) -> bool:
-        return _camel_part(piece, strict=strict, last=last)
-
-    @functools.cache
-    def fits(index: int, budget: int) -> bool:
-        if index == len(runs):
-            return True
-        if budget == 0:
-            return False
-        head = runs[index]
-        if not (head.isupper() and index + 1 < len(runs)):
-            return part(head, last=index + 1 == len(runs)) and fits(index + 1, budget - 1)
-        lower = runs[index + 1]
-        own_part = budget >= 2 and part(head) and part(lower) and fits(index + 2, budget - 2)
-        if own_part:
-            return True
-        given, joined = head[:-1], head[-1] + lower
-        if not given:
-            return part(joined) and fits(index + 2, budget - 1)
-        return budget >= 2 and part(given) and part(joined) and fits(index + 2, budget - 2)
-
-    return fits(0, _MAX_CAMEL_PARTS)
-
-
-def _reads_as_name(text: str) -> bool:
-    if " " not in text or not _NAME_RE.fullmatch(text):
-        return False
-    return all(_name_word(word) for word in _NAME_WORD_RE.findall(text))
-
-
-def _name_word(word: str) -> bool:
-    if len(word) == 1:
-        return word.isupper()
-    return (
-        len(word) <= _MAX_VALUE_WORD_LEN
-        and (word.isupper() or word.istitle())
-        and _spelled(word.lower())
-    )
-
-
-def reads_as_cased_words(value: str) -> bool:
-    """graftpunk.har.paths.reads_as_cased_words: *value* is one ASCII word in
-    capitals, a camelCase run of words, or a name of a few words."""
-    text = unquote_plus(value)
-    if not text.isascii() or not text:
-        return False
-    if not text.isalpha():
-        return _reads_as_name(text)
-    if text.isupper():
-        return len(text) <= _MAX_VALUE_WORD_LEN and _spelled(text.lower())
-    return _reads_as_camel_case(text)
-
-
-_PUNCTUATION_AND_SPACE = frozenset(string.punctuation + " ")
-
-
-def _without_cookie_quotes(value: str) -> str:
-    for quote in ('"', "%22"):
-        if len(value) > 2 * len(quote) and value.startswith(quote) and value.endswith(quote):
-            return value[len(quote) : -len(quote)]
-    return value
-
-
-def form_state(value: str) -> bool:
-    """graftpunk.har.digest.form_state: *value*, a non-empty recorded value, holds
-    no credential (punctuation and spaces alone, or words, once decoded)."""
-    if all(ch in _PUNCTUATION_AND_SPACE for ch in unquote_plus(value)):
-        return True
-    unquoted = _without_cookie_quotes(value)
-    return reads_as_words(unquoted) or reads_as_cased_words(unquoted)
-
-
-def holds_nothing(value: str) -> bool:
-    """True when the recorded *value* is empty or form state: the rule the
-    suite's fixtures check judges a value by."""
-    return not value or form_state(value)
+def _is_literal(value: str) -> bool:
+    """True when one of *value*'s forms is a JSON literal, in any case."""
+    return any(form.strip().casefold() in _LITERALS for form in _value_forms(value))
 
 
 def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
     """One line per flagged name whose recorded value is in *fixture*, naming the
     lines of the file that hold it (or ``found decoded``), never the value. Each
     of a value's :func:`_value_forms` is looked for in the fixture's forms and in
-    :func:`_combined_decodings` of it. A value that holds nothing
-    (:func:`holds_nothing`: ``true``, a word, punctuation) is not looked for: a
-    fixture cannot invent it away."""
+    :func:`_combined_decodings` of it. A value that is empty or, in any of its
+    forms, ``true``, ``false`` or ``null`` in any case is not looked for, since a
+    fixture cannot invent the literal away, and neither is a form shorter than
+    four characters."""
     lines: list[str] = []
     raw_lines = fixture.shown.split("\n")
     combined: str | None = None
@@ -1116,9 +834,9 @@ def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
         wanted = {
             _normal(form)
             for value in values[name]
-            if not holds_nothing(value)
+            if value and not _is_literal(value)
             for form in _value_forms(value)
-            if len(form) >= _MIN_LENGTH
+            if len(form) >= _MIN_RECORDED_LENGTH
         }
         hits = [value for value in wanted if value in fixture.haystack]
         if not hits and wanted:

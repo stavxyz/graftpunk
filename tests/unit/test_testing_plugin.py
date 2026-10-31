@@ -6,16 +6,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import random
-import string
+import re
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-from graftpunk.har import paths as paths_module
-from graftpunk.har.digest import DigestSource, digest, flagged_values_of, form_state
+from graftpunk.har.digest import DigestSource, digest, flagged_values_of
 from graftpunk.har.parser import parse_har_file
+from graftpunk.testing import decoding, recorded
 from graftpunk.testing.decoding import combined_forms, decoded_forms, value_forms
 from graftpunk.testing.recorded import RunUnreadableError, recorded_leaks, recorded_values
 from tests.unit.guide_harness import REPO_ROOT
@@ -283,106 +282,133 @@ def test_a_symlink_loop_is_the_same_read_error_in_the_package_and_the_script(
     )
 
 
-def _value_corpus() -> list[str]:
-    """Recorded values of every shape the form-state rule tells apart: random
-    tokens, words in each casing, names, dates, quantities, punctuation, quoted
-    and percent-encoded values."""
-    rng = random.Random(345)  # noqa: S311 - a fixed sample, not a secret
-    alphabets = [
-        string.ascii_letters + string.digits,
-        string.ascii_lowercase,
-        string.ascii_uppercase + " ",
-        string.ascii_letters,
-        string.ascii_letters + string.digits + "+/=",
-        string.digits + "-/ .",
-        string.ascii_lowercase + " ,.'-",
-        "abcdefghijklmnop%2C0123456789",
-        string.punctuation + " ",
-    ]
-    words = ["shoes", "Smith", "JOHN", "current", "Tab", "view", "PDF", "list", "Results"]
-    words += ["café", "iPhone", "15", "512gb", "en-US", "true", "of", "By", "Mary", "O'Brien"]
-    corpus = [
-        "".join(rng.choices(rng.choice(alphabets), k=rng.randint(1, 30))) for _ in range(4_000)
-    ]
-    corpus += [
-        rng.choice(["", " ", ", ", "-"]).join(rng.choices(words, k=rng.randint(1, 4)))
-        for _ in range(2_000)
-    ]
-    corpus += [f'"{value}"' for value in corpus[:300]] + [f"%22{v}%22" for v in corpus[:300]]
-    corpus += [
-        "true",
-        "false",
-        "USD",
-        "en-US",
-        "2026-10-01",
-        "running+shoes",
-        "currentTab",
-        "viewPDF",
-        "Smith, John",
-        "LANDOWNER",
-        "HTMLParserView",
-        "LISTviewResults",
-        "tabXQZresults",
-        "****",
-        "authenticity_token",
-        "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd",
-        "kQzPwM",
-        "lot 123456",
-        "cus_NffrFeUfNV2Hib",
-        "4111 1111 1111 1111",
-        "%00",
-    ]
-    return corpus
+# Each module-level constant and pattern of the script: the ones copied from the
+# package, by the package module that holds the original, and the script's own.
+# A constant added to the script must be listed here, so a new copy cannot go
+# unguarded.
+_COPIED_FROM = {
+    "_DIGITS": recorded,
+    "_IDENTIFIER": recorded,
+    "_MOST_PLACES": recorded,
+    "_MOST_FILES": recorded,
+    "PAGE_SOURCE_NAME": recorded,
+    "_MIN_RECORDED_LENGTH": recorded,
+    "_LITERALS": recorded,
+    "_UNICODE_ESCAPE": decoding,
+    "_SURROGATE_PAIR": decoding,
+    "_HEX_ESCAPE": decoding,
+    "_CONTROL_ESCAPE": decoding,
+    "_CONTROL_CHARACTERS": decoding,
+    "_PERCENT_ROUNDS": decoding,
+}
+_SCRIPTS_OWN = {
+    "_WORD",
+    "_MIN_LENGTH",
+    "_PROVENANCE",
+    "_RUN_LABEL",
+    "_DATE_TIME_DIGITS",
+    "_BEFORE",
+    "_AFTER",
+    "_NON_ASCII",
+    "_CONTEXT",
+    "_LONGEST_MATCH",
+    "_MOST_VALUES",
+    "_MOST_NAMED",
+    "_OPEN",
+    "_CLOSE",
+}
 
 
-def test_the_skill_scripts_form_state_rule_is_graftpunks() -> None:
-    """The script skips a recorded value that holds nothing by a copy of
-    graftpunk.har.digest.form_state, held to graftpunk's answers here."""
+def test_every_constant_the_skill_script_copies_is_graftpunks() -> None:
     script = _load_script()
-    differ = [value for value in _value_corpus() if script.form_state(value) != form_state(value)]
-    assert differ == []
-    assert script.form_state("true")
-    assert not script.form_state("Zq9XkLmPwR4t7Bv2Hn8Ks3Jd")
+    constants = {name for name in vars(script) if re.fullmatch(r"_?[A-Z][A-Z0-9_]*", name)}
+    assert constants == set(_COPIED_FROM) | _SCRIPTS_OWN
+    for name, module in _COPIED_FROM.items():
+        ours, theirs = getattr(script, name), getattr(module, name)
+        if isinstance(theirs, re.Pattern):
+            assert (ours.pattern, ours.flags) == (theirs.pattern, theirs.flags), name
+        else:
+            assert ours == theirs, name
+
+
+_PASTED_FIXTURE = (
+    '{"user": "alice", "name": "John Smith", "pin": "1234", "id": 48213,'
+    ' "password": "hunter12", "card": "4111 1111 1111 1111",'
+    ' "t": "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd", "active": true, "gone": null, "tab": "ab"}'
+)
 
 
 @pytest.mark.parametrize(
-    "name",
+    ("recorded_value", "reported"),
     [
-        "_MIN_HEX_LEN",
-        "_MIN_PREFIXED_TAIL",
-        "_MIN_BASE64_LEN",
-        "_MIN_BASE64_SWITCHES",
-        "_MAX_CAPITALS_RUN",
-        "_VOWELS",
-        "_WORD_CONSONANT_PAIRS",
-        "_MAX_VALUE_WORD_LEN",
-        "_QUANTITY_UNITS",
-        "_CAMEL_JOINING_WORDS",
-        "_MAX_CAMEL_PARTS",
-        "_MIN_UPPER_CAMEL_LEN",
+        ("alice", True),
+        ("John Smith", True),
+        ("1234", True),
+        ("48213", True),
+        ("hunter12", True),
+        ("4111 1111 1111 1111", True),
+        ("Zq9XkLmPwR4t7Bv2Hn8Ks3Jd", True),
+        ("true", False),
+        ("TRUE", False),
+        ("%22null%22", False),
+        ("null", False),
+        ("", False),
+        ("ab", False),
     ],
 )
-def test_the_skill_scripts_copied_constants_are_graftpunks(name: str) -> None:
-    assert getattr(_load_script(), name) == getattr(paths_module, name)
-
-
-@pytest.mark.parametrize(
-    ("recorded", "reported"),
-    [("true", False), ("USD", False), ("Zq9XkLmPwR4t7Bv2Hn8Ks3Jd", True)],
-    ids=["true", "a-word", "opaque"],
-)
-def test_a_recorded_value_that_holds_nothing_is_not_looked_for(
-    recorded: str, reported: bool
+def test_a_recorded_value_is_looked_for_unless_empty_a_literal_or_short(
+    recorded_value: str, reported: bool
 ) -> None:
-    """A name flagged by its name alone records values such as ``true``; a fixture
-    holding the JSON literal ``true`` cannot invent it away. An opaque value is
-    still reported, in both copies."""
+    """Only an empty value, ``true``, ``false`` or ``null`` in any case, and a
+    value shorter than four characters are skipped, in both copies: a username,
+    a name, a PIN, a short id, a password and a card number pasted into a
+    fixture are each reported."""
     script = _load_script()
-    fixture = '{"orders": [], "active": true, "currency": "USD", "t": "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"}'
-    values = {"logged_in_session": {recorded}}
-    package = recorded_leaks(fixture, values)
-    assert package == script.recorded_leaks(script._Fixture(fixture), values)
+    values = {"logged_in_session": {recorded_value}}
+    package = recorded_leaks(_PASTED_FIXTURE, values)
+    assert package == script.recorded_leaks(script._Fixture(_PASTED_FIXTURE), values)
     assert bool(package) is reported
+
+
+@pytest.mark.parametrize("missing", ["deleted", "dangling", "no-bodies-dir"])
+@pytest.mark.parametrize("ref", ["_bodyFile", "_postDataFile", "_domSnapshot"])
+def test_a_file_the_har_names_that_is_missing_is_the_same_read_error_in_both_copies(
+    tmp_path: Path, missing: str, ref: str
+) -> None:
+    """gp names a file in the HAR only after writing it, so a named file that is
+    gone (deleted, a dangling symlink, or its directory removed) fails the check
+    by its path in the run, in both copies, and is never a quiet pass."""
+    run_dir = tmp_path / "run"
+    (run_dir / "bodies").mkdir(parents=True)
+    html = [{"name": "Content-Type", "value": "text/html"}]
+    page = _page("https://myshop.example.com/", html, {"mimeType": "text/html"})
+    if ref == "_bodyFile":
+        page["response"]["content"]["_bodyFile"] = "bodies/a.html"
+    else:
+        page["request"][ref] = "bodies/a.html"
+    har = {"log": {"entries": [page]}}
+    if missing == "dangling":
+        (run_dir / "bodies" / "a.html").symlink_to("nothing.html")
+    elif missing == "no-bodies-dir":
+        (run_dir / "bodies").rmdir()
+    script = _load_script()
+    with pytest.raises(RunUnreadableError) as package:
+        recorded_values(har, _FLAGGED, run_dir)
+    with pytest.raises(script.RunUnreadableError) as copied:
+        script.recorded_values(har, set(_FLAGGED), run_dir)
+    assert str(package.value) == str(copied.value) == "cannot read bodies/a.html (missing)"
+
+
+def test_a_run_without_a_page_source_is_read_in_both_copies(tmp_path: Path) -> None:
+    """gp writes page-source.html only when the browser gave the page at stop, so
+    a run without one is read whole."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    har = _run_with_every_source(run_dir)
+    (run_dir / "page-source.html").unlink()
+    package = recorded_values(har, _FLAGGED, run_dir)
+    assert package == _load_script().recorded_values(har, set(_FLAGGED), run_dir)
+    assert package["csrf-token"] == {"OldTok9Qv2Rt7", "Snap5Qv2Rt7"}
 
 
 def test_the_script_reads_no_file_outside_the_run_as_the_package(tmp_path: Path) -> None:
