@@ -2359,8 +2359,9 @@ def login_form_targets(
     """Where the login forms of the page *html* post, host and path
     (``LoginForm.action_target``), each read as :func:`extract_login_forms` reads
     the page (*source*, *base* and *snapshot* passed on): the targets
-    :func:`is_credential_post` takes a POST for a login by. A form with no target of
-    its own gives none."""
+    :func:`is_credential_post` takes a POST for a login by. A form with no ``action``
+    targets its page's own path, so a POST to that page is one; a formless login
+    group (``LoginForm.formless``, target ``("", "")``) gives none."""
     if not html:
         return frozenset()
     forms = extract_login_forms(html, source=source, base=base, snapshot=snapshot)
