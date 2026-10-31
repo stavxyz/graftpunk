@@ -20,8 +20,10 @@ starts in the body or in the text of a JSON string; a void ``input``, ``meta``,
 ``param`` or ``link`` element named so with a ``value`` or ``content``, every
 other attribute value of it and every attribute name that is not one of its own
 judged too) whose value holds nothing (a boolean, null, empty, or form state, a
-number judged by its text, an object by its keys and values; a name in a URL or
-query string, such as ``?csrftoken=2``, is read by neither and stays checked),
+number judged by its text, an object by its keys and values; a URL is never read
+as a pair, so a name in a URL or query string, such as ``?csrftoken=2``, stays
+checked unless the URL is itself a value one of them judges whole, where it is
+judged like any value),
 and
 each cookie name whose values ``gp observe fixtures`` did not know
 (``graftpunk.har.digest.flagged_values_of``; a cookie no recorded request sent

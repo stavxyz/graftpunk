@@ -586,7 +586,10 @@ def checked_names_of(
     (:func:`graftpunk.har.digest.form_state`), a number judged by its text, an
     object by its keys and values. Any other occurrence keeps the name checked:
     ``name=v`` in a URL, a query string or a form body (``?csrftoken=2``
-    included), ``name: v`` in text that is not JSON, an attribute named by the
+    included; no reader reads a URL as a pair, so the name stays checked unless
+    the URL is itself a value a reader judges whole, a JSON value or a void
+    element's attribute value, where it is judged like any value),
+    ``name: v`` in text that is not JSON, an attribute named by the
     name, an element that holds text whether or not written with ``/>``, a
     call's argument. An honest ``"id": 7`` or ``"user": "alice"`` leaves the
     name unchecked; ``"csrftoken": "<an opaque value>"``,

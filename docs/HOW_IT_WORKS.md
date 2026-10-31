@@ -1330,7 +1330,8 @@ string that is form state by the rule above, a number whose text is form state
 nothing. An occurrence inside a value already read is part of that value. Any
 other occurrence keeps the name checked, whatever sits beside it: `name=v` in a
 URL, a query string or a form body (`?csrftoken=2` included, in an attribute
-value, a JSON string or text), `name: v` in
+value, a JSON string or text; no reader reads a URL as a pair, so such a name
+stays checked outside a value already read), `name: v` in
 text that is not JSON (`<li>csrftoken: <code>...</code></li>`,
 `<dt>csrftoken:</dt><dd>...</dd>`), `name == "v"` or `name => "v"` in a script,
 `name=<b>v</b>`, a call's argument as in `Cookies.set('name', ...)`, a

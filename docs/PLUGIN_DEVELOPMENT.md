@@ -2342,7 +2342,9 @@ element, every attribute value but the naming one, and every attribute name
 that is not an HTML attribute of that element): a boolean, null, empty, form state by the rule above, a number
 whose text is form state, or an object or array whose keys and values all hold
 nothing. Any other mention of the name (`?csrftoken=2` or any `name=v` in a
-URL or query string, `csrftoken: <code>...</code>` in a page,
+URL or query string, which no reader reads as a pair, so it keeps the name in
+unless the URL is itself a value a reader judges whole, where it is judged like
+any value; `csrftoken: <code>...</code>` in a page,
 `Cookies.set('csrftoken', ...)`, a `{"name": "csrftoken", "value": ...}` pair, an
 attribute named `csrftoken`, a `textarea` or other element that holds text, a
 table cell) keeps it in, so a cookie named `id` stays in for nearly every HTML
