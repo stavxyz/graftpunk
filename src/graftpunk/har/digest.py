@@ -7,6 +7,7 @@ only remaining consumer (plugin tooling spec, 2026-09-11).
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import re
@@ -584,9 +585,45 @@ def _scope_root(primary_host: str) -> str:
     that capture. Sites normally record from a ``www`` or ``app`` subdomain,
     which scopes correctly; a bare apex under such a suffix is the one shape
     this rule gets wrong.
+
+    An IP address (``192.168.1.10``, ``[::1]``, with or without a port) is its
+    own root: its dotted parts are not labels, and dropping the first gave
+    ``168.1.10``, under which ``10.168.1.10`` counted as in scope.
     """
+    if _ip_literal(primary_host):
+        return primary_host
     labels = primary_host.split(".")
     return primary_host if len(labels) <= 2 else ".".join(labels[1:])
+
+
+def _host_name(host: str) -> str:
+    """*host*, as :func:`graftpunk.har.paths.normal_host` spells it, without its
+    port: ``myshop.example.com:8443`` gives ``myshop.example.com`` and
+    ``[::1]:8000`` gives ``[::1]``."""
+    if host.startswith("["):
+        end = host.find("]")
+        return host[: end + 1] if end != -1 else host
+    if _is_ip(host):
+        return host
+    name, colon, port = host.rpartition(":")
+    return name if colon and port.isdigit() else host
+
+
+def _is_ip(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _ip_literal(host: str) -> bool:
+    """True when *host*, with or without a port, is an IPv4 or a bracketed IPv6
+    address."""
+    name = _host_name(host)
+    if name.startswith("[") and name.endswith("]"):
+        name = name[1:-1]
+    return _is_ip(name)
 
 
 def _primary_host(non_static_hosts: dict[str, int], document_hosts: set[str]) -> str:
@@ -612,8 +649,14 @@ def _primary_host(non_static_hosts: dict[str, int], document_hosts: set[str]) ->
 
 
 def _in_scope(host: str, root: str) -> bool:
-    """True when *host* is *root* or a subdomain of it."""
-    return bool(root) and (host == root or host.endswith(f".{root}"))
+    """True when *host* is *root* or a subdomain of it. An IP address has no
+    subdomains: when either is one, *host* is in scope only when it equals
+    *root*."""
+    if not root:
+        return False
+    if _ip_literal(root) or _ip_literal(host):
+        return host == root
+    return host == root or host.endswith(f".{root}")
 
 
 def _is_static(entry: HAREntry) -> bool:
@@ -3755,10 +3798,15 @@ def _out_of_scope_cookies(d: RunDigest, entries: Sequence[HAREntry]) -> set[str]
     array or ``Cookie`` header, and as set by its response's cookie array or
     ``Set-Cookie`` header. An entry whose URL has no host the digest reads (one
     ``urlparse`` refuses, or a scheme other than HTTP) is not known to be out of
-    scope, so its cookies are not named."""
+    scope, so its cookies are not named.
+
+    Hosts are compared without their ports, on both sides: a cookie is not
+    scoped by port (RFC 6265, section 8.5), so the site's API on
+    ``myshop.example.com:8443``, or ``localhost:3000`` beside a page on
+    ``localhost:8000``, is the site's own."""
     if not d.primary_host:
         return set()
-    root = _scope_root(d.primary_host)
+    root = _scope_root(_host_name(d.primary_host))
     outside: set[str] = set()
     inside: set[str] = set(d.cookies)
     for entry in entries:
@@ -3775,7 +3823,7 @@ def _out_of_scope_cookies(d: RunDigest, entries: Sequence[HAREntry]) -> set[str]
         host = ""
         if parsed.scheme.lower() in _HTTP_SCHEMES:
             host = normal_host(parsed.scheme, parsed.netloc)
-        (outside if host and not _in_scope(host, root) else inside).update(names)
+        (outside if host and not _in_scope(_host_name(host), root) else inside).update(names)
     return outside - inside
 
 

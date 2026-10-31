@@ -36,10 +36,12 @@ from graftpunk.har.digest import (
     _account_values,
     _array_expiry,
     _expiry,
+    _in_scope,
     _login_opener,
     _parse_body,
     _response_cookie_attributes,
     _scalar_values,
+    _scope_root,
     _with_login_flow,
     body_params,
     body_values,
@@ -54,7 +56,7 @@ from graftpunk.har.digest import (
 )
 from graftpunk.har.documents import LoginForm
 from graftpunk.har.parser import LoginInteraction, parse_har_file
-from graftpunk.har.paths import reads_as_words
+from graftpunk.har.paths import normal_host, reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from tests.unit.guide_harness import REPO_ROOT
 from tests.unit.test_har_parser import _load_har_facts
@@ -4831,6 +4833,68 @@ class TestFlaggedNamesOf:
         assert tuple(reasons) == flagged_names_of(result, entries)
         assert set(reasons) == {"NID", "both", "crossed", "pixel", "shop_ref"}
         assert flagged_values_of(result, entries)["NID"] == frozenset({"Ks3JdZq9XkLmPwR4t7Bv2Hn8"})
+
+    @pytest.mark.parametrize(
+        ("page_url", "sent_to", "out_of_scope"),
+        [
+            ("https://www.myshop.example.com:8443/a", "https://www.myshop.example.com/api", False),
+            ("https://shop.example.com/a", "https://shop.example.com:8443/api", False),
+            ("http://localhost:8000/a", "http://localhost:3000/api", False),
+            ("https://www.myshop.example.com:8443/a", "https://api.myshop.example.com/x", False),
+            ("http://192.168.1.10/a", "http://10.168.1.10/api", True),
+            ("http://127.0.0.1:8000/a", "http://10.0.0.1:8000/api", True),
+            ("http://127.0.0.1:8000/a", "http://127.0.0.1:9000/api", False),
+            ("http://[::1]:8000/a", "http://[::1]:3000/api", False),
+            ("http://[2001:db8::1]/a", "http://[2001:db8::2]/api", True),
+            ("https://www.myshop.example.com/a", "https://ads.example.net/x", True),
+        ],
+        ids=[
+            "same-host-default-port",
+            "same-host-other-port",
+            "localhost-ports",
+            "subdomain-of-the-root",
+            "ipv4-suffix-lookalike",
+            "other-ipv4-same-port",
+            "same-ipv4-other-port",
+            "ipv6-other-port",
+            "other-ipv6",
+            "third-party",
+        ],
+    )
+    def test_out_of_scope_compares_host_names_and_ip_addresses_whole(
+        self, tmp_path: Path, page_url: str, sent_to: str, out_of_scope: bool
+    ) -> None:
+        """A cookie is not scoped by port, so a host on another port of the
+        primary host is the site's own; an IP address is in scope only when it
+        is the primary host's, never because its text ends like it."""
+        page = _entry("GET", page_url, content_type="text/html", body="<p>")
+        api = _entry("GET", sent_to)
+        api["request"]["cookies"] = [{"name": "app_session", "value": "Ks3JdZq9XkLmPwR4t7Bv2Hn8"}]
+        har = _write_har(tmp_path, [page, api])
+        result = digest(DigestSource.from_har(har))
+        primary = urlparse(page_url)
+        assert result.primary_host == normal_host(primary.scheme, primary.netloc)
+        reasons = flagged_reasons_of(result, parse_har_file(har).entries)["app_session"]
+        assert ("out_of_scope_only" in reasons) is out_of_scope
+
+    @pytest.mark.parametrize(
+        ("primary", "host", "in_scope"),
+        [
+            ("192.168.1.10", "192.168.1.10", True),
+            ("192.168.1.10", "10.168.1.10", False),
+            ("127.0.0.1:8000", "10.0.0.1:8000", False),
+            ("127.0.0.1:8000", "127.0.0.1:8000", True),
+            ("[::ffff:192.168.1.10]", "[::ffff:10.168.1.10]", False),
+            ("www.myshop.example.com", "api.myshop.example.com", True),
+            ("www.myshop.example.com", "10.0.0.1", False),
+        ],
+    )
+    def test_the_scope_rule_matches_an_ip_address_only_whole(
+        self, primary: str, host: str, in_scope: bool
+    ) -> None:
+        """The digest's endpoint scope uses the same rule: an IP address's dotted
+        parts are not domain labels."""
+        assert _in_scope(host, _scope_root(primary)) is in_scope
 
     def test_a_recording_with_no_primary_host_has_no_out_of_scope_cookie(
         self, tmp_path: Path
