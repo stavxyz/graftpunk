@@ -43,8 +43,10 @@ from graftpunk.session_identity import identifier_key, is_identifier_field
 __all__ = [
     "KEPT_ATTRIBUTES",
     "TEXT_LIMIT",
+    "post_redaction_values",
     "sanitize_dom_snapshot",
     "snapshot_redaction",
+    "spelled_redaction",
     "stored_dom_snapshot",
 ]
 
@@ -523,19 +525,17 @@ def _spellings(value: str) -> list[str]:
     )
 
 
-def snapshot_redaction(body_text: str | None, content_type: str = "") -> Redaction:
-    """What a snapshot is scrubbed of: the triggering post's own values, its
-    password-like fields' (:func:`graftpunk.har.digest.password_field_names`) as
-    secrets, replaced wherever they occur, and its identifier fields'
-    (:func:`graftpunk.session_identity.is_identifier_field`, an allowlist) as
-    identifiers, replaced where they stand as a whole value. Another field's value
-    (``remember=1``) is left alone: replacing it everywhere would mangle the
-    markup. The values are read by :func:`graftpunk.har.digest.body_values` (a
-    nested JSON value under its nearest name, a multipart text part), and a
+def post_redaction_values(
+    body_text: str | None, content_type: str = ""
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """A credential post's own values as :func:`snapshot_redaction` reads them, each
+    once and without its other spellings: its password-like fields' values
+    (:func:`graftpunk.har.digest.password_field_names`), then its identifier fields'
+    (:func:`graftpunk.session_identity.is_identifier_field`, an allowlist). An empty
+    value is left out. The values are read by :func:`graftpunk.har.digest.body_values`
+    (a nested JSON value under its nearest name, a multipart text part), and a
     Rails-style name by its last bracketed part
-    (:func:`graftpunk.session_identity.identifier_key`). Each value's other
-    spellings (:func:`_spellings`) are added beside it, a second net under the
-    sanitizer's own redaction of decoded text."""
+    (:func:`graftpunk.session_identity.identifier_key`)."""
     password_names = set(password_field_names(body_text, content_type))
     secrets: list[str] = []
     identifiers: list[str] = []
@@ -544,10 +544,30 @@ def snapshot_redaction(body_text: str | None, content_type: str = "") -> Redacti
         if not value:
             continue
         if name in password_names:
-            secrets.extend(_spellings(value))
+            secrets.append(value)
         elif is_identifier_field(identifier_key(name)):
-            identifiers.extend(_spellings(value))
-    return Redaction(tuple(secrets), tuple(identifiers))
+            identifiers.append(value)
+    return tuple(dict.fromkeys(secrets)), tuple(dict.fromkeys(identifiers))
+
+
+def snapshot_redaction(body_text: str | None, content_type: str = "") -> Redaction:
+    """What a snapshot is scrubbed of: the triggering post's own values
+    (:func:`post_redaction_values`), its password-like fields' as secrets, replaced
+    wherever they occur, and its identifier fields' as identifiers, replaced where
+    they stand as a whole value. Another field's value (``remember=1``) is left
+    alone: replacing it everywhere would mangle the markup. Each value's other
+    spellings (:func:`_spellings`) are added beside it, a second net under the
+    sanitizer's own redaction of decoded text."""
+    return spelled_redaction(*post_redaction_values(body_text, content_type))
+
+
+def spelled_redaction(secrets: Iterable[str], identifiers: Iterable[str] = ()) -> Redaction:
+    """A :class:`graftpunk.observe.run.Redaction` of *secrets* and *identifiers*,
+    each with its other spellings (:func:`_spellings`) beside it."""
+    return Redaction(
+        tuple(spelled for value in secrets for spelled in _spellings(value)),
+        tuple(spelled for value in identifiers for spelled in _spellings(value)),
+    )
 
 
 def stored_dom_snapshot(

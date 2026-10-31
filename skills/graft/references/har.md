@@ -93,7 +93,8 @@ a form field). Never read the HAR by hand for it.
 ## Reading the HAR by hand
 
 Read the HAR yourself only for what the reader does not cover, and narrowly;
-the skill offers no allow rule for it, since it holds the login's password. The
+the skill offers no allow rule for it, since it holds the session's cookies and
+tokens and can hold the login's password. The
 file is JSON with a two-space indent, one key per line, and within an entry the
 request's `method` and `url` come first, then its `headers` (where `Cookie` and
 `Authorization` values sit), its `cookies` (with their values), its

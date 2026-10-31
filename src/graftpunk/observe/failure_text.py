@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 import urllib.parse
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -368,7 +368,12 @@ def _holds_json(value: str) -> bool:
     return value.lstrip()[:1] in ("{", "[")
 
 
-def scrub_failed_password(body: str, content_type: str, values: Iterable[str]) -> str:
+def scrub_failed_password(
+    body: str,
+    content_type: str,
+    values: Iterable[str],
+    names_a_password: Callable[[str | None], bool] | None = None,
+) -> str:
     """*body*, the failed post's own request body, with each of *values* (its
     password values, :func:`failed_password_values`) replaced by ``***REDACTED***``
     where it is a whole value under a password-like name (a
@@ -384,23 +389,27 @@ def scrub_failed_password(body: str, content_type: str, values: Iterable[str]) -
     the same inside JSON held in a field, a part, or a JSON string, one level down.
     The rest of the body is kept character for character, and a field holding JSON
     that changed is encoded again as it was written (a form field's
-    percent-encoding, a JSON string's escapes)."""
+    percent-encoding, a JSON string's escapes).
+
+    *names_a_password*, when given, replaces the password-like name rule: it is
+    called with each value's nearest name (None for a JSON value under no name)."""
     wanted = frozenset(value for value in values if value)
     if not wanted or not body:
         return body
+    named = names_a_password or _password_like
     layout = body_layout(body, content_type)
     if layout == "json":
-        return _scrub_json(body, wanted, None, nested=True)
+        return _scrub_json(body, wanted, None, named, nested=True)
     if layout == "text_plain":
-        return _scrub_text_plain(body, wanted)
+        return _scrub_text_plain(body, wanted, named)
     if layout == "multipart":
-        return _scrub_multipart(body, content_type, wanted)
+        return _scrub_multipart(body, content_type, wanted, named)
     if layout == "form":
-        return _scrub_form(body, wanted)
+        return _scrub_form(body, wanted, named)
     return body
 
 
-def _scrub_form(body: str, wanted: frozenset[str]) -> str:
+def _scrub_form(body: str, wanted: frozenset[str], named: Callable[[str | None], bool]) -> str:
     """Each ``&``-separated piece holding ``=``, read as ``parse_qs`` reads it."""
     pieces = body.split("&")
     for at, piece in enumerate(pieces):
@@ -409,11 +418,11 @@ def _scrub_form(body: str, wanted: frozenset[str]) -> str:
             continue
         name = urllib.parse.unquote_plus(raw_name)
         value = urllib.parse.unquote_plus(raw)
-        if _password_like(name) and value in wanted:
+        if named(name) and value in wanted:
             line_break = raw[len(raw.rstrip("\r\n")) :]
             pieces[at] = f"{raw_name}={REDACTED}{line_break}"
         elif _holds_json(value):
-            inner = _scrub_json(value, wanted, name, nested=False)
+            inner = _scrub_json(value, wanted, name, named, nested=False)
             if inner != value:
                 pieces[at] = f"{raw_name}={_form_encoded(raw, value, inner)}"
     return "&".join(pieces)
@@ -433,7 +442,9 @@ def _form_encoded(raw: str, value: str, new: str) -> str:
     return urllib.parse.quote(new, safe=safe)
 
 
-def _scrub_text_plain(body: str, wanted: frozenset[str]) -> str:
+def _scrub_text_plain(
+    body: str, wanted: frozenset[str], named: Callable[[str | None], bool]
+) -> str:
     """The fields of a ``text/plain`` body as :func:`graftpunk.har.digest.body_values`
     reads them: each line holding ``=`` starts one, a line without continues the one
     before, and a value is compared as written, with each line break in it as
@@ -453,14 +464,16 @@ def _scrub_text_plain(body: str, wanted: frozenset[str]) -> str:
     out = core
     for name, start, end in reversed(fields):
         region = core[start:end]
-        if _password_like(name) and region.replace("\r\n", "\n") in wanted:
+        if named(name) and region.replace("\r\n", "\n") in wanted:
             out = out[:start] + REDACTED + out[end:]
         elif _holds_json(region):
-            out = out[:start] + _scrub_json(region, wanted, name, nested=False) + out[end:]
+            out = out[:start] + _scrub_json(region, wanted, name, named, nested=False) + out[end:]
     return out + body[len(core) :]
 
 
-def _scrub_multipart(body: str, content_type: str, wanted: frozenset[str]) -> str:
+def _scrub_multipart(
+    body: str, content_type: str, wanted: frozenset[str], named: Callable[[str | None], bool]
+) -> str:
     """Each text part, split on the boundary as :func:`graftpunk.har.digest.body_values`
     splits it (:func:`graftpunk.har.digest.multipart_delimiter`)."""
     delimiter = multipart_delimiter(body, content_type)
@@ -478,10 +491,10 @@ def _scrub_multipart(body: str, content_type: str, wanted: frozenset[str]) -> st
         if not separator or name is None or "filename=" in head.lower():
             continue
         value = rest.removesuffix(newline)
-        if _password_like(name.group(1)) and value in wanted:
+        if named(name.group(1)) and value in wanted:
             new = REDACTED
         elif _holds_json(value):
-            new = _scrub_json(value, wanted, name.group(1), nested=False)
+            new = _scrub_json(value, wanted, name.group(1), named, nested=False)
         else:
             continue
         lead = part[: len(part) - len(stripped)]
@@ -489,7 +502,14 @@ def _scrub_multipart(body: str, content_type: str, wanted: frozenset[str]) -> st
     return delimiter.join(parts)
 
 
-def _scrub_json(text: str, wanted: frozenset[str], outer: str | None, *, nested: bool) -> str:
+def _scrub_json(
+    text: str,
+    wanted: frozenset[str],
+    outer: str | None,
+    named: Callable[[str | None], bool],
+    *,
+    nested: bool,
+) -> str:
     """*text*, JSON, with each string that is no object key, or number, that equals
     one of *wanted* (a number as the reader writes it, ``str`` of its parsed value)
     and has a password-like nearest name replaced by the redaction string: the key
@@ -517,7 +537,7 @@ def _scrub_json(text: str, wanted: frozenset[str], outer: str | None, *, nested:
             return token
         if not isinstance(value, str):
             name = next((key for key in reversed(keys) if key is not None), outer)
-            if str(value) in wanted and _password_like(name):
+            if str(value) in wanted and named(name):
                 return json.dumps(REDACTED)
             return token
         if _KEY_END_RE.match(text, match.end()) is not None:
@@ -525,10 +545,10 @@ def _scrub_json(text: str, wanted: frozenset[str], outer: str | None, *, nested:
                 keys[-1] = value
             return token
         name = next((key for key in reversed(keys) if key is not None), outer)
-        if value in wanted and _password_like(name):
+        if value in wanted and named(name):
             return json.dumps(REDACTED)
         if nested and _holds_json(value):
-            inner = _scrub_json(value, wanted, name, nested=False)
+            inner = _scrub_json(value, wanted, name, named, nested=False)
             if inner != value:
                 return json.dumps(inner, ensure_ascii=token.isascii())
         return token
