@@ -99,7 +99,9 @@ _FOREIGN = frozenset({"svg", "math"})
 # Tags the HTML parser renames as it builds the document (<image> becomes <img>),
 # so a selector naming the tag as written matches nothing there: id only.
 _RENAMED_TAGS = frozenset({"image"})
-# The autocomplete token of an input asking for an MFA or emailed code.
+# The autocomplete token of an input asking for an MFA or emailed code. It counts as
+# any token of the value, whether or not the rest parses: a missed code page lets an
+# MFA step pass as logged in, while a false one only drops a page from that set.
 _ONE_TIME_CODE = "one-time-code"
 # A form posted from a page after the credential post is a step of the login when a
 # body field's name or a segment of its URL path holds one of these words. "code"
@@ -300,6 +302,8 @@ class _ElementReader(HTMLParser):
         for name, value in attrs:
             # A browser keeps the first of a duplicated attribute.
             values.setdefault(name, value or "")
+        # Split on any whitespace, wider than the spec's ASCII whitespace: a code
+        # page missed here passes an MFA page as logged in.
         if tag == "input" and _ONE_TIME_CODE in values.get("autocomplete", "").lower().split():
             self.asks_for_a_code = True
         self.elements.append(

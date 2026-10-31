@@ -16,9 +16,11 @@ import pytest
 from graftpunk.har.login_signals import (
     _GENERATED_RULES,
     _words,
+    asks_for_a_code,
     is_login_step_post,
     success_candidates,
 )
+from graftpunk.observe.snapshot import stored_dom_snapshot
 
 _DOCTYPE = "<!DOCTYPE html>"
 _LOGIN = (
@@ -347,14 +349,47 @@ class TestSuccessCandidates:
             "#user-orders",
         )
 
-    def test_an_earlier_page_asking_for_a_one_time_code_is_logged_out(self) -> None:
+    @pytest.mark.parametrize(
+        "value", ["One-Time-Code", "one-time-code webauthn", "section-mfa one-time-code"]
+    )
+    def test_an_earlier_page_asking_for_a_one_time_code_is_logged_out(self, value: str) -> None:
         mfa = _page(
             "<div id='account-menu'></div>",
-            "<input name='code' autocomplete='One-Time-Code'>",
+            f"<input name='code' autocomplete='{value}'>",
         )
         after = _page("<div id='account-menu'></div><div id='main-panel'></div>")
         assert _checked([_LOGIN, mfa], after) == ("#main-panel",)
         assert success_candidates([_LOGIN], after, earlier=[mfa]) == ("#main-panel",)
+
+    @pytest.mark.parametrize(
+        ("value", "asks"),
+        [
+            ("one-time-code sms", True),
+            ("bogus one-time-code", True),
+            ("section-x one-time-code", True),
+            ("ONE-TIME-CODE\tsms", True),
+            ("one-time-code sms", True),
+            ("one-time-codes", False),
+            ("otp", False),
+        ],
+    )
+    def test_a_one_time_code_token_anywhere_in_the_value_asks_for_a_code(
+        self, value: str, asks: bool
+    ) -> None:
+        """Whether or not the rest of the value parses: a missed code page would let
+        an MFA step pass as logged in."""
+        assert asks_for_a_code(f"<input name='code' autocomplete='{value}'>") is asks
+
+    def test_a_structure_only_read_of_a_code_page_still_asks_for_a_code(self) -> None:
+        """The read after a credential post stores the section token as ***REDACTED***."""
+        stored = stored_dom_snapshot(
+            "<html><body><input name='code' autocomplete='section-mfa one-time-code'>"
+            "</body></html>",
+            None,
+            structure_only=True,
+        )
+        assert 'autocomplete="***REDACTED*** one-time-code"' in stored
+        assert asks_for_a_code(stored) is True
 
     # Review round 3 (#325): the login's steps are only the leading run of the
     # pages after the post.

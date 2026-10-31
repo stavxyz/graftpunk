@@ -10,6 +10,8 @@ import lxml.html
 import pytest
 
 from graftpunk.har.documents import (
+    _parse,
+    autofill_field_name,
     extract_login_forms,
     extract_token_candidates,
     form_action_targets,
@@ -18,6 +20,8 @@ from graftpunk.har.documents import (
     printable_selectors,
     printable_unresolved_roles,
 )
+from graftpunk.observe.snapshot import stored_dom_snapshot
+from tests.unit.test_dom_snapshot import _snapshot_parse_seconds
 
 _LOGIN_PAGE = """
 <html><body>
@@ -853,6 +857,123 @@ class TestLoginRolesFromAutocompleteAndControls:
         assert form.nameless_roles == ("field_1",)
 
 
+class TestAutocompleteIsATokenList:
+    """#322: an autocomplete value is read as the HTML autofill grammar's token
+    list and compared by its field-name token."""
+
+    @pytest.mark.parametrize(
+        ("value", "field_name"),
+        [
+            ("username", "username"),
+            ("username webauthn", "username"),
+            ("current-password webauthn", "current-password"),
+            ("section-login username", "username"),
+            ("USERNAME", "username"),
+            ("\tUsername\n", "username"),
+            ("section-a billing work email webauthn", "email"),
+            ("home email", "email"),
+            ("email", "email"),
+            ("one-time-code webauthn", "one-time-code"),
+            ("off", "off"),
+            ("on", "on"),
+            ("", ""),
+            ("   ", ""),
+            ("section-login", "section-login"),
+            ("off username", ""),
+            ("username off", ""),
+            ("bogus username", ""),
+            ("home username", ""),
+            ("billing section-a username", ""),
+            ("***REDACTED*** username", "username"),
+            ("***REDACTED*** ***REDACTED*** username", ""),
+        ],
+    )
+    def test_the_field_name_token(self, value: str, field_name: str) -> None:
+        assert autofill_field_name(value) == field_name
+
+    @pytest.mark.parametrize(
+        ("value", "username"),
+        [
+            ("username", "#who"),
+            ("username webauthn", "#who"),
+            ("section-login username", "#who"),
+            ("USERNAME", "#who"),
+            ("off", "#q"),
+            ("", "#q"),
+            ("section-login", "#q"),
+            ("bogus username", "#q"),
+            # An email hint counts only before the password, as before.
+            ("email", "#q"),
+        ],
+    )
+    @pytest.mark.parametrize("snapshot", [False, True], ids=["html", "snapshot"])
+    def test_a_username_field_name_counts_after_the_password(
+        self, value: str, username: str, snapshot: bool
+    ) -> None:
+        html = (
+            '<form action="/login"><input type="text" name="q" id="q">'
+            '<input type="password" name="password">'
+            f'<input type="text" id="who" name="who" autocomplete="{value}"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s", snapshot=snapshot)
+        assert form.fields["username"] == username
+
+    @pytest.mark.parametrize(
+        ("value", "username"),
+        [("email", "#who"), ("home email", "#who"), ("email webauthn", "#who"), ("", "#nick")],
+    )
+    def test_an_email_field_name_before_the_password_is_the_username(
+        self, value: str, username: str
+    ) -> None:
+        html = (
+            '<form action="/login"><input type="text" name="q" id="q">'
+            f'<input type="text" id="who" name="who" autocomplete="{value}">'
+            '<input type="text" name="nick" id="nick">'
+            '<input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["username"] == username
+
+    @pytest.mark.parametrize("value", ["current-password", "current-password webauthn"])
+    def test_a_current_password_field_name_marks_the_password(self, value: str) -> None:
+        html = (
+            '<form action="/login"><input type="email" name="login" id="login">'
+            f'<input type="text" id="secret" name="secret" autocomplete="{value}"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"username": "#login", "password": "#secret"}  # noqa: S105
+
+    @pytest.mark.parametrize(
+        ("value", "structure_only"),
+        [("***REDACTED*** username", False), ("section-login username", True)],
+        ids=["default", "structure-only"],
+    )
+    def test_a_stored_snapshot_s_redacted_section_token_still_leaves_the_username(
+        self, value: str, structure_only: bool
+    ) -> None:
+        """The structure-only read after a credential post writes the section token as
+        ***REDACTED***; a request-time snapshot keeps the value as written, so the
+        default case is given the marker itself."""
+        html = (
+            '<html><body><form action="/login"><input type="text" name="q" id="q">'
+            '<input type="password" name="password" id="pw">'
+            f'<input type="text" id="who" name="who" autocomplete="{value}">'
+            "</form></body></html>"
+        )
+        stored = stored_dom_snapshot(html, None, structure_only=structure_only)
+        assert 'autocomplete="***REDACTED*** username"' in stored
+        (form,) = extract_login_forms(stored, source="s", snapshot=True)
+        assert form.fields["username"] == "#who"
+
+    def test_a_text_input_with_another_password_token_is_no_password(self) -> None:
+        html = (
+            '<form action="/login"><input type="email" name="login" id="login">'
+            '<input type="text" id="secret" name="secret" autocomplete="bogus current-password">'
+            "</form>"
+        )
+        assert extract_login_forms(html, source="s") == ()
+
+
 class TestRegistrationFormsAndControlsOutsideTheirForm:
     def test_a_lone_registration_form_with_a_confirmation_is_not_a_login_form(self) -> None:
         """Only a lone form with one password (new-password misused) is kept."""
@@ -914,6 +1035,68 @@ class TestRegistrationFormsAndControlsOutsideTheirForm:
         _assert_first_match(html, form.submit, **check)
         fields, submit = printable_selectors(form)
         assert submit == expected
+
+
+# Controls inside and outside two forms, interleaved: some join a form through
+# form=, one inside a form joins the other, and one inside names its own form.
+_MIXED_FORM_OWNERS = (
+    '<input type="text" form="signin" name="before" id="before">'
+    '<form id="signin" action="/login">'
+    '<input type="text" name="username">'
+    '<input type="text" name="search_box" form="search">'
+    '<input type="text" form="signin" name="inside_marked">'
+    '<input type="password" name="password">'
+    "</form>"
+    '<input type="tel" form="signin" name="phone">'
+    '<form id="search" action="/search"><input type="text" name="q"></form>'
+    '<input type="text" form="search" name="scope">'
+    '<input type="checkbox" form="signin" name="remember">'
+    '<button type="submit" form="signin" id="go">Sign in</button>'
+)
+
+
+class TestFormAttributeControlsJoinTheirFormInLinearTime:
+    """#321: each control joining its form through form= re-sorted the form's
+    controls, so a page of many such controls parsed in quadratic time."""
+
+    def test_four_times_the_form_controls_take_about_four_times_as_long(self) -> None:
+        """Measured on 2026-10-31: the per-append sort grew about 12.4 to 13.0
+        times from 1000 to 4000 controls, the single sort 4.0 times. The shared
+        check's 0.05 s allowance is left out: it is about the whole quadratic cost
+        at these sizes (0.18 s at 4000), so with it the old parse passed or failed
+        by a few milliseconds."""
+
+        def page(n: int) -> str:
+            return (
+                '<form id="f" action="/login"><input name="username">'
+                '<input type="password" name="password"></form>'
+                + "".join(f'<input type="checkbox" form="f" name="c{i}">' for i in range(n))
+            )
+
+        small = _snapshot_parse_seconds(page(1000))
+        large = _snapshot_parse_seconds(page(4000))
+        assert large < 8 * small, f"1000: {small:.4f}s, 4000: {large:.4f}s"
+
+    def test_each_form_holds_its_controls_in_document_order(self) -> None:
+        parsed = _parse(_MIXED_FORM_OWNERS)
+        assert [[raw.name or raw.element_id for raw in form.inputs] for form in parsed.forms] == [
+            ["before", "username", "inside_marked", "password", "phone", "remember", "go"],
+            ["search_box", "q", "scope"],
+        ]
+
+    @pytest.mark.parametrize("snapshot", [False, True], ids=["html", "snapshot"])
+    def test_the_selectors_are_the_ones_the_per_append_sort_gave(self, snapshot: bool) -> None:
+        """The values the parse gave before #321's change, recorded on 2026-10-31."""
+        (form,) = extract_login_forms(_MIXED_FORM_OWNERS, source="s", snapshot=snapshot)
+        assert form.fields == {
+            "username": 'form[action="/login"] input[name="username"]',
+            "password": 'form[action="/login"] input[name="password"]',  # noqa: S105
+            "inside_marked": 'form[action="/login"] input[name="inside_marked"]',
+            "phone": 'input[form="signin"][name="phone"]',
+        }
+        assert list(form.fields) == ["username", "password", "inside_marked", "phone"]
+        assert form.submit == "#go"
+        assert form.neutral_roles == ()
 
 
 class TestSelectorsCountTheControlsInsideTheForm:

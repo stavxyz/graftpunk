@@ -37,6 +37,7 @@ __all__ = [
     "LoginForm",
     "TokenCandidate",
     "TokenKind",
+    "autofill_field_name",
     "extract_login_forms",
     "extract_token_candidates",
     "form_action_targets",
@@ -50,6 +51,70 @@ __all__ = [
 _USERNAME_HINTS = ("user", "email", "login", "account")
 _TOKEN_NAME_HINTS = ("csrf", "xsrf", "token")
 _HIDDEN_TOKEN_NAME_HINTS = ("_token", "csrf", "authenticity_token")
+
+# The autocomplete grammar's tokens before the field name, from WHATWG HTML
+# 4.10.19.7.1 "Autofilling form controls: the autocomplete attribute" (read
+# 2026-10-31): a contact token only before a field of the Contact category.
+_AUTOFILL_CONTACT_FIELDS = frozenset(
+    {
+        "tel",
+        "tel-country-code",
+        "tel-national",
+        "tel-area-code",
+        "tel-local",
+        "tel-local-prefix",
+        "tel-local-suffix",
+        "tel-extension",
+        "email",
+        "impp",
+    }
+)
+_AUTOFILL_CONTACT_TOKENS = frozenset({"home", "work", "mobile", "fax", "pager"})
+_AUTOFILL_MODE_TOKENS = frozenset({"shipping", "billing"})
+_ASCII_WHITESPACE_RE = re.compile(r"[\t\n\f\r ]+")
+# What the structure-only read after a credential post writes in place of an
+# autocomplete token outside the HTML vocabulary, a section-* token included
+# (graftpunk.observe.snapshot, with graftpunk.observe.run.REDACTED, which this module
+# does not import), lowercased. A request-time snapshot keeps the token as written.
+_SNAPSHOT_REDACTION_MARK = "***redacted***"
+
+
+def autofill_field_name(value: str) -> str:
+    """The field-name token of an ``autocomplete`` attribute *value*, lowercased:
+    ``username`` for ``username``, ``USERNAME``, ``username webauthn``, or
+    ``section-login username``. Empty when the value is empty or breaks the grammar.
+
+    The grammar is WHATWG HTML 4.10.19.7.1 (Autofill): ASCII-whitespace-separated,
+    ASCII case-insensitive tokens, read from the end: an optional ``webauthn``,
+    the field name, then optionally ``home``, ``work``, ``mobile``, ``fax``, or
+    ``pager`` (before a contact field only), ``shipping`` or ``billing``, and a
+    first token starting ``section-``. Any other token left over sends the browser
+    to its default, so no field name, as does ``on`` or ``off`` with another token.
+    The field name itself is not checked against the spec's list: one graftpunk
+    does not know (a lone ``section-*`` token, say) matches nothing it compares.
+
+    The structure-only read after a credential post writes a section token as
+    ``***REDACTED***`` (a request-time snapshot keeps it as written), so that
+    marker in first place counts as a section token. It also stands for any other
+    unknown token there, which the browser would reject; reading it as a section
+    is a judgment that a section token is the likelier one, not a measurement.
+    """
+    tokens = [token for token in _ASCII_WHITESPACE_RE.split(value.lower()) if token]
+    if not tokens:
+        return ""
+    alone = len(tokens) == 1
+    if not alone and tokens[-1] == "webauthn":
+        tokens.pop()
+    field_name = tokens.pop()
+    if field_name in ("on", "off"):
+        return field_name if alone else ""
+    if tokens and tokens[-1] in _AUTOFILL_CONTACT_TOKENS and field_name in _AUTOFILL_CONTACT_FIELDS:
+        tokens.pop()
+    if tokens and tokens[-1] in _AUTOFILL_MODE_TOKENS:
+        tokens.pop()
+    if tokens and (tokens[-1].startswith("section-") or tokens[-1] == _SNAPSHOT_REDACTION_MARK):
+        tokens.pop()
+    return "" if tokens else field_name
 
 
 def looks_like_token_name(name: str) -> bool:
@@ -164,6 +229,8 @@ class _RawInput:
     # Whether the element carried a non-empty type attribute; input_type is the
     # default ("text", or "submit" for a button) when it did not.
     typed: bool = True
+    # The autocomplete attribute's field-name token (autofill_field_name), so
+    # "username webauthn" compares as "username" (#322).
     autocomplete: str = ""
     # The id of the form a form="..." attribute names, and the position on the page,
     # so a control outside its form joins it in document order.
@@ -326,7 +393,7 @@ class _DocumentParser(HTMLParser):
                 name=values.get("name", ""),
                 element_id=values.get("id", ""),
                 typed=bool(values.get("type")),
-                autocomplete=values.get("autocomplete", "").strip().lower(),
+                autocomplete=autofill_field_name(values.get("autocomplete", "")),
                 form_owner=values.get("form", ""),
                 order=len(self.inputs),
             )
@@ -390,12 +457,18 @@ def _parse(html: str, *, track_blocks: bool = False) -> _DocumentParser:
     for index in parser._block_stack:  # elements still open run to the end
         parser.blocks[index].end = len(parser.inputs)
     # A control with form="id" belongs to that form wherever it sits on the page.
+    # The joined controls are appended in document order after the form's own, and
+    # each such form is sorted once at the end (two sorted runs, so one merge);
+    # sorting on every append was quadratic on a page of many form= controls (#321).
     owners = {form.element_id: form for form in parser.forms if form.element_id}
+    joined: dict[int, _RawForm] = {}
     for raw_input in parser.inputs:
         owner = owners.get(raw_input.form_owner) if raw_input.form_owner else None
         if owner is not None:
             owner.inputs.append(raw_input)
-            owner.inputs.sort(key=lambda control: control.order)
+            joined[id(owner)] = owner
+    for owner in joined.values():
+        owner.inputs.sort(key=lambda control: control.order)
     return parser
 
 
