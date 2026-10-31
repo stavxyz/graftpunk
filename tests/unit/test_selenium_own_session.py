@@ -554,9 +554,10 @@ class TestEveryWayOutOfASessionEndsTheBrowser:
     ) -> None:
         from graftpunk.session import BrowserSession
 
-        with pytest.raises(KeyboardInterrupt), BrowserSession(
-            backend="selenium", headless=True
-        ) as session:
+        with (
+            pytest.raises(KeyboardInterrupt),
+            BrowserSession(backend="selenium", headless=True) as session,
+        ):
             session._capture = _InterruptedCapture()
             raise KeyboardInterrupt  # the first Ctrl+C
 
