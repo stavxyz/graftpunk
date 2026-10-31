@@ -16,6 +16,14 @@ it warns about, and this module has no hooks of its own to register that way.
 ``fixtures_are_sanitised`` is handed the fixtures tree by the conftest, which
 declares it as ``FIXTURES_TREE``; nothing here imports ``graftpunk.devtools``
 (graft skill spec, 2026-09-21).
+
+From sidecar schema 4 a sidecar names the observe run its capture came from, and
+when that run is on this machine (a developer's checkout, never CI) the check
+also compares the fixture with every value the run recorded for its flagged
+names (:mod:`graftpunk.testing.recorded`). The sidecar names the plugin, never
+an account label, so the run is found among the plugin's session directories
+under ``graftpunk.observe.OBSERVE_BASE_DIR`` (:class:`_RunValues`), and only
+that run's own files are read.
 """
 
 from __future__ import annotations
@@ -32,10 +40,19 @@ from typing import Any, Literal
 
 import pytest
 
+import graftpunk.observe
 from graftpunk.contracts import current_schema
+from graftpunk.observe.storage import is_session_dir_of
 from graftpunk.testing.decoding import decoded_forms, whole_name_regex
+from graftpunk.testing.recorded import (
+    RunUnreadableError,
+    read_run_har,
+    recorded_leaks,
+    recorded_values,
+)
 from graftpunk.testing.sidecar import (
     FIXTURES_PLACEHOLDER,
+    ObserveRun,
     Sidecar,
     SidecarError,
     is_sidecar,
@@ -76,19 +93,24 @@ def site_env_scrubber(prefix: str) -> Any:
 
 @dataclass(frozen=True)
 class FixturesTreeReport:
-    """What :func:`check_fixtures_tree` found: every problem, and the two counts."""
+    """What :func:`check_fixtures_tree` found: every problem, and the counts."""
 
     problems: tuple[str, ...]
     verified: int
     declared: int
+    # Fixtures also compared with the values their observe run recorded: the run
+    # was on this machine. Zero in CI, where no run is.
+    run_checked: int = 0
 
     @property
     def summary(self) -> str:
-        """The line the check prints on every run, so the declared count shows in review."""
+        """The line the check prints on every run, so the declared count shows in
+        review, and whether the local value check ran."""
         return (
             f"fixtures_are_sanitised: {self.verified} fixture(s) verified against their "
             f"capture, {self.declared} accepted on declaration (no capture hash: "
-            f"trusted, not checked)"
+            f"trusted, not checked), {self.run_checked} compared with the values their "
+            f"observe run recorded on this machine"
         )
 
 
@@ -196,8 +218,8 @@ def _missing_sidecar(relative: Path, sidecar_name: str) -> str:
         f"copy the sidecar gp observe fixtures wrote beside the capture. For a hand-made "
         f'fixture, write {sidecar_name} with "schema": {schema}, a status, a content type, '
         f'"body_params": [], "capture_sha256": null, "flagged_names": [], '
-        f'"flagged_reasons": {{}}, "checked_names": [], and "redacted_names": 0, which '
-        f"declares that the file came off no account."
+        f'"flagged_reasons": {{}}, "checked_names": [], "observe_run": null, and '
+        f'"redacted_names": 0, which declares that the file came off no account.'
     )
 
 
@@ -299,7 +321,7 @@ def _collect_fixtures(tree: Path, tree_stat: os.stat_result) -> tuple[list[Path]
     return sorted(fixtures), problems
 
 
-def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
+def check_fixtures_tree(tree: Path, *, observe_dir: Path | None = None) -> FixturesTreeReport:
     """Check every fixture anywhere under *tree* against its sidecar.
 
     Catches a missing tree, a directory under it that cannot be listed or
@@ -318,6 +340,17 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     with ``.``, which covers ``FIXTURES_PLACEHOLDER`` itself, a macOS
     ``.DS_Store``, and an editor swap file) is never a fixture and is
     skipped.
+
+    A sidecar that names its observe run (schema 4) has the fixture also compared
+    with every value that run recorded for its flagged names, when the run is
+    under *observe_dir* (``graftpunk.observe.OBSERVE_BASE_DIR`` when None): a
+    match is a problem naming the flagged name and the fixture's lines, never the
+    value. A run that is not there (CI) is skipped without a word, beyond the
+    summary's count. A run that is there but cannot be read, or a run id found
+    under more than one of the plugin's session directories, is one problem,
+    since a check that quietly did not run reads as one that passed; the name
+    check still applies to its fixtures. Only the names of *observe_dir*'s own
+    entries and the run's own files are read (:class:`_RunValues`).
     """
     tree_detail: list[str] = []
     tree_stat: list[os.stat_result] = []
@@ -337,6 +370,9 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
         return FixturesTreeReport(problems=(message,), verified=0, declared=0)
     fixtures, problems = _collect_fixtures(tree, tree_stat[0])
     verified = declared = 0
+    runs = _RunValues(
+        observe_dir if observe_dir is not None else graftpunk.observe.OBSERVE_BASE_DIR
+    )
     for fixture in fixtures:
         relative = fixture.relative_to(tree)
         meta = sidecar_path(fixture)
@@ -373,7 +409,172 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
                     f"capture's structure and invents every value."
                 )
         problems.extend(_flagged_name_problems(relative, sidecar, body))
-    return FixturesTreeReport(problems=tuple(problems), verified=verified, declared=declared)
+        if sidecar.observe_run is not None:
+            problems.extend(runs.leaks(relative, sidecar.observe_run, sidecar, body))
+    problems.extend(runs.unreadable_problems())
+    return FixturesTreeReport(
+        problems=tuple(problems), verified=verified, declared=declared, run_checked=runs.checked
+    )
+
+
+class _LookupIncomplete(str):
+    """The reason the lookup of a run could not be completed (the observe
+    directory cannot be listed, or a session directory cannot be searched), so
+    whether the run is on this machine is unknown."""
+
+    __slots__ = ()
+
+
+class _RunValues:
+    """The local value check: each observe run a sidecar names, looked up once
+    under *base* and read once, and the fixtures compared with it.
+
+    A sidecar names the plugin part of the session and the run id, never the
+    account label, so the run is looked for in each of the plugin's session
+    directories: the names of *base*'s own entries are listed once (nothing
+    inside them is listed or read), those
+    :func:`graftpunk.observe.storage.is_session_dir_of` the plugin are kept, and
+    ``<that directory>/<run id>`` is stat'd in each. One hit is the run; none is
+    a run not on this machine; more than one cannot be told apart and is
+    reported as a run the check could not read."""
+
+    def __init__(self, base: Path) -> None:
+        self.base = base
+        self.checked = 0
+        # The names of base's entries, listed on first use; the reason they
+        # could not be listed, as a string; an empty tuple when base is absent.
+        self._entries: tuple[str, ...] | str | None = None
+        # Per run: (its directory, its parsed HAR); None when it is not on this
+        # machine; the reason, when it is there and cannot be read.
+        self._runs: dict[ObserveRun, tuple[Path, object] | str | None] = {}
+        self._values: dict[tuple[ObserveRun, tuple[str, ...]], dict[str, set[str]]] = {}
+        # Per unreadable run: the first fixture whose sidecar names it, and how many do.
+        self._unreadable: dict[ObserveRun, tuple[Path, int]] = {}
+
+    def _listing(self) -> tuple[str, ...] | str:
+        if self._entries is None:
+            try:
+                self._entries = tuple(sorted(os.listdir(self.base)))
+            except (FileNotFoundError, NotADirectoryError):
+                self._entries = ()
+            except OSError as exc:
+                self._entries = _LookupIncomplete(
+                    f"the observe directory cannot be listed ({exc.strerror or exc})"
+                )
+        return self._entries
+
+    def _run(self, run: ObserveRun) -> tuple[Path, object] | str | None:
+        if run in self._runs:
+            return self._runs[run]
+        self._runs[run] = found = self._find(run)
+        return found
+
+    def _find(self, run: ObserveRun) -> tuple[Path, object] | str | None:
+        entries = self._listing()
+        if isinstance(entries, str):
+            return entries
+        hits: list[tuple[Path, str, list[str]]] = []
+        # Session directories whose entries cannot be stat'd (no search
+        # permission): whether they hold the run is unknown, so they are not hits.
+        unsearchable: list[str] = []
+        for name in entries:
+            if not is_session_dir_of(run.plugin, name):
+                continue
+            run_dir = self.base / name / run.run
+            detail: list[str] = []
+            kind = _stat_kind(run_dir, detail)
+            if kind == "unreadable":
+                unsearchable.extend(detail[:1] or ["unknown reason"])
+            elif kind != "absent":
+                hits.append((run_dir, kind, detail))
+        if len(hits) > 1:
+            return (
+                f"{len(hits)} of the plugin's session directories hold a run {run.run}, "
+                f"and the check cannot tell which one the capture came from"
+            )
+        if unsearchable:
+            count = len(unsearchable)
+            return _LookupIncomplete(
+                f"{count} of the plugin's session directories cannot be searched "
+                f"({unsearchable[0]}), so the check cannot tell whether "
+                f"{'it holds' if count == 1 else 'they hold'} the run"
+            )
+        if not hits:
+            return None
+        ((run_dir, kind, detail),) = hits
+        if kind == "dir":
+            try:
+                return (run_dir, read_run_har(run_dir))
+            except RunUnreadableError as exc:
+                return str(exc)
+        if detail:
+            return detail[0]
+        if kind == "dangling":
+            return "a symlink to nothing"
+        return "not a directory"
+
+    def leaks(self, relative: Path, run: ObserveRun, sidecar: Sidecar, body: bytes) -> list[str]:
+        """One problem per flagged name whose value *run* recorded is in *body*,
+        or none when the run is not on this machine. An unreadable run is
+        reported once, by :meth:`unreadable_problems`."""
+        found = self._run(run)
+        if found is None:
+            return []
+        if isinstance(found, str):
+            self._count_unreadable(run, relative)
+            return []
+        run_dir, har = found
+        names = tuple(name for name in sidecar.flagged_names if name)
+        key = (run, names)
+        if key not in self._values:
+            try:
+                self._values[key] = recorded_values(har, names, run_dir)
+            except RunUnreadableError as exc:
+                self._runs[run] = str(exc)
+                self._count_unreadable(run, relative)
+                return []
+        self.checked += 1
+        text = body.decode("utf-8", errors="replace")
+        return [
+            f"{relative}: {line}, as its observe run {run.run} of {run.plugin} on this "
+            f"machine recorded it; invent a value in its place."
+            for line in recorded_leaks(text, self._values[key])
+        ]
+
+    def _count_unreadable(self, run: ObserveRun, relative: Path) -> None:
+        first, count = self._unreadable.get(run, (relative, 0))
+        self._unreadable[run] = (first, count + 1)
+
+    def unreadable_problems(self) -> list[str]:
+        """One problem per run a sidecar names that is on this machine and cannot
+        be read, or whose lookup could not be completed."""
+        problems: list[str] = []
+        for run, (first, count) in self._unreadable.items():
+            reason = self._runs[run]
+            others = f" and {count - 1} more" if count > 1 else ""
+            # Neither the observe directory's path (it holds the OS user name)
+            # nor a session directory's name (it holds the account label) is
+            # printed: suite output gets pasted into issues.
+            if isinstance(reason, _LookupIncomplete):
+                problems.append(
+                    f"{first}{others}: the lookup of the observe run {run.run} of "
+                    f"{run.plugin} its sidecar names could not be completed ({reason}), "
+                    f"so the fixture was not compared with the values the run may have "
+                    f"recorded. Make the observe directory "
+                    f"(graftpunk.observe.OBSERVE_BASE_DIR) listable and the plugin's "
+                    f"session directories in it searchable, so the check can tell "
+                    f"whether the run is on this machine."
+                )
+                continue
+            problems.append(
+                f"{first}{others}: the observe run {run.run} of {run.plugin} its sidecar "
+                f"names is on this machine but cannot be read ({reason}), so the fixture "
+                f"was not compared with the values the run recorded. Make the run readable "
+                f"and the only one of that id, or move its directory out of the observe "
+                f"directory (graftpunk.observe.OBSERVE_BASE_DIR) to have the fixture "
+                f"checked by its names alone, as in CI."
+            )
+        return problems
 
 
 def _flagged_name_pattern(name: str) -> re.Pattern[str]:
@@ -417,9 +618,11 @@ def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> lis
     texts = {form.casefold() for form in (raw, *decoded_forms(raw))}
     if sidecar.checked_names is None:
         regenerate = (
-            " Or regenerate the sidecar with gp observe fixtures (sidecar schema 3), "
+            " Or regenerate the sidecar with gp observe fixtures (sidecar schema 4), "
             "which leaves a flagged cookie name out where the capture held none of its "
-            "values and held the name only in name-value pairs holding nothing."
+            "values and held the name only in name-value pairs holding nothing, and "
+            "names its observe run, so on a machine holding the run the check also "
+            "compares the fixture with the values the run recorded."
         )
         source = "a cookie or token name the capture's digest recorded"
     else:
@@ -444,20 +647,23 @@ def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> lis
     return problems
 
 
-def fixtures_are_sanitised(tree: Path | str) -> Any:
+def fixtures_are_sanitised(tree: Path | str, *, observe_dir: Path | str | None = None) -> Any:
     """An autouse, session-scoped fixture that fails the run unless every fixture under
     *tree* passes :func:`check_fixtures_tree`.
 
     A generated ``tests/conftest.py`` sets
     ``sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)``; the assignment is
     what registers it. It prints :attr:`FixturesTreeReport.summary` once per run,
-    and on a problem it fails every test with the list of problems.
+    and on a problem it fails every test with the list of problems. *observe_dir*
+    is where the local value check looks for a sidecar's observe run
+    (:func:`check_fixtures_tree`); a generated conftest leaves it out.
     """
     root = Path(tree)
+    runs = Path(observe_dir) if observe_dir is not None else None
 
     @pytest.fixture(scope="session", autouse=True)
     def _sanitised(request: pytest.FixtureRequest) -> None:
-        report = check_fixtures_tree(root)
+        report = check_fixtures_tree(root, observe_dir=runs)
         reporter = request.config.pluginmanager.get_plugin("terminalreporter")
         if reporter is not None:
             reporter.write_line(report.summary)

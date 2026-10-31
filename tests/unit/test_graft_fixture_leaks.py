@@ -778,7 +778,7 @@ def _har(tmp_path: Path) -> Path:
         "headers": [
             {
                 "name": "Cookie",
-                "value": f"id={_OPAQUE}; myshop_session=first%2Bpart; short_session=Qz",
+                "value": f"id={_OPAQUE}; myshop_session=Fq7k%2BLp2w; short_session=Qz",
             },
             {"name": "x-csrf-token", "value": "HeaderTok9Lq8"},
         ],
@@ -861,7 +861,7 @@ def test_the_value_is_placed_by_line_number(tmp_path: Path) -> None:
     [
         (_TOKEN, "csrf-token"),
         ("SecondValue77", "myshop_remember"),
-        ("first+part", "myshop_session"),
+        ("Fq7k+Lp2w", "myshop_session"),
         ("HeaderTok9Lq8", "X-CSRF-Token"),
     ],
     ids=["meta-content", "set-cookie-header", "cookie-percent-decoded", "header-other-case"],
@@ -869,8 +869,8 @@ def test_the_value_is_placed_by_line_number(tmp_path: Path) -> None:
 def test_each_source_of_a_recorded_value_is_read(tmp_path: Path, value: str, name: str) -> None:
     """One value per fixture, so each source is pinned alone: a meta tag's content
     in a response whose Content-Type header says HTML, a cookie set only by a
-    Set-Cookie header, a cookie sent percent-encoded (first%2Bpart) found as
-    first+part, and a request header sent as x-csrf-token for the flagged
+    Set-Cookie header, a cookie sent percent-encoded (Fq7k%2BLp2w) found as
+    Fq7k+Lp2w, and a request header sent as x-csrf-token for the flagged
     X-CSRF-Token."""
     result = _run_har(tmp_path, json.dumps({"a": value}))
     assert result.returncode == 1
@@ -986,11 +986,43 @@ def test_a_page_source_outside_the_hars_directory_is_not_read(tmp_path: Path) ->
     assert lines == []
 
 
-def test_a_page_source_that_cannot_be_read_is_skipped(tmp_path: Path) -> None:
+def test_a_page_source_that_cannot_be_read_is_a_read_error_naming_it(tmp_path: Path) -> None:
+    """A run file the comparison needs and cannot read would leave its values
+    unchecked, so it is a read error, named by its path in the run."""
     (tmp_path / "page-source.html").mkdir()
     result = _run_har(tmp_path, json.dumps({"t": "invented"}))
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 2
+    assert result.stderr == (
+        "fixture-leaks: the HAR's run: cannot read page-source.html (Is a directory)\n"
+    )
+
+
+def test_a_body_file_the_har_names_that_is_gone_is_a_read_error_naming_it(tmp_path: Path) -> None:
+    """gp names a body file only after writing it, so one that is gone means the
+    run was changed since, and the values only it held cannot be compared."""
+    entry = {
+        "request": {"method": "GET", "url": "https://myshop.example.com/", "headers": []},
+        "response": {
+            "status": 200,
+            "headers": [{"name": "Content-Type", "value": "text/html"}],
+            "content": {"mimeType": "text/html", "_bodyFile": "bodies/gone.html"},
+        },
+    }
+    har = json.dumps({"log": {"entries": [entry]}})
+    result = _run_har(tmp_path, json.dumps({"t": "invented"}), har=har)
+    assert result.returncode == 2
+    assert result.stderr == (
+        "fixture-leaks: the HAR's run: cannot read bodies/gone.html (missing)\n"
+    )
+
+
+def test_a_looping_page_source_is_a_read_error_not_a_traceback(tmp_path: Path) -> None:
+    (tmp_path / "page-source.html").symlink_to("page-source.html")
+    result = _run_har(tmp_path, json.dumps({"t": "invented"}))
+    assert result.returncode == 2
     assert "Traceback" not in result.stderr
+    assert "cannot read page-source.html (a symlink loop)" in result.stderr
+    assert str(tmp_path) not in result.stderr
 
 
 def _run_with_request(

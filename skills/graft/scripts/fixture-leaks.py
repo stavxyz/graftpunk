@@ -70,31 +70,46 @@ response whose ``Content-Type`` header says HTML (a body kept in a file beside
 the HAR, ``_bodyFile``, included), in a DOM snapshot gp took at a credential
 post (``_domSnapshot``, ``_domAfter``), and in the run's ``page-source.html``
 beside the HAR. A file that resolves outside the HAR's directory, through a
-symlink or a ``..``, is not read.
-It reports a flagged name whose recorded value of three or more characters is in
-the fixture, as recorded, percent-decoded, or without the double quotes a cookie
-value may carry, case-sensitively, in any of the forms above or two of them
+symlink or a ``..``, is not read. A file inside it that cannot be read (a
+permission error, a symlink loop) is a read error, named by its path relative to
+the HAR's directory, and so is a file the HAR names that is missing (a dangling
+symlink included), since gp names a file only after writing it; a missing
+``page-source.html`` is not, as gp writes it only when the browser gave the page.
+It reports a flagged name whose recorded value is in the fixture, as recorded,
+percent-decoded, or without the double quotes a cookie value may carry,
+case-sensitively, in any of the forms above or two of them
 applied one after the other (JSON-escaped inside an HTML attribute), as ``the
 recorded value of flagged 'sessionid' is still in the fixture (line 3)``, or
 ``(found decoded)``. It never prints the value or the text around it: such a
-value is a credential. It reports and never decides what the suite checks:
-reading one more source can only find more. This catches a value the capture's
-body never held, which the fixtures check in the suite does not: it holds names
-only, and from sidecar schema 3 it looks for a flagged cookie name only where the
-capture held one of that cookie's recorded values or held the name other than
-in a name-value pair holding nothing, so a recorded cookie value pasted into a fixture from
-elsewhere, even under its cookie's name, passes the suite.
+value is a credential. A recorded value is not looked for only when it is empty,
+or ``true``, ``false`` or ``null`` in any case, or shorter than four characters,
+each after the decodings above: a name flagged by its name alone records such
+values, and a fixture cannot invent ``true`` away. Every other value is looked
+for, a username, a name or a four-digit PIN included. It reports and never
+decides what the suite checks: reading one more source can only find more.
+This catches a value the capture's body never held, which the fixtures check in
+the suite does not: it holds names only, and from sidecar schema 3 it looks for a
+flagged cookie name only where the capture held one of that cookie's recorded
+values or held the name other than in a name-value pair holding nothing, so a
+recorded cookie value pasted into a fixture from elsewhere, even under its
+cookie's name, passes the suite in CI. From sidecar schema 4 the suite makes this
+same comparison itself when the sidecar's own observe run is on the machine
+running it: graftpunk.testing.recorded is the package's copy of recorded_values
+and recorded_leaks, and a test holds the two to the same output.
 
 Exit 0 when nothing survived and the sidecar matches, 1 when something survived,
 a recorded value of a flagged name is in the fixture, or the sidecar differs, 2 on
-a usage or read error (a HAR that is not JSON included) (a capture that is not UTF-8 text,
+a usage or read error (a HAR that is not JSON, and a run file it reads that cannot be
+read, included) (a capture that is not UTF-8 text,
 such as a PDF, cannot be compared; nor can gp's sidecar when it is not JSON).
 Standard library only, so it runs under any Python 3.9 or later.
 """
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -203,7 +218,7 @@ def body_values(text: str) -> list[str]:
     or the text parts of anything else."""
     try:
         return _json_values(json.loads(text))
-    except ValueError:
+    except (ValueError, RecursionError):
         parser = _TextParts()
         parser.feed(text)
         parser.close()
@@ -601,6 +616,27 @@ class _TokenValues(HTMLParser):
             self.pairs.append((values.get("name", ""), values.get("value", "")))
 
 
+class RunUnreadableError(Exception):
+    """A file of the run that ``--har`` reads is there and cannot be read. The
+    message names each such file by its path relative to the HAR's directory."""
+
+
+_MOST_FILES = 3
+PAGE_SOURCE_NAME = "page-source.html"
+# A recorded value's form shorter than this is too common to report, and a value
+# that in any of its forms is one of these JSON literals (in any case) is not
+# looked for (graftpunk.testing.recorded; a test holds the copies equal).
+_MIN_RECORDED_LENGTH = 4
+_LITERALS = frozenset(("true", "false", "null"))
+
+
+def _cannot_read(unreadable: list[str]) -> str:
+    files = list(dict.fromkeys(unreadable))
+    shown = ", ".join(files[:_MOST_FILES])
+    more = f" and {len(files) - _MOST_FILES} more" if len(files) > _MOST_FILES else ""
+    return f"cannot read {shown}{more}"
+
+
 def _cookie_pair(text: str) -> tuple[str, str]:
     name, _, value = text.partition("=")
     return name.strip(), value.strip()
@@ -628,29 +664,50 @@ def _header(headers: list[tuple[str, str]], name: str) -> str | None:
     return spelled.get(name) or spelled.get(name.lower())
 
 
-def _file_text(ref: object, base: Path | None) -> str | None:
+def _file_text(
+    ref: object, base: Path | None, unreadable: list[str], *, optional: bool = False
+) -> str | None:
     """The text of the file *ref* names, relative to the HAR's directory *base*,
     read as UTF-8 as graftpunk's HAR parser reads it. A file that resolves outside
-    *base* (a ``..`` or a symlink), or one that cannot be read, gives None."""
+    *base* (a ``..``, an absolute path, or a symlink) gives None. A file inside
+    *base* that cannot be read (a permission error, a symlink loop, a directory)
+    or is not there (a dangling symlink included) gives None and is added to
+    *unreadable*, as its path relative to *base* and the reason, unless it is
+    *optional* and not there. gp names a file in the HAR only after writing it,
+    so a named file that is gone means the run was changed since."""
     if base is None or not isinstance(ref, str) or not ref:
         return None
-    root = base.resolve()
-    path = (root / ref).resolve()
-    if not path.is_relative_to(root):
+    try:
+        root = base.resolve()
+    except (OSError, RuntimeError):
+        return None
+    named = Path(os.path.normpath(root / ref))
+    if not named.is_relative_to(root):
         return None
     try:
+        # Before Python 3.13, resolve() raises RuntimeError on a symlink loop.
+        path = (root / ref).resolve()
+        if not path.is_relative_to(root):
+            return None
         return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
+    except FileNotFoundError:
+        if not optional:
+            unreadable.append(f"{named.relative_to(root)} (missing)")
+    except OSError as exc:
+        reason = "a symlink loop" if exc.errno == errno.ELOOP else exc.strerror
+        unreadable.append(f"{named.relative_to(root)} ({reason or type(exc).__name__})")
+    except RuntimeError:
+        unreadable.append(f"{named.relative_to(root)} (a symlink loop)")
+    return None
 
 
-def _body_text(content: dict, base: Path | None) -> str | None:
+def _body_text(content: dict, base: Path | None, unreadable: list[str]) -> str | None:
     """A response's body text: the HAR's ``content.text``, or, when the HAR keeps
     the body in a file (``content._bodyFile``), that file (:func:`_file_text`)."""
     text = content.get("text")
     if isinstance(text, str):
         return text
-    return _file_text(content.get("_bodyFile"), base)
+    return _file_text(content.get("_bodyFile"), base, unreadable)
 
 
 def _page_values(html: str) -> list[tuple[str, str]]:
@@ -673,7 +730,7 @@ def _json_pairs(data: object) -> Iterator[tuple[str, str]]:
             yield from _json_pairs(item)
 
 
-def _body_fields(request: dict, base: Path | None) -> list[tuple[str, str]]:
+def _body_fields(request: dict, base: Path | None, unreadable: list[str]) -> list[tuple[str, str]]:
     """``(name, value)`` for each field a request body sends: the HAR's
     ``postData.params``, and its text (``postData.text``, or the file
     ``_postDataFile`` names) read as JSON, else as a form-encoded body."""
@@ -681,7 +738,7 @@ def _body_fields(request: dict, base: Path | None) -> list[tuple[str, str]]:
     pairs = _named(post.get("params"))
     text = post.get("text")
     if not isinstance(text, str):
-        text = _file_text(request.get("_postDataFile"), base)
+        text = _file_text(request.get("_postDataFile"), base, unreadable)
     if text:
         try:
             pairs += list(_json_pairs(json.loads(text)))
@@ -698,8 +755,12 @@ def recorded_values(har: object, names: set[str], base: Path | None = None) -> d
     value in a response whose ``Content-Type`` header says HTML. With *base*, the
     HAR's directory, a body or request body the HAR keeps in a file is read, and
     so are gp's DOM snapshots (``_domSnapshot``, ``_domAfter``) and the run's
-    ``page-source.html`` beside the HAR, each only inside *base*."""
+    ``page-source.html`` beside the HAR, each only inside *base*. Raises
+    :class:`RunUnreadableError` when a file inside *base* that the HAR names
+    cannot be read or is missing, or the run's ``page-source.html`` is there and
+    cannot be read."""
     found: dict[str, set[str]] = {}
+    unreadable: list[str] = []
     # Several flagged names can differ in case alone (X-CSRF-Token, x-csrf-token).
     folded: dict[str, list[str]] = {}
     for name in names:
@@ -730,10 +791,10 @@ def recorded_values(har: object, names: set[str], base: Path | None = None) -> d
             else:
                 for flagged in folded.get(name.casefold(), ()):
                     add(flagged, value)
-        for name, value in _body_fields(request, base):
+        for name, value in _body_fields(request, base, unreadable):
             add(name, value)
-        add_page(_file_text(request.get("_domSnapshot"), base))
-        add_page(_file_text(request.get("_domAfter"), base))
+        add_page(_file_text(request.get("_domSnapshot"), base, unreadable))
+        add_page(_file_text(request.get("_domAfter"), base, unreadable))
         response_headers = _named(response.get("headers"))
         for name, value in response_headers:
             if name.casefold() == "set-cookie":
@@ -745,16 +806,27 @@ def recorded_values(har: object, names: set[str], base: Path | None = None) -> d
         if "html" not in (_header(response_headers, "Content-Type") or "").lower():
             continue
         content = response.get("content") if isinstance(response.get("content"), dict) else {}
-        add_page(_body_text(content, base))
-    add_page(_file_text("page-source.html", base))
+        add_page(_body_text(content, base, unreadable))
+    # gp writes page-source.html only when the browser gave the page at stop.
+    add_page(_file_text(PAGE_SOURCE_NAME, base, unreadable, optional=True))
+    if unreadable:
+        raise RunUnreadableError(_cannot_read(unreadable))
     return found
+
+
+def _is_literal(value: str) -> bool:
+    """True when one of *value*'s forms is a JSON literal, in any case."""
+    return any(form.strip().casefold() in _LITERALS for form in _value_forms(value))
 
 
 def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
     """One line per flagged name whose recorded value is in *fixture*, naming the
     lines of the file that hold it (or ``found decoded``), never the value. Each
     of a value's :func:`_value_forms` is looked for in the fixture's forms and in
-    :func:`_combined_decodings` of it."""
+    :func:`_combined_decodings` of it. A value that is empty or, in any of its
+    forms, ``true``, ``false`` or ``null`` in any case is not looked for, since a
+    fixture cannot invent the literal away, and neither is a form shorter than
+    four characters."""
     lines: list[str] = []
     raw_lines = fixture.shown.split("\n")
     combined: str | None = None
@@ -762,8 +834,9 @@ def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
         wanted = {
             _normal(form)
             for value in values[name]
+            if value and not _is_literal(value)
             for form in _value_forms(value)
-            if len(form) >= _MIN_LENGTH
+            if len(form) >= _MIN_RECORDED_LENGTH
         }
         hits = [value for value in wanted if value in fixture.haystack]
         if not hits and wanted:
@@ -829,7 +902,12 @@ def main(argv: list[str]) -> int:
         names = _flagged_names(Path(argv[1]), sidecar)
         if names is None:
             return 2
-        leaked = recorded_leaks(found, recorded_values(har, names, Path(har_path).parent))
+        try:
+            values = recorded_values(har, names, Path(har_path).parent)
+        except RunUnreadableError as exc:
+            print(f"fixture-leaks: the HAR's run: {exc}", file=sys.stderr)
+            return 2
+        leaked = recorded_leaks(found, values)
     for value in left[:_MOST_VALUES]:
         for place in found.places(_normal(value)):
             print(f"still in the fixture: {_cut(value)!r} ({place})")

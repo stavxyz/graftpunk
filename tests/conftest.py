@@ -1,6 +1,7 @@
 """Pytest configuration for graftpunk tests."""
 
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -34,6 +35,33 @@ os.environ.setdefault(
     "GRAFTPUNK_CONFIG_DIR",
     tempfile.mkdtemp(prefix="graftpunk-test-config-"),
 )
+
+# MODULE SCOPE too, for the same reason, and for every subprocess a test starts
+# with this process's environment (a generated project's own pytest, a
+# `python -c`, gp): graftpunk reads the home directory (the observe storage
+# under ~/.local/share/graftpunk, ~/.config/graftpunk) and no XDG variable, so
+# HOME (USERPROFILE on Windows) points at an empty directory for the session,
+# and _isolated_home moves it under each test's tmp_path. uv finds its cache
+# and its managed Pythons through HOME, so those stay where they were, or a
+# test that runs `uv build` would download into an empty cache.
+_REAL_HOME = Path.home()
+os.environ.setdefault(
+    "UV_CACHE_DIR",
+    str(Path(os.environ.get("XDG_CACHE_HOME") or _REAL_HOME / ".cache") / "uv"),
+)
+os.environ.setdefault(
+    "UV_PYTHON_INSTALL_DIR",
+    str(Path(os.environ.get("XDG_DATA_HOME") or _REAL_HOME / ".local" / "share") / "uv" / "python"),
+)
+_SESSION_HOME = tempfile.mkdtemp(prefix="graftpunk-test-home-")
+os.environ["HOME"] = _SESSION_HOME
+os.environ["USERPROFILE"] = _SESSION_HOME
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Remove the session HOME. pytest runs this hook in the controller and in
+    each xdist worker, each of which made its own."""
+    shutil.rmtree(_SESSION_HOME, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
@@ -72,6 +100,30 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     yield config_dir
 
     workstation_env._invalidate_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """HOME (and USERPROFILE) at an empty directory under the test's own
+    tmp_path, so neither the test nor a subprocess it starts with this
+    process's environment reads the developer's home (the module-scope note
+    above says why). Dot-prefixed, as isolated_config's directory is."""
+    home = tmp_path / ".graftpunk-test-home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home
+
+
+@pytest.fixture(autouse=True)
+def _isolated_observe_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the observe storage directory a caller reads at call time
+    (``graftpunk.observe.OBSERVE_BASE_DIR``) at an empty directory of the test's own.
+
+    The fixtures check looks up a schema 4 sidecar's observe run there, and a
+    test must never find, or read, a run under the developer's real
+    ``~/.local/share/graftpunk``. A test that wants a run patches it again."""
+    monkeypatch.setattr("graftpunk.observe.OBSERVE_BASE_DIR", tmp_path / ".graftpunk-test-observe")
 
 
 @pytest.fixture(autouse=True)

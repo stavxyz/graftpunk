@@ -52,7 +52,7 @@ Surface = Literal["endpoints", "info", "sidecar"]
 
 ENDPOINTS_SCHEMA: Final = 1
 INFO_SCHEMA: Final = 1
-SIDECAR_SCHEMA: Final = 3
+SIDECAR_SCHEMA: Final = 4
 
 _CURRENT: Final[dict[Surface, int]] = {
     "endpoints": ENDPOINTS_SCHEMA,

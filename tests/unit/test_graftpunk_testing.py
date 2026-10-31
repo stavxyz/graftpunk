@@ -22,8 +22,10 @@ from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.plugins.cli_plugin import CommandContext
 from graftpunk.testing import FixtureSession, fixture_context, make_context
 from graftpunk.testing.plugin import check_fixtures_tree
+from graftpunk.testing.recorded import recorded_values
 from graftpunk.testing.sidecar import (
     FIXTURES_PLACEHOLDER,
+    ObserveRun,
     Sidecar,
     SidecarError,
     load_sidecar,
@@ -822,6 +824,519 @@ class TestCheckFixturesTree:
         digits, _ and -, or token punctuation between two of those."""
         _fixture(tmp_path, "get_search.json", body, _captured(b"captured", "text"))
         assert check_fixtures_tree(tmp_path).problems == ()
+
+
+_RECORDED_SESSION = "Qz7XkLmPwR4t7Bv2Hn8Ks3JdVv"
+_RUN = ObserveRun(plugin="myshop", run="20261006-101500-4242")
+
+
+def _write_run(observe: Path, session_dir: str, run_id: str, cookie_value: str) -> Path:
+    """A run as gp observe stores one: observe/<session>/<run>/network.har, its one
+    request sending ``myshop_session`` with *cookie_value*."""
+    run_dir = observe / session_dir / run_id
+    run_dir.mkdir(parents=True)
+    entry = {
+        "startedDateTime": "2026-10-06T10:15:00.000Z",
+        "time": 1,
+        "request": {
+            "method": "GET",
+            "url": "https://myshop.example.com/api/orders",
+            "headers": [],
+            "cookies": [{"name": "myshop_session", "value": cookie_value}],
+        },
+        "response": {
+            "status": 200,
+            "statusText": "OK",
+            "headers": [],
+            "cookies": [],
+            "content": {"mimeType": "application/json", "text": "{}"},
+        },
+    }
+    (run_dir / "network.har").write_text(json.dumps({"log": {"entries": [entry]}}))
+    return run_dir
+
+
+def _from_run(body: bytes, run: ObserveRun | None = _RUN) -> Sidecar:
+    """A schema 4 sidecar whose capture held none of the session's values, so the
+    name check does not look for ``myshop_session``."""
+    return Sidecar(
+        status=200,
+        content_type="application/json",
+        capture_sha256=hashlib.sha256(b"captured " + body).hexdigest(),
+        flagged_reasons={"myshop_session": ("sent_only", "session_name")},
+        checked_names=(),
+        observe_run=run,
+    )
+
+
+_PASTED = b'{\n  "id": 7,\n  "myshop_session": "' + _RECORDED_SESSION.encode() + b'"\n}\n'
+
+
+class TestTheLocalValueCheck:
+    """#345: with a schema 4 sidecar whose observe run is on this machine, the
+    fixture is also compared with every value the run recorded."""
+
+    def test_a_recorded_value_pasted_under_its_name_fails_when_the_run_is_present(
+        self, tmp_path: Path
+    ) -> None:
+        observe = tmp_path / "observe"
+        _write_run(observe, "myshop", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        (problem,) = report.problems
+        assert problem.startswith("get_orders.json: the recorded value of flagged 'myshop_session'")
+        assert "(line 3)" in problem
+        assert "20261006-101500-4242 of myshop" in problem
+        assert _RECORDED_SESSION not in problem
+        assert _RECORDED_SESSION not in report.summary
+        assert report.run_checked == 1
+        assert "1 compared with the values their observe run recorded" in report.summary
+
+    def test_the_same_fixture_passes_when_the_run_is_absent(self, tmp_path: Path) -> None:
+        """CI holds no run: the check is schema 3's, and says nothing beyond the
+        summary's count."""
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=tmp_path / "observe")
+        assert report.problems == ()
+        assert report.run_checked == 0
+        assert "0 compared with the values their observe run recorded" in report.summary
+
+    def test_a_fixture_holding_no_recorded_value_passes_with_the_run_present(
+        self, tmp_path: Path
+    ) -> None:
+        observe = tmp_path / "observe"
+        _write_run(observe, "myshop", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        body = b'{"id": 7, "myshop_session": "InventedSessionValue"}'
+        _fixture(tree, "get_orders.json", body, _from_run(body))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        assert report.problems == ()
+        assert report.run_checked == 1
+
+    @pytest.mark.parametrize(
+        ("recorded", "fails"),
+        [("true", False), ("USD", False), (_RECORDED_SESSION, True)],
+        ids=["true", "a-word", "opaque"],
+    )
+    def test_a_recorded_value_that_holds_nothing_is_not_looked_for(
+        self, tmp_path: Path, recorded: str, fails: bool
+    ) -> None:
+        """A cookie flagged by its name alone can record ``true``; the fixture's
+        JSON literal ``true`` cannot be invented away, so such a value is not
+        looked for. An opaque recorded value still fails."""
+        observe = tmp_path / "observe"
+        _write_run(observe, "myshop", _RUN.run, recorded)
+        tree = tmp_path / "fixtures"
+        body = f'{{"orders": [], "active": true, "currency": "USD", "t": "{_RECORDED_SESSION}"}}'
+        _fixture(tree, "get_orders.json", body.encode(), _from_run(body.encode()))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        assert bool(report.problems) is fails
+        assert report.run_checked == 1
+
+    def test_a_run_of_another_plugin_is_not_used(self, tmp_path: Path) -> None:
+        """Only the plugin's own session directories are looked in: the same run id
+        under another plugin's directory, or under a directory that merely starts
+        with the plugin's name, is not read."""
+        observe = tmp_path / "observe"
+        _write_run(observe, "othershop", _RUN.run, _RECORDED_SESSION)
+        _write_run(observe, "myshopping", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        assert report.problems == ()
+        assert report.run_checked == 0
+
+    def test_a_run_of_an_account_session_is_found_by_the_plugin_alone(self, tmp_path: Path) -> None:
+        """The sidecar names ``myshop``, never the account label; the run of
+        ``myshop@alice`` is stored under ``myshop-alice`` (session_dirname) and is
+        found there, and nothing printed names the label."""
+        observe = tmp_path / "observe"
+        _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        (observe / "myshop-bob").mkdir()
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        (problem,) = report.problems
+        assert "'myshop_session'" in problem
+        assert "alice" not in problem
+        assert report.run_checked == 1
+
+    def test_a_run_id_under_two_of_the_plugins_sessions_is_reported(self, tmp_path: Path) -> None:
+        """Which account's run the capture came from cannot be told, so the check
+        reports a run it could not read, naming the run id and no account."""
+        observe = tmp_path / "observe"
+        _write_run(observe, "myshop", _RUN.run, "SomeOtherValue123")
+        _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        (problem,) = report.problems
+        assert problem.startswith("get_orders.json: the observe run 20261006-101500-4242 of myshop")
+        assert "2 of the plugin's session directories hold a run 20261006-101500-4242" in problem
+        assert "alice" not in problem
+        assert _RECORDED_SESSION not in problem
+        assert report.run_checked == 0
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root lists a directory whatever its mode")
+    def test_an_observe_directory_that_cannot_be_listed_is_reported(self, tmp_path: Path) -> None:
+        observe = tmp_path / "observe"
+        _write_run(observe, "myshop", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        observe.chmod(0)
+        try:
+            (problem,) = check_fixtures_tree(tree, observe_dir=observe).problems
+        finally:
+            observe.chmod(0o700)
+        assert problem.startswith(
+            "get_orders.json: the lookup of the observe run 20261006-101500-4242 of myshop "
+            "its sidecar names could not be completed (the observe directory cannot be listed"
+        )
+        assert "is on this machine but" not in problem
+        assert "move its directory" not in problem
+        assert str(tmp_path) not in problem
+
+    def test_a_sidecar_naming_no_run_is_not_compared(self, tmp_path: Path) -> None:
+        observe = tmp_path / "observe"
+        _write_run(observe, "myshop", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED, None))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        assert report.problems == ()
+        assert report.run_checked == 0
+
+    @pytest.mark.parametrize(
+        ("har", "reason"),
+        [
+            (None, "it holds no network.har"),
+            ("{not json", "network.har is not JSON"),
+            ('{"log": {}}', "network.har is not a HAR"),
+        ],
+        ids=["missing", "not-json", "not-a-har"],
+    )
+    def test_a_run_that_cannot_be_read_is_reported_once_and_names_still_checked(
+        self, tmp_path: Path, har: str | None, reason: str
+    ) -> None:
+        observe = tmp_path / "observe"
+        run_dir = observe / "myshop" / _RUN.run
+        run_dir.mkdir(parents=True)
+        if har is not None:
+            (run_dir / "network.har").write_text(har)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        named = b'{"csrftoken": "invented"}'
+        sidecar = Sidecar(
+            status=200,
+            content_type="application/json",
+            capture_sha256=hashlib.sha256(b"captured").hexdigest(),
+            flagged_reasons={"csrftoken": ("token_name",)},
+            checked_names=("csrftoken",),
+            observe_run=_RUN,
+        )
+        _fixture(tree, "get_token.json", named, sidecar)
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        name_problem, run_problem = report.problems
+        assert name_problem.startswith("get_token.json: contains the flagged name 'csrftoken'")
+        assert run_problem.startswith(
+            "get_orders.json and 1 more: the observe run 20261006-101500-4242 of myshop"
+        )
+        assert f"cannot be read ({reason}" in run_problem
+        assert "was not compared" in run_problem
+        assert report.run_checked == 0
+
+    def test_a_run_that_is_a_file_is_reported(self, tmp_path: Path) -> None:
+        observe = tmp_path / "observe"
+        (observe / "myshop").mkdir(parents=True)
+        (observe / "myshop" / _RUN.run).write_text("")
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        (problem,) = check_fixtures_tree(tree, observe_dir=observe).problems
+        assert "cannot be read (not a directory)" in problem
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a directory whatever its mode")
+    def test_a_run_whose_directory_cannot_be_searched_is_reported(self, tmp_path: Path) -> None:
+        observe = tmp_path / "observe"
+        run_dir = _write_run(observe, "myshop", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        run_dir.chmod(0)
+        try:
+            (problem,) = check_fixtures_tree(tree, observe_dir=observe).problems
+        finally:
+            run_dir.chmod(0o700)
+        assert "20261006-101500-4242 of myshop" in problem
+        assert "cannot be read" in problem
+        assert _RECORDED_SESSION not in problem
+
+    def test_only_the_runs_own_files_are_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The check opens files under the named run's directory only, and lists
+        only the observe directory itself (the names of its entries), never a
+        directory inside it."""
+        observe = tmp_path / "observe"
+        run_dir = _write_run(observe, "myshop", _RUN.run, _RECORDED_SESSION)
+        _write_run(observe, "myshop", "20261007-090000-1111", "OtherRunValue1234")
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        opened: list[Path] = []
+        listed: list[Path] = []
+        real_read_text = Path.read_text
+        real_iterdir = Path.iterdir
+        real_scandir = os.scandir
+        real_listdir = os.listdir
+
+        def read_text(self: Path, *args: object, **kwargs: object) -> str:
+            opened.append(self)
+            return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        def iterdir(self: Path):  # noqa: ANN202
+            listed.append(self)
+            return real_iterdir(self)
+
+        def scandir(path: object = ".") -> object:
+            listed.append(Path(str(path)))
+            return real_scandir(path)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+        monkeypatch.setattr(Path, "iterdir", iterdir)
+
+        def listdir(path: object = ".") -> list[str]:
+            listed.append(Path(str(path)))
+            return real_listdir(path)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(os, "scandir", scandir)
+        monkeypatch.setattr(os, "listdir", listdir)
+        check_fixtures_tree(tree, observe_dir=observe)
+        under_observe = [p for p in opened if p.is_relative_to(observe)]
+        assert under_observe
+        assert all(p.resolve().is_relative_to(run_dir.resolve()) for p in under_observe)
+        assert [p for p in listed if p.is_relative_to(observe)] == [observe]
+
+    @pytest.mark.parametrize("loop", ["self", "mutual"])
+    def test_a_symlink_loop_in_a_run_is_a_run_that_cannot_be_read(
+        self, tmp_path: Path, loop: str
+    ) -> None:
+        """Before Python 3.13 ``Path.resolve`` raises RuntimeError on a loop, and
+        from 3.13 the read raises ELOOP; either way the check reports the file by
+        its path in the run, and prints neither the account label nor a path
+        outside the run."""
+        observe = tmp_path / "observe"
+        run_dir = _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        if loop == "self":
+            (run_dir / "page-source.html").symlink_to("page-source.html")
+            named = "page-source.html"
+        else:
+            har_path = run_dir / "network.har"
+            har = json.loads(har_path.read_text())
+            har["log"]["entries"][0]["response"]["headers"] = [
+                {"name": "Content-Type", "value": "text/html"}
+            ]
+            har["log"]["entries"][0]["response"]["content"] = {
+                "mimeType": "text/html",
+                "_bodyFile": "bodies/a.html",
+            }
+            har_path.write_text(json.dumps(har))
+            (run_dir / "bodies").mkdir()
+            (run_dir / "bodies" / "a.html").symlink_to("b.html")
+            (run_dir / "bodies" / "b.html").symlink_to("a.html")
+            named = "bodies/a.html"
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        (problem,) = report.problems
+        assert problem.startswith("get_orders.json: the observe run 20261006-101500-4242 of myshop")
+        assert f"cannot read {named} (a symlink loop)" in problem
+        assert "alice" not in problem
+        assert str(tmp_path) not in problem
+        assert report.run_checked == 0
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+    def test_a_run_file_that_cannot_be_read_fails_the_local_check(self, tmp_path: Path) -> None:
+        """A page source the check needs and cannot read is a run it could not
+        read, never a quiet pass on the values it did read."""
+        observe = tmp_path / "observe"
+        run_dir = _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        page = run_dir / "page-source.html"
+        page.write_text('<meta name="myshop_session" content="PageOnlyValue123">')
+        page.chmod(0)
+        tree = tmp_path / "fixtures"
+        body = b'{"id": 7, "myshop_session": "PageOnlyValue123"}'
+        _fixture(tree, "get_orders.json", body, _from_run(body))
+        try:
+            report = check_fixtures_tree(tree, observe_dir=observe)
+        finally:
+            page.chmod(0o600)
+        (problem,) = report.problems
+        assert "cannot read page-source.html (Permission denied)" in problem
+        assert "alice" not in problem
+        assert str(tmp_path) not in problem
+        assert report.run_checked == 0
+
+    def test_a_body_file_the_har_names_that_is_gone_fails_the_local_check(
+        self, tmp_path: Path
+    ) -> None:
+        """gp names a body file in the HAR only after writing it, so one that is
+        gone means the run was changed since: the values only it held cannot be
+        compared, and the run is not counted as compared."""
+        observe = tmp_path / "observe"
+        run_dir = _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        har = json.loads((run_dir / "network.har").read_text())
+        response = har["log"]["entries"][0]["response"]
+        response["headers"] = [{"name": "Content-Type", "value": "text/html"}]
+        content = response["content"]
+        del content["text"]
+        content["_bodyFile"] = "bodies/1.html"
+        (run_dir / "network.har").write_text(json.dumps(har))
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        (problem,) = report.problems
+        assert "cannot be read (cannot read bodies/1.html (missing))" in problem
+        assert "alice" not in problem
+        assert str(tmp_path) not in problem
+        assert report.run_checked == 0
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root searches a directory whatever its mode")
+    @pytest.mark.parametrize("with_the_run", [True, False])
+    def test_a_session_directory_that_cannot_be_searched_is_not_a_second_copy(
+        self, tmp_path: Path, with_the_run: bool
+    ) -> None:
+        observe = tmp_path / "observe"
+        if with_the_run:
+            _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        bob = observe / "myshop-bob"
+        bob.mkdir(parents=True)
+        bob.chmod(0)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        try:
+            report = check_fixtures_tree(tree, observe_dir=observe)
+        finally:
+            bob.chmod(0o700)
+        (problem,) = report.problems
+        assert problem == (
+            "get_orders.json: the lookup of the observe run 20261006-101500-4242 of myshop "
+            "its sidecar names could not be completed (1 of the plugin's session "
+            "directories cannot be searched (Permission denied), so the check cannot tell "
+            "whether it holds the run), so the fixture was not compared with the values "
+            "the run may have recorded. Make the observe directory "
+            "(graftpunk.observe.OBSERVE_BASE_DIR) listable and the plugin's session "
+            "directories in it searchable, so the check can tell whether the run is on "
+            "this machine."
+        )
+        assert report.run_checked == 0
+        assert "alice" not in problem
+        assert "bob" not in problem
+        assert str(tmp_path) not in problem
+
+    @pytest.mark.parametrize("case", ["missing-har", "ambiguous", "leak"])
+    def test_no_problem_names_the_account_or_the_observe_path(
+        self, tmp_path: Path, case: str
+    ) -> None:
+        observe = tmp_path / "observe"
+        run_dir = _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        if case == "missing-har":
+            (run_dir / "network.har").unlink()
+        elif case == "ambiguous":
+            _write_run(observe, "myshop-alicia", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        assert report.problems
+        for text in (*report.problems, report.summary):
+            assert "alice" not in text
+            assert str(tmp_path) not in text
+            assert str(observe) not in text
+
+
+def _containment_run(run_dir: Path, outside: Path) -> dict:
+    """A run whose HAR names four files outside it, each holding a recorded value:
+    a climbing ``_bodyFile``, an absolute ``_postDataFile``, a body that is a
+    symlink out of the run, and a ``page-source.html`` that is one."""
+    (outside / "climb.html").write_text('<meta name="csrf-token" content="ClimbedOut123">')
+    (outside / "absolute.txt").write_text("csrf-token=AbsolutePath123")
+    (outside / "linked.html").write_text('<meta name="csrf-token" content="LinkedOut123">')
+    (outside / "page.html").write_text('<meta name="csrf-token" content="PageOut123">')
+    (run_dir / "bodies").mkdir(parents=True)
+    (run_dir / "bodies" / "linked.html").symlink_to(outside / "linked.html")
+    (run_dir / "page-source.html").symlink_to(outside / "page.html")
+    html = [{"name": "Content-Type", "value": "text/html"}]
+
+    def entry(content: dict, request: dict) -> dict:
+        return {
+            "request": {"url": "https://myshop.example.com/", "headers": [], **request},
+            "response": {"headers": html, "content": {"mimeType": "text/html", **content}},
+        }
+
+    climb = f"bodies/../../{outside.name}/climb.html"
+    return {
+        "log": {
+            "entries": [
+                entry({"_bodyFile": climb}, {}),
+                entry({}, {"_postDataFile": str(outside / "absolute.txt")}),
+                entry({"_bodyFile": "bodies/linked.html"}, {}),
+            ]
+        }
+    }
+
+
+def test_the_package_reads_no_file_outside_the_run(tmp_path: Path) -> None:
+    """``graftpunk.testing.recorded`` refuses a HAR's file reference that climbs
+    out of the run, one that is absolute, a body symlinked out of the run, and a
+    symlinked ``page-source.html``: none is read and none is an error."""
+    run_dir = tmp_path / "run"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    har = _containment_run(run_dir, outside)
+    assert recorded_values(har, {"csrf-token"}, run_dir) == {}
+
+
+_LOCAL_CHECK_CONFTEST = """
+from pathlib import Path
+
+from graftpunk.testing.plugin import fixtures_are_sanitised
+
+FIXTURES_TREE = Path(__file__).parent / "fixtures"
+
+sanitised_fixtures = fixtures_are_sanitised(
+    FIXTURES_TREE, observe_dir=Path(__file__).parent / "observe"
+)
+"""
+
+
+class TestTheLocalValueCheckInASuite:
+    def test_a_pasted_value_fails_the_suite_and_no_output_holds_it(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        _write_run(pytester.path / "observe", "myshop", _RUN.run, _RECORDED_SESSION)
+        _fixture(pytester.path / "fixtures", "get_orders.json", _PASTED, _from_run(_PASTED))
+        pytester.makepyfile(conftest=_LOCAL_CHECK_CONFTEST, test_one="def test_one():\n    pass\n")
+        result = pytester.runpytest_inprocess(
+            "-o", "asyncio_default_fixture_loop_scope=function", "-rA"
+        )
+        result.assert_outcomes(errors=1)
+        result.stdout.fnmatch_lines(
+            [
+                "*1 compared with the values their observe run recorded*",
+                "*get_orders.json: the recorded value of flagged 'myshop_session'*",
+            ]
+        )
+        output = "\n".join(result.outlines + result.errlines)
+        assert _RECORDED_SESSION not in output
+
+    def test_the_suite_passes_and_says_so_when_the_run_is_absent(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        _fixture(pytester.path / "fixtures", "get_orders.json", _PASTED, _from_run(_PASTED))
+        pytester.makepyfile(conftest=_LOCAL_CHECK_CONFTEST, test_one="def test_one():\n    pass\n")
+        result = pytester.runpytest_inprocess("-o", "asyncio_default_fixture_loop_scope=function")
+        result.assert_outcomes(passed=1)
+        result.stdout.fnmatch_lines(["*0 compared with the values their observe run recorded*"])
+        output = "\n".join(result.outlines + result.errlines)
+        assert "warning" not in output.lower()
 
 
 class TestFixturesAreSanitisedInASuite:

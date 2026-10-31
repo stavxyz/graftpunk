@@ -35,6 +35,30 @@ def session_dirname(session_name: str) -> str:
     return slugify(session_name) or "default"
 
 
+def run_dir_of(session_name: str, run_id: str, *, base_dir: Path) -> Path:
+    """Where the run *run_id* of the session *session_name* lives under *base_dir*.
+
+    ``gp observe``'s run resolver goes through it. It builds the path and touches
+    nothing on disk.
+    """
+    return base_dir / session_dirname(session_name) / run_id
+
+
+def is_session_dir_of(plugin: str, dirname: str) -> bool:
+    """True when *dirname*, an entry of the observe directory, can be a session
+    directory of the plugin *plugin* (a session name's part before ``@``): the
+    directory :func:`session_dirname` maps ``plugin`` to, or the one it maps
+    ``plugin@<label>`` to for some account label, which is that directory, a
+    hyphen, and the label's slug.
+
+    The mapping is not one to one, so a plugin whose own name is another
+    plugin's name, a hyphen and more (``myshop-eu`` beside ``myshop``) has its
+    directories counted as the other's too.
+    """
+    base = session_dirname(plugin)
+    return dirname == base or dirname.startswith(f"{base}-")
+
+
 #: A run holds the session's cookies and headers in plaintext, so only its
 #: owner may read it.
 PRIVATE_DIR_MODE = 0o700

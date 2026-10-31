@@ -36,10 +36,12 @@ from graftpunk.har.digest import (
     _account_values,
     _array_expiry,
     _expiry,
+    _in_scope,
     _login_opener,
     _parse_body,
     _response_cookie_attributes,
     _scalar_values,
+    _scope_root,
     _with_login_flow,
     body_params,
     body_values,
@@ -54,7 +56,7 @@ from graftpunk.har.digest import (
 )
 from graftpunk.har.documents import LoginForm
 from graftpunk.har.parser import LoginInteraction, parse_har_file
-from graftpunk.har.paths import reads_as_words
+from graftpunk.har.paths import normal_host, reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from tests.unit.guide_harness import REPO_ROOT
 from tests.unit.test_har_parser import _load_har_facts
@@ -4771,6 +4773,141 @@ class TestFlaggedNamesOf:
         result = digest(DigestSource.from_har(har))
         later = parse_har_file(har).entries[1:]
         assert flagged_reasons_of(result, later) == {"visit": ("value_not_form_state",)}
+
+    @staticmethod
+    def _scoped_recording(tmp_path: Path) -> Path:
+        """A recording against myshop.example.com (it serves the page) that also
+        reaches ads.example.net, every cookie value opaque: ``NID`` is sent only to
+        the ad host, ``shop_ref`` only to the shop, ``both`` to each, ``crossed``
+        is set by the ad host and sent to the shop, and ``pixel`` is only set by
+        the ad host."""
+        page = _entry(
+            "GET", "https://www.myshop.example.com/account", content_type="text/html", body="<p>"
+        )
+        page["request"]["cookies"] = [
+            {"name": "shop_ref", "value": "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"},
+            {"name": "both", "value": "Hn8Ks3JdZq9XkLmPwR4t7Bv2"},
+            {"name": "crossed", "value": "Pw4Rt7Bv2Hn8Ks3JdZq9XkL"},
+        ]
+        ad = _entry(
+            "GET",
+            "https://ads.example.net/collect",
+            set_cookies=[
+                "crossed=Pw4Rt7Bv2Hn8Ks3JdZq9XkL; Path=/",
+                "pixel=Bv2Hn8Ks3JdZq9X; Path=/",
+            ],
+        )
+        ad["response"]["cookies"] = [
+            {"name": "crossed", "value": "Pw4Rt7Bv2Hn8Ks3JdZq9XkL"},
+            {"name": "pixel", "value": "Bv2Hn8Ks3JdZq9X"},
+        ]
+        ad["request"]["cookies"] = [
+            {"name": "NID", "value": "Ks3JdZq9XkLmPwR4t7Bv2Hn8"},
+            {"name": "both", "value": "Hn8Ks3JdZq9XkLmPwR4t7Bv2"},
+        ]
+        return _write_har(tmp_path, [page, ad])
+
+    def test_a_cookie_only_out_of_scope_hosts_saw_says_so(self, tmp_path: Path) -> None:
+        """#316: a cookie every request that sent or set it addressed to a host
+        outside the run's scope gets out_of_scope_only beside the reasons that
+        flag it; one any in-scope request carried does not, whoever set it."""
+        har = self._scoped_recording(tmp_path)
+        result = digest(DigestSource.from_har(har))
+        assert result.primary_host == "www.myshop.example.com"
+        entries = parse_har_file(har).entries
+        assert flagged_reasons_of(result, entries) == {
+            "NID": ("out_of_scope_only", "sent_only", "value_not_form_state"),
+            "both": ("sent_only", "value_not_form_state"),
+            "crossed": ("value_not_form_state",),
+            "pixel": ("out_of_scope_only", "value_not_form_state"),
+            "shop_ref": ("sent_only", "value_not_form_state"),
+        }
+
+    def test_out_of_scope_only_changes_no_flagged_or_checked_name(self, tmp_path: Path) -> None:
+        """The reason says where a cookie went; the names flagged, and the values
+        that decide which are checked, are what they were without it."""
+        har = self._scoped_recording(tmp_path)
+        result = digest(DigestSource.from_har(har))
+        entries = parse_har_file(har).entries
+        reasons = flagged_reasons_of(result, entries)
+        assert tuple(reasons) == flagged_names_of(result, entries)
+        assert set(reasons) == {"NID", "both", "crossed", "pixel", "shop_ref"}
+        assert flagged_values_of(result, entries)["NID"] == frozenset({"Ks3JdZq9XkLmPwR4t7Bv2Hn8"})
+
+    @pytest.mark.parametrize(
+        ("page_url", "sent_to", "out_of_scope"),
+        [
+            ("https://www.myshop.example.com:8443/a", "https://www.myshop.example.com/api", False),
+            ("https://shop.example.com/a", "https://shop.example.com:8443/api", False),
+            ("http://localhost:8000/a", "http://localhost:3000/api", False),
+            ("https://www.myshop.example.com:8443/a", "https://api.myshop.example.com/x", False),
+            ("http://192.168.1.10/a", "http://10.168.1.10/api", True),
+            ("http://127.0.0.1:8000/a", "http://10.0.0.1:8000/api", True),
+            ("http://127.0.0.1:8000/a", "http://127.0.0.1:9000/api", False),
+            ("http://[::1]:8000/a", "http://[::1]:3000/api", False),
+            ("http://[2001:db8::1]/a", "http://[2001:db8::2]/api", True),
+            ("https://www.myshop.example.com/a", "https://ads.example.net/x", True),
+        ],
+        ids=[
+            "same-host-default-port",
+            "same-host-other-port",
+            "localhost-ports",
+            "subdomain-of-the-root",
+            "ipv4-suffix-lookalike",
+            "other-ipv4-same-port",
+            "same-ipv4-other-port",
+            "ipv6-other-port",
+            "other-ipv6",
+            "third-party",
+        ],
+    )
+    def test_out_of_scope_compares_host_names_and_ip_addresses_whole(
+        self, tmp_path: Path, page_url: str, sent_to: str, out_of_scope: bool
+    ) -> None:
+        """A cookie is not scoped by port, so a host on another port of the
+        primary host is the site's own; an IP address is in scope only when it
+        is the primary host's, never because its text ends like it."""
+        page = _entry("GET", page_url, content_type="text/html", body="<p>")
+        api = _entry("GET", sent_to)
+        api["request"]["cookies"] = [{"name": "app_session", "value": "Ks3JdZq9XkLmPwR4t7Bv2Hn8"}]
+        har = _write_har(tmp_path, [page, api])
+        result = digest(DigestSource.from_har(har))
+        primary = urlparse(page_url)
+        assert result.primary_host == normal_host(primary.scheme, primary.netloc)
+        reasons = flagged_reasons_of(result, parse_har_file(har).entries)["app_session"]
+        assert ("out_of_scope_only" in reasons) is out_of_scope
+
+    @pytest.mark.parametrize(
+        ("primary", "host", "in_scope"),
+        [
+            ("192.168.1.10", "192.168.1.10", True),
+            ("192.168.1.10", "10.168.1.10", False),
+            ("127.0.0.1:8000", "10.0.0.1:8000", False),
+            ("127.0.0.1:8000", "127.0.0.1:8000", True),
+            ("[::ffff:192.168.1.10]", "[::ffff:10.168.1.10]", False),
+            ("www.myshop.example.com", "api.myshop.example.com", True),
+            ("www.myshop.example.com", "10.0.0.1", False),
+        ],
+    )
+    def test_the_scope_rule_matches_an_ip_address_only_whole(
+        self, primary: str, host: str, in_scope: bool
+    ) -> None:
+        """The digest's endpoint scope uses the same rule: an IP address's dotted
+        parts are not domain labels."""
+        assert _in_scope(host, _scope_root(primary)) is in_scope
+
+    def test_a_recording_with_no_primary_host_has_no_out_of_scope_cookie(
+        self, tmp_path: Path
+    ) -> None:
+        """With every entry static there is no scope to be outside of."""
+        asset = _entry("GET", "https://ads.example.net/a.png", content_type="image/png")
+        asset["request"]["cookies"] = [{"name": "NID", "value": "Ks3JdZq9XkLmPwR4t7Bv2Hn8"}]
+        har = _write_har(tmp_path, [asset])
+        result = digest(DigestSource.from_har(har))
+        assert result.primary_host == ""
+        assert flagged_reasons_of(result, parse_har_file(har).entries) == {
+            "NID": ("sent_only", "value_not_form_state")
+        }
 
     def test_without_entries_every_digest_cookie_is_flagged_for_no_value_seen(
         self, tmp_path: Path
