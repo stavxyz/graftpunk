@@ -15,11 +15,10 @@ import os
 import subprocess
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from urllib.parse import unquote, unquote_plus
 
 from graftpunk.devtools.captures_rule import with_ignored
 from graftpunk.logging import get_logger
-from graftpunk.testing.decoding import decoded_forms
+from graftpunk.testing.decoding import combined_forms, value_forms
 from graftpunk.testing.sidecar import Sidecar, sidecar_path, sidecar_text
 
 LOG = get_logger(__name__)
@@ -143,20 +142,23 @@ def checked_names_of(
     derived from *text*, sorted: each name whose values are not all known (None),
     and each name one of whose values is in *text*.
 
-    A value is looked for as recorded and percent-decoded (with ``+`` read as a
-    plus and as a space, since a base64 value holds ``+``), case-sensitively, in
-    *text* as written and in each form the fixtures check reads a fixture in
-    (:func:`graftpunk.testing.decoding.decoded_forms`), so a value the body holds
-    escaped in a JSON string, HTML-escaped, or percent-encoded counts. A value of
-    one character that happens to be in the body keeps its name looked for: the
-    check then fails on the name as it did before sidecar schema 3, never less."""
-    forms = (text, *decoded_forms(text))
+    A value is looked for in each of its forms
+    (:func:`graftpunk.testing.decoding.value_forms`: as recorded, percent-decoded
+    with ``+`` read both ways, and without the double quotes a cookie value may
+    carry), case-sensitively, in *text* as written, in each form the fixtures
+    check reads a fixture in, and in each of those decoded again
+    (:func:`graftpunk.testing.decoding.combined_forms`), so a value the body holds
+    escaped in a JSON string, HTML-escaped, percent-encoded, or JSON-escaped
+    inside an HTML attribute counts. A value of one character that happens to be
+    in the body keeps its name looked for: the check then fails on the name as it
+    did before sidecar schema 3, never less."""
+    forms = (text, *combined_forms(text))
     checked: list[str] = []
     for name, values in flagged_values.items():
         if values is None:
             checked.append(name)
             continue
-        wanted = {form for value in values for form in (value, unquote(value), unquote_plus(value))}
+        wanted = {form for value in values for form in value_forms(value)}
         if any(value and value in form for value in wanted for form in forms):
             checked.append(name)
     return tuple(sorted(checked))

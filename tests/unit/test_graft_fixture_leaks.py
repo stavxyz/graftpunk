@@ -752,22 +752,44 @@ def test_a_value_behind_a_hex_escape_or_a_double_percent_encoding_is_found(
 
 _OPAQUE = "Xk3Lp9Qv2Rt7Wm4Zb8Nc6Hd"
 _TOKEN = "Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb"  # noqa: S105 - an invented token value
-_FLAGGED = {"schema": 3, "flagged_names": ["csrf-token", "id", "myshop_session"]}
+_FLAGGED = {
+    "schema": 3,
+    "flagged_names": [
+        "X-CSRF-Token",
+        "csrf-token",
+        "id",
+        "myshop_remember",
+        "myshop_session",
+        "short_session",
+    ],
+}
 
 
 def _har(tmp_path: Path) -> Path:
-    """A recording made with a cached session: the request sends `id` and
-    `myshop_session` in its Cookie header, the response sets `myshop_session`
-    anew by a Set-Cookie header, and the page carries a csrf-token meta tag."""
+    """A recording made with a cached session: the request sends `id`,
+    `myshop_session` (percent-encoded) and `short_session` (two characters) in its
+    Cookie header and an `x-csrf-token` header, the response sets
+    `myshop_remember` by a Set-Cookie header alone, and the page, HTML by its
+    Content-Type header, carries a csrf-token meta tag. Each name has its own
+    source, so a test failing on one names the source that broke."""
     request = {
         "method": "GET",
         "url": "https://myshop.example.com/account",
-        "headers": [{"name": "Cookie", "value": f"id={_OPAQUE}; myshop_session=first%2Bpart"}],
+        "headers": [
+            {
+                "name": "Cookie",
+                "value": f"id={_OPAQUE}; myshop_session=first%2Bpart; short_session=Qz",
+            },
+            {"name": "x-csrf-token", "value": "HeaderTok9Lq8"},
+        ],
         "cookies": [],
     }
     response = {
         "status": 200,
-        "headers": [{"name": "Set-Cookie", "value": "myshop_session=SecondValue77; HttpOnly"}],
+        "headers": [
+            {"name": "Content-Type", "value": "text/html; charset=utf-8"},
+            {"name": "Set-Cookie", "value": "myshop_remember=SecondValue77; HttpOnly"},
+        ],
         "cookies": [],
         "content": {
             "mimeType": "text/html",
@@ -834,17 +856,139 @@ def test_the_value_is_placed_by_line_number(tmp_path: Path) -> None:
     ]
 
 
-def test_set_cookie_header_and_meta_values_are_read_and_a_value_is_found_decoded(
-    tmp_path: Path,
-) -> None:
-    """The session cookie was sent percent-encoded (first%2Bpart) and set again by a
-    Set-Cookie header; the token is a meta tag's content in an HTML response."""
-    fixture = json.dumps({"a": "first+part", "b": "SecondValue77", "c": _TOKEN})
-    result = _run_har(tmp_path, fixture)
+@pytest.mark.parametrize(
+    ("value", "name"),
+    [
+        (_TOKEN, "csrf-token"),
+        ("SecondValue77", "myshop_remember"),
+        ("first+part", "myshop_session"),
+        ("HeaderTok9Lq8", "X-CSRF-Token"),
+    ],
+    ids=["meta-content", "set-cookie-header", "cookie-percent-decoded", "header-other-case"],
+)
+def test_each_source_of_a_recorded_value_is_read(tmp_path: Path, value: str, name: str) -> None:
+    """One value per fixture, so each source is pinned alone: a meta tag's content
+    in a response whose Content-Type header says HTML, a cookie set only by a
+    Set-Cookie header, a cookie sent percent-encoded (first%2Bpart) found as
+    first+part, and a request header sent as x-csrf-token for the flagged
+    X-CSRF-Token."""
+    result = _run_har(tmp_path, json.dumps({"a": value}))
     assert result.returncode == 1
     assert _value_lines(result.stdout) == [
-        "the recorded value of flagged 'csrf-token' is still in the fixture (line 1)",
-        "the recorded value of flagged 'myshop_session' is still in the fixture (line 1)",
+        f"the recorded value of flagged {name!r} is still in the fixture (line 1)"
+    ]
+
+
+def test_a_recorded_value_shorter_than_three_characters_is_not_looked_for(
+    tmp_path: Path,
+) -> None:
+    """short_session was sent as Qz; two characters are in too much text to mean a
+    copy."""
+    result = _run_har(tmp_path, json.dumps({"code": "Qz"}))
+    assert _value_lines(result.stdout) == []
+
+
+def _run_with_page(
+    tmp_path: Path, fixture: str, content: dict, headers: list[dict], files: dict[str, str]
+) -> list[str]:
+    """``_run_har`` on a HAR whose one response has *content* and *headers*, with
+    *files* written beside the HAR first, and the recorded-value lines it prints."""
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text)
+    entry = {
+        "request": {"method": "GET", "url": "https://myshop.example.com/a", "headers": []},
+        "response": {"status": 200, "headers": headers, "cookies": [], "content": content},
+    }
+    har = json.dumps({"log": {"entries": [entry]}})
+    return _value_lines(_run_har(tmp_path, fixture, har=har).stdout)
+
+
+_HTML = [{"name": "Content-Type", "value": "text/html"}]
+_META = f'<meta name="csrf-token" content="{_TOKEN}">'
+_CAUGHT = ["the recorded value of flagged 'csrf-token' is still in the fixture (line 1)"]
+
+
+def test_a_page_the_har_keeps_in_a_body_file_is_read(tmp_path: Path) -> None:
+    """gp's recorder writes a large body to bodies/ and the HAR names it in
+    _bodyFile; graftpunk's parser reads it, and so does this."""
+    lines = _run_with_page(
+        tmp_path,
+        json.dumps({"t": _TOKEN}),
+        {"mimeType": "text/html", "_bodyFile": "bodies/1.html"},
+        _HTML,
+        {"bodies/1.html": _META},
+    )
+    assert lines == _CAUGHT
+
+
+def test_a_body_file_outside_the_hars_directory_is_not_read(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (tmp_path / "outside.html").write_text(_META)
+    lines = _run_with_page(
+        run,
+        json.dumps({"t": _TOKEN}),
+        {"mimeType": "text/html", "_bodyFile": "../outside.html"},
+        _HTML,
+        {},
+    )
+    assert lines == []
+
+
+@pytest.mark.parametrize(
+    ("headers", "caught"),
+    [
+        ([{"name": "content-type", "value": "text/html"}], True),
+        ([{"name": "Content-Type", "value": "application/json"}], False),
+        ([], False),
+    ],
+    ids=["lower-case-header", "json-header", "no-header"],
+)
+def test_html_is_decided_by_the_content_type_header_as_graftpunk_does(
+    tmp_path: Path, headers: list[dict], caught: bool
+) -> None:
+    """The content's mimeType says HTML in every case; graftpunk's digest reads
+    the Content-Type header, so this does too."""
+    lines = _run_with_page(
+        tmp_path,
+        json.dumps({"t": _TOKEN}),
+        {"mimeType": "text/html", "text": _META},
+        headers,
+        {},
+    )
+    assert lines == (_CAUGHT if caught else [])
+
+
+def test_the_runs_page_source_beside_the_har_is_read(tmp_path: Path) -> None:
+    """A single-page app's token can change after the last HAR page: the value
+    on page-source.html is a recorded value too."""
+    lines = _run_with_page(
+        tmp_path,
+        json.dumps({"t": _TOKEN}),
+        {"mimeType": "application/json", "text": "{}"},
+        [],
+        {"page-source.html": _META},
+    )
+    assert lines == _CAUGHT
+
+
+def test_a_quoted_cookie_value_is_found_without_its_quotes(tmp_path: Path) -> None:
+    headers = [{"name": "Set-Cookie", "value": 'id="Quoted9Value7"; Path=/'}]
+    lines = _run_with_page(
+        tmp_path, "token Quoted9Value7 end", {"mimeType": "text/plain"}, headers, {}
+    )
+    assert lines == ["the recorded value of flagged 'id' is still in the fixture (line 1)"]
+
+
+def test_a_value_json_escaped_inside_an_html_attribute_is_found(tmp_path: Path) -> None:
+    """The page's token holds & and /, so its copy in a data attribute is both
+    HTML-escaped and JSON-escaped; only the two decodings together read it."""
+    meta = '<meta name="csrf-token" content="a&amp;b/cdefgh">'
+    fixture = '<div data-x="{&quot;t&quot;:&quot;a&amp;b\\/cdefgh&quot;}">'
+    lines = _run_with_page(tmp_path, fixture, {"mimeType": "text/html", "text": meta}, _HTML, {})
+    assert lines == [
+        "the recorded value of flagged 'csrf-token' is still in the fixture (found decoded)"
     ]
 
 

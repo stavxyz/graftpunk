@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,6 +26,7 @@ from graftpunk.cli.observe_commands import (  # noqa: F401
 )
 from graftpunk.testing.plugin import check_fixtures_tree
 from tests.unit.cli_harness import strip_ansi
+from tests.unit.guide_harness import REPO_ROOT
 
 runner = CliRunner()
 
@@ -1520,6 +1522,97 @@ class TestFlaggedNamesAreJudgedByTheirValues:
         assert _invoke_fixtures(out_dir).exit_code == 0
         (meta,) = out_dir.glob("*.meta.json")
         assert json.loads(meta.read_text())["checked_names"] == ["myshop_session"]
+
+    def test_a_token_value_only_on_the_page_source_keeps_the_name_checked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A HAR page carries one csrf-token value, and the run's page-source.html a
+        rotated one the captured body echoes: the capture held a recorded value,
+        so a fixture keeping that value under the name fails."""
+        old, new = "OldTok9Qv2Rt7Wm4Zb8Nc6", "NewTok3Lp9Qv2Rt7Wm4Zb8"
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/account",
+            content_type="text/html",
+            body=f'<html><head><meta name="csrf-token" content="{old}"></head></html>',
+        )
+        api = _entry(
+            "GET", "https://myshop.example.com/orders/1001", body=json.dumps({"csrf-token": new})
+        )
+        run_dir = _write_run(observe_base, "myshop", "run-1", [page, api])
+        (run_dir / "page-source.html").write_text(
+            f'<html><head><meta name="csrf-token" content="{new}"></head></html>'
+        )
+        out_dir = tmp_path / "captures"
+        assert _invoke_fixtures(out_dir).exit_code == 0
+        (meta,) = out_dir.glob("*.meta.json")
+        assert json.loads(meta.read_text())["checked_names"] == ["csrf-token"]
+        tree = tmp_path / "fixtures"
+        tree.mkdir()
+        (tree / meta.name).write_text(meta.read_text())
+        (tree / meta.name.removesuffix(".meta.json")).write_text(
+            json.dumps({"csrf-token": new[:-1] + "9"})
+        )
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "contains the flagged name 'csrf-token'" in problem
+
+    def test_a_quoted_cookie_value_the_body_holds_bare_keeps_the_name_checked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _out, sidecar = self._sidecar_of(
+            tmp_path, monkeypatch, f"token {_OPAQUE_ID} end", {"id": f'"{_OPAQUE_ID}"'}
+        )
+        assert sidecar["checked_names"] == ["id"]
+
+    def test_a_flagged_value_pasted_in_under_its_name_passes_the_suite_and_fails_har(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What CI stops catching with schema 3: the capture never held the session
+        value, so the suite does not look for `myshop_session`, and a fixture that
+        pasted the value in under that name passes it. ``fixture-leaks.py --har``
+        on the developer's machine is what catches it (CHANGELOG 1.33.0)."""
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411})
+        assert sidecar["checked_names"] == []
+        fixture = tree / "get_orders_{order_id}.json"
+        fixture.write_text(json.dumps({"id": 7, "myshop_session": _SESSION_VALUE}))
+        assert check_fixtures_tree(tree).problems == ()
+        capture = tmp_path / "captures" / fixture.name
+        har = tmp_path / "observe" / "myshop" / "run-1" / "network.har"
+        script = REPO_ROOT / "skills" / "graft" / "scripts" / "fixture-leaks.py"
+        result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-I", str(script), str(capture), str(fixture), "--har", str(har)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert (
+            "the recorded value of flagged 'myshop_session' is still in the fixture (line 1)"
+            in result.stdout
+        )
+        assert _SESSION_VALUE not in result.stdout
+
+    @staticmethod
+    def _sidecar_of(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str, cookies: dict[str, str]
+    ) -> tuple[Path, dict]:
+        """gp's sidecar for one `GET /orders/1001` text capture of *body*, the
+        request sending *cookies*."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry(
+            "GET",
+            "https://api.myshop.example.com/orders/1001",
+            content_type="text/plain",
+            body=body,
+        )
+        order["request"]["cookies"] = [{"name": k, "value": v} for k, v in cookies.items()]
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "captures"
+        assert _invoke_fixtures(out_dir).exit_code == 0
+        (meta,) = out_dir.glob("*.meta.json")
+        return out_dir, json.loads(meta.read_text())
 
 
 class TestUnwritableTargetIsARefusal:

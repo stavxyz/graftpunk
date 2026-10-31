@@ -63,14 +63,20 @@ for each name in ``flagged_names`` (SIDECAR's, or without SIDECAR, that of gp's
 sidecar beside CAPTURE, so a plugin or test module is checked too): each cookie
 of that name sent or set (the HAR's cookie arrays, ``Cookie`` and ``Set-Cookie``
 headers), each request header of that name in any case, and each meta tag's
-``content`` and hidden input's ``value`` of that name in an HTML response. It
-reports a flagged name whose recorded value of three or more characters is in the
-fixture, as recorded or percent-decoded, case-sensitively, in any of the forms
-above, as ``the recorded value of flagged 'sessionid' is still in the fixture
-(line 3)``, or ``(found decoded)``. It never prints the value or the text around
-it: such a value is a credential. This catches a value the capture's body never
-held, which the fixtures check in the suite cannot see (it holds names only, and
-from sidecar schema 3 looks only for the names whose value the capture held).
+``content`` and hidden input's ``value`` of that name in a response whose
+``Content-Type`` header says HTML, a body the HAR keeps in a file beside it
+(``_bodyFile``) included, and in the run's ``page-source.html`` beside the HAR.
+It reports a flagged name whose recorded value of three or more characters is in
+the fixture, as recorded, percent-decoded, or without the double quotes a cookie
+value may carry, case-sensitively, in any of the forms above or two of them
+applied one after the other (JSON-escaped inside an HTML attribute), as ``the
+recorded value of flagged 'sessionid' is still in the fixture (line 3)``, or
+``(found decoded)``. It never prints the value or the text around it: such a
+value is a credential. This catches a value the capture's body never held, which
+the fixtures check in the suite does not: it holds names only, and from sidecar
+schema 3 it looks only for the names whose value the capture held, so a recorded
+value pasted into a fixture from elsewhere, even under its flagged name, passes
+the suite.
 
 Exit 0 when nothing survived and the sidecar matches, 1 when something survived,
 a recorded value of a flagged name is in the fixture, or the sidecar differs, 2 on
@@ -267,6 +273,38 @@ def _escape_decodings(text: str) -> list[str]:
         forms.append(decoded)
         current = decoded
     return forms
+
+
+def _combined_decodings(text: str) -> list[str]:
+    """Each of :func:`_escape_decodings`, and each of those decoded again the same
+    ways, without repeats and in order, so a value JSON-escaped inside an HTML
+    attribute is read. ``--har`` looks for a recorded value in these too, as gp
+    observe fixtures does (graftpunk.testing.decoding.combined_forms; a test holds
+    the two to the same output)."""
+    forms: dict[str, None] = {}
+    for form in _escape_decodings(text):
+        forms.setdefault(form)
+        for twice in _escape_decodings(form):
+            forms.setdefault(twice)
+    return list(forms)
+
+
+def _without_quotes(value: str) -> str:
+    """*value* without one pair of surrounding double quotes, as a server may
+    quote a cookie value."""
+    if len(value) > 2 and value.startswith('"') and value.endswith('"'):
+        return value[1:-1]
+    return value
+
+
+def _value_forms(value: str) -> frozenset[str]:
+    """The forms a recorded *value* is looked for in: as recorded, percent-decoded
+    (``+`` read as a plus and as a space), and each of those without one pair of
+    surrounding double quotes, so a quote sent as ``%22`` is taken off too
+    (graftpunk.testing.decoding.value_forms; a test holds the two to the same
+    output)."""
+    forms = {value, unquote(value), unquote_plus(value)}
+    return frozenset(forms | {_without_quotes(form) for form in forms})
 
 
 def _decodings(fixture: str) -> list[str]:
@@ -474,6 +512,7 @@ class _Fixture:
         # one is the same offset in the other.
         self.shown = fixture if shown is None else shown
         assert len(self.shown) == len(fixture)
+        self.text = fixture
         self.haystack = _normal("\n".join(_decodings(fixture)))
         self.folded = self.haystack.casefold()
         self._normal = _Derived(fixture, self.haystack, _normal_chunks, _normal)
@@ -575,12 +614,53 @@ def _named(items: object) -> list[tuple[str, str]]:
     ]
 
 
-def recorded_values(har: object, names: set[str]) -> dict[str, set[str]]:
+def _header(headers: list[tuple[str, str]], name: str) -> str | None:
+    """The value of the header *name* in *headers*, as graftpunk's HAR parser
+    reads ``Content-Type``: the last header spelled ``name`` exactly, else the
+    last spelled in lower case."""
+    spelled = dict(headers)
+    return spelled.get(name) or spelled.get(name.lower())
+
+
+def _body_text(content: dict, base: Path | None) -> str | None:
+    """A response's body text: the HAR's ``content.text``, or, when the HAR keeps
+    the body in a file (``content._bodyFile``, relative to the HAR's directory
+    *base*), that file read as UTF-8, as graftpunk's HAR parser reads it. A file
+    outside *base*, or one that cannot be read, gives None."""
+    text = content.get("text")
+    if isinstance(text, str):
+        return text
+    ref = content.get("_bodyFile")
+    if base is None or not isinstance(ref, str) or not ref:
+        return None
+    path = (base / ref).resolve()
+    if not path.is_relative_to(base.resolve()):
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _page_values(html: str) -> list[tuple[str, str]]:
+    parser = _TokenValues()
+    parser.feed(html)
+    parser.close()
+    return parser.pairs
+
+
+def recorded_values(har: object, names: set[str], base: Path | None = None) -> dict[str, set[str]]:
     """Every non-empty value *har* records for each of *names*: as a cookie sent
-    or set, as a request header (any case), or as a meta tag's content or a hidden
-    input's value in an HTML response."""
+    or set (the cookie arrays, and the ``Cookie`` and ``Set-Cookie`` headers), as
+    a request header (any case), or as a meta tag's content or a hidden input's
+    value in a response whose ``Content-Type`` header says HTML. With *base*, the
+    HAR's directory, a body the HAR keeps in a file is read, and so is the run's
+    ``page-source.html`` beside the HAR, as ``gp observe fixtures`` reads them."""
     found: dict[str, set[str]] = {}
-    folded = {name.casefold(): name for name in names}
+    # Several flagged names can differ in case alone (X-CSRF-Token, x-csrf-token).
+    folded: dict[str, list[str]] = {}
+    for name in names:
+        folded.setdefault(name.casefold(), []).append(name)
 
     def add(name: str, value: str) -> None:
         if name in names and value:
@@ -597,38 +677,54 @@ def recorded_values(har: object, names: set[str]) -> dict[str, set[str]]:
             add(name, value)
         for name, value in _named(request.get("headers")):
             if name.casefold() == "cookie":
-                for pair in value.split(";"):
-                    add(*_cookie_pair(pair))
-            elif name.casefold() in folded:
-                add(folded[name.casefold()], value)
-        for name, value in _named(response.get("headers")):
+                for line in value.splitlines():
+                    for pair in line.split(";"):
+                        add(*_cookie_pair(pair))
+            else:
+                for flagged in folded.get(name.casefold(), ()):
+                    add(flagged, value)
+        response_headers = _named(response.get("headers"))
+        for name, value in response_headers:
             if name.casefold() == "set-cookie":
-                for line in value.split("\n"):
+                for line in value.splitlines():
                     add(*_cookie_pair(line.split(";", 1)[0]))
+        if "html" not in (_header(response_headers, "Content-Type") or "").lower():
+            continue
         content = response.get("content") if isinstance(response.get("content"), dict) else {}
-        text, mime = content.get("text"), content.get("mimeType")
-        if isinstance(text, str) and isinstance(mime, str) and "html" in mime.lower():
-            parser = _TokenValues()
-            parser.feed(text)
-            parser.close()
-            for name, value in parser.pairs:
-                add(name, value)
+        text = _body_text(content, base)
+        for name, value in _page_values(text) if text is not None else ():
+            add(name, value)
+    page_source = base / "page-source.html" if base is not None else None
+    if page_source is not None and page_source.is_file():
+        try:
+            page_html = page_source.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            page_html = ""
+        for name, value in _page_values(page_html):
+            add(name, value)
     return found
 
 
 def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
     """One line per flagged name whose recorded value is in *fixture*, naming the
-    lines of the file that hold it (or ``found decoded``), never the value."""
+    lines of the file that hold it (or ``found decoded``), never the value. Each
+    of a value's :func:`_value_forms` is looked for in the fixture's forms and in
+    :func:`_combined_decodings` of it."""
     lines: list[str] = []
     raw_lines = fixture.shown.split("\n")
+    combined: str | None = None
     for name in sorted(values):
         wanted = {
             _normal(form)
             for value in values[name]
-            for form in (value, unquote(value), unquote_plus(value))
+            for form in _value_forms(value)
             if len(form) >= _MIN_LENGTH
         }
         hits = [value for value in wanted if value in fixture.haystack]
+        if not hits and wanted:
+            if combined is None:
+                combined = _normal("\n".join(_combined_decodings(fixture.text)))
+            hits = [value for value in wanted if value in combined]
         if not hits:
             continue
         at = [
@@ -688,7 +784,7 @@ def main(argv: list[str]) -> int:
         names = _flagged_names(Path(argv[1]), sidecar)
         if names is None:
             return 2
-        leaked = recorded_leaks(found, recorded_values(har, names))
+        leaked = recorded_leaks(found, recorded_values(har, names, Path(har_path).parent))
     for value in left[:_MOST_VALUES]:
         for place in found.places(_normal(value)):
             print(f"still in the fixture: {_cut(value)!r} ({place})")

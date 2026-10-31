@@ -177,6 +177,25 @@ class TestCheckedNamesOf:
     def test_values_not_known_keep_the_name_checked(self) -> None:
         assert checked_names_of({"b": None, "a": frozenset()}, "{}") == ("b",)
 
+    def test_a_plus_in_a_recorded_value_is_also_read_as_a_space(self) -> None:
+        """A form-encoded cookie value spells a space as +; the body holds the
+        space."""
+        values = {"csrftoken": frozenset({"Xk3+Lp9Qv2"})}
+        assert checked_names_of(values, '{"t": "Xk3 Lp9Qv2"}') == ("csrftoken",)
+
+    @pytest.mark.parametrize("quoted", [f'"{_VALUE}"', f"%22{_VALUE}%22"])
+    def test_a_quoted_cookie_value_is_found_without_its_quotes(self, quoted: str) -> None:
+        """RFC 6265 lets a server quote a cookie value, and the browser sends the
+        quotes; a body holds the value inside a text node without them."""
+        body = f"<p>token {_VALUE} end</p>"
+        assert checked_names_of({"id": frozenset({quoted})}, body) == ("id",)
+
+    def test_a_value_json_escaped_inside_an_html_attribute_is_found(self) -> None:
+        """A value holding & and / in JSON state inside a data attribute is both
+        HTML-escaped and JSON-escaped; the two decodings are combined."""
+        body = '<div data-x="{&quot;t&quot;:&quot;a&amp;b\\/cdefgh&quot;}">'
+        assert checked_names_of({"id": frozenset({"a&b/cdefgh"})}, body) == ("id",)
+
 
 class TestWriteSidecarCheckedNames:
     def test_without_values_every_flagged_name_is_checked(self, tmp_path: Path) -> None:

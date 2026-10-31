@@ -1,20 +1,21 @@
 """The forms a fixture is read in besides as written, shared by the fixtures check
-and by ``gp observe fixtures``.
+and by ``gp observe fixtures``, and the forms a recorded value is looked for in.
 
 Pytest-free, so the writer side (``graftpunk.cli.observe_commands``), which never
 imports :mod:`graftpunk.testing.plugin`, reads a capture body in the same forms the
 check reads its fixture in. Kept in step with
-``skills/graft/scripts/fixture-leaks.py``'s ``_escape_decodings`` (a test compares
-the two): that script runs with the standard library alone and cannot import this.
+``skills/graft/scripts/fixture-leaks.py`` (``_escape_decodings``,
+``_combined_decodings`` and ``_value_forms``; tests compare each pair): that
+script runs with the standard library alone and cannot import this.
 """
 
 from __future__ import annotations
 
 import html
 import re
-from urllib.parse import unquote_plus
+from urllib.parse import unquote, unquote_plus
 
-__all__ = ["decoded_forms"]
+__all__ = ["combined_forms", "decoded_forms", "value_forms"]
 
 _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
@@ -56,3 +57,35 @@ def decoded_forms(text: str) -> list[str]:
         forms.append(decoded)
         current = decoded
     return forms
+
+
+def combined_forms(text: str) -> list[str]:
+    """Each of :func:`decoded_forms`, and each of those decoded again the same
+    ways, without repeats and in order: a value JSON-escaped inside an HTML
+    attribute (``&quot;a&amp;b\\/c&quot;``) is read once both decodings have
+    run. Only the side that compares recorded values with a body reads these;
+    the fixtures check reads :func:`decoded_forms`, so a regenerated sidecar can
+    only look for more names, never fewer."""
+    forms: dict[str, None] = {}
+    for form in decoded_forms(text):
+        forms.setdefault(form)
+        for twice in decoded_forms(form):
+            forms.setdefault(twice)
+    return list(forms)
+
+
+def _without_quotes(value: str) -> str:
+    """*value* without one pair of surrounding double quotes (RFC 6265 lets a
+    server quote a cookie value, and a browser keeps the quotes)."""
+    if len(value) > 2 and value.startswith('"') and value.endswith('"'):
+        return value[1:-1]
+    return value
+
+
+def value_forms(value: str) -> frozenset[str]:
+    """The forms a recorded *value* is looked for in a body: as recorded,
+    percent-decoded (``+`` read as a plus and as a space, since a base64 value
+    holds ``+``), and each of those without one pair of surrounding double
+    quotes, so a quote sent percent-encoded (``%22``) is taken off too."""
+    forms = {value, unquote(value), unquote_plus(value)}
+    return frozenset(forms | {_without_quotes(form) for form in forms})
