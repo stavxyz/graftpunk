@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-10-30
+
+This is a minor release. One change can reach a program on the first run after the upgrade: the fixtures check's problem line for a sidecar written before this release gains a sentence (Upgrading, item 1). Item 2 is the new sidecar schema, which reaches a plugin project only when it regenerates a sidecar, and item 3 is about upgrading itself.
+
 ### Upgrading
 
 1. **A plugin's committed fixtures and sidecars pass and fail exactly as before until a sidecar is regenerated** (#313). A sidecar written by 1.27.0 to 1.32.x (schema 2) or earlier (schema 1) still loads, and `fixtures_are_sanitised` still looks for every flagged name in its fixture. The one change on the first run is the problem line for such a sidecar, which now ends: `Or regenerate the sidecar with gp observe fixtures (sidecar schema 3), which looks only for the names whose value the capture held.` A program that matches the whole line sees the added sentence.
@@ -15,7 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`fixture-leaks.py --har HAR`** (#313). The graft skill's leak check reads every value the recording holds for each name in the sidecar's `flagged_names` (cookies sent and set, including `Cookie` and `Set-Cookie` headers, request headers of that name in any case, and meta and hidden-input values in HTML responses) and reports each flagged name whose value is in the fixture, as recorded or percent-decoded, in any form the script already reads (escaped in a JSON string, HTML-escaped, percent-encoded). It prints the name and the line numbers, never the value. This covers a value the capture's body never held, which the fixtures check in the suite cannot see. New API: `flagged_values_of` in `graftpunk.har.digest`, `token_values` in `graftpunk.har.documents`, `checked_names_of` and `write_sidecar(flagged_values=...)` in `graftpunk.devtools.captures`, `Sidecar.checked_names` and `Sidecar.names_to_check` in `graftpunk.testing.sidecar`, and the module `graftpunk.testing.decoding` (`decoded_forms`, which `graftpunk.testing.plugin` used privately as `_decoded_forms` and no longer defines).
+- **`fixture-leaks.py --har HAR`** (#313). The graft skill's leak check reads every value the recording holds for each name in `flagged_names` (the given sidecar's, or without one, that of gp's sidecar beside the capture, so a plugin or test module is checked too): cookies sent and set, including `Cookie` and `Set-Cookie` headers, request headers of that name in any case, and meta and hidden-input values in HTML responses. It reports each flagged name whose value is in the fixture, as recorded or percent-decoded, in any form the script already reads (escaped in a JSON string, HTML-escaped, percent-encoded). It prints the name and the line numbers, never the value. This covers a value the capture's body never held, which the fixtures check in the suite cannot see. New API: `flagged_values_of` in `graftpunk.har.digest`, `token_values` in `graftpunk.har.documents`, `checked_names_of` and `write_sidecar(flagged_values=...)` in `graftpunk.devtools.captures`, `Sidecar.checked_names` and `Sidecar.names_to_check` in `graftpunk.testing.sidecar`, and the module `graftpunk.testing.decoding` (`decoded_forms`, which `graftpunk.testing.plugin` used privately as `_decoded_forms` and no longer defines).
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.20 and needs graftpunk 1.33.0 or later** (#313). The guide describes sidecar schema 3 and `checked_names`, and the skill's harden step runs `fixture-leaks.py` with `--har` and the run's HAR.
 
 ### Fixed
 
