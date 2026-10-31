@@ -45,7 +45,6 @@ __all__ = [
     "looks_like_token_name",
     "printable_selectors",
     "printable_unresolved_roles",
-    "token_values",
 ]
 
 _USERNAME_HINTS = ("user", "email", "login", "account")
@@ -1427,37 +1426,6 @@ def extract_token_candidates(html: str, source: str) -> tuple[TokenCandidate, ..
                     TokenCandidate(kind="hidden_input", name=raw_input.name, seen_on=(source,))
                 )
     return tuple(candidates)
-
-
-class _TokenValueParser(HTMLParser):
-    """Each meta tag's content and each hidden input's value, by name."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.values: dict[str, set[str]] = {}
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        values = {key: value for key, value in attrs if value is not None}
-        if tag == "meta":
-            name, value = values.get("name"), values.get("content")
-        elif tag == "input" and values.get("type", "").lower() == "hidden":
-            name, value = values.get("name"), values.get("value")
-        else:
-            return
-        if name and value:
-            self.values.setdefault(name, set()).add(value)
-
-
-def token_values(html: str) -> dict[str, frozenset[str]]:
-    """Every non-empty meta ``content`` and hidden input ``value`` in *html*, keyed
-    by the element's ``name``: what a meta or hidden-input token candidate
-    (:func:`extract_token_candidates`) held on this page, character references
-    decoded. ``gp observe fixtures`` reads it to tell whether a capture holds a
-    flagged token's value (``graftpunk.har.digest.flagged_values_of``)."""
-    parser = _TokenValueParser()
-    parser.feed(html)
-    parser.close()
-    return {name: frozenset(found) for name, found in parser.values.items()}
 
 
 def is_login_document(html: str) -> bool:

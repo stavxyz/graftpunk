@@ -307,8 +307,9 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     outside its declared format (through the owner,
     :mod:`graftpunk.testing.sidecar`), a fixture that cannot be read, a
     fixture that is byte for byte its capture, and a flagged cookie or token
-    name in a fixture whose capture held that name's value (the sidecar's
-    ``checked_names``; every flagged name for a sidecar from before schema 3).
+    name in a fixture, a cookie name only where the capture held its value (the
+    sidecar's ``checked_names``; every flagged name for a sidecar from before
+    schema 3).
     It does not judge
     whether invented content is invented well. A sidecar with no capture hash
     is the author's declaration that the file came off no account (or gp's,
@@ -403,12 +404,13 @@ def _flagged_name_pattern(name: str) -> re.Pattern[str]:
 
 def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> list[str]:
     """One problem per name to check (:attr:`Sidecar.names_to_check`) found in the
-    fixture's body. A schema 3 sidecar names the flagged names whose value the
-    capture held, or whose value gp did not know in full; a flagged name whose
-    value the capture did not hold cannot have been copied into a fixture derived
-    from it, so an honest ``"id": 7`` key passes when a recording sent a cookie
-    named ``id``. A schema 1 or 2 sidecar records no such list, so every flagged name is
-    looked for, as before, and the problem says how to regenerate it.
+    fixture's body. A schema 3 sidecar names every flagged token name, and each
+    flagged cookie name whose value the capture held or whose value gp did not
+    know in full; a cookie name whose value the capture did not hold cannot have
+    been copied into a fixture derived from it, so an honest ``"id": 7`` key
+    passes when a recording sent a cookie named ``id``. A schema 1 or 2 sidecar
+    records no such list, so every flagged name is looked for, as before, and the
+    problem says how to regenerate it.
 
     Found as a whole name (:func:`_flagged_name_pattern`), in the body as written
     or in any of its decoded forms
@@ -432,14 +434,14 @@ def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> lis
     if sidecar.checked_names is None:
         regenerate = (
             " Or regenerate the sidecar with gp observe fixtures (sidecar schema 3), "
-            "which looks only for the names whose value the capture held."
+            "which looks for a flagged cookie name only where the capture held its value."
         )
         source = "a cookie or token name the capture's digest recorded"
     else:
         regenerate = ""
         source = (
-            "a cookie or token name whose value the capture held, or whose value "
-            "the recording did not keep"
+            "a token name, or a cookie name whose value the capture held or whose "
+            "value the recording did not keep"
         )
     for name in sidecar.names_to_check:
         if not name:

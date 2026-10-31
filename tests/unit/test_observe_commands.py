@@ -1221,18 +1221,18 @@ class TestPlainWordCookies:
             sidecar = json.loads((tree / name).read_text())
             assert sidecar["flagged_names"] == ["csrf-token", "csrftoken", "myshop_session"]
 
-    def test_gps_sidecars_and_honest_fixtures_pass_and_a_token_the_page_carries_fails(
+    def test_gps_sidecars_and_honest_fixtures_pass_and_a_token_name_still_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The session cookie's value is in neither capture, so its name in a
-        fixture is no evidence of a leak and passes (#313); the page held the
-        csrf-token meta tag's value, so that name is still looked for in the page's
-        fixture."""
+        fixture is no evidence of a leak and passes (#313); the csrf-token meta
+        tag is a token, not a cookie, so its name is looked for in every fixture
+        as in 1.32.x."""
         tree = self._fixtures(tmp_path, monkeypatch)
         page_meta = json.loads((tree / "get_search.html.meta.json").read_text())
         api_meta = json.loads((tree / "get_api_search.json.meta.json").read_text())
         assert page_meta["checked_names"] == ["csrf-token"]
-        assert api_meta["checked_names"] == []
+        assert api_meta["checked_names"] == ["csrf-token"]
         page = tree / "get_search.html"
         page.write_text(
             "<html><body><form><label>Enter text to search; the context is kept.</label>"
@@ -1256,10 +1256,12 @@ class TestPlainWordCookies:
         (problem,) = check_fixtures_tree(tree).problems
         assert "'csrf-token'" in problem
         assert "whose value the capture held" in problem
-        # The csrf-token name in the API fixture: that capture held no token value.
+        # The csrf-token name in the API fixture, whose capture held no token
+        # value: a token name is looked for wherever it is.
         page.write_text("<p>Searching.</p>")
         api.write_text(json.dumps({"query": row, "csrf-token": "invented"}))
-        assert check_fixtures_tree(tree).problems == ()
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "'csrf-token'" in problem
 
     @staticmethod
     def _django_style_sidecar(
@@ -1523,40 +1525,100 @@ class TestFlaggedNamesAreJudgedByTheirValues:
         (meta,) = out_dir.glob("*.meta.json")
         assert json.loads(meta.read_text())["checked_names"] == ["myshop_session"]
 
-    def test_a_token_value_only_on_the_page_source_keeps_the_name_checked(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A HAR page carries one csrf-token value, and the run's page-source.html a
-        rotated one the captured body echoes: the capture held a recorded value,
-        so a fixture keeping that value under the name fails."""
-        old, new = "OldTok9Qv2Rt7Wm4Zb8Nc6", "NewTok3Lp9Qv2Rt7Wm4Zb8"
-        observe_base = tmp_path / "observe"
-        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+    @staticmethod
+    def _token_run(run_dir: Path, source: str, old: str, new: str) -> tuple[str, list[dict]]:
+        """The flagged token name and the HAR entries of a run where the token's
+        value *new* is held only by *source*, a place the recording keeps it outside
+        any page the HAR's HTML responses show; files go into *run_dir*."""
         page = _entry(
             "GET",
             "https://myshop.example.com/account",
             content_type="text/html",
             body=f'<html><head><meta name="csrf-token" content="{old}"></head></html>',
         )
-        api = _entry(
-            "GET", "https://myshop.example.com/orders/1001", body=json.dumps({"csrf-token": new})
-        )
-        run_dir = _write_run(observe_base, "myshop", "run-1", [page, api])
-        (run_dir / "page-source.html").write_text(
-            f'<html><head><meta name="csrf-token" content="{new}"></head></html>'
-        )
+        if source == "page-source":
+            (run_dir / "page-source.html").write_text(f'<meta name="csrf-token" content="{new}">')
+            return "csrf-token", [page]
+        if source == "dom-snapshot":
+            (run_dir / "snapshots").mkdir()
+            (run_dir / "snapshots" / "1.html").write_text(
+                f'<meta name="csrf-token" content="{new}">'
+            )
+            post = _entry("POST", "https://myshop.example.com/account")
+            post["request"]["_domSnapshot"] = "snapshots/1.html"
+            post["request"]["_domSnapshotUrl"] = "https://myshop.example.com/account"
+            return "csrf-token", [page, post]
+        if source == "request-body":
+            # One page shows the input empty, and the form posts a value no page shows.
+            hidden = '<form><input type="hidden" name="csrfmiddlewaretoken" value="{}"></form>'
+            login = _entry(
+                "GET",
+                "https://myshop.example.com/login",
+                content_type="text/html",
+                body=hidden.format(old),
+            )
+            account = _entry(
+                "GET",
+                "https://myshop.example.com/account",
+                content_type="text/html",
+                body=hidden.format(""),
+            )
+            post = _entry("POST", "https://myshop.example.com/account")
+            post["request"]["postData"] = {
+                "mimeType": "application/x-www-form-urlencoded",
+                "text": f"csrfmiddlewaretoken={new}&n=2",
+            }
+            return "csrfmiddlewaretoken", [login, account, post]
+        api = _entry("POST", "https://myshop.example.com/api/cart")
+        api["request"]["headers"] = [{"name": "X-CSRF-Token", "value": old}]
+        api["response"]["headers"].append({"name": "X-CSRF-Token", "value": new})
+        return "X-CSRF-Token", [api]
+
+    @pytest.mark.parametrize(
+        "source", ["page-source", "dom-snapshot", "request-body", "response-header"]
+    )
+    def test_a_token_name_stays_checked_wherever_its_value_came_from(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+    ) -> None:
+        """A token's value can come from a place a reader of the recording does not
+        read, so a token name is looked for in every fixture, as in 1.32.x, even
+        when the capture held none of its values: a fixture keeping a value only
+        that place held under the name fails the suite, and ``fixture-leaks.py
+        --har`` reports it too."""
+        old, new = "OldTok9Qv2Rt7Wm4Zb8Nc6", "NewTok3Lp9Qv2Rt7Wm4Zb8"
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        name, entries = self._token_run(run_dir, source, old, new)
+        order = _entry("GET", "https://myshop.example.com/orders/1001", body='{"n": 1}')
+        har = run_dir / "network.har"
+        har.write_text(json.dumps({"log": {"version": "1.2", "entries": [*entries, order]}}))
         out_dir = tmp_path / "captures"
-        assert _invoke_fixtures(out_dir).exit_code == 0
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
         (meta,) = out_dir.glob("*.meta.json")
-        assert json.loads(meta.read_text())["checked_names"] == ["csrf-token"]
+        sidecar = json.loads(meta.read_text())
+        assert name in sidecar["flagged_names"]
+        assert sidecar["checked_names"] == [name]
         tree = tmp_path / "fixtures"
         tree.mkdir()
         (tree / meta.name).write_text(meta.read_text())
-        (tree / meta.name.removesuffix(".meta.json")).write_text(
-            json.dumps({"csrf-token": new[:-1] + "9"})
-        )
+        fixture = tree / meta.name.removesuffix(".meta.json")
+        fixture.write_text(json.dumps({name: new, "n": 2}))
         (problem,) = check_fixtures_tree(tree).problems
-        assert "contains the flagged name 'csrf-token'" in problem
+        assert f"contains the flagged name {name!r}" in problem
+        capture = out_dir / fixture.name
+        script = REPO_ROOT / "skills" / "graft" / "scripts" / "fixture-leaks.py"
+        found = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-I", str(script), str(capture), str(fixture), "--har", str(har)],
+            capture_output=True,
+            text=True,
+        )
+        assert f"the recorded value of flagged {name!r} is still in the fixture (line 1)" in (
+            found.stdout
+        )
+        assert new not in found.stdout
 
     def test_a_quoted_cookie_value_the_body_holds_bare_keeps_the_name_checked(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

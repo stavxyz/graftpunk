@@ -48,7 +48,7 @@ from graftpunk.har.digest import (
     post_every_value,
     redacted_names_of,
 )
-from graftpunk.har.documents import LoginForm, token_values
+from graftpunk.har.documents import LoginForm
 from graftpunk.har.parser import LoginInteraction, parse_har_file
 from graftpunk.har.paths import reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
@@ -4807,30 +4807,73 @@ class TestFlaggedValuesOf:
         entries = parse_har_file(har).entries
         assert tuple(flagged_values_of(result, entries)) == flagged_names_of(result, entries)
 
-    def test_a_meta_token_carries_the_content_the_page_held(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("name", "body", "request_headers"),
+        [
+            ("csrf-token", '<meta name="csrf-token" content="Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb">', {}),
+            (
+                "authenticity_token",
+                '<form><input type="hidden" name="authenticity_token" value="Mq8Wz2Lp"></form>',
+                {},
+            ),
+            ("x-csrf-token", "{}", {"x-csrf-token": "Hd5Ks0Gf2Lq8"}),
+        ],
+        ids=["meta", "hidden-input", "header"],
+    )
+    def test_a_token_that_is_not_a_cookie_is_never_known(
+        self, tmp_path: Path, name: str, body: str, request_headers: dict[str, str]
+    ) -> None:
+        """A meta, hidden-input, or header token's value can come from a source the
+        recording does not hold in full (a page a script changed, a request body, a
+        response header), so its name stays checked as in 1.32.x, even when every
+        page and header the HAR holds shows a value."""
+        entry = _entry(
+            "POST",
+            "https://myshop.example.com/account",
+            content_type="text/html",
+            body=body,
+            request_headers=request_headers,
+        )
+        assert self._values(tmp_path, [entry])[name] is None
+
+    def test_a_cookie_named_as_a_hidden_input_token_too_is_not_known(self, tmp_path: Path) -> None:
+        """Django's csrftoken cookie with a hidden input of the same name: the
+        input's value can differ from every cookie value the HAR holds."""
         entry = _entry(
             "GET",
             "https://myshop.example.com/account",
             content_type="text/html",
-            body=(
-                '<meta name="csrf-token" content="Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb">'
-                '<form><input type="hidden" name="authenticity_token" value="Mq8&amp;Wz2">'
-                "</form>"
-            ),
+            body='<form><input type="hidden" name="csrftoken" value="Hk4Rt8Wz3Ny6"></form>',
+            request_headers={"Cookie": "csrftoken=Hk4Rt8Wz3Ny6"},
         )
-        values = self._values(tmp_path, [entry])
-        assert values["csrf-token"] == frozenset({"Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb"})
-        assert values["authenticity_token"] == frozenset({"Mq8&Wz2"})
+        assert self._values(tmp_path, [entry]) == {"csrftoken": None}
 
-    def test_a_header_token_carries_the_header_values_in_any_case(self, tmp_path: Path) -> None:
-        entries = [
-            _entry(
-                "POST",
-                "https://myshop.example.com/api/cart",
-                request_headers={"x-csrf-token": "Hd5Ks0Gf2Lq8"},
-            )
-        ]
-        assert self._values(tmp_path, entries)["x-csrf-token"] == frozenset({"Hd5Ks0Gf2Lq8"})
+    def test_a_cookie_token_candidate_carries_its_cookie_values(self, tmp_path: Path) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"Cookie": "csrftoken=Hk4Rt8Wz3Ny6"},
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert [(t.kind, t.name) for t in result.tokens] == [("cookie", "csrftoken")]
+        values = flagged_values_of(result, parse_har_file(har).entries)
+        assert values == {"csrftoken": frozenset({"Hk4Rt8Wz3Ny6"})}
+
+    def test_a_cookie_token_candidate_with_no_value_in_the_entries_given_is_not_known(
+        self, tmp_path: Path
+    ) -> None:
+        """A cookie the digest found as a token candidate in a request it sent: with
+        no entries passed in, no value of it is seen, and the name carries no
+        cookie reason that would say so."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"Cookie": "csrftoken=Hk4Rt8Wz3Ny6"},
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [entry])))
+        assert flagged_reasons_of(result) == {"csrftoken": ("token_candidate",)}
+        assert flagged_values_of(result) == {"csrftoken": None}
 
     def test_a_cookie_whose_value_was_not_kept_is_not_known(self, tmp_path: Path) -> None:
         entry = _entry("GET", "https://myshop.example.com/api/orders")
@@ -4851,125 +4894,6 @@ class TestFlaggedValuesOf:
         entry = _entry("GET", "https://myshop.example.com/api/orders")
         entry["request"]["cookies"] = [{"name": "sessionid", "value": ""}]
         assert self._values(tmp_path, [entry]) == {"sessionid": frozenset()}
-
-    def test_without_entries_no_value_is_known(self, tmp_path: Path) -> None:
-        entry = _entry(
-            "GET",
-            "https://myshop.example.com/account",
-            content_type="text/html",
-            body='<meta name="csrf-token" content="Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb">',
-        )
-        har = _write_har(tmp_path, [entry])
-        assert flagged_values_of(digest(DigestSource.from_har(har))) == {"csrf-token": None}
-
-    def test_a_meta_token_carries_the_page_sources_value_too(self, tmp_path: Path) -> None:
-        """A single-page app rotated its token after the last HAR page: the run's
-        page-source.html holds the new value, and a capture holding it keeps the
-        name checked."""
-        page = _entry(
-            "GET",
-            "https://myshop.example.com/account",
-            content_type="text/html",
-            body='<meta name="csrf-token" content="OldTok9Qv2Rt7Wm4Zb8Nc6">',
-        )
-        har = _write_har(tmp_path, [page])
-        source = tmp_path / "page-source.html"
-        source.write_text('<meta name="csrf-token" content="NewTok3Lp9Qv2Rt7Wm4Zb8">')
-        result = digest(DigestSource(har_path=har, page_source=source))
-        values = flagged_values_of(result, parse_har_file(har).entries)
-        assert values["csrf-token"] == frozenset(
-            {"OldTok9Qv2Rt7Wm4Zb8Nc6", "NewTok3Lp9Qv2Rt7Wm4Zb8"}
-        )
-
-    def test_a_meta_token_found_on_a_page_not_read_is_not_known(self, tmp_path: Path) -> None:
-        """Two pages carry the token and only one is passed in: the other page's
-        value could not be compared."""
-        pages = [
-            _entry(
-                "GET",
-                f"https://myshop.example.com/{path}",
-                content_type="text/html",
-                body=f'<meta name="csrf-token" content="{value}">',
-            )
-            for path, value in (("account", "Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb"), ("cart", "Zr5Tn8Wq3Lk6Pd"))
-        ]
-        har = _write_har(tmp_path, pages)
-        result = digest(DigestSource.from_har(har))
-        entries = parse_har_file(har).entries
-        assert flagged_values_of(result, entries)["csrf-token"] == frozenset(
-            {"Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb", "Zr5Tn8Wq3Lk6Pd"}
-        )
-        assert flagged_values_of(result, entries[:1]) == {"csrf-token": None}
-
-    def test_a_page_kept_in_a_body_file_is_read(self, tmp_path: Path) -> None:
-        page = _entry("GET", "https://myshop.example.com/account", content_type="text/html")
-        del page["response"]["content"]["text"]
-        page["response"]["content"]["_bodyFile"] = "bodies/1.html"
-        (tmp_path / "bodies").mkdir()
-        (tmp_path / "bodies" / "1.html").write_text(
-            '<form><input type="hidden" name="csrfmiddlewaretoken" value="Hk4Rt8Wz3Ny6"></form>'
-        )
-        values = self._values(tmp_path, [page])
-        assert values["csrfmiddlewaretoken"] == frozenset({"Hk4Rt8Wz3Ny6"})
-
-    def test_a_meta_like_string_in_a_body_that_is_not_html_is_not_a_page_value(
-        self, tmp_path: Path
-    ) -> None:
-        """The same URL answered once with its page and once with text (content
-        negotiation); only the response whose Content-Type says HTML is a page."""
-        page = _entry(
-            "GET",
-            "https://myshop.example.com/account",
-            content_type="text/html",
-            body='<meta name="csrf-token" content="Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb">',
-        )
-        text = _entry(
-            "GET",
-            "https://myshop.example.com/account",
-            content_type="text/plain",
-            body='<meta name="csrf-token" content="NotThePage9">',
-        )
-        values = self._values(tmp_path, [page, text])
-        assert values["csrf-token"] == frozenset({"Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb"})
-
-    def test_a_hidden_input_token_with_no_value_on_any_page_is_not_known(
-        self, tmp_path: Path
-    ) -> None:
-        page = _entry(
-            "GET",
-            "https://myshop.example.com/account",
-            content_type="text/html",
-            body='<form><input type="hidden" name="csrfmiddlewaretoken" value=""></form>',
-        )
-        assert self._values(tmp_path, [page]) == {"csrfmiddlewaretoken": None}
-
-    def test_a_header_tokens_values_are_read_in_every_case_it_was_sent(
-        self, tmp_path: Path
-    ) -> None:
-        """HTTP/2 lowercases header names, so one recording can send the token as
-        X-CSRF-Token and as x-csrf-token."""
-        entries = [
-            _entry(
-                "POST",
-                "https://myshop.example.com/api/cart",
-                request_headers={"X-CSRF-Token": "Hd5Ks0Gf2Lq8"},
-            ),
-            _entry(
-                "POST",
-                "https://myshop.example.com/api/cart",
-                request_headers={"x-csrf-token": "Wq3Lk6Pd9Xc2"},
-            ),
-        ]
-        values = self._values(tmp_path, entries)
-        assert values["X-CSRF-Token"] == frozenset({"Hd5Ks0Gf2Lq8", "Wq3Lk6Pd9Xc2"})
-
-    def test_a_header_token_sent_only_empty_is_not_known(self, tmp_path: Path) -> None:
-        entries = [
-            _entry(
-                "POST", "https://myshop.example.com/api/cart", request_headers={"X-CSRF-Token": ""}
-            )
-        ]
-        assert self._values(tmp_path, entries) == {"X-CSRF-Token": None}
 
     def test_a_cookie_seen_with_a_value_and_also_set_by_name_only_is_not_known(
         self, tmp_path: Path
@@ -5013,19 +4937,49 @@ class TestFlaggedValuesOf:
             {"FromArray66", "FromHeader77", "SetByHeader88"}
         )
 
-
-class TestTokenValues:
-    def test_meta_content_and_hidden_input_values_by_name(self) -> None:
-        html = (
-            '<meta name="csrf-token" content="a&amp;b"><meta name="viewport">'
-            '<form><input type="hidden" name="t" value="x1"><input type="HIDDEN" name="t" '
-            'value="x2"><input type="text" name="q" value="shoes">'
-            '<input type="hidden" name="empty" value=""></form>'
+    def test_a_cookie_the_entries_given_show_only_in_a_header_is_not_known(
+        self, tmp_path: Path
+    ) -> None:
+        """A response the caller leaves out set sessionid; the request passed in
+        sends it in its Cookie header only, its cookie array leaving it out. The
+        reasons say no_value_seen, and the value the left-out response set may
+        differ, so the name stays checked."""
+        login = _entry("POST", "https://myshop.example.com/login")
+        login["response"]["cookies"] = [{"name": "sessionid", "value": "SetAtLogin55"}]
+        orders = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"Cookie": "lot=12; sessionid=FromHeader77"},
         )
-        assert token_values(html) == {
-            "csrf-token": frozenset({"a&b"}),
-            "t": frozenset({"x1", "x2"}),
-        }
+        orders["request"]["cookies"] = [{"name": "lot", "value": "12"}]
+        har = _write_har(tmp_path, [login, orders])
+        result = digest(DigestSource.from_har(har))
+        entries = parse_har_file(har).entries[1:]
+        assert "no_value_seen" in flagged_reasons_of(result, entries)["sessionid"]
+        assert flagged_values_of(result, entries)["sessionid"] is None
+
+    @pytest.mark.parametrize("separator", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+    def test_a_lower_case_set_cookie_header_of_several_lines_is_read_line_by_line(
+        self, tmp_path: Path, separator: str
+    ) -> None:
+        """Chromium joins a response's Set-Cookie headers with line breaks, and
+        HTTP/2 lowercases the name; the value on the second line, written with a
+        space after its '=', is a recorded value as it is sent."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            response_headers={
+                "set-cookie": f"lot=12; Path=/{separator} sessionid= SetLater88 ; HttpOnly"
+            },
+        )
+        entry["request"]["cookies"] = [{"name": "sessionid", "value": "FromArray66"}]
+        entry["response"]["cookies"] = [
+            {"name": "lot", "value": "12"},
+            {"name": "sessionid", "value": "FromArray66"},
+        ]
+        assert self._values(tmp_path, [entry])["sessionid"] == frozenset(
+            {"FromArray66", "SetLater88"}
+        )
 
 
 class TestEveryNamePositionGoesThroughTheIdRule:

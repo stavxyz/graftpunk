@@ -12,7 +12,6 @@ from types import ModuleType
 import pytest
 
 from graftpunk.har.digest import DigestSource, digest, flagged_values_of
-from graftpunk.har.documents import token_values
 from graftpunk.har.parser import parse_har_file
 from graftpunk.testing.decoding import combined_forms, decoded_forms, value_forms
 from tests.unit.guide_harness import REPO_ROOT
@@ -50,24 +49,6 @@ def test_the_skill_script_reads_a_fixture_in_the_same_forms(text: str) -> None:
 
 def test_percent_decoding_stops_after_three_rounds() -> None:
     assert decoded_forms("a%25252541")[2:] == ["a%252541", "a%2541", "a%41"]
-
-
-def test_the_skill_script_reads_token_values_as_the_digest_does() -> None:
-    """``fixture-leaks.py --har`` reads a meta or hidden-input token's value as
-    ``gp observe fixtures`` does (graftpunk.har.documents.token_values)."""
-    html = (
-        '<meta name="csrf-token" content="a&amp;b"><meta name="viewport">'
-        '<input type="HIDDEN" name="t" value="x1"><input type="text" name="q" value="s">'
-        '<input type="hidden" name="t" value="x2"><input type="hidden" name="e" value="">'
-    )
-    parser = _load_script()._TokenValues()
-    parser.feed(html)
-    parser.close()
-    script: dict[str, set[str]] = {}
-    for name, value in parser.pairs:
-        if name and value:
-            script.setdefault(name, set()).add(value)
-    assert {name: frozenset(found) for name, found in script.items()} == token_values(html)
 
 
 @pytest.mark.parametrize(
@@ -113,8 +94,9 @@ def test_the_skill_script_reads_every_value_gp_observe_fixtures_reads(tmp_path: 
     """``fixture-leaks.py --har`` reads at least the values the package compares
     with a capture, on a run with a body kept in bodies/, a page source, the
     Content-Type header in lower case, a Cookie header, a Set-Cookie header, and a
-    header token sent in two cases. The script cannot import graftpunk, so the two
-    readers are held together here."""
+    header token sent in two cases. The package knows a cookie's values only;
+    every token name stays checked. The script cannot import graftpunk, so the
+    two readers are held together here."""
     html = [{"name": "content-type", "value": "text/html"}]
     kept = _page(
         "https://myshop.example.com/account",
@@ -145,13 +127,20 @@ def test_the_skill_script_reads_every_value_gp_observe_fixtures_reads(tmp_path: 
     package = flagged_values_of(result, parse_har_file(har).entries)
     known = {name: values for name, values in package.items() if values is not None}
     assert known == {
-        "X-CSRF-Token": frozenset({"Hd5Ks0Gf2Lq8", "Wq3Lk6Pd9Xc2"}),
-        "csrf-token": frozenset({"OldTok9Qv2Rt7", "NewTok3Lp9"}),
-        "csrfmiddlewaretoken": frozenset({"Hk4Rt8Wz3Ny6"}),
         "id": frozenset({"Xk3Lp9Qv2Rt7"}),
         "sessionid": frozenset({"FromArray66", "FromHeader77", "SetByHeader88"}),
-        "x-csrf-token": frozenset({"Hd5Ks0Gf2Lq8", "Wq3Lk6Pd9Xc2"}),
     }
-    script = _load_script().recorded_values(json.loads(har.read_text()), set(known), tmp_path)
+    assert {name for name, values in package.items() if values is None} == {
+        "X-CSRF-Token",
+        "csrf-token",
+        "csrfmiddlewaretoken",
+        "x-csrf-token",
+    }
+    script = _load_script().recorded_values(json.loads(har.read_text()), set(package), tmp_path)
     for name, values in known.items():
         assert values <= script.get(name, set()), name
+    # The script reports on the token values too, though the suite never drops
+    # those names.
+    assert script["csrf-token"] == {"OldTok9Qv2Rt7", "NewTok3Lp9"}
+    assert script["csrfmiddlewaretoken"] == {"Hk4Rt8Wz3Ny6"}
+    assert script["X-CSRF-Token"] == {"Hd5Ks0Gf2Lq8", "Wq3Lk6Pd9Xc2"}

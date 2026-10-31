@@ -29,7 +29,6 @@ from graftpunk.har.documents import (
     form_action_targets,
     looks_like_new_password_name,
     looks_like_token_name,
-    token_values,
 )
 from graftpunk.har.inline_state import inline_json
 from graftpunk.har.login_signals import (
@@ -3568,38 +3567,28 @@ def _header_cookie_values(entry: HAREntry) -> Iterable[tuple[str, str]]:
                 yield cookie_name.strip(), cookie_value.strip()
 
 
-def _page_label(entry: HAREntry) -> str | None:
-    """The ``seen_on`` label the digest gives a token found in *entry*'s page: its
-    URL as :func:`digest` keeps it, or None when that URL cannot be read."""
-    try:
-        return _normal_url(bare_url(entry.request.url))
-    except ValueError:
-        return None
-
-
 def flagged_values_of(
     d: RunDigest, entries: Iterable[HAREntry] = ()
 ) -> dict[str, frozenset[str] | None]:
     """Each name :func:`flagged_reasons_of` returns, with every non-empty value
-    the recording holds for it, or None when they are not all known.
+    the recording holds for it when it is a cookie's name alone, or None.
 
-    A cookie's values are the ones :func:`_cookies_seen` reads from the HAR's
-    cookie arrays, sent and set, and the ones the ``Cookie`` and ``Set-Cookie``
-    headers of *entries* carry. A token candidate's are, by the kind the digest
-    found it as: a cookie's values for a cookie; the request header's values for
-    a header (any case); and for a meta tag or a hidden input, the ``content`` or
-    ``value`` that name held on each page the digest found it on
-    (:func:`graftpunk.har.documents.token_values`): an HTML response in *entries*,
-    a body the HAR keeps in a file included (the parser reads it in), and the
-    run's ``page-source.html`` (``d.source.page_source``).
+    Only a cookie's values are all in a recording: a browser sends every cookie
+    in a request's ``Cookie`` header and a response sets one in a ``Set-Cookie``
+    header, so a cookie a script set is in the next request that sends it, and
+    one never sent or set has no value seen. A cookie's values are the ones
+    :func:`_cookies_seen` reads from the HAR's cookie arrays, sent and set, and
+    the ones the ``Cookie`` and ``Set-Cookie`` headers of *entries* carry.
 
-    None, the values not all known, for a cookie the recording carried without a
-    value kept (``value_not_kept``) or with none seen (``no_value_seen``); for a
-    header token with no value in *entries*; and for a meta or hidden-input token
-    with no value on any page, or found on a page this did not read (one not in
-    *entries*, or a page source that cannot be read). A cookie a request only
-    ever sent empty, flagged by its name alone, is known to have held nothing: an
-    empty set.
+    None, the values not all known, for any name the digest found as a meta tag,
+    hidden input, or header token: such a value can come from a source the
+    recording does not hold in full (a page a script changed, a request body, a
+    response header), so the fixtures check looks for that name as it did before
+    sidecar schema 3. None too for a cookie the recording carried without a value
+    kept (``value_not_kept``) or with none seen (``no_value_seen``), and for a
+    cookie token candidate *entries* show neither a value nor an empty send of.
+    A cookie a request only ever sent empty, flagged by its name alone, is known
+    to have held nothing: an empty set.
 
     ``gp observe fixtures`` reads this to record which flagged names a capture
     holds the value of (the sidecar's ``checked_names``). The values never leave
@@ -3607,65 +3596,19 @@ def flagged_values_of(
     entries = tuple(entries)
     reasons = flagged_reasons_of(d, entries)
     seen = _cookies_seen(entries)
-    cookies: dict[str, set[str]] = {name: set(found) for name, found in seen.values.items()}
-    tokens: dict[str, list[TokenCandidate]] = {}
-    for token in d.tokens:
-        tokens.setdefault(token.name, []).append(token)
-    headers: dict[str, set[str]] = {}
-    pages: dict[str, dict[str, set[str]]] = {}
+    values: dict[str, set[str]] = {name: set(found) for name, found in seen.values.items()}
     for entry in entries:
         for name, value in _header_cookie_values(entry):
             if value:
-                cookies.setdefault(name, set()).add(value)
-        for name, value in entry.request.headers.items():
-            if value:
-                headers.setdefault(name.casefold(), set()).add(value)
-        body = entry.response.body
-        if not isinstance(body, str) or "html" not in (entry.response.content_type or "").lower():
-            continue
-        label = _page_label(entry)
-        if label is not None:
-            page = pages.setdefault(label, {})
-            for name, found in token_values(body).items():
-                page.setdefault(name, set()).update(found)
-    page_source = d.source.page_source
-    if page_source is not None:
-        try:
-            page_html = page_source.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            pass
-        else:
-            page = pages.setdefault(str(page_source), {})
-            for name, found in token_values(page_html).items():
-                page.setdefault(name, set()).update(found)
-
-    def cookie_values(name: str) -> frozenset[str] | None:
-        if name in seen.unseen or "no_value_seen" in reasons[name]:
-            return None
-        return frozenset(cookies.get(name, ()))
-
-    def document_values(token: TokenCandidate) -> frozenset[str] | None:
-        found: set[str] = set()
-        for label in token.seen_on:
-            if label not in pages:
-                return None
-            found.update(pages[label].get(token.name, ()))
-        return frozenset(found) or None
-
+                values.setdefault(name, set()).add(value)
+    not_cookies = {token.name for token in d.tokens if token.kind != "cookie"}
     result: dict[str, frozenset[str] | None] = {}
     for name, why in reasons.items():
-        sources: list[frozenset[str] | None] = []
-        if set(why) - {"token_candidate", "sent_only"}:
-            sources.append(cookie_values(name))
-        for token in tokens.get(name, []) if "token_candidate" in why else ():
-            if token.kind == "cookie":
-                sources.append(cookie_values(name))
-            elif token.kind == "header":
-                sources.append(frozenset(headers.get(name.casefold(), ())) or None)
-            else:
-                sources.append(document_values(token))
-        if not sources or any(found is None for found in sources):
-            result[name] = None
-        else:
-            result[name] = frozenset().union(*(found for found in sources if found is not None))
+        known = (
+            name not in not_cookies
+            and name not in seen.unseen
+            and "no_value_seen" not in why
+            and (name in values or name in seen.sent_empty)
+        )
+        result[name] = frozenset(values.get(name, ())) if known else None
     return result

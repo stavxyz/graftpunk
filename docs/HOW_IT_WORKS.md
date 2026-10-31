@@ -1272,19 +1272,26 @@ and 1.1% of 8 capitals and digits. `FixtureSession` reads the sidecar through
 `graftpunk.testing.sidecar` for status and content type, so a fixture copied
 from a capture keeps its recorded status.
 
-`checked_names` is how the fixtures check judges a flagged name by its value
-without the value (#313). The check runs in the plugin's suite, in CI and on a
-fresh checkout, where neither the recording nor any key outside the repository
-exists, so it can only use names. `gp observe fixtures` holds the recording, so
-it decides per capture which flagged names the check still needs to look for:
-`graftpunk.har.digest.flagged_values_of` reads every non-empty value the
-recording holds for each flagged name: a cookie's values from the HAR's cookie
-arrays and from its `Cookie` and `Set-Cookie` headers, sent and set; a header
-token's request header values in any case; and a meta or hidden-input token's
-`content` or `value` on every page the digest found it on, which is each HTML
-response in the HAR (a body the HAR keeps in a file under `bodies/` included,
-since the parser reads it in) and the run's `page-source.html`.
-`graftpunk.devtools.captures.checked_names_of` keeps a name when one of its
+`checked_names` is how the fixtures check judges a flagged cookie name by its
+value without the value (#313). The check runs in the plugin's suite, in CI and
+on a fresh checkout, where neither the recording nor any key outside the
+repository exists, so it can only use names. `gp observe fixtures` holds the
+recording, so it decides per capture which flagged names the check still needs
+to look for. The change affects cookie names only. Every value a cookie held is
+in the recording: a browser sends a cookie in a request's `Cookie` header and a
+response sets one in a `Set-Cookie` header, so a cookie a script set is in the
+next request that sends it, and a cookie never sent or set has no value seen and
+stays checked. A token's value has no such guarantee: a meta tag or hidden input
+a script changed, a form field a script filled and posted, or a header token a
+response rotated can hold a value no page or request header in the HAR shows.
+So every flagged token name (a meta tag, a hidden input, or a header the digest
+found as a token, and a cookie of the same name as one of those) is always in
+`checked_names`, and is looked for exactly as in 1.32.x.
+
+For a cookie name, `graftpunk.har.digest.flagged_values_of` reads the cookie's
+non-empty values from the HAR's cookie arrays and from its `Cookie` and
+`Set-Cookie` headers, sent and set, and
+`graftpunk.devtools.captures.checked_names_of` keeps the name when one of those
 values is in the capture's body, case-sensitively. A value is looked for as
 recorded, percent-decoded (with `+` read both ways), and without the double
 quotes a cookie value may carry (`graftpunk.testing.decoding.value_forms`), in
@@ -1292,36 +1299,42 @@ the body as written, in any form the check reads a fixture in
 (`graftpunk.testing.decoding.decoded_forms`: backslash escapes, HTML character
 references, up to three rounds of percent-decoding), and in each of those
 decoded again (`combined_forms`), so a value JSON-escaped inside an HTML
-attribute counts. It also keeps every name whose values are not all known: a
-cookie the recording carried without a value kept or with none seen, a header
-token with no value, and a meta or hidden-input token with no value on any page
-or found on a page that could not be read. A name whose value the body did not
-hold cannot have been copied into a fixture derived from that body, so the check
-does not look for it, and an honest `"id": 7` key passes when a recording made
-with a cached session sent a cookie named `id`. The values stay in memory; the
-sidecar holds names only, a subset of `flagged_names`, which are already
-committed. A one-character value that happens to be in the body keeps its name
-looked for, which is the check before schema 3, never less.
+attribute counts. It also keeps a cookie name whose values are not all known: a
+cookie the recording carried without a value kept, or with none seen in the
+cookie arrays. A cookie name whose value the body did not hold cannot have been
+copied into a fixture derived from that body, so the check does not look for
+it, and an honest `"id": 7` key passes when a recording made with a cached
+session sent a cookie named `id`. The values stay in memory; the sidecar holds
+names only, a subset of `flagged_names`, which are already committed. A
+one-character value that happens to be in the body keeps its name looked for,
+which is the check before schema 3, never less.
 
 This moves one catch out of CI. With a schema 3 sidecar, the suite fails a
-flagged name only where the recording's capture held its value, so a recorded
-value pasted into a fixture from anywhere else passes the suite, even under its
-flagged name: a fixture `{"id": 7, "myshop_session": "<the recorded session
-value>"}` derived from a capture that never held that value fails under a
-schema 2 sidecar and passes under a schema 3 one. A recorded value kept under a
-renamed key passed the name-only check before schema 3 too. The graft skill's
-`fixture-leaks.py ... --har HAR` catches both on the developer's machine: it
-reports every value of the capture's body left in a fixture, and every recorded
-value of a flagged name, from the same sources `gp observe fixtures` reads
-(cookies sent and set, `Cookie` and `Set-Cookie` headers, request headers, meta
-and hidden-input values in HTML responses, bodies in `bodies/`, and
-`page-source.html` beside the HAR), by line number only, never printing the
-value. The suite does not run that check, because a sidecar does not name the
-run it came from and the recording is not in the plugin's repository. What
-remains in CI is a body that held the value: there the check still fails on the
-name, as in `{"csrftoken": "<the cookie's value>"}` from an endpoint that hands
-a single-page app its token, or a page fixture that keeps the hidden input a
-parser selects on.
+flagged cookie name only where the recording's capture held one of the
+cookie's values, so a recorded cookie value pasted into a fixture from anywhere
+else passes the suite, even under its cookie's name: a fixture `{"id": 7,
+"myshop_session": "<the recorded session value>"}` derived from a capture that
+never held that value fails under a schema 2 sidecar and passes under a schema 3
+one. A recorded value kept under a renamed key passed the name-only check
+before schema 3 too. The graft skill's `fixture-leaks.py ... --har HAR` catches
+both on the developer's machine: it reports every value of the capture's body
+left in a fixture, and each value of a flagged name it finds in the recording
+(cookies sent and set, `Cookie` and `Set-Cookie` headers, request and response
+headers, fields a request body sends, meta and hidden-input values in HTML
+responses, in gp's DOM snapshots, and in `page-source.html` beside the HAR,
+bodies kept in files included), by line number only, never printing the value.
+It reports and never decides what the suite checks, so a source it reads that
+`gp observe fixtures` does not can only find more. The suite does not run that
+check, because a sidecar does not name the run it came from and the recording
+is not in the plugin's repository; #345 tracks doing it when the sidecar's own
+run is on disk. What remains in CI is every token name, and a cookie name whose
+value the body held, as in `{"csrftoken": "<the cookie's value>"}` from an
+endpoint that hands a single-page app its token.
+
+A body file (`_bodyFile`, `_postDataFile`, a DOM snapshot) or the run's
+`page-source.html` that resolves outside the HAR's directory, through `..` or a
+symlink, is not read, by the HAR parser, by the digest, or by `fixture-leaks.py`:
+gp's recorder writes every one inside the run.
 
 The options considered were a keyed digest of each value in the sidecar, with
 the key outside the repository, and this. A keyed digest needs the key in CI
@@ -1332,7 +1345,8 @@ salted hash of a short value is reversed by brute force, which is why
 `redacted_names` keeps none. A sidecar from schema 1 or 2 has no
 `checked_names`; the check looks for every flagged name in its fixture, as
 1.32.x did, and its problem line says that regenerating the sidecar with `gp
-observe fixtures` looks only for the names whose value the capture held. It is
+observe fixtures` looks for a flagged cookie name only where the capture held its
+value. It is
 not refused, since a plugin project floats to the newest graftpunk and a
 refusal would fail its suite on the first run after the upgrade with no change
 on its side.

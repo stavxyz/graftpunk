@@ -2230,9 +2230,9 @@ judged by the same rule as one a response sets. That is the state of every
 cookie in a recording made with a cached session, which reaches the browser
 before the recording starts, so analytics cookies and plain names such as `id`
 can be flagged too. That does not fail an honest fixture: the fixtures check
-looks for a flagged name only in a fixture whose capture held that name's value
-(`checked_names`, below), so an `"id": 7` key passes when the recording sent a
-cookie named `id` whose value the captured body does not hold. The sent
+looks for a flagged cookie name only in a fixture whose capture held that
+cookie's value (`checked_names`, below), so an `"id": 7` key passes when the
+recording sent a cookie named `id` whose value the captured body does not hold. The sent
 cookies are read from the HAR's `request.cookies`, or from its
 `Cookie` headers when that array is missing or empty; a recording that kept
 neither (nodriver 0.48.1 delivered no request `Cookie` header on a measured
@@ -2318,30 +2318,34 @@ regenerate the sidecar, or rename the name in the fixture where its structure
 allows.
 
 `checked_names` lists the flagged names the fixtures check looks for in this
-fixture: each one whose recorded value the captured body holds (the value as
-recorded, percent-decoded, or without the double quotes a cookie value may
-carry, found in the body as written or with its backslash escapes, HTML
-character references, or percent-encoding decoded, alone or two together), and
-each one whose value the recording did not keep or show, which `gp observe
-fixtures` cannot compare. The recorded values are every one the run holds: the
-cookie arrays and the `Cookie` and `Set-Cookie` headers, request headers, and
-meta and hidden-input values on every HTML page, bodies kept in `bodies/` and
-the run's `page-source.html` included. A
-flagged name whose value the body does not hold cannot have been copied into a
-fixture derived from it, so the check does not look for it. The values are
-compared in memory and never written; the list is names only. Where the body
-holds the value (an endpoint that returns a token, a page whose hidden input
-carries one), the check still fails on the name, since it cannot tell an
-invented value from the recorded one; rename the key where the plugin does not
-read it. A sidecar written before 1.33.0 has no `checked_names` (schema 2 or 1),
-and the check looks for every flagged name in its fixture, as before;
-regenerate it with `gp observe fixtures` to have only the names whose value the
-capture held looked for. That also means the suite no longer catches a recorded
-value pasted into a fixture from anywhere other than its capture, even under
-its flagged name: `{"id": 7, "myshop_session": "<the recorded session value>"}`
-passes a schema 3 sidecar whose capture never held that value. The graft
-skill's `fixture-leaks.py` with `--har` and the run's HAR catches it on your
-machine, by line number, without printing the value.
+fixture. It changes nothing for a token name: every flagged token name (a meta
+tag, a hidden input, or a header the digest found as a token) is always in it,
+and is checked as before, since a token's value can come from a place the
+recording does not hold in full, such as a field a script filled. A flagged
+cookie name is in it when one of the cookie's recorded values is in the captured
+body (the value as recorded, percent-decoded, or without the double quotes a
+cookie value may carry, found in the body as written or with its backslash
+escapes, HTML character references, or percent-encoding decoded, alone or two
+together), or when the recording did not keep or show the cookie's value, which
+`gp observe fixtures` cannot compare. A cookie's recorded values are the HAR's
+cookie arrays and its `Cookie` and `Set-Cookie` headers, which hold every value
+a cookie was sent or set with. A cookie name whose value the body does not hold
+cannot have been copied into a fixture derived from it, so the check does not
+look for it. The values are compared in memory and never written; the list is
+names only. Where the body holds the value (an endpoint that returns the
+`csrftoken` cookie's value), the check still fails on the name, since it cannot
+tell an invented value from the recorded one; rename the key where the plugin
+does not read it. A sidecar written before 1.33.0 has no `checked_names`
+(schema 2 or 1), and the check looks for every flagged name in its fixture, as
+before; regenerate it with `gp observe fixtures` to have a cookie name looked
+for only where the capture held its value. That also means the suite no longer
+catches a recorded cookie value pasted into a fixture from anywhere other than
+its capture, even under its cookie's name: `{"id": 7, "myshop_session": "<the
+recorded session value>"}` passes a schema 3 sidecar whose capture never held
+that value. The graft skill's `fixture-leaks.py` with `--har` and the run's HAR
+catches it on your machine, by line number, without printing the value
+([#345](https://github.com/stavxyz/graftpunk/issues/345) tracks having the suite
+do that check when the sidecar's own run is on disk).
 
 `flagged_reasons` says why each flagged name is flagged, and the suite's
 problem line repeats it, so you can tell a form-state cookie from a session
@@ -2390,8 +2394,9 @@ is kept: read both lists before you commit a sidecar.
 }
 ```
 
-Here the captured body held the token's value and not the session's, so only
-`X-Csrf-Token` is looked for in the fixture.
+Here `X-Csrf-Token`, a token name, is looked for in the fixture, and
+`myshop_session` is not, since the captured body did not hold the session
+cookie's value.
 
 Without a sidecar, `FixtureSession` answers with status 200 and guesses the
 content type from the extension, but the generated suite's fixtures check fails
@@ -2463,7 +2468,8 @@ The generated suite holds you to part of that. Its `tests/conftest.py` wires in
 on every run (a `.DS_Store` or an editor swap file is skipped, like `.gitkeep`)
 and fails when a fixture has no sidecar, when a fixture is still byte for byte
 its capture, when a name in the sidecar's `checked_names` turns up in the
-fixture (any flagged name, for a sidecar written before 1.33.0), when a
+fixture (every token name, and a cookie name whose value the capture held; any
+flagged name, for a sidecar written before 1.33.0), when a
 sidecar is outside its declared format, or when a fixture, or a directory under
 `tests/fixtures/`, cannot be read. A checked name is matched case-insensitively
 and only as a whole name. Letters, digits, `_` and `-` continue a name. The rest

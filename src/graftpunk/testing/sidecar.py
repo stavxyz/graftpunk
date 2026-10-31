@@ -12,12 +12,13 @@ recorded, never a value. From schema 2, ``flagged_reasons`` says why each of
 those names is flagged, in the words of :data:`FLAGGED_REASONS`, so an author or
 a reviewer can tell a form-state cookie flagged by its name from a session
 value without the recording. From schema 3, ``checked_names`` is the part of
-``flagged_names`` the fixtures check looks for in this fixture: each name whose
-recorded value this capture's body held, in any form the check reads, and each
-name whose values ``gp observe fixtures`` did not know in full
-(``graftpunk.har.digest.flagged_values_of``). A flagged name whose value the body
-did not hold cannot have been copied into a fixture derived from it, so its name
-alone is not looked for. A name that holds an account value
+``flagged_names`` the fixtures check looks for in this fixture: every token name,
+each cookie name whose recorded value this capture's body held, in any form the
+check reads, and each cookie name whose values ``gp observe fixtures`` did not
+know in full (``graftpunk.har.digest.flagged_values_of``). Only a cookie's values
+are all in a recording, so only a cookie name can be left out: one whose value
+the body did not hold cannot have been copied into a fixture derived from it.
+A name that holds an account value
 (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``
 counts how many were left out. ``body_params`` is the request's body keys that read as
