@@ -35,6 +35,24 @@ GUIDE_TEXT = GUIDE.read_text(encoding="utf-8")
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 
+# CommonMark 0.31.2, section 2.1 "Characters and lines": a line ends at a line
+# feed, a carriage return, or the two together, and at nothing else.
+_LINE_ENDING_RE = re.compile(r"\r\n|\r|\n")
+
+
+def _lines(text: str) -> list[str]:
+    """The lines of *text*, split only where CommonMark ends a line.
+
+    ``str.splitlines`` also splits on a vertical tab, a form feed, the file, group,
+    and record separators, U+0085, U+2028, and U+2029, so one of those pasted into a document would shift every later
+    line number and could end a code span or a fence early. As with
+    ``splitlines``, a line ending at the very end adds no empty last line.
+    """
+    lines = _LINE_ENDING_RE.split(text)
+    if lines[-1] == "":
+        lines.pop()
+    return lines
+
 # CommonMark 0.31.2, section 4.5 "Fenced code blocks"
 # (https://spec.commonmark.org/0.31.2/#fenced-code-blocks).
 _FENCE_OPEN_RE = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
@@ -73,7 +91,7 @@ def fences(text: str) -> list[Fence]:
     one is found only when its lines start the way a top-level fence's would.
     """
     found: list[Fence] = []
-    lines = text.splitlines()
+    lines = _lines(text)
     index = 0
     while index < len(lines):
         opening = _FENCE_OPEN_RE.match(lines[index])
@@ -136,7 +154,7 @@ def code_spans(text: str) -> list[tuple[int, str]]:
     """
     fenced = _fenced_line_numbers(text)
     paragraphs: list[tuple[int, list[str]]] = []
-    for line_no, line in enumerate(text.splitlines(), start=1):
+    for line_no, line in enumerate(_lines(text), start=1):
         if line_no in fenced or not line.strip(" \t"):
             paragraphs.append((line_no + 1, []))
             continue
@@ -213,7 +231,7 @@ def gp_invocations(text: str) -> list[tuple[int, str]]:
     """
     found: list[tuple[int, str]] = []
     for start, body in blocks(text, "bash"):
-        for offset, raw in enumerate(body.splitlines(), start=1):
+        for offset, raw in enumerate(_lines(body), start=1):
             tokens = _split(raw)
             if tokens and tokens[0] == "gp":
                 found.append((start + offset, shlex.join(tokens)))
@@ -362,7 +380,7 @@ def outside_fences(text: str) -> str:
     """*text* without its fenced blocks, the fence lines included: its prose."""
     fenced = _fenced_line_numbers(text)
     return "\n".join(
-        line for line_no, line in enumerate(text.splitlines(), start=1) if line_no not in fenced
+        line for line_no, line in enumerate(_lines(text), start=1) if line_no not in fenced
     )
 
 
@@ -372,7 +390,7 @@ def section(text: str, heading: str) -> str:
     inside a fenced block is never a heading (the guide quotes a digest whose body
     has ``##`` lines)."""
     level = len(heading) - len(heading.lstrip("#"))
-    lines = text.splitlines()
+    lines = _lines(text)
     fenced = _fenced_line_numbers(text)
     start = lines.index(heading)
     end = next(
@@ -393,7 +411,7 @@ def slugs_of(path: Path) -> set[str]:
     content, not headings, and GitHub does not make anchors from them.
     """
     slugs: set[str] = set()
-    for line in outside_fences(path.read_text(encoding="utf-8")).splitlines():
+    for line in _lines(outside_fences(path.read_text(encoding="utf-8"))):
         heading = _HEADING_RE.match(line)
         if heading is not None:
             slugs.add(slug(heading.group(2)))

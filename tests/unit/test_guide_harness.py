@@ -98,6 +98,23 @@ def test_an_indented_fence_strips_its_indent_from_content() -> None:
     assert fence.lines == ("gp a", "gp b", "gp c")
 
 
+def test_a_form_feed_and_a_line_separator_do_not_end_a_line() -> None:
+    """CommonMark ends a line only at a line feed or carriage return; str.splitlines
+    would also split at these, moving later line numbers and ending spans early."""
+    for separator in ("\f", "\u2028"):
+        text = f"one `gp{separator}version` here\n`gp --help`\n"
+        assert code_spans(text) == [(1, f"gp{separator}version"), (2, "gp --help")]
+
+
+def test_carriage_returns_end_lines() -> None:
+    assert code_spans("`a`\r\n`b`\r`c`\n`d`") == [(1, "a"), (2, "b"), (3, "c"), (4, "d")]
+
+
+def test_a_form_feed_does_not_split_a_fence() -> None:
+    (fence,) = fences("```bash\ngp a\f```\n```\n`after`\n")
+    assert (fence.open, fence.close, fence.lines) == (1, 3, ("gp a\f```",))
+
+
 def test_the_guide_has_at_least_the_invocations_it_had() -> None:
     """A parsing regression shrinks the checked set without failing any one check;
     the floor makes it fail."""
