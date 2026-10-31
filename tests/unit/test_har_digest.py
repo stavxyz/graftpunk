@@ -790,14 +790,24 @@ class TestDeeplyNestedJsonBodies:
         assert endpoint.falsy_first_response is None
 
     def test_a_small_response_too_deep_for_the_parser_is_not_called_over_the_threshold(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """200,000 bytes, under the 256 KiB sampling threshold, and 100,000 levels
-        deep, past the parser's limit on every supported Python."""
+        """200,000 bytes, under the 256 KiB sampling threshold. The parser's
+        refusal is stood in for, as where it falls depends on the platform; the
+        HAR's own decode is left alone."""
         body = "[" * 100_000 + "]" * 100_000
         assert len(body.encode()) < 256 * 1024
         entries = [_entry("GET", "https://api.myshop.example.com/deep", body=body)]
-        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        source = DigestSource.from_har(_write_har(tmp_path, entries))
+        loads = json.loads
+
+        def too_deep(text: str | bytes, *args: Any, **kwargs: Any) -> object:
+            if text == body:
+                raise RecursionError("maximum recursion depth exceeded")
+            return loads(text, *args, **kwargs)
+
+        monkeypatch.setattr(json, "loads", too_deep)
+        result = digest(source)
         (endpoint,) = result.endpoints
         assert endpoint.shape == SHAPE_TOO_DEEP
         text = render_markdown(result)

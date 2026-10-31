@@ -10,6 +10,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 import typer
@@ -29,6 +30,22 @@ from tests.unit.cli_harness import strip_ansi
 from tests.unit.guide_harness import REPO_ROOT
 
 runner = CliRunner()
+
+_TOO_DEEP_HAR = '{"log": {"version": "1.2", "entries": [], "_custom": [[[]]]}}'
+
+
+def _refuse_as_too_deep(monkeypatch: pytest.MonkeyPatch, document: str) -> None:
+    """Make ``json.loads`` raise RecursionError for *document* alone, standing in
+    for the parser's depth refusal, which falls at a different depth per platform."""
+    loads = json.loads
+
+    def too_deep(text: str | bytes, *args: Any, **kwargs: Any) -> object:
+        if text == document:
+            raise RecursionError("maximum recursion depth exceeded")
+        return loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", too_deep)
+
 
 # A cookie value shaped like a session id: flagged_names leaves out a cookie whose
 # every value is form state, so a cookie that must be flagged needs one like it.
@@ -197,20 +214,18 @@ class TestDigestCommand:
         "text",
         [
             pytest.param("{", id="not-json"),
-            pytest.param(
-                '{"log": {"version": "1.2", "entries": [], "_custom": '
-                + "[" * 100_000
-                + "]" * 100_000
-                + "}}",
-                id="nested-past-the-parsers-limit",
-            ),
+            pytest.param(_TOO_DEEP_HAR, id="nested-past-the-parsers-limit"),
         ],
     )
-    def test_an_unreadable_har_is_a_one_line_error(self, tmp_path: Path, text: str) -> None:
+    def test_an_unreadable_har_is_a_one_line_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+    ) -> None:
         """A HAR the JSON parser refuses, for its syntax or for its depth, is a
-        red line and exit 1, not a traceback."""
+        red line and exit 1, not a traceback. The depth refusal is stood in for,
+        as where it falls depends on the platform."""
         har_path = tmp_path / "network.har"
         har_path.write_text(text)
+        _refuse_as_too_deep(monkeypatch, _TOO_DEEP_HAR)
         result = runner.invoke(_build_app(), ["observe", "digest", "--har", str(har_path)])
         assert result.exit_code == 1
         assert isinstance(result.exception, SystemExit)
@@ -264,13 +279,7 @@ class TestFixturesCommand:
         "text",
         [
             pytest.param("{", id="not-json"),
-            pytest.param(
-                '{"log": {"version": "1.2", "entries": [], "_custom": '
-                + "[" * 100_000
-                + "]" * 100_000
-                + "}}",
-                id="nested-past-the-parsers-limit",
-            ),
+            pytest.param(_TOO_DEEP_HAR, id="nested-past-the-parsers-limit"),
         ],
     )
     def test_an_unreadable_har_is_a_one_line_error(
@@ -283,6 +292,7 @@ class TestFixturesCommand:
         _write_run(observe_base, "myshop", "run-1", [_entry("GET", "https://myshop.example/a")])
         (har_path,) = observe_base.rglob("network.har")
         har_path.write_text(text)
+        _refuse_as_too_deep(monkeypatch, _TOO_DEEP_HAR)
         out_dir = tmp_path / "out"
         result = runner.invoke(
             _build_app(),
