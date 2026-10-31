@@ -254,22 +254,22 @@ def _parse_json_at(text: str, start: int) -> tuple[object, int] | int:
         piece = text[start:stop]
         try:
             value, end = _SCAN(piece, 0)
-        except StopIteration:
-            # Raised from deep inside a value as well as at its start.
-            return len(piece)
+        except StopIteration as exc:
+            # Raised with where the value failed, deep inside it as well as at its start.
+            failed_at, unterminated = exc.value, False
         except json.JSONDecodeError as exc:
             # An unterminated string reports where it began, not where the
             # slice ran out.
-            cut_short = exc.pos >= len(piece) - _JSON_CUT_MARGIN or exc.msg.startswith(
-                "Unterminated"
-            )
-            if stop < len(text) and cut_short:
-                size *= 2
-                continue
-            return len(piece) if cut_short else exc.pos + 1
+            failed_at, unterminated = exc.pos, exc.msg.startswith("Unterminated")
         except (ValueError, RecursionError):
             return len(text) - start
-        return value, start + end
+        else:
+            return value, start + end
+        cut_short = unterminated or failed_at >= len(piece) - _JSON_CUT_MARGIN
+        if stop < len(text) and cut_short:
+            size *= 2
+            continue
+        return len(piece) if cut_short else failed_at + 1
 
 
 def _json_values(text: str) -> list[tuple[int, int, _Form | None]]:

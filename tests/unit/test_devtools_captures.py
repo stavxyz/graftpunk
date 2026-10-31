@@ -381,6 +381,12 @@ class TestCheckedNamesOfValuesUnderTheName:
             '<input name="csrftoken" value="" type="hidden"/>',
             '<meta content="Ann Lee" itemprop="csrftoken" />',
             '<script>window.s = {"csrftoken": "en", "n": 1};</script>',
+            json.dumps(
+                {"items": [{"n": n, "label": "Ann Lee"} for n in range(40)], "csrftoken": 7}
+            ),
+            "<script>var s = "
+            + json.dumps(json.dumps({"rows": [{"csrftoken": "en", "n": n} for n in range(30)]}))
+            + ";</script>",
         ],
         ids=[
             "number",
@@ -409,6 +415,8 @@ class TestCheckedNamesOfValuesUnderTheName:
             "a-self-closing-input",
             "a-self-closing-meta",
             "json-in-a-script",
+            "a-long-json-body",
+            "long-json-in-a-script-string",
         ],
     )
     def test_a_name_holding_only_form_state_numbers_or_booleans_is_not_checked(
