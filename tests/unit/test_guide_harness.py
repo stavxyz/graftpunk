@@ -90,6 +90,24 @@ def test_an_empty_quote_line_ends_a_quoted_paragraph() -> None:
     assert code_spans("> a ` b\n>\n> `gp version` `\n") == [(3, "gp version")]
 
 
+def test_an_html_tag_or_autolink_takes_its_backticks_first() -> None:
+    """Spec examples 344 and 346: the tag or autolink starts first, so its
+    backtick opens nothing and the one after it is unclosed."""
+    assert code_spans('<a href="`">`\n') == []
+    assert code_spans("<https://foo.bar.`baz>`\n") == []
+    assert code_spans("x <!-- ` --> `gp version`\n") == [(1, "gp version")]
+
+
+def test_a_span_that_opens_first_takes_the_tag() -> None:
+    """Spec examples 345 and 347."""
+    assert _contents('`<a href="`">`\n') == ['<a href="']
+    assert _contents("`<https://foo.bar.`baz>`\n") == ["<https://foo.bar."]
+
+
+def test_a_placeholder_in_angle_brackets_leaves_spans_alone() -> None:
+    assert _contents("pass <url> then `gp version`") == ["gp version"]
+
+
 def test_an_escaped_backtick_opens_nothing() -> None:
     assert _contents(r"a \`literal and `gp version`") == ["gp version"]
 

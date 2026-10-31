@@ -131,6 +131,20 @@ def _fenced_line_numbers(text: str) -> set[int]:
 # ASCII punctuation: the characters a backslash escapes (CommonMark 0.31.2, 2.4).
 _ESCAPABLE = frozenset(string.punctuation)
 
+# An autolink (section 6.5) or raw HTML (section 6.6) starting at a "<". Either
+# binds tighter than a code span that opens inside it, so its backticks are
+# literal (spec examples 344 and 346).
+_ATTRIBUTE = r"""\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?"""
+_TAG_OR_AUTOLINK_RE = re.compile(
+    r"<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\x00-\x20<>]*>"
+    r"|<[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*>"
+    rf"|<[A-Za-z][A-Za-z0-9-]*(?:{_ATTRIBUTE})*\s*/?>"
+    r"|</[A-Za-z][A-Za-z0-9-]*\s*>"
+    r"|<!-->|<!--->|<!--.*?-->|<\?.*?\?>|<![A-Za-z][^>]*>|<!\[CDATA\[.*?\]\]>",
+    re.DOTALL,
+)
+
 
 def code_spans(text: str) -> list[tuple[int, str]]:
     """Every inline code span in *text* outside fenced blocks, as (1-based line of
@@ -145,7 +159,9 @@ def code_spans(text: str) -> list[tuple[int, str]]:
     space and is not all spaces, one space comes off each end. Outside a span a
     backslash escapes the ASCII punctuation after it (section 2.4, "Backslash
     escapes"), so an escaped backtick opens nothing; inside a span a backslash is
-    literal.
+    literal. An autolink or an inline HTML tag, comment, or declaration that
+    starts before a backtick takes that backtick as its own (sections 6.5 and
+    6.6), so it opens nothing either.
 
     Fenced blocks are found by ``fences`` (section 4.5) and hold no spans. A span
     stays inside one paragraph, so the search for a closer ends where
@@ -220,6 +236,9 @@ def _spans_in(para: str) -> list[tuple[int, str]]:
         char = para[index]
         if char == "\\" and index + 1 < len(para) and para[index + 1] in _ESCAPABLE:
             index += 2
+            continue
+        if char == "<" and (tag := _TAG_OR_AUTOLINK_RE.match(para, index)) is not None:
+            index = tag.end()
             continue
         if char != "`":
             index += 1
