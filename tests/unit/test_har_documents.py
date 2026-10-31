@@ -10,6 +10,7 @@ import lxml.html
 import pytest
 
 from graftpunk.har.documents import (
+    _parse,
     extract_login_forms,
     extract_token_candidates,
     form_action_targets,
@@ -18,6 +19,7 @@ from graftpunk.har.documents import (
     printable_selectors,
     printable_unresolved_roles,
 )
+from tests.unit.test_dom_snapshot import _snapshot_parse_seconds
 
 _LOGIN_PAGE = """
 <html><body>
@@ -914,6 +916,68 @@ class TestRegistrationFormsAndControlsOutsideTheirForm:
         _assert_first_match(html, form.submit, **check)
         fields, submit = printable_selectors(form)
         assert submit == expected
+
+
+# Controls inside and outside two forms, interleaved: some join a form through
+# form=, one inside a form joins the other, and one inside names its own form.
+_MIXED_FORM_OWNERS = (
+    '<input type="text" form="signin" name="before" id="before">'
+    '<form id="signin" action="/login">'
+    '<input type="text" name="username">'
+    '<input type="text" name="search_box" form="search">'
+    '<input type="text" form="signin" name="inside_marked">'
+    '<input type="password" name="password">'
+    "</form>"
+    '<input type="tel" form="signin" name="phone">'
+    '<form id="search" action="/search"><input type="text" name="q"></form>'
+    '<input type="text" form="search" name="scope">'
+    '<input type="checkbox" form="signin" name="remember">'
+    '<button type="submit" form="signin" id="go">Sign in</button>'
+)
+
+
+class TestFormAttributeControlsJoinTheirFormInLinearTime:
+    """#321: each control joining its form through form= re-sorted the form's
+    controls, so a page of many such controls parsed in quadratic time."""
+
+    def test_four_times_the_form_controls_take_about_four_times_as_long(self) -> None:
+        """Measured on 2026-10-31: the per-append sort grew about 12.4 to 13.0
+        times from 1000 to 4000 controls, the single sort 4.0 times. The shared
+        check's 0.05 s allowance is left out: it is about the whole quadratic cost
+        at these sizes (0.18 s at 4000), so with it the old parse passed or failed
+        by a few milliseconds."""
+
+        def page(n: int) -> str:
+            return (
+                '<form id="f" action="/login"><input name="username">'
+                '<input type="password" name="password"></form>'
+                + "".join(f'<input type="checkbox" form="f" name="c{i}">' for i in range(n))
+            )
+
+        small = _snapshot_parse_seconds(page(1000))
+        large = _snapshot_parse_seconds(page(4000))
+        assert large < 8 * small, f"1000: {small:.4f}s, 4000: {large:.4f}s"
+
+    def test_each_form_holds_its_controls_in_document_order(self) -> None:
+        parsed = _parse(_MIXED_FORM_OWNERS)
+        assert [[raw.name or raw.element_id for raw in form.inputs] for form in parsed.forms] == [
+            ["before", "username", "inside_marked", "password", "phone", "remember", "go"],
+            ["search_box", "q", "scope"],
+        ]
+
+    @pytest.mark.parametrize("snapshot", [False, True], ids=["html", "snapshot"])
+    def test_the_selectors_are_the_ones_the_per_append_sort_gave(self, snapshot: bool) -> None:
+        """The values the parse gave before #321's change, recorded on 2026-10-31."""
+        (form,) = extract_login_forms(_MIXED_FORM_OWNERS, source="s", snapshot=snapshot)
+        assert form.fields == {
+            "username": 'form[action="/login"] input[name="username"]',
+            "password": 'form[action="/login"] input[name="password"]',  # noqa: S105
+            "inside_marked": 'form[action="/login"] input[name="inside_marked"]',
+            "phone": 'input[form="signin"][name="phone"]',
+        }
+        assert list(form.fields) == ["username", "password", "inside_marked", "phone"]
+        assert form.submit == "#go"
+        assert form.neutral_roles == ()
 
 
 class TestSelectorsCountTheControlsInsideTheForm:

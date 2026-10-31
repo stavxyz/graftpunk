@@ -390,12 +390,18 @@ def _parse(html: str, *, track_blocks: bool = False) -> _DocumentParser:
     for index in parser._block_stack:  # elements still open run to the end
         parser.blocks[index].end = len(parser.inputs)
     # A control with form="id" belongs to that form wherever it sits on the page.
+    # The joined controls are appended in document order after the form's own, and
+    # each such form is sorted once at the end (two sorted runs, so one merge);
+    # sorting on every append was quadratic on a page of many form= controls (#321).
     owners = {form.element_id: form for form in parser.forms if form.element_id}
+    joined: dict[int, _RawForm] = {}
     for raw_input in parser.inputs:
         owner = owners.get(raw_input.form_owner) if raw_input.form_owner else None
         if owner is not None:
             owner.inputs.append(raw_input)
-            owner.inputs.sort(key=lambda control: control.order)
+            joined[id(owner)] = owner
+    for owner in joined.values():
+        owner.inputs.sort(key=lambda control: control.order)
     return parser
 
 
