@@ -51,9 +51,9 @@ and rewrite any captured value it prints, since a docstring and a comment hold
 invented values only; a match in gp's `seen N time(s) in run` phrase is its run
 label: keep it and tell the user. Then run the gate's `pytest` line through the
 Harden block's runner: the suite names each fixture that is its capture byte for
-byte or holds a name its sidecar checks; rewrite those. Count the check as run
-only when that output carries its `fixtures_are_sanitised:` line; without it,
-the wiring is missing: run the gate's plugin check first.
+byte or holds a name its sidecar checks (never a value pasted in); rewrite
+those. Count the check as run only when that output carries its
+`fixtures_are_sanitised:` line; without it, run the gate's plugin check first.
 
 When gp says it can write no fixture for a command's endpoint, write a fixture
 and its sidecar yourself, with invented values in the shape the projection gives

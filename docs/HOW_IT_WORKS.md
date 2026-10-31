@@ -1278,36 +1278,50 @@ fresh checkout, where neither the recording nor any key outside the repository
 exists, so it can only use names. `gp observe fixtures` holds the recording, so
 it decides per capture which flagged names the check still needs to look for:
 `graftpunk.har.digest.flagged_values_of` reads every non-empty value the
-recording holds for each flagged name (a cookie's sent and set values; a header
-token's request header values in any case; a meta or hidden-input token's
-`content` or `value` in an HTML response the HAR holds), and
+recording holds for each flagged name: a cookie's values from the HAR's cookie
+arrays and from its `Cookie` and `Set-Cookie` headers, sent and set; a header
+token's request header values in any case; and a meta or hidden-input token's
+`content` or `value` on every page the digest found it on, which is each HTML
+response in the HAR (a body the HAR keeps in a file under `bodies/` included,
+since the parser reads it in) and the run's `page-source.html`.
 `graftpunk.devtools.captures.checked_names_of` keeps a name when one of its
-values is in the capture's body, as recorded or percent-decoded (with `+` read
-both ways), case-sensitively, in the body as written or in any form the check
-reads a fixture in (`graftpunk.testing.decoding.decoded_forms`: backslash
-escapes, HTML character references, up to three rounds of percent-decoding). It
-also keeps every name whose values are not all known: a cookie the recording
-carried without a value kept or with none seen, and a token whose kind shows no
-value in the HAR (a meta tag on the page source only, or in a body kept in a
-file). A name whose value the body did not hold cannot have been copied into a
-fixture derived from that body, so the check does not look for it, and an
-honest `"id": 7` key passes when a recording made with a cached session sent a
-cookie named `id`. The values stay in memory; the sidecar holds names only, a
-subset of `flagged_names`, which are already committed. A one-character value
-that happens to be in the body keeps its name looked for, which is the check
-before schema 3, never less. Without the values the check cannot catch a
-recorded value pasted into a fixture from outside its capture, or a recorded
-value kept in a fixture under a renamed key; the name-only check before schema
-3 could not either. The graft skill's
-`fixture-leaks.py` covers both on the developer's machine: it reports every
-value of the capture's body left in a fixture, and with `--har HAR` every
-recorded value of a flagged name (cookies sent and set, `Cookie` and
-`Set-Cookie` headers, request headers, meta and hidden-input values in HTML
-responses), by line number only, never printing the value. What remains is a
-body that held the value: there the check still fails on the name, as in
-`{"csrftoken": "<the cookie's value>"}` from an endpoint that hands a single-page
-app its token, or a page fixture that keeps the hidden input a parser selects
-on.
+values is in the capture's body, case-sensitively. A value is looked for as
+recorded, percent-decoded (with `+` read both ways), and without the double
+quotes a cookie value may carry (`graftpunk.testing.decoding.value_forms`), in
+the body as written, in any form the check reads a fixture in
+(`graftpunk.testing.decoding.decoded_forms`: backslash escapes, HTML character
+references, up to three rounds of percent-decoding), and in each of those
+decoded again (`combined_forms`), so a value JSON-escaped inside an HTML
+attribute counts. It also keeps every name whose values are not all known: a
+cookie the recording carried without a value kept or with none seen, a header
+token with no value, and a meta or hidden-input token with no value on any page
+or found on a page that could not be read. A name whose value the body did not
+hold cannot have been copied into a fixture derived from that body, so the check
+does not look for it, and an honest `"id": 7` key passes when a recording made
+with a cached session sent a cookie named `id`. The values stay in memory; the
+sidecar holds names only, a subset of `flagged_names`, which are already
+committed. A one-character value that happens to be in the body keeps its name
+looked for, which is the check before schema 3, never less.
+
+This moves one catch out of CI. With a schema 3 sidecar, the suite fails a
+flagged name only where the recording's capture held its value, so a recorded
+value pasted into a fixture from anywhere else passes the suite, even under its
+flagged name: a fixture `{"id": 7, "myshop_session": "<the recorded session
+value>"}` derived from a capture that never held that value fails under a
+schema 2 sidecar and passes under a schema 3 one. A recorded value kept under a
+renamed key passed the name-only check before schema 3 too. The graft skill's
+`fixture-leaks.py ... --har HAR` catches both on the developer's machine: it
+reports every value of the capture's body left in a fixture, and every recorded
+value of a flagged name, from the same sources `gp observe fixtures` reads
+(cookies sent and set, `Cookie` and `Set-Cookie` headers, request headers, meta
+and hidden-input values in HTML responses, bodies in `bodies/`, and
+`page-source.html` beside the HAR), by line number only, never printing the
+value. The suite does not run that check, because a sidecar does not name the
+run it came from and the recording is not in the plugin's repository. What
+remains in CI is a body that held the value: there the check still fails on the
+name, as in `{"csrftoken": "<the cookie's value>"}` from an endpoint that hands
+a single-page app its token, or a page fixture that keeps the hidden input a
+parser selects on.
 
 The options considered were a keyed digest of each value in the sidecar, with
 the key outside the repository, and this. A keyed digest needs the key in CI

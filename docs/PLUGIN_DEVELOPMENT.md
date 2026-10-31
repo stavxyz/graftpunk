@@ -2319,10 +2319,14 @@ allows.
 
 `checked_names` lists the flagged names the fixtures check looks for in this
 fixture: each one whose recorded value the captured body holds (the value as
-recorded or percent-decoded, found in the body as written or with its backslash
-escapes, HTML character references, or percent-encoding decoded), and each one
-whose value the recording did not keep or show, which `gp observe fixtures`
-cannot compare. A
+recorded, percent-decoded, or without the double quotes a cookie value may
+carry, found in the body as written or with its backslash escapes, HTML
+character references, or percent-encoding decoded, alone or two together), and
+each one whose value the recording did not keep or show, which `gp observe
+fixtures` cannot compare. The recorded values are every one the run holds: the
+cookie arrays and the `Cookie` and `Set-Cookie` headers, request headers, and
+meta and hidden-input values on every HTML page, bodies kept in `bodies/` and
+the run's `page-source.html` included. A
 flagged name whose value the body does not hold cannot have been copied into a
 fixture derived from it, so the check does not look for it. The values are
 compared in memory and never written; the list is names only. Where the body
@@ -2332,7 +2336,12 @@ invented value from the recorded one; rename the key where the plugin does not
 read it. A sidecar written before 1.33.0 has no `checked_names` (schema 2 or 1),
 and the check looks for every flagged name in its fixture, as before;
 regenerate it with `gp observe fixtures` to have only the names whose value the
-capture held looked for.
+capture held looked for. That also means the suite no longer catches a recorded
+value pasted into a fixture from anywhere other than its capture, even under
+its flagged name: `{"id": 7, "myshop_session": "<the recorded session value>"}`
+passes a schema 3 sidecar whose capture never held that value. The graft
+skill's `fixture-leaks.py` with `--har` and the run's HAR catches it on your
+machine, by line number, without printing the value.
 
 `flagged_reasons` says why each flagged name is flagged, and the suite's
 problem line repeats it, so you can tell a form-state cookie from a session
