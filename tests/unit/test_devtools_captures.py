@@ -335,6 +335,9 @@ class TestCheckedNamesOfValuesUnderTheName:
             f'{{"u": ["/x?csrftoken=&", "{_ROTATED}"], "n": 1}}',
             f'<param name="csrftoken" value="{_ROTATED}">',
             f'<link itemprop="csrftoken" content="" href="/x?t={_ROTATED}">',
+            f'<input name="csrftoken" id="{_ROTATED}" value="">',
+            f'<input id="{_ROTATED}" name="csrftoken" value="">',
+            f'<meta name="csrftoken" itemprop="{_ROTATED}" content="">',
         ],
         ids=[
             "js-call",
@@ -413,6 +416,9 @@ class TestCheckedNamesOfValuesUnderTheName:
             "an-empty-pair-ended-by-an-ampersand-in-a-json-array",
             "a-param-with-a-token-value",
             "a-link-with-a-token-in-another-attribute",
+            "a-token-in-an-id-after-the-naming-name",
+            "a-token-in-an-id-before-the-naming-name",
+            "a-token-in-an-itemprop-after-the-naming-name",
         ],
     )
     def test_an_occurrence_the_reader_cannot_pair_with_a_value_keeps_it_checked(
@@ -458,6 +464,8 @@ class TestCheckedNamesOfValuesUnderTheName:
             "<script>var s = "
             + json.dumps(json.dumps({"rows": [{"csrftoken": "en", "n": n} for n in range(30)]}))
             + ";</script>",
+            '{"csrftoken": 7, "a": "' + "x" * 30 + '", "b": true, "c": 1}',
+            '{"csrftoken": 7, "a": "' + "x" * 28 + '", "b": "\\u00e9", "c": 1}',
         ],
         ids=[
             "number",
@@ -486,6 +494,8 @@ class TestCheckedNamesOfValuesUnderTheName:
             "json-in-a-script",
             "a-long-json-body",
             "long-json-in-a-script-string",
+            "a-literal-cut-by-the-first-slice",
+            "an-escape-cut-by-the-first-slice",
         ],
     )
     def test_a_name_holding_only_form_state_numbers_or_booleans_is_not_checked(
@@ -551,6 +561,8 @@ class TestCheckedNamesOfValuesUnderTheName:
                 1000,
             ),
             ('<input name="csrftoken" value=""', ' data-x="csrftoken"', ">", 125),
+            ('{"csrftoken": 1} ', "[" + "x" * 255 + " ", "", 1000),
+            ('{"csrftoken": 1} ', '"a" ', "", 8000),
         ],
         ids=[
             "read",
@@ -560,6 +572,8 @@ class TestCheckedNamesOfValuesUnderTheName:
             "objects-and-escaped-quotes-in-a-string",
             "escaped-markup-in-a-script-string",
             "the-name-in-many-attributes-of-one-element",
+            "many-short-failed-starts",
+            "many-strings",
         ],
     )
     def test_the_cost_grows_linearly_with_the_body(
