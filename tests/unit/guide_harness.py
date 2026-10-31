@@ -43,15 +43,17 @@ _LINE_ENDING_RE = re.compile(r"\r\n|\r|\n")
 def _lines(text: str) -> list[str]:
     """The lines of *text*, split only where CommonMark ends a line.
 
-    ``str.splitlines`` also splits on a vertical tab, a form feed, the file, group,
-    and record separators, U+0085, U+2028, and U+2029, so one of those pasted into a document would shift every later
-    line number and could end a code span or a fence early. As with
-    ``splitlines``, a line ending at the very end adds no empty last line.
+    ``str.splitlines`` also splits on a vertical tab, a form feed, the file,
+    group, and record separators, U+0085, U+2028, and U+2029, so one of those
+    pasted into a document would shift every later line number and could end a
+    code span or a fence early. As with ``splitlines``, a line ending at the
+    very end adds no empty last line.
     """
     lines = _LINE_ENDING_RE.split(text)
     if lines[-1] == "":
         lines.pop()
     return lines
+
 
 # CommonMark 0.31.2, section 4.5 "Fenced code blocks"
 # (https://spec.commonmark.org/0.31.2/#fenced-code-blocks).
