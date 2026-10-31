@@ -1273,10 +1273,12 @@ def _same_site(value: str | None) -> str:
     return _SAME_SITE.get(value.strip().lower(), "unknown")
 
 
-# A Path that prints, after templating: a slash and path characters alone. A
-# comma, query, fragment, ``=``, ``;``, quote, or space is not part of a path a
-# browser stores, and can be a second cookie folded into the header or a value.
-_PLAIN_COOKIE_PATH_RE = re.compile(r"/[A-Za-z0-9\-._~%/:@+]*")
+# A Path that prints, after templating: one leading slash, then letters, digits,
+# ``.``, ``_``, ``~``, ``-``, and single slashes alone. A comma, query, fragment,
+# ``=``, ``;``, quote, or space can be a second cookie folded into the header or a
+# value, and so can its percent-encoded form; ``:``, ``@``, ``+``, and a ``//``
+# can carry a host or a user. Any of them gives ``(not shown)``.
+_PLAIN_COOKIE_PATH_RE = re.compile(r"(?!.*//)/[A-Za-z0-9._~/-]*")
 _PATH_NOT_SHOWN = "(not shown)"
 
 

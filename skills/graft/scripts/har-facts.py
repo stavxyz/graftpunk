@@ -682,9 +682,11 @@ def _same_site(value: str | None) -> str:
 
 
 # graftpunk.har.digest._PLAIN_COOKIE_PATH_RE, copied (a test holds the two equal):
-# a Path holding anything else (a comma, query, fragment, ``=``, ``;``, quote, or
-# space) can carry a second cookie folded into the header, or a value.
-_PLAIN_COOKIE_PATH_RE = re.compile(r"/[A-Za-z0-9\-._~%/:@+]*")
+# one leading slash, then letters, digits, ``.``, ``_``, ``~``, ``-``, and single
+# slashes alone. Anything else (a comma, query, fragment, ``=``, ``;``, quote,
+# space, percent escape, ``:``, ``@``, ``+``, or ``//``) can carry a second cookie
+# folded into the header, a value, a host, or a user.
+_PLAIN_COOKIE_PATH_RE = re.compile(r"(?!.*//)/[A-Za-z0-9._~/-]*")
 
 
 def _cookie_path(value: str) -> str:

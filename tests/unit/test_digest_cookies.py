@@ -303,8 +303,9 @@ def test_json_leaves_the_count_out_when_every_name_prints(tmp_path: Path) -> Non
 
 
 # Text a Path can carry that is no part of a path: a second cookie folded into the
-# header with a comma, a query, a fragment, params, a space, and quotes. Lower
-# case, so the endpoint templating alone would keep it.
+# header with a comma, a query, a fragment, params, a space, and quotes, each
+# also percent-encoded, a user or host, a ``+``, and a ``//``. Lower case, so the
+# endpoint templating alone would keep it.
 @pytest.mark.parametrize(
     ("path", "word"),
     [
@@ -314,6 +315,15 @@ def test_json_leaves_the_count_out_when_every_name_prints(tmp_path: Path) -> Non
         ("/a=dusk", "dusk"),
         ("/a lemon", "lemon"),
         ('/"quoted"', "quoted"),
+        ("/a%2Cb%3Dbobsmith", "bobsmith"),
+        ("/cb%3Fnext%3Dbobsmith", "bobsmith"),
+        ("/%2C%20sid%3Dbobsmith", "bobsmith"),
+        ("/%3Fq%3Dbobsmith", "bobsmith"),
+        ("/x:bobsmith@host", "bobsmith"),
+        ("/x@bobsmith", "bobsmith"),
+        ("/x+bobsmith", "bobsmith"),
+        ("//bobsmith.example/x", "bobsmith"),
+        ("/a//bobsmith", "bobsmith"),
     ],
 )
 def test_a_path_that_is_not_a_plain_path_is_not_shown(tmp_path: Path, path: str, word: str) -> None:
