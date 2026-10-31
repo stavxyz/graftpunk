@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.34.0] - 2026-11-01
+
+This is a minor release. Three changes can reach a program on the first run after the upgrade: the markdown digest's Cookies section has one line per cookie and holds back a name that reads as a value (Upgrading, item 1), `gp observe digest --json` gains two keys and its `cookies` holds back the same names (item 2), and the graft skill's `har-facts.py cookies` prints new words (item 3). Item 4 is about upgrading itself.
 
 ### Upgrading
 
@@ -17,10 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    - an empty or bare `SameSite`, on a header line or in the array, is `unknown` (it was `-`), and one it does not recognise is `unknown` (it was `an unknown value`);
    - a `Path` that does not start with `/` is `unknown` (it was `{}`), and one holding anything outside a plain path (a `,`, `?`, `#`, `=`, `;`, quote, or whitespace) is `(not shown)` (it was printed templated);
    - `expiry` is `session`, `persistent`, `past`, or `unknown` (it was `yes` or `no`); an array `expires` no later than the request is `past`, and an `Expires` on an entry whose `startedDateTime` does not parse is `unknown`.
+4. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
 
 ### Added
 
 - **The markdown digest's Cookies section shows each cookie's attributes, never its value** (#315). `gp observe digest` prints, for a cookie a response set, the endpoints that set it and its `HttpOnly`, `Secure`, `SameSite`, `Path` (templated and collapsed into its endpoint family as an endpoint's path is, or `(not shown)`), and `expiry` (`session`, `persistent`, or `past`), with `unknown` for what the recording does not settle; when responses set it with different attributes, each set is listed with its own endpoints. A cookie no kept response set reads `sent in requests and never set by a response the digest kept`. docs/HOW_IT_WORKS.md ("Building a plugin from a recording") gives each word and the rule for a missing, empty, or bare attribute. `gp observe digest --json` carries the same facts in a new `cookie_facts` key, left out for a run with no cookie, and counts the names it holds back in `cookie_names_not_shown`. New API: `CookieFacts`, `CookieSetting`, `RunDigest.cookie_facts`, and `RunDigest.cookie_names_not_shown` in `graftpunk.har.digest`; `printable_name` in `graftpunk.har.paths`; and `HARResponse.set_cookie_attributes` and `UNPARSED_TIMESTAMP` in `graftpunk.har.parser`. A parsed `response.cookies` entry now keeps the HAR's `sameSite` when it has one.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.21 and needs graftpunk 1.34.0 or later** (#315). The HAR reference describes `cookie_facts` and `cookie_names_not_shown` in `gp observe digest --json`, and `har-facts.py cookies` prints the digest's words.
 
 ## [1.33.0] - 2026-10-30
 
