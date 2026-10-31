@@ -3609,9 +3609,11 @@ def flagged_values_of(
     hidden input, or header token: such a value can come from a source the
     recording does not hold in full (a page a script changed, a request body, a
     response header), so the fixtures check looks for that name as it did before
-    sidecar schema 3. None too for a cookie no recorded request sent (in its
-    ``Cookie`` header or its cookie array), since a value seen only in a
-    ``Set-Cookie`` header says nothing of what the browser held later; for a
+    sidecar schema 3. None too for a cookie no recorded request sent a non-empty
+    value (in its ``Cookie`` header or its cookie array), since a value seen only
+    in a ``Set-Cookie`` header says nothing of what the browser held later,
+    unless a request sent it empty and no non-empty value of it is recorded
+    anywhere, in a request or a response; for a
     cookie the recording carried without a value kept (``value_not_kept``) or
     with none seen (``no_value_seen``); and for a cookie token candidate
     *entries* show neither a value nor an empty send of. A cookie a request only
@@ -3625,15 +3627,21 @@ def flagged_values_of(
     reasons = flagged_reasons_of(d, entries)
     seen = _cookies_seen(entries)
     values: dict[str, set[str]] = {name: set(found) for name, found in seen.values.items()}
-    sent: set[str] = set()
+    sent_a_value: set[str] = set()
+    sent_empty: set[str] = set()
     for entry in entries:
         for name, value in _sent_cookie_values(entry):
-            sent.add(name)
             if value:
+                sent_a_value.add(name)
                 values.setdefault(name, set()).add(value)
+            else:
+                sent_empty.add(name)
         for name, value in _set_cookie_values(entry):
             if value:
                 values.setdefault(name, set()).add(value)
+    # Sent empty counts as sent only when the cookie never held a value the
+    # recording saw: a value only a Set-Cookie gave it says nothing of later.
+    sent = sent_a_value | {name for name in sent_empty if not values.get(name)}
     not_cookies = {token.name for token in d.tokens if token.kind != "cookie"}
     result: dict[str, frozenset[str] | None] = {}
     for name, why in reasons.items():

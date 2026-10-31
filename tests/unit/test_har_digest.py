@@ -4920,6 +4920,27 @@ class TestFlaggedValuesOf:
         entry["request"]["cookies"] = [{"name": "sessionid", "value": ""}]
         assert self._values(tmp_path, [entry]) == {"sessionid": frozenset()}
 
+    def test_a_cookie_sent_empty_and_then_set_by_a_response_is_not_known(
+        self, tmp_path: Path
+    ) -> None:
+        """Its only value came from a Set-Cookie, which says nothing of what the
+        browser held later; the empty send does not make it known (#313)."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            set_cookies=["sessionid=SetLater88; Path=/"],
+        )
+        entry["request"]["cookies"] = [{"name": "sessionid", "value": ""}]
+        entry["response"]["cookies"] = [{"name": "sessionid", "value": "SetLater88"}]
+        assert self._values(tmp_path, [entry]) == {"sessionid": None}
+
+    def test_a_cookie_sent_empty_and_later_with_a_value_is_known(self, tmp_path: Path) -> None:
+        empty = _entry("GET", "https://myshop.example.com/")
+        empty["request"]["cookies"] = [{"name": "sessionid", "value": ""}]
+        sent = _entry("GET", "https://myshop.example.com/api/orders")
+        sent["request"]["cookies"] = [{"name": "sessionid", "value": "Zq9XkLmPwR4t7"}]
+        assert self._values(tmp_path, [empty, sent]) == {"sessionid": frozenset({"Zq9XkLmPwR4t7"})}
+
     def test_a_cookie_seen_with_a_value_and_also_set_by_name_only_is_not_known(
         self, tmp_path: Path
     ) -> None:
