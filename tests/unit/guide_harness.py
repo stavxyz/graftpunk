@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 import shlex
+import string
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeAlias
 
@@ -31,38 +33,163 @@ GUIDE = REPO_ROOT / "docs" / "PLUGIN_DEVELOPMENT.md"
 GUIDE_TEXT = GUIDE.read_text(encoding="utf-8")
 
 
-_FENCE_RE = re.compile(r"^```(\w*)[^\n]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 
+# CommonMark 0.31.2, section 4.5 "Fenced code blocks"
+# (https://spec.commonmark.org/0.31.2/#fenced-code-blocks).
+_FENCE_OPEN_RE = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
 
-# A code span may wrap across a line break, and one of the guide's own does. A
-# per-line scanner silently loses the tail (and any option in it), so the span
-# regex has to tolerate a newline; a blank line ends a paragraph, so a match
-# containing one is a pair of unbalanced backticks rather than a span.
-_CODE_SPAN_RE = re.compile(r"`([^`]+)`")
+
+@dataclass(frozen=True)
+class Fence:
+    """One fenced code block: its fence lines (1-based, inclusive), info string, and
+    content lines. An unclosed block runs to the end of the text, so ``close`` is
+    then its last line."""
+
+    open: int
+    close: int
+    info: str
+    lines: tuple[str, ...]
+
+    @property
+    def language(self) -> str:
+        """The info string's first word, the conventional language name."""
+        return self.info.split()[0] if self.info else ""
+
+
+def fences(text: str) -> list[Fence]:
+    """Every fenced code block in *text*, by CommonMark 0.31.2 section 4.5
+    (https://spec.commonmark.org/0.31.2/#fenced-code-blocks).
+
+    A fence is a run of at least three backticks or at least three tildes, never
+    mixed, indented by at most three spaces. After a backtick fence the info
+    string may not hold a backtick (such a line is prose with code spans in it).
+    The block closes at the next line holding only a fence of the same character
+    at least as long as the opening one (indented by at most three spaces, and
+    followed only by spaces or tabs), or else at the end of the text. Up to as
+    many spaces as indent the opening fence are removed from each content line.
+
+    Container blocks (block quotes, list items) are not modeled: a fence inside
+    one is found only when its lines start the way a top-level fence's would.
+    """
+    found: list[Fence] = []
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        opening = _FENCE_OPEN_RE.match(lines[index])
+        if opening is None or (opening.group(2)[0] == "`" and "`" in opening.group(3)):
+            index += 1
+            continue
+        indent, fence, info = len(opening.group(1)), opening.group(2), opening.group(3)
+        closing = re.compile(rf"^ {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$")
+        end = next((i for i in range(index + 1, len(lines)) if closing.match(lines[i])), len(lines))
+        content = tuple(
+            line[min(indent, len(line) - len(line.lstrip(" "))) :]
+            for line in lines[index + 1 : end]
+        )
+        close = min(end, len(lines) - 1)
+        found.append(Fence(index + 1, close + 1, info.strip(" \t"), content))
+        index = end + 1
+    return found
 
 
 def blocks(text: str, language: str) -> list[tuple[int, str]]:
-    """Every fenced block of *language* in *text*, as (1-based start line, body)."""
-    found: list[tuple[int, str]] = []
-    for match in _FENCE_RE.finditer(text):
-        if match.group(1) == language:
-            found.append((text[: match.start()].count("\n") + 1, match.group(2)))
-    return found
+    """Every fenced block of *language* in *text*, as (1-based opening fence line,
+    body). Body line *k* (1-based) sits on line ``start + k`` of *text*."""
+    return [
+        (fence.open, "".join(f"{line}\n" for line in fence.lines))
+        for fence in fences(text)
+        if fence.language == language
+    ]
 
 
 def _fenced_line_numbers(text: str) -> set[int]:
     """Every 1-based line number inside a fenced block, the fence lines included."""
-    inside: set[int] = set()
-    in_fence = False
+    return {line_no for fence in fences(text) for line_no in range(fence.open, fence.close + 1)}
+
+
+# ASCII punctuation: the characters a backslash escapes (CommonMark 0.31.2, 2.4).
+_ESCAPABLE = frozenset(string.punctuation)
+
+
+def code_spans(text: str) -> list[tuple[int, str]]:
+    """Every inline code span in *text* outside fenced blocks, as (1-based line of
+    its opening backticks, content), by CommonMark 0.31.2 section 6.1 "Code spans"
+    (https://spec.commonmark.org/0.31.2/#code-spans).
+
+    A backtick string (a maximal run of backticks) of length N opens a span that
+    closes at the next backtick string of exactly length N; a longer or shorter
+    run in between is part of the content. An opening string with no such closer
+    is literal backticks, and the scan resumes right after it. Line endings in
+    the content become spaces, and when the result both begins and ends with a
+    space and is not all spaces, one space comes off each end. Outside a span a
+    backslash escapes the ASCII punctuation after it (section 2.4, "Backslash
+    escapes"), so an escaped backtick opens nothing; inside a span a backslash is
+    literal.
+
+    Fenced blocks are found by ``fences`` (section 4.5) and hold no spans. A span
+    stays inside one paragraph, so a blank line ends any search for a closer;
+    each line's leading spaces and tabs are dropped first, as a paragraph's
+    continuation lines drop theirs (section 4.8, "Paragraphs"). Other block
+    structure (headings, list markers, HTML blocks, indented code) is not
+    modeled: the documents read here keep their code spans in prose.
+    """
+    fenced = _fenced_line_numbers(text)
+    paragraphs: list[tuple[int, list[str]]] = []
     for line_no, line in enumerate(text.splitlines(), start=1):
-        if line.startswith("```"):
-            in_fence = not in_fence
-            inside.add(line_no)
+        if line_no in fenced or not line.strip(" \t"):
+            paragraphs.append((line_no + 1, []))
             continue
-        if in_fence:
-            inside.add(line_no)
-    return inside
+        if not paragraphs:
+            paragraphs.append((line_no, []))
+        paragraphs[-1][1].append(line.lstrip(" \t"))
+
+    found: list[tuple[int, str]] = []
+    for first_line, para_lines in paragraphs:
+        para = "\n".join(para_lines)
+        found.extend((first_line + line, content) for line, content in _spans_in(para))
+    return found
+
+
+def _spans_in(para: str) -> list[tuple[int, str]]:
+    """The code spans of one paragraph, as (0-based line within it, content)."""
+    found: list[tuple[int, str]] = []
+    index = 0
+    while index < len(para):
+        char = para[index]
+        if char == "\\" and index + 1 < len(para) and para[index + 1] in _ESCAPABLE:
+            index += 2
+            continue
+        if char != "`":
+            index += 1
+            continue
+        opener_end = _run_end(para, index)
+        width = opener_end - index
+        cursor = opener_end
+        while cursor < len(para):
+            if para[cursor] != "`":
+                cursor += 1
+                continue
+            run_end = _run_end(para, cursor)
+            if run_end - cursor == width:
+                content = para[opener_end:cursor].replace("\n", " ")
+                if content.startswith(" ") and content.endswith(" ") and content.strip(" "):
+                    content = content[1:-1]
+                found.append((para.count("\n", 0, index), content))
+                index = run_end
+                break
+            cursor = run_end
+        else:
+            index = opener_end
+    return found
+
+
+def _run_end(text: str, start: int) -> int:
+    """The index just past the run of backticks starting at *start*."""
+    end = start
+    while end < len(text) and text[end] == "`":
+        end += 1
+    return end
 
 
 def _split(raw: str) -> list[str]:
@@ -91,20 +218,12 @@ def gp_invocations(text: str) -> list[tuple[int, str]]:
             if tokens and tokens[0] == "gp":
                 found.append((start + offset, shlex.join(tokens)))
 
-    # Fenced lines are blanked rather than dropped, so an offset in the masked
-    # text still maps to the real line number.
-    fenced = _fenced_line_numbers(text)
-    prose = "\n".join(
-        "" if line_no in fenced else line for line_no, line in enumerate(text.splitlines(), start=1)
-    )
-    for match in _CODE_SPAN_RE.finditer(prose):
-        span = match.group(1)
-        if "\n\n" in span or not span.startswith("gp "):
+    for line_no, span in code_spans(text):
+        if not span.startswith("gp "):
             continue
-        line_no = prose[: match.start()].count("\n") + 1
         # A prose span often trails an ellipsis standing in for the rest of the
         # command line; it is not a token the CLI would ever see.
-        tokens = [word for word in _split(" ".join(span.split())) if word != "..."]
+        tokens = [word for word in _split(span) if word != "..."]
         if tokens and tokens[0] == "gp":
             found.append((line_no, shlex.join(tokens)))
     return found

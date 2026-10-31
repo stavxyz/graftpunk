@@ -21,6 +21,7 @@ from tests.unit.guide_harness import (
     GUIDE,
     GUIDE_TEXT,
     REPO_ROOT,
+    code_spans,
     gp_invocations,
     outside_fences,
     section,
@@ -281,7 +282,7 @@ def _listed(opening: str, closing: str) -> set[str]:
     whitespace collapsed first: one of its closed lists."""
     flat = " ".join(_DIGEST_MD.read_text(encoding="utf-8").split())
     start = flat.index(opening) + len(opening)
-    return set(re.findall(r"`([^`]+)`", flat[start : flat.index(closing, start)]))
+    return {content for _line, content in code_spans(flat[start : flat.index(closing, start)])}
 
 
 def _projection() -> dict[str, Any]:
