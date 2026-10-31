@@ -248,6 +248,9 @@ class SeleniumBackend:
 
         if self._headless:
             chrome_options.add_argument("--headless=new")
+            # Nobody can answer a page's dialog in a headless browser (#320); see
+            # graftpunk.stealth.create_stealth_driver.
+            chrome_options.set_capability("unhandledPromptBehavior", "accept")
 
         # Window size from options or default
         window_size = self._options.get("window_size", "800,600")

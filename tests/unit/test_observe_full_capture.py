@@ -353,11 +353,11 @@ class TestSeleniumSessionRecordsTheNetwork:
 
     @pytest.mark.parametrize("headless", [True, False])
     @pytest.mark.parametrize("performance_log", [True, False])
-    def test_a_headless_recording_accepts_the_page_dialogs(
+    def test_a_headless_browser_accepts_the_page_dialogs(
         self, headless: bool, performance_log: bool
     ) -> None:
         """#320: ChromeDriver answers a dialog nobody can answer in a headless
-        recording; a visible browser, or no recording, keeps its default."""
+        browser, recorded or not; a visible browser keeps its default."""
         from graftpunk import stealth
 
         with (
@@ -374,7 +374,7 @@ class TestSeleniumSessionRecordsTheNetwork:
 
         capabilities = chrome.call_args.kwargs["options"].to_capabilities()
         accepts = capabilities.get("unhandledPromptBehavior") == "accept"
-        assert accepts is (headless and performance_log)
+        assert accepts is headless
 
     @pytest.mark.parametrize(
         ("mime", "kept"),

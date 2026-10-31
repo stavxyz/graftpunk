@@ -687,6 +687,29 @@ class TestSeleniumBackendStandardMode:
         # Check arguments were added
         assert any("headless" in str(arg) for arg in options.arguments)
 
+    @pytest.mark.parametrize("headless", [True, False])
+    @patch("selenium.webdriver.Chrome")
+    @patch("graftpunk.backends.selenium.webdriver_manager.chrome.ChromeDriverManager")
+    @patch("graftpunk.backends.selenium.get_chrome_version")
+    def test_a_headless_browser_accepts_the_page_dialogs(
+        self,
+        mock_version: MagicMock,
+        mock_manager: MagicMock,
+        mock_chrome: MagicMock,
+        headless: bool,
+    ) -> None:
+        """#320: nobody can answer a dialog in a headless browser; a visible one
+        keeps ChromeDriver's default."""
+        mock_version.return_value = "120"
+        mock_manager.return_value.install.return_value = "/path/to/chromedriver"
+        mock_chrome.return_value = MagicMock()
+
+        backend = SeleniumBackend(use_stealth=False, headless=headless)
+        backend.start()
+
+        capabilities = mock_chrome.call_args[1]["options"].to_capabilities()
+        assert (capabilities.get("unhandledPromptBehavior") == "accept") is headless
+
     @patch("graftpunk.backends.selenium.get_chrome_version")
     def test_standard_mode_chrome_detection_error(self, mock_version: MagicMock) -> None:
         """ChromeDriverError during version detection raises BrowserError."""
