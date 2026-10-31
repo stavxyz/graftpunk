@@ -207,31 +207,35 @@ A browser opens at the URL. Log in. Then exercise every flow you listed in
 an export. The recording is only as good as what you clicked. Press Ctrl+C in
 the terminal to stop and save.
 
-When it saves, graftpunk reads the password you typed from the run's own POSTs
-(the values under a password-like name, never `true`, `false` or `null`, and not
-under a setting's name such as `rememberPassword`), the username from the
-requests the digest reports as credential posts, from a POST a password came
-from, and from an earlier step that posted the username alone at a path or with
-field names holding a step word such as `login` or `signin`, and scrubs them
-from `network.har`, the request bodies in `bodies/`, `page-source.html`, and
-`snapshots/`, keeping the field names so the digest still finds the login, and
-prints how many values it scrubbed. It leaves a password under three
-characters; a boolean password; a password that is part of a field name
-(`pass`), which it replaces only in its request's own body; the username of an
-earlier step with no step word (`POST /identify`); a password under a name that
-is not password-like (`credential`, `p`) sent where no recorded login form
-posts; a body that is not valid JSON or cannot be read; and response bodies in
-`bodies/`, `console.jsonl`, and the screenshots. It prints that the run may
-still hold the password typed into it when a POST that may hold a password
-could not be read (a body it could not split into fields that names a password,
-or a body not read or not captured sent where a login form posts), or when a
-recorded page had a password field, a POST sent a username or email, and it
-found no password at all; that second line can also appear with no login typed,
-or for a sign-up whose password field it cannot read. A password that is also
-an ordinary word is scrubbed everywhere it appears, URLs included, and a
-numeric one inside every number that holds its digits, which leaves such a JSON
-body invalid. The run still holds the session's cookies and tokens, so keep it
-on your machine and delete it when you are done.
+When it saves, graftpunk reads the password and username you typed from the
+run's credential posts only: each POST, PUT, or PATCH the digest reports as a
+login, by a password field in its body or by being sent where a recorded login
+form posts. It takes a value whose own field name holds `password`, `passwd`,
+or `pwd` and no setting's word (`rememberPassword`, `savePassword`,
+`passwordless`), when it is at least three characters and not `true`, `false`,
+`yes`, `no`, `on`, `off`, or `null`; each value under a username or email
+field; the username of an earlier step posted at a path or with field names
+holding a step word such as `login` or `signin`; and with
+`--wrong-password-first` the password of the post marked failed. It scrubs
+them from `network.har`, the request bodies in `bodies/`, `page-source.html`,
+and `snapshots/`, keeping the field names so the digest still finds the login.
+It leaves any password sent by a request that is no credential post (a login a
+script posts elsewhere, a sign-up, a password change); a password under a name
+without `password`, `passwd`, or `pwd` (`pin`, `pass`, `credential`); a
+password under three characters, a boolean one, or a flag word; a password
+that is part of a field name (`pass`), which it replaces only in its request's
+own body; the username of an earlier step with no step word (`POST
+/identify`); a credential post whose body it could not read; and response
+bodies in `bodies/`, `console.jsonl`, and the screenshots. It prints a line
+when a credential post's body could not be read (not valid JSON, a body file
+it cannot read, or a body not captured). When a recorded page had a password
+field, it always prints a note saying how many values it scrubbed from how many
+credential posts and that the run can still hold a password it did not
+recognise; the note never says the run is clean. A password that is also an
+ordinary word is scrubbed everywhere it appears, URLs included, and a numeric
+one inside every number that holds its digits, which leaves such a JSON body
+invalid. The run still holds the session's cookies and tokens, so keep it on
+your machine and delete it when you are done.
 
 To have the recording suggest the `failure` text, add `--wrong-password-first`
 (`gp observe --no-session interactive https://myshop.example/ --wrong-password-first`).
