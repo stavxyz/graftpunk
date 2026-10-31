@@ -740,7 +740,7 @@ def selenium_in_own_session() -> Iterator[SeleniumLaunch]:
     may overlap: the first in installs the objects and the last out restores
     the modules. A module whose ``subprocess`` is neither the real module nor
     that object is left alone with a warning, and the launch then starts where
-    it always did. ``tests/unit/test_browser_launch.py`` pins the two calls
+    it always did. ``tests/unit/test_selenium_own_session.py`` pins the two calls
     this relies on, and :func:`check_in_own_session` checks the outcome.
 
     Each process is registered with the SIGTERM and SIGHUP handlers as it is
