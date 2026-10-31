@@ -2401,22 +2401,25 @@ get_orders.json: the recorded value of flagged 'myshop_session' is still in the 
 
 It looks for the run id in each of the plugin's session directories (`myshop`,
 `myshop-alice`, and so on) and reads only that run's files. A recorded value
-that holds nothing by the rule the name check judges a value by (empty, or form
-state such as `true`, `USD` or a date) is not looked for, since a fixture
-cannot invent it away; an opaque value is. In CI
+is not looked for only when it is empty, `true`, `false` or `null` in any case,
+or shorter than four characters, since a fixture cannot invent `true` away;
+every other value is, a username, a name or a four-digit PIN included. In CI
 and on a teammate's checkout the run is not there, and the check is the name
 check alone, with no warning; the line the check prints on every run ends with
 `, N compared with the values their observe run recorded on this machine`, so
 you can see which check ran. When the run is there but cannot be read (a
 damaged `network.har`, a permission error, a file of the run the check needs
-and cannot read, such as a symlink loop, the same run id under two of the
-plugin's sessions, or a session directory of the plugin it cannot search), the
-suite fails with one line naming the plugin, the run id, and any such file by
-its path inside the run, and never the observe directory's path or an account
+and cannot read, such as a symlink loop, a body file the HAR names that is
+missing, or the same run id under two of the plugin's sessions), the suite
+fails with one line naming the plugin, the run id, and any such file by its
+path inside the run, and never the observe directory's path or an account
 label, since a value check that quietly did not run reads as a pass; make the
 run readable and the only one of its id, or move its directory out of
 `~/.local/share/graftpunk/observe/` to have the fixture checked by its names
-alone. A sidecar written before 1.35.0 names no run, so its
+alone. When the check cannot tell whether the run is there (the observe
+directory cannot be listed, or a session directory of the plugin cannot be
+searched), the suite fails with a line saying the lookup could not be
+completed; make those directories listable and searchable. A sidecar written before 1.35.0 names no run, so its
 fixture gets the name check only; regenerate it with `gp observe fixtures` while
 the run is on disk to turn the value check on. A graftpunk older than 1.35.0
 refuses a schema 4 sidecar, so a suite pinned below 1.35.0 needs its pin raised

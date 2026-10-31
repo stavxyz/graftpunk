@@ -1508,12 +1508,12 @@ compared` in CI and a positive count on the developer's machine say which check
 ran without a line per fixture. Where the run is present but cannot be read (no
 `network.har`, a HAR that is not JSON or has no `log.entries` list, a
 permission error, a file or a dangling symlink in the run's place, a file of
-the run the check reads that is there and cannot be read, such as a
-`page-source.html` without read permission or a symlink loop, an observe
-directory that cannot be listed, a run id under more than one of the plugin's
-session directories, or a session directory of the plugin that cannot be
-searched, which is not counted as holding the run), the check
-reports one problem per run, naming the first fixture whose sidecar names it,
+the run the check reads that cannot be read, such as a `page-source.html`
+without read permission or a symlink loop, a file the HAR names that is
+missing, or a run id under more than one of the plugin's session directories),
+or where the lookup cannot be completed (an observe directory that cannot be
+listed, or a session directory of the plugin that cannot be searched, which is
+not counted as holding the run), the check reports one problem per run, naming the first fixture whose sidecar names it,
 and fails the suite; the name check still runs on those fixtures. The problem
 names the plugin, the run id, and a file by its path inside the run, never the
 observe directory's path (it holds the OS user name) or a session directory's
@@ -1521,18 +1521,30 @@ name (it holds the account label): suite output gets pasted into issues. A warni
 the alternative. It was not chosen because the check exists for the machine
 that holds the run, and a passing run with a warning line is read as a pass: a
 damaged run would switch the value check off without anyone deciding to. The
-problem says how to proceed: make the run readable and the only one of its
-id, or move its directory out of the observe directory, after which the
-fixture is checked by its names alone, as in CI.
+problem says how to proceed: for a run that cannot be read, make the run
+readable and the only one of its id, or move its directory out of the observe
+directory, after which the fixture is checked by its names alone, as in CI;
+for a lookup that cannot be completed, make the observe directory listable and
+the plugin's session directories searchable. A file the HAR names (a kept
+body, a request body, a DOM snapshot) that is missing, a dangling symlink
+included, is a file that cannot be read: gp names a file in the HAR only after
+writing it, so a missing one means the run was changed since, and the values
+only it held would go uncompared. `page-source.html` is not named by the HAR,
+and gp writes it only when the browser gave the page at stop, so a run without
+one is read whole.
 
-A recorded value that holds nothing is not looked for: an empty value, or one
-that is form state by the rule a cookie value is judged by
-(`graftpunk.har.digest.form_state`), the rule `checked_names_of` judges a value
-by. A name flagged by its name alone (`session_name`, `http_only`) records
-such values, `logged_in=true` or `currency=USD`, and a fixture holding the JSON
-literal `true` or the word `USD` cannot invent it away; an opaque value is
-looked for as before. The script copies `form_state`, and a test holds the copy
-to graftpunk's answers.
+A recorded value is not looked for only when it is empty, `true`, `false` or
+`null` in any case, or shorter than four characters, each after the decodings
+the check applies to a recorded value (percent-decoding and one pair of
+surrounding double quotes). A name flagged by its name alone (`session_name`,
+`http_only`) records `logged_in=true`, and a fixture holding the JSON literal
+`true` cannot invent it away; a value of three characters or fewer is in most
+fixtures by chance. Every other value is looked for, a username, a personal
+name, a four-digit PIN or a five-digit id included. The rule the name check
+judges a value by (`form_state`) was the alternative. It was not chosen
+because it reads usernames, names, short numbers and dictionary-word
+passwords as holding nothing, and a flagged session or token name can record
+exactly those.
 
 `out_of_scope_only` (#316, schema 4) is a context reason like `sent_only`:
 `flagged_reasons_of` writes it beside the reasons that flag a cookie when every
