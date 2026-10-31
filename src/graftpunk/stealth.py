@@ -185,6 +185,7 @@ def create_stealth_driver(
             attach_selenium_processes(driver, launch.processes)
             check_in_own_session(_driver_pids(driver))
         _apply_stealth(driver)
+        # Inside the block, so a failure here still ends both processes.
+        LOG.info("stealth_driver_created", navigator_webdriver_limitation=True)
 
-    LOG.info("stealth_driver_created", navigator_webdriver_limitation=True)
     return driver

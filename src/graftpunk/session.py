@@ -215,6 +215,8 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             except Exception as exc:
                 LOG.error("failed_to_create_nodriver_session", error=str(exc))
                 raise BrowserError(f"Failed to create nodriver browser session: {exc}") from exc
+            # This branch initializes requests.Session directly, past the mixin.
+            self._give_new_jar_the_browser_cookie_policy()
         else:
             # Use stealth driver (undetected-chromedriver + selenium-stealth)
             from graftpunk.stealth import create_stealth_driver
@@ -234,22 +236,20 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                     kwargs_minimal = kwargs.copy()
                     kwargs_minimal["webdriver_path"] = None  # Skip driver creation
                     super().__init__(*args, **kwargs_minimal)
+
+                    # Replace requestium's driver with our stealth driver
+                    self._webdriver = self._stealth_driver
+
+                    LOG.info("stealth_browser_session_initialized", headless=headless)
                 except BaseException:
                     # A Ctrl+C no longer reaches chromedriver and Chrome
                     # (#335), so a session that failed to come up quits them.
                     self._webdriver = self._stealth_driver
                     self._quit_selenium()
                     raise
-
-                # Replace requestium's driver with our stealth driver
-                self._webdriver = self._stealth_driver
-
-                LOG.info("stealth_browser_session_initialized", headless=headless)
             except (selenium.common.exceptions.WebDriverException, OSError) as exc:
                 LOG.error("failed_to_create_stealth_session", error=str(exc))
                 raise BrowserError(f"Failed to create stealth browser session: {exc}") from exc
-        # The nodriver branch initializes requests.Session directly, past the mixin.
-        self._give_new_jar_the_browser_cookie_policy()
 
     @property
     def session_name(self) -> str:

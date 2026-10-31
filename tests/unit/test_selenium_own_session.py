@@ -709,6 +709,64 @@ class TestEveryWayOutOfASessionEndsTheBrowser:
 
         TestAPlainSeleniumLogin._assert_ended(fake_uc.created[0])
 
+    def test_a_failure_after_requestium_is_up(
+        self,
+        handlers_installed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_uc: type[_FakeUcChrome],
+    ) -> None:
+        """Everything the constructor does once the driver is up is covered,
+        down to its last statement."""
+        import graftpunk.session as session_module
+        from graftpunk.session import BrowserSession
+
+        real = session_module.LOG
+
+        class InterruptedLog:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(real, name)
+
+            def info(self, event: str, **kw: Any) -> None:
+                if event == "stealth_browser_session_initialized":
+                    raise KeyboardInterrupt
+                real.info(event, **kw)
+
+        monkeypatch.setattr(session_module, "LOG", InterruptedLog())
+
+        with pytest.raises(KeyboardInterrupt):
+            BrowserSession(backend="selenium", headless=True)
+
+        TestAPlainSeleniumLogin._assert_ended(fake_uc.created[0])
+
+    def test_a_failure_as_the_stealth_driver_is_reported_ends_both(
+        self,
+        handlers_installed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_uc: type[_FakeUcChrome],
+    ) -> None:
+        """``create_stealth_driver``'s last statement before it returns the driver."""
+        import graftpunk.stealth as stealth
+        from graftpunk.stealth import create_stealth_driver
+
+        real = stealth.LOG
+
+        class InterruptedLog:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(real, name)
+
+            def info(self, event: str, **kw: Any) -> None:
+                if event == "stealth_driver_created":
+                    raise KeyboardInterrupt
+                real.info(event, **kw)
+
+        monkeypatch.setattr(stealth, "LOG", InterruptedLog())
+
+        with pytest.raises(KeyboardInterrupt):
+            create_stealth_driver(headless=True)
+
+        [driver] = fake_uc.created
+        assert [_exited_within(p, 10) for p in driver.processes] == [-signal.SIGTERM] * 2
+
     def test_a_requestium_session_that_fails_to_come_up(
         self,
         handlers_installed: None,
