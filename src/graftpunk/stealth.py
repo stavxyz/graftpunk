@@ -117,6 +117,8 @@ def create_stealth_driver(
         performance_log: Have ChromeDriver keep Chrome's performance log, which
             the Selenium observe capture reads its network events from.
             ChromeDriver keeps it only when the capability is set at launch.
+            With *headless* too (a headless recording), ChromeDriver also
+            accepts each JavaScript dialog a page opens.
 
     With graftpunk's SIGTERM and SIGHUP handlers installed (always in ``gp``;
     in a program, after ``install_termination_cleanup()``), chromedriver and
@@ -152,6 +154,13 @@ def create_stealth_driver(
 
     if performance_log:
         options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+        if headless:
+            # A headless recording has nobody to answer a page's alert, confirm,
+            # prompt or beforeunload (#320). ChromeDriver answers an open one when
+            # the next WebDriver command runs, by this capability; the default
+            # dismisses it and fails that command. ChromeDriver reports no dialog
+            # event, so none is logged or counted.
+            options.set_capability("unhandledPromptBehavior", "accept")
 
     # Detect Chrome version for matching ChromeDriver
     try:

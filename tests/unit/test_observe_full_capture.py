@@ -351,6 +351,31 @@ class TestSeleniumSessionRecordsTheNetwork:
         if performance_log:
             assert capabilities["goog:loggingPrefs"] == {"performance": "ALL"}
 
+    @pytest.mark.parametrize("headless", [True, False])
+    @pytest.mark.parametrize("performance_log", [True, False])
+    def test_a_headless_recording_accepts_the_page_dialogs(
+        self, headless: bool, performance_log: bool
+    ) -> None:
+        """#320: ChromeDriver answers a dialog nobody can answer in a headless
+        recording; a visible browser, or no recording, keeps its default."""
+        from graftpunk import stealth
+
+        with (
+            patch.object(stealth.uc, "Chrome") as chrome,
+            patch.object(stealth, "stealth"),
+            patch.object(stealth, "get_chrome_version", return_value="155"),
+            patch.object(Path, "mkdir"),
+        ):
+            stealth.create_stealth_driver(
+                headless=headless,
+                profile_dir=Path("/nonexistent-unused"),
+                performance_log=performance_log,
+            )
+
+        capabilities = chrome.call_args.kwargs["options"].to_capabilities()
+        accepts = capabilities.get("unhandledPromptBehavior") == "accept"
+        assert accepts is (headless and performance_log)
+
     @pytest.mark.parametrize(
         ("mime", "kept"),
         [
