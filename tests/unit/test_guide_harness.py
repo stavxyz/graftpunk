@@ -54,6 +54,42 @@ def test_a_span_wraps_a_line_but_not_a_paragraph() -> None:
     assert code_spans("an open `gp\n\nobserve` here") == []
 
 
+def test_a_stray_backtick_in_a_list_item_does_not_reach_the_next_item() -> None:
+    for marker in ("-", "*", "+", "1.", "2)"):
+        text = f"{marker} a ` b\n{marker} `gp version` c ` d\n"
+        assert code_spans(text) == [(2, "gp version")], marker
+
+
+def test_a_list_item_continuation_line_stays_in_its_item() -> None:
+    assert code_spans("- run `gp\n  version` now\n- next\n") == [(1, "gp version")]
+
+
+def test_a_stray_backtick_in_a_table_row_does_not_reach_the_next_row() -> None:
+    text = "| a ` b |\n|---|\n| `gp version` ` |\n"
+    assert code_spans(text) == [(3, "gp version")]
+
+
+def test_a_heading_is_a_paragraph_of_its_own() -> None:
+    assert code_spans("text ` here\n## `gp version` ` heading\nafter `x`\n") == [
+        (2, "gp version"),
+        (3, "x"),
+    ]
+
+
+def test_a_block_quote_starts_a_paragraph_and_loses_its_markers() -> None:
+    assert code_spans("prose ` here\n> `gp version` quoted\n") == [(2, "gp version")]
+    assert code_spans("> a `(dict,\n> slotstate)` b\n") == [(1, "(dict, slotstate)")]
+    assert code_spans("> > deep `one\n> > two`\n") == [(1, "one two")]
+
+
+def test_a_lazy_continuation_line_continues_a_quoted_paragraph() -> None:
+    assert code_spans("> a `gp\nversion` b\n") == [(1, "gp version")]
+
+
+def test_an_empty_quote_line_ends_a_quoted_paragraph() -> None:
+    assert code_spans("> a ` b\n>\n> `gp version` `\n") == [(3, "gp version")]
+
+
 def test_an_escaped_backtick_opens_nothing() -> None:
     assert _contents(r"a \`literal and `gp version`") == ["gp version"]
 

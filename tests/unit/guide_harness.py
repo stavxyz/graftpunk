@@ -146,27 +146,68 @@ def code_spans(text: str) -> list[tuple[int, str]]:
     literal.
 
     Fenced blocks are found by ``fences`` (section 4.5) and hold no spans. A span
-    stays inside one paragraph, so a blank line ends any search for a closer;
-    each line's leading spaces and tabs are dropped first, as a paragraph's
-    continuation lines drop theirs (section 4.8, "Paragraphs"). Other block
-    structure (headings, list markers, HTML blocks, indented code) is not
-    modeled: the documents read here keep their code spans in prose.
+    stays inside one paragraph, so the search for a closer ends where
+    ``_paragraphs`` ends a paragraph.
     """
-    fenced = _fenced_line_numbers(text)
-    paragraphs: list[tuple[int, list[str]]] = []
-    for line_no, line in enumerate(_lines(text), start=1):
-        if line_no in fenced or not line.strip(" \t"):
-            paragraphs.append((line_no + 1, []))
-            continue
-        if not paragraphs:
-            paragraphs.append((line_no, []))
-        paragraphs[-1][1].append(line.lstrip(" \t"))
-
     found: list[tuple[int, str]] = []
-    for first_line, para_lines in paragraphs:
+    for first_line, para_lines in _paragraphs(text):
         para = "\n".join(para_lines)
         found.extend((first_line + line, content) for line, content in _spans_in(para))
     return found
+
+
+# Lines that start a block of their own, read after any block-quote markers and
+# indentation are gone: an ATX heading (section 4.2), a bullet or ordered list
+# item marker (section 5.2), and a table row (GFM 0.29 section 4.10, rows
+# written with a leading pipe).
+_BLOCK_START_RE = re.compile(r"#{1,6}(?:[ \t]|$)|[-+*](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|\|")
+
+
+def _unquote(line: str) -> tuple[int, str]:
+    """*line*'s block-quote depth, and the line without its ``>`` markers and its
+    leading spaces and tabs (section 5.1, "Block quotes")."""
+    depth = 0
+    rest = line.lstrip(" \t")
+    while rest.startswith(">"):
+        depth += 1
+        rest = rest[1:].lstrip(" \t")
+    return depth, rest
+
+
+def _paragraphs(text: str) -> list[tuple[int, list[str]]]:
+    """The runs of lines in *text* a code span can stretch across, as (1-based
+    first line, lines), each line without its block-quote markers and its
+    leading spaces and tabs (a paragraph's continuation lines drop theirs,
+    section 4.8 "Paragraphs").
+
+    A run ends at a blank line or a fenced block, and before a line that starts
+    an ATX heading, a list item, a table row, or a deeper block quote. A heading
+    and a table row are one line each. So a stray backtick in one list item or
+    table row never pairs with a backtick in the next. A line quoted less deeply
+    than the run continues it, as CommonMark's lazy continuation lines do.
+
+    Not modeled: setext headings, HTML blocks, indented code, the rule that only
+    a list item starting at 1 or holding text interrupts a paragraph, and table
+    rows without a leading pipe. The documents read here do not depend on them.
+    """
+    fenced = _fenced_line_numbers(text)
+    paragraphs: list[tuple[int, list[str]]] = []
+    current: list[str] | None = None
+    current_depth = 0
+    for line_no, line in enumerate(_lines(text), start=1):
+        depth, rest = _unquote(line)
+        if line_no in fenced or not rest:
+            current = None
+            continue
+        block = _BLOCK_START_RE.match(rest)
+        if current is None or block is not None or depth > current_depth:
+            current = []
+            current_depth = depth
+            paragraphs.append((line_no, current))
+        current.append(rest)
+        if block is not None and rest[0] in "#|":
+            current = None
+    return paragraphs
 
 
 def _spans_in(para: str) -> list[tuple[int, str]]:
