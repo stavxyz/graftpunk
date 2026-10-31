@@ -2204,8 +2204,10 @@ beside the fixture. It holds no URL, no time, and no header, cookie, or query
 value: only the status, the content type, the hash of the captured body, the
 request's body parameter names, every cookie name the recording set or sent
 except a cookie that only ever held form state, the reasons each of those names
-is flagged, the token names the digest found, and which of those names the
-fixtures check looks for in this fixture (`checked_names`, below).
+is flagged, the token names the digest found, which of those names the
+fixtures check looks for in this fixture (`checked_names`, below), and the
+session name and run id of the `gp observe` run the capture came from
+(`observe_run`, below).
 
 A cookie whose every non-empty value in the recording (in any request or
 response) is form state holds no credential, so its name is left out of
@@ -2370,14 +2372,41 @@ rename the key where the plugin does not read it. A sidecar written before
 1.33.0 has no `checked_names` (schema 2 or 1), and the check looks for every
 flagged name in its fixture, as before; regenerate it with `gp observe
 fixtures` to have a cookie name left out where the capture held none of its
-values and held the name only in name-value pairs holding nothing. That also means the suite no longer
-catches a recorded cookie value pasted into a fixture from anywhere other than
-its capture, even under its cookie's name: `{"id": 7, "myshop_session": "<the
-recorded session value>"}` passes a schema 3 sidecar whose capture never held
-that value. The graft skill's `fixture-leaks.py` with `--har` and the run's HAR
-catches it on your machine, by line number, without printing the value
-([#345](https://github.com/stavxyz/graftpunk/issues/345) tracks having the suite
-do that check when the sidecar's own run is on disk).
+values and held the name only in name-value pairs holding nothing. That also means the name check
+no longer catches a recorded cookie value pasted into a fixture from anywhere
+other than its capture, even under its cookie's name: `{"id": 7,
+"myshop_session": "<the recorded session value>"}` passes the name check of a
+sidecar whose capture never held that value. On your machine the value check
+below catches it.
+
+`observe_run` (from schema 4, graftpunk 1.35.0) names the run the capture came
+from as `gp observe show` takes it, a session name and a run id, never a path.
+When the suite runs where that run is on disk, which is the machine you ran
+`gp observe fixtures` on, `fixtures_are_sanitised` also compares the fixture
+with every value the run recorded for each flagged name (a cookie sent or set,
+a request or response header, a field a request body sent, a meta or
+hidden-input token, in the HAR, the bodies kept beside it, gp's DOM snapshots
+and `page-source.html`), as the graft skill's `fixture-leaks.py --har` does,
+and fails on a match with the flagged name and the fixture's line numbers,
+never the value:
+
+```text
+get_orders.json: the recorded value of flagged 'myshop_session' is still in the fixture (line 3), as its observe run myshop/20261006-101500-4242 on this machine recorded it; invent a value in its place.
+```
+
+It looks the run up as `gp observe` does and reads only that run's files. In CI
+and on a teammate's checkout the run is not there, and the check is the name
+check alone, with no warning; the line the check prints on every run ends with
+`N compared with the values their observe run recorded`, so you can see which
+check ran. When the run is there but cannot be read (a damaged `network.har`, a
+permission error), the suite fails with one line naming the run, since a value
+check that quietly did not run reads as a pass; make the run readable, or move
+its directory out of `~/.local/share/graftpunk/observe/` to have the fixture
+checked by its names alone. A sidecar written before 1.35.0 names no run, so its
+fixture gets the name check only; regenerate it with `gp observe fixtures` while
+the run is on disk to turn the value check on. A graftpunk older than 1.35.0
+refuses a schema 4 sidecar, so a suite pinned below 1.35.0 needs its pin raised
+before it reads one.
 
 `flagged_reasons` says why each flagged name is flagged, and the suite's
 problem line repeats it, so you can tell a form-state cookie from a session
@@ -2385,9 +2414,13 @@ value without the recording: `token_candidate` (the digest found the name as a
 token), `token_name` or `session_name` (the name alone), `http_only` (a
 response set it with `HttpOnly`), `value_not_form_state` (a recorded value is
 not form state), `value_not_kept` (an entry in the recording holds the cookie without a value),
-`no_value_seen` (the recording shows no non-empty value), and `sent_only`,
-which is never the only reason and says no response in the recording set the
-cookie. A name flagged only by `value_not_form_state` (with or without `sent_only`) with values you know to
+`no_value_seen` (the recording shows no non-empty value), and two context
+reasons, which are never a name's only reasons: `sent_only` says no response in
+the recording set the cookie, and `out_of_scope_only` (from schema 4) says every
+request that sent or set it went to a host outside the run's scope, such as an
+ad host's `NID`. A cookie any in-scope request carried does not get it, so
+`_ga` and `_gid`, set by script on the site's own domain, do not; telling an
+analytics cookie from a session by name is not what it does. A name flagged only by `value_not_form_state` (with or without `sent_only`) with values you know to
 be form state is the false positive the paragraph above describes; a name with
 `http_only`, `session_name` or `token_name` is a credential until you have
 checked otherwise.
@@ -2432,17 +2465,18 @@ is kept: read both lists before you commit a sidecar.
 
 Here `X-Csrf-Token`, a token name, is looked for in the fixture, and
 `myshop_session` is not, since the captured body did not hold the session
-cookie's value.
+cookie's value; on the machine holding run `20261006-101500-4242` of `myshop`,
+the fixture is also compared with every value that run recorded for both names.
 
 Without a sidecar, `FixtureSession` answers with status 200 and guesses the
 content type from the extension, but the generated suite's fixtures check fails
 on any fixture that has none (see
 [Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture)). A
-fixture you make by hand gets a sidecar of its own with all nine keys shown
+fixture you make by hand gets a sidecar of its own with all ten keys shown
 above (the key set is closed, so a sidecar missing one is refused), its own
 `status` and `content_type`, and `"body_params": []`, `"capture_sha256": null`,
-`"checked_names": []`, `"flagged_names": []`, `"flagged_reasons": {}`, and
-`"redacted_names": 0`. A sidecar is how you test an
+`"checked_names": []`, `"flagged_names": []`, `"flagged_reasons": {}`,
+`"observe_run": null`, and `"redacted_names": 0`. A sidecar is how you test an
 error path: copy a fixture together with its sidecar, set the copied sidecar's
 `status` to 403, and assert that the command raises `SessionRejectedError`.
 
@@ -2506,7 +2540,9 @@ and fails when a fixture has no sidecar, when a fixture is still byte for byte
 its capture, when a name in the sidecar's `checked_names` turns up in the
 fixture (every token name, and a cookie name whose recorded value the capture
 held, or held other than in a name-value pair holding nothing; any flagged name,
-for a sidecar written before 1.33.0), when a
+for a sidecar written before 1.33.0), when a value
+the sidecar's observe run recorded for a flagged name is in the fixture (only
+where that run is on disk; see `observe_run` above), when a
 sidecar is outside its declared format, or when a fixture, or a directory under
 `tests/fixtures/`, cannot be read. A checked name is matched case-insensitively
 and only as a whole name. Letters, digits, `_` and `-` continue a name. The rest
@@ -2527,10 +2563,10 @@ sidecar's own fields are not scanned: gp writes `status` and `content_type` from
 the response, and a media type such as `text/html` is not a cookie value. When a
 checked name turns up, rename it in the fixture. It cannot tell
 whether invented content was invented well; that part stays yours. A fixture
-you wrote from nothing needs a sidecar too, with all nine keys: its own
-`status` and `content_type`, `"schema": 3`, `"body_params": []`,
+you wrote from nothing needs a sidecar too, with all ten keys: its own
+`status` and `content_type`, `"schema": 4`, `"body_params": []`,
 `"capture_sha256": null`, `"checked_names": []`, `"flagged_names": []`,
-`"flagged_reasons": {}`, and `"redacted_names": 0`. The
+`"flagged_reasons": {}`, `"observe_run": null`, and `"redacted_names": 0`. The
 null hash declares the file came off no account. The check trusts that
 declaration rather than verifying it, and prints on every run how many
 fixtures it accepted that way, so the number shows up in review.

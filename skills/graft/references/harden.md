@@ -27,7 +27,7 @@ fixture-leaks line on the capture, the fixture, its sidecar, and `<har>`. It
 prints each captured value or piece of one left in the fixture, its line, and
 the match marked `»` `«` (`found decoded:` for an escaped or encoded copy), and
 the sidecar's names and reasons (tell the user when `value_not_form_state` is a
-name's only reason but `sent_only`); past fifty values, names only (`not
+name's only reason but the context ones); past fifty values, names only (`not
 placed`); past 500, a `more values not shown` count. A `recorded value` line
 places a cookie or token value: rewrite it without printing or copying it. Exit
 1 naming keys means the sidecar differs from gp's: write gp's text again. Read
@@ -51,9 +51,9 @@ and rewrite any captured value it prints, since a docstring and a comment hold
 invented values only; a match in gp's `seen N time(s) in run` phrase is its run
 label: keep it and tell the user. Then run the gate's `pytest` line through the
 Harden block's runner: the suite names each fixture that is its capture byte for
-byte or holds a name its sidecar checks (never a value pasted in); rewrite
-those. Count the check as run only when that output carries its
-`fixtures_are_sanitised:` line; without it, run the gate's plugin check first.
+byte, holds a name its sidecar checks, or holds a value its run recorded where
+the run is; rewrite those. Count the check as run only when that output carries
+its `fixtures_are_sanitised:` line; without it, run the gate's plugin check first.
 
 When gp says it can write no fixture for a command's endpoint, write a fixture
 and its sidecar yourself, with invented values in the shape the projection gives

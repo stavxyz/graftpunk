@@ -1310,8 +1310,10 @@ name that holds an id left out and counted in `redacted_names`; from schema 2,
 also the reasons each of those cookie and token names is flagged
 (`flagged_reasons`, which the fixtures check repeats in its problem line); from
 schema 3, also the flagged names the fixtures check looks for in this fixture
-(`checked_names`, below); it
-never holds the URL, the capture time, or any value, in any form), written to be
+(`checked_names`, below); from schema 4, also the observe run the capture came
+from, as the session name and run id `gp observe` names it by (`observe_run`,
+below), and the context reason `out_of_scope_only`; it
+never holds the URL, the capture time, a path, or any value, in any form), written to be
 committed beside the fixture derived from it once you have read its body
 parameter names and its `flagged_names`: a body key that does not read as a
 field name or holds an id is dropped, but the rule is lexical, so an account
@@ -1449,15 +1451,70 @@ headers, fields a request body sends, meta and hidden-input values in HTML
 responses, in gp's DOM snapshots, and in `page-source.html` beside the HAR,
 bodies kept in files included), by line number only, never printing the value.
 It reports and never decides what the suite checks, so a source it reads that
-`gp observe fixtures` does not can only find more. The suite does not run that
-check, because a sidecar does not name the run it came from and the recording
-is not in the plugin's repository; #345 tracks doing it when the sidecar's own
-run is on disk. What remains in CI is every token name, and a cookie name whose
+`gp observe fixtures` does not can only find more. From schema 4 the suite runs
+that comparison itself where it can (the local value check, below). What remains
+in CI is every token name, and a cookie name whose
 recorded value the body held or that the body held other than in a name-value
 pair whose value holds nothing, as in `{"csrftoken": "<a token>"}` or
 `{"cookies": [{"name": "csrftoken", "value": "<a token>"}]}` from an endpoint
 that hands a single-page app its token, whether or not a recorded header
 carried that token.
+
+The local value check (#345, 1.35.0). A schema 4 sidecar names its observe run
+(`observe_run`: `{"session": "myshop", "run": "20261006-101500-4242"}`), the
+two names `gp observe show` takes, never a path and nothing derived from a
+value; the run id is held to one path component of letters, digits, `.`, `_`
+and `-` that does not start with a dot, so a committed sidecar cannot point the
+check outside its session's runs. When the suite runs on a machine that holds
+that run (the developer's own, where `gp observe fixtures` wrote the sidecar),
+`fixtures_are_sanitised` also compares the fixture with every value the run
+recorded for each of the sidecar's `flagged_names`, read and matched as
+`fixture-leaks.py --har` reads and matches them, and fails a match with a
+problem naming the flagged name and the fixture's line numbers (or `found
+decoded`), never the value. So the pasted `myshop_session` value above fails on
+the developer's machine. `graftpunk.testing.recorded` is the package's one
+implementation of that comparison; the script keeps a copy because it runs with
+the standard library alone, and a test holds the two to the same output on the
+same run.
+
+The run is found by the lookup `gp observe` itself uses
+(`graftpunk.observe.storage.run_dir_of`: the observe directory, the session's
+directory as `session_dirname` names it, then the run id), and the check reads
+only that run's `network.har`, the files it names inside the run (a kept body,
+a request body, a DOM snapshot), and its `page-source.html`, the files the
+digest reads. It lists no directory and reads no other run, so a run id that
+exists only under another session is not used. Two session names that
+`session_dirname` maps to one directory (`myshop@alice` and `myshop-alice`)
+share their runs, as they do for every `gp observe` command.
+
+Where the run is absent, as in CI or on a teammate's checkout, the check is
+exactly schema 3's, with no warning: the line the check prints on every run
+ends with how many fixtures were compared with their run's values, so `0
+compared` in CI and a positive count on the developer's machine say which check
+ran without a line per fixture. Where the run is present but cannot be read (no
+`network.har`, a HAR that is not JSON or has no `log.entries` list, a
+permission error, a file or a dangling symlink in the run's place), the check
+reports one problem per run, naming the first fixture whose sidecar names it,
+and fails the suite; the name check still runs on those fixtures. A warning was
+the alternative. It was not chosen because the check exists for the machine
+that holds the run, and a passing run with a warning line is read as a pass: a
+damaged run would switch the value check off without anyone deciding to. The
+problem says how to proceed: make the run readable, or move its directory out
+of the observe directory, after which the fixture is checked by its names
+alone, as in CI.
+
+`out_of_scope_only` (#316, schema 4) is a context reason like `sent_only`:
+`flagged_reasons_of` writes it beside the reasons that flag a cookie when every
+entry whose request sent the cookie or whose response set it was addressed to a
+host outside the run's scope (the digest's scope root of its primary host,
+`_in_scope`), and the digest's own cookie list, which holds the in-scope hosts'
+cookies, does not name it. A cookie an ad host set and the browser then sent to
+the site is in scope; so is one sent to both. A digest with no primary host has
+no scope, and an entry whose URL has no host the digest reads is not counted as
+out of scope. It is never written alone (the loader refuses a name whose only
+reasons are context reasons) and changes no name's being flagged or checked:
+it tells a reader that a cookie such as `NID` came from a third party, not that
+it is safe.
 
 A body file (`_bodyFile`, `_postDataFile`, a DOM snapshot) or the run's
 `page-source.html` that resolves outside the HAR's directory, through `..` or a
@@ -1482,7 +1539,11 @@ observe fixtures` leaves a flagged cookie name out where the capture held none o
 its values and held the name only in name-value pairs holding nothing. It is
 not refused, since a plugin project floats to the newest graftpunk and a
 refusal would fail its suite on the first run after the upgrade with no change
-on its side.
+on its side. A schema 3 sidecar is not refused either and names no run, so
+its fixture is checked by names alone wherever it runs; regenerating it with
+`gp observe fixtures` from a run still on disk turns the local value check on.
+A schema 4 sidecar is refused by a graftpunk older than 1.35.0, since the
+loader refuses an unknown schema (`graftpunk.contracts`).
 
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
 fixture that removes prefixed environment variables for the duration of each
