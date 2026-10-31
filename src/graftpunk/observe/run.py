@@ -730,9 +730,9 @@ def credential_post_redaction(
     field names of a post it was taken from is kept out of the run-wide scrub.
     """
     from graftpunk.har.digest import (
-        _read_body_values,
         is_credential_post,
         post_identifier_values,
+        read_body_values,
     )
     from graftpunk.har.login_signals import is_login_step_post
     from graftpunk.observe.snapshot import spelled_redaction
@@ -773,7 +773,7 @@ def credential_post_redaction(
             continue
         try:
             credential = is_credential_post(text, content_type, url, targets)
-            read, by_names = _read_body_values(text, content_type)
+            read, by_names = read_body_values(text, content_type)
         except Exception as exc:  # noqa: BLE001 - one post's body never stops the save
             unread += 1
             missed += 1

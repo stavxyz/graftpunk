@@ -110,6 +110,8 @@ __all__ = [
     "post_every_value",
     "printable_login_fields",
     "printable_tokens",
+    "read_body_values",
+    "BodyValue",
     "post_identifier_values",
     "posted_account_values",
     "endpoint_template",
@@ -1019,19 +1021,19 @@ def body_values(post_data: str | None, content_type: str = "") -> list[tuple[tup
     type it declared (``multipart/form-data`` with no parts, say), any body holding
     ``=`` that is not JSON by ``parse_qs`` even when no key reads as a field name, as
     the snapshot redaction always did, and a value that is itself a JSON object or
-    array, one level down, under its field's name (:func:`_read_body_values`)."""
-    return [(path, value) for path, value, _named in _read_body_values(post_data, content_type)[0]]
+    array, one level down, under its field's name (:func:`read_body_values`)."""
+    return [(path, value) for path, value, _named in read_body_values(post_data, content_type)[0]]
 
 
 # A body value: the names leading to it, outermost first; the value; and how many
 # of those names are the field's own. That is all of them but for a value read
 # inside a field holding JSON, whose own names are the outer field's only.
-_BodyValue = tuple[tuple[str, ...], str, int]
+BodyValue = tuple[tuple[str, ...], str, int]
 
 
-def _read_body_values(post_data: str | None, content_type: str) -> tuple[list[_BodyValue], bool]:
+def read_body_values(post_data: str | None, content_type: str) -> tuple[list[BodyValue], bool]:
     """:func:`body_values`, each with how many of its names are its field's own
-    (:data:`_BodyValue`), and whether the body was read by its field names: as
+    (:data:`BodyValue`), and whether the body was read by its field names: as
     JSON in which every value has a name, as multipart parts, as ``text/plain``
     fields, or as a form with a key spelled like a field name. A body read only by
     ``parse_qs`` with no such key (XML with an attribute, prose with an ``=``), a
@@ -1053,7 +1055,7 @@ def body_layout(post_data: str | None, content_type: str = "") -> BodyLayout:
 def _body_fields(
     post_data: str | None, content_type: str
 ) -> tuple[BodyLayout, list[tuple[tuple[str, ...], str]], bool]:
-    """The one split of a body into fields, for :func:`_read_body_values` and
+    """The one split of a body into fields, for :func:`read_body_values` and
     :func:`body_layout`: its layout, its fields (before the values inside a field
     holding JSON), and whether they were read by their field names."""
     declared = content_type.split(";")[0].strip().lower()
@@ -1116,13 +1118,13 @@ def _text_plain_fields(post_data: str) -> list[tuple[tuple[str, ...], str]] | No
 
 def _with_json_values(
     values: list[tuple[tuple[str, ...], str]], by_names: bool
-) -> tuple[list[_BodyValue], bool]:
+) -> tuple[list[BodyValue], bool]:
     """*values*, each followed by the values inside it when it is itself a JSON
     object or array (a form field or a JSON string holding JSON), under its own
     names; one level only. A value inside keeps its field's names as its own
-    (:data:`_BodyValue`). *by_names* turns false when such a value is nested past
+    (:data:`BodyValue`). *by_names* turns false when such a value is nested past
     the JSON parser's limit, because the values inside it cannot be read."""
-    found: list[_BodyValue] = []
+    found: list[BodyValue] = []
     for path, value in values:
         found.append((path, value, len(path)))
         if value.lstrip()[:1] not in ("{", "["):
@@ -2066,10 +2068,10 @@ def post_account_values(
     ``account=1`` leave every value an account value).
 
     ``None`` when the body gives no values read by their field names
-    (:func:`_read_body_values`: no body, nested past the JSON parser's limit, XML, a
+    (:func:`read_body_values`: no body, nested past the JSON parser's limit, XML, a
     JSON value under no name, or any other shape), so the guard cannot see the
     username, and nothing may be suggested. Held in memory only, never written."""
-    values, by_names = _read_body_values(post_data, content_type)
+    values, by_names = read_body_values(post_data, content_type)
     if not (values and by_names):
         return None
     usernames_by_form = frozenset(username_names)
@@ -2100,7 +2102,7 @@ def post_account_values(
     return [*usernames, *inner, *passwords, *emails]
 
 
-def _every_value_but_tokens(values: list[_BodyValue]) -> list[str]:
+def _every_value_but_tokens(values: list[BodyValue]) -> list[str]:
     """The every-value fallback of :func:`post_account_values`: each of *values* but
     one under a token field's name (:func:`graftpunk.har.documents.looks_like_token_name`)
     anywhere on its way."""
@@ -2119,7 +2121,7 @@ def post_every_value(post_data: str | None, content_type: str = "") -> list[str]
     an ``email``) is still the account's. Empty when the body gives no values read by
     their field names, as :func:`post_account_values` gives ``None``. Held in memory
     only, never written."""
-    values, by_names = _read_body_values(post_data, content_type)
+    values, by_names = read_body_values(post_data, content_type)
     return _every_value_but_tokens(values) if values and by_names else []
 
 
