@@ -990,7 +990,13 @@ class TestTheLocalValueCheck:
             (problem,) = check_fixtures_tree(tree, observe_dir=observe).problems
         finally:
             observe.chmod(0o700)
-        assert "the observe directory cannot be listed" in problem
+        assert problem.startswith(
+            "get_orders.json: the lookup of the observe run 20261006-101500-4242 of myshop "
+            "its sidecar names could not be completed (the observe directory cannot be listed"
+        )
+        assert "is on this machine but" not in problem
+        assert "move its directory" not in problem
+        assert str(tmp_path) not in problem
 
     def test_a_sidecar_naming_no_run_is_not_compared(self, tmp_path: Path) -> None:
         observe = tmp_path / "observe"
@@ -1169,6 +1175,30 @@ class TestTheLocalValueCheck:
         assert str(tmp_path) not in problem
         assert report.run_checked == 0
 
+    def test_a_body_file_the_har_names_that_is_gone_fails_the_local_check(
+        self, tmp_path: Path
+    ) -> None:
+        """gp names a body file in the HAR only after writing it, so one that is
+        gone means the run was changed since: the values only it held cannot be
+        compared, and the run is not counted as compared."""
+        observe = tmp_path / "observe"
+        run_dir = _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        har = json.loads((run_dir / "network.har").read_text())
+        response = har["log"]["entries"][0]["response"]
+        response["headers"] = [{"name": "Content-Type", "value": "text/html"}]
+        content = response["content"]
+        del content["text"]
+        content["_bodyFile"] = "bodies/1.html"
+        (run_dir / "network.har").write_text(json.dumps(har))
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        (problem,) = report.problems
+        assert "cannot be read (cannot read bodies/1.html (missing))" in problem
+        assert "alice" not in problem
+        assert str(tmp_path) not in problem
+        assert report.run_checked == 0
+
     @pytest.mark.skipif(os.geteuid() == 0, reason="root searches a directory whatever its mode")
     @pytest.mark.parametrize("with_the_run", [True, False])
     def test_a_session_directory_that_cannot_be_searched_is_not_a_second_copy(
@@ -1187,11 +1217,17 @@ class TestTheLocalValueCheck:
         finally:
             bob.chmod(0o700)
         (problem,) = report.problems
-        assert (
-            "1 of the plugin's session directories cannot be searched (Permission denied), "
-            "so the check cannot tell whether it holds the run"
-        ) in problem
-        assert "hold a run" not in problem
+        assert problem == (
+            "get_orders.json: the lookup of the observe run 20261006-101500-4242 of myshop "
+            "its sidecar names could not be completed (1 of the plugin's session "
+            "directories cannot be searched (Permission denied), so the check cannot tell "
+            "whether it holds the run), so the fixture was not compared with the values "
+            "the run may have recorded. Make the observe directory "
+            "(graftpunk.observe.OBSERVE_BASE_DIR) listable and the plugin's session "
+            "directories in it searchable, so the check can tell whether the run is on "
+            "this machine."
+        )
+        assert report.run_checked == 0
         assert "alice" not in problem
         assert "bob" not in problem
         assert str(tmp_path) not in problem

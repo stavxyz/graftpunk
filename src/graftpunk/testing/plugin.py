@@ -417,6 +417,14 @@ def check_fixtures_tree(tree: Path, *, observe_dir: Path | None = None) -> Fixtu
     )
 
 
+class _LookupIncomplete(str):
+    """The reason the lookup of a run could not be completed (the observe
+    directory cannot be listed, or a session directory cannot be searched), so
+    whether the run is on this machine is unknown."""
+
+    __slots__ = ()
+
+
 class _RunValues:
     """The local value check: each observe run a sidecar names, looked up once
     under *base* and read once, and the fixtures compared with it.
@@ -450,7 +458,9 @@ class _RunValues:
             except (FileNotFoundError, NotADirectoryError):
                 self._entries = ()
             except OSError as exc:
-                self._entries = f"the observe directory cannot be listed ({exc.strerror or exc})"
+                self._entries = _LookupIncomplete(
+                    f"the observe directory cannot be listed ({exc.strerror or exc})"
+                )
         return self._entries
 
     def _run(self, run: ObserveRun) -> tuple[Path, object] | str | None:
@@ -484,7 +494,7 @@ class _RunValues:
             )
         if unsearchable:
             count = len(unsearchable)
-            return (
+            return _LookupIncomplete(
                 f"{count} of the plugin's session directories cannot be searched "
                 f"({unsearchable[0]}), so the check cannot tell whether "
                 f"{'it holds' if count == 1 else 'they hold'} the run"
@@ -537,7 +547,7 @@ class _RunValues:
 
     def unreadable_problems(self) -> list[str]:
         """One problem per run a sidecar names that is on this machine and cannot
-        be read."""
+        be read, or whose lookup could not be completed."""
         problems: list[str] = []
         for run, (first, count) in self._unreadable.items():
             reason = self._runs[run]
@@ -545,6 +555,17 @@ class _RunValues:
             # Neither the observe directory's path (it holds the OS user name)
             # nor a session directory's name (it holds the account label) is
             # printed: suite output gets pasted into issues.
+            if isinstance(reason, _LookupIncomplete):
+                problems.append(
+                    f"{first}{others}: the lookup of the observe run {run.run} of "
+                    f"{run.plugin} its sidecar names could not be completed ({reason}), "
+                    f"so the fixture was not compared with the values the run may have "
+                    f"recorded. Make the observe directory "
+                    f"(graftpunk.observe.OBSERVE_BASE_DIR) listable and the plugin's "
+                    f"session directories in it searchable, so the check can tell "
+                    f"whether the run is on this machine."
+                )
+                continue
             problems.append(
                 f"{first}{others}: the observe run {run.run} of {run.plugin} its sidecar "
                 f"names is on this machine but cannot be read ({reason}), so the fixture "
