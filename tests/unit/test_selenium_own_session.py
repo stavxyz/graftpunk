@@ -202,6 +202,37 @@ class TestTheProcesses:
 
         assert _exited_within(running, 10) == -signal.SIGTERM
 
+    def test_the_signal_handler_ends_a_chrome_known_by_pid_only(
+        self, armed: None, spawned: list[subprocess.Popen[Any]]
+    ) -> None:
+        """The standard path's Chrome, which chromedriver spawned: held by ``add_pid``."""
+        chrome = _sleeper(subprocess.Popen, "--remote-debugging-port=0", owner_switch())
+        spawned.append(chrome)
+        processes = SeleniumProcesses()
+        processes.add_pid(chrome.pid)
+
+        processes._terminate_for_signal()
+
+        assert _exited_within(chrome, 10) == -signal.SIGTERM
+
+    def test_the_signal_handler_never_signals_a_process_that_has_exited(
+        self, monkeypatch: pytest.MonkeyPatch, spawned: list[subprocess.Popen[Any]]
+    ) -> None:
+        """Its pid is free for the kernel to hand to another program."""
+        running = _sleeper(subprocess.Popen)
+        exited = subprocess.Popen([sys.executable, "-c", "pass"])
+        exited.wait(10)
+        spawned += [running, exited]
+        processes = SeleniumProcesses()
+        processes.add(running)
+        processes.add(exited)
+        signaled: list[int] = []
+        monkeypatch.setattr(chrome_orphans, "terminate_pid", signaled.append)
+
+        processes._terminate_for_signal()
+
+        assert signaled == [running.pid]
+
     def test_a_pid_now_held_by_a_process_without_our_marker_is_never_signaled(
         self, armed: None, spawned: list[subprocess.Popen[Any]]
     ) -> None:
@@ -220,6 +251,40 @@ class TestTheProcesses:
         assert _exited_within(unmarked, 1) is None
         assert _exited_within(someone_elses, 0.1) is None
         assert processes not in signals.live_browsers()
+
+    def test_end_kills_a_process_that_ignores_sigterm(
+        self, monkeypatch: pytest.MonkeyPatch, spawned: list[subprocess.Popen[Any]]
+    ) -> None:
+        stubborn = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "print('ready', flush=True); time.sleep(60)",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        spawned.append(stubborn)
+        assert stubborn.stdout is not None
+        assert stubborn.stdout.readline().strip() == "ready"
+        monkeypatch.setattr(browser_launch, "_END_TERM_TIMEOUT_S", 0.2)
+        processes = SeleniumProcesses()
+        processes.add(stubborn)
+
+        processes.end()
+
+        assert stubborn.returncode == -signal.SIGKILL
+        stubborn.stdout.close()
+
+    def test_a_non_positive_pid_is_never_signaled(self, armed: None) -> None:
+        """``kill(0, ...)`` would reach this process's own group, a negative pid a whole group."""
+        kills: list[int] = []
+        ops = chrome_orphans.ProcessOps(kill=lambda pid, signum: kills.append(pid))
+
+        assert chrome_orphans.terminate_pid(0, ops=ops) is False
+        assert chrome_orphans.terminate_pid(-1, ops=ops) is False
+        assert kills == []
 
     def test_releasing_a_quit_driver_leaves_the_registry(self) -> None:
         processes = SeleniumProcesses()
@@ -317,6 +382,48 @@ class TestTheStealthDriver:
         assert processes.pids == [chrome.pid, chromedriver.pid]
         assert processes in signals.live_browsers()
         assert [e for e in logs if e["event"] == "chrome_not_in_own_session"] == []
+
+    def test_in_gp_the_launch_arms_the_handlers_itself(
+        self, armed: None, monkeypatch: pytest.MonkeyPatch, fake_uc: type[_FakeUcChrome]
+    ) -> None:
+        """``gp`` sets ``auto_install`` and nothing else: a selenium-only run has no
+        other arming site, so without this launch's arming the handlers are never
+        installed and Chrome and chromedriver stay in the terminal's group."""
+        from graftpunk.stealth import create_stealth_driver
+
+        monkeypatch.setattr(signals, "auto_install", True)
+        monkeypatch.setattr(browser_launch, "prepare_browser_launch", CleanupReport)
+        assert signals.termination_cleanup_installed() is False
+
+        driver = create_stealth_driver(headless=True)
+
+        assert signals.termination_cleanup_installed() is True
+        chrome, chromedriver = driver.processes
+        assert os.getsid(chrome.pid) == chrome.pid
+        assert os.getsid(chromedriver.pid) == chromedriver.pid
+
+    def test_with_the_handlers_the_orphan_sweep_runs_once_before_chrome_starts(
+        self,
+        handlers_installed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_uc: type[_FakeUcChrome],
+    ) -> None:
+        """For a user whose plugins are all selenium, this is the only sweep that
+        ends a chromedriver and Chrome left by a Ctrl+\\ or a group SIGKILL."""
+        from graftpunk.stealth import create_stealth_driver
+
+        started_before_sweep: list[int] = []
+
+        def sweep() -> CleanupReport:
+            started_before_sweep.append(len(fake_uc.created))
+            return CleanupReport()
+
+        monkeypatch.setattr(browser_launch, "prepare_browser_launch", sweep)
+
+        create_stealth_driver(headless=True)
+
+        assert started_before_sweep == [0]
+        assert len(fake_uc.created) == 1
 
     def test_without_the_handlers_it_launches_as_before(
         self, monkeypatch: pytest.MonkeyPatch, fake_uc: type[_FakeUcChrome]
@@ -431,73 +538,156 @@ time.sleep(60)
 """
 
 
+@pytest.fixture()
+def fake_chromedriver(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[dict[str, Any]]:
+    """The standard path with a stand-in chromedriver that spawns a stand-in Chrome.
+
+    Yields what the fake ``webdriver.Chrome`` saw: ``service``, ``options`` and
+    ``chrome``, the pid of the Chrome the fake chromedriver spawned. Every
+    stand-in is killed at the end whatever happened.
+    """
+    chromedriver_path = tmp_path / "chromedriver"
+    chromedriver_path.write_text(_FAKE_CHROMEDRIVER.format(python=sys.executable, sleep=_SLEEP))
+    chromedriver_path.chmod(0o755)
+    manager = SimpleNamespace(install=lambda: str(chromedriver_path))
+    monkeypatch.setattr(
+        "graftpunk.backends.selenium.webdriver_manager.chrome.ChromeDriverManager",
+        lambda driver_version: manager,
+    )
+    monkeypatch.setattr("graftpunk.backends.selenium.get_chrome_version", lambda major: "156")
+    monkeypatch.setattr(SeleniumService, "is_connectable", lambda self: True)
+    seen: dict[str, Any] = {}
+    yield seen
+    with suppress(KeyError, OSError):
+        os.kill(seen["chrome"], signal.SIGKILL)
+    service = seen.get("service")
+    if service is not None and service.process.poll() is None:
+        service.process.kill()
+        service.process.wait(5)
+
+
+def _fake_webdriver(seen: dict[str, Any], *, interrupt: bool = False) -> type:
+    """``webdriver.Chrome`` as far as processes go, raising KeyboardInterrupt when *interrupt*."""
+
+    class FakeWebDriver:
+        """Starts the service as ChromiumDriver does, and waits for its "Chrome"."""
+
+        def __init__(self, service: Any, options: Any) -> None:
+            service.start()
+            seen["service"] = service
+            seen["options"] = options
+            deadline = time.monotonic() + 10
+            while not (chromes := browser_launch.chromes_started_by(service.process.pid)):
+                assert time.monotonic() < deadline, "the fake chromedriver never spawned"
+                time.sleep(0.05)
+            [seen["chrome"]] = chromes
+            if interrupt:
+                raise KeyboardInterrupt
+
+        def quit(self) -> None:
+            os.kill(seen["chrome"], signal.SIGTERM)
+            seen["service"].process.terminate()
+            seen["service"].process.wait(10)
+
+    return FakeWebDriver
+
+
+def _gone_within(pid: int, timeout_s: float) -> bool:
+    """Whether *pid*, a process this test did not spawn, is gone within *timeout_s*."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
 class TestTheStandardSeleniumPath:
     """``SeleniumBackend(use_stealth=False)``: chromedriver through Selenium's own
     ``popen_kw``, and its Chrome in chromedriver's session."""
 
     def test_chromedriver_and_its_chrome_are_out_of_this_session_and_registered(
-        self, handlers_installed: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        handlers_installed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_chromedriver: dict[str, Any],
     ) -> None:
         from graftpunk.backends.selenium import SeleniumBackend
 
-        chromedriver_path = tmp_path / "chromedriver"
-        chromedriver_path.write_text(_FAKE_CHROMEDRIVER.format(python=sys.executable, sleep=_SLEEP))
-        chromedriver_path.chmod(0o755)
-        manager = SimpleNamespace(install=lambda: str(chromedriver_path))
-        monkeypatch.setattr(
-            "graftpunk.backends.selenium.webdriver_manager.chrome.ChromeDriverManager",
-            lambda driver_version: manager,
-        )
-        monkeypatch.setattr("graftpunk.backends.selenium.get_chrome_version", lambda major: "156")
-        monkeypatch.setattr(SeleniumService, "is_connectable", lambda self: True)
-        seen: dict[str, Any] = {}
-
-        class FakeWebDriver:
-            """Starts the service as ChromiumDriver does, and waits for its "Chrome"."""
-
-            def __init__(self, service: Any, options: Any) -> None:
-                service.start()
-                seen["service"] = service
-                seen["options"] = options
-                deadline = time.monotonic() + 10
-                while not browser_launch.chromes_started_by(service.process.pid):
-                    assert time.monotonic() < deadline, "the fake chromedriver never spawned"
-                    time.sleep(0.05)
-
-            def quit(self) -> None:
-                for pid in browser_launch.chromes_started_by(seen["service"].process.pid):
-                    os.kill(pid, signal.SIGTERM)
-                seen["service"].process.terminate()
-                seen["service"].process.wait(10)
-
-        monkeypatch.setattr("selenium.webdriver.Chrome", FakeWebDriver)
+        seen = fake_chromedriver
+        monkeypatch.setattr("selenium.webdriver.Chrome", _fake_webdriver(seen))
         backend = SeleniumBackend(use_stealth=False, headless=True)
-        try:
-            with capture_logs() as logs:
-                backend.start()
-            chromedriver = seen["service"].process
-            processes = backend._driver._graftpunk_processes
-            [chrome] = processes.pids[1:]
+        with capture_logs() as logs:
+            backend.start()
+        chromedriver = seen["service"].process
+        processes = backend._driver._graftpunk_processes
+        chrome = seen["chrome"]
 
-            assert os.getsid(chromedriver.pid) == chromedriver.pid
-            assert os.getsid(chrome) == chromedriver.pid
-            assert chromedriver.args[-1] == owner_switch()
-            assert owner_switch() in seen["options"].arguments
-            assert processes.pids == [chromedriver.pid, chrome]
-            assert processes in signals.live_browsers()
-            assert [e for e in logs if e["event"] == "chrome_not_in_own_session"] == []
+        assert os.getsid(chromedriver.pid) == chromedriver.pid
+        assert os.getsid(chrome) == chromedriver.pid
+        assert chromedriver.args[-1] == owner_switch()
+        assert owner_switch() in seen["options"].arguments
+        assert processes.pids == [chromedriver.pid, chrome]
+        assert processes in signals.live_browsers()
+        assert [e for e in logs if e["event"] == "chrome_not_in_own_session"] == []
 
-            backend.stop()
+        backend.stop()
 
-            assert processes not in signals.live_browsers()
-        finally:
-            service = seen.get("service")
-            if service is not None:
-                for pid in browser_launch.chromes_started_by(service.process.pid):
-                    os.kill(pid, signal.SIGKILL)
-                if service.process.poll() is None:
-                    service.process.kill()
-                    service.process.wait(5)
+        assert processes not in signals.live_browsers()
+
+    def test_a_start_interrupted_after_chromedriver_spawned_chrome_ends_both(
+        self,
+        handlers_installed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_chromedriver: dict[str, Any],
+    ) -> None:
+        """Chrome is not yet held when ``webdriver.Chrome`` raises: only the lookup
+        of chromedriver's children finds it, and a SIGTERM to chromedriver alone
+        would leave it running in a session no Ctrl+C reaches."""
+        from graftpunk.backends.selenium import SeleniumBackend
+
+        seen = fake_chromedriver
+        monkeypatch.setattr("selenium.webdriver.Chrome", _fake_webdriver(seen, interrupt=True))
+        backend = SeleniumBackend(use_stealth=False, headless=True)
+
+        with pytest.raises(KeyboardInterrupt):
+            backend.start()
+
+        assert _exited_within(seen["service"].process, 10) == -signal.SIGTERM
+        assert _gone_within(seen["chrome"], 10)
+        assert seen["service"]._graftpunk_processes not in signals.live_browsers()
+
+    def test_a_chromedriver_left_in_this_session_is_logged_with_what_it_costs(
+        self,
+        handlers_installed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_chromedriver: dict[str, Any],
+    ) -> None:
+        """The outcome is checked, not the seam: a Selenium whose ``popen_kw`` no
+        longer reaches the spawn warns, for chromedriver and for its Chrome."""
+        from graftpunk.backends import selenium as selenium_backend
+
+        class SharingService(selenium_backend._RegisteringService):
+            def __init__(self, path: str, processes: SeleniumProcesses) -> None:
+                super().__init__(path, processes)
+                self.popen_kw = {}
+
+        seen = fake_chromedriver
+        monkeypatch.setattr(selenium_backend, "_RegisteringService", SharingService)
+        monkeypatch.setattr("selenium.webdriver.Chrome", _fake_webdriver(seen))
+        backend = selenium_backend.SeleniumBackend(use_stealth=False, headless=True)
+        with capture_logs() as logs:
+            backend.start()
+
+        events = [e for e in logs if e["event"] == "chrome_not_in_own_session"]
+        assert sorted(e["pid"] for e in events) == sorted(
+            [seen["service"].process.pid, seen["chrome"]]
+        )
+        assert {e["consequence"] for e in events} == {CHROME_SHARES_SESSION_CONSEQUENCE}
+
+        backend.stop()
 
 
 class TestTheReaper:
