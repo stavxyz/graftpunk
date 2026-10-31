@@ -19,6 +19,7 @@ from graftpunk.contracts import current_schema
 from graftpunk.har.digest import (
     INTERNAL,
     OMIT_EMPTY,
+    CookieSetting,
     Endpoint,
     RunDigest,
     ShapeNode,
@@ -76,6 +77,37 @@ def summarize_shape(shape: ShapeNode | None, *, depth: int = _DEFAULT_SUMMARY_DE
 def _size_note(size: int | None) -> str:
     """`` (N bytes)`` for a size the HAR recorded, and nothing for one it did not."""
     return "" if size is None else f" ({size} bytes)"
+
+
+def _cookie_setting(setting: CookieSetting) -> str:
+    """One attribute set, in the words and order the graft skill's
+    ``har-facts.py cookies`` prints them, with the expiry as a word."""
+    return (
+        f"set by {', '.join(setting.set_by)}: HttpOnly={setting.http_only} "
+        f"Secure={setting.secure} SameSite={setting.same_site} Path={setting.path} "
+        f"expiry={setting.expiry}"
+    )
+
+
+def _cookie_lines(d: RunDigest) -> list[str]:
+    """The Cookies section: one line per cookie, by name, never a value. A cookie a
+    response set lists each distinct attribute set with the endpoints that set it
+    so, separated by ``;``; one the recording only sent says so. A name in
+    ``d.cookies`` with no facts (a digest built without them) prints alone."""
+    facts = {fact.name: fact for fact in d.cookie_facts}
+    names = list(dict.fromkeys([*d.cookies, *facts]))
+    if not names:
+        return ["(none)"]
+    lines: list[str] = []
+    for name in names:
+        fact = facts.get(name)
+        if fact is None:
+            lines.append(f"- `{name}`")
+        elif fact.settings:
+            lines.append(f"- `{name}`: {'; '.join(map(_cookie_setting, fact.settings))}")
+        else:
+            lines.append(f"- `{name}`: sent in requests and never set in this recording")
+    return lines
 
 
 def _endpoint_block(endpoint: Endpoint) -> list[str]:
@@ -231,7 +263,7 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     lines.append("")
 
     lines.append("## Cookies")
-    lines.append(", ".join(d.cookies) if d.cookies else "(none)")
+    lines.extend(_cookie_lines(d))
     lines.append("")
 
     lines.append("## Endpoints")

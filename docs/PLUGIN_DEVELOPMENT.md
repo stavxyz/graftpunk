@@ -699,7 +699,7 @@ blocks elided:
 - header `X-Csrf-Token`, seen on: GET /api/orders, GET /api/orders/{order_id}
 
 ## Cookies
-myshop_session
+- `myshop_session`: set by POST /session: HttpOnly=yes Secure=yes SameSite=Lax Path=/ expiry=session
 
 ## Endpoints
 ### GET /api/orders
@@ -744,8 +744,17 @@ tokens, and the endpoints each was seen on. A candidate is a name, not a value,
 and not yet a decision: see [How graftpunk Works](HOW_IT_WORKS.md#token-and-csrf-support)
 for turning one into a `Token`.
 
-**Cookies** lists the cookie names set by every host the digest kept (the
-primary host's domain, or every host with `--all-hosts`), names only.
+**Cookies** has one line per cookie a host the digest kept (the primary host's
+domain, or every host with `--all-hosts`) set or sent, never its value. A cookie
+a response set shows the endpoints that set it and the attributes they gave it:
+`HttpOnly`, `Secure`, `SameSite`, `Path`, and `expiry` (`session`,
+`persistent`, or `past` for a response that deletes it). When responses gave it
+different attributes, each set follows its own `set by`, separated by `;`.
+`unknown` is an attribute the recording does not settle, and `-` one the
+response did not set. A cookie the recording only sent (a recording made with a
+cached session never sees the session set) says so. See
+[How graftpunk Works](HOW_IT_WORKS.md#building-a-plugin-from-a-recording) for
+each word.
 
 **Endpoints** is one block per method and templated path. Path segments that
 look like identifiers collapse into named parameters, so five requests for

@@ -22,6 +22,7 @@ from graftpunk.har.documents import extract_login_forms
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from graftpunk.observe.snapshot import stored_dom_snapshot
 from tests.unit.test_har_digest import _entry, _write_har
+from tests.unit.test_har_report import cookies_by_name_only
 
 _HOST = "https://myshop.example.com"
 _CREDS = {"email": "alice@example.com", "password": "hunter2hunter2"}
@@ -510,9 +511,11 @@ def golden_outputs(base: Path) -> dict[str, dict[str, str]]:
 
 def test_a_run_without_an_after_read_digests_as_1_29_0_did(tmp_path: Path) -> None:
     """The golden file was written by graftpunk 1.29.0 (main at cd8b06be) from these
-    runs; every output must match it byte for byte."""
+    runs; every output must match it byte for byte, the markdown Cookies section
+    read in its form before #315 (:func:`cookies_by_name_only`)."""
     golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
-    assert _without_failure_candidates(golden_outputs(tmp_path)) == golden
+    outputs = cookies_by_name_only(golden_outputs(tmp_path))
+    assert _without_failure_candidates(outputs) == golden
 
 
 def _without_failure_candidates(outputs: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:

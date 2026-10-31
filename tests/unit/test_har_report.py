@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,35 @@ from graftpunk.har.report import (
 )
 
 _EXPECTED_MAX_MARKDOWN_LINES = 400
+_COOKIES_SECTION_RE = re.compile(r"^## Cookies\n(.*?)\n\n", re.MULTILINE | re.DOTALL)
+_COOKIE_LINE_RE = re.compile(r"- `([^`]+)`(: .*)?")
+
+
+def cookies_by_name_only(outputs: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    """*outputs* (a golden test's renderings, by run) with each markdown Cookies
+    section put back in its form before #315 gave each cookie its own line: the
+    names a response set, comma-separated, and no line for a cookie the recording
+    only sent. Every other byte is compared as rendered."""
+
+    def names_only(match: re.Match[str]) -> str:
+        body = match.group(1)
+        if body == "(none)":
+            return match.group(0)
+        names = []
+        for line in body.split("\n"):
+            cookie = _COOKIE_LINE_RE.fullmatch(line)
+            assert cookie is not None, line
+            if not (cookie.group(2) or "").endswith("never set in this recording"):
+                names.append(cookie.group(1))
+        return f"## Cookies\n{', '.join(names) if names else '(none)'}\n\n"
+
+    for outputs_of_run in outputs.values():
+        text = outputs_of_run["markdown"]
+        assert len(_COOKIES_SECTION_RE.findall(text)) == 1
+        outputs_of_run["markdown"] = _COOKIES_SECTION_RE.sub(names_only, text)
+    return outputs
+
+
 _LARGE_RUN_ENTRY_COUNT = 700
 
 

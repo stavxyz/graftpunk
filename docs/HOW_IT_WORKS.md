@@ -718,6 +718,31 @@ it is left commented or uncommented; to use it, uncomment it, return
 The generated project already requires the graftpunk release that wrote it (its
 `graftpunk>=` floor is that release's `major.minor.0`), so the import resolves.
 
+The markdown digest's Cookies section gives each cookie a kept host's responses
+set or its requests sent one line, by name, and never a value or a `Domain`
+(#315). A cookie a response set lists each distinct set of attributes it was
+given, each after the endpoints that gave it (`set by POST /login, GET /account:`,
+as `METHOD template` in the digest's own templates), separated by `;`, so one
+line shows a cookie a login sets `HttpOnly` and a logout deletes. An attribute
+set is `HttpOnly` and `Secure` (`yes`, `no`, or `unknown`), `SameSite` (`Lax`,
+`Strict`, `None`, `-` when not set, or `unknown`), `Path` (templated as an
+endpoint's path is, `-` when not set, or `unknown` when it does not start with
+`/`), and `expiry`: `session` with neither `Max-Age` nor `Expires`,
+`persistent`, `past` when `Max-Age` is 0 or less or `Expires` is no later than
+the request (the response deletes the cookie), or `unknown` when neither is a
+number or a date. `Max-Age` wins over `Expires`, as in RFC 6265. The attributes
+are read from every `Set-Cookie` header line by the parser's one `Set-Cookie`
+parse (`graftpunk.har.parser._set_cookie_lines`: any header case, several
+headers per entry, newline-joined lines, attribute names in any case); a
+`response.cookies` entry past the header lines of its name, as a HAR from
+another tool can carry with no header, adds its own flags, and one it leaves
+out reads `unknown`. A cookie no kept response set and a kept request sent
+reads `sent in requests and never set in this recording`, as a recording made
+with a cached session shows its session cookie. A name that holds an id is
+left out, as everywhere. The words are those of the graft skill's `har-facts.py
+cookies`, which also prints the `Domain` and each response's full URL. `--json`
+and `--endpoints-json` do not carry these lines.
+
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
 response keys; request header names; cookie and token candidate names; and a

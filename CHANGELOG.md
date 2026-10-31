@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading
+
+1. **The markdown digest's Cookies section is now one line per cookie** (#315). It was one comma-separated line of the names responses set. Each line now starts ``- `<name>`:`` and is followed by the cookie's attributes, and a cookie the recording only sent gets a line too. A program that read the names from the old line should read `--json`'s `cookies` (unchanged) instead. `--json`, `--endpoints-json`, and the fixture sidecar are unchanged.
+
+### Added
+
+- **The markdown digest's Cookies section shows each cookie's attributes, never its value** (#315). `gp observe digest` prints, for a cookie a response set, the endpoints that set it and its `HttpOnly`, `Secure`, `SameSite`, `Path` (templated), and `expiry` (`session`, `persistent`, or `past`), with `unknown` for what the recording does not settle; when responses set it with different attributes, each set is listed with its own endpoints. A cookie no response set reads `sent in requests and never set in this recording`. docs/HOW_IT_WORKS.md ("Building a plugin from a recording") gives each word. New API: `CookieFacts`, `CookieSetting`, and `RunDigest.cookie_facts` in `graftpunk.har.digest`, and `HARResponse.set_cookie_attributes` in `graftpunk.har.parser`; a parsed `response.cookies` entry now keeps the HAR's `sameSite` when it has one.
+
 ## [1.33.0] - 2026-10-30
 
 This is a minor release. Two changes can reach a program on the first run after the upgrade: the fixtures check's problem line for a sidecar written before this release gains a sentence (Upgrading, item 1), and `parse_har_file` and the digest no longer read a response body file or `page-source.html` that resolves outside the HAR's directory, which gp's own recordings never hold (item 3). Item 2 is the new sidecar schema, which reaches a plugin project only when it regenerates a sidecar, and item 4 is about upgrading itself.
