@@ -915,6 +915,26 @@ class TestTheLocalValueCheck:
         assert report.problems == ()
         assert report.run_checked == 1
 
+    @pytest.mark.parametrize(
+        ("recorded", "fails"),
+        [("true", False), ("USD", False), (_RECORDED_SESSION, True)],
+        ids=["true", "a-word", "opaque"],
+    )
+    def test_a_recorded_value_that_holds_nothing_is_not_looked_for(
+        self, tmp_path: Path, recorded: str, fails: bool
+    ) -> None:
+        """A cookie flagged by its name alone can record ``true``; the fixture's
+        JSON literal ``true`` cannot be invented away, so such a value is not
+        looked for. An opaque recorded value still fails."""
+        observe = tmp_path / "observe"
+        _write_run(observe, "myshop", _RUN.run, recorded)
+        tree = tmp_path / "fixtures"
+        body = f'{{"orders": [], "active": true, "currency": "USD", "t": "{_RECORDED_SESSION}"}}'
+        _fixture(tree, "get_orders.json", body.encode(), _from_run(body.encode()))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        assert bool(report.problems) is fails
+        assert report.run_checked == 1
+
     def test_a_run_of_another_plugin_is_not_used(self, tmp_path: Path) -> None:
         """Only the plugin's own session directories are looked in: the same run id
         under another plugin's directory, or under a directory that merely starts

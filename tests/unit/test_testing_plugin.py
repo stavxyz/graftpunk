@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import random
+import string
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-from graftpunk.har.digest import DigestSource, digest, flagged_values_of
+from graftpunk.har import paths as paths_module
+from graftpunk.har.digest import DigestSource, digest, flagged_values_of, form_state
 from graftpunk.har.parser import parse_har_file
 from graftpunk.testing.decoding import combined_forms, decoded_forms, value_forms
 from graftpunk.testing.recorded import RunUnreadableError, recorded_leaks, recorded_values
@@ -278,6 +281,108 @@ def test_a_symlink_loop_is_the_same_read_error_in_the_package_and_the_script(
     assert str(package.value) == (
         "cannot read bodies/a.html (a symlink loop), page-source.html (a symlink loop)"
     )
+
+
+def _value_corpus() -> list[str]:
+    """Recorded values of every shape the form-state rule tells apart: random
+    tokens, words in each casing, names, dates, quantities, punctuation, quoted
+    and percent-encoded values."""
+    rng = random.Random(345)  # noqa: S311 - a fixed sample, not a secret
+    alphabets = [
+        string.ascii_letters + string.digits,
+        string.ascii_lowercase,
+        string.ascii_uppercase + " ",
+        string.ascii_letters,
+        string.ascii_letters + string.digits + "+/=",
+        string.digits + "-/ .",
+        string.ascii_lowercase + " ,.'-",
+        "abcdefghijklmnop%2C0123456789",
+        string.punctuation + " ",
+    ]
+    words = ["shoes", "Smith", "JOHN", "current", "Tab", "view", "PDF", "list", "Results"]
+    words += ["café", "iPhone", "15", "512gb", "en-US", "true", "of", "By", "Mary", "O'Brien"]
+    corpus = [
+        "".join(rng.choices(rng.choice(alphabets), k=rng.randint(1, 30))) for _ in range(4_000)
+    ]
+    corpus += [
+        rng.choice(["", " ", ", ", "-"]).join(rng.choices(words, k=rng.randint(1, 4)))
+        for _ in range(2_000)
+    ]
+    corpus += [f'"{value}"' for value in corpus[:300]] + [f"%22{v}%22" for v in corpus[:300]]
+    corpus += [
+        "true",
+        "false",
+        "USD",
+        "en-US",
+        "2026-10-01",
+        "running+shoes",
+        "currentTab",
+        "viewPDF",
+        "Smith, John",
+        "LANDOWNER",
+        "HTMLParserView",
+        "LISTviewResults",
+        "tabXQZresults",
+        "****",
+        "authenticity_token",
+        "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd",
+        "kQzPwM",
+        "lot 123456",
+        "cus_NffrFeUfNV2Hib",
+        "4111 1111 1111 1111",
+        "%00",
+    ]
+    return corpus
+
+
+def test_the_skill_scripts_form_state_rule_is_graftpunks() -> None:
+    """The script skips a recorded value that holds nothing by a copy of
+    graftpunk.har.digest.form_state, held to graftpunk's answers here."""
+    script = _load_script()
+    differ = [value for value in _value_corpus() if script.form_state(value) != form_state(value)]
+    assert differ == []
+    assert script.form_state("true")
+    assert not script.form_state("Zq9XkLmPwR4t7Bv2Hn8Ks3Jd")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "_MIN_HEX_LEN",
+        "_MIN_PREFIXED_TAIL",
+        "_MIN_BASE64_LEN",
+        "_MIN_BASE64_SWITCHES",
+        "_MAX_CAPITALS_RUN",
+        "_VOWELS",
+        "_WORD_CONSONANT_PAIRS",
+        "_MAX_VALUE_WORD_LEN",
+        "_QUANTITY_UNITS",
+        "_CAMEL_JOINING_WORDS",
+        "_MAX_CAMEL_PARTS",
+        "_MIN_UPPER_CAMEL_LEN",
+    ],
+)
+def test_the_skill_scripts_copied_constants_are_graftpunks(name: str) -> None:
+    assert getattr(_load_script(), name) == getattr(paths_module, name)
+
+
+@pytest.mark.parametrize(
+    ("recorded", "reported"),
+    [("true", False), ("USD", False), ("Zq9XkLmPwR4t7Bv2Hn8Ks3Jd", True)],
+    ids=["true", "a-word", "opaque"],
+)
+def test_a_recorded_value_that_holds_nothing_is_not_looked_for(
+    recorded: str, reported: bool
+) -> None:
+    """A name flagged by its name alone records values such as ``true``; a fixture
+    holding the JSON literal ``true`` cannot invent it away. An opaque value is
+    still reported, in both copies."""
+    script = _load_script()
+    fixture = '{"orders": [], "active": true, "currency": "USD", "t": "Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"}'
+    values = {"logged_in_session": {recorded}}
+    package = recorded_leaks(fixture, values)
+    assert package == script.recorded_leaks(script._Fixture(fixture), values)
+    assert bool(package) is reported
 
 
 def test_the_script_reads_no_file_outside_the_run_as_the_package(tmp_path: Path) -> None:

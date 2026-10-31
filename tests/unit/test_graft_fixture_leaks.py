@@ -778,7 +778,7 @@ def _har(tmp_path: Path) -> Path:
         "headers": [
             {
                 "name": "Cookie",
-                "value": f"id={_OPAQUE}; myshop_session=first%2Bpart; short_session=Qz",
+                "value": f"id={_OPAQUE}; myshop_session=Fq7k%2BLp2w; short_session=Qz",
             },
             {"name": "x-csrf-token", "value": "HeaderTok9Lq8"},
         ],
@@ -861,7 +861,7 @@ def test_the_value_is_placed_by_line_number(tmp_path: Path) -> None:
     [
         (_TOKEN, "csrf-token"),
         ("SecondValue77", "myshop_remember"),
-        ("first+part", "myshop_session"),
+        ("Fq7k+Lp2w", "myshop_session"),
         ("HeaderTok9Lq8", "X-CSRF-Token"),
     ],
     ids=["meta-content", "set-cookie-header", "cookie-percent-decoded", "header-other-case"],
@@ -869,8 +869,8 @@ def test_the_value_is_placed_by_line_number(tmp_path: Path) -> None:
 def test_each_source_of_a_recorded_value_is_read(tmp_path: Path, value: str, name: str) -> None:
     """One value per fixture, so each source is pinned alone: a meta tag's content
     in a response whose Content-Type header says HTML, a cookie set only by a
-    Set-Cookie header, a cookie sent percent-encoded (first%2Bpart) found as
-    first+part, and a request header sent as x-csrf-token for the flagged
+    Set-Cookie header, a cookie sent percent-encoded (Fq7k%2BLp2w) found as
+    Fq7k+Lp2w, and a request header sent as x-csrf-token for the flagged
     X-CSRF-Token."""
     result = _run_har(tmp_path, json.dumps({"a": value}))
     assert result.returncode == 1

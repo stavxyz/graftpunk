@@ -35,6 +35,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qsl
 
+from graftpunk.har.digest import form_state
 from graftpunk.testing.decoding import combined_forms, decoded_forms, value_forms
 
 __all__ = ["RunUnreadableError", "read_run_har", "recorded_leaks", "recorded_values"]
@@ -344,7 +345,14 @@ def recorded_leaks(text: str, values: Mapping[str, Iterable[str]]) -> list[str]:
     looked for, compatibility-normalised and case-sensitively, in *text*, in its
     filled-in values (JSON leaves, or an HTML body's text and attribute values),
     and in its decoded forms (:func:`graftpunk.testing.decoding.decoded_forms`),
-    then in :func:`graftpunk.testing.decoding.combined_forms`."""
+    then in :func:`graftpunk.testing.decoding.combined_forms`.
+
+    A recorded value that holds nothing is not looked for: an empty one, or form
+    state by the rule a cookie value is judged by
+    (:func:`graftpunk.har.digest.form_state`), the rule
+    :func:`graftpunk.devtools.captures.checked_names_of` judges a value by. A
+    name flagged by its name alone records such values (``logged_in=true``,
+    ``currency=USD``), and a fixture cannot invent ``true`` away."""
     haystack = _normal("\n".join([text, "\n".join(_body_values(text)), *decoded_forms(text)]))
     raw_lines = text.split("\n")
     combined: str | None = None
@@ -353,6 +361,7 @@ def recorded_leaks(text: str, values: Mapping[str, Iterable[str]]) -> list[str]:
         wanted = {
             _normal(form)
             for value in values[name]
+            if value and not form_state(value)
             for form in value_forms(value)
             if len(form) >= _MIN_LENGTH
         }
