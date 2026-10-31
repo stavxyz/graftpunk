@@ -14,8 +14,9 @@ import pytest
 from graftpunk.har.digest import DigestSource, digest, flagged_values_of
 from graftpunk.har.parser import parse_har_file
 from graftpunk.testing.decoding import combined_forms, decoded_forms, value_forms
-from graftpunk.testing.recorded import recorded_leaks, recorded_values
+from graftpunk.testing.recorded import RunUnreadableError, recorded_leaks, recorded_values
 from tests.unit.guide_harness import REPO_ROOT
+from tests.unit.test_graftpunk_testing import _containment_run
 
 SCRIPT = REPO_ROOT / "skills" / "graft" / "scripts" / "fixture-leaks.py"
 
@@ -249,3 +250,40 @@ def test_the_package_reports_a_leak_as_the_skill_script_does(tmp_path: Path, fix
     assert recorded_leaks(fixture, values) == expected
     for line in expected:
         assert not any(value in line for found in values.values() for value in found)
+
+
+@pytest.mark.parametrize("loop", ["self", "mutual"])
+def test_a_symlink_loop_is_the_same_read_error_in_the_package_and_the_script(
+    tmp_path: Path, loop: str
+) -> None:
+    """Before Python 3.13 ``Path.resolve`` raises RuntimeError on a loop; both
+    copies report the file by its path in the run instead of raising it."""
+    run_dir = tmp_path / "run"
+    (run_dir / "bodies").mkdir(parents=True)
+    html = [{"name": "Content-Type", "value": "text/html"}]
+    page = _page("https://myshop.example.com/", html, {"_bodyFile": "bodies/a.html"})
+    har = {"log": {"entries": [page]}}
+    if loop == "self":
+        (run_dir / "bodies" / "a.html").symlink_to("a.html")
+    else:
+        (run_dir / "bodies" / "a.html").symlink_to("b.html")
+        (run_dir / "bodies" / "b.html").symlink_to("a.html")
+    (run_dir / "page-source.html").symlink_to("page-source.html")
+    script = _load_script()
+    with pytest.raises(RunUnreadableError) as package:
+        recorded_values(har, _FLAGGED, run_dir)
+    with pytest.raises(script.RunUnreadableError) as copied:
+        script.recorded_values(har, set(_FLAGGED), run_dir)
+    assert str(package.value) == str(copied.value)
+    assert str(package.value) == (
+        "cannot read bodies/a.html (a symlink loop), page-source.html (a symlink loop)"
+    )
+
+
+def test_the_script_reads_no_file_outside_the_run_as_the_package(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    har = _containment_run(run_dir, outside)
+    assert _load_script().recorded_values(har, {"csrf-token"}, run_dir) == {}
+    assert recorded_values(har, {"csrf-token"}, run_dir) == {}

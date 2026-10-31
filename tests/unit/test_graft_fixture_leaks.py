@@ -986,11 +986,24 @@ def test_a_page_source_outside_the_hars_directory_is_not_read(tmp_path: Path) ->
     assert lines == []
 
 
-def test_a_page_source_that_cannot_be_read_is_skipped(tmp_path: Path) -> None:
+def test_a_page_source_that_cannot_be_read_is_a_read_error_naming_it(tmp_path: Path) -> None:
+    """A run file the comparison needs and cannot read would leave its values
+    unchecked, so it is a read error, named by its path in the run."""
     (tmp_path / "page-source.html").mkdir()
     result = _run_har(tmp_path, json.dumps({"t": "invented"}))
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 2
+    assert result.stderr == (
+        "fixture-leaks: the HAR's run: cannot read page-source.html (Is a directory)\n"
+    )
+
+
+def test_a_looping_page_source_is_a_read_error_not_a_traceback(tmp_path: Path) -> None:
+    (tmp_path / "page-source.html").symlink_to("page-source.html")
+    result = _run_har(tmp_path, json.dumps({"t": "invented"}))
+    assert result.returncode == 2
     assert "Traceback" not in result.stderr
+    assert "cannot read page-source.html (a symlink loop)" in result.stderr
+    assert str(tmp_path) not in result.stderr
 
 
 def _run_with_request(

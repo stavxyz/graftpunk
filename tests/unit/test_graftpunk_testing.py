@@ -22,6 +22,7 @@ from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.plugins.cli_plugin import CommandContext
 from graftpunk.testing import FixtureSession, fixture_context, make_context
 from graftpunk.testing.plugin import check_fixtures_tree
+from graftpunk.testing.recorded import recorded_values
 from graftpunk.testing.sidecar import (
     FIXTURES_PLACEHOLDER,
     ObserveRun,
@@ -1087,6 +1088,154 @@ class TestTheLocalValueCheck:
         assert under_observe
         assert all(p.resolve().is_relative_to(run_dir.resolve()) for p in under_observe)
         assert [p for p in listed if p.is_relative_to(observe)] == [observe]
+
+    @pytest.mark.parametrize("loop", ["self", "mutual"])
+    def test_a_symlink_loop_in_a_run_is_a_run_that_cannot_be_read(
+        self, tmp_path: Path, loop: str
+    ) -> None:
+        """Before Python 3.13 ``Path.resolve`` raises RuntimeError on a loop, and
+        from 3.13 the read raises ELOOP; either way the check reports the file by
+        its path in the run, and prints neither the account label nor a path
+        outside the run."""
+        observe = tmp_path / "observe"
+        run_dir = _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        if loop == "self":
+            (run_dir / "page-source.html").symlink_to("page-source.html")
+            named = "page-source.html"
+        else:
+            har_path = run_dir / "network.har"
+            har = json.loads(har_path.read_text())
+            har["log"]["entries"][0]["response"]["headers"] = [
+                {"name": "Content-Type", "value": "text/html"}
+            ]
+            har["log"]["entries"][0]["response"]["content"] = {
+                "mimeType": "text/html",
+                "_bodyFile": "bodies/a.html",
+            }
+            har_path.write_text(json.dumps(har))
+            (run_dir / "bodies").mkdir()
+            (run_dir / "bodies" / "a.html").symlink_to("b.html")
+            (run_dir / "bodies" / "b.html").symlink_to("a.html")
+            named = "bodies/a.html"
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        (problem,) = report.problems
+        assert problem.startswith("get_orders.json: the observe run 20261006-101500-4242 of myshop")
+        assert f"cannot read {named} (a symlink loop)" in problem
+        assert "alice" not in problem
+        assert str(tmp_path) not in problem
+        assert report.run_checked == 0
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+    def test_a_run_file_that_cannot_be_read_fails_the_local_check(self, tmp_path: Path) -> None:
+        """A page source the check needs and cannot read is a run it could not
+        read, never a quiet pass on the values it did read."""
+        observe = tmp_path / "observe"
+        run_dir = _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        page = run_dir / "page-source.html"
+        page.write_text('<meta name="myshop_session" content="PageOnlyValue123">')
+        page.chmod(0)
+        tree = tmp_path / "fixtures"
+        body = b'{"id": 7, "myshop_session": "PageOnlyValue123"}'
+        _fixture(tree, "get_orders.json", body, _from_run(body))
+        try:
+            report = check_fixtures_tree(tree, observe_dir=observe)
+        finally:
+            page.chmod(0o600)
+        (problem,) = report.problems
+        assert "cannot read page-source.html (Permission denied)" in problem
+        assert "alice" not in problem
+        assert str(tmp_path) not in problem
+        assert report.run_checked == 0
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root searches a directory whatever its mode")
+    @pytest.mark.parametrize("with_the_run", [True, False])
+    def test_a_session_directory_that_cannot_be_searched_is_not_a_second_copy(
+        self, tmp_path: Path, with_the_run: bool
+    ) -> None:
+        observe = tmp_path / "observe"
+        if with_the_run:
+            _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        bob = observe / "myshop-bob"
+        bob.mkdir(parents=True)
+        bob.chmod(0)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        try:
+            report = check_fixtures_tree(tree, observe_dir=observe)
+        finally:
+            bob.chmod(0o700)
+        (problem,) = report.problems
+        assert (
+            "1 of the plugin's session directories cannot be searched (Permission denied), "
+            "so the check cannot tell whether it holds the run"
+        ) in problem
+        assert "hold a run" not in problem
+        assert "alice" not in problem
+        assert "bob" not in problem
+        assert str(tmp_path) not in problem
+
+    @pytest.mark.parametrize("case", ["missing-har", "ambiguous", "leak"])
+    def test_no_problem_names_the_account_or_the_observe_path(
+        self, tmp_path: Path, case: str
+    ) -> None:
+        observe = tmp_path / "observe"
+        run_dir = _write_run(observe, "myshop-alice", _RUN.run, _RECORDED_SESSION)
+        if case == "missing-har":
+            (run_dir / "network.har").unlink()
+        elif case == "ambiguous":
+            _write_run(observe, "myshop-alicia", _RUN.run, _RECORDED_SESSION)
+        tree = tmp_path / "fixtures"
+        _fixture(tree, "get_orders.json", _PASTED, _from_run(_PASTED))
+        report = check_fixtures_tree(tree, observe_dir=observe)
+        assert report.problems
+        for text in (*report.problems, report.summary):
+            assert "alice" not in text
+            assert str(tmp_path) not in text
+            assert str(observe) not in text
+
+
+def _containment_run(run_dir: Path, outside: Path) -> dict:
+    """A run whose HAR names four files outside it, each holding a recorded value:
+    a climbing ``_bodyFile``, an absolute ``_postDataFile``, a body that is a
+    symlink out of the run, and a ``page-source.html`` that is one."""
+    (outside / "climb.html").write_text('<meta name="csrf-token" content="ClimbedOut123">')
+    (outside / "absolute.txt").write_text("csrf-token=AbsolutePath123")
+    (outside / "linked.html").write_text('<meta name="csrf-token" content="LinkedOut123">')
+    (outside / "page.html").write_text('<meta name="csrf-token" content="PageOut123">')
+    (run_dir / "bodies").mkdir(parents=True)
+    (run_dir / "bodies" / "linked.html").symlink_to(outside / "linked.html")
+    (run_dir / "page-source.html").symlink_to(outside / "page.html")
+    html = [{"name": "Content-Type", "value": "text/html"}]
+
+    def entry(content: dict, request: dict) -> dict:
+        return {
+            "request": {"url": "https://myshop.example.com/", "headers": [], **request},
+            "response": {"headers": html, "content": {"mimeType": "text/html", **content}},
+        }
+
+    climb = f"bodies/../../{outside.name}/climb.html"
+    return {
+        "log": {
+            "entries": [
+                entry({"_bodyFile": climb}, {}),
+                entry({}, {"_postDataFile": str(outside / "absolute.txt")}),
+                entry({"_bodyFile": "bodies/linked.html"}, {}),
+            ]
+        }
+    }
+
+
+def test_the_package_reads_no_file_outside_the_run(tmp_path: Path) -> None:
+    """``graftpunk.testing.recorded`` refuses a HAR's file reference that climbs
+    out of the run, one that is absolute, a body symlinked out of the run, and a
+    symlinked ``page-source.html``: none is read and none is an error."""
+    run_dir = tmp_path / "run"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    har = _containment_run(run_dir, outside)
+    assert recorded_values(har, {"csrf-token"}, run_dir) == {}
 
 
 _LOCAL_CHECK_CONFTEST = """

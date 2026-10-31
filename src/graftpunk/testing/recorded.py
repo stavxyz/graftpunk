@@ -24,7 +24,9 @@ digest reads. Nothing here lists a directory.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import re
 import unicodedata
 from collections.abc import Iterable, Iterator, Mapping
@@ -49,8 +51,22 @@ _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
 
 
 class RunUnreadableError(Exception):
-    """The run is on disk but its HAR cannot be read as one. The message is the
-    reason, and names no recorded value."""
+    """The run is on disk but its HAR cannot be read as one, or a file of the run
+    the check reads cannot be read. The message is the reason, names a file by
+    its path relative to the run, and names no recorded value."""
+
+
+# Files named in a RunUnreadableError before the rest are counted.
+_MOST_FILES = 3
+
+
+def _cannot_read(unreadable: list[str]) -> str:
+    """The reason a run whose files *unreadable* cannot be read fails, naming the
+    first few."""
+    files = list(dict.fromkeys(unreadable))
+    shown = ", ".join(files[:_MOST_FILES])
+    more = f" and {len(files) - _MOST_FILES} more" if len(files) > _MOST_FILES else ""
+    return f"cannot read {shown}{more}"
 
 
 def read_run_har(run_dir: Path) -> object:
@@ -167,29 +183,45 @@ def _header(headers: list[tuple[str, str]], name: str) -> str | None:
     return spelled.get(name) or spelled.get(name.lower())
 
 
-def _file_text(ref: object, base: Path | None) -> str | None:
+def _file_text(ref: object, base: Path | None, unreadable: list[str]) -> str | None:
     """The text of the file *ref* names, relative to the HAR's directory *base*,
     read as UTF-8 as graftpunk's HAR parser reads it. A file that resolves outside
-    *base* (a ``..`` or a symlink), or one that cannot be read, gives None."""
+    *base* (a ``..``, an absolute path, or a symlink) or is not there gives None.
+    A file inside *base* that is there and cannot be read (a permission error, a
+    symlink loop, a directory) gives None and is added to *unreadable*, as its
+    path relative to *base* and the reason."""
     if base is None or not isinstance(ref, str) or not ref:
         return None
-    root = base.resolve()
-    path = (root / ref).resolve()
-    if not path.is_relative_to(root):
+    try:
+        root = base.resolve()
+    except (OSError, RuntimeError):
+        return None
+    named = Path(os.path.normpath(root / ref))
+    if not named.is_relative_to(root):
         return None
     try:
+        # Before Python 3.13, resolve() raises RuntimeError on a symlink loop.
+        path = (root / ref).resolve()
+        if not path.is_relative_to(root):
+            return None
         return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        reason = "a symlink loop" if exc.errno == errno.ELOOP else exc.strerror
+        unreadable.append(f"{named.relative_to(root)} ({reason or type(exc).__name__})")
+    except RuntimeError:
+        unreadable.append(f"{named.relative_to(root)} (a symlink loop)")
+    return None
 
 
-def _body_text(content: dict[str, object], base: Path | None) -> str | None:
+def _body_text(content: dict[str, object], base: Path | None, unreadable: list[str]) -> str | None:
     """A response's body text: the HAR's ``content.text``, or, when the HAR keeps
     the body in a file (``content._bodyFile``), that file (:func:`_file_text`)."""
     text = content.get("text")
     if isinstance(text, str):
         return text
-    return _file_text(content.get("_bodyFile"), base)
+    return _file_text(content.get("_bodyFile"), base, unreadable)
 
 
 def _page_values(html: str) -> list[tuple[str, str]]:
@@ -212,7 +244,9 @@ def _json_pairs(data: object) -> Iterator[tuple[str, str]]:
             yield from _json_pairs(item)
 
 
-def _body_fields(request: dict[str, object], base: Path | None) -> list[tuple[str, str]]:
+def _body_fields(
+    request: dict[str, object], base: Path | None, unreadable: list[str]
+) -> list[tuple[str, str]]:
     """``(name, value)`` for each field a request body sends: the HAR's
     ``postData.params``, and its text (``postData.text``, or the file
     ``_postDataFile`` names) read as JSON, else as a form-encoded body."""
@@ -220,7 +254,7 @@ def _body_fields(request: dict[str, object], base: Path | None) -> list[tuple[st
     pairs = _named(post.get("params"))
     text = post.get("text")
     if not isinstance(text, str):
-        text = _file_text(request.get("_postDataFile"), base)
+        text = _file_text(request.get("_postDataFile"), base, unreadable)
     if text:
         try:
             pairs += list(_json_pairs(json.loads(text)))
@@ -239,8 +273,15 @@ def recorded_values(
     value in a response whose ``Content-Type`` header says HTML. With *base*, the
     HAR's directory, a body or request body the HAR keeps in a file is read, and
     so are gp's DOM snapshots (``_domSnapshot``, ``_domAfter``) and the run's
-    ``page-source.html`` beside the HAR, each only inside *base*."""
+    ``page-source.html`` beside the HAR, each only inside *base*.
+
+    Raises:
+        RunUnreadableError: A file inside *base* that the HAR names, or the
+            run's ``page-source.html``, is there and cannot be read; the message
+            names each such file by its path relative to *base*.
+    """
     wanted = set(names)
+    unreadable: list[str] = []
     found: dict[str, set[str]] = {}
     # Several flagged names can differ in case alone (X-CSRF-Token, x-csrf-token).
     folded: dict[str, list[str]] = {}
@@ -272,10 +313,10 @@ def recorded_values(
             else:
                 for flagged in folded.get(name.casefold(), ()):
                     add(flagged, value)
-        for name, value in _body_fields(request, base):
+        for name, value in _body_fields(request, base, unreadable):
             add(name, value)
-        add_page(_file_text(request.get("_domSnapshot"), base))
-        add_page(_file_text(request.get("_domAfter"), base))
+        add_page(_file_text(request.get("_domSnapshot"), base, unreadable))
+        add_page(_file_text(request.get("_domAfter"), base, unreadable))
         response_headers = _named(response.get("headers"))
         for name, value in response_headers:
             if name.casefold() == "set-cookie":
@@ -287,8 +328,10 @@ def recorded_values(
         if "html" not in (_header(response_headers, "Content-Type") or "").lower():
             continue
         content = _object(response.get("content"))
-        add_page(_body_text(content, base))
-    add_page(_file_text(PAGE_SOURCE_NAME, base))
+        add_page(_body_text(content, base, unreadable))
+    add_page(_file_text(PAGE_SOURCE_NAME, base, unreadable))
+    if unreadable:
+        raise RunUnreadableError(_cannot_read(unreadable))
     return found
 
 

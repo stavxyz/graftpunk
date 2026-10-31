@@ -464,21 +464,33 @@ class _RunValues:
         if isinstance(entries, str):
             return entries
         hits: list[tuple[Path, str, list[str]]] = []
+        # Session directories whose entries cannot be stat'd (no search
+        # permission): whether they hold the run is unknown, so they are not hits.
+        unsearchable: list[str] = []
         for name in entries:
             if not is_session_dir_of(run.plugin, name):
                 continue
             run_dir = self.base / name / run.run
             detail: list[str] = []
             kind = _stat_kind(run_dir, detail)
-            if kind != "absent":
+            if kind == "unreadable":
+                unsearchable.extend(detail[:1] or ["unknown reason"])
+            elif kind != "absent":
                 hits.append((run_dir, kind, detail))
-        if not hits:
-            return None
         if len(hits) > 1:
             return (
                 f"{len(hits)} of the plugin's session directories hold a run {run.run}, "
                 f"and the check cannot tell which one the capture came from"
             )
+        if unsearchable:
+            count = len(unsearchable)
+            return (
+                f"{count} of the plugin's session directories cannot be searched "
+                f"({unsearchable[0]}), so the check cannot tell whether "
+                f"{'it holds' if count == 1 else 'they hold'} the run"
+            )
+        if not hits:
+            return None
         ((run_dir, kind, detail),) = hits
         if kind == "dir":
             try:
@@ -499,14 +511,18 @@ class _RunValues:
         if found is None:
             return []
         if isinstance(found, str):
-            first, count = self._unreadable.get(run, (relative, 0))
-            self._unreadable[run] = (first, count + 1)
+            self._count_unreadable(run, relative)
             return []
         run_dir, har = found
         names = tuple(name for name in sidecar.flagged_names if name)
         key = (run, names)
         if key not in self._values:
-            self._values[key] = recorded_values(har, names, run_dir)
+            try:
+                self._values[key] = recorded_values(har, names, run_dir)
+            except RunUnreadableError as exc:
+                self._runs[run] = str(exc)
+                self._count_unreadable(run, relative)
+                return []
         self.checked += 1
         text = body.decode("utf-8", errors="replace")
         return [
@@ -515,6 +531,10 @@ class _RunValues:
             for line in recorded_leaks(text, self._values[key])
         ]
 
+    def _count_unreadable(self, run: ObserveRun, relative: Path) -> None:
+        first, count = self._unreadable.get(run, (relative, 0))
+        self._unreadable[run] = (first, count + 1)
+
     def unreadable_problems(self) -> list[str]:
         """One problem per run a sidecar names that is on this machine and cannot
         be read."""
@@ -522,12 +542,16 @@ class _RunValues:
         for run, (first, count) in self._unreadable.items():
             reason = self._runs[run]
             others = f" and {count - 1} more" if count > 1 else ""
+            # Neither the observe directory's path (it holds the OS user name)
+            # nor a session directory's name (it holds the account label) is
+            # printed: suite output gets pasted into issues.
             problems.append(
                 f"{first}{others}: the observe run {run.run} of {run.plugin} its sidecar "
-                f"names is under {self.base} but cannot be read ({reason}), so the fixture "
+                f"names is on this machine but cannot be read ({reason}), so the fixture "
                 f"was not compared with the values the run recorded. Make the run readable "
-                f"and the only one of that id, or move its directory out of {self.base} to "
-                f"have the fixture checked by its names alone, as in CI."
+                f"and the only one of that id, or move its directory out of the observe "
+                f"directory (graftpunk.observe.OBSERVE_BASE_DIR) to have the fixture "
+                f"checked by its names alone, as in CI."
             )
         return problems
 
