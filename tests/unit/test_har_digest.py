@@ -1037,6 +1037,16 @@ class TestDigestSourceFromHar:
         assert source.bodies_dir is None
         assert source.page_source is None
 
+    def test_a_page_source_that_resolves_outside_the_run_is_not_read(self, tmp_path: Path) -> None:
+        """As the HAR parser reads no body file outside the HAR's directory."""
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        outside = tmp_path / "elsewhere.html"
+        outside.write_text("<html></html>")
+        (run_dir / "page-source.html").symlink_to(outside)
+        source = DigestSource.from_run_dir(run_dir, session="s", run_id="r")
+        assert source.page_source is None
+
     def test_run_dir_picks_up_bodies_and_page_source(self, tmp_path: Path) -> None:
         run_dir = tmp_path / "myshop" / "20260910-100000-1"
         (run_dir / "bodies").mkdir(parents=True)

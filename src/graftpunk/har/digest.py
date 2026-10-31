@@ -256,10 +256,13 @@ class DigestSource:
     def from_run_dir(cls, run_dir: Path, *, session: str, run_id: str) -> DigestSource:
         bodies_dir = run_dir / "bodies"
         page_source = run_dir / "page-source.html"
+        # A page source that resolves outside the run (a symlink) is not read, as
+        # the HAR parser reads no body file outside the HAR's directory.
+        inside = page_source.resolve().is_relative_to(run_dir.resolve())
         return cls(
             har_path=run_dir / "network.har",
             bodies_dir=bodies_dir if bodies_dir.is_dir() else None,
-            page_source=page_source if page_source.is_file() else None,
+            page_source=page_source if inside and page_source.is_file() else None,
             session=session,
             run_id=run_id,
         )

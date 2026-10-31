@@ -718,6 +718,34 @@ class TestHARParserBodyFile:
         assert result.body is None
         assert result.body_file == "nonexistent.html"
 
+    @pytest.mark.parametrize("how", ["dotdot", "symlink"])
+    def test_a_body_file_outside_the_har_directory_is_not_read(
+        self, tmp_path: Path, how: str
+    ) -> None:
+        """The same refusal as a request body file's and a DOM snapshot's: a
+        reference or a symlink that leaves the HAR's directory is not followed,
+        so the body counts as not captured."""
+        run = tmp_path / "run"
+        (run / "bodies").mkdir(parents=True)
+        outside = tmp_path / "shared.html"
+        outside.write_text("<html>elsewhere</html>")
+        if how == "dotdot":
+            ref = "../shared.html"
+        else:
+            ref = "bodies/1.html"
+            (run / "bodies" / "1.html").symlink_to(outside)
+        response_data = {
+            "status": 200,
+            "statusText": "OK",
+            "headers": [],
+            "cookies": [],
+            "content": {"size": 0, "mimeType": "text/html", "_bodyFile": ref},
+        }
+        result = _parse_response(response_data, base_dir=run)
+
+        assert result.body is None
+        assert result.body_file == ref
+
     def test_parse_har_file_passes_base_dir(self, tmp_path: Path) -> None:
         """parse_har_file passes its directory as base_dir for body resolution."""
         body_content = '{"key": "value"}'

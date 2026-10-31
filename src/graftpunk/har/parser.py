@@ -516,8 +516,11 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
         # If body is stored on disk and not already inline, load it
         if body_file_ref and base_dir and body is None:
             body_file = body_file_ref
-            body_path = base_dir / body_file_ref
-            if body_path.exists():
+            root = base_dir.resolve()
+            body_path = (root / body_file_ref).resolve()
+            # The same refusal as a request body file's: a reference or a symlink
+            # that leaves the HAR's directory is not read.
+            if body_path.is_relative_to(root) and body_path.exists():
                 mime = content.get("mimeType", "")
                 if _is_text_content(mime):
                     body = body_path.read_text(encoding="utf-8", errors="replace")
