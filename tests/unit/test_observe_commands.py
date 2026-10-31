@@ -193,6 +193,31 @@ class TestDigestCommand:
         assert result.exit_code == 1
         assert "not both" in result.output.lower()
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("{", id="not-json"),
+            pytest.param(
+                '{"log": {"version": "1.2", "entries": [], "_custom": '
+                + "[" * 100_000
+                + "]" * 100_000
+                + "}}",
+                id="nested-past-the-parsers-limit",
+            ),
+        ],
+    )
+    def test_an_unreadable_har_is_a_one_line_error(self, tmp_path: Path, text: str) -> None:
+        """A HAR the JSON parser refuses, for its syntax or for its depth, is a
+        red line and exit 1, not a traceback."""
+        har_path = tmp_path / "network.har"
+        har_path.write_text(text)
+        result = runner.invoke(_build_app(), ["observe", "digest", "--har", str(har_path)])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        output = strip_ansi(result.output)
+        assert "Could not read the HAR" in output
+        assert "Traceback" not in output
+
     def test_digest_missing_har_file_is_one_line_error(self, tmp_path: Path) -> None:
         app = _build_app()
         result = runner.invoke(app, ["observe", "digest", "--har", str(tmp_path / "missing.har")])

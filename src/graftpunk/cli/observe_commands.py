@@ -52,7 +52,7 @@ from graftpunk.har.naming import (
     fixture_order,
     parse_endpoint,
 )
-from graftpunk.har.parser import HAREntry, parse_har_file
+from graftpunk.har.parser import HAREntry, HARParseError, parse_har_file
 from graftpunk.har.report import (
     DEFAULT_ENDPOINT_LIMIT,
     render_endpoints_json,
@@ -176,7 +176,11 @@ def digest_cmd(
         err_console.print("[red]Pass --json or --endpoints-json, not both.[/red]")
         raise typer.Exit(1)
     source = _digest_source(session, run, har)
-    result = digest(source, all_hosts=all_hosts)
+    try:
+        result = digest(source, all_hosts=all_hosts)
+    except HARParseError as exc:
+        console.print(f"[red]Could not read the HAR: {escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
     if endpoints_json:
         text = render_endpoints_json(result)
     elif as_json:

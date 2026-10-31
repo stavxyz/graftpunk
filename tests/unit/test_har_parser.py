@@ -62,6 +62,12 @@ def minimal_har() -> str:
     )
 
 
+def _deep_har(depth: int) -> str:
+    """A HAR whose ``log._custom`` holds an array nested *depth* levels deep."""
+    deep = "[" * depth + "]" * depth
+    return '{"log": {"version": "1.2", "entries": [], "_custom": ' + deep + "}}"
+
+
 class TestValidateHarSchema:
     """Tests for HAR schema validation."""
 
@@ -153,6 +159,15 @@ class TestParseHarFile:
             parse_har_file(bad_file)
         assert str(caught.value).count(str(bad_file)) == 1
 
+    def test_json_nested_past_the_parsers_limit(self, tmp_path: Path) -> None:
+        """100,000 levels is past the parser's limit on every supported Python."""
+        deep_file = tmp_path / "deep.har"
+        deep_file.write_text(_deep_har(100_000))
+
+        with pytest.raises(HARParseError, match="nested too deep to parse") as caught:
+            parse_har_file(deep_file)
+        assert str(caught.value).count(str(deep_file)) == 1
+
     def test_invalid_schema(self, tmp_path: Path) -> None:
         """HARParseError names the file, once, for an invalid schema too:
         validate_har_schema's own messages carry no path, so parse_har_file
@@ -201,6 +216,10 @@ class TestParseHarString:
         """HARParseError for invalid JSON string."""
         with pytest.raises(HARParseError, match="Invalid JSON"):
             parse_har_string("not json")
+
+    def test_json_nested_past_the_parsers_limit(self) -> None:
+        with pytest.raises(HARParseError, match="nested too deep to parse"):
+            parse_har_string(_deep_har(100_000))
 
     def test_empty_entries(self) -> None:
         """Empty entries array returns empty list."""

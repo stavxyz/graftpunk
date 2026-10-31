@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.36.3] - 2026-11-01
 
-This is a patch release. `gp observe digest` no longer fails on a run holding a JSON request or response body nested thousands of levels deep (#327). In 1.36.2 such a body raised `RecursionError` and the digest of the whole run failed; now the run's digest completes. A digest that completed before is unchanged. Item 1 is about upgrading itself. The format of a run's files and of the digest is unchanged.
+This is a patch release. `gp observe digest` no longer fails on a run holding a JSON request or response body nested thousands of levels deep (#327). In 1.36.2 such a body raised `RecursionError` and the digest of the whole run failed; now the run's digest completes. A digest that completed before is unchanged, and a HAR file nested too deep to parse is now a one-line error. Item 1 is about upgrading itself. The format of a run's files is unchanged; the digest's one addition is the `too_deep` flag on a response shape nested too deep to parse.
 
 ### Upgrading
 
@@ -16,6 +16,7 @@ This is a patch release. `gp observe digest` no longer fails on a run holding a 
 ### Fixed
 
 - **The digest reads a deeply nested JSON body without `RecursionError`** (#327). A request body whose field held an array nested about 2,000 levels deep (`{"items": [[[...]]]}`) failed the digest in `body_params` and the endpoint grouping, because the field's type was read by recursing into every inner array. An array inside an array is recorded as the bare element `list` whatever it holds, so it is no longer walked, and the field's type is `list[list]` as before. A response body nested past the JSON parser's own limit (which depends on the Python version and the platform, about 1,000 levels on Python 3.11) also failed the digest; its shape now reads `shape unavailable: body nested too deep to parse`, and it records no falsy first response. In `--json` that shape is an `unavailable` node, as a large body that does not parse already had, with `"too_deep": true` added; every other node renders as before. A request body past that limit already read as no body. Tested with bodies 2,000 and 100,000 levels deep through `body_params`, the digest, and `gp observe digest` on a run.
+- **`gp observe digest` reports a HAR file it cannot parse in one line.** A HAR file whose own JSON was nested past the parser's limit raised `RecursionError` from `parse_har_file` and `parse_har_string`; both now raise `HARParseError` (`JSON nested too deep to parse`), as they do for a HAR that is not JSON. `gp observe digest` prints either as `Could not read the HAR: ...` and exits 1, where it printed a traceback. A run graftpunk recorded does not hit this, since its bodies are JSON strings inside the HAR.
 
 ## [1.36.2] - 2026-11-01
 
