@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
+import itertools
 import json
 import random
 import re
@@ -8425,6 +8426,24 @@ def test_the_expiry_rule_is_the_digests(
     assert _load_har_facts().expiry_of(attributes, sent_at) == _expiry(attributes, sent_at)
 
 
+# ISO 8601 times datetime.fromisoformat reads from Python 3.11 on and not on 3.9
+# or 3.10, where the graft skill's har-facts.py also runs.
+_ISO_SHAPES_BEFORE_3_11 = [
+    "1970-01-01T00:00:00.12Z",
+    "1970-01-01T00:00:00.1234Z",
+    "2099-01-01T00:00:00.1234567Z",
+    "1970-01-01T00:00:00,5Z",
+    "19700101T000000Z",
+    "20990101",
+    "2099-01-01T0000",
+    "2099-01-01T000000.5",
+    "2099-01-01T00:00:00.000+0000",
+    "2099-01-01T00:00:00+00",
+    "2099-01-01T00:00:00-0530",
+    "2099-01-01T00:00:00+05:30:15",
+]
+
+
 @pytest.mark.parametrize(
     "expires",
     [
@@ -8435,6 +8454,7 @@ def test_the_expiry_rule_is_the_digests(
         "2037-10-21T07:28:00.000Z",
         "2026-10-31T10:00:00+00:00",
         "2026-10-31T10:00:00",
+        *_ISO_SHAPES_BEFORE_3_11,
         "Thu, 01 Jan 1970 00:00:00 GMT",
         "Wed, 21 Oct 2037 07:28:00 GMT",
         "not a date",
@@ -8444,6 +8464,38 @@ def test_the_expiry_rule_is_the_digests(
 def test_the_array_expiry_rule_is_the_digests(expires: object, sent_at: datetime | None) -> None:
     """The script's ``expiry`` word for a ``response.cookies`` entry is the digest's."""
     assert _load_har_facts().array_expiry_of(expires, sent_at) == _array_expiry(expires, sent_at)
+
+
+@pytest.mark.parametrize("text", _ISO_SHAPES_BEFORE_3_11)
+def test_the_har_reader_reads_on_3_9_the_iso_shapes_3_11_reads(text: str) -> None:
+    """``fromisoformat`` before 3.11 rejects each of these, and the script runs on
+    3.9, while CI runs 3.11 on: the script's own reading of them, which it falls
+    back to, is what ``fromisoformat`` gives on this Python."""
+    expected = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    assert _load_har_facts()._iso_by_hand(text) == expected
+
+
+def test_the_har_reader_reads_no_iso_shape_3_11_rejects() -> None:
+    """Over every joining of these dates, separators, times, fractions, and
+    offsets, valid or not, the script's own reading gives a time only where
+    ``fromisoformat`` does, and the same time."""
+    by_hand = _load_har_facts()._iso_by_hand
+    dates = ["1970-01-01", "19700101", "2099-12-31", "2099-13-01", "2099-02-30", "1970-0101"]
+    separators = ["T", " ", "t", ""]
+    times = ["", "00", "23", "24", "00:00", "0000", "00:00:00", "000000", "23:59:60", "00:0000"]
+    fractions = ["", ".5", ",5", ".123", ".1234567", "."]
+    offsets = ["", "Z", "z", "+00", "-05", "+0530", "+05:30", "+05:30:15", "+053015", "+24:00"]
+    read = 0
+    for parts in itertools.product(dates, separators, times, fractions, offsets):
+        text = "".join(parts)
+        try:
+            expected: datetime | None = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            expected = None
+        got = by_hand(text)
+        assert got is None or got == expected, text
+        read += got is not None
+    assert read > 100
 
 
 def test_the_har_readers_plain_path_pattern_is_the_digests() -> None:

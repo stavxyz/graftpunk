@@ -117,7 +117,7 @@ import json
 import re
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -728,6 +728,64 @@ def _past_or_persistent(when: datetime, sent_at: datetime | None) -> str:
     return "past" if when <= sent else "persistent"
 
 
+# ISO 8601 shapes datetime.fromisoformat reads from Python 3.11 on and not
+# before: a basic-format date or time, a fraction of other than 3 or 6 digits or
+# after a comma, and a +HH or +HHMM offset. Each part is extended or basic alone,
+# as 3.11 has it.
+_ISO_DATETIME_RE = re.compile(
+    r"(?P<date>\d{4}-\d{2}-\d{2}|\d{8})"
+    r"(?:[T ](?P<time>\d{2}:\d{2}:\d{2}(?:[.,]\d+)?|\d{2}:\d{2}|\d{6}(?:[.,]\d+)?|\d{4}|\d{2})"
+    r"(?P<offset>Z|[+-]\d{2}(?::\d{2}(?::\d{2})?|\d{2}(?:\d{2})?)?)?)?"
+)
+
+
+def _iso_by_hand(text: str) -> datetime | None:
+    """*text* read as one of :data:`_ISO_DATETIME_RE`'s shapes, as
+    ``datetime.fromisoformat`` reads it from Python 3.11 on (a fraction past six
+    digits is cut), or None when it is not one or names no real time."""
+    match = _ISO_DATETIME_RE.fullmatch(text)
+    if match is None:
+        return None
+    date = re.sub(r"\D", "", match["date"])
+    clock, _, fraction = (match["time"] or "").replace(",", ".").partition(".")
+    clock = clock.replace(":", "")
+    offset = match["offset"]
+    try:
+        zone = None
+        if offset == "Z":
+            zone = timezone.utc  # noqa: UP017 - Python 3.9 has no datetime.UTC
+        elif offset:
+            digits = offset[1:].replace(":", "")
+            delta = timedelta(
+                hours=int(digits[:2]), minutes=int(digits[2:4] or 0), seconds=int(digits[4:] or 0)
+            )
+            zone = timezone(-delta if offset[0] == "-" else delta)
+        return datetime(
+            int(date[:4]),
+            int(date[4:6]),
+            int(date[6:]),
+            int(clock[:2] or 0),
+            int(clock[2:4] or 0),
+            int(clock[4:] or 0),
+            int(fraction[:6].ljust(6, "0")),
+            tzinfo=zone,
+        )
+    except ValueError:
+        return None
+
+
+def _iso_datetime(text: str) -> datetime | None:
+    """*text* read as graftpunk reads an ISO 8601 time (``fromisoformat`` after a
+    ``Z`` becomes ``+00:00``), on any Python 3.9 or later: before 3.11,
+    ``fromisoformat`` reads only its own output, so :func:`_iso_by_hand` reads
+    the other shapes 3.11 accepts. A week date, which 3.11 also reads, is None
+    here before 3.11."""
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return _iso_by_hand(text)
+
+
 def array_expiry_of(expires: Any, sent_at: datetime | None) -> str:
     """The ``expiry`` word for a ``response.cookies`` entry's ``expires``, by
     graftpunk.har.digest._array_expiry's rule (a test holds the two equal): an
@@ -735,9 +793,8 @@ def array_expiry_of(expires: Any, sent_at: datetime | None) -> str:
     missing, empty, or neither."""
     if not isinstance(expires, str) or not expires:
         return "unknown"
-    try:
-        when = datetime.fromisoformat(expires.replace("Z", "+00:00"))
-    except ValueError:
+    when = _iso_datetime(expires)
+    if when is None:
         try:
             when = parsedate_to_datetime(expires)
         except (TypeError, ValueError, IndexError):
@@ -747,12 +804,7 @@ def array_expiry_of(expires: Any, sent_at: datetime | None) -> str:
 
 def _sent_at(entry: dict[str, Any]) -> datetime | None:
     started = entry.get("startedDateTime")
-    if not isinstance(started, str):
-        return None
-    try:
-        return datetime.fromisoformat(started.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return _iso_datetime(started) if isinstance(started, str) else None
 
 
 def _array_flag(value: Any) -> str:
