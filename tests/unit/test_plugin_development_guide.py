@@ -300,10 +300,18 @@ README_TEXT = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 # guide's sections, so they are held to the same CLI as the guide's.
 README_PLUGIN_FLOW = section(README_TEXT, "### From recording to plugin")
 README_INVOCATIONS = gp_invocations(README_PLUGIN_FLOW)
+# The number gp_invocations finds in that section (2026-10-30). As with the
+# guide's floor in test_guide_harness.py, a parsing regression would shrink the
+# checked set without failing any one check; this makes it fail.
+README_INVOCATION_FLOOR = 10
 
 
-def test_the_readme_plugin_flow_has_invocations_to_check() -> None:
-    assert README_INVOCATIONS, "no gp invocations found in README's plugin flow"
+def test_the_readme_plugin_flow_has_at_least_the_invocations_it_had() -> None:
+    found = len(README_INVOCATIONS)
+    assert found >= README_INVOCATION_FLOOR, (
+        f"found {found} gp invocations in README's plugin flow, "
+        f"fewer than {README_INVOCATION_FLOOR}"
+    )
 
 
 @pytest.mark.parametrize(("line_no", "invocation"), README_INVOCATIONS, ids=lambda v: str(v)[:60])

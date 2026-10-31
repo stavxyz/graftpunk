@@ -281,8 +281,17 @@ SKILL_INVOCATIONS = [
 ]
 
 
-def test_the_skill_has_invocations_to_check() -> None:
-    assert SKILL_INVOCATIONS
+# The number gp_invocations finds across skill_docs() (2026-10-30). As with the
+# guide's floor in test_guide_harness.py, a parsing regression would shrink the
+# checked set without failing any one check; this makes it fail.
+SKILL_INVOCATION_FLOOR = 43
+
+
+def test_the_skill_has_at_least_the_invocations_it_had() -> None:
+    found = len(SKILL_INVOCATIONS)
+    assert found >= SKILL_INVOCATION_FLOOR, (
+        f"found {found} gp invocations in the skill, fewer than {SKILL_INVOCATION_FLOOR}"
+    )
 
 
 @pytest.mark.parametrize(
