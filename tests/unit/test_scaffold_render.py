@@ -51,6 +51,7 @@ from graftpunk.devtools.scaffold.selection import (
     plan_command,
 )
 from graftpunk.har.digest import (
+    SHAPE_TOO_DEEP,
     SHAPE_UNAVAILABLE,
     DigestSource,
     Endpoint,
@@ -2872,7 +2873,8 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
 
 
 class TestUnavailableShapeIsOmittedFromTheDocstring:
-    def test_no_shape_line_when_the_shape_could_not_be_read(self) -> None:
+    @pytest.mark.parametrize("shape", [SHAPE_UNAVAILABLE, SHAPE_TOO_DEEP])
+    def test_no_shape_line_when_the_shape_could_not_be_read(self, shape: ShapeNode) -> None:
         """An unavailable shape is not a fact about the site, and the docstring
         used to claim `Shape: non-JSON.` for every body over the threshold."""
         endpoint = Endpoint(
@@ -2885,7 +2887,7 @@ class TestUnavailableShapeIsOmittedFromTheDocstring:
             query_params={},
             body_params={},
             body_kind="none",
-            shape=SHAPE_UNAVAILABLE,
+            shape=shape,
             custom_headers=(),
             examples=(),
         )

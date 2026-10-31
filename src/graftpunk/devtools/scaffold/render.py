@@ -53,7 +53,6 @@ from graftpunk.devtools.scaffold.selection import (
     planned_commands,
 )
 from graftpunk.har.digest import (
-    SHAPE_UNAVAILABLE,
     Endpoint,
     LoginForm,
     LoginObservation,
@@ -1390,9 +1389,10 @@ def _render_command_stub(
     # endpoint.shape is the fixture recording's own shape (None when that
     # recording is not JSON), so the line only ever describes what the
     # generated test's fixture actually holds. An unavailable shape (a JSON
-    # body too large to have been captured whole) is not a fact about the site
-    # either, so the docstring says nothing rather than guessing.
-    shape_known = endpoint.shape is not None and endpoint.shape != SHAPE_UNAVAILABLE
+    # body too large to have been captured whole, or nested too deep to parse)
+    # is not a fact about the site either, so the docstring says nothing rather
+    # than guessing.
+    shape_known = endpoint.shape is not None and endpoint.shape.kind != "unavailable"
 
     lines = _decorator_lines(command, param_specs if _needs_param_specs(endpoint) else [])
     lines.append(f"{L1}def {name}(")

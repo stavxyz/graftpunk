@@ -28,6 +28,7 @@ from graftpunk.har.digest import (
     _PLAIN_COOKIE_PATH_RE,
     _SHAPE_MAX_DEPTH,
     _SHAPE_MAX_KEYS,
+    SHAPE_TOO_DEEP,
     SHAPE_UNAVAILABLE,
     DigestSource,
     Endpoint,
@@ -785,8 +786,26 @@ class TestDeeplyNestedJsonBodies:
 
         monkeypatch.setattr(json, "loads", too_deep)
         (endpoint,) = digest(source).endpoints
-        assert endpoint.shape == SHAPE_UNAVAILABLE
+        assert endpoint.shape == SHAPE_TOO_DEEP
         assert endpoint.falsy_first_response is None
+
+    def test_a_small_response_too_deep_for_the_parser_is_not_called_over_the_threshold(
+        self, tmp_path: Path
+    ) -> None:
+        """200,000 bytes, under the 256 KiB sampling threshold, and 100,000 levels
+        deep, past the parser's limit on every supported Python."""
+        body = "[" * 100_000 + "]" * 100_000
+        assert len(body.encode()) < 256 * 1024
+        entries = [_entry("GET", "https://api.myshop.example.com/deep", body=body)]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.shape == SHAPE_TOO_DEEP
+        text = render_markdown(result)
+        assert "- shape: shape unavailable: body nested too deep to parse" in text
+        assert "over the sampling threshold" not in text
+        (shape,) = (e["shape"] for e in json.loads(render_json(result))["endpoints"])
+        assert shape["kind"] == "unavailable"
+        assert shape["too_deep"] is True
 
 
 class TestNonFormBodiesHaveNoFieldNames:
