@@ -528,11 +528,12 @@ class RunDigest:
     # interactive --wrong-password-first (_failure_candidates). Suggestions only: the
     # generator writes them commented out.
     failure_candidates: tuple[str, ...] = ()
-    # The markdown Cookies section's lines: every cookie of ``cookies``, then each
-    # one a request of a kept host sent and no response of one set, never one
-    # whose name holds an account value (_cookie_facts). render_json leaves it
-    # out, so --json and --endpoints-json stay as they were before it (#315).
-    cookie_facts: tuple[CookieFacts, ...] = field(default=(), metadata={INTERNAL: True})
+    # What the run shows of each cookie, never a value or a Domain: every cookie of
+    # ``cookies`` with its attribute sets, then each one a request of a kept host
+    # sent and no response of one set, never one whose name holds an account
+    # value (_cookie_facts). The markdown Cookies section prints it, and --json
+    # carries it (#315); a run with no cookie renders as it did before it.
+    cookie_facts: tuple[CookieFacts, ...] = field(default=(), metadata={OMIT_EMPTY: True})
 
 
 def _scope_root(primary_host: str) -> str:

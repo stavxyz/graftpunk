@@ -38,7 +38,7 @@ from graftpunk.har.report import (
     summarize_shape,
 )
 from tests.unit.test_har_digest import _entry, _write_har
-from tests.unit.test_har_report import _ENDPOINT_V1, _INLINE_ENDPOINT_V1, cookies_by_name_only
+from tests.unit.test_har_report import _ENDPOINT_V1, _INLINE_ENDPOINT_V1
 
 _HOST = "https://myshop.example.com"
 _FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -168,10 +168,11 @@ def _spec(result: RunDigest, commands: tuple[CommandSelection, ...] = ()) -> Sca
 
 def test_a_run_without_inline_state_digests_as_1_31_1_did(tmp_path: Path) -> None:
     """The golden file was written from these runs by graftpunk at da034e21 (main,
-    1.31.1 plus #271 part 1); every output must match it byte for byte, the
-    markdown Cookies section read in its form before #315 (:func:`cookies_by_name_only`)."""
+    1.31.1 plus #271 part 1), and rewritten when #315 gave the markdown Cookies
+    section and --json each cookie's attributes; every output must match it byte
+    for byte."""
     golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
-    assert cookies_by_name_only(golden_outputs(tmp_path)) == golden
+    assert golden_outputs(tmp_path) == golden
 
 
 def _digest_of(tmp_path: Path, entries: list[dict]) -> RunDigest:

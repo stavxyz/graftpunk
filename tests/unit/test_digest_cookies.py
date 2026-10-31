@@ -227,9 +227,32 @@ def test_a_digest_without_facts_prints_the_names(tmp_path: Path) -> None:
     assert _cookie_lines(d) == ["- `sid`"]
 
 
-def test_the_json_outputs_carry_no_cookie_facts(tmp_path: Path) -> None:
-    """--json and --endpoints-json are as they were: ``cookie_facts`` is the
-    markdown section's alone, and the projection carries no cookie names."""
-    d = _digest(tmp_path, _login(f"sid={_VALUE}; HttpOnly"))
-    assert "cookie_facts" not in json.loads(render_json(d))
+def test_json_carries_the_cookie_facts_and_the_projection_no_cookie(tmp_path: Path) -> None:
+    """--json, the complete digest, carries ``cookie_facts`` with the words the
+    markdown prints; --endpoints-json carries no cookie name."""
+    entries = _login(f"sid={_VALUE}; HttpOnly; Path=/")
+    entries.append(_entry("GET", f"{_HOST}/account", request_headers={"Cookie": f"pref={_VALUE}"}))
+    d = _digest(tmp_path, entries)
+    assert json.loads(render_json(d))["cookie_facts"] == [
+        {
+            "name": "sid",
+            "settings": [
+                {
+                    "expiry": "session",
+                    "http_only": "yes",
+                    "path": "/",
+                    "same_site": "-",
+                    "secure": "no",
+                    "set_by": ["POST /login"],
+                }
+            ],
+        },
+        {"name": "pref", "settings": []},
+    ]
     assert "sid" not in render_endpoints_json(d)
+    assert "pref" not in render_endpoints_json(d)
+
+
+def test_json_leaves_cookie_facts_out_of_a_run_without_a_cookie(tmp_path: Path) -> None:
+    d = _digest(tmp_path, [_entry("GET", f"{_HOST}/account")])
+    assert "cookie_facts" not in json.loads(render_json(d))

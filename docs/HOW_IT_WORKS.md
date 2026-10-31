@@ -741,7 +741,11 @@ reads `sent in requests and never set in this recording`, as a recording made
 with a cached session shows its session cookie. A name that holds an id is
 left out, as everywhere. The words are those of the graft skill's `har-facts.py
 cookies`, which also prints the `Domain` and each response's full URL. `--json`
-and `--endpoints-json` do not carry these lines.
+carries the same facts as `cookie_facts`: one object per cookie with its `name`
+and its `settings`, each with `http_only`, `secure`, `same_site`, `path`,
+`expiry`, and `set_by` in the words above, and an empty `settings` for a cookie
+only sent; a run with no cookie leaves the key out. `--endpoints-json` carries
+no cookie name.
 
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
