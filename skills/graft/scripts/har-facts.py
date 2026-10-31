@@ -750,7 +750,8 @@ def _past_or_persistent(when: datetime, sent_at: datetime | None) -> str:
 # _iso_by_hand and the helpers below read every string 3.11's reader reads, with
 # the same result, its leniencies included (any one character between the date
 # and the time, a fraction after any part of the time or the offset, one stray
-# character before an offset); a test holds it equal to fromisoformat on 3.11 to
+# character before an offset where 3.11 allows one, which is not after a short
+# fraction); a test holds it equal to fromisoformat on 3.11 to
 # 3.13 over a generated corpus. 3.14 changed the reader (it reads an hour of 24
 # and rejects some strings 3.11 reads), so from 3.11 on the script uses the
 # running Python's reader, as the digest does.

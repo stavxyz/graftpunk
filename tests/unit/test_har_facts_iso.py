@@ -1,5 +1,6 @@
 """The graft skill's har-facts.py reads ISO 8601 times as Python 3.11's
-``datetime.fromisoformat`` does, on every Python the script runs on (3.9 on).
+``datetime.fromisoformat`` does on Python 3.9 to 3.13; from 3.14 on it uses the
+running Python's reader, which 3.14 changed.
 
 This module imports only the standard library and pytest, so it also runs under
 Python 3.9 and 3.10, which CI does not run::
