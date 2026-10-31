@@ -547,6 +547,8 @@ class CredentialScrub:
             that could not be split into fields, a body file that could not be
             read, or a body the recorder did not capture (``_postDataNotCaptured``).
         value_posts: How many credential posts a value was taken from.
+        step_posts: How many earlier login steps (no credential post) an email
+            address was taken from.
         marked_failed: How many values came only from the post the user marked
             failed (*typed*), and from no credential post.
         password_input: Whether a page the run recorded held an ``<input
@@ -564,6 +566,7 @@ class CredentialScrub:
     unread: int
     missed: int = 0
     value_posts: int = 0
+    step_posts: int = 0
     marked_failed: int = 0
     password_input: bool = False
     password_names: frozenset[str] = frozenset()
@@ -712,6 +715,18 @@ def _not_redacted(value: str) -> bool:
     return bool(value) and value != REDACTED
 
 
+# An email address: one @, a local part, and a domain with a dot after the @.
+_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
+def _is_email(value: str) -> bool:
+    """Whether *value* is an email address, the only identifier the scrub takes: a
+    login form's other identifier-named fields send values nobody typed (a submit
+    button's ``login=Log In``, a hidden ``account=guest``), which a run-wide scrub
+    would rewrite wherever they appear."""
+    return _EMAIL_RE.fullmatch(value) is not None
+
+
 def credential_post_redaction(
     entries: Iterable[dict[str, Any]], run_dir: Path, *, typed: Iterable[str] = ()
 ) -> CredentialScrub:
@@ -729,9 +744,10 @@ def credential_post_redaction(
     type="password">`` a recorded page holds, is a secret when it is at least 3
     characters and no flag word (:func:`_password_value`); one whose own field name
     is an identifier field's (:func:`graftpunk.session_identity.is_identifier_field`)
-    is an identifier. An identifier-first login posts its username in an earlier
-    step: the identifier values of each other request before the last credential
-    post that the digest reads as a step of a login
+    is an identifier when it is an email address (:func:`_is_email`). An
+    identifier-first login posts its username in an earlier step: the email
+    addresses under an identifier field's own name in each other request before the
+    last credential post that the digest reads as a step of a login
     (:func:`graftpunk.har.login_signals.is_login_step_post`) are taken too. *typed*
     adds secrets the recorder knew of (the password of a post the user marked
     failed, which it already replaced in that post's own body).
@@ -744,11 +760,7 @@ def credential_post_redaction(
     never a value. A value inside one of the field names of a credential post is
     kept out of the run-wide scrub.
     """
-    from graftpunk.har.digest import (
-        is_credential_post,
-        post_identifier_values,
-        read_body_values,
-    )
+    from graftpunk.har.digest import is_credential_post, read_body_values
     from graftpunk.har.login_signals import is_login_step_post
     from graftpunk.observe.snapshot import spelled_redaction
 
@@ -764,9 +776,20 @@ def credential_post_redaction(
     identifiers: dict[str, None] = {}
     names: set[str] = set()
     indices: list[int] = []
-    value_posts = 0
+    value_posts = step_posts = 0
+
+    def emails(values: list[tuple[tuple[str, ...], str]]) -> list[str]:
+        return [
+            value
+            for path, value in values
+            if path
+            and _is_email(value)
+            and not password_name(path[-1])
+            and is_identifier_field(identifier_key(path[-1]))
+        ]
+
     # The requests that are no credential post, for an identifier-first login's step.
-    others: list[tuple[int, str, str, str, list[tuple[tuple[str, ...], str]]]] = []
+    others: list[tuple[int, str, list[tuple[tuple[str, ...], str]]]] = []
     unread = missed = 0
     for index, entry in enumerate(entries):
         request = entry.get("request") if isinstance(entry, dict) else None
@@ -801,7 +824,7 @@ def credential_post_redaction(
             continue
         values = [(path, value) for path, value, _own in read]
         if not credential:
-            others.append((index, text, content_type, url, values))
+            others.append((index, url, values))
             continue
         indices.append(index)
         passwords = [
@@ -813,31 +836,20 @@ def credential_post_redaction(
             # Not split into fields (a broken JSON body, XML): its password may be in it.
             missed += 1
             LOG.info("credential_scrub_body_unsplit", entry=index)
-        users = [
-            value
-            for path, value in values
-            if path
-            and _not_redacted(value)
-            and not password_name(path[-1])
-            and is_identifier_field(identifier_key(path[-1]))
-        ]
+        users = emails(values)
         value_posts += bool(passwords or users)
         secrets.update(dict.fromkeys(passwords))
         identifiers.update(dict.fromkeys(users))
         names |= {name for path, _value in values for name in path}
-    for index, text, content_type, url, values in others:
+    for index, url, values in others:
         if not indices or index > indices[-1]:
             continue
         if is_login_step_post(
             urllib.parse.urlsplit(url).path, {name for path, _value in values for name in path}
         ):
-            identifiers.update(
-                dict.fromkeys(
-                    value
-                    for value in post_identifier_values(text, content_type)
-                    if _not_redacted(value)
-                )
-            )
+            users = emails(values)
+            step_posts += bool(users)
+            identifiers.update(dict.fromkeys(users))
     marked = [value for value in typed if _not_redacted(value) and value not in secrets]
     secrets.update(dict.fromkeys(marked))
 
@@ -859,6 +871,7 @@ def credential_post_redaction(
         unread=unread,
         missed=missed,
         value_posts=value_posts,
+        step_posts=step_posts,
         marked_failed=len([v for v in dict.fromkeys(marked) if v in run_values or v in post_only]),
         password_input=pages.password_input,
         password_names=pages.password_names,
@@ -1027,22 +1040,27 @@ def _scrub_note(found: CredentialScrub) -> str:
     were scrubbed and from where, and what the run can still hold. It never says the
     run is clean."""
     count = found.scrubbed
-    posts = found.value_posts
-    from_posts = f"{posts} credential post{'' if posts == 1 else 's'}"
-    if found.marked_failed and posts:
-        source = f"{from_posts} and the post marked failed"
-    elif found.marked_failed:
-        source = "the post marked failed"
+    posts, steps = found.value_posts, found.step_posts
+    sources = [
+        *([f"{posts} credential post{'' if posts == 1 else 's'}"] if posts else []),
+        *([f"{steps} earlier login step{'' if steps == 1 else 's'}"] if steps else []),
+        *(["the post marked failed"] if found.marked_failed else []),
+    ]
+    if not sources:
+        source = "0 credential posts"
+    elif len(sources) == 1:
+        source = sources[0]
     else:
-        source = from_posts
+        source = f"{', '.join(sources[:-1])} and {sources[-1]}"
     return (
         f"[yellow]Scrubbed {count} value{'' if count == 1 else 's'} from {source}. "
         "The run can still hold a password the scrub did not recognise: one sent by a "
         "request that is no credential post (a login a script posts elsewhere, a sign-up, "
         "a password change), one under a name that holds no password, passwd or pwd and "
         "is not the name of a password input on a recorded page, a "
-        f"boolean one or one under {_MIN_REDACT_LEN} characters, and any copy in response "
-        f"bodies, console.jsonl or the screenshots. See {_SCRUB_DOCS}.[/yellow]"
+        f"boolean one or one under {_MIN_REDACT_LEN} characters, a username that is not an "
+        "email address, and any copy in response bodies, console.jsonl or the "
+        f"screenshots. See {_SCRUB_DOCS}.[/yellow]"
     )
 
 
@@ -1054,6 +1072,7 @@ def _report_credential_scrub(found: CredentialScrub, say: Callable[[str], None])
         "observe_credential_scrub",
         credential_posts=found.posts,
         value_posts=found.value_posts,
+        step_posts=found.step_posts,
         values_scrubbed=found.values,
         values_post_only=len(found.post_only),
         values_marked_failed=found.marked_failed,
@@ -1074,6 +1093,7 @@ def _report_credential_scrub(found: CredentialScrub, say: Callable[[str], None])
             "observe_credential_scrub_note",
             values_scrubbed=found.scrubbed,
             value_posts=found.value_posts,
+            step_posts=found.step_posts,
             values_marked_failed=found.marked_failed,
         )
         say(_scrub_note(found))

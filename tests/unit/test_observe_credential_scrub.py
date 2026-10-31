@@ -17,6 +17,7 @@ import pytest
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.observe.run import (
     REDACTED,
+    _is_email,
     _marked_failed_secrets,
     credential_post_redaction,
     names_a_password,
@@ -232,6 +233,7 @@ class TestCredentialPostsAreScrubbed:
         assert summary[0].kwargs == {
             "credential_posts": 2,
             "value_posts": 2,
+            "step_posts": 0,
             "values_scrubbed": 3,
             "values_post_only": 0,
             "values_marked_failed": 0,
@@ -729,7 +731,7 @@ class TestTheDigestsRule:
         first = _entry(
             "POST",
             "/login/identifier",
-            post_data=json.dumps({"username": "alice.example"}),
+            post_data=json.dumps({"username": _EMAIL}),
             started="2026-10-31T10:00:03.000Z",
         )
         second = _entry(
@@ -738,12 +740,12 @@ class TestTheDigestsRule:
             post_data=json.dumps({"password": _JSON_PASSWORD}),
             started="2026-10-31T10:00:05.000Z",
         )
-        account = _entry("GET", "/account", body=json.dumps({"name": "alice.example"}))
+        account = _entry("GET", "/account", body=json.dumps({"name": _EMAIL}))
 
         await _save(storage, _Backend([first, second, account]))
 
         everything = _everything(storage.run_dir)
-        assert b"alice.example" not in everything
+        assert _EMAIL.encode() not in everything
         assert _JSON_PASSWORD.encode() not in everything
 
 
@@ -956,9 +958,9 @@ class TestWhichValuesArePasswords:
         post = _entry(
             method,
             "/api/session",
-            post_data=json.dumps({"username": "alice.example", "password": "Zebra-Plum-77"}),
+            post_data=json.dumps({"username": _EMAIL, "password": "Zebra-Plum-77"}),
         )
-        echo = _entry("GET", "/account", body=json.dumps({"name": "alice.example"}))
+        echo = _entry("GET", "/account", body=json.dumps({"name": _EMAIL}))
 
         await _save(storage, _Backend([_login_page(), post, echo]))
 
@@ -968,7 +970,7 @@ class TestWhichValuesArePasswords:
         }
         everything = _everything(storage.run_dir)
         assert b"Zebra-Plum-77" not in everything
-        assert b"alice.example" not in everything
+        assert _EMAIL.encode() not in everything
 
 
 class TestNoValueIsTakenFromARequestThatIsNoCredentialPost:
@@ -1274,16 +1276,37 @@ class TestKnownGaps:
         self, tmp_path: Path
     ) -> None:
         storage = _storage(tmp_path)
-        first = _entry("POST", "/identify", post_data=json.dumps({"username": "alice.example"}))
+        first = _entry("POST", "/identify", post_data=json.dumps({"username": _EMAIL}))
         second = _entry("POST", "/session", post_data=json.dumps({"password": "sunflower99"}))
         console = MagicMock()
 
         await _save(storage, _Backend([_login_page(), first, second]), console)
 
         everything = _everything(storage.run_dir)
-        assert b"alice.example" in everything
+        assert _EMAIL.encode() in everything
         assert b"sunflower99" not in everything
         assert _UNREAD_LINE not in _printed(console)
+
+    @pytest.mark.asyncio
+    async def test_a_username_that_is_not_an_email_address_is_left(self, tmp_path: Path) -> None:
+        storage = _storage(tmp_path)
+        post = _entry(
+            "POST",
+            "/session",
+            post_data=json.dumps({"username": "admin", "password": "Zebra-Plum-77"}),
+        )
+        echo = _entry("GET", "/account", body=json.dumps({"name": "admin"}))
+        console = MagicMock()
+
+        await _save(storage, _Backend([_login_page(), post, echo]), console)
+
+        assert json.loads(_har(storage)[1]["request"]["postData"]["text"]) == {
+            "username": "admin",
+            "password": REDACTED,
+        }
+        assert json.loads(_har(storage)[2]["response"]["content"]["text"]) == {"name": "admin"}
+        assert b"Zebra-Plum-77" not in _everything(storage.run_dir)
+        assert "Scrubbed 1 value from 1 credential post. " + _NOTE in _printed(console)
 
     @pytest.mark.asyncio
     async def test_a_numeric_password_is_replaced_inside_other_numbers(
@@ -1329,3 +1352,145 @@ class TestMarkedFailedSecrets:
 
     def test_a_backend_without_the_method_gives_none(self) -> None:
         assert _marked_failed_secrets(object()) == ()
+
+
+_LABELS = {"items": ["Log In", "Login", "Sign up"], "guest": True, "role": "guest"}
+_SETTINGS = {"locale": "en-US", "theme": "darkmode", "remember": "true", "active": True}
+
+
+class TestOnlyAnEmailAddressIsTakenAsAnIdentifier:
+    """A login form's other identifier-named fields send values nobody typed (a submit
+    button, a hidden field, a step's settings object): only an email address under an
+    identifier field's own name is taken, and nothing else in the run changes."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"login": "Log In"},
+            {"login": "Login"},
+            {"login": "true"},
+            {"account": "guest"},
+            {"user": {"locale": "en-US", "remember": "true"}},
+        ],
+    )
+    async def test_a_credential_posts_other_identifier_fields_are_left(
+        self, tmp_path: Path, extra: dict[str, Any]
+    ) -> None:
+        post = _entry(
+            "POST",
+            "/session",
+            post_data=json.dumps({"email": _EMAIL, "password": "Zebra-Plum-77", **extra}),
+        )
+        labels = _entry("GET", "/api/nav", body=json.dumps(_LABELS))
+        settings = _entry("GET", "/settings", body=json.dumps(_SETTINGS))
+        storage = _storage(tmp_path)
+        backend = _Backend([_login_page(), post, labels, settings])
+        backend.page_source = "<html><body><a href='/login'>Log In</a> Login guest</body></html>"
+        console = MagicMock()
+
+        await _save(storage, backend, console)
+
+        entries = _har(storage)
+        assert json.loads(entries[1]["request"]["postData"]["text"]) == {
+            "email": REDACTED,
+            "password": REDACTED,
+            **extra,
+        }
+        assert json.loads(entries[2]["response"]["content"]["text"]) == _LABELS
+        assert json.loads(entries[3]["response"]["content"]["text"]) == _SETTINGS
+        assert (storage.run_dir / "page-source.html").read_text() == backend.page_source
+        assert "Scrubbed 2 values from 1 credential post. " + _NOTE in _printed(console)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "post_data",
+        ["sku=A-100&account=guest", "sku=A-100&user=default&login=admin"],
+    )
+    async def test_a_cart_post_to_a_page_whose_login_form_has_no_action_is_left(
+        self, tmp_path: Path, post_data: str
+    ) -> None:
+        modal = (
+            "<html><body><form method='post'><input name='email'>"
+            "<input type='password' name='password'></form></body></html>"
+        )
+        page = _entry("GET", "/cart", body=modal, content_type="text/html")
+        cart = _entry(
+            "POST", "/cart", post_data=post_data, post_type="application/x-www-form-urlencoded"
+        )
+        guest = _entry(
+            "GET", "/admin/guest", body=json.dumps({"guest": True, "user": "default", "admin": 1})
+        )
+        entries = [page, cart, guest, *_ordinary()]
+        plain, scrubbed = _storage(tmp_path / "a"), _storage(tmp_path / "b")
+        console = MagicMock()
+
+        await _save(plain, _Backend(entries), scrub=False)
+        await _save(scrubbed, _Backend(entries), console)
+
+        assert _run_bytes(scrubbed.run_dir) == _run_bytes(plain.run_dir)
+        assert "Scrubbed 0 values from 0 credential posts. " + _NOTE in _printed(console)
+
+    @pytest.mark.asyncio
+    async def test_a_login_steps_settings_object_is_left_and_its_email_scrubbed(
+        self, tmp_path: Path
+    ) -> None:
+        step = _entry(
+            "POST",
+            "/login/verify",
+            post_data=json.dumps(
+                {"user": {"locale": "en-US", "remember": "true"}, "email": _EMAIL}
+            ),
+        )
+        login = _entry("POST", "/session", post_data=json.dumps({"password": "Zebra-Plum-77"}))
+        settings = _entry("GET", "/settings", body=json.dumps(_SETTINGS))
+        echo = _entry("GET", "/account", body=json.dumps({"name": _EMAIL}))
+        storage = _storage(tmp_path)
+        console = MagicMock()
+
+        await _save(storage, _Backend([_login_page(), step, login, settings, echo]), console)
+
+        entries = _har(storage)
+        assert json.loads(entries[1]["request"]["postData"]["text"]) == {
+            "user": {"locale": "en-US", "remember": "true"},
+            "email": REDACTED,
+        }
+        assert json.loads(entries[3]["response"]["content"]["text"]) == _SETTINGS
+        assert _EMAIL.encode() not in _everything(storage.run_dir)
+        assert b"Zebra-Plum-77" not in _everything(storage.run_dir)
+        assert (
+            "Scrubbed 2 values from 1 credential post and 1 earlier login step. " + _NOTE
+            in _printed(console)
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_note_names_a_login_step_that_alone_gave_a_value(
+        self, tmp_path: Path
+    ) -> None:
+        step = _entry("POST", "/login/identify", post_data=json.dumps({"username": _EMAIL}))
+        login = _entry("POST", "/session", post_data=json.dumps({"u": _EMAIL, "p": "secretword"}))
+        storage = _storage(tmp_path)
+        console = MagicMock()
+
+        await _save(storage, _Backend([_login_page(), step, login]), console)
+
+        printed = _printed(console)
+        assert "Scrubbed 1 value from 1 earlier login step. " + _NOTE in printed
+        assert "0 credential posts" not in printed
+        assert _EMAIL.encode() not in _everything(storage.run_dir)
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("alice@example.com", True),
+            ("a.b+c@mail.example.org", True),
+            ("alice@localhost", False),
+            ("alice@@example.com", False),
+            ("al ice@example.com", False),
+            ("@example.com", False),
+            ("alice.example", False),
+            ("admin", False),
+        ],
+    )
+    def test_what_is_an_email_address(self, value: str, expected: bool) -> None:
+        assert _is_email(value) is expected
