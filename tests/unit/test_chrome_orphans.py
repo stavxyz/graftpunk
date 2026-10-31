@@ -257,6 +257,33 @@ class TestListChromeProcesses:
             (804, 799, None),
         ]
 
+    def test_a_chromedriver_in_uc_data_dir_is_listed_while_its_binary_is_absent(self) -> None:
+        """undetected-chromedriver unlinks its binary and downloads a new one on
+        each launch; an orphan of an earlier run still names that path."""
+        uc_driver = f"{chrome_orphans._UC_DATA_DIR}/undetected_chromedriver"
+        table = "\n".join(
+            [
+                _row(820, 1, f"{uc_driver}-absent-for-this-test --port=1 {OWNER_SWITCH}=799"),
+                _row(821, 1, f"grep {uc_driver} {OWNER_SWITCH}=799"),
+                _row(822, 1, f'/bin/sh -c "{uc_driver} {OWNER_SWITCH}=799"'),
+            ]
+        )
+
+        assert [p.pid for p in list_chrome_processes(_ops(table))] == [820]
+
+    def test_the_uc_data_dir_is_undetected_chromedrivers(self) -> None:
+        """Version pin: computed here, so the sweep runs without that library."""
+        patcher = pytest.importorskip("undetected_chromedriver.patcher")
+
+        assert patcher.Patcher.data_path == chrome_orphans._UC_DATA_DIR
+        for platform, tail in [
+            ("win32", "appdata/roaming/undetected_chromedriver"),
+            ("linux", ".local/share/undetected_chromedriver"),
+            ("darwin", "Library/Application Support/undetected_chromedriver"),
+            ("freebsd14", ".undetected_chromedriver"),
+        ]:
+            assert chrome_orphans._uc_data_dir(platform).endswith(tail)
+
     def test_a_command_naming_a_chromedriver_path_is_not_a_chromedriver(
         self, tmp_path: Path
     ) -> None:

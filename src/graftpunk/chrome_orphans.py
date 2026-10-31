@@ -66,6 +66,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterable
@@ -257,6 +258,32 @@ def _switch_value(args: str, switch: str) -> str | None:
     return None
 
 
+def _uc_data_dir(platform: str = sys.platform) -> str:
+    """Where undetected-chromedriver keeps its patched chromedriver.
+
+    ``Patcher.data_path`` in undetected-chromedriver 3.5.5
+    (``undetected_chromedriver/patcher.py:29-40``), computed here rather than
+    imported, so the sweep runs without that library. ``Patcher.auto()``
+    unlinks the binary there and downloads a new one on each launch
+    (``patcher.py:159-160``), so a chromedriver left running may name a file
+    that is, for a while, not on disk.
+    """
+    if platform.endswith("win32"):
+        directory = "~/appdata/roaming/undetected_chromedriver"
+    elif "LAMBDA_TASK_ROOT" in os.environ:
+        directory = "/tmp/undetected_chromedriver"  # noqa: S108 - the library's own path
+    elif platform.startswith(("linux", "linux2")):
+        directory = "~/.local/share/undetected_chromedriver"
+    elif platform.endswith("darwin"):
+        directory = "~/Library/Application Support/undetected_chromedriver"
+    else:
+        directory = "~/.undetected_chromedriver"
+    return os.path.abspath(os.path.expanduser(directory))
+
+
+_UC_DATA_DIR = _uc_data_dir()
+
+
 def _is_marked_chromedriver(args: str) -> bool:
     """Whether *args* is a chromedriver that a graftpunk selenium launch marked.
 
@@ -276,8 +303,12 @@ def _is_marked_chromedriver(args: str) -> bool:
         return False
     # A prefix with a space in it is either an executable whose path holds
     # one or a command naming such a path as an argument (``grep <path>``,
-    # ``sh -c "<path>``). Only the first is a file on disk.
-    return not any(char.isspace() for char in executable) or os.path.isfile(executable)
+    # ``sh -c "<path>``). Only the first is a file on disk, or, while
+    # undetected-chromedriver has unlinked its binary to download a new one,
+    # starts with that library's own data directory.
+    if not any(char.isspace() for char in executable):
+        return True
+    return os.path.isfile(executable) or executable.startswith(_UC_DATA_DIR + os.sep)
 
 
 def _parse_row(row: str) -> ChromeProcess | None:
