@@ -24,6 +24,8 @@ from graftpunk.har.digest import (
     RunDigest,
     ShapeNode,
     family_values,
+    printable_login_fields,
+    printable_tokens,
 )
 from graftpunk.har.documents import LoginForm, printable_selectors, printable_unresolved_roles
 from graftpunk.har.paths import printable_name, templated_url, templates_a_segment
@@ -239,7 +241,8 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     lines.append("## Login")
     if d.login:
         for obs in d.login:
-            field_note = f" ({', '.join(obs.fields)})" if obs.fields else ""
+            fields = printable_login_fields(obs)
+            field_note = f" ({', '.join(fields)})" if fields else ""
             redirect_note = f" -> {obs.redirect_to}" if obs.redirect_to else ""
             # A login-shaped observation outside the login the generator uses (a
             # password change, a later redirect) says so.
@@ -266,8 +269,9 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     lines.append("")
 
     lines.append("## Tokens")
-    if d.tokens:
-        for token in d.tokens:
+    tokens = printable_tokens(d.tokens)
+    if tokens:
+        for token in tokens:
             lines.append(f"- {token.kind} `{token.name}`, seen on: {', '.join(token.seen_on)}")
     else:
         lines.append("(none found)")
@@ -322,11 +326,16 @@ def _jsonable(value: Any) -> Any:
 def render_json(d: RunDigest) -> str:
     """The complete digest as JSON: nothing capped, nothing summarised. A field
     marked :data:`graftpunk.har.digest.INTERNAL` is a lookup for code and is left
-    out, and so is a name in ``cookies`` that reads as a value
+    out, and so is a cookie name that reads as a value
     (:func:`graftpunk.har.paths.printable_name`), which
-    ``cookie_names_not_shown`` counts."""
+    ``cookie_names_not_shown`` counts: in ``cookies``, in ``login`` fields
+    (:func:`graftpunk.har.digest.printable_login_fields`), and in ``tokens``
+    (:func:`graftpunk.har.digest.printable_tokens`)."""
     rendered = _jsonable(d)
     rendered["cookies"] = [name for name in d.cookies if printable_name(name)]
+    rendered["tokens"] = _jsonable(printable_tokens(d.tokens))
+    for observation, login in zip(d.login, rendered["login"], strict=True):
+        login["fields"] = list(printable_login_fields(observation))
     return json.dumps(rendered, indent=2, sort_keys=True)
 
 

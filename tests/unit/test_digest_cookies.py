@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
 from graftpunk.har.digest import DigestSource, RunDigest, digest
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from tests.unit.test_har_digest import _entry, _write_har
@@ -442,3 +443,61 @@ def test_a_cookie_a_dropped_response_set_is_only_sent_by_a_kept_one(lines_of) ->
     assert lines_of([static, account]) == [
         "- `bm_check`: sent in requests and never set by a response the digest kept"
     ]
+
+
+# Names printable_name holds back and holds_an_id does not, so only the name gate
+# keeps them out: a session cookie a login step sets, a token-shaped cookie set
+# and sent back, a token-shaped cookie only sent, and a nameless cookie's value
+# recorded as its name.
+_HELD_BACK = ("sessionZq9vLm2x", "xsrfQz9XvKw", "authTokenQx7vK", _VALUE_AS_NAME)
+
+
+def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
+    """Login steps, token candidates, and the Cookies section, in the markdown,
+    --json, --endpoints-json, and a scaffolded plugin, print no held-back name;
+    the digest's own model keeps each one for the fixture safety net."""
+    session, xsrf, auth, nameless = _HELD_BACK
+    page = _entry(
+        "GET",
+        f"{_HOST}/login",
+        content_type="text/html",
+        body="<form method=post action=/login><input name=username>"
+        "<input type=password name=password></form>",
+    )
+    login = _entry(
+        "POST",
+        f"{_HOST}/login",
+        status=302,
+        content_type="text/html",
+        body="",
+        post_data="username=u&password=p",
+        request_headers={"Content-Type": "application/x-www-form-urlencoded"},
+        response_headers={"Location": "/account"},
+    )
+    account = _entry(
+        "GET",
+        f"{_HOST}/account",
+        content_type="text/html",
+        body="<html></html>",
+        set_cookies=[f"{session}={_VALUE}; Path=/; HttpOnly"],
+    )
+    sets_xsrf = _entry("GET", f"{_HOST}/api/a", set_cookies=[f"{xsrf}={_VALUE}; Path=/"])
+    sets_xsrf["response"]["cookies"] = [{"name": xsrf, "value": _VALUE}]
+    echoes_xsrf = _entry("POST", f"{_HOST}/api/b")
+    echoes_xsrf["request"]["cookies"] = [{"name": xsrf, "value": _VALUE}]
+    sends = _entry("GET", f"{_HOST}/api/c")
+    sends["request"]["cookies"] = [{"name": auth, "value": _VALUE}, {"name": nameless, "value": ""}]
+    d = _digest(tmp_path, [page, login, account, sets_xsrf, echoes_xsrf, sends])
+
+    assert (session,) in [obs.fields for obs in d.login if obs.kind == "set_cookie"]
+    assert {xsrf, auth} <= {token.name for token in d.tokens if token.kind == "cookie"}
+    assert d.cookie_names_not_shown == len(_HELD_BACK)
+    plugin = render(
+        ScaffoldSpec(
+            name="myshop", mode="new_project", backend="nodriver", base_url=_HOST, digest=d
+        )
+    )
+    for text in (render_markdown(d), render_json(d), render_endpoints_json(d), *plugin.values()):
+        for name in _HELD_BACK:
+            assert name.lower() not in text.lower()
+    assert "- 4 cookies whose names read as values are not shown" in _cookie_lines(d)

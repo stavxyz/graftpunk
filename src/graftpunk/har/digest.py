@@ -105,6 +105,8 @@ __all__ = [
     "password_field_names",
     "post_account_values",
     "post_every_value",
+    "printable_login_fields",
+    "printable_tokens",
     "post_identifier_values",
     "posted_account_values",
     "endpoint_template",
@@ -553,8 +555,12 @@ class RunDigest:
     cookie_facts: tuple[CookieFacts, ...] = field(default=(), metadata={OMIT_EMPTY: True})
     # How many distinct cookie names, set or sent, read as a value
     # (graftpunk.har.paths.printable_name, the graft skill's har-facts.py gate)
-    # and so print nowhere: not in ``cookie_facts``, the markdown Cookies
-    # section, or --json's ``cookies``. A name holding an id counts here too.
+    # and so print nowhere: not in ``cookie_facts``, a login step's cookie
+    # names (printable_login_fields), a cookie token candidate
+    # (printable_tokens), or --json's ``cookies``, so in no section of the
+    # markdown, --json, --endpoints-json, or a scaffolded plugin. The model's
+    # ``cookies``, ``login``, and ``tokens`` keep every name for the fixture
+    # safety net. A name holding an id counts here too.
     cookie_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
 
 
@@ -1465,6 +1471,26 @@ def _cookie_names_not_shown(*names: Iterable[str]) -> int:
     id, and sent) read as a value (:func:`graftpunk.har.paths.printable_name`),
     and so print in no form."""
     return len({name for group in names for name in group if not printable_name(name)})
+
+
+def printable_tokens(tokens: Iterable[TokenCandidate]) -> tuple[TokenCandidate, ...]:
+    """*tokens* as every output prints them: without a cookie candidate whose name
+    reads as a value (:func:`graftpunk.har.paths.printable_name`), which
+    ``RunDigest.cookie_names_not_shown`` counts. A header candidate is a header
+    name and prints as the endpoints' custom headers do. ``RunDigest.tokens``
+    keeps them all: :func:`flagged_names_of` reads it."""
+    return tuple(t for t in tokens if t.kind != "cookie" or printable_name(t.name))
+
+
+def printable_login_fields(observation: LoginObservation) -> tuple[str, ...]:
+    """*observation*'s ``fields`` as every output prints them: a ``set_cookie``
+    step's cookie names without one that reads as a value
+    (:func:`graftpunk.har.paths.printable_name`), which
+    ``RunDigest.cookie_names_not_shown`` counts. ``LoginObservation.fields`` keeps
+    them all."""
+    if observation.kind != "set_cookie":
+        return observation.fields
+    return tuple(name for name in observation.fields if printable_name(name))
 
 
 def _redirect_target(entry: HAREntry) -> tuple[str, str]:

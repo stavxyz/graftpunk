@@ -1435,8 +1435,8 @@ class TestPluginModuleWithTokens:
         assert 'header="X-CSRF-Token",' in plugin_code
 
     def test_paired_header_and_cookie_candidates_use_from_cookie(self) -> None:
-        header = TokenCandidate(kind="header", name="X-Csrf", seen_on=("GET /a",))
-        cookie = TokenCandidate(kind="cookie", name="X-Csrf", seen_on=("GET /a",))
+        header = TokenCandidate(kind="header", name="XSRF-TOKEN", seen_on=("GET /a",))
+        cookie = TokenCandidate(kind="cookie", name="XSRF-TOKEN", seen_on=("GET /a",))
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
@@ -1446,8 +1446,8 @@ class TestPluginModuleWithTokens:
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "Token.from_cookie(" in plugin_code
-        assert 'cookie_name="X-Csrf",' in plugin_code
-        assert 'header="X-Csrf",' in plugin_code
+        assert 'cookie_name="XSRF-TOKEN",' in plugin_code
+        assert 'header="XSRF-TOKEN",' in plugin_code
 
     def test_unpaired_candidate_is_a_gp_fill_line(self) -> None:
         lone = TokenCandidate(kind="header", name="X-Lonely", seen_on=("GET /a",))
