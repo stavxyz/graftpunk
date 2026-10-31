@@ -1311,19 +1311,11 @@ cookie name out only when every occurrence of the name in the capture's body is
 accounted for. It finds each whole-name occurrence the way the fixtures check
 finds a flagged name (without regard to case, so `x-name` and `window.name` are
 not it), in the body as written and in each decoded form above, and counts one
-as accounted for only when one of three strict readers reads it as a
+as accounted for only when one of two strict readers reads it as a
 name-value pair. JSON: the name is a key of a JSON object that parses where it
 starts in that form (the whole body, an object or array inside it such as
 inline state in a script, or the text of a JSON string there that is itself a
-JSON object or array), read with the key's parsed value. A query or form pair:
-`name=v` at the start of the form or after `?`, `&`, `;` or a quote, where `v` is
-a run of URL characters (no `<`, `>`, `=`, whitespace, quote or backslash)
-followed by `&`, `#` or `;`, or a run that is not empty and ends the form, an
-attribute value of a tag the HTML parser read, or a JSON string value (not a
-key) the JSON reader parsed. A pair ended by any other quote (in prose, in a
-script's call or concatenation) is not read, and an empty `v` at the end of a
-string, an attribute or the form is not read either, since a token can sit
-right after it. An element attribute: a void `input`, `meta`, `param` or `link`
+JSON object or array), read with the key's parsed value. An element attribute: a void `input`, `meta`, `param` or `link`
 element, written with or without `/>`, with a `value` or `content` attribute,
 whose `name`, `id`, `property`, `itemprop` or `http-equiv` is the name, read
 with an HTML parser so the order of its attributes does not matter; every other
@@ -1334,10 +1326,11 @@ a JSON object or array is opened and read as JSON, and so is such a string
 inside that text, at any depth; a JSON string whose text is another JSON string
 is not opened, so a name inside it stays checked. Every value read so must hold nothing: a boolean, null, empty, a
 string that is form state by the rule above, a number whose text is form state
-(`7` and `4411` are, an 18-digit id is not; a value after `=` is read as text,
-never as a JSON number), or an object or array whose every key and value holds
+(`7` and `4411` are, an 18-digit id is not), or an object or array whose every key and value holds
 nothing. An occurrence inside a value already read is part of that value. Any
-other occurrence keeps the name checked, whatever sits beside it: `name: v` in
+other occurrence keeps the name checked, whatever sits beside it: `name=v` in a
+URL, a query string or a form body (`?csrftoken=2` included, in an attribute
+value, a JSON string or text), `name: v` in
 text that is not JSON (`<li>csrftoken: <code>...</code></li>`,
 `<dt>csrftoken:</dt><dd>...</dd>`), `name == "v"` or `name => "v"` in a script,
 `name=<b>v</b>`, a call's argument as in `Cookies.set('name', ...)`, a
@@ -1347,9 +1340,12 @@ attributes and whether or not written with `/>`, and a table cell. So a cookie n
 in nearly every HTML capture, where `id="..."` names an attribute. The JSON
 reader stops looking for values once its failed parses have scanned four times
 the form's length, so an object left open many levels deep costs linear time,
-and a quote before the end of a string or value it already parsed never starts
-a string, so a long string of escaped markup costs linear time too; an
-occurrence it did not reach is read only by the other two readers. The HTML
+and a quote inside a value it already parsed, or inside a string it already
+parsed other than that string's closing quote, never starts a string, so a long
+string of escaped markup costs linear time too (the closing quote of a string
+that is not opened may start one, since that string may have paired a stray
+quote with the next string's opening quote); an occurrence it did not reach is
+read only by the element reader. The HTML
 parser reads each tag once, and an element is judged once for a name however
 many occurrences of the name it holds. An honest
 `"id": 7` or `"user": "alice"` leaves the name out;

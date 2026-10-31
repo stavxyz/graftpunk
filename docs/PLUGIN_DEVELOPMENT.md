@@ -2332,20 +2332,17 @@ cookie's recorded values are the HAR's cookie arrays and every `Cookie` and
 `Set-Cookie` header: what the recorded headers carried, not every value the
 cookie held, since a token rotated or set by a script after the last request
 that sent the cookie is in none of them. So a cookie name is left out only when
-every occurrence of it in the captured body is read by one of three strict
+every occurrence of it in the captured body is read by one of two strict
 readers: a key of a JSON object that parses where it starts in the body (or in
-the text of a JSON string there), read with its parsed value; a query or form
-pair `name=v` at the start of the text or after `?`, `&`, `;` or a quote, with
-`v` a run of URL characters ending at `&`, `#` or `;`, or a run that is not
-empty ending the text, an attribute value or a JSON string value (a pair ended
-by a quote in prose or a script's call is not read); or a void `input`, `meta`,
+the text of a JSON string there), read with its parsed value; or a void `input`, `meta`,
 `param` or `link` element, with or without `/>`, with a `value` or `content`
 attribute, whose `name`, `id`, `property`, `itemprop` or `http-equiv` is the
 name, in any attribute order. Every value read so must hold nothing (for an
 element, every attribute value but the naming one, and every attribute name
 that is not an HTML attribute of that element): a boolean, null, empty, form state by the rule above, a number
 whose text is form state, or an object or array whose keys and values all hold
-nothing. Any other mention of the name (`csrftoken: <code>...</code>` in a page,
+nothing. Any other mention of the name (`?csrftoken=2` or any `name=v` in a
+URL or query string, `csrftoken: <code>...</code>` in a page,
 `Cookies.set('csrftoken', ...)`, a `{"name": "csrftoken", "value": ...}` pair, an
 attribute named `csrftoken`, a `textarea` or other element that holds text, a
 table cell) keeps it in, so a cookie named `id` stays in for nearly every HTML

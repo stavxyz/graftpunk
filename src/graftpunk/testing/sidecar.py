@@ -15,15 +15,14 @@ value without the recording. From schema 3, ``checked_names`` is the part of
 ``flagged_names`` the fixtures check looks for in this fixture: every token name,
 each cookie name whose recorded value this capture's body held, in any form the
 check reads, each cookie name the body held anywhere but in a name-value pair
-one of three strict readers reads (a key of a JSON object that parses where it
-starts in the body or in the text of a JSON string; ``name=v`` after the start
-of the text or one of ``?&;"'``, with ``v`` a run of URL characters ending at
-``&``, ``#`` or ``;``, or a run that is not empty ending the text, an attribute
-value or a JSON string value; a void ``input``, ``meta``, ``param`` or ``link``
-element named so with a ``value`` or ``content``, every other attribute value
-of it and every attribute name that is not one of its own judged too) whose value
-holds nothing (a boolean, null, empty, or form state, a number judged by its
-text, an object by its keys and values), and
+one of two strict readers reads (a key of a JSON object that parses where it
+starts in the body or in the text of a JSON string; a void ``input``, ``meta``,
+``param`` or ``link`` element named so with a ``value`` or ``content``, every
+other attribute value of it and every attribute name that is not one of its own
+judged too) whose value holds nothing (a boolean, null, empty, or form state, a
+number judged by its text, an object by its keys and values; a name in a URL or
+query string, such as ``?csrftoken=2``, is read by neither and stays checked),
+and
 each cookie name whose values ``gp observe fixtures`` did not know
 (``graftpunk.har.digest.flagged_values_of``; a cookie no recorded request sent
 a value is one). Only a cookie name can be left out, and only when every
