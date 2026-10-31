@@ -1309,6 +1309,26 @@ class TestKnownGaps:
         assert "Scrubbed 1 value from 1 credential post. " + _NOTE in _printed(console)
 
     @pytest.mark.asyncio
+    async def test_a_coupon_under_a_same_page_password_input_name_is_scrubbed(
+        self, tmp_path: Path
+    ) -> None:
+        page = _entry(
+            "GET",
+            "/cart",
+            body="<html><body><form method='post'><input type='password' name='code'></form>"
+            "</body></html>",
+            content_type="text/html",
+        )
+        cart = _entry("POST", "/cart", post_data=json.dumps({"sku": "A-100", "code": "SAVE10"}))
+        promo = _entry("GET", "/promo/SAVE10")
+        storage = _storage(tmp_path)
+
+        await _save(storage, _Backend([page, cart, promo]))
+
+        assert _har(storage)[2]["request"]["url"] == f"{_HOST}/promo/{REDACTED}"
+        assert b"SAVE10" not in _everything(storage.run_dir)
+
+    @pytest.mark.asyncio
     async def test_a_numeric_password_is_replaced_inside_other_numbers(
         self, tmp_path: Path
     ) -> None:
