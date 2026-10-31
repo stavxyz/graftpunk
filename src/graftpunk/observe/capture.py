@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
+from graftpunk.dialogs import DialogAnswerer, answer_dialogs
 from graftpunk.har.parser import cookie_header_pairs
 from graftpunk.har.paths import bare_path, holds_an_id
 from graftpunk.har.selectors import MAX_SELECTOR_LENGTH, MAX_SHOWN_FIELDS, bounded_selector
@@ -52,9 +53,6 @@ _DOM_DISABLE_WAIT_S = 2.0
 # The most the page source read waits for its turn at the DOM read lock, so a read
 # stuck on a page that stopped answering DevTools cannot hold it up for good.
 _PAGE_SOURCE_TURN_WAIT_S = 10.0
-# The most an answer to a JavaScript dialog waits for Chrome's reply: nodriver's send
-# waits with no bound, and a detached target may never reply.
-_DIALOG_ANSWER_WAIT_S = 5.0
 
 # MIME type constants for body handling
 BINARY_MIME_PREFIXES = (
@@ -1697,10 +1695,12 @@ class NodriverCaptureBackend:
         # Set for a headless recording (#320): nobody can answer a page's alert,
         # confirm, prompt or beforeunload there, and one left open stops the page's
         # script and every DevTools read of the page, so the run is never saved.
-        # Each is accepted through CDP (_on_dialog_opening).
+        # Each is accepted through CDP (graftpunk.dialogs), by the tab's one answerer,
+        # which a headless NoDriverBackend installs before its first navigation.
         self._answer_dialogs = answer_dialogs
-        self._dialogs_answered = 0
-        self._dialog_answer_failures = 0
+        self._dialogs: DialogAnswerer | None = None
+        # (answered, failed) as stop ended, so the run log's count is the summary's.
+        self._dialog_counts: tuple[int, int] | None = None
         self._get_tab = get_tab
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
@@ -1784,8 +1784,16 @@ class NodriverCaptureBackend:
 
     @property
     def dialogs_answered(self) -> int:
-        """How many JavaScript dialogs this capture answered (only a headless one does)."""
-        return self._dialogs_answered
+        """How many JavaScript dialogs the tab's answerer accepted (only a headless
+        capture has one), as counted when stop ended."""
+        return self._current_dialog_counts()[0]
+
+    def _current_dialog_counts(self) -> tuple[int, int]:
+        if self._dialog_counts is not None:
+            return self._dialog_counts
+        if self._dialogs is None:
+            return (0, 0)
+        return (self._dialogs.answered, self._dialogs.failed)
 
     def start_capture(self) -> None:
         """Begin capturing browser data."""
@@ -1931,7 +1939,7 @@ class NodriverCaptureBackend:
             tab.add_handler(event_cls, handler)
 
         if self._answer_dialogs:
-            await self._start_answering_dialogs(tab)
+            self._dialogs = await answer_dialogs(tab)
 
         if self._dom_snapshots_dir is not None:
             await self._install_dom_listener(tab)
@@ -1961,13 +1969,6 @@ class NodriverCaptureBackend:
             return
 
         self._extra_info.log_unmatched(self._request_map)
-
-        if self._dialogs_answered or self._dialog_answer_failures:
-            LOG.info(
-                "nodriver_dialog_summary",
-                answered=self._dialogs_answered,
-                failed=self._dialog_answer_failures,
-            )
 
         # One aggregate line so a systematic eager-fetch failure (e.g. a
         # nodriver internals change, issue #146) is visible at a glance rather
@@ -2021,6 +2022,10 @@ class NodriverCaptureBackend:
             if self._record_request_bodies:
                 _flag_uncaptured_post_data(self._request_map)
             self._scrub_failed_resends()
+            if self._dialogs is not None:
+                self._dialog_counts = self._current_dialog_counts()
+                answered, failed = self._dialog_counts
+                LOG.info("nodriver_dialog_summary", answered=answered, failed=failed)
 
     async def _settle_request_time_fetches(self) -> None:
         """Let the request-time body fetches still running finish first.
@@ -2385,62 +2390,6 @@ class NodriverCaptureBackend:
             return
         self._post_data_tasks.add(task)
         task.add_done_callback(self._post_data_tasks.discard)
-
-    async def _start_answering_dialogs(self, tab: Any) -> None:
-        """Answer each JavaScript dialog the tab's pages open (:meth:`_on_dialog_opening`).
-        ``Page.javascriptDialogOpening`` comes only with the Page domain enabled. A
-        target that refuses it is still recorded, with one warning."""
-        import nodriver.cdp.page as cdp_page
-
-        event_cls = getattr(cdp_page, "JavascriptDialogOpening", None)
-        if event_cls is None:
-            LOG.warning("nodriver_dialog_answering_unavailable", reason="no_event_class")
-            return
-        tab.add_handler(event_cls, self._on_dialog_opening)
-        try:
-            await tab.send(cdp_page.enable())
-        except Exception as exc:  # noqa: BLE001 - the recording goes on without it
-            LOG.warning(
-                "nodriver_dialog_answering_unavailable",
-                error=str(exc),
-                exc_type=type(exc).__name__,
-                hint="A page that opens an alert, confirm or prompt stalls the recording.",
-            )
-
-    async def _on_dialog_opening(self, event: Any) -> None:
-        """Accept the dialog *event* announces: an alert, a confirm, a prompt with its
-        default text, and a beforeunload (refusing would keep the recording on the
-        page the page or the user asked to leave). One line logs the dialog's type,
-        the choice and the page's host, never the message, the default text, or the
-        URL's path or query, any of which can hold account data. An answer that
-        fails (the dialog closed already, the target went away) or gets no reply
-        within ``_DIALOG_ANSWER_WAIT_S`` is a debug line and nothing else."""
-        import nodriver.cdp.page as cdp_page
-
-        kind = str(getattr(getattr(event, "type_", None), "value", "") or "unknown")
-        host = urllib.parse.urlsplit(str(getattr(event, "url", "") or "")).hostname
-        tab = self._tab
-        if tab is None:
-            return
-        prompt_text = (getattr(event, "default_prompt", None) or "") if kind == "prompt" else None
-        try:
-            async with asyncio.timeout(_DIALOG_ANSWER_WAIT_S):
-                await tab.send(
-                    cdp_page.handle_java_script_dialog(accept=True, prompt_text=prompt_text),
-                    **_capture_session_kwargs(tab, self._capture_session_id),
-                )
-        except Exception as exc:  # noqa: BLE001 - best-effort; never holds up the run
-            self._dialog_answer_failures += 1
-            LOG.debug(
-                "nodriver_dialog_answer_failed",
-                dialog_type=kind,
-                host=host,
-                error=str(exc),
-                exc_type=type(exc).__name__,
-            )
-            return
-        self._dialogs_answered += 1
-        LOG.info("nodriver_dialog_answered", dialog_type=kind, choice="accept", host=host)
 
     async def _install_dom_listener(self, tab: Any) -> None:
         """Install the isolated-world listener (graftpunk.observe.dom_listener) that

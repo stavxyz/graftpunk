@@ -67,6 +67,7 @@ from graftpunk.chrome_orphans import (
     remove_browser_temp_profile,
     terminate_nodriver_browser,
 )
+from graftpunk.dialogs import answer_dialogs
 from graftpunk.exceptions import BrowserError
 from graftpunk.logging import get_logger, suppress_asyncio_noise
 from graftpunk.signals import (
@@ -1816,6 +1817,12 @@ class NoDriverBackend:
                     # Get initial page/tab - navigate to blank page
                     self._page = await self._browser.get("about:blank")
                     self._raise_if_given_up(hold)
+                    if self._headless:
+                        # Before the caller's first navigation, on the tab
+                        # Browser.get navigates: nobody can answer a page's
+                        # alert in a headless browser, and one left open stops
+                        # the page and every DevTools call to it (#320).
+                        await answer_dialogs(self._page)
                     return
                 except Exception as exc:
                     last_exc = exc

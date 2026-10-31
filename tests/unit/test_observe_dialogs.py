@@ -18,6 +18,7 @@ from nodriver.cdp.page import JavascriptDialogOpening
 from nodriver.cdp.util import parse_json_event
 from structlog.testing import capture_logs
 
+from graftpunk import dialogs
 from graftpunk.observe import capture
 from graftpunk.observe.capture import NodriverCaptureBackend
 from tests.unit.test_observe_post_data import FakeTab, _always, _start, _stop
@@ -121,6 +122,37 @@ class TestHeadlessCaptureAnswersDialogs:
         assert ("Page.handleJavaScriptDialog", "session-1") in tab.sessions
 
 
+class TestTheCountTheRunReports:
+    @pytest.mark.asyncio
+    async def test_a_dialog_answered_before_the_capture_started_is_counted(self) -> None:
+        """A headless NoDriverBackend answers from its start, before the login page
+        loads; the capture shares that answerer, so it neither answers twice nor
+        misses the count."""
+        tab = FakeTab({}, _always)
+        await dialogs.answer_dialogs(tab)
+        await tab.dispatch(_dialog("alert"))
+        backend = await _start(tab, answer_dialogs=True)
+        await tab.dispatch(_dialog("confirm"))
+        await _stop(backend, tab)
+
+        assert len(_answers(tab)) == 2
+        assert backend.dialogs_answered == 2
+
+    @pytest.mark.asyncio
+    async def test_the_summary_ends_stop_and_matches_the_saved_count(self) -> None:
+        tab = FakeTab({}, _always)
+        backend = await _start(tab, answer_dialogs=True)
+        with capture_logs() as logs:
+            await _stop(backend, tab)
+        await tab.dispatch(_dialog("alert"))
+
+        assert logs[-1]["event"] == "nodriver_dialog_summary"
+        assert (logs[-1]["answered"], logs[-1]["failed"]) == (0, 0)
+        # Answered after stop: the run's count stays the one stop logged.
+        assert len(_answers(tab)) == 1
+        assert backend.dialogs_answered == 0
+
+
 class TestAFailedAnswerNeverHoldsUpTheRun:
     @pytest.mark.asyncio
     async def test_a_refused_answer_is_a_debug_line_and_the_run_stops(self) -> None:
@@ -144,7 +176,7 @@ class TestAFailedAnswerNeverHoldsUpTheRun:
     async def test_an_answer_chrome_never_replies_to_is_given_up(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(capture, "_DIALOG_ANSWER_WAIT_S", 0.01)
+        monkeypatch.setattr(dialogs, "_DIALOG_ANSWER_WAIT_S", 0.01)
 
         class Silent(FakeTab):
             async def send(self, cmd: Any, **kwargs: Any) -> Any:

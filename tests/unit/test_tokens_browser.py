@@ -638,6 +638,40 @@ def _patched_nodriver(start: object) -> Iterator[None]:
         yield
 
 
+class TestBrowserExtractionAnswersDialogs:
+    @pytest.mark.asyncio
+    async def test_dialogs_are_answered_on_the_navigated_tab_before_any_navigation(
+        self,
+    ) -> None:
+        """#320: the extraction browser is headless, so nobody can answer an alert,
+        and one the page opens while loading would stop the extraction."""
+        from graftpunk.tokens import _extract_tokens_browser
+
+        browser = _hygiene_browser()
+        navigated = MagicMock()
+        browser.tabs = [navigated]
+        order: list[object] = []
+
+        async def answer(tab: object) -> None:
+            order.append(tab)
+
+        async def get(url: str) -> object:
+            order.append(url)
+            return browser.main_tab
+
+        browser.get = get
+
+        with (
+            _patched_nodriver(AsyncMock(return_value=browser)),
+            patch("graftpunk.tokens.answer_dialogs", answer),
+        ):
+            await _extract_tokens_browser(
+                requests.Session(), [_HYGIENE_TOKEN], "https://example.com"
+            )
+
+        assert order == [navigated, "https://example.com/app"]
+
+
 class TestBrowserExtractionHygiene:
     """The third launch site marks, sweeps, registers and cleans up like the other two (#96)."""
 

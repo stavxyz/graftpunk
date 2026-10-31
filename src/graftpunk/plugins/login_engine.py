@@ -504,13 +504,20 @@ async def _fill_field(
     )
 
 
-def _header_only_capture(backend_type: str, driver: Any, get_tab: Any) -> Any:
+def _header_only_capture(
+    backend_type: str, driver: Any, get_tab: Any, *, headless: bool = False
+) -> Any:
     """A capture used only for header roles: its HAR is never written, so it keeps,
-    fetches and logs about no request body."""
+    fetches and logs about no request body. A headless one answers JavaScript
+    dialogs, as a recorded one does (#320)."""
     from graftpunk.observe.capture import create_capture_backend
 
     return create_capture_backend(
-        backend_type, driver, get_tab=get_tab, record_request_bodies=False
+        backend_type,
+        driver,
+        get_tab=get_tab,
+        record_request_bodies=False,
+        answer_dialogs=headless,
     )
 
 
@@ -531,14 +538,15 @@ def _start_login_capture(
     storage is an ``ObserveStorage`` under the OPERATING session name --
     ``session_name`` when the CLI computed one (``base@label``), else the
     plugin's base name -- so ``gp --observe=full <plugin> login`` files the run
-    where the reader looks for that account (#151). A full capture of a
+    where the reader looks for that account (#151). Either capture of a
     *headless* login accepts each JavaScript dialog the pages open, as a
-    headless ``gp observe go`` does (#320).
+    headless ``gp observe go`` does (#320), through the tab's one answerer, which
+    the headless browser installed before the login page loaded.
     """
     from graftpunk.observe.capture import create_capture_backend
 
     if observe_mode == "off":
-        return _header_only_capture(backend_type, driver, get_tab), None
+        return _header_only_capture(backend_type, driver, get_tab, headless=headless), None
 
     # Why the login engine owns this for nodriver instead of handing
     # observe_mode to BrowserSession like the selenium path: the nodriver
@@ -563,7 +571,7 @@ def _start_login_capture(
             exc_type=type(exc).__name__,
         )
         gp_console.warn(f"Observability capture unavailable for this login: {exc}")
-        return _header_only_capture(backend_type, driver, get_tab), None
+        return _header_only_capture(backend_type, driver, get_tab, headless=headless), None
     capture = create_capture_backend(
         backend_type,
         driver,
@@ -757,6 +765,9 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
 
         from graftpunk import BrowserSession  # lazy: graftpunk-lite may lack it
 
+        # A headless browser answers JavaScript dialogs from its start, before this
+        # first navigation, so one the login page opens while loading is answered
+        # too (#320, NoDriverBackend).
         async with BrowserSession(backend="nodriver", headless=run_headless) as session:
             try:
                 async with asyncio.timeout(_LOGIN_NAV_TIMEOUT):

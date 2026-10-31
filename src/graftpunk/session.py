@@ -542,6 +542,9 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 driver,
                 get_tab=lambda: tab,
                 bodies_dir=self._observe_storage.run_dir / "bodies",
+                # A headless backend answers the page's dialogs from its start
+                # (#320); the capture shares that answerer and counts its answers.
+                answer_dialogs=getattr(self._backend_instance, "_headless", False) is True,
             )
             await self._capture.start_capture_async()
         except Exception as exc:  # noqa: BLE001 - opt-in diagnostics are best-effort
