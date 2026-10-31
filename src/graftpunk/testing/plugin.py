@@ -109,7 +109,7 @@ class FixturesTreeReport:
             f"fixtures_are_sanitised: {self.verified} fixture(s) verified against their "
             f"capture, {self.declared} accepted on declaration (no capture hash: "
             f"trusted, not checked), {self.run_checked} compared with the values their "
-            f"observe run recorded (the run is on this machine)"
+            f"observe run recorded on this machine"
         )
 
 
