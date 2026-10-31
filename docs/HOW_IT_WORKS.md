@@ -1313,7 +1313,9 @@ schema 3, also the flagged names the fixtures check looks for in this fixture
 (`checked_names`, below); from schema 4, also the observe run the capture came
 from, as the plugin part of its session name and its run id (`observe_run`,
 below), and the context reason `out_of_scope_only`; it
-never holds the URL, the capture time, a path, an account label, or any value, in any form), written to be
+never holds the URL, a path, an account label, or any value, in any form, and
+the one time it holds is the run id, `%Y%m%d-%H%M%S-<pid>`, the date and time
+the recording started and the recording process's id), written to be
 committed beside the fixture derived from it once you have read its body
 parameter names and its `flagged_names`: a body key that does not read as a
 field name or holds an id is dropped, but the rule is lexical, so an account
@@ -1505,11 +1507,17 @@ ends with how many fixtures were compared with their run's values, so `0
 compared` in CI and a positive count on the developer's machine say which check
 ran without a line per fixture. Where the run is present but cannot be read (no
 `network.har`, a HAR that is not JSON or has no `log.entries` list, a
-permission error, a file or a dangling symlink in the run's place, an observe
-directory that cannot be listed, or a run id under more than one of the
-plugin's session directories), the check
+permission error, a file or a dangling symlink in the run's place, a file of
+the run the check reads that is there and cannot be read, such as a
+`page-source.html` without read permission or a symlink loop, an observe
+directory that cannot be listed, a run id under more than one of the plugin's
+session directories, or a session directory of the plugin that cannot be
+searched, which is not counted as holding the run), the check
 reports one problem per run, naming the first fixture whose sidecar names it,
-and fails the suite; the name check still runs on those fixtures. A warning was
+and fails the suite; the name check still runs on those fixtures. The problem
+names the plugin, the run id, and a file by its path inside the run, never the
+observe directory's path (it holds the OS user name) or a session directory's
+name (it holds the account label): suite output gets pasted into issues. A warning was
 the alternative. It was not chosen because the check exists for the machine
 that holds the run, and a passing run with a warning line is read as a pass: a
 damaged run would switch the value check off without anyone deciding to. The
@@ -1517,12 +1525,27 @@ problem says how to proceed: make the run readable and the only one of its
 id, or move its directory out of the observe directory, after which the
 fixture is checked by its names alone, as in CI.
 
+A recorded value that holds nothing is not looked for: an empty value, or one
+that is form state by the rule a cookie value is judged by
+(`graftpunk.har.digest.form_state`), the rule `checked_names_of` judges a value
+by. A name flagged by its name alone (`session_name`, `http_only`) records
+such values, `logged_in=true` or `currency=USD`, and a fixture holding the JSON
+literal `true` or the word `USD` cannot invent it away; an opaque value is
+looked for as before. The script copies `form_state`, and a test holds the copy
+to graftpunk's answers.
+
 `out_of_scope_only` (#316, schema 4) is a context reason like `sent_only`:
 `flagged_reasons_of` writes it beside the reasons that flag a cookie when every
 entry whose request sent the cookie or whose response set it was addressed to a
 host outside the run's scope (the digest's scope root of its primary host,
 `_in_scope`), and the digest's own cookie list, which holds the in-scope hosts'
-cookies, does not name it. A cookie an ad host set and the browser then sent to
+cookies, does not name it. Hosts are compared without their ports, on both
+sides: a cookie is not scoped by port (RFC 6265, section 8.5), so an API on
+`myshop.example.com:8443`, or `localhost:3000` beside a page on
+`localhost:8000`, is the site's own. An IP address is its own scope root and is
+in scope only when it is the primary host's, for this reason and for the
+digest's endpoints alike: before 1.35.0 the scope root of `192.168.1.10` was
+`168.1.10`, under which `10.168.1.10` counted as in scope. A cookie an ad host set and the browser then sent to
 the site is in scope; so is one sent to both. A digest with no primary host has
 no scope, and an entry whose URL has no host the digest reads is not counted as
 out of scope. It is never written alone (the loader refuses a name whose only

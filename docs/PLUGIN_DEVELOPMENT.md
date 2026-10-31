@@ -2200,14 +2200,18 @@ reads `get_api_orders.json`; `GET /api/orders/1001` reads
 
 A `<filename>.meta.json` sidecar beside a fixture supplies its status and
 content type. `gp observe fixtures` writes one for every capture to commit
-beside the fixture. It holds no URL, no time, and no header, cookie, or query
-value: only the status, the content type, the hash of the captured body, the
+beside the fixture. It holds no URL, no header, cookie, or query value, and no
+time but the run id's: only the status, the content type, the hash of the
+captured body, the
 request's body parameter names, every cookie name the recording set or sent
 except a cookie that only ever held form state, the reasons each of those names
 is flagged, the token names the digest found, which of those names the
 fixtures check looks for in this fixture (`checked_names`, below), and the
 plugin part of the session name and the run id of the `gp observe` run the
-capture came from, never an account label (`observe_run`, below).
+capture came from, never an account label (`observe_run`, below). A run id is
+`%Y%m%d-%H%M%S-<pid>`, the date and time the recording started and the id of
+the process that recorded it, so a committed sidecar says when its capture was
+recorded.
 
 A cookie whose every non-empty value in the recording (in any request or
 response) is form state holds no credential, so its name is left out of
@@ -2396,16 +2400,23 @@ get_orders.json: the recorded value of flagged 'myshop_session' is still in the 
 ```
 
 It looks for the run id in each of the plugin's session directories (`myshop`,
-`myshop-alice`, and so on) and reads only that run's files. In CI
+`myshop-alice`, and so on) and reads only that run's files. A recorded value
+that holds nothing by the rule the name check judges a value by (empty, or form
+state such as `true`, `USD` or a date) is not looked for, since a fixture
+cannot invent it away; an opaque value is. In CI
 and on a teammate's checkout the run is not there, and the check is the name
 check alone, with no warning; the line the check prints on every run ends with
-`N compared with the values their observe run recorded`, so you can see which
-check ran. When the run is there but cannot be read (a damaged `network.har`, a
-permission error, or the same run id under two of the plugin's sessions), the
-suite fails with one line naming the run id, since a value check that quietly
-did not run reads as a pass; make the run readable and the only one of its id, or move
-its directory out of `~/.local/share/graftpunk/observe/` to have the fixture
-checked by its names alone. A sidecar written before 1.35.0 names no run, so its
+`, N compared with the values their observe run recorded on this machine`, so
+you can see which check ran. When the run is there but cannot be read (a
+damaged `network.har`, a permission error, a file of the run the check needs
+and cannot read, such as a symlink loop, the same run id under two of the
+plugin's sessions, or a session directory of the plugin it cannot search), the
+suite fails with one line naming the plugin, the run id, and any such file by
+its path inside the run, and never the observe directory's path or an account
+label, since a value check that quietly did not run reads as a pass; make the
+run readable and the only one of its id, or move its directory out of
+`~/.local/share/graftpunk/observe/` to have the fixture checked by its names
+alone. A sidecar written before 1.35.0 names no run, so its
 fixture gets the name check only; regenerate it with `gp observe fixtures` while
 the run is on disk to turn the value check on. A graftpunk older than 1.35.0
 refuses a schema 4 sidecar, so a suite pinned below 1.35.0 needs its pin raised
@@ -2421,7 +2432,9 @@ not form state), `value_not_kept` (an entry in the recording holds the cookie wi
 reasons, which are never a name's only reasons: `sent_only` says no response in
 the recording set the cookie, and `out_of_scope_only` (from schema 4) says every
 request that sent or set it went to a host outside the run's scope, such as an
-ad host's `NID`. A cookie any in-scope request carried does not get it, so
+ad host's `NID`. Hosts are compared without their ports, since a cookie is not
+scoped by port, and an IP address is in scope only when it is the primary
+host's. A cookie any in-scope request carried does not get it, so
 `_ga` and `_gid`, set by script on the site's own domain, do not; telling an
 analytics cookie from a session by name is not what it does. A name flagged only by `value_not_form_state` (with or without `sent_only`) with values you know to
 be form state is the false positive the paragraph above describes; a name with
