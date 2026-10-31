@@ -277,6 +277,82 @@ class TestTheProcesses:
         assert stubborn.returncode == -signal.SIGKILL
         stubborn.stdout.close()
 
+    def test_a_slow_ps_does_not_delay_the_held_processes_signal(
+        self,
+        armed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        spawned: list[subprocess.Popen[Any]],
+    ) -> None:
+        """graftpunk spawned the held processes: they are signaled before any ``ps``."""
+        held = _sleeper(subprocess.Popen)
+        spawned.append(held)
+        processes = SeleniumProcesses()
+        processes.add(held)
+        seen_during_ps: list[int | None] = []
+
+        def slow_ps(ops: Any = None) -> list[Any]:
+            seen_during_ps.append(_exited_within(held, 5))
+            return []
+
+        monkeypatch.setattr(chrome_orphans, "list_chrome_processes", slow_ps)
+
+        processes._terminate_for_signal()
+
+        assert seen_during_ps == [-signal.SIGTERM]
+
+    def test_an_interrupted_ps_skips_only_the_processes_known_by_pid(
+        self,
+        armed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        spawned: list[subprocess.Popen[Any]],
+    ) -> None:
+        """A Ctrl+C during the handler's ``ps`` must not cancel the held processes'
+        SIGTERM, and must not leave the handler."""
+        held = _sleeper(subprocess.Popen)
+        by_pid = _sleeper(subprocess.Popen, "--remote-debugging-port=0", owner_switch())
+        spawned += [held, by_pid]
+        processes = SeleniumProcesses()
+        processes.add(held)
+        processes.add_pid(by_pid.pid)
+
+        def interrupted_ps(ops: Any = None) -> list[Any]:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(chrome_orphans, "list_chrome_processes", interrupted_ps)
+
+        processes._terminate_for_signal()
+
+        assert _exited_within(held, 10) == -signal.SIGTERM
+        assert _exited_within(by_pid, 0.5) is None
+
+    def test_a_reaped_chromedrivers_reused_pid_is_no_parent_of_ours(
+        self,
+        armed: None,
+        monkeypatch: pytest.MonkeyPatch,
+        spawned: list[subprocess.Popen[Any]],
+    ) -> None:
+        """A held chromedriver exited and was reaped, and the kernel gave its pid to
+        a program whose browser now lists it as parent: that browser is not ours."""
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait(10)
+        stranger = _sleeper(subprocess.Popen, "--remote-debugging-port=0")
+        spawned += [gone, stranger]
+        row = chrome_orphans.ChromeProcess(
+            pid=stranger.pid,
+            ppid=gone.pid,
+            args=f"{sys.executable} --remote-debugging-port=0",
+            owner_pid=None,
+            user_data_dir=None,
+        )
+        monkeypatch.setattr(chrome_orphans, "list_chrome_processes", lambda ops=None: [row])
+        processes = SeleniumProcesses()
+        processes.add(gone)
+
+        processes._terminate_for_signal()
+        processes.end()
+
+        assert _exited_within(stranger, 1) is None
+
     def test_a_non_positive_pid_is_never_signaled(self, armed: None) -> None:
         """``kill(0, ...)`` would reach this process's own group, a negative pid a whole group."""
         kills: list[int] = []
@@ -689,7 +765,8 @@ class TestEveryWayOutOfASessionEndsTheBrowser:
 
 _FAKE_CHROMEDRIVER = """#!{python}
 import subprocess, sys, time
-subprocess.Popen([sys.executable, "-c", {sleep!r}, "--remote-debugging-port=0"])
+marker = [arg for arg in sys.argv[1:] if arg.startswith("--graftpunk-owner-pid=")]
+subprocess.Popen([sys.executable, "-c", {sleep!r}, "--remote-debugging-port=0", *marker])
 time.sleep(60)
 """
 

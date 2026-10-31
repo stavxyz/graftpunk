@@ -506,30 +506,49 @@ class SeleniumProcesses:
         """Every process held, the spawned ones first."""
         return [process.pid for process in self._processes] + list(self._pids)
 
-    def _still_ours(self) -> list[int]:
+    def _live_drivers(self) -> set[int]:
+        """The pids of the held processes still running (an exited one's pid is free for reuse)."""
+        return {process.pid for process in self._processes if process.poll() is None}
+
+    def _still_ours(self, drivers: set[int], *, adopted: bool = False) -> list[int]:
         """The processes known by pid that are still this launch's, from one ``ps`` listing.
 
         A pid held by :meth:`add_pid` counts while it is listed with this
-        process's owner marker or as the child of a held chromedriver; a
-        browser whose parent is a held chromedriver counts too, which is how a
-        Chrome spawned by a start that then failed is found. That is the
-        reaper's matching (the marker, the debugging port), so a pid that
-        another program has reused since is skipped. An unreadable process
-        table yields nothing: not signaling is the safe direction.
+        process's owner marker or as the child of a chromedriver in *drivers*;
+        a browser whose parent is in *drivers* counts too, which is how a
+        Chrome spawned by a start that then failed is found. With *adopted*,
+        so does a process carrying this process's marker whose parent is gone
+        (ppid 1): the Chrome of a chromedriver the handler has just ended.
+        That is the reaper's matching (the marker, the debugging port), so a
+        pid that another program has reused since is skipped. An unreadable
+        process table yields nothing: not signaling is the safe direction.
         """
-        drivers = {process.pid for process in self._processes if process.poll() is None}
         held = set(self._pids)
         me = os.getpid()
         return [
             proc.pid
             for proc in chrome_orphans.list_chrome_processes()
-            if proc.ppid in drivers or (proc.pid in held and proc.owner_pid == me)
+            if proc.ppid in drivers
+            or (proc.owner_pid == me and (proc.pid in held or (adopted and proc.ppid == 1)))
         ]
 
     def _terminate_for_signal(self) -> None:
-        """Send each process still running, and still ours, one SIGTERM, and nothing else."""
-        live = [process.pid for process in self._processes if process.poll() is None]
-        for pid in [*live, *self._still_ours()]:
+        """Send each process still running, and still ours, one SIGTERM, and nothing else.
+
+        The processes held as ``Popen`` first, with no ``ps``: graftpunk
+        spawned them, so a slow ``ps``, or a Ctrl+C that interrupts it, cannot
+        delay or cancel their signal. Then one ``ps`` listing for the
+        processes known by pid; anything raised there skips only those.
+        """
+        drivers = self._live_drivers()
+        for pid in drivers:
+            chrome_orphans.terminate_pid(pid)
+        try:
+            by_pid = self._still_ours(drivers, adopted=True)
+        except BaseException as exc:  # noqa: BLE001 - a handler has nowhere to raise
+            LOG.warning("termination_pid_lookup_failed", error=repr(exc))
+            return
+        for pid in by_pid:
             chrome_orphans.terminate_pid(pid)
 
     def end(self) -> None:
@@ -542,7 +561,7 @@ class SeleniumProcesses:
         for one that has not.
         """
         try:
-            for pid in self._still_ours():
+            for pid in self._still_ours(self._live_drivers()):
                 with contextlib.suppress(OSError):
                     os.kill(pid, signal.SIGTERM)
             for process in self._processes:
