@@ -973,6 +973,127 @@ def test_the_runs_page_source_beside_the_har_is_read(tmp_path: Path) -> None:
     assert lines == _CAUGHT
 
 
+def test_a_page_source_outside_the_hars_directory_is_not_read(tmp_path: Path) -> None:
+    """The same refusal as a body file's: page-source.html as a symlink to a file
+    outside the run is not followed."""
+    run = tmp_path / "run"
+    run.mkdir()
+    (tmp_path / "outside.html").write_text(_META)
+    (run / "page-source.html").symlink_to(tmp_path / "outside.html")
+    lines = _run_with_page(
+        run, json.dumps({"t": _TOKEN}), {"mimeType": "application/json", "text": "{}"}, [], {}
+    )
+    assert lines == []
+
+
+def test_a_page_source_that_cannot_be_read_is_skipped(tmp_path: Path) -> None:
+    (tmp_path / "page-source.html").mkdir()
+    result = _run_har(tmp_path, json.dumps({"t": "invented"}))
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def _run_with_request(
+    tmp_path: Path, fixture: str, request: dict, files: dict[str, str], response: dict | None = None
+) -> list[str]:
+    """``_run_har`` on a HAR whose one entry sends *request* (merged into a bare GET)
+    and answers *response* (an empty JSON one by default), with *files* written
+    beside the HAR first, and the recorded-value lines it prints."""
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text)
+    entry = {
+        "request": {
+            "method": "GET",
+            "url": "https://myshop.example.com/a",
+            "headers": [],
+            **request,
+        },
+        "response": response
+        or {"status": 200, "headers": [], "cookies": [], "content": {"text": "{}"}},
+    }
+    har = json.dumps({"log": {"entries": [entry]}})
+    return _value_lines(_run_har(tmp_path, fixture, har=har).stdout)
+
+
+@pytest.mark.parametrize("field", ["_domSnapshot", "_domAfter"])
+def test_a_dom_snapshot_beside_the_har_is_read(tmp_path: Path, field: str) -> None:
+    """gp keeps the page at a credential post (and after it) as a file the HAR
+    names; a token value only that page held is a recorded value."""
+    lines = _run_with_request(
+        tmp_path,
+        json.dumps({"t": _TOKEN}),
+        {field: "snapshots/1.html"},
+        {"snapshots/1.html": _META},
+    )
+    assert lines == _CAUGHT
+
+
+@pytest.mark.parametrize("how", ["dotdot", "symlink"])
+def test_a_dom_snapshot_outside_the_hars_directory_is_not_read(tmp_path: Path, how: str) -> None:
+    run = tmp_path / "run"
+    (run / "snapshots").mkdir(parents=True)
+    (tmp_path / "outside.html").write_text(_META)
+    ref = "../outside.html"
+    if how == "symlink":
+        ref = "snapshots/1.html"
+        (run / ref).symlink_to(tmp_path / "outside.html")
+    lines = _run_with_request(run, json.dumps({"t": _TOKEN}), {"_domSnapshot": ref}, {})
+    assert lines == []
+
+
+@pytest.mark.parametrize(
+    ("request_fields", "files"),
+    [
+        ({"postData": {"params": [{"name": "csrf-token", "value": _TOKEN}]}}, {}),
+        ({"postData": {"text": f"n=2&csrf-token={_TOKEN}"}}, {}),
+        ({"postData": {"text": json.dumps({"auth": [{"csrf-token": _TOKEN}]})}}, {}),
+        ({"_postDataFile": "bodies/post.txt"}, {"bodies/post.txt": f"csrf-token={_TOKEN}"}),
+    ],
+    ids=["params", "form-text", "json-text", "body-file"],
+)
+def test_a_value_a_request_body_sends_is_read(
+    tmp_path: Path, request_fields: dict, files: dict[str, str]
+) -> None:
+    """A form posts a token value no page shows (an empty hidden input a script
+    filled): the field it sends is a recorded value."""
+    lines = _run_with_request(tmp_path, json.dumps({"t": _TOKEN}), request_fields, files)
+    assert lines == _CAUGHT
+
+
+def test_a_response_header_of_a_flagged_name_is_read_in_any_case(tmp_path: Path) -> None:
+    """A server that rotates its CSRF header sends the new value in a response."""
+    response = {
+        "status": 200,
+        "headers": [{"name": "x-csrf-token", "value": "Rotated5Kd8Wz"}],
+        "cookies": [],
+        "content": {"text": "{}"},
+    }
+    lines = _run_with_request(tmp_path, json.dumps({"t": "Rotated5Kd8Wz"}), {}, {}, response)
+    assert lines == [
+        "the recorded value of flagged 'X-CSRF-Token' is still in the fixture (line 1)"
+    ]
+
+
+def test_a_cookie_header_of_several_lines_is_read_line_by_line(tmp_path: Path) -> None:
+    """Chromium joins a request's Cookie headers with a line break; the flagged
+    cookie is on the second line."""
+    headers = [{"name": "Cookie", "value": "lot=12\nid=SecondLine8Kd"}]
+    lines = _run_with_request(tmp_path, "token SecondLine8Kd end", {"headers": headers}, {})
+    assert lines == ["the recorded value of flagged 'id' is still in the fixture (line 1)"]
+
+
+@pytest.mark.parametrize("separator", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+def test_a_set_cookie_header_of_several_lines_is_read_line_by_line(
+    tmp_path: Path, separator: str
+) -> None:
+    headers = [{"name": "Set-Cookie", "value": f"lot=12; Path=/{separator}id=SetLater8Kd; Path=/"}]
+    lines = _run_with_page(
+        tmp_path, "token SetLater8Kd end", {"mimeType": "text/plain"}, headers, {}
+    )
+    assert lines == ["the recorded value of flagged 'id' is still in the fixture (line 1)"]
+
+
 def test_a_quoted_cookie_value_is_found_without_its_quotes(tmp_path: Path) -> None:
     headers = [{"name": "Set-Cookie", "value": 'id="Quoted9Value7"; Path=/'}]
     lines = _run_with_page(

@@ -58,25 +58,31 @@ parsed JSON, with the sidecar gp wrote beside CAPTURE (``CAPTURE.meta.json``),
 naming each key that differs: the skill writes that text with the Write tool, and
 a slip in it would quietly weaken the suite's checks.
 
-With ``--har HAR`` (the run's HAR), it also reads every value the recording holds
-for each name in ``flagged_names`` (SIDECAR's, or without SIDECAR, that of gp's
-sidecar beside CAPTURE, so a plugin or test module is checked too): each cookie
-of that name sent or set (the HAR's cookie arrays, ``Cookie`` and ``Set-Cookie``
-headers), each request header of that name in any case, and each meta tag's
-``content`` and hidden input's ``value`` of that name in a response whose
-``Content-Type`` header says HTML, a body the HAR keeps in a file beside it
-(``_bodyFile``) included, and in the run's ``page-source.html`` beside the HAR.
+With ``--har HAR`` (the run's HAR), it also reads every value of each name in
+``flagged_names`` (SIDECAR's, or without SIDECAR, that of gp's sidecar beside
+CAPTURE, so a plugin or test module is checked too) that it can find in the
+recording: each cookie of that name sent or set (the HAR's cookie arrays,
+``Cookie`` and ``Set-Cookie`` headers), each request or response header of that
+name in any case, each field of that name a request body sends (``postData``
+params, a form-encoded or JSON body, or one kept in a file beside the HAR), and
+each meta tag's ``content`` and hidden input's ``value`` of that name in a
+response whose ``Content-Type`` header says HTML (a body kept in a file beside
+the HAR, ``_bodyFile``, included), in a DOM snapshot gp took at a credential
+post (``_domSnapshot``, ``_domAfter``), and in the run's ``page-source.html``
+beside the HAR. A file that resolves outside the HAR's directory, through a
+symlink or a ``..``, is not read.
 It reports a flagged name whose recorded value of three or more characters is in
 the fixture, as recorded, percent-decoded, or without the double quotes a cookie
 value may carry, case-sensitively, in any of the forms above or two of them
 applied one after the other (JSON-escaped inside an HTML attribute), as ``the
 recorded value of flagged 'sessionid' is still in the fixture (line 3)``, or
 ``(found decoded)``. It never prints the value or the text around it: such a
-value is a credential. This catches a value the capture's body never held, which
-the fixtures check in the suite does not: it holds names only, and from sidecar
-schema 3 it looks only for the names whose value the capture held, so a recorded
-value pasted into a fixture from elsewhere, even under its flagged name, passes
-the suite.
+value is a credential. It reports and never decides what the suite checks:
+reading one more source can only find more. This catches a value the capture's
+body never held, which the fixtures check in the suite does not: it holds names
+only, and from sidecar schema 3 it looks for a flagged cookie name only where the
+capture held that cookie's value, so a recorded cookie value pasted into a
+fixture from elsewhere, even under its cookie's name, passes the suite.
 
 Exit 0 when nothing survived and the sidecar matches, 1 when something survived,
 a recorded value of a flagged name is in the fixture, or the sidecar differs, 2 on
@@ -98,7 +104,7 @@ from heapq import merge
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote, unquote_plus
+from urllib.parse import parse_qsl, unquote, unquote_plus
 
 _DIGITS = re.compile(r"\d{3,}")
 # Words split at spaces, punctuation, and a URL's separators, so an email in a
@@ -580,8 +586,7 @@ class _Fixture:
 
 
 class _TokenValues(HTMLParser):
-    """Each meta tag's content and each hidden input's value, by name, as
-    graftpunk.har.documents.token_values reads them."""
+    """Each meta tag's content and each hidden input's value, by name."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -622,24 +627,29 @@ def _header(headers: list[tuple[str, str]], name: str) -> str | None:
     return spelled.get(name) or spelled.get(name.lower())
 
 
-def _body_text(content: dict, base: Path | None) -> str | None:
-    """A response's body text: the HAR's ``content.text``, or, when the HAR keeps
-    the body in a file (``content._bodyFile``, relative to the HAR's directory
-    *base*), that file read as UTF-8, as graftpunk's HAR parser reads it. A file
-    outside *base*, or one that cannot be read, gives None."""
-    text = content.get("text")
-    if isinstance(text, str):
-        return text
-    ref = content.get("_bodyFile")
+def _file_text(ref: object, base: Path | None) -> str | None:
+    """The text of the file *ref* names, relative to the HAR's directory *base*,
+    read as UTF-8 as graftpunk's HAR parser reads it. A file that resolves outside
+    *base* (a ``..`` or a symlink), or one that cannot be read, gives None."""
     if base is None or not isinstance(ref, str) or not ref:
         return None
-    path = (base / ref).resolve()
-    if not path.is_relative_to(base.resolve()):
+    root = base.resolve()
+    path = (root / ref).resolve()
+    if not path.is_relative_to(root):
         return None
     try:
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
+
+
+def _body_text(content: dict, base: Path | None) -> str | None:
+    """A response's body text: the HAR's ``content.text``, or, when the HAR keeps
+    the body in a file (``content._bodyFile``), that file (:func:`_file_text`)."""
+    text = content.get("text")
+    if isinstance(text, str):
+        return text
+    return _file_text(content.get("_bodyFile"), base)
 
 
 def _page_values(html: str) -> list[tuple[str, str]]:
@@ -649,13 +659,45 @@ def _page_values(html: str) -> list[tuple[str, str]]:
     return parser.pairs
 
 
+def _json_pairs(data: object) -> Iterator[tuple[str, str]]:
+    """``(key, value)`` for each string value under a key at any depth of *data*."""
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, str):
+                yield str(key), value
+            else:
+                yield from _json_pairs(value)
+    elif isinstance(data, list):
+        for item in data:
+            yield from _json_pairs(item)
+
+
+def _body_fields(request: dict, base: Path | None) -> list[tuple[str, str]]:
+    """``(name, value)`` for each field a request body sends: the HAR's
+    ``postData.params``, and its text (``postData.text``, or the file
+    ``_postDataFile`` names) read as JSON, else as a form-encoded body."""
+    post = request.get("postData") if isinstance(request.get("postData"), dict) else {}
+    pairs = _named(post.get("params"))
+    text = post.get("text")
+    if not isinstance(text, str):
+        text = _file_text(request.get("_postDataFile"), base)
+    if text:
+        try:
+            pairs += list(_json_pairs(json.loads(text)))
+        except (ValueError, RecursionError):
+            pairs += parse_qsl(text, keep_blank_values=False)
+    return pairs
+
+
 def recorded_values(har: object, names: set[str], base: Path | None = None) -> dict[str, set[str]]:
-    """Every non-empty value *har* records for each of *names*: as a cookie sent
-    or set (the cookie arrays, and the ``Cookie`` and ``Set-Cookie`` headers), as
-    a request header (any case), or as a meta tag's content or a hidden input's
+    """Every non-empty value *har* records for each of *names* that this reads:
+    as a cookie sent or set (the cookie arrays, and the ``Cookie`` and
+    ``Set-Cookie`` headers), as a request or response header (any case), as a
+    field a request body sends, or as a meta tag's content or a hidden input's
     value in a response whose ``Content-Type`` header says HTML. With *base*, the
-    HAR's directory, a body the HAR keeps in a file is read, and so is the run's
-    ``page-source.html`` beside the HAR, as ``gp observe fixtures`` reads them."""
+    HAR's directory, a body or request body the HAR keeps in a file is read, and
+    so are gp's DOM snapshots (``_domSnapshot``, ``_domAfter``) and the run's
+    ``page-source.html`` beside the HAR, each only inside *base*."""
     found: dict[str, set[str]] = {}
     # Several flagged names can differ in case alone (X-CSRF-Token, x-csrf-token).
     folded: dict[str, list[str]] = {}
@@ -665,6 +707,10 @@ def recorded_values(har: object, names: set[str], base: Path | None = None) -> d
     def add(name: str, value: str) -> None:
         if name in names and value:
             found.setdefault(name, set()).add(value)
+
+    def add_page(html: str | None) -> None:
+        for name, value in _page_values(html) if html is not None else ():
+            add(name, value)
 
     log = har.get("log") if isinstance(har, dict) else None
     entries = log.get("entries") if isinstance(log, dict) else None
@@ -683,25 +729,23 @@ def recorded_values(har: object, names: set[str], base: Path | None = None) -> d
             else:
                 for flagged in folded.get(name.casefold(), ()):
                     add(flagged, value)
+        for name, value in _body_fields(request, base):
+            add(name, value)
+        add_page(_file_text(request.get("_domSnapshot"), base))
+        add_page(_file_text(request.get("_domAfter"), base))
         response_headers = _named(response.get("headers"))
         for name, value in response_headers:
             if name.casefold() == "set-cookie":
                 for line in value.splitlines():
                     add(*_cookie_pair(line.split(";", 1)[0]))
+            else:
+                for flagged in folded.get(name.casefold(), ()):
+                    add(flagged, value)
         if "html" not in (_header(response_headers, "Content-Type") or "").lower():
             continue
         content = response.get("content") if isinstance(response.get("content"), dict) else {}
-        text = _body_text(content, base)
-        for name, value in _page_values(text) if text is not None else ():
-            add(name, value)
-    page_source = base / "page-source.html" if base is not None else None
-    if page_source is not None and page_source.is_file():
-        try:
-            page_html = page_source.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            page_html = ""
-        for name, value in _page_values(page_html):
-            add(name, value)
+        add_page(_body_text(content, base))
+    add_page(_file_text("page-source.html", base))
     return found
 
 
