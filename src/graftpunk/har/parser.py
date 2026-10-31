@@ -604,6 +604,12 @@ def _redirect_url(response_data: dict[str, Any], headers: dict[str, str]) -> str
     return ""
 
 
+# The time an entry whose startedDateTime does not parse is given: it sorts such
+# an entry first, and a reader comparing a time with it (the digest's cookie
+# expiry) must treat it as no time at all.
+UNPARSED_TIMESTAMP = datetime.min.replace(tzinfo=UTC)
+
+
 def _parse_timestamp(started: str) -> datetime:
     """Parse ISO 8601 timestamp from HAR.
 
@@ -623,7 +629,7 @@ def _parse_timestamp(started: str) -> datetime:
     except ValueError:
         # Use epoch as fallback - makes failures visible in chronological ordering
         LOG.warning("timestamp_parse_failed", timestamp=started)
-        return datetime.min.replace(tzinfo=UTC)
+        return UNPARSED_TIMESTAMP
 
 
 def validate_har_schema(data: dict[str, Any]) -> None:

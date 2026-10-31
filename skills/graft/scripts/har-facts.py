@@ -49,7 +49,8 @@ What fails the gate is replaced or counted:
   read as values; an HTML control whose name fails keeps its type and position;
 - an HTML page's title prints as its length class only, and a control's type
   prints only when it is a standard input type;
-- a cookie's ``Path`` prints templated like a URL path, its ``Domain`` only when
+- a cookie's ``Path`` prints templated like a URL path (``(not shown)`` when it
+  holds anything outside a plain path, such as a query), its ``Domain`` only when
   it is the setting response's host or a parent of it, and its ``SameSite`` only
   as ``Lax``, ``Strict``, or ``None``;
 - a value's type and a string's length class (empty, short up to 16 characters,
@@ -75,13 +76,15 @@ it (method and templated URL) with a count, and each setting's ``HttpOnly``,
 raw ``Set-Cookie`` header, every line of a newline-joined value, parsed as
 graftpunk's own HAR parser does (``set_cookie_lines``, held equal by a test), and
 from the entry's ``response.cookies`` array, paired by position within a name; a
-line says when the two disagree. The words are the markdown digest's: ``yes``,
-``no``, or ``unknown`` for a flag (the array's missing flag is ``unknown``);
-``Lax``, ``Strict``, ``None``, ``-`` (not set), or ``unknown`` for ``SameSite``;
-``-`` or ``unknown`` for a ``Path`` not set or not starting with ``/``; and
-``session``, ``persistent``, ``past`` (``Max-Age`` 0 or less, or ``Expires`` no
-later than the request: the response deletes the cookie), or ``unknown`` for
-``expiry`` (``expiry_of``, held equal to the digest's by a test). Then it names
+line says when the two disagree. The words are the markdown digest's, held
+equal to it by a test: ``yes``, ``no``, or ``unknown`` for a flag (an attribute
+the array leaves out is ``unknown``); ``Lax``, ``Strict``, ``None``, ``-`` (not
+set), or ``unknown`` (empty, bare, or not recognised) for ``SameSite``; ``-``
+(not set or empty), ``unknown`` (not starting with ``/``), or ``(not shown)``
+for a ``Path``; and ``session``, ``persistent``, ``past`` (``Max-Age`` 0 or
+less, or an ``Expires`` or array ``expires`` no later than the request: the
+response deletes the cookie), or ``unknown`` (not a number or a date, or an
+entry whose ``startedDateTime`` does not parse) for ``expiry``. Then it names
 the cookies the recording only sends. With ``--name``, it prints only the block
 of that exact name, whatever the gate says, since the caller already holds the
 name.
@@ -114,7 +117,7 @@ import json
 import re
 import sys
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -671,15 +674,25 @@ def _domain(domain: str, host: str) -> str:
     return "a domain outside the response's host"
 
 
-def _same_site(value: str) -> str:
-    if not value:
+def _same_site(value: str | None) -> str:
+    if value is None:
         return "-"
     known = {"lax": "Lax", "strict": "Strict", "none": "None"}
     return known.get(value.strip().lower(), "unknown")
 
 
+# graftpunk.har.digest._PLAIN_COOKIE_PATH_RE, copied (a test holds the two equal):
+# a Path holding anything else (a comma, query, fragment, ``=``, ``;``, quote, or
+# space) can carry a second cookie folded into the header, or a value.
+_PLAIN_COOKIE_PATH_RE = re.compile(r"/[A-Za-z0-9\-._~%/:@+]*")
+
+
 def _cookie_path(value: str) -> str:
-    return templated_path(value) if value.startswith("/") else ("-" if not value else "unknown")
+    if not value:
+        return "-"
+    if not value.startswith("/"):
+        return "unknown"
+    return templated_path(value) if _PLAIN_COOKIE_PATH_RE.fullmatch(value) else "(not shown)"
 
 
 _MAX_AGE_RE = re.compile(r"-?[0-9]+")
@@ -700,11 +713,34 @@ def expiry_of(attributes: dict[str, str], sent_at: datetime | None) -> str:
         when = parsedate_to_datetime(expires)
     except (TypeError, ValueError, IndexError):
         return "unknown"
+    return _past_or_persistent(when, sent_at)
+
+
+def _past_or_persistent(when: datetime, sent_at: datetime | None) -> str:
     if sent_at is None:
         return "unknown"
-    sent = sent_at if sent_at.tzinfo else sent_at.replace(tzinfo=UTC)
-    when = when if when.tzinfo else when.replace(tzinfo=UTC)
+    # timezone.utc, not datetime.UTC: the script runs on Python 3.9, which lacks it.
+    utc = timezone.utc  # noqa: UP017
+    sent = sent_at if sent_at.tzinfo else sent_at.replace(tzinfo=utc)
+    when = when if when.tzinfo else when.replace(tzinfo=utc)
     return "past" if when <= sent else "persistent"
+
+
+def array_expiry_of(expires: Any, sent_at: datetime | None) -> str:
+    """The ``expiry`` word for a ``response.cookies`` entry's ``expires``, by
+    graftpunk.har.digest._array_expiry's rule (a test holds the two equal): an
+    ISO 8601 or HTTP date compared with *sent_at*, and ``unknown`` when it is
+    missing, empty, or neither."""
+    if not isinstance(expires, str) or not expires:
+        return "unknown"
+    try:
+        when = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(expires)
+        except (TypeError, ValueError, IndexError):
+            return "unknown"
+    return _past_or_persistent(when, sent_at)
 
 
 def _sent_at(entry: dict[str, Any]) -> datetime | None:
@@ -723,20 +759,18 @@ def _array_flag(value: Any) -> str:
     return "no" if value is False else "unknown"
 
 
-def _header_view(
-    attributes: dict[str, str], host: str, sent_at: datetime | None
-) -> dict[str, str]:
+def _header_view(attributes: dict[str, str], host: str, sent_at: datetime | None) -> dict[str, str]:
     return {
         "HttpOnly": "yes" if "httponly" in attributes else "no",
         "Secure": "yes" if "secure" in attributes else "no",
-        "SameSite": _same_site(attributes.get("samesite", "")),
+        "SameSite": _same_site(attributes.get("samesite")),
         "Path": _cookie_path(attributes.get("path", "")),
         "Domain": _domain(attributes.get("domain", ""), host),
         "expiry": expiry_of(attributes, sent_at),
     }
 
 
-def _array_view(cookie: dict[str, Any], host: str) -> dict[str, str]:
+def _array_view(cookie: dict[str, Any], host: str, sent_at: datetime | None) -> dict[str, str]:
     same_site, path = cookie.get("sameSite"), cookie.get("path")
     return {
         "HttpOnly": _array_flag(cookie.get("httpOnly")),
@@ -744,7 +778,7 @@ def _array_view(cookie: dict[str, Any], host: str) -> dict[str, str]:
         "SameSite": _same_site(same_site) if isinstance(same_site, str) else "unknown",
         "Path": _cookie_path(path) if isinstance(path, str) else "unknown",
         "Domain": _domain(str(cookie.get("domain") or ""), host),
-        "expiry": "persistent" if cookie.get("expires") else "unknown",
+        "expiry": array_expiry_of(cookie.get("expires"), sent_at),
     }
 
 
@@ -779,7 +813,7 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
             text = f"header: {_describe(view)}"
             matches = array.get(name, [])
             if seen[name] < len(matches):
-                other = _array_view(matches[seen[name]], host)
+                other = _array_view(matches[seen[name]], host, _sent_at(entry))
                 # An attribute the array leaves out is a disagreement only for a
                 # flag the header sets: the array often drops one it carried.
                 differ = [
@@ -809,7 +843,7 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
                 if not shown(name):
                     hidden_set.add(name)
                     continue
-                view = _describe(_array_view(cookie, host))
+                view = _describe(_array_view(cookie, host, _sent_at(entry)))
                 text = f"response.cookies array only (no Set-Cookie header line): {view}"
                 settings.setdefault(name, Counter())[(where, text)] += 1
     lines: list[str] = []
