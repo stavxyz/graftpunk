@@ -15,15 +15,18 @@ import os
 import subprocess
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from urllib.parse import unquote, unquote_plus
 
 from graftpunk.devtools.captures_rule import with_ignored
 from graftpunk.logging import get_logger
+from graftpunk.testing.decoding import decoded_forms
 from graftpunk.testing.sidecar import Sidecar, sidecar_path, sidecar_text
 
 LOG = get_logger(__name__)
 
 __all__ = [
     "IgnoreFileReadError",
+    "checked_names_of",
     "ensure_ignored",
     "find_repo_root",
     "is_tracked",
@@ -133,6 +136,32 @@ def is_tracked(path: Path) -> bool:
     return result.returncode == 0
 
 
+def checked_names_of(
+    flagged_values: Mapping[str, frozenset[str] | None], text: str
+) -> tuple[str, ...]:
+    """The names in *flagged_values* the fixtures check must look for in a fixture
+    derived from *text*, sorted: each name whose values are not all known (None),
+    and each name one of whose values is in *text*.
+
+    A value is looked for as recorded and percent-decoded (with ``+`` read as a
+    plus and as a space, since a base64 value holds ``+``), case-sensitively, in
+    *text* as written and in each form the fixtures check reads a fixture in
+    (:func:`graftpunk.testing.decoding.decoded_forms`), so a value the body holds
+    escaped in a JSON string, HTML-escaped, or percent-encoded counts. A value of
+    one character that happens to be in the body keeps its name looked for: the
+    check then fails on the name as it did before sidecar schema 3, never less."""
+    forms = (text, *decoded_forms(text))
+    checked: list[str] = []
+    for name, values in flagged_values.items():
+        if values is None:
+            checked.append(name)
+            continue
+        wanted = {form for value in values for form in (value, unquote(value), unquote_plus(value))}
+        if any(value and value in form for value in wanted for form in forms):
+            checked.append(name)
+    return tuple(sorted(checked))
+
+
 def write_sidecar(
     fixture: Path,
     *,
@@ -140,6 +169,7 @@ def write_sidecar(
     content_type: str,
     body_params: Iterable[str],
     flagged_reasons: Mapping[str, Iterable[str]],
+    flagged_values: Mapping[str, frozenset[str] | None] | None = None,
     redacted_names: int = 0,
 ) -> Path:
     """Write *fixture*'s committable sidecar beside it and return its path.
@@ -150,8 +180,21 @@ def write_sidecar(
     *flagged_reasons* maps each flagged name to why it is flagged
     (``graftpunk.har.digest.flagged_reasons_of``); its keys are the flagged
     names. The sort and dedupe is ``Sidecar``'s own job, not this writer's.
+    *flagged_values* maps each flagged name to its recorded values
+    (``graftpunk.har.digest.flagged_values_of``); ``checked_names`` is the names
+    :func:`checked_names_of` finds in *fixture*'s text. Without it every flagged
+    name is checked, as a sidecar from before schema 3 is read. A name in it that
+    is not flagged is ignored.
     """
     body = fixture.read_bytes()
+    names = tuple(flagged_reasons)
+    if flagged_values is None:
+        checked = names
+    else:
+        text = body.decode("utf-8", errors="replace")
+        # A flagged name the caller has no values for is not known in full.
+        known = {name: flagged_values.get(name) for name in names}
+        checked = checked_names_of(known, text)
     sidecar = Sidecar(
         status=status,
         content_type=content_type,
@@ -160,8 +203,9 @@ def write_sidecar(
         # its fixture is empty too, so a recorded hash would fail the suite's
         # unchanged-copy check on a fixture that holds no captured value.
         capture_sha256=hashlib.sha256(body).hexdigest() if body else None,
-        flagged_names=tuple(flagged_reasons),
+        flagged_names=names,
         flagged_reasons={name: tuple(why) for name, why in flagged_reasons.items()},
+        checked_names=checked,
         redacted_names=redacted_names,
     )
     path = sidecar_path(fixture)

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import errno
 import hashlib
-import html
 import os
 import re
 import stat
@@ -30,11 +29,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import unquote_plus
 
 import pytest
 
 from graftpunk.contracts import current_schema
+from graftpunk.testing.decoding import decoded_forms
 from graftpunk.testing.sidecar import (
     FIXTURES_PLACEHOLDER,
     Sidecar,
@@ -197,8 +196,8 @@ def _missing_sidecar(relative: Path, sidecar_name: str) -> str:
         f"copy the sidecar gp observe fixtures wrote beside the capture. For a hand-made "
         f'fixture, write {sidecar_name} with "schema": {schema}, a status, a content type, '
         f'"body_params": [], "capture_sha256": null, "flagged_names": [], '
-        f'"flagged_reasons": {{}}, and "redacted_names": 0, which declares that the file '
-        f"came off no account."
+        f'"flagged_reasons": {{}}, "checked_names": [], and "redacted_names": 0, which '
+        f"declares that the file came off no account."
     )
 
 
@@ -308,7 +307,9 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     outside its declared format (through the owner,
     :mod:`graftpunk.testing.sidecar`), a fixture that cannot be read, a
     fixture that is byte for byte its capture, and a flagged cookie or token
-    name in a fixture. It does not judge
+    name in a fixture whose capture held that name's value (the sidecar's
+    ``checked_names``; every flagged name for a sidecar from before schema 3).
+    It does not judge
     whether invented content is invented well. A sidecar with no capture hash
     is the author's declaration that the file came off no account (or gp's,
     for an empty capture, which holds nothing to sanitise); it is trusted,
@@ -387,50 +388,6 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
 _NAME_CORE = r"A-Za-z0-9_\-"
 _NAME_PUNCTUATION = r"!$*.^`~"
 
-# The forms a fixture is read in besides as written, kept in step with
-# skills/graft/scripts/fixture-leaks.py's _escape_decodings (a test compares the
-# two): that script runs with the standard library alone and cannot import this.
-_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
-_SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
-_HEX_ESCAPE = re.compile(r"\\x([0-9a-fA-F]{2})")
-# A one-letter control escape (\n, \r, \t, \b, \f), so a name on the line after
-# a JSON or Python string's \n is read as starting that line.
-_CONTROL_ESCAPE = re.compile(r"\\([nrtbf])")
-_CONTROL_CHARACTERS = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f"}
-_PERCENT_ROUNDS = 3
-
-
-def _backslash_unescaped(text: str) -> str:
-    """*text* with its ``\\uXXXX`` escapes decoded (a surrogate pair rejoined into
-    the one character it spells), its ``\\xXX`` escapes and its ``\\n``, ``\\r``,
-    ``\\t``, ``\\b`` and ``\\f`` escapes decoded, and ``\\/`` read as ``/``."""
-
-    def pair(m: re.Match[str]) -> str:
-        high, low = int(m.group(1), 16), int(m.group(2), 16)
-        return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
-
-    decoded = _SURROGATE_PAIR.sub(pair, text)
-    decoded = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
-    decoded = _HEX_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
-    decoded = _CONTROL_ESCAPE.sub(lambda m: _CONTROL_CHARACTERS[m.group(1)], decoded)
-    return decoded.replace("\\/", "/")
-
-
-def _decoded_forms(text: str) -> list[str]:
-    """*text* with its backslash escapes decoded, with its HTML character
-    references decoded, and percent-decoded (``+`` as a space) once per round
-    until it stops changing, at most three rounds, so a URL nested in another
-    URL's query is read as written."""
-    forms = [_backslash_unescaped(text), html.unescape(text)]
-    current = text
-    for _ in range(_PERCENT_ROUNDS):
-        decoded = unquote_plus(current)
-        if decoded == current:
-            break
-        forms.append(decoded)
-        current = decoded
-    return forms
-
 
 def _flagged_name_pattern(name: str) -> re.Pattern[str]:
     """*name*, casefolded, as a whole name (see ``_NAME_CORE``): a flagged
@@ -445,13 +402,21 @@ def _flagged_name_pattern(name: str) -> re.Pattern[str]:
 
 
 def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> list[str]:
-    """One problem per flagged name found in the fixture's body, as a whole name
-    (:func:`_flagged_name_pattern`), in the body as written or in any of its
-    decoded forms (:func:`_decoded_forms`), so a name beside an escaped ``&`` or
-    ``"`` still counts. Matched case-insensitively: an HTTP header name is case-insensitive by the
-    protocol, and a capture recorded over HTTP/2 lowercases every header name,
-    so a flagged ``X-Csrf-Token`` copied into a fixture as ``x-csrf-token``
-    still counts.
+    """One problem per name to check (:attr:`Sidecar.names_to_check`) found in the
+    fixture's body. A schema 3 sidecar names the flagged names whose value the
+    capture held, or whose value gp did not know in full; a flagged name whose
+    value the capture did not hold cannot have been copied into a fixture derived
+    from it, so an honest ``"id": 7`` key passes when a recording sent a cookie
+    named ``id``. A schema 1 or 2 sidecar records no such list, so every flagged name is
+    looked for, as before, and the problem says how to regenerate it.
+
+    Found as a whole name (:func:`_flagged_name_pattern`), in the body as written
+    or in any of its decoded forms
+    (:func:`graftpunk.testing.decoding.decoded_forms`), so a name beside an
+    escaped ``&`` or ``"`` still counts. Matched case-insensitively: an HTTP
+    header name is case-insensitive by the protocol, and a capture recorded over
+    HTTP/2 lowercases every header name, so a flagged ``X-Csrf-Token`` copied
+    into a fixture as ``x-csrf-token`` still counts.
 
     No sidecar field is scanned. ``status`` and ``content_type`` are written by
     gp from the response and hold no cookie value (a media type such as
@@ -463,8 +428,20 @@ def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> lis
     from a session value without the recording."""
     problems: list[str] = []
     raw = body.decode("utf-8", errors="replace")
-    texts = {form.casefold() for form in (raw, *_decoded_forms(raw))}
-    for name in sidecar.flagged_names:
+    texts = {form.casefold() for form in (raw, *decoded_forms(raw))}
+    if sidecar.checked_names is None:
+        regenerate = (
+            " Or regenerate the sidecar with gp observe fixtures (sidecar schema 3), "
+            "which looks only for the names whose value the capture held."
+        )
+        source = "a cookie or token name the capture's digest recorded"
+    else:
+        regenerate = ""
+        source = (
+            "a cookie or token name whose value the capture held, or whose value "
+            "the recording did not keep"
+        )
+    for name in sidecar.names_to_check:
         if not name:
             # An empty name would match between every two characters.
             continue
@@ -473,9 +450,8 @@ def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> lis
             why = sidecar.flagged_reasons.get(name)
             flagged_by = f" (flagged by: {', '.join(why)})" if why else ""
             problems.append(
-                f"{relative}: contains the flagged name {name!r}, a cookie or token "
-                f"name the capture's digest recorded{flagged_by}; rename it in the "
-                f"fixture."
+                f"{relative}: contains the flagged name {name!r}, {source}{flagged_by}; "
+                f"rename it in the fixture.{regenerate}"
             )
     return problems
 

@@ -12,8 +12,11 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import graftpunk.devtools.captures_rule as captures_rule
 from graftpunk.devtools.captures import (
+    checked_names_of,
     ensure_ignored,
     find_repo_root,
     is_tracked,
@@ -140,6 +143,83 @@ class TestWriteSidecar:
         )
         assert load_sidecar(path).capture_sha256 is None
         assert json.loads(path.read_text())["capture_sha256"] is None
+
+
+_VALUE = "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc"
+
+
+class TestCheckedNamesOf:
+    @pytest.mark.parametrize(
+        "body",
+        [
+            f'{{"token": "{_VALUE}"}}',
+            f"/next?csrftoken={_VALUE}&x=1",
+            f"/next?ref=%2Fa%3Fcsrftoken%3D{_VALUE}",
+            f"&lt;i&gt;{_VALUE}",
+            '{"token": "\\u0052' + _VALUE[1:] + '"}',
+        ],
+        ids=["json", "query", "percent-encoded", "html-escaped", "json-escaped"],
+    )
+    def test_a_value_the_body_holds_in_any_form_is_checked(self, body: str) -> None:
+        assert checked_names_of({"csrftoken": frozenset({_VALUE})}, body) == ("csrftoken",)
+
+    def test_a_value_recorded_percent_encoded_is_found_decoded(self) -> None:
+        values = {"csrftoken": frozenset({"ab%2Bcd%3D%3D"})}
+        assert checked_names_of(values, '{"t": "ab+cd=="}') == ("csrftoken",)
+
+    def test_a_name_whose_values_the_body_does_not_hold_is_not_checked(self) -> None:
+        values = {"id": frozenset({_VALUE}), "csrftoken": frozenset({"other-value"})}
+        assert checked_names_of(values, '{"id": 7, "csrftoken": "invented"}') == ()
+
+    def test_a_value_is_matched_case_sensitively(self) -> None:
+        assert checked_names_of({"id": frozenset({_VALUE})}, _VALUE.lower()) == ()
+
+    def test_values_not_known_keep_the_name_checked(self) -> None:
+        assert checked_names_of({"b": None, "a": frozenset()}, "{}") == ("b",)
+
+
+class TestWriteSidecarCheckedNames:
+    def test_without_values_every_flagged_name_is_checked(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "get_orders.json"
+        fixture.write_text('{"id": 7}', encoding="utf-8")
+        path = write_sidecar(
+            fixture,
+            status=200,
+            content_type="application/json",
+            body_params=[],
+            flagged_reasons={"id": ["value_not_form_state"], "sid": ["session_name"]},
+        )
+        assert load_sidecar(path).checked_names == ("id", "sid")
+
+    def test_with_values_only_the_names_whose_value_the_file_holds(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "get_orders.json"
+        fixture.write_text(json.dumps({"id": 7, "token": _VALUE}), encoding="utf-8")
+        path = write_sidecar(
+            fixture,
+            status=200,
+            content_type="application/json",
+            body_params=[],
+            flagged_reasons={"id": ["value_not_form_state"], "sid": ["session_name"]},
+            flagged_values={
+                "id": frozenset({"Zq9XkLmPwR4t7Bv2Hn8Ks3Jd"}),
+                "sid": frozenset({_VALUE}),
+            },
+        )
+        assert load_sidecar(path).checked_names == ("sid",)
+        assert _VALUE not in path.read_text()
+
+    def test_a_flagged_name_missing_from_the_values_is_checked(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "get_orders.json"
+        fixture.write_text("{}", encoding="utf-8")
+        path = write_sidecar(
+            fixture,
+            status=200,
+            content_type="application/json",
+            body_params=[],
+            flagged_reasons={"id": ["value_not_form_state"]},
+            flagged_values={},
+        )
+        assert load_sidecar(path).checked_names == ("id",)
 
 
 class TestWithIgnored:

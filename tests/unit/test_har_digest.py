@@ -44,10 +44,11 @@ from graftpunk.har.digest import (
     endpoint_template,
     flagged_names_of,
     flagged_reasons_of,
+    flagged_values_of,
     post_every_value,
     redacted_names_of,
 )
-from graftpunk.har.documents import LoginForm
+from graftpunk.har.documents import LoginForm, token_values
 from graftpunk.har.parser import LoginInteraction, parse_har_file
 from graftpunk.har.paths import reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
@@ -4761,6 +4762,109 @@ class TestFlaggedNamesOf:
         values = [generate() for _ in range(10_000)]
         lost = [v for v in values if _form_state(v) and not reads_as_words(v)]
         assert len(lost) / len(values) <= _FORM_STATE_LOSS_CEILINGS[shape]
+
+
+class TestFlaggedValuesOf:
+    """Each flagged name's recorded values, which gp observe fixtures compares with
+    a capture's body (#313); None where they are not all known."""
+
+    def _values(self, tmp_path: Path, entries: list[dict]) -> dict:
+        har = _write_har(tmp_path, entries)
+        return flagged_values_of(digest(DigestSource.from_har(har)), parse_har_file(har).entries)
+
+    def test_a_cached_sessions_sent_cookies_carry_their_values(self, tmp_path: Path) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"Cookie": "id=Xk3Lp9Qv2Rt7Wm4Zb8Nc6Hd; sessionid=Zq9XkLmPwR4t7"},
+        )
+        values = self._values(tmp_path, [entry])
+        assert values == {
+            "id": frozenset({"Xk3Lp9Qv2Rt7Wm4Zb8Nc6Hd"}),
+            "sessionid": frozenset({"Zq9XkLmPwR4t7"}),
+        }
+
+    def test_the_keys_are_the_flagged_names(self, tmp_path: Path) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/account",
+            content_type="text/html",
+            body='<meta name="csrf-token" content="Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb">',
+            set_cookies=["sid=Zq9XkLmPwR4t7Bv2; Path=/", "lot=12; Path=/"],
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        entries = parse_har_file(har).entries
+        assert tuple(flagged_values_of(result, entries)) == flagged_names_of(result, entries)
+
+    def test_a_meta_token_carries_the_content_the_page_held(self, tmp_path: Path) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/account",
+            content_type="text/html",
+            body=(
+                '<meta name="csrf-token" content="Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb">'
+                '<form><input type="hidden" name="authenticity_token" value="Mq8&amp;Wz2">'
+                "</form>"
+            ),
+        )
+        values = self._values(tmp_path, [entry])
+        assert values["csrf-token"] == frozenset({"Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb"})
+        assert values["authenticity_token"] == frozenset({"Mq8&Wz2"})
+
+    def test_a_header_token_carries_the_header_values_in_any_case(self, tmp_path: Path) -> None:
+        entries = [
+            _entry(
+                "POST",
+                "https://myshop.example.com/api/cart",
+                request_headers={"x-csrf-token": "Hd5Ks0Gf2Lq8"},
+            )
+        ]
+        assert self._values(tmp_path, entries)["x-csrf-token"] == frozenset({"Hd5Ks0Gf2Lq8"})
+
+    def test_a_cookie_whose_value_was_not_kept_is_not_known(self, tmp_path: Path) -> None:
+        entry = _entry("GET", "https://myshop.example.com/api/orders")
+        entry["request"]["cookies"] = [{"name": "sessionid"}]
+        assert self._values(tmp_path, [entry]) == {"sessionid": None}
+
+    def test_a_set_cookie_kept_as_a_name_only_is_not_known(self, tmp_path: Path) -> None:
+        """A Set-Cookie header with no response.cookies entry: the value was not
+        kept as a cookie value."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            set_cookies=["sessionid=Zq9XkLmPwR4t7; HttpOnly"],
+        )
+        assert self._values(tmp_path, [entry])["sessionid"] is None
+
+    def test_a_session_cookie_only_ever_sent_empty_held_nothing(self, tmp_path: Path) -> None:
+        entry = _entry("GET", "https://myshop.example.com/api/orders")
+        entry["request"]["cookies"] = [{"name": "sessionid", "value": ""}]
+        assert self._values(tmp_path, [entry]) == {"sessionid": frozenset()}
+
+    def test_without_entries_no_value_is_known(self, tmp_path: Path) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/account",
+            content_type="text/html",
+            body='<meta name="csrf-token" content="Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb">',
+        )
+        har = _write_har(tmp_path, [entry])
+        assert flagged_values_of(digest(DigestSource.from_har(har))) == {"csrf-token": None}
+
+
+class TestTokenValues:
+    def test_meta_content_and_hidden_input_values_by_name(self) -> None:
+        html = (
+            '<meta name="csrf-token" content="a&amp;b"><meta name="viewport">'
+            '<form><input type="hidden" name="t" value="x1"><input type="HIDDEN" name="t" '
+            'value="x2"><input type="text" name="q" value="shoes">'
+            '<input type="hidden" name="empty" value=""></form>'
+        )
+        assert token_values(html) == {
+            "csrf-token": frozenset({"a&b"}),
+            "t": frozenset({"x1", "x2"}),
+        }
 
 
 class TestEveryNamePositionGoesThroughTheIdRule:

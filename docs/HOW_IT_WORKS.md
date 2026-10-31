@@ -1246,8 +1246,10 @@ session-like name nor a `Set-Cookie` with `HttpOnly` (in the header or in the
 HAR's `response.cookies` array), and the token names the run's digest recorded, a
 name that holds an id left out and counted in `redacted_names`; from schema 2,
 also the reasons each of those cookie and token names is flagged
-(`flagged_reasons`, which the fixtures check repeats in its problem line); it
-never holds the URL or the capture time), written to be
+(`flagged_reasons`, which the fixtures check repeats in its problem line); from
+schema 3, also the flagged names the fixtures check looks for in this fixture
+(`checked_names`, below); it
+never holds the URL, the capture time, or any value, in any form), written to be
 committed beside the fixture derived from it once you have read its body
 parameter names and its `flagged_names`: a body key that does not read as a
 field name or holds an id is dropped, but the rule is lexical, so an account
@@ -1269,6 +1271,58 @@ capitals and 5.2% of 12,
 and 1.1% of 8 capitals and digits. `FixtureSession` reads the sidecar through
 `graftpunk.testing.sidecar` for status and content type, so a fixture copied
 from a capture keeps its recorded status.
+
+`checked_names` is how the fixtures check judges a flagged name by its value
+without the value (#313). The check runs in the plugin's suite, in CI and on a
+fresh checkout, where neither the recording nor any key outside the repository
+exists, so it can only use names. `gp observe fixtures` holds the recording, so
+it decides per capture which flagged names the check still needs to look for:
+`graftpunk.har.digest.flagged_values_of` reads every non-empty value the
+recording holds for each flagged name (a cookie's sent and set values; a header
+token's request header values in any case; a meta or hidden-input token's
+`content` or `value` in an HTML response the HAR holds), and
+`graftpunk.devtools.captures.checked_names_of` keeps a name when one of its
+values is in the capture's body, as recorded or percent-decoded (with `+` read
+both ways), case-sensitively, in the body as written or in any form the check
+reads a fixture in (`graftpunk.testing.decoding.decoded_forms`: backslash
+escapes, HTML character references, up to three rounds of percent-decoding). It
+also keeps every name whose values are not all known: a cookie the recording
+carried without a value kept or with none seen, and a token whose kind shows no
+value in the HAR (a meta tag on the page source only, or in a body kept in a
+file). A name whose value the body did not hold cannot have been copied into a
+fixture derived from that body, so the check does not look for it, and an
+honest `"id": 7` key passes when a recording made with a cached session sent a
+cookie named `id`. The values stay in memory; the sidecar holds names only, a
+subset of `flagged_names`, which are already committed. A one-character value
+that happens to be in the body keeps its name looked for, which is the check
+before schema 3, never less. Without the values the check cannot catch a
+recorded value pasted into a fixture from outside its capture, or a recorded
+value kept in a fixture under a renamed key; the name-only check before schema
+3 could not either. The graft skill's
+`fixture-leaks.py` covers both on the developer's machine: it reports every
+value of the capture's body left in a fixture, and with `--har HAR` every
+recorded value of a flagged name (cookies sent and set, `Cookie` and
+`Set-Cookie` headers, request headers, meta and hidden-input values in HTML
+responses), by line number only, never printing the value. What remains is a
+body that held the value: there the check still fails on the name, as in
+`{"csrftoken": "<the cookie's value>"}` from an endpoint that hands a single-page
+app its token, or a page fixture that keeps the hidden input a parser selects
+on.
+
+The options considered were a keyed digest of each value in the sidecar, with
+the key outside the repository, and this. A keyed digest needs the key in CI
+and on every teammate's machine, and without it the check must fall back to
+names, so one commit would pass on one machine and fail on another; it also
+matches only a candidate whose boundaries equal the value's. An unkeyed or
+salted hash of a short value is reversed by brute force, which is why
+`redacted_names` keeps none. A sidecar from schema 1 or 2 has no
+`checked_names`; the check looks for every flagged name in its fixture, as
+1.32.x did, and its problem line says that regenerating the sidecar with `gp
+observe fixtures` looks only for the names whose value the capture held. It is
+not refused, since a plugin project floats to the newest graftpunk and a
+refusal would fail its suite on the first run after the upgrade with no change
+on its side.
+
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
 fixture that removes prefixed environment variables for the duration of each
 test; a generated `conftest.py` imports it and assigns the result to a

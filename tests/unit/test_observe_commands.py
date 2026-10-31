@@ -571,14 +571,18 @@ class TestFixturesCommand:
             "capture_sha256",
             "flagged_names",
             "flagged_reasons",
+            "checked_names",
             "redacted_names",
         }
-        assert sidecar["schema"] == 2
+        assert sidecar["schema"] == 3
         assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
         assert sidecar["flagged_names"] == ["shop_session"]
         assert sidecar["flagged_reasons"] == {
             "shop_session": ["session_name", "value_not_form_state"]
         }
+        # The body, {"id": 1}, does not hold the session's value.
+        assert sidecar["checked_names"] == []
+        assert _SESSION_VALUE not in json.dumps(sidecar)
         assert "page=2" not in json.dumps(sidecar)
 
     def test_the_sidecar_counts_an_id_cookie_name_and_holds_no_trace_of_it(
@@ -1215,10 +1219,18 @@ class TestPlainWordCookies:
             sidecar = json.loads((tree / name).read_text())
             assert sidecar["flagged_names"] == ["csrf-token", "csrftoken", "myshop_session"]
 
-    def test_gps_sidecars_and_honest_fixtures_pass_and_a_named_session_cookie_fails(
+    def test_gps_sidecars_and_honest_fixtures_pass_and_a_token_the_page_carries_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The session cookie's value is in neither capture, so its name in a
+        fixture is no evidence of a leak and passes (#313); the page held the
+        csrf-token meta tag's value, so that name is still looked for in the page's
+        fixture."""
         tree = self._fixtures(tmp_path, monkeypatch)
+        page_meta = json.loads((tree / "get_search.html.meta.json").read_text())
+        api_meta = json.loads((tree / "get_api_search.json.meta.json").read_text())
+        assert page_meta["checked_names"] == ["csrf-token"]
+        assert api_meta["checked_names"] == []
         page = tree / "get_search.html"
         page.write_text(
             "<html><body><form><label>Enter text to search; the context is kept.</label>"
@@ -1233,17 +1245,19 @@ class TestPlainWordCookies:
         assert check_fixtures_tree(tree).problems == ()
 
         api.write_text(json.dumps({"query": row, "myshop_session": "invented"}))
-        (problem,) = check_fixtures_tree(tree).problems
-        assert "'myshop_session'" in problem
-        api.write_text(json.dumps({"query": row, "results": []}))
+        assert check_fixtures_tree(tree).problems == ()
 
         page.write_text("<p>Sign in again to renew your myshop_session cookie.</p>")
-        (problem,) = check_fixtures_tree(tree).problems
-        assert "'myshop_session'" in problem
+        assert check_fixtures_tree(tree).problems == ()
 
         page.write_text('<meta name="csrf-token" content="invented">')
         (problem,) = check_fixtures_tree(tree).problems
         assert "'csrf-token'" in problem
+        assert "whose value the capture held" in problem
+        # The csrf-token name in the API fixture: that capture held no token value.
+        page.write_text("<p>Searching.</p>")
+        api.write_text(json.dumps({"query": row, "csrf-token": "invented"}))
+        assert check_fixtures_tree(tree).problems == ()
 
     @staticmethod
     def _django_style_sidecar(
@@ -1312,9 +1326,12 @@ class TestPlainWordCookies:
     ) -> None:
         """The session and the token stay flagged with word-shaped values; the form
         state a response set without HttpOnly is left out, and the fixture keeping
-        its names passes."""
+        its names passes. The search body holds neither the session's value nor the
+        token's, so naming the session cookie in the fixture passes too (#313)."""
         meta = self._django_style_sidecar(tmp_path, monkeypatch, form_state_http_only=False)
-        assert json.loads(meta.read_text())["flagged_names"] == ["csrftoken", "sessionid"]
+        sidecar = json.loads(meta.read_text())
+        assert sidecar["flagged_names"] == ["csrftoken", "sessionid"]
+        assert sidecar["checked_names"] == []
         tree = tmp_path / "fixtures"
         tree.mkdir()
         (tree / meta.name).write_text(meta.read_text())
@@ -1322,8 +1339,7 @@ class TestPlainWordCookies:
         fixture.write_text(json.dumps({"results": [{"block": "B", "lot": "7"}], "text": "x"}))
         assert check_fixtures_tree(tree).problems == ()
         fixture.write_text("See the `sessionid` cookie.")
-        (problem,) = check_fixtures_tree(tree).problems
-        assert "'sessionid'" in problem
+        assert check_fixtures_tree(tree).problems == ()
 
     def test_httponly_read_from_set_cookie_headers_when_the_cookies_array_omits_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1403,6 +1419,107 @@ def _unwritable_dir(parent: Path, name: str = "readonly") -> Iterator[Path]:
         yield directory
     finally:
         directory.chmod(0o700)
+
+
+_OPAQUE_ID = "Xk3Lp9Qv2Rt7Wm4Zb8Nc6Hd"
+
+
+class TestFlaggedNamesAreJudgedByTheirValues:
+    """#313: a recording made with a cached session sends `id=<opaque>`, so `id` is
+    flagged. The fixtures check looks for the name only in a fixture whose capture
+    held the value."""
+
+    @staticmethod
+    def _sidecar(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: object
+    ) -> tuple[Path, dict]:
+        """gp's sidecar for one `GET /orders/1001` capture of *body*, the request
+        sending `id` and `myshop_session` as a cached session does (no response sets
+        them), copied into a fixtures tree. Returns the tree and the sidecar."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body=json.dumps(body))
+        order["request"]["cookies"] = [
+            {"name": "id", "value": _OPAQUE_ID},
+            {"name": "myshop_session", "value": _SESSION_VALUE},
+        ]
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "captures"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        (meta,) = out_dir.glob("*.meta.json")
+        tree = tmp_path / "fixtures"
+        tree.mkdir()
+        (tree / meta.name).write_text(meta.read_text())
+        return tree, json.loads(meta.read_text())
+
+    def test_an_honest_id_key_passes_when_the_recording_sent_an_id_cookie(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411, "total": "12.50"})
+        assert sidecar["flagged_names"] == ["id", "myshop_session"]
+        assert sidecar["checked_names"] == []
+        (tree / "get_orders_{order_id}.json").write_text(json.dumps({"id": 7, "total": "1.00"}))
+        assert check_fixtures_tree(tree).problems == ()
+
+    def test_the_same_fixture_under_the_schema_2_sidecar_still_fails_with_the_way_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sidecar committed by 1.32.x keeps today's behaviour: every flagged
+        name is looked for, and the problem says how to regenerate it."""
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411, "total": "12.50"})
+        del sidecar["checked_names"]
+        sidecar["schema"] = 2
+        (meta,) = tree.glob("*.meta.json")
+        meta.write_text(json.dumps(sidecar))
+        (tree / "get_orders_{order_id}.json").write_text(json.dumps({"id": 7, "total": "1.00"}))
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "contains the flagged name 'id'" in problem
+        assert "regenerate the sidecar with gp observe fixtures (sidecar schema 3)" in problem
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"session": {"id": _OPAQUE_ID}},
+            {"next": f"/account?id={_OPAQUE_ID}&tab=2"},
+            {"next": f"/account?ref=%2Fx%3Fid%3D{_OPAQUE_ID}"},
+            {"html": f"<a href='/x?a=1&amp;v={_OPAQUE_ID}'>"},
+        ],
+        ids=["json-string", "url", "url-encoded", "html-escaped"],
+    )
+    def test_a_capture_holding_the_value_keeps_the_name_looked_for(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: dict
+    ) -> None:
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, body)
+        assert sidecar["checked_names"] == ["id"]
+        (tree / "get_orders_{order_id}.json").write_text(json.dumps({"id": 7}))
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "contains the flagged name 'id'" in problem
+        assert "whose value the capture held" in problem
+
+    def test_the_sidecar_holds_no_recorded_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"session": {"id": _OPAQUE_ID}})
+        text = json.dumps(sidecar)
+        assert _OPAQUE_ID not in text
+        assert _SESSION_VALUE not in text
+        assert hashlib.sha256(_OPAQUE_ID.encode()).hexdigest() not in text
+
+    def test_a_cookie_whose_value_was_not_kept_stays_looked_for(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gp cannot tell whether a value it never saw is in the body, so the name
+        is looked for, as before."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
+        order["request"]["cookies"] = [{"name": "myshop_session"}]
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "captures"
+        assert _invoke_fixtures(out_dir).exit_code == 0
+        (meta,) = out_dir.glob("*.meta.json")
+        assert json.loads(meta.read_text())["checked_names"] == ["myshop_session"]
 
 
 class TestUnwritableTargetIsARefusal:

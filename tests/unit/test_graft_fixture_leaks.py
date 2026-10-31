@@ -746,3 +746,136 @@ def test_a_value_behind_a_hex_escape_or_a_double_percent_encoding_is_found(
     result = _run(tmp_path, json.dumps({"name": "José García"}), fixture)
     assert result.returncode == 1
     assert "José García" in result.stdout
+
+
+# --har: the recorded values of the sidecar's flagged names (#313).
+
+_OPAQUE = "Xk3Lp9Qv2Rt7Wm4Zb8Nc6Hd"
+_TOKEN = "Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb"  # noqa: S105 - an invented token value
+_FLAGGED = {"schema": 3, "flagged_names": ["csrf-token", "id", "myshop_session"]}
+
+
+def _har(tmp_path: Path) -> Path:
+    """A recording made with a cached session: the request sends `id` and
+    `myshop_session` in its Cookie header, the response sets `myshop_session`
+    anew by a Set-Cookie header, and the page carries a csrf-token meta tag."""
+    request = {
+        "method": "GET",
+        "url": "https://myshop.example.com/account",
+        "headers": [{"name": "Cookie", "value": f"id={_OPAQUE}; myshop_session=first%2Bpart"}],
+        "cookies": [],
+    }
+    response = {
+        "status": 200,
+        "headers": [{"name": "Set-Cookie", "value": "myshop_session=SecondValue77; HttpOnly"}],
+        "cookies": [],
+        "content": {
+            "mimeType": "text/html",
+            "text": f'<meta name="csrf-token" content="{_TOKEN}">',
+        },
+    }
+    path = tmp_path / "network.har"
+    path.write_text(json.dumps({"log": {"entries": [{"request": request, "response": response}]}}))
+    return path
+
+
+def _run_har(tmp_path: Path, fixture: str, sidecar: dict | None = _FLAGGED, har: str = ""):
+    (tmp_path / "capture.json").write_text(json.dumps({"orders": []}))
+    (tmp_path / "fixture.json").write_text(fixture)
+    args = [str(tmp_path / "capture.json"), str(tmp_path / "fixture.json")]
+    if sidecar is not None:
+        (tmp_path / "fixture.json.meta.json").write_text(json.dumps(sidecar))
+        args.append(str(tmp_path / "fixture.json.meta.json"))
+    har_path = _har(tmp_path)
+    if har:
+        har_path.write_text(har)
+    assert PYTHON is not None
+    return subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [PYTHON, "-I", str(SCRIPT), *args, "--har", str(har_path)],
+        capture_output=True,
+        text=True,
+    )
+
+
+def _value_lines(stdout: str) -> list[str]:
+    return [line for line in stdout.splitlines() if line.startswith("the recorded value")]
+
+
+def test_an_honest_id_key_reports_no_recorded_value(tmp_path: Path) -> None:
+    result = _run_har(tmp_path, json.dumps({"id": 7, "myshop_session": "invented"}))
+    assert result.returncode == 0, result.stdout
+    assert _value_lines(result.stdout) == []
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        json.dumps({"session": {"id": _OPAQUE}}),
+        f"next=%2Faccount%3Fv%3D{_OPAQUE}",
+        '{"v": "\\u0058' + _OPAQUE[1:] + '"}',
+        f"<a href='/x?a=1&amp;v={_OPAQUE}'>",
+    ],
+    ids=["json-string", "percent-encoded", "json-escaped", "html-escaped"],
+)
+def test_a_fixture_holding_the_opaque_value_fails_without_printing_it(
+    tmp_path: Path, fixture: str
+) -> None:
+    result = _run_har(tmp_path, fixture)
+    assert result.returncode == 1
+    (line,) = _value_lines(result.stdout)
+    assert line.startswith("the recorded value of flagged 'id' is still in the fixture (")
+    assert _OPAQUE not in result.stdout
+
+
+def test_the_value_is_placed_by_line_number(tmp_path: Path) -> None:
+    result = _run_har(tmp_path, f'{{\n  "a": 1,\n  "b": "{_OPAQUE}"\n}}\n')
+    assert _value_lines(result.stdout) == [
+        "the recorded value of flagged 'id' is still in the fixture (line 3)"
+    ]
+
+
+def test_set_cookie_header_and_meta_values_are_read_and_a_value_is_found_decoded(
+    tmp_path: Path,
+) -> None:
+    """The session cookie was sent percent-encoded (first%2Bpart) and set again by a
+    Set-Cookie header; the token is a meta tag's content in an HTML response."""
+    fixture = json.dumps({"a": "first+part", "b": "SecondValue77", "c": _TOKEN})
+    result = _run_har(tmp_path, fixture)
+    assert result.returncode == 1
+    assert _value_lines(result.stdout) == [
+        "the recorded value of flagged 'csrf-token' is still in the fixture (line 1)",
+        "the recorded value of flagged 'myshop_session' is still in the fixture (line 1)",
+    ]
+
+
+def test_a_name_the_sidecar_does_not_flag_is_not_looked_for(tmp_path: Path) -> None:
+    sidecar = {"schema": 3, "flagged_names": ["myshop_session"]}
+    result = _run_har(tmp_path, json.dumps({"v": _OPAQUE}), sidecar)
+    assert _value_lines(result.stdout) == []
+
+
+def test_without_a_sidecar_the_names_come_from_gps_sidecar_beside_the_capture(
+    tmp_path: Path,
+) -> None:
+    """The skill runs the same line on a plugin module with no sidecar; the
+    flagged names are then gp's own, so a value pasted into code is caught."""
+    (tmp_path / "capture.json.meta.json").write_text(json.dumps(_FLAGGED))
+    result = _run_har(tmp_path, f'TOKEN = "{_OPAQUE}"\n', sidecar=None)
+    assert result.returncode == 1
+    assert _value_lines(result.stdout) == [
+        "the recorded value of flagged 'id' is still in the fixture (line 1)"
+    ]
+
+
+def test_har_with_no_sidecar_to_read_names_from_exits_2(tmp_path: Path) -> None:
+    result = _run_har(tmp_path, "{}", sidecar=None)
+    assert result.returncode == 2
+    assert "--har reads the flagged names from SIDECAR or from the capture's sidecar" in (
+        result.stderr
+    )
+
+
+def test_a_har_that_is_not_json_exits_2_naming_it(tmp_path: Path) -> None:
+    result = _run_har(tmp_path, "{}", har="not json")
+    assert result.returncode == 2
+    assert "cannot read the HAR" in result.stderr

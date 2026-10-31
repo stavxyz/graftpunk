@@ -1,5 +1,6 @@
-"""graftpunk.testing.plugin's own helpers, held to the graft skill's script where the
-two must agree. The fixtures check itself is tested in test_graftpunk_testing.py."""
+"""graftpunk helpers the graft skill's fixture-leaks script copies, held equal to
+it where the two must agree. The fixtures check itself is tested in
+test_graftpunk_testing.py."""
 
 from __future__ import annotations
 
@@ -8,7 +9,8 @@ from types import ModuleType
 
 import pytest
 
-from graftpunk.testing.plugin import _decoded_forms
+from graftpunk.har.documents import token_values
+from graftpunk.testing.decoding import decoded_forms
 from tests.unit.guide_harness import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "skills" / "graft" / "scripts" / "fixture-leaks.py"
@@ -39,8 +41,26 @@ def _load_script() -> ModuleType:
 def test_the_skill_script_reads_a_fixture_in_the_same_forms(text: str) -> None:
     """The script runs on the standard library alone and cannot import graftpunk,
     so the two decoders are held equal here."""
-    assert _load_script()._escape_decodings(text) == _decoded_forms(text)
+    assert _load_script()._escape_decodings(text) == decoded_forms(text)
 
 
 def test_percent_decoding_stops_after_three_rounds() -> None:
-    assert _decoded_forms("a%25252541")[2:] == ["a%252541", "a%2541", "a%41"]
+    assert decoded_forms("a%25252541")[2:] == ["a%252541", "a%2541", "a%41"]
+
+
+def test_the_skill_script_reads_token_values_as_the_digest_does() -> None:
+    """``fixture-leaks.py --har`` reads a meta or hidden-input token's value as
+    ``gp observe fixtures`` does (graftpunk.har.documents.token_values)."""
+    html = (
+        '<meta name="csrf-token" content="a&amp;b"><meta name="viewport">'
+        '<input type="HIDDEN" name="t" value="x1"><input type="text" name="q" value="s">'
+        '<input type="hidden" name="t" value="x2"><input type="hidden" name="e" value="">'
+    )
+    parser = _load_script()._TokenValues()
+    parser.feed(html)
+    parser.close()
+    script: dict[str, set[str]] = {}
+    for name, value in parser.pairs:
+        if name and value:
+            script.setdefault(name, set()).add(value)
+    assert {name: frozenset(found) for name, found in script.items()} == token_values(html)

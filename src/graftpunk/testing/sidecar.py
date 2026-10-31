@@ -11,7 +11,13 @@ cookie whose every recorded value is form state
 recorded, never a value. From schema 2, ``flagged_reasons`` says why each of
 those names is flagged, in the words of :data:`FLAGGED_REASONS`, so an author or
 a reviewer can tell a form-state cookie flagged by its name from a session
-value without the recording. A name that holds an account value
+value without the recording. From schema 3, ``checked_names`` is the part of
+``flagged_names`` the fixtures check looks for in this fixture: each name whose
+recorded value this capture's body held, in any form the check reads, and each
+name whose values ``gp observe fixtures`` did not know in full
+(``graftpunk.har.digest.flagged_values_of``). A flagged name whose value the body
+did not hold cannot have been copied into a fixture derived from it, so its name
+alone is not looked for. A name that holds an account value
 (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``
 counts how many were left out. ``body_params`` is the request's body keys that read as
@@ -88,6 +94,18 @@ SIDECAR_FIELDS: dict[int, frozenset[str]] = {
             "redacted_names",
         }
     ),
+    3: frozenset(
+        {
+            "status",
+            "content_type",
+            "body_params",
+            "capture_sha256",
+            "flagged_names",
+            "flagged_reasons",
+            "checked_names",
+            "redacted_names",
+        }
+    ),
 }
 """The keys each schema version holds besides ``schema`` itself."""
 
@@ -140,6 +158,10 @@ class Sidecar:
     # for a schema 1 sidecar, which did not record it. Given alone, its keys are
     # the flagged names.
     flagged_reasons: Mapping[str, tuple[str, ...]] = field(default_factory=dict, hash=False)
+    # The flagged names the fixtures check looks for in this fixture, all of them
+    # in flagged_names; None for a schema 1 or 2 sidecar, which did not record it,
+    # and then every flagged name is looked for (names_to_check).
+    checked_names: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         """Hold every field to the loader's own type and sign checks, sort and dedupe
@@ -154,7 +176,8 @@ class Sidecar:
             raise SidecarError(f"redacted_names must not be negative, got {self.redacted_names}")
         if not isinstance(self.content_type, str):
             raise SidecarError(f"content_type must be a string, got {self.content_type!r}")
-        for key in ("body_params", "flagged_names"):
+        keys = ("body_params", "flagged_names")
+        for key in (*keys, "checked_names") if self.checked_names is not None else keys:
             value = getattr(self, key)
             if not isinstance(value, (tuple, list)) or not all(
                 isinstance(item, str) for item in value
@@ -172,12 +195,27 @@ class Sidecar:
         object.__setattr__(self, "body_params", tuple(sorted(set(self.body_params))))
         object.__setattr__(self, "flagged_names", tuple(sorted(set(self.flagged_names))))
         object.__setattr__(self, "flagged_reasons", _checked_reasons(self))
+        if self.checked_names is not None:
+            checked = tuple(sorted(set(self.checked_names)))
+            outside = sorted(set(checked) - set(self.flagged_names))
+            if outside:
+                raise SidecarError(
+                    f"checked_names must be flagged names, got {outside!r} outside "
+                    f"{list(self.flagged_names)!r}"
+                )
+            object.__setattr__(self, "checked_names", checked)
 
     @property
     def declared(self) -> bool:
         """True for a hand-made fixture's sidecar, or an empty capture's: trusted, not
         checked against a capture."""
         return self.capture_sha256 is None
+
+    @property
+    def names_to_check(self) -> tuple[str, ...]:
+        """The flagged names the fixtures check looks for: ``checked_names``, or
+        every flagged name when the sidecar did not record it (schema 1 or 2)."""
+        return self.flagged_names if self.checked_names is None else self.checked_names
 
 
 def _checked_reasons(sidecar: Sidecar) -> dict[str, tuple[str, ...]]:
@@ -249,6 +287,7 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
         "capture_sha256": sidecar.capture_sha256,
         "flagged_names": list(sidecar.flagged_names),
         "flagged_reasons": {name: list(why) for name, why in reasons.items()},
+        "checked_names": list(sidecar.names_to_check),
         "redacted_names": sidecar.redacted_names,
     }
 
@@ -299,6 +338,7 @@ def load_sidecar(path: Path) -> Sidecar:
     flagged_names = _names(data, "flagged_names", path)
     redacted_names = _integer(data, "redacted_names", path)
     flagged_reasons = _reasons(data, path) if "flagged_reasons" in fields else {}
+    checked_names = _names(data, "checked_names", path) if "checked_names" in fields else None
     if "flagged_reasons" in fields and set(flagged_reasons) != set(flagged_names):
         # Sidecar reads an empty mapping as a schema 1 sidecar's; from schema 2
         # every flagged name carries its reasons.
@@ -314,6 +354,7 @@ def load_sidecar(path: Path) -> Sidecar:
             flagged_names=flagged_names,
             redacted_names=redacted_names,
             flagged_reasons=flagged_reasons,
+            checked_names=checked_names,
         )
     except SidecarError as exc:
         raise SidecarError(f"{path}: {exc}") from exc
