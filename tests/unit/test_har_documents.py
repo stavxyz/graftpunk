@@ -943,18 +943,25 @@ class TestAutocompleteIsATokenList:
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#login", "password": "#secret"}  # noqa: S105
 
-    @pytest.mark.parametrize("structure_only", [False, True], ids=["default", "structure-only"])
-    def test_a_stored_snapshot_s_section_token_still_leaves_the_username(
-        self, structure_only: bool
+    @pytest.mark.parametrize(
+        ("value", "structure_only"),
+        [("***REDACTED*** username", False), ("section-login username", True)],
+        ids=["default", "structure-only"],
+    )
+    def test_a_stored_snapshot_s_redacted_section_token_still_leaves_the_username(
+        self, value: str, structure_only: bool
     ) -> None:
-        """A stored snapshot writes the section token as ***REDACTED***."""
+        """The structure-only read after a credential post writes the section token as
+        ***REDACTED***; a request-time snapshot keeps the value as written, so the
+        default case is given the marker itself."""
         html = (
             '<html><body><form action="/login"><input type="text" name="q" id="q">'
             '<input type="password" name="password" id="pw">'
-            '<input type="text" id="who" name="who" autocomplete="section-login username">'
+            f'<input type="text" id="who" name="who" autocomplete="{value}">'
             "</form></body></html>"
         )
         stored = stored_dom_snapshot(html, None, structure_only=structure_only)
+        assert 'autocomplete="***REDACTED*** username"' in stored
         (form,) = extract_login_forms(stored, source="s", snapshot=True)
         assert form.fields["username"] == "#who"
 
