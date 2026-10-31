@@ -63,6 +63,9 @@ class TestTheFormat:
     def test_version_two_adds_flagged_reasons(self) -> None:
         assert SIDECAR_FIELDS[2] == _V1_FIELDS | {"flagged_reasons"}
 
+    def test_version_three_adds_checked_names(self) -> None:
+        assert SIDECAR_FIELDS[3] == SIDECAR_FIELDS[2] | {"checked_names"}
+
     def test_every_version_up_to_the_current_one_has_a_key_set(self) -> None:
         assert set(SIDECAR_FIELDS) == set(range(1, current_schema("sidecar") + 1))
 
@@ -96,11 +99,13 @@ class TestLoad:
             body_params=("page",),
             capture_sha256="ab" * 32,
             flagged_reasons={"shop_session": ("session_name", "http_only")},
+            checked_names=("shop_session",),
         )
         path = tmp_path / "x.json.meta.json"
         path.write_text(sidecar_text(sidecar), encoding="utf-8")
         assert load_sidecar(path) == sidecar
         assert load_sidecar(path).flagged_names == ("shop_session",)
+        assert load_sidecar(path).checked_names == ("shop_session",)
         assert load_sidecar(path).flagged_reasons == {"shop_session": ("http_only", "session_name")}
 
     def test_a_schema_1_sidecar_still_loads_without_reasons(self, tmp_path: Path) -> None:
@@ -139,6 +144,76 @@ class TestLoad:
         path.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(SidecarError, match=match):
             load_sidecar(path)
+
+    def test_a_schema_2_sidecar_still_loads_and_checks_every_flagged_name(
+        self, tmp_path: Path
+    ) -> None:
+        """A sidecar committed by 1.27.0 to 1.32.x recorded no checked_names; it loads
+        unchanged, and every flagged name is looked for, as it was then."""
+        payload = _v1(
+            schema=2,
+            flagged_names=["id", "shop_session"],
+            flagged_reasons={"id": ["value_not_form_state"], "shop_session": ["session_name"]},
+        )
+        sidecar = load_sidecar(_write(tmp_path / "x.json.meta.json", payload))
+        assert sidecar.checked_names is None
+        assert sidecar.names_to_check == ("id", "shop_session")
+
+    def test_a_schema_2_key_set_is_refused_under_schema_3(self, tmp_path: Path) -> None:
+        payload = _v1(schema=3, flagged_reasons={})
+        with pytest.raises(SidecarError, match="missing keys: checked_names"):
+            load_sidecar(_write(tmp_path / "x.json.meta.json", payload))
+
+    def test_schema_3_loads_its_checked_names(self, tmp_path: Path) -> None:
+        payload = _v1(
+            schema=3,
+            flagged_names=["id", "shop_session"],
+            flagged_reasons={"id": ["value_not_form_state"], "shop_session": ["session_name"]},
+            checked_names=["shop_session"],
+        )
+        sidecar = load_sidecar(_write(tmp_path / "x.json.meta.json", payload))
+        assert sidecar.checked_names == ("shop_session",)
+        assert sidecar.names_to_check == ("shop_session",)
+
+    @pytest.mark.parametrize(
+        ("checked", "match"),
+        [
+            (["other"], r"checked_names must be flagged names, got \['other'\]"),
+            ("id", "checked_names must be a list of strings"),
+            ([1], "checked_names must be a list of strings"),
+        ],
+        ids=["not-flagged", "string", "number"],
+    )
+    def test_schema_3_checked_names_are_held_to_the_flagged_names(
+        self, tmp_path: Path, checked: object, match: str
+    ) -> None:
+        payload = _v1(
+            schema=3,
+            flagged_names=["id"],
+            flagged_reasons={"id": ["value_not_form_state"]},
+            checked_names=checked,
+        )
+        with pytest.raises(SidecarError, match=match):
+            load_sidecar(_write(tmp_path / "x.json.meta.json", payload))
+
+    def test_a_sidecar_built_without_checked_names_writes_every_flagged_name(self) -> None:
+        """A Sidecar that does not say which names to check is written to check
+        them all, never fewer."""
+        sidecar = Sidecar(
+            status=200,
+            content_type="text/plain",
+            flagged_reasons={"a": ("session_name",), "b": ("token_name",)},
+        )
+        assert sidecar_payload(sidecar)["checked_names"] == ["a", "b"]
+
+    def test_checked_names_are_sorted_and_deduped_on_construction(self) -> None:
+        sidecar = Sidecar(
+            status=200,
+            content_type="text/plain",
+            flagged_reasons={"a": ("session_name",), "b": ("token_name",)},
+            checked_names=("b", "a", "b"),
+        )
+        assert sidecar.checked_names == ("a", "b")
 
     def test_a_sidecar_with_names_and_no_reasons_cannot_be_written(self) -> None:
         """The current schema records a reason for every flagged name, so a

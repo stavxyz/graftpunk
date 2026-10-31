@@ -40,7 +40,7 @@ from graftpunk.har.login_signals import (
     success_candidates,
 )
 from graftpunk.har.naming import capture_text, fixture_rank, normalize_media_type
-from graftpunk.har.parser import HAREntry, LoginInteraction, parse_har_file
+from graftpunk.har.parser import HAREntry, LoginInteraction, cookie_header_pairs, parse_har_file
 from graftpunk.har.paths import (
     bare_host,
     bare_path,
@@ -103,6 +103,8 @@ __all__ = [
     "FlaggedReason",
     "flagged_names_of",
     "flagged_reasons_of",
+    "flagged_values_of",
+    "form_state",
     "redacted_names_of",
 ]
 
@@ -254,10 +256,15 @@ class DigestSource:
     def from_run_dir(cls, run_dir: Path, *, session: str, run_id: str) -> DigestSource:
         bodies_dir = run_dir / "bodies"
         page_source = run_dir / "page-source.html"
+        # A page source that resolves outside the run (a symlink) is not read, as
+        # the HAR parser reads no body file outside the HAR's directory.
+        inside = page_source.resolve().is_relative_to(run_dir.resolve())
+        if not inside:
+            LOG.warning("digest_page_source_outside_run_dir", run_id=run_id)
         return cls(
             har_path=run_dir / "network.har",
             bodies_dir=bodies_dir if bodies_dir.is_dir() else None,
-            page_source=page_source if page_source.is_file() else None,
+            page_source=page_source if inside and page_source.is_file() else None,
             session=session,
             run_id=run_id,
         )
@@ -2512,7 +2519,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             continue
         if _body_missing(entry):
             dropped["error"] += 1
-            LOG.warning("digest_body_file_missing", url=bare_url(entry.request.url))
+            if entry.response.body_file_outside:
+                LOG.warning("digest_body_file_outside_har_dir", url=bare_url(entry.request.url))
+            else:
+                LOG.warning("digest_body_file_missing", url=bare_url(entry.request.url))
             continue
 
         method = entry.request.method.upper()
@@ -3379,7 +3389,7 @@ def flagged_reasons_of(
             why.add("http_only")
         if name in seen.unseen:
             why.add("value_not_kept")
-        if any(not _form_state(value) for value in values):
+        if any(not form_state(value) for value in values):
             why.add("value_not_form_state")
         if not values and not sent_empty:
             why.add("no_value_seen")
@@ -3453,7 +3463,7 @@ class _CookiesSeen:
 _PUNCTUATION_AND_SPACE = frozenset(string.punctuation + " ")
 
 
-def _form_state(value: str) -> bool:
+def form_state(value: str) -> bool:
     """True when *value*, a non-empty cookie value, holds no credential by
     :func:`flagged_names_of`'s rule: once decoded it is ASCII punctuation and
     spaces alone, or, with one pair of surrounding double quotes taken off (RFC
@@ -3542,3 +3552,105 @@ def redacted_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> int:
     }
     cookies = max(len(entry_id_cookies), d.cookie_names_dropped_as_ids)
     return cookies + d.token_names_dropped_as_ids
+
+
+def _sent_cookie_values(entry: HAREntry) -> Iterable[tuple[str, str]]:
+    """``(name, value)`` for each cookie *entry*'s request sends, by its
+    ``request.cookies`` array and by the text of every ``Cookie`` header it
+    carries, in any case: a value the array leaves out or spells otherwise is
+    still a sent value. Empty values included."""
+    for cookie in entry.request.cookies:
+        name, value = cookie.get("name"), cookie.get("value")
+        if isinstance(name, str) and name and isinstance(value, str):
+            yield name, value
+    texts = list(entry.request.cookie_headers)
+    texts += [
+        value
+        for name, value in entry.request.headers.items()
+        if name.casefold() == "cookie" and isinstance(value, str)
+    ]
+    for cookie in cookie_header_pairs(texts):
+        yield cookie["name"], cookie["value"]
+
+
+def _set_cookie_values(entry: HAREntry) -> Iterable[tuple[str, str]]:
+    """``(name, value)`` for each cookie the text of every ``Set-Cookie`` header of
+    *entry*'s response sets, in any case, every line of a joined value."""
+    texts = list(entry.response.set_cookie_headers)
+    texts += [
+        value
+        for name, value in entry.response.headers.items()
+        if name.casefold() == "set-cookie" and isinstance(value, str)
+    ]
+    for text in texts:
+        for line in re.split(r"\r\n|\r|\n", text):
+            cookie_name, sep, cookie_value = line.split(";", 1)[0].partition("=")
+            if sep and cookie_name.strip():
+                yield cookie_name.strip(), cookie_value.strip()
+
+
+def flagged_values_of(
+    d: RunDigest, entries: Iterable[HAREntry] = ()
+) -> dict[str, frozenset[str] | None]:
+    """Each name :func:`flagged_reasons_of` returns, with the non-empty values the
+    recording's cookie headers carry for it when it is a cookie's name alone and
+    a request sent it, or None.
+
+    A cookie's values are the ones :func:`_cookies_seen` reads from the HAR's
+    cookie arrays, sent and set, and the ones the text of every ``Cookie`` and
+    ``Set-Cookie`` header of *entries* carries. They are what the recording
+    knows, not every value the cookie held: a value a script set after the last
+    request that sent the cookie, a value a later response rotated it to, or a
+    header the recorder did not keep is in no recorded header. So
+    :func:`graftpunk.devtools.captures.checked_names_of` also keeps a name
+    checked when the capture holds it anywhere but in a name-value pair whose
+    value holds nothing.
+
+    None, the values not all known, for any name the digest found as a meta tag,
+    hidden input, or header token: such a value can come from a source the
+    recording does not hold in full (a page a script changed, a request body, a
+    response header), so the fixtures check looks for that name as it did before
+    sidecar schema 3. None too for a cookie no recorded request sent a non-empty
+    value (in its ``Cookie`` header or its cookie array), since a value seen only
+    in a ``Set-Cookie`` header says nothing of what the browser held later,
+    unless a request sent it empty and no non-empty value of it is recorded
+    anywhere, in a request or a response; for a
+    cookie the recording carried without a value kept (``value_not_kept``) or
+    with none seen (``no_value_seen``); and for a cookie token candidate
+    *entries* show neither a value nor an empty send of. A cookie a request only
+    ever sent empty, flagged by its name alone, is known to have held nothing
+    the recording saw: an empty set.
+
+    ``gp observe fixtures`` reads this to record which flagged names a capture
+    holds the value of (the sidecar's ``checked_names``). The values never leave
+    the process."""
+    entries = tuple(entries)
+    reasons = flagged_reasons_of(d, entries)
+    seen = _cookies_seen(entries)
+    values: dict[str, set[str]] = {name: set(found) for name, found in seen.values.items()}
+    sent_a_value: set[str] = set()
+    sent_empty: set[str] = set()
+    for entry in entries:
+        for name, value in _sent_cookie_values(entry):
+            if value:
+                sent_a_value.add(name)
+                values.setdefault(name, set()).add(value)
+            else:
+                sent_empty.add(name)
+        for name, value in _set_cookie_values(entry):
+            if value:
+                values.setdefault(name, set()).add(value)
+    # Sent empty counts as sent only when the cookie never held a value the
+    # recording saw: a value only a Set-Cookie gave it says nothing of later.
+    sent = sent_a_value | {name for name in sent_empty if not values.get(name)}
+    not_cookies = {token.name for token in d.tokens if token.kind != "cookie"}
+    result: dict[str, frozenset[str] | None] = {}
+    for name, why in reasons.items():
+        known = (
+            name not in not_cookies
+            and name in sent
+            and name not in seen.unseen
+            and "no_value_seen" not in why
+        )
+        result[name] = frozenset(values.get(name, ())) if known else None
+    return result

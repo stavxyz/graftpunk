@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.32.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.33.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -2192,7 +2192,8 @@ beside the fixture. It holds no URL, no time, and no header, cookie, or query
 value: only the status, the content type, the hash of the captured body, the
 request's body parameter names, every cookie name the recording set or sent
 except a cookie that only ever held form state, the reasons each of those names
-is flagged, and the token names the digest found.
+is flagged, the token names the digest found, and which of those names the
+fixtures check looks for in this fixture (`checked_names`, below).
 
 A cookie whose every non-empty value in the recording (in any request or
 response) is form state holds no credential, so its name is left out of
@@ -2228,10 +2229,11 @@ sidecar. A cookie the recording only sends, which no response in it sets, is
 judged by the same rule as one a response sets. That is the state of every
 cookie in a recording made with a cached session, which reaches the browser
 before the recording starts, so analytics cookies and plain names such as `id`
-can be flagged too; when an honest fixture cannot rename such a key, record
-again with `gp observe --no-session interactive https://myshop.example/` and
-log in during the recording, so the HAR holds only the cookies the site sets
-then. The sent cookies are read from the HAR's `request.cookies`, or from its
+can be flagged too. That does not fail an honest fixture: the fixtures check
+looks for a flagged cookie name only in a fixture whose capture held that
+cookie's value (`checked_names`, below), so an `"id": 7` key passes when the
+recording sent a cookie named `id` whose value the captured body does not hold. The sent
+cookies are read from the HAR's `request.cookies`, or from its
 `Cookie` headers when that array is missing or empty; a recording that kept
 neither (nodriver 0.48.1 delivered no request `Cookie` header on a measured
 login) never flags a cached session, so record with a current nodriver or
@@ -2253,8 +2255,10 @@ digits is left out only when a draw holds no digit: 1.1% at 8 characters, 0.09%
 at 12 and none at 16. The graft skill's `fixture-leaks.py`, which compares a
 fixture with the capture it was derived from, still reports any value from the
 captured response body left in the fixture, each run of 3 or more digits
-included. It reads the capture's body, not its cookie headers, and runs when
-the skill derives a fixture, not in the suite.
+included. With `--har` and the run's HAR it also reports each flagged name
+whose recorded value (a cookie sent or set, a header, a meta or hidden-input
+token) is in the fixture, by line number, without printing the value. It runs
+when the skill derives a fixture, not in the suite.
 
 A form-state cookie can stay flagged the other way, when one of its values is
 not form state. A value is form state when it is ASCII punctuation and spaces
@@ -2308,10 +2312,60 @@ letter pair English words do not use (`cz`, `sf`) do not read so. The rule
   `mcdonalds` the pairs `mc` and `cd`).
 
 A cookie the server set with `HttpOnly` stays flagged whatever its values. When
-a form-state cookie you expected to be left out is in `flagged_names` and an
+a form-state cookie you expected to be left out is in `checked_names` and an
 honest fixture fails on its name, record again searching only plain words and
 regenerate the sidecar, or rename the name in the fixture where its structure
 allows.
+
+`checked_names` lists the flagged names the fixtures check looks for in this
+fixture. It changes nothing for a token name: every flagged token name (a meta
+tag, a hidden input, or a header the digest found as a token) is always in it,
+and is checked as before, since a token's value can come from a place the
+recording does not hold in full, such as a field a script filled. A flagged
+cookie name is in it when one of the cookie's recorded values is in the captured
+body (the value as recorded, percent-decoded, or without the double quotes a
+cookie value may carry, found in the body as written or with its backslash
+escapes, HTML character references, or percent-encoding decoded, alone or two
+together), or when the recording did not keep or show the cookie's value, or no
+recorded request sent the cookie a value, which `gp observe fixtures` cannot compare. A
+cookie's recorded values are the HAR's cookie arrays and every `Cookie` and
+`Set-Cookie` header: what the recorded headers carried, not every value the
+cookie held, since a token rotated or set by a script after the last request
+that sent the cookie is in none of them. So a cookie name is left out only when
+every occurrence of it in the captured body is read by one of two strict
+readers: a key of a JSON object that parses where it starts in the body (or in
+the text of a JSON string there), read with its parsed value; or a void `input`, `meta`,
+`param` or `link` element, with or without `/>`, with a `value` or `content`
+attribute, whose `name`, `id`, `property`, `itemprop` or `http-equiv` is the
+name, in any attribute order. Every value read so must hold nothing (for an
+element, every attribute value but the naming one, and every attribute name
+that is not an HTML attribute of that element): a boolean, null, empty, form state by the rule above, a number
+whose text is form state, or an object or array whose keys and values all hold
+nothing. Any other mention of the name (`?csrftoken=2` or any `name=v` in a
+URL or query string, which no reader reads as a pair, so it keeps the name in
+unless the URL is itself a value a reader judges whole, where it is judged like
+any value; `csrftoken: <code>...</code>` in a page,
+`Cookies.set('csrftoken', ...)`, a `{"name": "csrftoken", "value": ...}` pair, an
+attribute named `csrftoken`, a `textarea` or other element that holds text, a
+table cell) keeps it in, so a cookie named `id` stays in for nearly every HTML
+capture, where `id="..."` names an attribute. An honest `"id": 7` or `"user": "alice"` leaves the name out, while
+`"csrftoken": "<an opaque token>"` and `"user": {"email": "ann@myshop.example"}`
+keep it in. The values are compared in
+memory and never written; the list is names only. Where the name stays checked
+(an endpoint that returns a `csrftoken` token), the check fails on the name in
+the fixture, since it cannot tell an invented value from the recorded one;
+rename the key where the plugin does not read it. A sidecar written before
+1.33.0 has no `checked_names` (schema 2 or 1), and the check looks for every
+flagged name in its fixture, as before; regenerate it with `gp observe
+fixtures` to have a cookie name left out where the capture held none of its
+values and held the name only in name-value pairs holding nothing. That also means the suite no longer
+catches a recorded cookie value pasted into a fixture from anywhere other than
+its capture, even under its cookie's name: `{"id": 7, "myshop_session": "<the
+recorded session value>"}` passes a schema 3 sidecar whose capture never held
+that value. The graft skill's `fixture-leaks.py` with `--har` and the run's HAR
+catches it on your machine, by line number, without printing the value
+([#345](https://github.com/stavxyz/graftpunk/issues/345) tracks having the suite
+do that check when the sidecar's own run is on disk).
 
 `flagged_reasons` says why each flagged name is flagged, and the suite's
 problem line repeats it, so you can tell a form-state cookie from a session
@@ -2337,6 +2391,9 @@ is kept: read both lists before you commit a sidecar.
 {
   "body_params": [],
   "capture_sha256": "4f6c1e0a9d2b7c3e8f5a1d6b0c9e2f7a3b8d4c1e6f0a5b9c2d7e3f8a1b6c0d4e",
+  "checked_names": [
+    "X-Csrf-Token"
+  ],
   "content_type": "application/json",
   "flagged_names": [
     "X-Csrf-Token",
@@ -2352,19 +2409,24 @@ is kept: read both lists before you commit a sidecar.
     ]
   },
   "redacted_names": 0,
-  "schema": 2,
+  "schema": 3,
   "status": 200
 }
 ```
+
+Here `X-Csrf-Token`, a token name, is looked for in the fixture, and
+`myshop_session` is not, since the captured body did not hold the session
+cookie's value.
 
 Without a sidecar, `FixtureSession` answers with status 200 and guesses the
 content type from the extension, but the generated suite's fixtures check fails
 on any fixture that has none (see
 [Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture)). A
-fixture you make by hand gets a sidecar of its own with all eight keys shown
+fixture you make by hand gets a sidecar of its own with all nine keys shown
 above (the key set is closed, so a sidecar missing one is refused), its own
 `status` and `content_type`, and `"body_params": []`, `"capture_sha256": null`,
-`"flagged_names": []`, `"flagged_reasons": {}`, and `"redacted_names": 0`. A sidecar is how you test an
+`"checked_names": []`, `"flagged_names": []`, `"flagged_reasons": {}`, and
+`"redacted_names": 0`. A sidecar is how you test an
 error path: copy a fixture together with its sidecar, set the copied sidecar's
 `status` to 403, and assert that the command raises `SessionRejectedError`.
 
@@ -2425,9 +2487,12 @@ The generated suite holds you to part of that. Its `tests/conftest.py` wires in
 `fixtures_are_sanitised`, which walks every non-dotfile under `tests/fixtures/`
 on every run (a `.DS_Store` or an editor swap file is skipped, like `.gitkeep`)
 and fails when a fixture has no sidecar, when a fixture is still byte for byte
-its capture, when a name the sidecar flags turns up in the fixture, when a
+its capture, when a name in the sidecar's `checked_names` turns up in the
+fixture (every token name, and a cookie name whose recorded value the capture
+held, or held other than in a name-value pair holding nothing; any flagged name,
+for a sidecar written before 1.33.0), when a
 sidecar is outside its declared format, or when a fixture, or a directory under
-`tests/fixtures/`, cannot be read. A flagged name is matched case-insensitively
+`tests/fixtures/`, cannot be read. A checked name is matched case-insensitively
 and only as a whole name. Letters, digits, `_` and `-` continue a name. The rest
 of the punctuation an RFC 6265 cookie name can hold (`` . $ ! * ^ ` ~ ``)
 continues it only between two of those, as in `connect.sid`; anywhere else it
@@ -2435,20 +2500,21 @@ ends the name, and so does every other character, `#` and `|` included. The
 fixture is read as written and in decoded forms: its `\uXXXX`, `\xXX`, `\n`,
 `\r`, `\t`, `\b` and `\f` escapes decoded, its HTML
 character references decoded, and percent-decoded up to three times while it
-keeps changing. A flagged `myshop_session` therefore fails
+keeps changing. A checked `myshop_session` therefore fails
 `{"myshop_session": "x"}`, `?a=1&myshop_session=x`, the same pair behind an
 escaped `&` (`\u0026`, `\x26`, `%2526`), the same pair after an escaped newline
 (`\nmyshop_session=`) or a URL's `#`, `` `myshop_session` ``, and a sentence
-ending in `myshop_session.`, and a flagged `text` does not fail `context`,
+ending in `myshop_session.`, and a checked `text` does not fail `context`,
 `text-align` or `text.v2`. A name joined to another by a full stop
 (`req.cookies.myshop_session`) is read as one longer name and does not fail. The
 sidecar's own fields are not scanned: gp writes `status` and `content_type` from
 the response, and a media type such as `text/html` is not a cookie value. When a
-flagged name turns up, rename it in the fixture. It cannot tell
+checked name turns up, rename it in the fixture. It cannot tell
 whether invented content was invented well; that part stays yours. A fixture
-you wrote from nothing needs a sidecar too, with all eight keys: its own
-`status` and `content_type`, `"schema": 2`, `"body_params": []`,
-`"capture_sha256": null`, `"flagged_names": []`, `"flagged_reasons": {}`, and `"redacted_names": 0`. The
+you wrote from nothing needs a sidecar too, with all nine keys: its own
+`status` and `content_type`, `"schema": 3`, `"body_params": []`,
+`"capture_sha256": null`, `"checked_names": []`, `"flagged_names": []`,
+`"flagged_reasons": {}`, and `"redacted_names": 0`. The
 null hash declares the file came off no account. The check trusts that
 declaration rather than verifying it, and prints on every run how many
 fixtures it accepted that way, so the number shows up in review.

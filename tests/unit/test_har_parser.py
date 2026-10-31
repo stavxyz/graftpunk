@@ -717,6 +717,73 @@ class TestHARParserBodyFile:
 
         assert result.body is None
         assert result.body_file == "nonexistent.html"
+        assert result.body_file_outside is False
+
+    @pytest.mark.parametrize("how", ["dotdot", "symlink"])
+    def test_a_body_file_outside_the_har_directory_is_not_read(
+        self, tmp_path: Path, how: str
+    ) -> None:
+        """The same refusal as a request body file's and a DOM snapshot's: a
+        reference or a symlink that leaves the HAR's directory is not followed,
+        so the body counts as not captured."""
+        run = tmp_path / "run"
+        (run / "bodies").mkdir(parents=True)
+        outside = tmp_path / "shared.html"
+        outside.write_text("<html>elsewhere</html>")
+        if how == "dotdot":
+            ref = "../shared.html"
+        else:
+            ref = "bodies/1.html"
+            (run / "bodies" / "1.html").symlink_to(outside)
+        response_data = {
+            "status": 200,
+            "statusText": "OK",
+            "headers": [],
+            "cookies": [],
+            "content": {"size": 0, "mimeType": "text/html", "_bodyFile": ref},
+        }
+        result = _parse_response(response_data, base_dir=run)
+
+        assert result.body is None
+        assert result.body_file == ref
+        assert result.body_file_outside is True
+
+    def test_every_cookie_and_set_cookie_header_is_kept(self, tmp_path: Path) -> None:
+        """The headers dict keeps the last header of a name; a HAR from another
+        recorder can carry several Cookie or Set-Cookie headers, in any case, and
+        every one's value is kept."""
+        entry = {
+            "startedDateTime": "2026-10-30T10:00:00.000Z",
+            "time": 1,
+            "request": {
+                "method": "GET",
+                "url": "https://myshop.example.com/cart",
+                "headers": [
+                    {"name": "cookie", "value": "sessionid=First77"},
+                    {"name": "Accept", "value": "*/*"},
+                    {"name": "Cookie", "value": "theme=dark"},
+                ],
+                "cookies": [],
+            },
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [
+                    {"name": "set-cookie", "value": "sessionid=OnApp88; Path=/app"},
+                    {"name": "Set-Cookie", "value": "sessionid=OnRoot66; Path=/"},
+                ],
+                "cookies": [],
+                "content": {"size": 0, "mimeType": "text/html", "text": ""},
+            },
+        }
+        har = tmp_path / "network.har"
+        har.write_text(json.dumps({"log": {"version": "1.2", "entries": [entry]}}))
+        (parsed,) = parse_har_file(har).entries
+        assert parsed.request.cookie_headers == ("sessionid=First77", "theme=dark")
+        assert parsed.response.set_cookie_headers == (
+            "sessionid=OnApp88; Path=/app",
+            "sessionid=OnRoot66; Path=/",
+        )
 
     def test_parse_har_file_passes_base_dir(self, tmp_path: Path) -> None:
         """parse_har_file passes its directory as base_dir for body resolution."""

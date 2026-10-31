@@ -82,6 +82,7 @@ def test_the_sidecar_json_example_matches_sidecar_text_byte_for_byte() -> None:
         capture_sha256=doc_json["capture_sha256"],
         flagged_names=tuple(doc_json["flagged_names"]),
         flagged_reasons={name: tuple(why) for name, why in doc_json["flagged_reasons"].items()},
+        checked_names=tuple(doc_json["checked_names"]),
         redacted_names=doc_json["redacted_names"],
     )
     assert block.strip() == sidecar_text(sidecar).strip()

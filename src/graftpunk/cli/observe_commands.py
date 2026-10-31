@@ -40,6 +40,7 @@ from graftpunk.har.digest import (
     digest,
     endpoint_template,
     flagged_reasons_of,
+    flagged_values_of,
     redacted_names_of,
 )
 from graftpunk.har.naming import (
@@ -321,6 +322,8 @@ def fixtures_cmd(
     entries = parse_har_file(har_path).entries
     run_digest = digest(DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name))
     flagged = flagged_reasons_of(run_digest, entries)
+    # Held in memory only: the sidecar records names, never these values.
+    recorded_values = flagged_values_of(run_digest, entries)
     redacted = redacted_names_of(run_digest, entries)
 
     if not allow_tracked and target_dir.exists():
@@ -474,6 +477,7 @@ def fixtures_cmd(
                 content_type=content_type,
                 body_params=body_params(entry),
                 flagged_reasons=flagged,
+                flagged_values=recorded_values,
                 redacted_names=redacted,
             )
         except OSError as exc:

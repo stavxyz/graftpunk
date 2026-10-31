@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,6 +26,7 @@ from graftpunk.cli.observe_commands import (  # noqa: F401
 )
 from graftpunk.testing.plugin import check_fixtures_tree
 from tests.unit.cli_harness import strip_ansi
+from tests.unit.guide_harness import REPO_ROOT
 
 runner = CliRunner()
 
@@ -571,14 +573,19 @@ class TestFixturesCommand:
             "capture_sha256",
             "flagged_names",
             "flagged_reasons",
+            "checked_names",
             "redacted_names",
         }
-        assert sidecar["schema"] == 2
+        assert sidecar["schema"] == 3
         assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
         assert sidecar["flagged_names"] == ["shop_session"]
         assert sidecar["flagged_reasons"] == {
             "shop_session": ["session_name", "value_not_form_state"]
         }
+        # The body, {"id": 1}, does not hold the session's value, but no request
+        # sent the cookie: a value seen only in a Set-Cookie leaves it checked.
+        assert sidecar["checked_names"] == ["shop_session"]
+        assert _SESSION_VALUE not in json.dumps(sidecar)
         assert "page=2" not in json.dumps(sidecar)
 
     def test_the_sidecar_counts_an_id_cookie_name_and_holds_no_trace_of_it(
@@ -1215,10 +1222,18 @@ class TestPlainWordCookies:
             sidecar = json.loads((tree / name).read_text())
             assert sidecar["flagged_names"] == ["csrf-token", "csrftoken", "myshop_session"]
 
-    def test_gps_sidecars_and_honest_fixtures_pass_and_a_named_session_cookie_fails(
+    def test_gps_sidecars_and_honest_fixtures_pass_and_a_token_name_still_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The session cookie's value is in neither capture, so its name in a
+        fixture is no evidence of a leak and passes (#313); the csrf-token meta
+        tag is a token, not a cookie, so its name is looked for in every fixture
+        as in 1.32.x."""
         tree = self._fixtures(tmp_path, monkeypatch)
+        page_meta = json.loads((tree / "get_search.html.meta.json").read_text())
+        api_meta = json.loads((tree / "get_api_search.json.meta.json").read_text())
+        assert page_meta["checked_names"] == ["csrf-token"]
+        assert api_meta["checked_names"] == ["csrf-token"]
         page = tree / "get_search.html"
         page.write_text(
             "<html><body><form><label>Enter text to search; the context is kept.</label>"
@@ -1233,15 +1248,19 @@ class TestPlainWordCookies:
         assert check_fixtures_tree(tree).problems == ()
 
         api.write_text(json.dumps({"query": row, "myshop_session": "invented"}))
-        (problem,) = check_fixtures_tree(tree).problems
-        assert "'myshop_session'" in problem
-        api.write_text(json.dumps({"query": row, "results": []}))
+        assert check_fixtures_tree(tree).problems == ()
 
         page.write_text("<p>Sign in again to renew your myshop_session cookie.</p>")
-        (problem,) = check_fixtures_tree(tree).problems
-        assert "'myshop_session'" in problem
+        assert check_fixtures_tree(tree).problems == ()
 
         page.write_text('<meta name="csrf-token" content="invented">')
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "'csrf-token'" in problem
+        assert "whose recorded value the capture held" in problem
+        # The csrf-token name in the API fixture, whose capture held no token
+        # value: a token name is looked for wherever it is.
+        page.write_text("<p>Searching.</p>")
+        api.write_text(json.dumps({"query": row, "csrf-token": "invented"}))
         (problem,) = check_fixtures_tree(tree).problems
         assert "'csrf-token'" in problem
 
@@ -1312,9 +1331,12 @@ class TestPlainWordCookies:
     ) -> None:
         """The session and the token stay flagged with word-shaped values; the form
         state a response set without HttpOnly is left out, and the fixture keeping
-        its names passes."""
+        its names passes. The search body holds neither the session's value nor the
+        token's, so naming the session cookie in the fixture passes too (#313)."""
         meta = self._django_style_sidecar(tmp_path, monkeypatch, form_state_http_only=False)
-        assert json.loads(meta.read_text())["flagged_names"] == ["csrftoken", "sessionid"]
+        sidecar = json.loads(meta.read_text())
+        assert sidecar["flagged_names"] == ["csrftoken", "sessionid"]
+        assert sidecar["checked_names"] == []
         tree = tmp_path / "fixtures"
         tree.mkdir()
         (tree / meta.name).write_text(meta.read_text())
@@ -1322,8 +1344,7 @@ class TestPlainWordCookies:
         fixture.write_text(json.dumps({"results": [{"block": "B", "lot": "7"}], "text": "x"}))
         assert check_fixtures_tree(tree).problems == ()
         fixture.write_text("See the `sessionid` cookie.")
-        (problem,) = check_fixtures_tree(tree).problems
-        assert "'sessionid'" in problem
+        assert check_fixtures_tree(tree).problems == ()
 
     def test_httponly_read_from_set_cookie_headers_when_the_cookies_array_omits_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1403,6 +1424,391 @@ def _unwritable_dir(parent: Path, name: str = "readonly") -> Iterator[Path]:
         yield directory
     finally:
         directory.chmod(0o700)
+
+
+_OPAQUE_ID = "Xk3Lp9Qv2Rt7Wm4Zb8Nc6Hd"
+
+
+class TestFlaggedNamesAreJudgedByTheirValues:
+    """#313: a recording made with a cached session sends `id=<opaque>`, so `id` is
+    flagged. The fixtures check looks for the name only in a fixture whose capture
+    held the value."""
+
+    @staticmethod
+    def _sidecar(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: object
+    ) -> tuple[Path, dict]:
+        """gp's sidecar for one `GET /orders/1001` capture of *body* (a string as
+        written, an HTML page; anything else as JSON), the request sending `id` and
+        `myshop_session` as a cached session does (no response sets them), copied
+        into a fixtures tree. Returns the tree and the sidecar."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        if isinstance(body, str):
+            order = _entry(
+                "GET",
+                "https://api.myshop.example.com/orders/1001",
+                content_type="text/html",
+                body=body,
+            )
+        else:
+            order = _entry(
+                "GET", "https://api.myshop.example.com/orders/1001", body=json.dumps(body)
+            )
+        order["request"]["cookies"] = [
+            {"name": "id", "value": _OPAQUE_ID},
+            {"name": "myshop_session", "value": _SESSION_VALUE},
+        ]
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "captures"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        (meta,) = out_dir.glob("*.meta.json")
+        tree = tmp_path / "fixtures"
+        tree.mkdir()
+        (tree / meta.name).write_text(meta.read_text())
+        return tree, json.loads(meta.read_text())
+
+    def test_an_honest_id_key_passes_when_the_recording_sent_an_id_cookie(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411, "total": "12.50"})
+        assert sidecar["flagged_names"] == ["id", "myshop_session"]
+        assert sidecar["checked_names"] == []
+        (tree / "get_orders_{order_id}.json").write_text(json.dumps({"id": 7, "total": "1.00"}))
+        assert check_fixtures_tree(tree).problems == ()
+
+    def test_an_empty_hidden_input_named_id_passes_with_its_attributes_in_any_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        page = '<form><input value="" type="hidden" name="id"><p>Order 1001</p></form>'
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, page)
+        assert sidecar["checked_names"] == []
+        (meta,) = tree.glob("*.meta.json")
+        fixture = tree / meta.name.removesuffix(".meta.json")
+        fixture.write_text(page.replace("1001", "7"))
+        assert check_fixtures_tree(tree).problems == ()
+
+    def test_the_same_fixture_under_the_schema_2_sidecar_still_fails_with_the_way_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sidecar committed by 1.32.x keeps today's behaviour: every flagged
+        name is looked for, and the problem says how to regenerate it."""
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411, "total": "12.50"})
+        del sidecar["checked_names"]
+        sidecar["schema"] = 2
+        (meta,) = tree.glob("*.meta.json")
+        meta.write_text(json.dumps(sidecar))
+        (tree / "get_orders_{order_id}.json").write_text(json.dumps({"id": 7, "total": "1.00"}))
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "contains the flagged name 'id'" in problem
+        assert "regenerate the sidecar with gp observe fixtures (sidecar schema 3)" in problem
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"session": {"id": _OPAQUE_ID}},
+            {"next": f"/account?id={_OPAQUE_ID}&tab=2"},
+            {"next": f"/account?ref=%2Fx%3Fid%3D{_OPAQUE_ID}"},
+            {"html": f"<a href='/x?a=1&amp;v={_OPAQUE_ID}'>"},
+        ],
+        ids=["json-string", "url", "url-encoded", "html-escaped"],
+    )
+    def test_a_capture_holding_the_value_keeps_the_name_looked_for(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: dict
+    ) -> None:
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, body)
+        assert sidecar["checked_names"] == ["id"]
+        (tree / "get_orders_{order_id}.json").write_text(json.dumps({"id": 7}))
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "contains the flagged name 'id'" in problem
+        assert "whose recorded value the capture held" in problem
+
+    def test_a_value_no_recorded_header_carried_keeps_the_name_checked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The capture hands the page a value under the cookie's name that no
+        recorded Cookie or Set-Cookie header carried (a token rotated after the
+        last request, or set by a script): the recording cannot know it, and the
+        body holds an opaque value under the name, so the name stays checked and
+        a fixture keeping that value fails as under a schema 2 sidecar."""
+        rotated = "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf"
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"order": 1, "id": rotated})
+        assert sidecar["checked_names"] == ["id"]
+        (tree / "get_orders_{order_id}.json").write_text(json.dumps({"order": 2, "id": rotated}))
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "contains the flagged name 'id'" in problem
+        assert "other than in a name-value pair holding nothing" in problem
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<script>Cookies.set('id', 'Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf');</script>",
+            {"cookies": [{"name": "id", "value": "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf"}], "n": 1},
+            "<r><id>Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</id><n>1</n></r>",
+            '<textarea name="id">Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</textarea>',
+            "<script>window.cfg = {id: {value: 'Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf'}};</script>",
+            "<tr><td>id</td><td>Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</td></tr>",
+            {"next": "/orders?id=918273645546372819&page=2"},
+            {"id": {"Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf": True}, "n": 1},
+            {"id": 827364918273649182736491},
+            "<ul><li>id: <code>Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</code></li><li>n: 1</li></ul>",
+            "<script>if (id == 'Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf') go();</script>",
+            '<form><textarea name="id" value="">Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</textarea></form>',
+            '<ol><li itemprop="id" value="1">Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</li></ol>',
+            '<input name="id" value="" data-token="Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf">',
+            '<p><a href="/orders?id=">Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf</a> n 1</p>',
+            '<script>u = ["/x?id=", "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf"].join("");</script>',
+            {"id=": "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf", "n": 1},
+            '<p><span itemprop="id" content=""/>Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf n 1</p>',
+            '<input name="id" value="" Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf>',
+            {"next": "/orders?id=2&page=1", "token": "Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf"},
+            '<p><a href="/orders?id=2"Rk9mT2vX8Lq4Pz7Nw3Yb6Hc1Jd5Ks0Gf>x</a> n 1</p>',
+        ],
+        ids=[
+            "js-call",
+            "name-value-pair",
+            "element-body",
+            "textarea",
+            "nested-js-literal",
+            "table-cell",
+            "query-digits",
+            "opaque-key",
+            "long-number",
+            "a-label-and-a-colon",
+            "a-comparison",
+            "a-textarea-with-a-value-attribute",
+            "a-list-item-with-a-value-attribute",
+            "another-attribute-of-the-named-element",
+            "an-empty-pair-in-a-link-before-its-text",
+            "an-empty-pair-in-an-array-before-a-token",
+            "an-empty-pair-as-a-json-key",
+            "a-self-closing-span",
+            "an-attribute-name-of-the-named-element",
+            "a-pair-in-a-query",
+            "a-quote-run-on-after-a-query",
+        ],
+    )
+    def test_a_value_beside_the_name_in_a_shape_not_read_keeps_the_name_checked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: object
+    ) -> None:
+        """A token rotated or set by a script, beside the cookie's name in a shape
+        the reader cannot pair with a value or with a value that is not harmless:
+        the name stays checked and the fixture keeping it fails, as under a
+        schema 2 sidecar."""
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, body)
+        assert sidecar["checked_names"] == ["id"]
+        (meta,) = tree.glob("*.meta.json")
+        fixture = tree / meta.name.removesuffix(".meta.json")
+        fixture.write_text(json.dumps([body, "edited"]))
+        (problem,) = check_fixtures_tree(tree).problems
+        assert "contains the flagged name 'id'" in problem
+
+    def test_a_cookie_sent_empty_and_then_set_stays_checked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Its one value came from a Set-Cookie, so what the browser held later is
+        unknown, and the empty send does not make it known."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        home = _entry("GET", "https://api.myshop.example.com/", body="{}")
+        home["request"]["cookies"] = [{"name": "myshop_session", "value": ""}]
+        home["response"]["cookies"] = [{"name": "myshop_session", "value": _SESSION_VALUE}]
+        home["response"]["headers"].append(
+            {"name": "Set-Cookie", "value": f"myshop_session={_SESSION_VALUE}; Path=/"}
+        )
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"n": 1}')
+        _write_run(observe_base, "myshop", "run-1", [home, order])
+        out_dir = tmp_path / "captures"
+        assert _invoke_fixtures(out_dir).exit_code == 0
+        (meta,) = out_dir.glob("*.meta.json")
+        assert json.loads(meta.read_text())["checked_names"] == ["myshop_session"]
+
+    @pytest.mark.parametrize(
+        "body",
+        [{"id": 4411, "total": "12.50"}, {"id": "alice"}, {"id": True, "myshop_session": None}],
+        ids=["number", "word", "boolean-and-null"],
+    )
+    def test_numbers_booleans_and_form_state_under_the_name_leave_it_unchecked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: dict
+    ) -> None:
+        _tree, sidecar = self._sidecar(tmp_path, monkeypatch, body)
+        assert sidecar["checked_names"] == []
+
+    def test_the_sidecar_holds_no_recorded_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"session": {"id": _OPAQUE_ID}})
+        text = json.dumps(sidecar)
+        assert _OPAQUE_ID not in text
+        assert _SESSION_VALUE not in text
+        assert hashlib.sha256(_OPAQUE_ID.encode()).hexdigest() not in text
+
+    def test_a_cookie_whose_value_was_not_kept_stays_looked_for(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gp cannot tell whether a value it never saw is in the body, so the name
+        is looked for, as before."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
+        order["request"]["cookies"] = [{"name": "myshop_session"}]
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "captures"
+        assert _invoke_fixtures(out_dir).exit_code == 0
+        (meta,) = out_dir.glob("*.meta.json")
+        assert json.loads(meta.read_text())["checked_names"] == ["myshop_session"]
+
+    @staticmethod
+    def _token_run(run_dir: Path, source: str, old: str, new: str) -> tuple[str, list[dict]]:
+        """The flagged token name and the HAR entries of a run where the token's
+        value *new* is held only by *source*, a place the recording keeps it outside
+        any page the HAR's HTML responses show; files go into *run_dir*."""
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/account",
+            content_type="text/html",
+            body=f'<html><head><meta name="csrf-token" content="{old}"></head></html>',
+        )
+        if source == "page-source":
+            (run_dir / "page-source.html").write_text(f'<meta name="csrf-token" content="{new}">')
+            return "csrf-token", [page]
+        if source == "dom-snapshot":
+            (run_dir / "snapshots").mkdir()
+            (run_dir / "snapshots" / "1.html").write_text(
+                f'<meta name="csrf-token" content="{new}">'
+            )
+            post = _entry("POST", "https://myshop.example.com/account")
+            post["request"]["_domSnapshot"] = "snapshots/1.html"
+            post["request"]["_domSnapshotUrl"] = "https://myshop.example.com/account"
+            return "csrf-token", [page, post]
+        if source == "request-body":
+            # One page shows the input empty, and the form posts a value no page shows.
+            hidden = '<form><input type="hidden" name="csrfmiddlewaretoken" value="{}"></form>'
+            login = _entry(
+                "GET",
+                "https://myshop.example.com/login",
+                content_type="text/html",
+                body=hidden.format(old),
+            )
+            account = _entry(
+                "GET",
+                "https://myshop.example.com/account",
+                content_type="text/html",
+                body=hidden.format(""),
+            )
+            post = _entry("POST", "https://myshop.example.com/account")
+            post["request"]["postData"] = {
+                "mimeType": "application/x-www-form-urlencoded",
+                "text": f"csrfmiddlewaretoken={new}&n=2",
+            }
+            return "csrfmiddlewaretoken", [login, account, post]
+        api = _entry("POST", "https://myshop.example.com/api/cart")
+        api["request"]["headers"] = [{"name": "X-CSRF-Token", "value": old}]
+        api["response"]["headers"].append({"name": "X-CSRF-Token", "value": new})
+        return "X-CSRF-Token", [api]
+
+    @pytest.mark.parametrize(
+        "source", ["page-source", "dom-snapshot", "request-body", "response-header"]
+    )
+    def test_a_token_name_stays_checked_wherever_its_value_came_from(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+    ) -> None:
+        """A token's value can come from a place a reader of the recording does not
+        read, so a token name is looked for in every fixture, as in 1.32.x, even
+        when the capture held none of its values: a fixture keeping a value only
+        that place held under the name fails the suite, and ``fixture-leaks.py
+        --har`` reports it too."""
+        old, new = "OldTok9Qv2Rt7Wm4Zb8Nc6", "NewTok3Lp9Qv2Rt7Wm4Zb8"
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        name, entries = self._token_run(run_dir, source, old, new)
+        order = _entry("GET", "https://myshop.example.com/orders/1001", body='{"n": 1}')
+        har = run_dir / "network.har"
+        har.write_text(json.dumps({"log": {"version": "1.2", "entries": [*entries, order]}}))
+        out_dir = tmp_path / "captures"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        (meta,) = out_dir.glob("*.meta.json")
+        sidecar = json.loads(meta.read_text())
+        assert name in sidecar["flagged_names"]
+        assert sidecar["checked_names"] == [name]
+        tree = tmp_path / "fixtures"
+        tree.mkdir()
+        (tree / meta.name).write_text(meta.read_text())
+        fixture = tree / meta.name.removesuffix(".meta.json")
+        fixture.write_text(json.dumps({name: new, "n": 2}))
+        (problem,) = check_fixtures_tree(tree).problems
+        assert f"contains the flagged name {name!r}" in problem
+        capture = out_dir / fixture.name
+        script = REPO_ROOT / "skills" / "graft" / "scripts" / "fixture-leaks.py"
+        found = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-I", str(script), str(capture), str(fixture), "--har", str(har)],
+            capture_output=True,
+            text=True,
+        )
+        assert f"the recorded value of flagged {name!r} is still in the fixture (line 1)" in (
+            found.stdout
+        )
+        assert new not in found.stdout
+
+    def test_a_quoted_cookie_value_the_body_holds_bare_keeps_the_name_checked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _out, sidecar = self._sidecar_of(
+            tmp_path, monkeypatch, f"token {_OPAQUE_ID} end", {"id": f'"{_OPAQUE_ID}"'}
+        )
+        assert sidecar["checked_names"] == ["id"]
+
+    def test_a_flagged_value_pasted_in_under_its_name_passes_the_suite_and_fails_har(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What CI stops catching with schema 3: the capture never held the session
+        value, so the suite does not look for `myshop_session`, and a fixture that
+        pasted the value in under that name passes it. ``fixture-leaks.py --har``
+        on the developer's machine is what catches it (CHANGELOG 1.33.0)."""
+        tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411})
+        assert sidecar["checked_names"] == []
+        fixture = tree / "get_orders_{order_id}.json"
+        fixture.write_text(json.dumps({"id": 7, "myshop_session": _SESSION_VALUE}))
+        assert check_fixtures_tree(tree).problems == ()
+        capture = tmp_path / "captures" / fixture.name
+        har = tmp_path / "observe" / "myshop" / "run-1" / "network.har"
+        script = REPO_ROOT / "skills" / "graft" / "scripts" / "fixture-leaks.py"
+        result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-I", str(script), str(capture), str(fixture), "--har", str(har)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert (
+            "the recorded value of flagged 'myshop_session' is still in the fixture (line 1)"
+            in result.stdout
+        )
+        assert _SESSION_VALUE not in result.stdout
+
+    @staticmethod
+    def _sidecar_of(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str, cookies: dict[str, str]
+    ) -> tuple[Path, dict]:
+        """gp's sidecar for one `GET /orders/1001` text capture of *body*, the
+        request sending *cookies*."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry(
+            "GET",
+            "https://api.myshop.example.com/orders/1001",
+            content_type="text/plain",
+            body=body,
+        )
+        order["request"]["cookies"] = [{"name": k, "value": v} for k, v in cookies.items()]
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "captures"
+        assert _invoke_fixtures(out_dir).exit_code == 0
+        (meta,) = out_dir.glob("*.meta.json")
+        return out_dir, json.loads(meta.read_text())
 
 
 class TestUnwritableTargetIsARefusal:

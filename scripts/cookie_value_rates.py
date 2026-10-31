@@ -25,7 +25,7 @@ import uuid
 from collections.abc import Callable
 from urllib.parse import quote
 
-from graftpunk.har.digest import _form_state
+from graftpunk.har.digest import form_state
 from graftpunk.har.paths import holds_an_id, reads_as_words
 
 _B64 = string.ascii_letters + string.digits + "+/"
@@ -105,7 +105,7 @@ def shapes(rng: random.Random) -> dict[str, Callable[[], str]]:
 
 RULES: dict[str, Callable[[str], bool]] = {
     "1.24.0": lambda v: not reads_as_words(v),
-    "this branch": lambda v: not _form_state(v),
+    "this branch": lambda v: not form_state(v),
     "holds_an_id only": holds_an_id,
 }
 

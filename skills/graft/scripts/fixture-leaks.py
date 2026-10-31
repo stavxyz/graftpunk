@@ -1,6 +1,6 @@
 """Print every value from a capture that is still in the fixture derived from it.
 
-Usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR]
+Usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR] [--har HAR]
 
 The graft skill writes each fixture from a capture on the developer's workstation,
 inventing every value. This reports what survived, so the skill can rewrite it.
@@ -58,8 +58,36 @@ parsed JSON, with the sidecar gp wrote beside CAPTURE (``CAPTURE.meta.json``),
 naming each key that differs: the skill writes that text with the Write tool, and
 a slip in it would quietly weaken the suite's checks.
 
-Exit 0 when nothing survived and the sidecar matches, 1 when something survived or
-the sidecar differs, 2 on a usage or read error (a capture that is not UTF-8 text,
+With ``--har HAR`` (the run's HAR), it also reads every value of each name in
+``flagged_names`` (SIDECAR's, or without SIDECAR, that of gp's sidecar beside
+CAPTURE, so a plugin or test module is checked too) that it can find in the
+recording: each cookie of that name sent or set (the HAR's cookie arrays,
+``Cookie`` and ``Set-Cookie`` headers), each request or response header of that
+name in any case, each field of that name a request body sends (``postData``
+params, a form-encoded or JSON body, or one kept in a file beside the HAR), and
+each meta tag's ``content`` and hidden input's ``value`` of that name in a
+response whose ``Content-Type`` header says HTML (a body kept in a file beside
+the HAR, ``_bodyFile``, included), in a DOM snapshot gp took at a credential
+post (``_domSnapshot``, ``_domAfter``), and in the run's ``page-source.html``
+beside the HAR. A file that resolves outside the HAR's directory, through a
+symlink or a ``..``, is not read.
+It reports a flagged name whose recorded value of three or more characters is in
+the fixture, as recorded, percent-decoded, or without the double quotes a cookie
+value may carry, case-sensitively, in any of the forms above or two of them
+applied one after the other (JSON-escaped inside an HTML attribute), as ``the
+recorded value of flagged 'sessionid' is still in the fixture (line 3)``, or
+``(found decoded)``. It never prints the value or the text around it: such a
+value is a credential. It reports and never decides what the suite checks:
+reading one more source can only find more. This catches a value the capture's
+body never held, which the fixtures check in the suite does not: it holds names
+only, and from sidecar schema 3 it looks for a flagged cookie name only where the
+capture held one of that cookie's recorded values or held the name other than
+in a name-value pair holding nothing, so a recorded cookie value pasted into a fixture from
+elsewhere, even under its cookie's name, passes the suite.
+
+Exit 0 when nothing survived and the sidecar matches, 1 when something survived,
+a recorded value of a flagged name is in the fixture, or the sidecar differs, 2 on
+a usage or read error (a HAR that is not JSON included) (a capture that is not UTF-8 text,
 such as a PDF, cannot be compared; nor can gp's sidecar when it is not JSON).
 Standard library only, so it runs under any Python 3.9 or later.
 """
@@ -77,7 +105,7 @@ from heapq import merge
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote_plus
+from urllib.parse import parse_qsl, unquote, unquote_plus
 
 _DIGITS = re.compile(r"\d{3,}")
 # Words split at spaces, punctuation, and a URL's separators, so an email in a
@@ -241,7 +269,7 @@ def _escape_decodings(text: str) -> list[str]:
     """*text* with its backslash escapes decoded, with its HTML character
     references decoded, and percent-decoded (``+`` as a space) once per round
     until it stops changing, at most three rounds. graftpunk's fixtures check reads
-    a fixture in the same forms (graftpunk.testing.plugin._decoded_forms), and a
+    a fixture in the same forms (graftpunk.testing.decoding.decoded_forms), and a
     test holds the two to the same output."""
     forms = [_unescape(text), unescape(text)]
     current = text
@@ -252,6 +280,38 @@ def _escape_decodings(text: str) -> list[str]:
         forms.append(decoded)
         current = decoded
     return forms
+
+
+def _combined_decodings(text: str) -> list[str]:
+    """Each of :func:`_escape_decodings`, and each of those decoded again the same
+    ways, without repeats and in order, so a value JSON-escaped inside an HTML
+    attribute is read. ``--har`` looks for a recorded value in these too, as gp
+    observe fixtures does (graftpunk.testing.decoding.combined_forms; a test holds
+    the two to the same output)."""
+    forms: dict[str, None] = {}
+    for form in _escape_decodings(text):
+        forms.setdefault(form)
+        for twice in _escape_decodings(form):
+            forms.setdefault(twice)
+    return list(forms)
+
+
+def _without_quotes(value: str) -> str:
+    """*value* without one pair of surrounding double quotes, as a server may
+    quote a cookie value."""
+    if len(value) > 2 and value.startswith('"') and value.endswith('"'):
+        return value[1:-1]
+    return value
+
+
+def _value_forms(value: str) -> frozenset[str]:
+    """The forms a recorded *value* is looked for in: as recorded, percent-decoded
+    (``+`` read as a plus and as a space), and each of those without one pair of
+    surrounding double quotes, so a quote sent as ``%22`` is taken off too
+    (graftpunk.testing.decoding.value_forms; a test holds the two to the same
+    output)."""
+    forms = {value, unquote(value), unquote_plus(value)}
+    return frozenset(forms | {_without_quotes(form) for form in forms})
 
 
 def _decodings(fixture: str) -> list[str]:
@@ -459,6 +519,7 @@ class _Fixture:
         # one is the same offset in the other.
         self.shown = fixture if shown is None else shown
         assert len(self.shown) == len(fixture)
+        self.text = fixture
         self.haystack = _normal("\n".join(_decodings(fixture)))
         self.folded = self.haystack.casefold()
         self._normal = _Derived(fixture, self.haystack, _normal_chunks, _normal)
@@ -525,6 +586,204 @@ class _Fixture:
         return [f"found decoded: {_neighborhood(self.haystack, start, end)}"]
 
 
+class _TokenValues(HTMLParser):
+    """Each meta tag's content and each hidden input's value, by name."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.pairs: list[tuple[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {key: value for key, value in attrs if value is not None}
+        if tag == "meta":
+            self.pairs.append((values.get("name", ""), values.get("content", "")))
+        elif tag == "input" and values.get("type", "").lower() == "hidden":
+            self.pairs.append((values.get("name", ""), values.get("value", "")))
+
+
+def _cookie_pair(text: str) -> tuple[str, str]:
+    name, _, value = text.partition("=")
+    return name.strip(), value.strip()
+
+
+def _named(items: object) -> list[tuple[str, str]]:
+    """The (name, value) of each object in a HAR array whose name and value are
+    strings."""
+    if not isinstance(items, list):
+        return []
+    return [
+        (item["name"], item["value"])
+        for item in items
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("value"), str)
+    ]
+
+
+def _header(headers: list[tuple[str, str]], name: str) -> str | None:
+    """The value of the header *name* in *headers*, as graftpunk's HAR parser
+    reads ``Content-Type``: the last header spelled ``name`` exactly, else the
+    last spelled in lower case."""
+    spelled = dict(headers)
+    return spelled.get(name) or spelled.get(name.lower())
+
+
+def _file_text(ref: object, base: Path | None) -> str | None:
+    """The text of the file *ref* names, relative to the HAR's directory *base*,
+    read as UTF-8 as graftpunk's HAR parser reads it. A file that resolves outside
+    *base* (a ``..`` or a symlink), or one that cannot be read, gives None."""
+    if base is None or not isinstance(ref, str) or not ref:
+        return None
+    root = base.resolve()
+    path = (root / ref).resolve()
+    if not path.is_relative_to(root):
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _body_text(content: dict, base: Path | None) -> str | None:
+    """A response's body text: the HAR's ``content.text``, or, when the HAR keeps
+    the body in a file (``content._bodyFile``), that file (:func:`_file_text`)."""
+    text = content.get("text")
+    if isinstance(text, str):
+        return text
+    return _file_text(content.get("_bodyFile"), base)
+
+
+def _page_values(html: str) -> list[tuple[str, str]]:
+    parser = _TokenValues()
+    parser.feed(html)
+    parser.close()
+    return parser.pairs
+
+
+def _json_pairs(data: object) -> Iterator[tuple[str, str]]:
+    """``(key, value)`` for each string value under a key at any depth of *data*."""
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, str):
+                yield str(key), value
+            else:
+                yield from _json_pairs(value)
+    elif isinstance(data, list):
+        for item in data:
+            yield from _json_pairs(item)
+
+
+def _body_fields(request: dict, base: Path | None) -> list[tuple[str, str]]:
+    """``(name, value)`` for each field a request body sends: the HAR's
+    ``postData.params``, and its text (``postData.text``, or the file
+    ``_postDataFile`` names) read as JSON, else as a form-encoded body."""
+    post = request.get("postData") if isinstance(request.get("postData"), dict) else {}
+    pairs = _named(post.get("params"))
+    text = post.get("text")
+    if not isinstance(text, str):
+        text = _file_text(request.get("_postDataFile"), base)
+    if text:
+        try:
+            pairs += list(_json_pairs(json.loads(text)))
+        except (ValueError, RecursionError):
+            pairs += parse_qsl(text, keep_blank_values=False)
+    return pairs
+
+
+def recorded_values(har: object, names: set[str], base: Path | None = None) -> dict[str, set[str]]:
+    """Every non-empty value *har* records for each of *names* that this reads:
+    as a cookie sent or set (the cookie arrays, and the ``Cookie`` and
+    ``Set-Cookie`` headers), as a request or response header (any case), as a
+    field a request body sends, or as a meta tag's content or a hidden input's
+    value in a response whose ``Content-Type`` header says HTML. With *base*, the
+    HAR's directory, a body or request body the HAR keeps in a file is read, and
+    so are gp's DOM snapshots (``_domSnapshot``, ``_domAfter``) and the run's
+    ``page-source.html`` beside the HAR, each only inside *base*."""
+    found: dict[str, set[str]] = {}
+    # Several flagged names can differ in case alone (X-CSRF-Token, x-csrf-token).
+    folded: dict[str, list[str]] = {}
+    for name in names:
+        folded.setdefault(name.casefold(), []).append(name)
+
+    def add(name: str, value: str) -> None:
+        if name in names and value:
+            found.setdefault(name, set()).add(value)
+
+    def add_page(html: str | None) -> None:
+        for name, value in _page_values(html) if html is not None else ():
+            add(name, value)
+
+    log = har.get("log") if isinstance(har, dict) else None
+    entries = log.get("entries") if isinstance(log, dict) else None
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+        response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
+        for name, value in _named(request.get("cookies")) + _named(response.get("cookies")):
+            add(name, value)
+        for name, value in _named(request.get("headers")):
+            if name.casefold() == "cookie":
+                for line in value.splitlines():
+                    for pair in line.split(";"):
+                        add(*_cookie_pair(pair))
+            else:
+                for flagged in folded.get(name.casefold(), ()):
+                    add(flagged, value)
+        for name, value in _body_fields(request, base):
+            add(name, value)
+        add_page(_file_text(request.get("_domSnapshot"), base))
+        add_page(_file_text(request.get("_domAfter"), base))
+        response_headers = _named(response.get("headers"))
+        for name, value in response_headers:
+            if name.casefold() == "set-cookie":
+                for line in value.splitlines():
+                    add(*_cookie_pair(line.split(";", 1)[0]))
+            else:
+                for flagged in folded.get(name.casefold(), ()):
+                    add(flagged, value)
+        if "html" not in (_header(response_headers, "Content-Type") or "").lower():
+            continue
+        content = response.get("content") if isinstance(response.get("content"), dict) else {}
+        add_page(_body_text(content, base))
+    add_page(_file_text("page-source.html", base))
+    return found
+
+
+def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
+    """One line per flagged name whose recorded value is in *fixture*, naming the
+    lines of the file that hold it (or ``found decoded``), never the value. Each
+    of a value's :func:`_value_forms` is looked for in the fixture's forms and in
+    :func:`_combined_decodings` of it."""
+    lines: list[str] = []
+    raw_lines = fixture.shown.split("\n")
+    combined: str | None = None
+    for name in sorted(values):
+        wanted = {
+            _normal(form)
+            for value in values[name]
+            for form in _value_forms(value)
+            if len(form) >= _MIN_LENGTH
+        }
+        hits = [value for value in wanted if value in fixture.haystack]
+        if not hits and wanted:
+            if combined is None:
+                combined = _normal("\n".join(_combined_decodings(fixture.text)))
+            hits = [value for value in wanted if value in combined]
+        if not hits:
+            continue
+        at = [
+            str(number)
+            for number, line in enumerate(raw_lines, 1)
+            if any(value in _normal(line) for value in hits)
+        ]
+        where = f"line {', '.join(at[:_MOST_PLACES])}" if at else "found decoded"
+        if len(at) > _MOST_PLACES:
+            where += f" and {len(at) - _MOST_PLACES} more lines"
+        lines.append(f"the recorded value of flagged {name!r} is still in the fixture ({where})")
+    return lines
+
+
 def survivors(capture: str, fixture: _Fixture) -> list[str]:
     """Each captured value that still appears in *fixture*, in any of its forms."""
     return [v for v in captured_values(capture) if fixture.holds(_normal(v))]
@@ -534,8 +793,16 @@ def main(argv: list[str]) -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
         reconfigure(errors="backslashreplace")
+    har_path = None
+    if "--har" in argv:
+        at = argv.index("--har")
+        har_path = argv[at + 1] if at + 1 < len(argv) else None
+        argv = argv[:at] + argv[at + 2 :]
+        if har_path is None:
+            print("fixture-leaks: --har needs the run's HAR.", file=sys.stderr)
+            return 2
     if len(argv) not in (3, 4):
-        print("usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR]", file=sys.stderr)
+        print("usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR] [--har HAR]", file=sys.stderr)
         return 2
     role, path = "capture", argv[1]
     try:
@@ -544,7 +811,9 @@ def main(argv: list[str]) -> int:
         fixture = Path(path).read_text(encoding="utf-8")
         role, path = "sidecar", argv[3] if len(argv) == 4 else ""
         sidecar = json.loads(Path(path).read_text(encoding="utf-8")) if len(argv) == 4 else None
-    except (OSError, ValueError) as exc:
+        role, path = "HAR", har_path or ""
+        har = json.loads(Path(path).read_text(encoding="utf-8")) if har_path else None
+    except (OSError, ValueError, RecursionError) as exc:
         print(f"fixture-leaks: cannot read the {role} {path}: {exc}", file=sys.stderr)
         return 2
     if sidecar is not None and not isinstance(sidecar, dict):
@@ -555,6 +824,12 @@ def main(argv: list[str]) -> int:
         return 2
     found = _Fixture(_without_provenance(fixture), fixture)
     left = survivors(capture, found)
+    leaked: list[str] = []
+    if har is not None:
+        names = _flagged_names(Path(argv[1]), sidecar)
+        if names is None:
+            return 2
+        leaked = recorded_leaks(found, recorded_values(har, names, Path(har_path).parent))
     for value in left[:_MOST_VALUES]:
         for place in found.places(_normal(value)):
             print(f"still in the fixture: {_cut(value)!r} ({place})")
@@ -568,6 +843,8 @@ def main(argv: list[str]) -> int:
             f"fixture-leaks: {len(left) - _MOST_NAMED} more values not shown; "
             "the fixture is not done while this line prints."
         )
+    for line in leaked:
+        print(line)
     if differs:
         print(
             f"the sidecar differs from the capture's in {', '.join(differs)}: "
@@ -585,7 +862,26 @@ def main(argv: list[str]) -> int:
                 print(f"sidecar flagged {name}: {shown}")
     if not left:
         print("fixture-leaks: no captured value is left in the fixture.")
-    return 1 if left or differs else 0
+    return 1 if left or leaked or differs else 0
+
+
+def _flagged_names(capture: Path, sidecar: dict | None) -> set[str] | None:
+    """The ``flagged_names`` of *sidecar*, or, without one (a plugin module or a
+    test module checked in place of a fixture), of the sidecar gp wrote beside
+    *capture*. None, after saying why, when neither can be read."""
+    if sidecar is None:
+        own = capture.with_name(capture.name + ".meta.json")
+        try:
+            sidecar = json.loads(own.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError) as exc:
+            print(
+                f"fixture-leaks: --har reads the flagged names from SIDECAR or from the "
+                f"capture's sidecar {own}, which cannot be read: {exc}",
+                file=sys.stderr,
+            )
+            return None
+    flagged = sidecar.get("flagged_names") if isinstance(sidecar, dict) else None
+    return {n for n in flagged if isinstance(n, str)} if isinstance(flagged, list) else set()
 
 
 def _keys_differing_from_gps(capture: Path, sidecar: dict) -> list[str] | None:

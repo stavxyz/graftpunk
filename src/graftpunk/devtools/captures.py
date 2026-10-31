@@ -11,19 +11,27 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import os
+import re
 import subprocess
-from collections.abc import Iterable, Mapping
+from bisect import bisect_right
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from html.parser import HTMLParser
+from json.scanner import make_scanner
 from pathlib import Path
 
 from graftpunk.devtools.captures_rule import with_ignored
+from graftpunk.har.digest import form_state
 from graftpunk.logging import get_logger
+from graftpunk.testing.decoding import combined_forms, value_forms, whole_name_regex
 from graftpunk.testing.sidecar import Sidecar, sidecar_path, sidecar_text
 
 LOG = get_logger(__name__)
 
 __all__ = [
     "IgnoreFileReadError",
+    "checked_names_of",
     "ensure_ignored",
     "find_repo_root",
     "is_tracked",
@@ -133,6 +141,475 @@ def is_tracked(path: Path) -> bool:
     return result.returncode == 0
 
 
+# A number is returned as its source text, so it is judged by form_state like a
+# cookie value of the same digits.
+_DECODER = json.JSONDecoder(parse_int=str, parse_float=str, parse_constant=str)
+# typeshed types make_scanner's context as a make_scanner; it takes the decoder whose
+# parse_* hooks it reads.
+_SCAN = make_scanner(_DECODER)  # ty: ignore[invalid-argument-type]
+# Where the JSON reader tries to parse a value: an object, an array, or a string
+# whose text may be a JSON object or array.
+_JSON_START_RE = re.compile(r"""[{\["]""")
+# A JSON string as written. Run over a value already parsed, where every quote
+# outside a string opens one, it finds each string in it.
+_JSON_STRING_RE = re.compile(r'"[^"\\]*(?:\\[\s\S][^"\\]*)*"')
+_JSON_COLON_RE = re.compile(r"\s*:\s*")
+# Characters a failed parse may scan, per character of the text, before the JSON
+# reader stops looking: an object left open many levels deep is otherwise
+# scanned again from each level.
+_JSON_FAILURE_BUDGET = 4
+# The first slice a value is parsed in, and how near its end a failure means
+# the slice cut the value short (a literal, a number or an escape cut in two).
+_JSON_FIRST_SLICE = 64
+_JSON_CUT_MARGIN = 16
+# Elements that hold no text, written with or without "/>": the start tag of
+# one of these is the whole element.
+_VOID_ELEMENTS = frozenset({"input", "meta", "param", "link"})
+# Attributes naming an element, and the attributes one must have to be read:
+# <input name="x" value="...">, <meta name="x" content="...">.
+_NAMING_ATTRIBUTES = frozenset({"name", "id", "property", "itemprop", "http-equiv"})
+_VALUE_ATTRIBUTES = frozenset({"value", "content"})
+# The HTML attribute names of each void element read, global ones included. Any
+# other attribute name of a read element is judged as its values are.
+_GLOBAL_ATTRIBUTES = frozenset(
+    {
+        *("accesskey", "autocapitalize", "autocorrect", "autofocus", "class"),
+        *("contenteditable", "dir", "draggable", "enterkeyhint", "hidden", "id"),
+        *("inert", "inputmode", "is", "itemid", "itemprop", "itemref", "itemscope"),
+        *("itemtype", "lang", "nonce", "popover", "slot", "spellcheck", "style"),
+        *("tabindex", "title", "translate", "writingsuggestions"),
+    }
+)
+_KNOWN_ATTRIBUTES = {
+    tag: _GLOBAL_ATTRIBUTES | _NAMING_ATTRIBUTES | _VALUE_ATTRIBUTES | frozenset(own)
+    for tag, own in (
+        (
+            "input",
+            (
+                *("accept", "alpha", "alt", "autocomplete", "checked", "colorspace"),
+                *("dirname", "disabled", "form", "formaction", "formenctype"),
+                *("formmethod", "formnovalidate", "formtarget", "height", "list", "max"),
+                *("maxlength", "min", "minlength", "multiple", "pattern", "placeholder"),
+                *("popovertarget", "popovertargetaction", "readonly", "required"),
+                *("size", "src", "step", "type", "width"),
+            ),
+        ),
+        ("meta", ("charset", "media")),
+        ("param", ()),
+        (
+            "link",
+            (
+                *("as", "blocking", "color", "crossorigin", "disabled", "fetchpriority"),
+                *("href", "hreflang", "imagesizes", "imagesrcset", "integrity", "media"),
+                *("referrerpolicy", "rel", "sizes", "type"),
+            ),
+        ),
+    )
+}
+# One attribute in a start tag's text as HTMLParser reads one: a name, then
+# optionally "=" and a double-quoted, single-quoted or bare value.
+_ATTRIBUTE_RE = re.compile(
+    r"""([^\s/>][^\s/=>]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|(?!["'])([^>\s]*)))?"""
+)
+
+_Attributes = tuple[tuple[str, str], ...]
+
+
+class _Tag:
+    """A start tag :class:`_Elements` read: its name, where it ends in the text,
+    and its attributes (values unescaped, an attribute without one as empty)."""
+
+    __slots__ = ("attributes", "end", "name")
+
+    def __init__(self, name: str, end: int, attributes: _Attributes) -> None:
+        self.name = name
+        self.end = end
+        self.attributes = attributes
+
+    def read_as(self, name: str) -> bool | None:
+        """How the element reader reads this tag for *name*: None unless it is a
+        void element (:data:`_VOID_ELEMENTS`) with a value or content attribute
+        and a naming attribute whose value is *name*; else True when every
+        other attribute value, and every attribute name that is not one of the
+        element's (:data:`_KNOWN_ATTRIBUTES`), holds nothing and no attribute is
+        named *name*."""
+        if self.name not in _VOID_ELEMENTS:
+            return None
+        folded = name.casefold()
+        keys = {key for key, _ in self.attributes}
+        naming = {
+            at
+            for at, (key, value) in enumerate(self.attributes)
+            if key in _NAMING_ATTRIBUTES and value.casefold() == folded
+        }
+        if not naming or _VALUE_ATTRIBUTES.isdisjoint(keys):
+            return None
+        known = _KNOWN_ATTRIBUTES[self.name]
+        return folded not in keys and all(
+            (key in known or _holds_nothing(key)) and (at in naming or _holds_nothing(value))
+            for at, (key, value) in enumerate(self.attributes)
+        )
+
+
+class _Elements(HTMLParser):
+    """The start tags of an HTML text, each read once: the span in the text of
+    each attribute value of each tag whose attributes :data:`_ATTRIBUTE_RE` reads
+    as HTMLParser did, in order, with its :class:`_Tag`."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.line_starts = [0, *(m.end() for m in re.finditer("\n", text))]
+        self.starts: list[int] = []
+        self.spans: list[tuple[int, int, _Tag]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._read(tag, attrs)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._read(tag, attrs)
+
+    def _read(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if not attrs:
+            return
+        source = self.get_starttag_text() or ""
+        matches = list(_ATTRIBUTE_RE.finditer(source, 1 + len(tag)))
+        # A tag this expression reads otherwise than HTMLParser did is not read.
+        if [match.group(1).lower() for match in matches] != [key for key, _ in attrs]:
+            return
+        line, offset = self.getpos()
+        start = self.line_starts[line - 1] + offset
+        read = _Tag(tag, start + len(source), tuple((key, value or "") for key, value in attrs))
+        for match in matches:
+            group = next((g for g in (2, 3, 4) if match.group(g) is not None), None)
+            if group is not None:
+                self.starts.append(start + match.start(group))
+                self.spans.append((start + match.start(group), start + match.end(group), read))
+
+
+def _opened(value: object) -> _Form | None:
+    """A form of *value*, a string read from JSON, when its text is a JSON object
+    or array; else None."""
+    if not isinstance(value, str) or not value.lstrip().startswith(("{", "[")):
+        return None
+    try:
+        _DECODER.decode(value)
+    except (ValueError, RecursionError):
+        return None
+    return _Form(value)
+
+
+def _parse_json_at(text: str, start: int) -> tuple[object, int] | int:
+    """The JSON value starting at *start* in *text* and where it ends, or, when
+    none parses there, how many characters the attempt scanned.
+
+    The value is parsed in a slice of the text, doubled while the parse fails
+    only for want of text, so a failure costs what it scanned:
+    :class:`json.JSONDecodeError` counts the lines before the failure in the
+    string it was given."""
+    size = _JSON_FIRST_SLICE
+    while True:
+        stop = min(len(text), start + size)
+        piece = text[start:stop]
+        try:
+            value, end = _SCAN(piece, 0)
+        except StopIteration as exc:
+            # Raised with where the value failed, deep inside it as well as at its start.
+            failed_at, unterminated = exc.value, False
+        except json.JSONDecodeError as exc:
+            # An unterminated string reports where it began, not where the
+            # slice ran out.
+            failed_at, unterminated = exc.pos, exc.msg.startswith("Unterminated")
+        except (ValueError, RecursionError):
+            return len(text) - start
+        else:
+            return value, start + end
+        cut_short = unterminated or failed_at >= len(piece) - _JSON_CUT_MARGIN
+        if stop < len(text) and cut_short:
+            size *= 2
+            continue
+        return len(piece) if cut_short else failed_at + 1
+
+
+def _json_values(text: str) -> list[tuple[int, int, _Form | None]]:
+    """The JSON values *text* holds, in order and not nested, by span: each object
+    or array that parses, with None, and each string whose text is a JSON object
+    or array, with that text's form (:func:`_opened`). A string that is not
+    opened is looked into, so ``"{"a": 1}"`` with its escapes decoded still
+    yields the object. A quote inside a value already parsed, or inside a
+    string already parsed other than its closing quote, never starts a string,
+    and failed parses stop the search once they have scanned
+    :data:`_JSON_FAILURE_BUDGET` times the text's length, so the cost stays
+    linear. A string that is not opened may have paired a stray quote with the
+    next string's opening quote, so its closing quote may still start one."""
+    found: list[tuple[int, int, _Form | None]] = []
+    budget = _JSON_FAILURE_BUDGET * len(text)
+    pos = 0
+    # A quote before this, other than a closing quote of a string not opened, is
+    # inside a value or string already parsed and is not a string's start.
+    quotes_from = 0
+    while budget > 0:
+        match = _JSON_START_RE.search(text, pos)
+        if match is None:
+            break
+        start = match.start()
+        pos = start + 1
+        quote = text[start] == '"'
+        if quote and start < quotes_from:
+            continue
+        parsed = _parse_json_at(text, start)
+        if isinstance(parsed, int):
+            budget -= parsed
+            continue
+        value, end = parsed
+        if not quote:
+            found.append((start, end, None))
+            pos, quotes_from = end, max(quotes_from, end)
+            continue
+        opened = _opened(value)
+        if opened is None:
+            quotes_from = max(quotes_from, end - 1)
+            continue
+        found.append((start, end, opened))
+        pos, quotes_from = end, max(quotes_from, end)
+    return found
+
+
+class _Form:
+    """One form a body is read in: its text, the text casefolded with the offset
+    in the text each casefolded character came from (None when casefolding kept
+    every offset), and what each strict reader finds in it, read on first use."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.folded = text.casefold()
+        self.origin: list[int] | None = None
+        if len(self.folded) != len(text):
+            self.origin = [i for i, ch in enumerate(text) for _ in ch.casefold()]
+        self._json: list[tuple[int, int, _Form | None]] | None = None
+        self._json_starts: list[int] = []
+        self._strings: dict[int, tuple[list[int], list[tuple[int, int]]]] = {}
+        self._opened: dict[int, _Form | None] = {}
+        self._elements: _Elements | None = None
+
+    def occurrences(self, pattern: re.Pattern[str]) -> Iterator[tuple[int, int]]:
+        """The span in the text of each match of *pattern* in the casefolded text."""
+        for match in pattern.finditer(self.folded):
+            start, end = match.span()
+            if self.origin is None:
+                yield start, end
+            else:
+                yield self.origin[start], self.origin[end - 1] + 1
+
+    def json_value_at(self, pos: int) -> tuple[int, int, int, _Form | None] | None:
+        """The index, span and opened form of the JSON value (:func:`_json_values`)
+        holding *pos*, or None."""
+        if self._json is None:
+            self._json = _json_values(self.text)
+            self._json_starts = [start for start, _, _ in self._json]
+        index = bisect_right(self._json_starts, pos) - 1
+        if index < 0:
+            return None
+        start, end, opened = self._json[index]
+        return (index, start, end, opened) if pos < end else None
+
+    def string_at(self, index: int, start: int, end: int, pos: int) -> tuple[int, int] | None:
+        """The span of the string holding *pos* in the JSON value at *index*, which
+        spans *start*..*end*, or None."""
+        if index not in self._strings:
+            spans = [m.span() for m in _JSON_STRING_RE.finditer(self.text, start, end)]
+            self._strings[index] = ([s for s, _ in spans], spans)
+        starts, spans = self._strings[index]
+        at = bisect_right(starts, pos) - 1
+        if at < 0 or pos >= spans[at][1]:
+            return None
+        return spans[at]
+
+    def opened_string(self, start: int, end: int) -> _Form | None:
+        """The form of the JSON string at *start*..*end* when its text is a JSON
+        object or array (:func:`_opened`), decoded once."""
+        if start not in self._opened:
+            try:
+                self._opened[start] = _opened(_DECODER.decode(self.text[start:end]))
+            except ValueError:
+                self._opened[start] = None
+        return self._opened[start]
+
+    def element_at(self, pos: int) -> tuple[int, int, _Tag] | None:
+        """The span of the attribute value holding *pos* in a tag :class:`_Elements`
+        read, with the tag, or None."""
+        if self._elements is None:
+            self._elements = _Elements(self.text)
+            if "<" in self.text:
+                self._elements.feed(self.text)
+                self._elements.close()
+        at = bisect_right(self._elements.starts, pos) - 1
+        if at < 0:
+            return None
+        span = self._elements.spans[at]
+        return span if pos < span[1] else None
+
+
+def _holds_nothing(value: object) -> bool:
+    """True when *value* holds no credential: a boolean, null, an empty string, a
+    string (a number as its text) that is form state by the rule a cookie value
+    is judged by (:func:`graftpunk.har.digest.form_state`), or an object whose
+    every key and value, or an array whose every item, is one of those."""
+    if value is None or isinstance(value, bool):
+        return True
+    if isinstance(value, str):
+        return not value or form_state(value)
+    if isinstance(value, dict):
+        return all(_holds_nothing(key) and _holds_nothing(item) for key, item in value.items())
+    if isinstance(value, list):
+        return all(_holds_nothing(item) for item in value)
+    return False
+
+
+def _read(name: str, form: _Form, start: int, end: int) -> tuple[bool | None, int]:
+    """How the strict readers read the occurrence of *name* at *start*..*end* in
+    *form*, and where the reading ended: True when one read it with a value that
+    holds nothing (:func:`_holds_nothing`), False when one read it with any other
+    value, None when none read it.
+
+    - JSON: the occurrence is a key of a JSON value :func:`_json_values` parsed,
+      read with the key's parsed value; or it is in a string of such a value, or
+      is such a string, whose text is a JSON object or array, read as that text
+      is (:func:`_is_accounted_for`).
+    - An element attribute: the occurrence is in an attribute value of a tag
+      :class:`_Elements` read, which :meth:`_Tag.read_as` reads; the reading
+      ends at the end of the tag, so the tag is judged once."""
+    text = form.text
+    held = form.json_value_at(start)
+    if held is not None:
+        index, value_start, value_end, opened = held
+        if opened is not None:
+            return _is_accounted_for(name, [opened]), value_end
+        string = form.string_at(index, value_start, value_end, start)
+        if string is not None:
+            string_start, string_end = string
+            colon = _JSON_COLON_RE.match(text, string_end)
+            if string_start == start - 1 and string_end == end + 1 and colon is not None:
+                try:
+                    value, read_until = _SCAN(text, colon.end())
+                except (StopIteration, ValueError):
+                    return False, end
+                return _holds_nothing(value), read_until
+            inner = form.opened_string(string_start, string_end)
+            if inner is not None:
+                return _is_accounted_for(name, [inner]), string_end
+    element = form.element_at(start)
+    if element is not None:
+        tag = element[2]
+        verdict = tag.read_as(name)
+        if verdict is not None:
+            return verdict, tag.end
+    return None, end
+
+
+def _is_accounted_for(name: str, forms: Sequence[_Form]) -> bool:
+    """True when every whole-name occurrence of *name* in every form (found as the
+    fixtures check finds a flagged name,
+    :func:`graftpunk.testing.decoding.whole_name_regex`) is read by a strict
+    reader (:func:`_read`) with a value that holds nothing. An occurrence inside
+    a value already read is part of that value, judged whole. Any other
+    occurrence (``name=value`` in a URL or query string, ``name: value`` in text
+    that is not JSON, a call's argument, a
+    ``{"name": ..., "value": ...}`` pair, an element's text, a table cell, an
+    attribute's name outside an element read, a string the reader cannot open)
+    is read by none, so the name is not accounted for."""
+    folded = name.casefold()
+    pattern = re.compile(whole_name_regex(name))
+    for form in forms:
+        if folded not in form.folded:
+            continue
+        read_until = 0
+        for start, end in form.occurrences(pattern):
+            if start < read_until:
+                continue
+            verdict, read_until = _read(name, form, start, end)
+            if not verdict:
+                return False
+    return True
+
+
+def _holds_a_value_under(name: str, forms: Sequence[_Form]) -> bool:
+    """True when *name* is not accounted for in *forms* (:func:`_is_accounted_for`),
+    or a value under it is too deeply nested to judge."""
+    try:
+        return not _is_accounted_for(name, forms)
+    except RecursionError:
+        return True
+
+
+def checked_names_of(
+    flagged_values: Mapping[str, frozenset[str] | None], text: str
+) -> tuple[str, ...]:
+    """The names in *flagged_values* the fixtures check must look for in a fixture
+    derived from *text*, sorted: each name whose values are not all known (None),
+    each name one of whose values is in *text*, and each name *text* mentions
+    anywhere but in a name-value pair holding nothing.
+
+    A value is looked for in each of its forms
+    (:func:`graftpunk.testing.decoding.value_forms`: as recorded, percent-decoded
+    with ``+`` read both ways, and without the double quotes a cookie value may
+    carry), case-sensitively, in *text* as written, in each form the fixtures
+    check reads a fixture in, and in each of those decoded again
+    (:func:`graftpunk.testing.decoding.combined_forms`), so a value the body holds
+    escaped in a JSON string, HTML-escaped, percent-encoded, or JSON-escaped
+    inside an HTML attribute counts. A value of one character that happens to be
+    in the body keeps its name looked for: the check then fails on the name as it
+    did before sidecar schema 3, never less.
+
+    The recorded values are only what the recording's cookie headers carried
+    (:func:`graftpunk.har.digest.flagged_values_of`): a value the cookie took
+    after the last request that sent it is in none of them. So a name is left
+    out only when every whole-name occurrence of it in *text*, in each of those
+    forms, is read by one of two strict readers, and every value read so holds
+    nothing:
+
+    - JSON: the name is a key of a JSON object that parses where it starts in
+      the text (the whole body, or an object or array within it, such as inline
+      state in a script), or of one that is the text of a JSON string there,
+      read with the key's parsed value; a JSON string inside that text whose
+      text is a JSON object or array is opened again, at any depth, while a
+      string whose text is another JSON string is not opened;
+    - an element attribute: a void ``input``, ``meta``, ``param`` or ``link``
+      element, written with or without ``/>``, with a ``value`` or ``content``
+      attribute, whose ``name``, ``id``, ``property``, ``itemprop`` or
+      ``http-equiv`` is the name, its attributes in any order; every other
+      attribute value of it is judged, and so is every attribute name that is
+      not an HTML attribute of that element, and an attribute named by the name
+      keeps it checked.
+
+    A value holds nothing when it is a boolean, null, empty, or form state by
+    the rule that flags a cookie by its value
+    (:func:`graftpunk.har.digest.form_state`), a number judged by its text, an
+    object by its keys and values. Any other occurrence keeps the name checked:
+    ``name=v`` in a URL, a query string or a form body (``?csrftoken=2``
+    included; no reader reads a URL as a pair, so the name stays checked unless
+    the URL is itself a value a reader judges whole, a JSON value or a void
+    element's attribute value, where it is judged like any value),
+    ``name: v`` in text that is not JSON, an attribute named by the
+    name, an element that holds text whether or not written with ``/>``, a
+    call's argument. An honest ``"id": 7`` or ``"user": "alice"`` leaves the
+    name unchecked; ``"csrftoken": "<an opaque value>"``,
+    ``setCookie('csrftoken', ...)``, ``{"name": "csrftoken", ...}`` and
+    ``<li>csrftoken: <code>...</code></li>`` keep it checked."""
+    texts = (text, *combined_forms(text))
+    forms = [_Form(form) for form in dict.fromkeys(texts)]
+    checked: list[str] = []
+    for name, values in flagged_values.items():
+        if values is None:
+            checked.append(name)
+            continue
+        wanted = {form for value in values for form in value_forms(value)}
+        if any(
+            value and value in form for value in wanted for form in texts
+        ) or _holds_a_value_under(name, forms):
+            checked.append(name)
+    return tuple(sorted(checked))
+
+
 def write_sidecar(
     fixture: Path,
     *,
@@ -140,6 +617,7 @@ def write_sidecar(
     content_type: str,
     body_params: Iterable[str],
     flagged_reasons: Mapping[str, Iterable[str]],
+    flagged_values: Mapping[str, frozenset[str] | None] | None = None,
     redacted_names: int = 0,
 ) -> Path:
     """Write *fixture*'s committable sidecar beside it and return its path.
@@ -150,8 +628,21 @@ def write_sidecar(
     *flagged_reasons* maps each flagged name to why it is flagged
     (``graftpunk.har.digest.flagged_reasons_of``); its keys are the flagged
     names. The sort and dedupe is ``Sidecar``'s own job, not this writer's.
+    *flagged_values* maps each flagged name to its recorded values
+    (``graftpunk.har.digest.flagged_values_of``); ``checked_names`` is the names
+    :func:`checked_names_of` finds in *fixture*'s text. Without it every flagged
+    name is checked, as a sidecar from before schema 3 is read. A name in it that
+    is not flagged is ignored.
     """
     body = fixture.read_bytes()
+    names = tuple(flagged_reasons)
+    if flagged_values is None:
+        checked = names
+    else:
+        text = body.decode("utf-8", errors="replace")
+        # A flagged name the caller has no values for is not known in full.
+        known = {name: flagged_values.get(name) for name in names}
+        checked = checked_names_of(known, text)
     sidecar = Sidecar(
         status=status,
         content_type=content_type,
@@ -160,8 +651,9 @@ def write_sidecar(
         # its fixture is empty too, so a recorded hash would fail the suite's
         # unchanged-copy check on a fixture that holds no captured value.
         capture_sha256=hashlib.sha256(body).hexdigest() if body else None,
-        flagged_names=tuple(flagged_reasons),
+        flagged_names=names,
         flagged_reasons={name: tuple(why) for name, why in flagged_reasons.items()},
+        checked_names=checked,
         redacted_names=redacted_names,
     )
     path = sidecar_path(fixture)

@@ -114,6 +114,10 @@ class HARRequest:
     # The request's CDP resource type as the recorder saw it (request._resourceType):
     # "Document" for a navigation. None when the HAR does not say.
     resource_type: str | None = None
+    # The value of every Cookie header, in any case, from the raw HAR list: the
+    # headers dict keeps one header of each spelling, and a HAR from another
+    # recorder can split the cookies over several headers.
+    cookie_headers: tuple[str, ...] = ()
 
 
 @dataclass
@@ -137,6 +141,12 @@ class HARResponse:
     # when the header carries it, so the array alone cannot say a cookie was not
     # HttpOnly
     set_cookie_http_only: tuple[str, ...] = ()
+    # the value of every Set-Cookie header, in any case, from the raw headers
+    # list, for the same reason as set_cookie_names
+    set_cookie_headers: tuple[str, ...] = ()
+    # the _bodyFile resolves outside the HAR's directory (a reference or a
+    # symlink that leaves it), so the body was not read
+    body_file_outside: bool = False
     # where a redirect sent the client: the HAR's own redirectURL when the
     # recorder filled it in, else the Location header, else empty
     redirect_url: str = ""
@@ -281,17 +291,25 @@ def cookie_header_pairs(values: Iterable[str]) -> list[dict[str, str]]:
     return cookies
 
 
-def _cookie_header_values(headers_list: list[Any]) -> list[str]:
-    """The value of every ``Cookie`` header in *headers_list*, the raw HAR list (the
-    ``_parse_headers`` dict keeps only the last header of a name), in any case.
-    A header whose name or value is not a string is skipped, since the fallback
-    that reads these must never fail an entry that parses without it."""
+def _header_values_named(headers_list: list[Any], wanted: str) -> list[str]:
+    """The value of every header named *wanted* (lower case) in *headers_list*, the
+    raw HAR list (the ``_parse_headers`` dict keeps only the last header of a
+    name), in any case. A header that is not an object, or whose name or value is
+    not a string, is skipped, since what reads these must never fail an entry
+    that parses without it."""
     values: list[str] = []
     for header in headers_list:
+        if not isinstance(header, dict):
+            continue
         name, value = header.get("name"), header.get("value")
-        if isinstance(name, str) and name.lower() == "cookie" and isinstance(value, str):
+        if isinstance(name, str) and name.lower() == wanted and isinstance(value, str):
             values.append(value)
     return values
+
+
+def _cookie_header_values(headers_list: list[Any]) -> list[str]:
+    """The value of every ``Cookie`` header in *headers_list* (:func:`_header_values_named`)."""
+    return _header_values_named(headers_list, "cookie")
 
 
 def _parse_set_cookie_names(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
@@ -483,6 +501,7 @@ def _parse_request(request_data: dict[str, Any], base_dir: Path | None = None) -
         user_marked_failed=request_data.get("_userMarkedFailed") is True,
         failure_text_candidates=_failure_texts(request_data.get("_failureTextCandidates")),
         resource_type=resource_type if isinstance(resource_type, str) else None,
+        cookie_headers=tuple(_cookie_header_values(request_data.get("headers", []))),
     )
 
 
@@ -507,6 +526,7 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
     body = None
     body_size = 0
     body_file = None
+    body_file_outside = False
     content = response_data.get("content", {})
     if isinstance(content, dict):
         body = content.get("text")
@@ -516,8 +536,12 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
         # If body is stored on disk and not already inline, load it
         if body_file_ref and base_dir and body is None:
             body_file = body_file_ref
-            body_path = base_dir / body_file_ref
-            if body_path.exists():
+            root = base_dir.resolve()
+            body_path = (root / body_file_ref).resolve()
+            # The same refusal as a request body file's: a reference or a symlink
+            # that leaves the HAR's directory is not read.
+            body_file_outside = not body_path.is_relative_to(root)
+            if not body_file_outside and body_path.exists():
                 mime = content.get("mimeType", "")
                 if _is_text_content(mime):
                     body = body_path.read_text(encoding="utf-8", errors="replace")
@@ -538,6 +562,8 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
         body_file=body_file,
         set_cookie_names=set_cookie_names,
         set_cookie_http_only=set_cookie_http_only,
+        set_cookie_headers=tuple(_header_values_named(raw_headers, "set-cookie")),
+        body_file_outside=body_file_outside,
         redirect_url=_redirect_url(response_data, headers),
     )
 

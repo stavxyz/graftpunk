@@ -1246,8 +1246,10 @@ session-like name nor a `Set-Cookie` with `HttpOnly` (in the header or in the
 HAR's `response.cookies` array), and the token names the run's digest recorded, a
 name that holds an id left out and counted in `redacted_names`; from schema 2,
 also the reasons each of those cookie and token names is flagged
-(`flagged_reasons`, which the fixtures check repeats in its problem line); it
-never holds the URL or the capture time), written to be
+(`flagged_reasons`, which the fixtures check repeats in its problem line); from
+schema 3, also the flagged names the fixtures check looks for in this fixture
+(`checked_names`, below); it
+never holds the URL, the capture time, or any value, in any form), written to be
 committed beside the fixture derived from it once you have read its body
 parameter names and its `flagged_names`: a body key that does not read as a
 field name or holds an id is dropped, but the rule is lexical, so an account
@@ -1269,6 +1271,157 @@ capitals and 5.2% of 12,
 and 1.1% of 8 capitals and digits. `FixtureSession` reads the sidecar through
 `graftpunk.testing.sidecar` for status and content type, so a fixture copied
 from a capture keeps its recorded status.
+
+`checked_names` is how the fixtures check judges a flagged cookie name by its
+value without the value (#313). The check runs in the plugin's suite, in CI and
+on a fresh checkout, where neither the recording nor any key outside the
+repository exists, so it can only use names. `gp observe fixtures` holds the
+recording, so it decides per capture which flagged names the check still needs
+to look for. The change affects cookie names only. For a cookie, the recording
+holds the values its `Cookie` and `Set-Cookie` headers carried, and the
+capture's own body shows what it holds under the cookie's name; the check below
+reads both. A token's value can come from places a reader of the recording does
+not read: a meta tag or hidden input a script changed, a form field a script
+filled and posted, or a header token a response rotated can hold a value no page
+or request header in the HAR shows. So every flagged token name (a meta tag, a hidden input, or a header the digest
+found as a token, and a cookie of the same name as one of those) is always in
+`checked_names`, and is looked for exactly as in 1.32.x.
+
+For a cookie name, `graftpunk.har.digest.flagged_values_of` reads the cookie's
+non-empty values from the HAR's cookie arrays and from every `Cookie` and
+`Set-Cookie` header of each entry (not only the last header of a spelling), sent
+and set, and `graftpunk.devtools.captures.checked_names_of` keeps the name when
+one of those values is in the capture's body, case-sensitively. A value is looked for as
+recorded, percent-decoded (with `+` read both ways), and without the double
+quotes a cookie value may carry (`graftpunk.testing.decoding.value_forms`), in
+the body as written, in any form the check reads a fixture in
+(`graftpunk.testing.decoding.decoded_forms`: backslash escapes, HTML character
+references, up to three rounds of percent-decoding), and in each of those
+decoded again (`combined_forms`), so a value JSON-escaped inside an HTML
+attribute counts.
+
+Those values are what the recording's headers carried, not every value the
+cookie held. A token a response rotated the cookie to after the last request
+that sent it, a cookie a script set after the last request, and a request whose
+`Cookie` header the recorder did not keep are in no recorded header (gp's
+recorder takes `Cookie` and `Set-Cookie` from CDP's separate ExtraInfo events,
+counts one it could not match in `extra_info_unmatched`, and nodriver 0.48.1 was
+measured to drop most request-side ones). So `checked_names_of` leaves a
+cookie name out only when every occurrence of the name in the capture's body is
+accounted for. It finds each whole-name occurrence the way the fixtures check
+finds a flagged name (without regard to case, so `x-name` and `window.name` are
+not it), in the body as written and in each decoded form above, and counts one
+as accounted for only when one of two strict readers reads it as a
+name-value pair. JSON: the name is a key of a JSON object that parses where it
+starts in that form (the whole body, an object or array inside it such as
+inline state in a script, or the text of a JSON string there that is itself a
+JSON object or array), read with the key's parsed value. An element attribute: a void `input`, `meta`, `param` or `link`
+element, written with or without `/>`, with a `value` or `content` attribute,
+whose `name`, `id`, `property`, `itemprop` or `http-equiv` is the name, read
+with an HTML parser so the order of its attributes does not matter; every other
+attribute value of that element is judged too, so is every attribute name that
+is not an HTML attribute of that element (a bare token written as an attribute),
+and an attribute named by the name keeps it checked. A JSON string whose text is
+a JSON object or array is opened and read as JSON, and so is such a string
+inside that text, at any depth; a JSON string whose text is another JSON string
+is not opened, so a name inside it stays checked. Every value read so must hold nothing: a boolean, null, empty, a
+string that is form state by the rule above, a number whose text is form state
+(`7` and `4411` are, an 18-digit id is not), or an object or array whose every key and value holds
+nothing. An occurrence inside a value already read is part of that value. Any
+other occurrence keeps the name checked, whatever sits beside it: `name=v` in a
+URL, a query string or a form body (`?csrftoken=2` included, in an attribute
+value, a JSON string or text; no reader reads a URL as a pair, so such a name
+stays checked outside a value already read), `name: v` in
+text that is not JSON (`<li>csrftoken: <code>...</code></li>`,
+`<dt>csrftoken:</dt><dd>...</dd>`), `name == "v"` or `name => "v"` in a script,
+`name=<b>v</b>`, a call's argument as in `Cookies.set('name', ...)`, a
+`{"name": "name", "value": ...}` pair, an attribute named by the name, an
+element that holds text (`textarea`, `li`, `button`, `span`) whatever its
+attributes and whether or not written with `/>`, and a table cell. So a cookie named `id` stays checked
+in nearly every HTML capture, where `id="..."` names an attribute. The JSON
+reader stops looking for values once its failed parses have scanned four times
+the form's length, so an object left open many levels deep costs linear time,
+and a quote inside a value it already parsed, or inside a string it already
+parsed other than that string's closing quote, never starts a string, so a long
+string of escaped markup costs linear time too (the closing quote of a string
+that is not opened may start one, since that string may have paired a stray
+quote with the next string's opening quote); an occurrence it did not reach is
+read only by the element reader. The HTML
+parser reads each tag once, and an element is judged once for a name however
+many occurrences of the name it holds. An honest
+`"id": 7` or `"user": "alice"` leaves the name out;
+`"csrftoken": "<an opaque token>"`, `setCookie('csrftoken', ...)` and
+`getCookie('csrftoken')` keep it, and so does
+`"user": {"email": "ann@myshop.example"}`, since an address is not form state.
+It also keeps a cookie name whose values are not known: a cookie no recorded
+request sent a non-empty value in its `Cookie` header or cookie array (a value
+seen only in a `Set-Cookie` says nothing of what the browser held later),
+unless a request sent it empty and no non-empty value of it is recorded
+anywhere; and a cookie the recording carried without a value kept, or with none
+seen in the cookie arrays. A cookie name left out is one whose recorded values
+the body did not hold and every occurrence of which one of those readers read
+with a value that holds nothing, so an honest `"id": 7` key passes
+when a recording made with a cached session sent a cookie named `id`. This is
+the whole rule: a token the cookie took after the last recorded request is
+caught when the body holds the cookie's name anywhere outside such a pair, and
+missed when the body holds that token without the name, or under the name as a
+value that is form state. The values stay in memory; the sidecar holds names only, a
+subset of `flagged_names`, which are already committed. A one-character value
+that happens to be in the body keeps its name looked for, which is the check
+before schema 3, never less.
+
+This moves one catch out of CI. With a schema 3 sidecar, the suite fails a
+flagged cookie name only where the recording's capture held one of the
+cookie's recorded values or held the name other than in a name-value pair
+whose value holds nothing, so
+a recorded cookie value pasted into a fixture from anywhere else passes the
+suite, even under its cookie's name: a fixture `{"id": 7,
+"myshop_session": "<the recorded session value>"}` derived from a capture that
+never held that value fails under a schema 2 sidecar and passes under a schema 3
+one. A recorded value kept under a renamed key passed the name-only check
+before schema 3 too. The graft skill's `fixture-leaks.py ... --har HAR` catches
+both on the developer's machine: it reports every value of the capture's body
+left in a fixture, and each value of a flagged name it finds in the recording
+(cookies sent and set, `Cookie` and `Set-Cookie` headers, request and response
+headers, fields a request body sends, meta and hidden-input values in HTML
+responses, in gp's DOM snapshots, and in `page-source.html` beside the HAR,
+bodies kept in files included), by line number only, never printing the value.
+It reports and never decides what the suite checks, so a source it reads that
+`gp observe fixtures` does not can only find more. The suite does not run that
+check, because a sidecar does not name the run it came from and the recording
+is not in the plugin's repository; #345 tracks doing it when the sidecar's own
+run is on disk. What remains in CI is every token name, and a cookie name whose
+recorded value the body held or that the body held other than in a name-value
+pair whose value holds nothing, as in `{"csrftoken": "<a token>"}` or
+`{"cookies": [{"name": "csrftoken", "value": "<a token>"}]}` from an endpoint
+that hands a single-page app its token, whether or not a recorded header
+carried that token.
+
+A body file (`_bodyFile`, `_postDataFile`, a DOM snapshot) or the run's
+`page-source.html` that resolves outside the HAR's directory, through `..` or a
+symlink, is not read, by the HAR parser, by the digest, or by `fixture-leaks.py`:
+gp's recorder writes every one inside the run. Before 1.33.0 the parser and the
+digest read such a file. `parse_har_file` now leaves the response's `body` as
+None and sets `body_file_outside`; the digest drops that entry as an unreadable
+body and logs `digest_body_file_outside_har_dir` for it (a missing file still
+logs `digest_body_file_missing`), and `DigestSource.from_run_dir` logs
+`digest_page_source_outside_run_dir` for a page source it does not read.
+
+The options considered were a keyed digest of each value in the sidecar, with
+the key outside the repository, and this. A keyed digest needs the key in CI
+and on every teammate's machine, and without it the check must fall back to
+names, so one commit would pass on one machine and fail on another; it also
+matches only a candidate whose boundaries equal the value's. An unkeyed or
+salted hash of a short value is reversed by brute force, which is why
+`redacted_names` keeps none. A sidecar from schema 1 or 2 has no
+`checked_names`; the check looks for every flagged name in its fixture, as
+1.32.x did, and its problem line says that regenerating the sidecar with `gp
+observe fixtures` leaves a flagged cookie name out where the capture held none of
+its values and held the name only in name-value pairs holding nothing. It is
+not refused, since a plugin project floats to the newest graftpunk and a
+refusal would fail its suite on the first run after the upgrade with no change
+on its side.
+
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
 fixture that removes prefixed environment variables for the duration of each
 test; a generated `conftest.py` imports it and assigns the result to a

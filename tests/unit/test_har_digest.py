@@ -33,7 +33,6 @@ from graftpunk.har.digest import (
     LoginObservation,
     ObservationKind,
     _account_values,
-    _form_state,
     _login_opener,
     _parse_body,
     _scalar_values,
@@ -44,6 +43,8 @@ from graftpunk.har.digest import (
     endpoint_template,
     flagged_names_of,
     flagged_reasons_of,
+    flagged_values_of,
+    form_state,
     post_every_value,
     redacted_names_of,
 )
@@ -1036,6 +1037,18 @@ class TestDigestSourceFromHar:
         assert source.bodies_dir is None
         assert source.page_source is None
 
+    def test_a_page_source_that_resolves_outside_the_run_is_not_read(self, tmp_path: Path) -> None:
+        """As the HAR parser reads no body file outside the HAR's directory."""
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        outside = tmp_path / "elsewhere.html"
+        outside.write_text("<html></html>")
+        (run_dir / "page-source.html").symlink_to(outside)
+        with capture_logs() as events:
+            source = DigestSource.from_run_dir(run_dir, session="s", run_id="r")
+        assert source.page_source is None
+        assert [e["event"] for e in events] == ["digest_page_source_outside_run_dir"]
+
     def test_run_dir_picks_up_bodies_and_page_source(self, tmp_path: Path) -> None:
         run_dir = tmp_path / "myshop" / "20260910-100000-1"
         (run_dir / "bodies").mkdir(parents=True)
@@ -1733,6 +1746,29 @@ class TestParseErrorsAndMissingBodies:
             digest(DigestSource.from_har(har_path))
         (event,) = [e for e in events if e["event"] == "digest_body_file_missing"]
         assert event["url"] == "https://api.myshop.example.com/big"
+
+    def test_a_body_file_outside_the_har_directory_logs_its_own_reason(
+        self, tmp_path: Path
+    ) -> None:
+        """The file may exist; the parser refused it, so the warning says why
+        rather than that it is missing."""
+        (tmp_path / "elsewhere.json").write_text("{}")
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        entry = _entry("GET", "https://api.myshop.example.com/big?q=QUERYVALUE")
+        entry["response"]["content"] = {
+            "mimeType": "application/json",
+            "size": 0,
+            "_bodyFile": "../elsewhere.json",
+        }
+        har_path = _write_har(run_dir, [entry])
+        with capture_logs() as events:
+            result = digest(DigestSource.from_har(har_path))
+        names = [e["event"] for e in events]
+        assert "digest_body_file_missing" not in names
+        (event,) = [e for e in events if e["event"] == "digest_body_file_outside_har_dir"]
+        assert event["url"] == "https://api.myshop.example.com/big"
+        assert result.endpoints == ()
 
     def test_a_malformed_form_action_is_recorded_as_empty(self, tmp_path: Path) -> None:
         """urlsplit raises on an unclosed IPv6 bracket; the digest must still complete,
@@ -4548,7 +4584,7 @@ class TestFlaggedNamesOf:
             quote(bytes(rng.randrange(low, 0x100) for _ in range(length)), safe="")
             for _ in range(10_000)
         ]
-        assert [v for v in values if _form_state(v) and not reads_as_words(v)] == []
+        assert [v for v in values if form_state(v) and not reads_as_words(v)] == []
 
     @pytest.mark.parametrize(
         "value",
@@ -4567,13 +4603,13 @@ class TestFlaggedNamesOf:
         """#296's reporter sent case masks, never values: a cleared "", a quoted
         "AAA Aaaaaaaa" (it failed only on its quotes), capitals of 7 and 9 and
         an AAAAaaaaAaaaaa tab name. These are invented values with those masks."""
-        assert _form_state(value)
+        assert form_state(value)
 
     @pytest.mark.parametrize("value", ["%00", "%00%00", "%01%02", "\x01", '"%00"', "-%00-"])
     def test_a_control_character_is_not_punctuation(self, tmp_path: Path, value: str) -> None:
         """Only ASCII punctuation and spaces hold nothing; a control character is
         a byte of a value, so the cookie stays flagged."""
-        assert not _form_state(value)
+        assert not form_state(value)
         har = _write_har(tmp_path, [self._with_cookies([("visit", value)])])
         result = digest(DigestSource.from_har(har))
         assert flagged_names_of(result, parse_har_file(har).entries) == ("visit",)
@@ -4759,8 +4795,311 @@ class TestFlaggedNamesOf:
         printed by scripts/cookie_value_rates.py."""
         generate = _rate_shapes(f"296-{shape}")[shape]
         values = [generate() for _ in range(10_000)]
-        lost = [v for v in values if _form_state(v) and not reads_as_words(v)]
+        lost = [v for v in values if form_state(v) and not reads_as_words(v)]
         assert len(lost) / len(values) <= _FORM_STATE_LOSS_CEILINGS[shape]
+
+
+class TestFlaggedValuesOf:
+    """Each flagged name's recorded values, which gp observe fixtures compares with
+    a capture's body (#313); None where they are not all known."""
+
+    def _values(self, tmp_path: Path, entries: list[dict]) -> dict:
+        har = _write_har(tmp_path, entries)
+        return flagged_values_of(digest(DigestSource.from_har(har)), parse_har_file(har).entries)
+
+    def test_a_cached_sessions_sent_cookies_carry_their_values(self, tmp_path: Path) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"Cookie": "id=Xk3Lp9Qv2Rt7Wm4Zb8Nc6Hd; sessionid=Zq9XkLmPwR4t7"},
+        )
+        values = self._values(tmp_path, [entry])
+        assert values == {
+            "id": frozenset({"Xk3Lp9Qv2Rt7Wm4Zb8Nc6Hd"}),
+            "sessionid": frozenset({"Zq9XkLmPwR4t7"}),
+        }
+
+    def test_the_keys_are_the_flagged_names(self, tmp_path: Path) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/account",
+            content_type="text/html",
+            body='<meta name="csrf-token" content="Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb">',
+            set_cookies=["sid=Zq9XkLmPwR4t7Bv2; Path=/", "lot=12; Path=/"],
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        entries = parse_har_file(har).entries
+        assert tuple(flagged_values_of(result, entries)) == flagged_names_of(result, entries)
+
+    @pytest.mark.parametrize(
+        ("name", "body", "request_headers"),
+        [
+            ("csrf-token", '<meta name="csrf-token" content="Qm7Lp2Xv9Kd4Rt8Wz3Ny6Hb">', {}),
+            (
+                "authenticity_token",
+                '<form><input type="hidden" name="authenticity_token" value="Mq8Wz2Lp"></form>',
+                {},
+            ),
+            ("x-csrf-token", "{}", {"x-csrf-token": "Hd5Ks0Gf2Lq8"}),
+        ],
+        ids=["meta", "hidden-input", "header"],
+    )
+    def test_a_token_that_is_not_a_cookie_is_never_known(
+        self, tmp_path: Path, name: str, body: str, request_headers: dict[str, str]
+    ) -> None:
+        """A meta, hidden-input, or header token's value can come from a source the
+        recording does not hold in full (a page a script changed, a request body, a
+        response header), so its name stays checked as in 1.32.x, even when every
+        page and header the HAR holds shows a value."""
+        entry = _entry(
+            "POST",
+            "https://myshop.example.com/account",
+            content_type="text/html",
+            body=body,
+            request_headers=request_headers,
+        )
+        assert self._values(tmp_path, [entry])[name] is None
+
+    def test_a_cookie_named_as_a_hidden_input_token_too_is_not_known(self, tmp_path: Path) -> None:
+        """Django's csrftoken cookie with a hidden input of the same name: the
+        input's value can differ from every cookie value the HAR holds."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/account",
+            content_type="text/html",
+            body='<form><input type="hidden" name="csrftoken" value="Hk4Rt8Wz3Ny6"></form>',
+            request_headers={"Cookie": "csrftoken=Hk4Rt8Wz3Ny6"},
+        )
+        assert self._values(tmp_path, [entry]) == {"csrftoken": None}
+
+    def test_a_cookie_token_candidate_carries_its_cookie_values(self, tmp_path: Path) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"Cookie": "csrftoken=Hk4Rt8Wz3Ny6"},
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert [(t.kind, t.name) for t in result.tokens] == [("cookie", "csrftoken")]
+        values = flagged_values_of(result, parse_har_file(har).entries)
+        assert values == {"csrftoken": frozenset({"Hk4Rt8Wz3Ny6"})}
+
+    def test_a_cookie_token_candidate_with_no_value_in_the_entries_given_is_not_known(
+        self, tmp_path: Path
+    ) -> None:
+        """A cookie the digest found as a token candidate in a request it sent: with
+        no entries passed in, no value of it is seen, and the name carries no
+        cookie reason that would say so."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"Cookie": "csrftoken=Hk4Rt8Wz3Ny6"},
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [entry])))
+        assert flagged_reasons_of(result) == {"csrftoken": ("token_candidate",)}
+        assert flagged_values_of(result) == {"csrftoken": None}
+
+    def test_a_cookie_whose_value_was_not_kept_is_not_known(self, tmp_path: Path) -> None:
+        entry = _entry("GET", "https://myshop.example.com/api/orders")
+        entry["request"]["cookies"] = [{"name": "sessionid"}]
+        assert self._values(tmp_path, [entry]) == {"sessionid": None}
+
+    def test_a_set_cookie_kept_as_a_name_only_is_not_known(self, tmp_path: Path) -> None:
+        """A Set-Cookie header with no response.cookies entry: the value was not
+        kept as a cookie value."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            set_cookies=["sessionid=Zq9XkLmPwR4t7; HttpOnly"],
+        )
+        assert self._values(tmp_path, [entry])["sessionid"] is None
+
+    def test_a_session_cookie_only_ever_sent_empty_held_nothing(self, tmp_path: Path) -> None:
+        entry = _entry("GET", "https://myshop.example.com/api/orders")
+        entry["request"]["cookies"] = [{"name": "sessionid", "value": ""}]
+        assert self._values(tmp_path, [entry]) == {"sessionid": frozenset()}
+
+    def test_a_cookie_sent_empty_and_then_set_by_a_response_is_not_known(
+        self, tmp_path: Path
+    ) -> None:
+        """Its only value came from a Set-Cookie, which says nothing of what the
+        browser held later; the empty send does not make it known (#313)."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            set_cookies=["sessionid=SetLater88; Path=/"],
+        )
+        entry["request"]["cookies"] = [{"name": "sessionid", "value": ""}]
+        entry["response"]["cookies"] = [{"name": "sessionid", "value": "SetLater88"}]
+        assert self._values(tmp_path, [entry]) == {"sessionid": None}
+
+    def test_a_cookie_sent_empty_and_later_with_a_value_is_known(self, tmp_path: Path) -> None:
+        empty = _entry("GET", "https://myshop.example.com/")
+        empty["request"]["cookies"] = [{"name": "sessionid", "value": ""}]
+        sent = _entry("GET", "https://myshop.example.com/api/orders")
+        sent["request"]["cookies"] = [{"name": "sessionid", "value": "Zq9XkLmPwR4t7"}]
+        assert self._values(tmp_path, [empty, sent]) == {"sessionid": frozenset({"Zq9XkLmPwR4t7"})}
+
+    def test_a_cookie_seen_with_a_value_and_also_set_by_name_only_is_not_known(
+        self, tmp_path: Path
+    ) -> None:
+        """A request sent sessionid with a value and a later response set it anew by
+        a Set-Cookie header with no response.cookies entry: values are seen, yet the
+        set one was not kept as a cookie value (value_not_kept, not
+        no_value_seen), so the name stays checked."""
+        sent = _entry("GET", "https://myshop.example.com/api/orders")
+        sent["request"]["cookies"] = [{"name": "sessionid", "value": "Zq9XkLmPwR4t7"}]
+        renewed = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            set_cookies=["sessionid=Renewed55Xc2; HttpOnly"],
+        )
+        har = _write_har(tmp_path, [sent, renewed])
+        result = digest(DigestSource.from_har(har))
+        entries = parse_har_file(har).entries
+        assert "no_value_seen" not in flagged_reasons_of(result, entries)["sessionid"]
+        assert flagged_values_of(result, entries) == {"sessionid": None}
+
+    def test_a_cookie_with_no_value_in_the_entries_given_is_not_known(self, tmp_path: Path) -> None:
+        """The digest knows the cookie; with no entries passed in, no value of it is
+        seen (no_value_seen alone)."""
+        entry = _entry("GET", "https://myshop.example.com/api/orders")
+        entry["response"]["cookies"] = [{"name": "sid", "value": "Zq9XkLmPwR4t7"}]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [entry])))
+        assert flagged_reasons_of(result) == {"sid": ("no_value_seen", "session_name")}
+        assert flagged_values_of(result) == {"sid": None}
+
+    def test_cookie_headers_add_values_the_cookie_arrays_leave_out(self, tmp_path: Path) -> None:
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"cookie": "sessionid=FromHeader77"},
+            set_cookies=["sessionid=SetByHeader88; HttpOnly"],
+        )
+        entry["request"]["cookies"] = [{"name": "sessionid", "value": "FromArray66"}]
+        entry["response"]["cookies"] = [{"name": "sessionid", "value": "FromArray66"}]
+        assert self._values(tmp_path, [entry])["sessionid"] == frozenset(
+            {"FromArray66", "FromHeader77", "SetByHeader88"}
+        )
+
+    def test_a_cookie_the_entries_given_show_only_in_a_header_is_not_known(
+        self, tmp_path: Path
+    ) -> None:
+        """A response the caller leaves out set sessionid; the request passed in
+        sends it in its Cookie header only, its cookie array leaving it out. The
+        reasons say no_value_seen, and the value the left-out response set may
+        differ, so the name stays checked."""
+        login = _entry("POST", "https://myshop.example.com/login")
+        login["response"]["cookies"] = [{"name": "sessionid", "value": "SetAtLogin55"}]
+        orders = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"Cookie": "lot=12; sessionid=FromHeader77"},
+        )
+        orders["request"]["cookies"] = [{"name": "lot", "value": "12"}]
+        har = _write_har(tmp_path, [login, orders])
+        result = digest(DigestSource.from_har(har))
+        entries = parse_har_file(har).entries[1:]
+        assert "no_value_seen" in flagged_reasons_of(result, entries)["sessionid"]
+        assert flagged_values_of(result, entries)["sessionid"] is None
+
+    @pytest.mark.parametrize("separator", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+    def test_a_lower_case_set_cookie_header_of_several_lines_is_read_line_by_line(
+        self, tmp_path: Path, separator: str
+    ) -> None:
+        """Chromium joins a response's Set-Cookie headers with line breaks, and
+        HTTP/2 lowercases the name; the value on the second line, written with a
+        space after its '=', is a recorded value as it is sent."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            response_headers={
+                "set-cookie": f"lot=12; Path=/{separator} sessionid= SetLater88 ; HttpOnly"
+            },
+        )
+        entry["request"]["cookies"] = [{"name": "sessionid", "value": "FromArray66"}]
+        entry["response"]["cookies"] = [
+            {"name": "lot", "value": "12"},
+            {"name": "sessionid", "value": "FromArray66"},
+        ]
+        assert self._values(tmp_path, [entry])["sessionid"] == frozenset(
+            {"FromArray66", "SetLater88"}
+        )
+
+    def test_a_cookie_no_request_sent_is_not_known(self, tmp_path: Path) -> None:
+        """A cookie seen only where a response set it: no recorded request's
+        Cookie header carried it (a request-side event the recorder dropped, or a
+        cookie set after the last request), so what the browser held later is
+        unknown and the name stays checked."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/login",
+            set_cookies=["sessionid=SetOnly55Xc2; Path=/"],
+        )
+        entry["response"]["cookies"] = [{"name": "sessionid", "value": "SetOnly55Xc2"}]
+        assert self._values(tmp_path, [entry]) == {"sessionid": None}
+
+    def test_a_cookie_sent_only_in_a_cookie_header_is_known(self, tmp_path: Path) -> None:
+        """A request that sends the cookie in its Cookie header, its cookie array
+        empty, sent it: a value set before is joined by the one sent."""
+        login = _entry(
+            "POST",
+            "https://myshop.example.com/login",
+            set_cookies=["sessionid=SetAtLogin55; Path=/"],
+        )
+        login["response"]["cookies"] = [{"name": "sessionid", "value": "SetAtLogin55"}]
+        orders = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"Cookie": "sessionid=FromHeader77"},
+        )
+        assert self._values(tmp_path, [login, orders]) == {
+            "sessionid": frozenset({"SetAtLogin55", "FromHeader77"})
+        }
+
+    def test_every_cookie_header_of_an_entry_is_read(self, tmp_path: Path) -> None:
+        """A HAR from another recorder splits the cookies over two Cookie headers
+        and lists only the second in the array: the first header's value is a
+        recorded value too, not only the last header of the name."""
+        cart = _entry("GET", "https://myshop.example.com/cart")
+        cart["request"]["cookies"] = [{"name": "sessionid", "value": "InArray66"}]
+        entry = _entry("GET", "https://myshop.example.com/api/orders")
+        entry["request"]["headers"] = [
+            {"name": "cookie", "value": "sessionid=FirstHeader77"},
+            {"name": "cookie", "value": "theme=dark"},
+        ]
+        entry["request"]["cookies"] = [{"name": "theme", "value": "dark"}]
+        assert self._values(tmp_path, [cart, entry])["sessionid"] == frozenset(
+            {"InArray66", "FirstHeader77"}
+        )
+
+    def test_every_set_cookie_header_of_an_entry_is_read(self, tmp_path: Path) -> None:
+        """Two Set-Cookie headers set one name on two paths, and the array keeps
+        the second: the first header's value is a recorded value too."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            set_cookies=["sessionid=OnAppPath88; Path=/app", "sessionid=OnRoot66; Path=/"],
+        )
+        entry["request"]["cookies"] = [{"name": "sessionid", "value": "OnRoot66"}]
+        entry["response"]["cookies"] = [{"name": "sessionid", "value": "OnRoot66", "path": "/"}]
+        assert self._values(tmp_path, [entry])["sessionid"] == frozenset(
+            {"OnAppPath88", "OnRoot66"}
+        )
+
+    def test_a_cookie_named_as_a_header_token_too_is_not_known(self, tmp_path: Path) -> None:
+        """A request header token and a cookie of the same name: the header's
+        value can differ from every cookie value the HAR holds."""
+        entry = _entry(
+            "GET",
+            "https://myshop.example.com/api/orders",
+            request_headers={"X-CSRF-Token": "Hd5Ks0Gf2Lq8", "Cookie": "X-CSRF-Token=Hd5Ks0Gf2Lq8"},
+        )
+        har = _write_har(tmp_path, [entry])
+        result = digest(DigestSource.from_har(har))
+        assert ("header", "X-CSRF-Token") in [(t.kind, t.name) for t in result.tokens]
+        assert flagged_values_of(result, parse_har_file(har).entries)["X-CSRF-Token"] is None
 
 
 class TestEveryNamePositionGoesThroughTheIdRule:
