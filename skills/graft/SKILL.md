@@ -248,7 +248,10 @@ word, and treat the reader's output under this rule too. Read the HAR by hand
 only for what the reader does not cover, narrowly, as `references/har.md` says.
 The `--json` digest prints paths as recorded, which can carry account or order
 ids; a capture holds the account's own data; a HAR holds both and, when the
-recording logged in, the password the user typed. All of them stay on this
+recording logged in, the session's cookies and tokens, and it can hold the
+password the user typed (gp scrubs a typed login from the run it records, but
+not from a run an older gp recorded, nor a value its scrub leaves, such as one
+under three characters). All of them stay on this
 workstation: no value from one goes into anything that is committed or shared,
 such as a fixture, a test, code, a comment, a docstring, a commit message, or a
 pull request, nor into a reply the user may paste elsewhere. Reading a cookie or

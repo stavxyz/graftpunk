@@ -5,8 +5,9 @@ Usage:
   har-facts.py request HAR URL_PART [--method METHOD]
   har-facts.py response HAR URL_PART [--method METHOD]
 
-A HAR holds the account's data and, from a recorded login, the password the user
-typed. The graft skill reads one through this script. What the script guarantees:
+A HAR holds the account's data and, from a recorded login, the session's cookies
+and tokens, and it can hold the password the user typed. The graft skill reads one
+through this script. What the script guarantees:
 it prints no cookie, header, query, or body value, apart from four pieces that
 print as recorded after a shape check alone: the request method, a non-web URL
 scheme, a content type's subtype, and the host. Names and path segments are

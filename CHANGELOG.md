@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading
+
+1. **A run of `gp observe interactive` or `gp observe go` no longer holds the login you typed** (#318). At save, the values of the run's own credential posts (the password-like fields' and the username or email fields') are scrubbed from `network.har`, the request bodies in `bodies/`, `page-source.html`, and `snapshots/`, and the terminal prints `Scrubbed N typed credential values from the run (M credential posts)`. Anything that read the typed username or password back out of such a run finds `***REDACTED***` there instead, and a fixture written from the run's response bodies holds `***REDACTED***` where the site echoed the username. A password that is also an ordinary word is scrubbed wherever it occurs, URLs included, so a digest of such a run can show `***REDACTED***` in an endpoint's path. A run with no credential post is written exactly as before.
+
+### Changed
+
+- **`gp observe interactive` and `gp observe go` scrub the typed login from the run at save** (#318). Item 1 above. A value under three characters, a password that is part of a field name (replaced only in the credential post's own body), a login the digest's rule does not read as a credential post (a `multipart/form-data` body, a password inside a nested JSON object), and response bodies in `bodies/` are left; docs/HOW_IT_WORKS.md lists them. New API in `graftpunk.observe.run`: `save_observe_run(scrub_credential_posts=...)`, `credential_post_redaction`, `CredentialScrub`, `scrub_credential_post_bodies`, and `redact_run_text_files`; in `graftpunk.observe.snapshot`: `post_redaction_values` and `spelled_redaction`.
+- **The `/graftpunk:graft` skill no longer says a recorded login's HAR holds the password**: it says a HAR holds the session's cookies and tokens and can hold the password, from a run an older gp recorded or a value the scrub leaves.
+
 ## [1.35.0] - 2026-11-01
 
 This is a minor release. Three changes can reach a program on the first run after the upgrade: the line `fixtures_are_sanitised` prints on every run gains a clause (Upgrading, item 1), the problem line for a sidecar written before 1.33.0 names schema 4 (item 1), and `flagged_reasons_of` can return a new reason (item 4). Items 2 and 3 reach a plugin project only when it regenerates a sidecar with `gp observe fixtures`; item 3 can then fail a developer's own suite run that passed before. Item 5 is about upgrading itself. Under Fixed, two more reach a program on its first run: the digest of a recording against an IP address keeps fewer hosts in scope, and the graft skill's `fixture-leaks.py --har` exits 2 on a run file it cannot read or that the HAR names and is missing, and no longer reports a recorded value of three characters or one that is `true`, `false` or `null`.

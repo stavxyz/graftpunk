@@ -207,6 +207,17 @@ A browser opens at the URL. Log in. Then exercise every flow you listed in
 an export. The recording is only as good as what you clicked. Press Ctrl+C in
 the terminal to stop and save.
 
+When it saves, graftpunk reads the username and password you typed from the
+run's own login request and scrubs them from `network.har`, the request bodies
+in `bodies/`, `page-source.html`, and `snapshots/`, keeping the field names so
+the digest still finds the login, and prints how many values it scrubbed. It
+leaves a password under three characters; a password that is part of a field
+name (`pass`), which it replaces only in the login request's own body; and a
+login it does not read as one (a `multipart/form-data` body, or a password
+inside a nested JSON object). A password that is also an ordinary word is
+scrubbed everywhere it appears, URLs included. The run still holds the session's
+cookies and tokens, so keep it on your machine and delete it when you are done.
+
 To have the recording suggest the `failure` text, add `--wrong-password-first`
 (`gp observe --no-session interactive https://myshop.example/ --wrong-password-first`).
 Before you log in, submit the login once with the throwaway wrong password the
