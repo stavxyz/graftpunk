@@ -503,11 +503,12 @@ def _password_value(value: str) -> bool:
 
 
 class _PasswordInputs(html.parser.HTMLParser):
-    """Whether one page holds an ``<input type="password">``."""
+    """Whether one page holds an ``<input type="password">``, and each one's name."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.found = False
+        self.names: set[str] = set()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag != "input":
@@ -515,6 +516,8 @@ class _PasswordInputs(html.parser.HTMLParser):
         values = {key: value or "" for key, value in attrs}
         if values.get("type", "").strip().lower() == "password":
             self.found = True
+            if values.get("name"):
+                self.names.add(values["name"])
 
 
 @dataclass(frozen=True)
@@ -531,8 +534,8 @@ class CredentialScrub:
             field name (``password``, ``pass``, ``login``): scrubbing them
             everywhere would rename the fields the digest finds the login by, so
             they are replaced only where they are a whole value under a
-            password-like name (:func:`names_a_password`) in a credential post's
-            own body.
+            password-like name (:func:`names_a_password`) or a recorded password
+            input's name (*password_names*) in a credential post's own body.
         post_indices: The HAR entry indices of the credential posts, each of
             whose own body is scrubbed by its structure.
         values: How many distinct values are scrubbed from the whole run.
@@ -548,6 +551,8 @@ class CredentialScrub:
             failed (*typed*), and from no credential post.
         password_input: Whether a page the run recorded held an ``<input
             type="password">``.
+        password_names: The ``name`` of each such input: a credential post's
+            value under one of them is a password, whatever the name says.
     """
 
     redaction: Redaction
@@ -561,6 +566,12 @@ class CredentialScrub:
     value_posts: int = 0
     marked_failed: int = 0
     password_input: bool = False
+    password_names: frozenset[str] = frozenset()
+
+    def is_password_name(self, name: str | None) -> bool:
+        """Whether a credential post's field *name* is a password's: password-like
+        (:func:`names_a_password`), or a recorded password input's name."""
+        return name in self.password_names or names_a_password(name)
 
     @property
     def posts(self) -> int:
@@ -625,10 +636,12 @@ class _RunPages:
         targets: Where every login form posts
             (:func:`graftpunk.har.digest.login_form_targets`).
         password_input: Whether any page holds an ``<input type="password">``.
+        password_names: The ``name`` of each such input.
     """
 
     targets: frozenset[tuple[str, str]]
     password_input: bool
+    password_names: frozenset[str] = frozenset()
 
 
 def _run_pages(entries: list[dict[str, Any]], root: Path) -> _RunPages:
@@ -642,6 +655,7 @@ def _run_pages(entries: list[dict[str, Any]], root: Path) -> _RunPages:
     from graftpunk.har.digest import login_form_targets
 
     targets: set[tuple[str, str]] = set()
+    names: set[str] = set()
     found = False
 
     def add(
@@ -657,6 +671,7 @@ def _run_pages(entries: list[dict[str, Any]], root: Path) -> _RunPages:
             inputs.feed(page_html)
             inputs.close()
             found = found or inputs.found
+            names.update(inputs.names)
         except Exception as exc:  # noqa: BLE001 - one page never stops the save
             LOG.info("credential_scrub_page_unread", exc_type=type(exc).__name__)
 
@@ -684,7 +699,7 @@ def _run_pages(entries: list[dict[str, Any]], root: Path) -> _RunPages:
         if snapshot is not None:
             page = str(request.get("_domSnapshotUrl") or url)
             add(snapshot, page, page, snapshot=True)
-    return _RunPages(frozenset(targets), found)
+    return _RunPages(frozenset(targets), found, frozenset(names))
 
 
 # The methods whose body can carry a login: a POST, and a PUT or PATCH, as an API
@@ -710,7 +725,8 @@ def credential_post_redaction(
     posts (:func:`_run_pages`). Values are taken from credential posts only. Each
     one's values are read by :func:`graftpunk.har.digest.read_body_values` (a JSON
     value at any depth under its nearest name). One whose own field name is
-    password-like (:func:`names_a_password`) is a secret when it is at least 3
+    password-like (:func:`names_a_password`), or is the ``name`` of an ``<input
+    type="password">`` a recorded page holds, is a secret when it is at least 3
     characters and no flag word (:func:`_password_value`); one whose own field name
     is an identifier field's (:func:`graftpunk.session_identity.is_identifier_field`)
     is an identifier. An identifier-first login posts its username in an earlier
@@ -740,6 +756,10 @@ def credential_post_redaction(
     root = run_dir.resolve()
     pages = _run_pages(entries, root)
     targets = pages.targets
+
+    def password_name(name: str) -> bool:
+        return name in pages.password_names or names_a_password(name)
+
     secrets: dict[str, None] = {}
     identifiers: dict[str, None] = {}
     names: set[str] = set()
@@ -787,7 +807,7 @@ def credential_post_redaction(
         passwords = [
             value
             for path, value in values
-            if path and names_a_password(path[-1]) and _password_value(value)
+            if path and password_name(path[-1]) and _password_value(value)
         ]
         if not passwords and not by_names:
             # Not split into fields (a broken JSON body, XML): its password may be in it.
@@ -798,7 +818,7 @@ def credential_post_redaction(
             for path, value in values
             if path
             and _not_redacted(value)
-            and not names_a_password(path[-1])
+            and not password_name(path[-1])
             and is_identifier_field(identifier_key(path[-1]))
         ]
         value_posts += bool(passwords or users)
@@ -841,6 +861,7 @@ def credential_post_redaction(
         value_posts=value_posts,
         marked_failed=len([v for v in dict.fromkeys(marked) if v in run_values or v in post_only]),
         password_input=pages.password_input,
+        password_names=pages.password_names,
     )
 
 
@@ -856,7 +877,8 @@ def scrub_credential_post_bodies(
     scrubbed by its structure, before the run-wide scrub: split into fields as the
     digest reads them, each value equal to one of ``found.run_values`` replaced by
     ``***REDACTED***`` under any name and one of ``found.post_only`` under a
-    password-like name (:func:`names_a_password`), and written back in its own format
+    password's name (:meth:`CredentialScrub.is_password_name`), and written back in
+    its own format
     (:func:`graftpunk.observe.failure_text.scrub_failed_password`): a form keeps its
     pairs and encoding, and JSON stays valid JSON (a number becomes the redaction
     string). A value is found however the body spelled it (``%7E`` for ``~``), and a
@@ -869,7 +891,7 @@ def scrub_credential_post_bodies(
 
     def scrub(text: str, content_type: str) -> str:
         text = scrub_failed_password(text, content_type, found.run_values, _any_name)
-        return scrub_failed_password(text, content_type, found.post_only, names_a_password)
+        return scrub_failed_password(text, content_type, found.post_only, found.is_password_name)
 
     root = run_dir.resolve()
     out = list(entries)
@@ -1017,7 +1039,8 @@ def _scrub_note(found: CredentialScrub) -> str:
         f"[yellow]Scrubbed {count} value{'' if count == 1 else 's'} from {source}. "
         "The run can still hold a password the scrub did not recognise: one sent by a "
         "request that is no credential post (a login a script posts elsewhere, a sign-up, "
-        "a password change), one under a name without password, passwd or pwd in it, a "
+        "a password change), one under a name that holds no password, passwd or pwd and "
+        "is not the name of a password input on a recorded page, a "
         f"boolean one or one under {_MIN_REDACT_LEN} characters, and any copy in response "
         f"bodies, console.jsonl or the screenshots. See {_SCRUB_DOCS}.[/yellow]"
     )

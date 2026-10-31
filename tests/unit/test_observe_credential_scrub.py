@@ -639,23 +639,44 @@ class TestTheDigestsRule:
         assert _credential_posts(storage)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["pass", "pw", "pin", "passcode", "userSecret"])
-    async def test_a_password_under_a_name_with_no_hint_is_left_and_the_note_printed(
+    @pytest.mark.parametrize("name", ["pin", "pass", "pw", "passcode", "userSecret", "credential"])
+    async def test_a_password_under_its_form_password_input_name_is_scrubbed(
         self, tmp_path: Path, name: str
     ) -> None:
-        """A credential post by its target, whose password field holds no
-        ``password``, ``passwd`` or ``pwd``: its email is scrubbed and its password
-        left, and the note says the run can still hold one."""
+        """The login form's ``<input type="password">`` is named *name*: the
+        credential post's value under that name is the password, whatever it says."""
         storage = _storage(tmp_path)
         page = _login_page()
         page["response"]["content"]["text"] = _LOGIN_PAGE.replace(
             "name='password'", f"name='{name}'"
         )
         post = _form_post()
+        post["request"]["postData"]["text"] = f"email=alice%40example.com&{name}=hunter12"
+        echo = _entry("GET", "/account", body=json.dumps({"last": "hunter12"}))
+        console = MagicMock()
+
+        await _save(storage, _Backend([page, post, echo]), console)
+
+        assert _har(storage)[1]["request"]["postData"]["text"] == (
+            f"email={REDACTED}&{name}={REDACTED}"
+        )
+        assert b"hunter12" not in _everything(storage.run_dir)
+        assert "Scrubbed 2 values from 1 credential post." in _printed(console)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["pin", "pass", "passcode", "userSecret"])
+    async def test_a_field_with_no_hint_that_is_no_password_input_name_is_left(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        """The site's password input is named ``password``; a credential post's
+        other field under a name with no ``password``, ``passwd`` or ``pwd`` is left,
+        and the note says the run can still hold one."""
+        storage = _storage(tmp_path)
+        post = _form_post()
         post["request"]["postData"]["text"] = f"email=alice%40example.com&{name}=sunflower99"
         console = MagicMock()
 
-        await _save(storage, _Backend([page, post]), console)
+        await _save(storage, _Backend([_login_page(), post]), console)
 
         assert _har(storage)[1]["request"]["postData"]["text"] == (
             f"email={REDACTED}&{name}=sunflower99"
