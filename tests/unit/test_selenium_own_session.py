@@ -202,6 +202,25 @@ class TestTheProcesses:
 
         assert _exited_within(running, 10) == -signal.SIGTERM
 
+    def test_a_pid_now_held_by_a_process_without_our_marker_is_never_signaled(
+        self, armed: None, spawned: list[subprocess.Popen[Any]]
+    ) -> None:
+        """A Chrome known by pid exited and the kernel reused its pid: neither the
+        signal handler nor ``end()`` may signal what holds it now."""
+        unmarked = _sleeper(subprocess.Popen, "--remote-debugging-port=0")
+        someone_elses = _sleeper(subprocess.Popen, "--remote-debugging-port=0", owner_switch(1))
+        spawned += [unmarked, someone_elses]
+        processes = SeleniumProcesses()
+        processes.add_pid(unmarked.pid)
+        processes.add_pid(someone_elses.pid)
+
+        processes._terminate_for_signal()
+        processes.end()
+
+        assert _exited_within(unmarked, 1) is None
+        assert _exited_within(someone_elses, 0.1) is None
+        assert processes not in signals.live_browsers()
+
     def test_releasing_a_quit_driver_leaves_the_registry(self) -> None:
         processes = SeleniumProcesses()
         processes.add_pid(2**22)

@@ -480,8 +480,11 @@ class SeleniumProcesses:
     SIGTERM and SIGHUP handlers as soon as its first process is added, and
     released by the code that quits the driver. A process graftpunk's launch
     spawned is held as its ``Popen``, so a handler never signals one that has
-    exited and been reaped; a Chrome that chromedriver spawned is known by pid
-    only, and is released with the driver.
+    exited and been reaped. A Chrome that chromedriver spawned is known by pid
+    only, so it is signaled only while the process table still shows that pid
+    with this process's owner marker or as the child of a held chromedriver
+    (:meth:`_still_ours`); a pid reused by another program meanwhile is left
+    alone.
     """
 
     def __init__(self) -> None:
@@ -503,28 +506,43 @@ class SeleniumProcesses:
         """Every process held, the spawned ones first."""
         return [process.pid for process in self._processes] + list(self._pids)
 
+    def _still_ours(self) -> list[int]:
+        """The processes known by pid that are still this launch's, from one ``ps`` listing.
+
+        A pid held by :meth:`add_pid` counts while it is listed with this
+        process's owner marker or as the child of a held chromedriver; a
+        browser whose parent is a held chromedriver counts too, which is how a
+        Chrome spawned by a start that then failed is found. That is the
+        reaper's matching (the marker, the debugging port), so a pid that
+        another program has reused since is skipped. An unreadable process
+        table yields nothing: not signaling is the safe direction.
+        """
+        drivers = {process.pid for process in self._processes if process.poll() is None}
+        held = set(self._pids)
+        me = os.getpid()
+        return [
+            proc.pid
+            for proc in chrome_orphans.list_chrome_processes()
+            if proc.ppid in drivers or (proc.pid in held and proc.owner_pid == me)
+        ]
+
     def _terminate_for_signal(self) -> None:
-        """Send each process still running one SIGTERM, and nothing else."""
+        """Send each process still running, and still ours, one SIGTERM, and nothing else."""
         live = [process.pid for process in self._processes if process.poll() is None]
-        for pid in [*live, *self._pids]:
+        for pid in [*live, *self._still_ours()]:
             chrome_orphans.terminate_pid(pid)
 
     def end(self) -> None:
         """End every process, for a start that failed or was interrupted. Never raises.
 
-        The Chromes a held chromedriver spawned are looked up first: a SIGTERM
-        to chromedriver leaves its Chrome running. Then SIGTERM to all, up to
+        The processes known by pid, the Chromes a held chromedriver spawned
+        among them, are looked up first (:meth:`_still_ours`): a SIGTERM to
+        chromedriver leaves its Chrome running. Then SIGTERM to all, up to
         ``_END_TERM_TIMEOUT_S`` for each spawned process to exit, and SIGKILL
         for one that has not.
         """
         try:
-            started_by_them = [
-                pid
-                for process in self._processes
-                if process.poll() is None
-                for pid in chromes_started_by(process.pid)
-            ]
-            for pid in [*started_by_them, *self._pids]:
+            for pid in self._still_ours():
                 with contextlib.suppress(OSError):
                     os.kill(pid, signal.SIGTERM)
             for process in self._processes:
