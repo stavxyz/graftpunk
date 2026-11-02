@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.4] - 2026-11-02
+
+This is a patch release. On an Apple Silicon Mac the stealth browser (`create_stealth_driver`, `SeleniumBackend` with `use_stealth=True`, which is its default, and so `BrowserSession` on its default `selenium` backend) now starts Chrome as a native arm64 process (#356). Before, undetected-chromedriver fetched its Intel chromedriver on every Mac, that driver ran under Rosetta, and the Chrome it started ran under Rosetta too, which is slower and makes macOS 26 warn on each launch that "Chrome" will not open in a future release of macOS. Item 1 is about the driver file this changes; item 2 is about upgrading itself. On Linux and Windows the driver now comes from webdriver-manager as well, as it already did for the non-stealth backend, and nothing else changes.
+
+### Upgrading
+
+1. **The stealth driver is the chromedriver webdriver-manager caches, patched in place** (#356). It lives under `~/.wdm/drivers/chromedriver/`, the same file the non-stealth `SeleniumBackend` runs, and undetected-chromedriver's patch is applied to that file before launch; on macOS the patched file is then signed ad hoc with `codesign`, because macOS kills an arm64 executable whose signature no longer matches its contents. The non-stealth backend runs the patched file too, which changes nothing it does. undetected-chromedriver's own download directory (`~/Library/Application Support/undetected_chromedriver/` on macOS) is no longer used and can be deleted.
+2. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Fixed
+
+- **The stealth browser runs native on Apple Silicon** (#356). `create_stealth_driver` let undetected-chromedriver download its own chromedriver, and that library's `Patcher` names `mac-x64` for every Mac, so on Apple Silicon the driver was an Intel binary running under Rosetta, and the Chrome it started inherited Rosetta (a translated process starts a universal child translated). Each stealth launch made macOS 26 show "Support Ending for Intel-based Apps: This version of "Chrome" will not open in a future release of macOS." The driver now comes from webdriver-manager, which picks the host's architecture (`mac-arm64` there), is patched before launch, and on macOS is signed again: the patch alone left the arm64 driver with an invalid signature, and the kernel killed it at launch (`SIGKILL`, logged as `CODE SIGNING: ... rejecting invalid page`). If `codesign` is not on `PATH`, the launch fails with `ChromeDriverError` before Chrome starts. Verified on an M5 MacBook Air with macOS 26.6.2 and Chrome 156: the driver is `arm64`, `codesign -vv` passes, and `vmmap` shows the Chrome process as `ARM64`.
+
 ## [1.36.3] - 2026-11-01
 
 This is a patch release. `gp observe digest` no longer fails on a run holding a JSON request or response body nested thousands of levels deep (#327). In 1.36.2 such a body raised `RecursionError` and the digest of the whole run failed; now the run's digest completes. A digest that completed before is unchanged, and a HAR file nested too deep to parse is now a one-line error. Item 1 is about upgrading itself. The format of a run's files is unchanged; the digest's one addition is the `too_deep` flag on a response shape nested too deep to parse.

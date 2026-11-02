@@ -7,10 +7,13 @@ Combines multiple anti-detection techniques:
 """
 
 import platform as platform_mod
+import shutil
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 
 import undetected_chromedriver as uc
+import webdriver_manager.chrome
 from selenium_stealth import stealth
 
 from graftpunk.browser_launch import (
@@ -99,6 +102,31 @@ def _apply_stealth(driver: uc.Chrome) -> None:
     )
 
 
+def _patch_driver(driver_path: str) -> None:
+    """Apply undetected-chromedriver's patch to *driver_path* ahead of launch.
+
+    ``uc.Chrome`` patches a driver it is handed and starts it in the same
+    call, so the patch has to happen here for the signing step to fit in
+    between. A driver already patched is left as it is.
+    """
+    uc.Patcher(executable_path=driver_path).auto()
+    if platform_mod.system() == "Darwin":
+        # The patch rewrites bytes inside a signed Mach-O. On Apple Silicon
+        # the kernel kills an arm64 executable whose signature no longer
+        # matches its pages ("Unrecoverable CT signature issue"), so sign the
+        # patched driver ad hoc before it runs.
+        codesign = shutil.which("codesign")
+        if codesign is None:
+            raise ChromeDriverError(
+                "codesign not found on PATH; the patched chromedriver cannot be signed"
+            )
+        subprocess.run(  # noqa: S603
+            [codesign, "--force", "--sign", "-", driver_path],
+            check=True,
+            capture_output=True,
+        )
+
+
 def create_stealth_driver(
     headless: bool = False,
     profile_dir: Path | None = None,
@@ -175,6 +203,18 @@ def create_stealth_driver(
         LOG.warning("chrome_version_detection_failed", error=str(exc))
         chrome_version = None
 
+    # undetected-chromedriver's own download is the mac-x64 build on every
+    # Mac (its Patcher has no arm64 branch). On Apple Silicon that driver runs
+    # under Rosetta and starts Chrome translated with it, so macOS warns that
+    # Chrome is an Intel app. webdriver-manager resolves the host's
+    # architecture, so the driver comes from there and undetected-chromedriver
+    # only patches it (#356).
+    driver_path = webdriver_manager.chrome.ChromeDriverManager(
+        driver_version=str(chrome_version) if chrome_version is not None else None
+    ).install()
+    LOG.info("chromedriver_resolved", path=driver_path)
+    _patch_driver(driver_path)
+
     # With graftpunk's termination handlers installed (the gp CLI, or a
     # program that called install_termination_cleanup()), chromedriver and
     # Chrome start in a session of their own, so a terminal's Ctrl+C reaches
@@ -194,6 +234,7 @@ def create_stealth_driver(
             options=options,
             user_data_dir=str(profile_dir),
             version_main=chrome_version,
+            driver_executable_path=driver_path,
         )
         if launch is not None:
             attach_selenium_processes(driver, launch.processes)
