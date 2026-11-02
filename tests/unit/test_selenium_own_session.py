@@ -403,9 +403,12 @@ class _FakeUcChrome:
     created: list[_FakeUcChrome] = []
     popen_chrome: Any = None
 
-    def __init__(self, options: Any, user_data_dir: str, version_main: Any) -> None:
+    def __init__(
+        self, options: Any, user_data_dir: str, version_main: Any, driver_executable_path: str
+    ) -> None:
         popen = self.popen_chrome or undetected_chromedriver.subprocess.Popen
         self.options = options
+        self.driver_executable_path = driver_executable_path
         self.chrome = _sleeper(popen, *options.arguments)
         self.browser_pid = self.chrome.pid
         self.service = SimpleNamespace(
@@ -426,10 +429,16 @@ class _FakeUcChrome:
 
 @pytest.fixture()
 def fake_uc(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[type[_FakeUcChrome]]:
-    """create_stealth_driver with the stand-in Chrome, no version probe and no stealth JS."""
+    """create_stealth_driver with the stand-in Chrome, no version probe, no driver
+    download or patch, and no stealth JS."""
     fake = type("FakeUcChrome", (_FakeUcChrome,), {"created": []})
     monkeypatch.setattr(undetected_chromedriver, "Chrome", fake)
     monkeypatch.setattr("graftpunk.stealth.get_chrome_version", lambda major: "156")
+    monkeypatch.setattr(
+        "webdriver_manager.chrome.ChromeDriverManager",
+        lambda driver_version: SimpleNamespace(install=lambda: str(tmp_path / "chromedriver")),
+    )
+    monkeypatch.setattr("graftpunk.stealth._patch_driver", lambda driver_path: None)
     monkeypatch.setattr("graftpunk.stealth._apply_stealth", lambda driver: None)
     monkeypatch.setattr("graftpunk.stealth.get_profile_dir", lambda: tmp_path / "profile")
     yield fake
