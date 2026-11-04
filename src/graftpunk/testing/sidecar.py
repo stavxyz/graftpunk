@@ -43,8 +43,9 @@ is never a path, never holds an account label, and holds nothing derived from a
 recorded value. Schema 4 also adds the context reason ``out_of_scope_only``.
 From schema 5, ``graphql_operation`` names the GraphQL operation the captured
 request carried (``graftpunk.har.graphql``), its name or ``(anonymous)``, the same
-one the fixture's file name holds; null for a request that was not GraphQL and for
-a hand-made fixture's sidecar (#367).
+one the fixture's file name holds; null in a hand-made schema 5 sidecar (#367). A
+sidecar of a request that carried no operation is written as schema 4, so a
+graftpunk older than 1.39.0 still reads it.
 A name that holds an account value
 (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``
@@ -75,7 +76,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from graftpunk.contracts import UnknownSchemaError, current_schema, refuse_unknown_schema
+from graftpunk.contracts import (
+    SIDECAR_SCHEMA_WITHOUT_OPERATION,
+    UnknownSchemaError,
+    current_schema,
+    refuse_unknown_schema,
+)
 from graftpunk.exceptions import GraftpunkError
 
 __all__ = [
@@ -381,7 +387,8 @@ def is_sidecar(path: Path) -> bool:
 
 
 def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
-    """*sidecar* as the current schema's JSON object.
+    """*sidecar* as a JSON object: the current schema when it names a GraphQL
+    operation, else schema 4, which holds every other key.
 
     Raises:
         SidecarError: *sidecar* has flagged names and no reasons for them (a
@@ -398,7 +405,7 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
     # copies), and one changed after construction must not reach a file the
     # loader would refuse.
     reasons = _checked_reasons(sidecar)
-    return {
+    payload: dict[str, object] = {
         "schema": current_schema("sidecar"),
         "status": sidecar.status,
         "content_type": sidecar.content_type,
@@ -415,6 +422,10 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
         "graphql_operation": sidecar.graphql_operation,
         "redacted_names": sidecar.redacted_names,
     }
+    if sidecar.graphql_operation is None:
+        payload["schema"] = SIDECAR_SCHEMA_WITHOUT_OPERATION
+        del payload["graphql_operation"]
+    return payload
 
 
 def sidecar_text(sidecar: Sidecar) -> str:

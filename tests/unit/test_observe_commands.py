@@ -668,11 +668,10 @@ class TestFixturesCommand:
             "flagged_reasons",
             "checked_names",
             "observe_run",
-            "graphql_operation",
             "redacted_names",
         }
-        assert sidecar["schema"] == 5
-        assert sidecar["graphql_operation"] is None
+        # No GraphQL operation: schema 4, which a graftpunk before 1.39.0 reads (#367).
+        assert sidecar["schema"] == 4
         assert sidecar["observe_run"] == {"plugin": "myshop", "run": "run-1"}
         assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
         assert sidecar["flagged_names"] == ["shop_session"]
@@ -1630,7 +1629,7 @@ class TestFlaggedNamesAreJudgedByTheirValues:
         """A sidecar committed by 1.32.x keeps today's behaviour: every flagged
         name is looked for, and the problem says how to regenerate it."""
         tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411, "total": "12.50"})
-        del sidecar["checked_names"], sidecar["observe_run"], sidecar["graphql_operation"]
+        del sidecar["checked_names"], sidecar["observe_run"]
         sidecar["schema"] = 2
         (meta,) = tree.glob("*.meta.json")
         meta.write_text(json.dumps(sidecar))

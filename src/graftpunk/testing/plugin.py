@@ -41,7 +41,7 @@ from typing import Any, Literal
 import pytest
 
 import graftpunk.observe
-from graftpunk.contracts import current_schema
+from graftpunk.contracts import SIDECAR_SCHEMA_WITHOUT_OPERATION
 from graftpunk.observe.storage import is_session_dir_of
 from graftpunk.testing.decoding import decoded_forms, whole_name_regex
 from graftpunk.testing.recorded import (
@@ -212,15 +212,16 @@ def _stat_kind(
 
 
 def _missing_sidecar(relative: Path, sidecar_name: str) -> str:
-    schema = current_schema("sidecar")
+    # Schema 4: a hand-made fixture names no GraphQL operation, and schema 5 adds
+    # only that key (graftpunk.testing.sidecar.sidecar_payload, #367).
+    schema = SIDECAR_SCHEMA_WITHOUT_OPERATION
     return (
         f"{relative}: no sidecar ({sidecar_name}). For a fixture derived from a capture, "
         f"copy the sidecar gp observe fixtures wrote beside the capture. For a hand-made "
         f'fixture, write {sidecar_name} with "schema": {schema}, a status, a content type, '
         f'"body_params": [], "capture_sha256": null, "flagged_names": [], '
-        f'"flagged_reasons": {{}}, "checked_names": [], "observe_run": null, '
-        f'"graphql_operation": null, and "redacted_names": 0, which declares that the file '
-        f"came off no account."
+        f'"flagged_reasons": {{}}, "checked_names": [], "observe_run": null, and '
+        f'"redacted_names": 0, which declares that the file came off no account.'
     )
 
 

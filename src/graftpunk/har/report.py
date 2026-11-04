@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from graftpunk.contracts import current_schema
+from graftpunk.contracts import ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS, current_schema
 from graftpunk.har.digest import (
     INTERNAL,
     OMIT_EMPTY,
@@ -525,16 +525,21 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     that left any out carries ``custom_headers_not_shown``, how many. Added within
     schema 1, on those entries only.
 
-    A GraphQL operation row (#367) carries ``operation``, the operation's name or
-    ``(anonymous)``, and its ``body_params`` are the operation's variables. Added
-    within schema 1, on those entries only: a run without GraphQL prints what it
-    printed before, and on a run with GraphQL ``method`` and ``template`` repeat
-    across entries, which ``operation`` tells apart.
+    Schema 2 (#367) adds ``operation`` on a GraphQL operation row, the operation's
+    name or ``(anonymous)``, whose ``body_params`` are the operation's variables. On
+    such a run ``method`` and ``template`` repeat across entries, and ``operation``
+    tells them apart, so a projection holding any operation row is schema 2, which
+    a reader written for schema 1 refuses at once. A run without one is written as
+    schema 1, what it printed before
+    (:data:`graftpunk.contracts.ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS`).
     """
     source = d.source
     spellings = header_spellings(d)
+    with_operations = any(endpoint.operation for endpoint in d.endpoints)
     return {
-        "schema": current_schema("endpoints"),
+        "schema": current_schema("endpoints")
+        if with_operations
+        else ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS,
         "source": {
             "session": source.session,
             "run_id": source.run_id,

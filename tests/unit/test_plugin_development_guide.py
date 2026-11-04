@@ -85,7 +85,7 @@ def test_the_sidecar_json_example_matches_sidecar_text_byte_for_byte() -> None:
         checked_names=tuple(doc_json["checked_names"]),
         observe_run=ObserveRun(**doc_json["observe_run"]),
         redacted_names=doc_json["redacted_names"],
-        graphql_operation=doc_json["graphql_operation"],
+        graphql_operation=doc_json.get("graphql_operation"),
     )
     assert block.strip() == sidecar_text(sidecar).strip()
 

@@ -33,7 +33,7 @@ set -u
 
 SKILL_REQUIRES_GRAFTPUNK="1.39.0"
 SKILL_READS_INFO_SCHEMA=1
-SKILL_READS_ENDPOINTS_SCHEMA=1
+SKILL_READS_ENDPOINTS_SCHEMA=2
 
 INSTALL_LINE="uv tool install graftpunk   (or: pip install graftpunk)"
 FULL_UPGRADE_LINE="uv tool upgrade graftpunk   (or: pip install --upgrade graftpunk)"

@@ -85,16 +85,16 @@ def test_matching_contracts_exit_0_and_still_print_the_facts() -> None:
 def test_a_caller_reading_an_older_schema_is_named_the_older_side(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setitem(contracts._CURRENT, "endpoints", 2)
-    result = runner.invoke(app, ["version", "--json", "--contract", "endpoints=1"])
+    monkeypatch.setitem(contracts._CURRENT, "endpoints", 3)
+    result = runner.invoke(app, ["version", "--json", "--contract", "endpoints=2"])
     assert result.exit_code == 3
     assert "endpoints" in result.output
     assert "the caller is older than graftpunk" in result.output
-    assert json.loads(result.stdout)["contracts"]["endpoints"] == 2
+    assert json.loads(result.stdout)["contracts"]["endpoints"] == 3
 
 
 def test_a_caller_reading_a_newer_schema_names_graftpunk_the_older_side() -> None:
-    result = runner.invoke(app, ["version", "--contract", "endpoints=2"])
+    result = runner.invoke(app, ["version", "--contract", "endpoints=3"])
     assert result.exit_code == 3
     assert "graftpunk is older than the caller" in result.output
 
@@ -135,7 +135,7 @@ def test_a_dev_or_local_version_is_ordered_not_rejected(
 
 
 def test_two_mismatches_in_one_call_print_one_stderr_line_each() -> None:
-    result = runner.invoke(app, ["version", "--contract", "endpoints=2", "--contract", "nosuch=1"])
+    result = runner.invoke(app, ["version", "--contract", "endpoints=3", "--contract", "nosuch=1"])
     assert result.exit_code == 3
     lines = result.stderr.splitlines()
     assert len(lines) == 2

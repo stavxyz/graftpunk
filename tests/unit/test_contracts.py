@@ -27,15 +27,15 @@ from graftpunk.contracts import (
 
 _PACKAGE = Path(graftpunk.__file__).parent
 # A schema number written as a literal anywhere but contracts.py: a "schema" key
-# with a digit, a schema= keyword with a digit, or a *_SCHEMA constant with a digit.
+# with a digit, a schema= keyword with a digit, or a *_SCHEMA* constant with a digit.
 _LITERAL_SCHEMA_RE = re.compile(
-    r"""["']schema["']\s*:\s*\d|\bschema\s*=\s*\d|_SCHEMA\s*(?::[^=\n]*)?=\s*\d"""
+    r"""["']schema["']\s*:\s*\d|\bschema\s*=\s*\d|_SCHEMA\w*\s*(?::[^=\n]*)?=\s*\d"""
 )
 
 
 class TestCurrentNumbers:
     def test_one_number_per_surface(self) -> None:
-        assert current_schema("endpoints") == ENDPOINTS_SCHEMA == 1
+        assert current_schema("endpoints") == ENDPOINTS_SCHEMA == 2
         assert current_schema("sidecar") == SIDECAR_SCHEMA == 5
 
     def test_cli_contracts_lists_every_surface_a_caller_reads_through_the_cli(self) -> None:
@@ -50,7 +50,7 @@ class TestCurrentNumbers:
 
     def test_the_info_surface_is_read_through_the_cli(self) -> None:
         assert current_schema("info") == INFO_SCHEMA == 1
-        assert cli_contracts() == {"endpoints": 1, "info": 1}
+        assert cli_contracts() == {"endpoints": 2, "info": 1}
 
 
 class TestRefuseUnknownSchema:
@@ -61,7 +61,7 @@ class TestRefuseUnknownSchema:
         with pytest.raises(UnknownSchemaError, match="sidecar"):
             refuse_unknown_schema("sidecar", None)
 
-    @pytest.mark.parametrize("value", [0, 2, "1", True, 1.0])
+    @pytest.mark.parametrize("value", [0, 3, "1", True, 1.0])
     def test_an_unknown_number_is_refused_with_the_surface_named(self, value: object) -> None:
         with pytest.raises(UnknownSchemaError, match="endpoints"):
             refuse_unknown_schema("endpoints", value)

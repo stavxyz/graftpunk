@@ -26,6 +26,12 @@ it through a ``gp`` command, its name in ``CLI_SURFACES``. The payload's writer
 then reads its number through :func:`current_schema` and never writes a
 literal. A test holds ``_CURRENT`` to ``Surface`` and ``CLI_SURFACES`` to
 ``_CURRENT``, so a missed edit fails the suite.
+
+One exception, by design: a payload that holds nothing its current version added
+is written as the earlier version, so a reader of that version keeps reading it.
+The ``--endpoints-json`` projection of a run with no GraphQL operation row is
+schema 1 (:data:`ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS`), and a sidecar naming no
+GraphQL operation is schema 4 (:data:`SIDECAR_SCHEMA_WITHOUT_OPERATION`), #367.
 """
 
 from __future__ import annotations
@@ -37,8 +43,10 @@ import graftpunk
 __all__ = [
     "CLI_SURFACES",
     "ENDPOINTS_SCHEMA",
+    "ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS",
     "INFO_SCHEMA",
     "SIDECAR_SCHEMA",
+    "SIDECAR_SCHEMA_WITHOUT_OPERATION",
     "Surface",
     "UnknownSchemaError",
     "cli_contracts",
@@ -50,9 +58,18 @@ __all__ = [
 
 Surface = Literal["endpoints", "info", "sidecar"]
 
-ENDPOINTS_SCHEMA: Final = 1
+ENDPOINTS_SCHEMA: Final = 2
 INFO_SCHEMA: Final = 1
 SIDECAR_SCHEMA: Final = 5
+
+ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS: Final = 1
+"""The schema an ``--endpoints-json`` projection with no GraphQL operation row is
+written as: schema 2 adds only ``operation``, so a reader written for schema 1
+keeps reading such a run (#367)."""
+SIDECAR_SCHEMA_WITHOUT_OPERATION: Final = 4
+"""The schema a sidecar naming no GraphQL operation is written as: schema 5 adds
+only ``graphql_operation``, so a fixture of any other request stays readable by a
+graftpunk from 1.35.0 to 1.38.x (#367)."""
 
 _CURRENT: Final[dict[Surface, int]] = {
     "endpoints": ENDPOINTS_SCHEMA,
