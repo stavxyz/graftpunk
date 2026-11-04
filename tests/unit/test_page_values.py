@@ -201,14 +201,15 @@ def test_skipped_region_mentioning_names_where_a_tag_was_not_read(
 
 
 def _seconds(build: Callable[[int], str], n: int) -> float:
-    """The fastest of three parses of a page of size *n* (a fresh text each time,
-    so the cache does not answer)."""
+    """The least CPU time of five parses of a page of size *n* (a fresh text each
+    time, so the cache does not answer). CPU time and the minimum keep a busy
+    machine (other xdist workers) from reading as a slow parse."""
     best = float("inf")
-    for attempt in range(3):
+    for attempt in range(5):
         page = build(n) + f"<!--{attempt}-->"
-        start = time.perf_counter()
+        start = time.process_time()
         page_values(page)
-        best = min(best, time.perf_counter() - start)
+        best = min(best, time.process_time() - start)
     return best
 
 
@@ -233,8 +234,8 @@ _ROW = '<tr><td class="c">cell &amp; text</td><td><a href="/x?a=1&b=2">link</a><
     ],
 )
 def test_cost_grows_linearly(build: Callable[[int], str]) -> None:
-    """Four times the text costs about four times the time; a quadratic parse
-    would cost sixteen. The bound of ten leaves room for timer noise."""
+    """Eight times the text costs about eight times the time; a quadratic parse
+    would cost sixty-four. The bound of sixteen leaves room for timer noise."""
     small = _seconds(build, 250_000)
-    large = _seconds(build, 1_000_000)
-    assert large < 10 * max(small, 1e-3), (small, large)
+    large = _seconds(build, 2_000_000)
+    assert large < 16 * max(small, 1e-3), (small, large)
