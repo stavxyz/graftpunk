@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
-from graftpunk.dialogs import DialogAnswerer, answer_dialogs
+from graftpunk.dialogs import DialogAnswerer, answer_dialogs, new_tab_dialog_counts
 from graftpunk.har.parser import cookie_header_pairs
 from graftpunk.har.paths import bare_path, holds_an_id
 from graftpunk.har.selectors import MAX_SELECTOR_LENGTH, MAX_SHOWN_FIELDS, bounded_selector
@@ -1784,8 +1784,9 @@ class NodriverCaptureBackend:
 
     @property
     def dialogs_answered(self) -> int:
-        """How many JavaScript dialogs the tab's answerer accepted (only a headless
-        capture has one), as counted when stop ended."""
+        """How many JavaScript dialogs a headless capture's browser accepted, on the
+        recorded tab and on each tab or popup opened later (#353), as counted when
+        stop ended."""
         return self._current_dialog_counts()[0]
 
     def _current_dialog_counts(self) -> tuple[int, int]:
@@ -1793,7 +1794,8 @@ class NodriverCaptureBackend:
             return self._dialog_counts
         if self._dialogs is None:
             return (0, 0)
-        return (self._dialogs.answered, self._dialogs.failed)
+        new_answered, new_failed = new_tab_dialog_counts(self._browser)
+        return (self._dialogs.answered + new_answered, self._dialogs.failed + new_failed)
 
     def start_capture(self) -> None:
         """Begin capturing browser data."""

@@ -1052,3 +1052,92 @@ class TestObserveArmsTheSignalHandlers:
             )
 
         assert signal.getsignal(signal.SIGTERM) is signals._handle_termination
+
+
+class TestObserveGoClosesTheNewTabAnswerer:
+    """#353: the new-tab answerer's connection keeps auto-attach on until it is
+    closed, so gp observe go closes it once the run is saved, then stops Chrome."""
+
+    @staticmethod
+    def _observed(browser: object) -> object:
+        from graftpunk.cli.observe_browser import ObserveSession
+
+        tab = MagicMock()
+        tab.sleep = AsyncMock()
+        return ObserveSession(
+            browser=browser,
+            handle=MagicMock(),
+            tab=tab,
+            storage=MagicMock(),
+            backend=MagicMock(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_run_is_saved_then_the_answerer_closed_then_the_browser_stopped(
+        self,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from structlog.testing import capture_logs
+
+        from graftpunk import dialogs
+        from graftpunk.cli.observe_browser import run_observe_go
+        from tests.unit.test_headless_dialogs import ChromeEndpoint
+
+        opened: list[ChromeEndpoint] = []
+
+        async def open_socket(url: str) -> ChromeEndpoint:
+            opened.append(ChromeEndpoint(url))
+            return opened[-1]
+
+        order: list[tuple[str, bool]] = []
+        browser = SimpleNamespace(
+            websocket_url="ws://127.0.0.1:9/devtools/browser/x",
+            targets=[],
+            stop=lambda: order.append(("stop", opened[0].closed)),
+        )
+        with patch.object(dialogs, "_open_socket", open_socket):
+            assert await dialogs.answer_dialogs_in_new_tabs(browser) is not None
+
+        async def save(*args: object, **kwargs: object) -> None:
+            order.append(("save", opened[0].closed))
+
+        where = "graftpunk.cli.observe_browser"
+        with (
+            patch(
+                f"{where}.setup_observe_session", AsyncMock(return_value=self._observed(browser))
+            ),
+            patch(f"{where}.save_observe_run", save),
+            patch(f"{where}.signals.unregister_live_browser"),
+            patch(f"{where}.remove_browser_temp_profile"),
+            capture_logs() as logs,
+        ):
+            await run_observe_go("myshop", "https://myshop.example/", 0.0, 1024)
+
+        assert order == [("save", False), ("stop", True)]
+        assert "nodriver_dialog_answerer_lost" not in [e["event"] for e in logs]
+
+    @pytest.mark.asyncio
+    async def test_the_browser_still_stops_when_closing_the_answerer_raises(self) -> None:
+        from graftpunk.cli.observe_browser import run_observe_go
+
+        browser = MagicMock()
+        where = "graftpunk.cli.observe_browser"
+        with (
+            patch(
+                f"{where}.setup_observe_session", AsyncMock(return_value=self._observed(browser))
+            ),
+            patch(f"{where}.save_observe_run", AsyncMock()),
+            patch(
+                "graftpunk.dialogs.close_dialogs_in_new_tabs",
+                AsyncMock(side_effect=asyncio.CancelledError),
+            ),
+            patch(f"{where}.signals.unregister_live_browser") as unregister,
+            patch(f"{where}.remove_browser_temp_profile") as remove_profile,
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await run_observe_go("myshop", "https://myshop.example/", 0.0, 1024)
+
+        browser.stop.assert_called_once_with()
+        assert unregister.call_count == 1
+        remove_profile.assert_called_once_with(browser)

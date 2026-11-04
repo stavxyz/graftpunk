@@ -1,4 +1,4 @@
-"""Answering a page's JavaScript dialogs in a headless nodriver browser (#320).
+"""Answering a page's JavaScript dialogs in a headless nodriver browser (#320, #353).
 
 A page's ``alert()``, ``confirm()``, ``prompt()`` or ``beforeunload`` dialog stops its
 script until someone answers it, and while one is open every DevTools read of the
@@ -6,14 +6,23 @@ page waits too. In a headless browser nobody can answer it, so graftpunk does,
 through CDP: :func:`answer_dialogs` registers a ``Page.javascriptDialogOpening``
 handler on a tab and enables the Page domain, and each dialog is accepted with
 ``Page.handleJavaScriptDialog``. :func:`answer_dialogs_in_new_tabs` does the same for
-each tab or popup the browser opens later. A visible browser leaves dialogs to the
+each tab or popup the browser opens later, on a CDP connection of its own. Chrome
+holds a popup (and any other page the browser opens itself) before its first
+script until that answerer is in place, so a dialog the popup's first script opens
+is answered. A tab a program opens with ``get(url, new_tab=True)`` is not held: its
+first-script dialog is answered only when the answerer's install reaches Chrome
+before that script runs, a race (#363). A visible browser leaves dialogs to the
 user.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import itertools
+import json
 import urllib.parse
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from graftpunk.logging import get_logger
@@ -28,9 +37,21 @@ _DIALOG_ANSWER_WAIT_S = 5.0
 # answer per dialog however many callers ask for answering.
 _TAB_ATTR = "_gp_dialog_answerer"
 
-# The browser attribute that marks its new tabs as answered, so the handler is
-# registered once however many callers ask.
+# The browser attribute that holds its NewPageAnswerer, so a browser gets one
+# however many callers ask.
 _BROWSER_ATTR = "_gp_dialog_new_tabs"
+
+# The most one command of a NewPageAnswerer's install or resume waits for Chrome's
+# reply, so a lost reply cannot hold up the answerer's other work.
+_INSTALL_WAIT_S = 5.0
+
+# The largest message the NewPageAnswerer's connection reads (websockets' own
+# default is 1 MiB). It hears only target and Page events and command replies.
+_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+
+# The waits before each attempt to reconnect a NewPageAnswerer whose connection
+# Chrome closed, or that failed, while the browser runs; one attempt per entry.
+_RECONNECT_DELAYS_S = (0.5, 1.0, 2.0)
 
 
 class DialogAnswerer:
@@ -42,6 +63,10 @@ class DialogAnswerer:
         # there, and nodriver 0.50.6's Browser.get(url) opens another session on the
         # tab afterwards (see graftpunk.observe.capture._capture_session_kwargs).
         self._session_id: str | None = None
+        # Whether Page.enable went through: until then Chrome may report the tab's
+        # dialogs to no session of this answerer, so a page is left to it only once
+        # this is True (see _answered_elsewhere).
+        self.ready = False
         self.answered = 0
         self.failed = 0
 
@@ -53,31 +78,37 @@ class DialogAnswerer:
         URL's path or query, any of which can hold account data. An answer that
         fails (the dialog closed already, the target went away) or gets no reply
         within ``_DIALOG_ANSWER_WAIT_S`` is a debug line and nothing else."""
-        import nodriver.cdp.page as cdp_page
-
         from graftpunk.observe.capture import _capture_session_kwargs
 
-        kind = str(getattr(getattr(event, "type_", None), "value", "") or "unknown")
-        host = urllib.parse.urlsplit(str(getattr(event, "url", "") or "")).hostname
-        prompt_text = (getattr(event, "default_prompt", None) or "") if kind == "prompt" else None
-        try:
-            async with asyncio.timeout(_DIALOG_ANSWER_WAIT_S):
-                await self._tab.send(
-                    cdp_page.handle_java_script_dialog(accept=True, prompt_text=prompt_text),
-                    **_capture_session_kwargs(self._tab, self._session_id),
-                )
-        except Exception as exc:  # noqa: BLE001 - best-effort; never holds up the run
+        kwargs = _capture_session_kwargs(self._tab, self._session_id)
+        if await _accept_dialog(event, lambda cmd: self._tab.send(cmd, **kwargs)):
+            self.answered += 1
+        else:
             self.failed += 1
-            LOG.debug(
-                "nodriver_dialog_answer_failed",
-                dialog_type=kind,
-                host=host,
-                error=str(exc),
-                exc_type=type(exc).__name__,
-            )
-            return
-        self.answered += 1
-        LOG.info("nodriver_dialog_answered", dialog_type=kind, choice="accept", host=host)
+
+
+async def _accept_dialog(event: Any, send: Callable[[Any], Awaitable[Any]]) -> bool:
+    """Accept the dialog *event* announces through *send*, log the outcome, and
+    return whether Chrome took the answer (see :meth:`DialogAnswerer.on_dialog_opening`)."""
+    import nodriver.cdp.page as cdp_page
+
+    kind = str(getattr(getattr(event, "type_", None), "value", "") or "unknown")
+    host = urllib.parse.urlsplit(str(getattr(event, "url", "") or "")).hostname
+    prompt_text = (getattr(event, "default_prompt", None) or "") if kind == "prompt" else None
+    try:
+        async with asyncio.timeout(_DIALOG_ANSWER_WAIT_S):
+            await send(cdp_page.handle_java_script_dialog(accept=True, prompt_text=prompt_text))
+    except Exception as exc:  # noqa: BLE001 - best-effort; never holds up the run
+        LOG.debug(
+            "nodriver_dialog_answer_failed",
+            dialog_type=kind,
+            host=host,
+            error=str(exc),
+            exc_type=type(exc).__name__,
+        )
+        return False
+    LOG.info("nodriver_dialog_answered", dialog_type=kind, choice="accept", host=host)
+    return True
 
 
 async def answer_dialogs(tab: Any) -> DialogAnswerer | None:
@@ -116,6 +147,7 @@ async def answer_dialogs(tab: Any) -> DialogAnswerer | None:
         session_id = session_id if isinstance(session_id, str) else None
         await tab.send(cdp_page.enable(), **_capture_session_kwargs(tab, session_id))
         answerer._session_id = session_id
+        answerer.ready = True
     except Exception as exc:  # noqa: BLE001 - the browser goes on without it
         LOG.warning(
             "nodriver_dialog_answering_unavailable",
@@ -126,68 +158,495 @@ async def answer_dialogs(tab: Any) -> DialogAnswerer | None:
     return answerer
 
 
-async def answer_dialogs_in_new_tabs(browser: Any) -> None:
-    """Answer the JavaScript dialogs of every page target *browser* gains from now
-    on: a tab a program opens (``get(url, new_tab=True)``) and a popup a page opens
-    (``window.open``, a ``target="_blank"`` link).
+class _Connection:
+    """One websocket to the browser's endpoint and what was learned on it: a page's
+    session id means nothing on another connection."""
 
-    Chrome reports each new target (``Target.targetCreated``, with target discovery
-    turned on), and the target gets its own answerer through :func:`answer_dialogs`
-    once, a moment after it is created. A dialog its page opens before that answerer
-    has enabled the Page domain stays open: measured on 2026-10-31 (nodriver 0.50.6,
-    headless, a local page), a popup that called ``alert()`` as it loaded never
-    finished ``Page.enable``, nothing answered it, and every DevTools call to the
-    popup and to the page that opened it waited until the browser stopped; a popup
-    whose alert came 1.5 s after it opened was answered and went on. Registered once
-    per browser. Never raises: a browser that cannot take the handler is one
+    def __init__(self, socket: Any) -> None:
+        self.socket = socket
+        self.listener: asyncio.Task[None] | None = None
+        self.replies: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        # The sessions of the page targets answered here: session id to target id.
+        self.pages: dict[str, str] = {}
+        # Every session attached and not yet reported detached, answered here or not.
+        self.attached: set[str] = set()
+        # Set once auto-attach is on: only then does a loss call for a reconnect.
+        self.up = False
+        # Set when the connection is given up, together with clearing its sessions,
+        # so a command that fails afterwards is not taken for a page that closed.
+        self.dropped = False
+        self._close: asyncio.Task[None] | None = None
+
+    @property
+    def open(self) -> bool:
+        return not self.dropped and self.listener is not None and not self.listener.done()
+
+    def drop(self) -> None:
+        self.dropped = True
+        for future in self.replies.values():
+            if not future.done():
+                future.set_exception(ConnectionError("dialog answerer connection closed"))
+        self.replies.clear()
+        self.pages.clear()
+        self.attached.clear()
+
+    def close(self) -> asyncio.Task[None]:
+        """Close the socket once, within ``_INSTALL_WAIT_S``: every caller shares the
+        one close, so a close Chrome does not answer is waited for once."""
+        if self._close is None:
+            self._close = asyncio.ensure_future(_close_quietly(self.socket))
+        return self._close
+
+
+async def _close_quietly(socket: Any) -> None:
+    with contextlib.suppress(Exception):
+        async with asyncio.timeout(_INSTALL_WAIT_S):
+            await socket.close()
+
+
+class NewPageAnswerer:
+    """Answers the JavaScript dialogs of the pages a browser gains, on a CDP
+    connection of its own to the browser's endpoint (#353).
+
+    ``Target.setAutoAttach`` with ``waitForDebuggerOnStart`` and ``flatten`` attaches
+    this connection to each page target Chrome creates from then on. A popup (and
+    any other page the browser opens itself) is reported waiting for the debugger
+    and held before its first script: it gets ``Page.enable`` on its session, and
+    only then ``Runtime.runIfWaitingForDebugger``, so a dialog its first script
+    opens is reported here and accepted. A tab made with ``Target.createTarget``
+    (``get(url, new_tab=True)``) is not held, so its first-script dialog is answered
+    only when ``Page.enable`` reaches Chrome before that script runs (#363). The
+    resume is sent whatever the install did, within ``_INSTALL_WAIT_S`` of each
+    command. The auto-attach asks for page targets only; any other target a Chrome
+    attaches all the same is resumed at once and detached. This connection, not
+    nodriver's, reads the session id Chrome puts on each event, which nodriver
+    0.50.6 drops when it parses one.
+
+    A page whose nodriver Tab has a :class:`DialogAnswerer` that has enabled the
+    Page domain is left to it, at attach and again at each dialog. A session's
+    state goes when Chrome reports it detached (its target closed or destroyed),
+    and everything goes when the connection ends. The connection sends no
+    keepalive pings, as nodriver's own does not.
+
+    The connection is meant to end only with the browser. :meth:`aclose` closes it
+    (every stop on the browser's loop calls it), and :meth:`expect_end` marks the
+    end a stop without that loop is about to cause. When Chrome closes the
+    connection otherwise, or it fails, the answerer reconnects on its own with the
+    same counts and rules: one attempt after each of ``_RECONNECT_DELAYS_S``, each
+    an info line. The new connection's auto-attach attaches every existing page
+    too, and Chrome reports a popup the lost connection left held as not waiting,
+    so every page attached gets the resume, held or not, after its install:
+    measured on 2026-11-03, that released a popup a lost client had left held, its
+    first-script ``alert()`` was answered, and a resume on pages that were not held
+    changed nothing (docs/HOW_IT_WORKS.md). When every attempt fails, one
+    ``nodriver_dialog_answerer_lost`` warning says so and the answerer has ended: a
+    popup held at the loss, or a tab or popup opened later whose first script opens
+    a dialog, may stay paused until the browser stops, unless a program calls
+    :func:`answer_dialogs_in_new_tabs` again, which starts a new answerer. A
+    listener cancelled from outside (its loop shutting down) is not reconnected;
+    that is the warning at once.
+    """
+
+    def __init__(self, browser: Any, url: str) -> None:
+        self._browser = browser
+        self._url = url
+        self._conn: _Connection | None = None
+        self._reconnector: asyncio.Task[None] | None = None
+        self._ids = itertools.count(1)
+        self._tasks: set[asyncio.Task[Any]] = set()
+        # Set once the end of the connection is expected (aclose, a browser stop),
+        # so that end is neither reconnected nor reported as lost.
+        self._closing = False
+        self._ended_once = False
+        self.answered = 0
+        self.failed = 0
+
+    @property
+    def pages(self) -> dict[str, str]:
+        """The page sessions answered on the current connection: session id to
+        target id."""
+        return {} if self._conn is None else self._conn.pages
+
+    @property
+    def closed(self) -> bool:
+        """Whether no connection is open now (none yet, or it ended)."""
+        return self._conn is None or not self._conn.open
+
+    @property
+    def ended(self) -> bool:
+        """Whether this answerer is finished: closed, its start failed, or every
+        reconnect failed."""
+        return self._ended_once
+
+    async def start(self) -> None:
+        """Open the connection and turn auto-attach on; raises if either fails."""
+        await self._connect()
+
+    async def _connect(self) -> None:
+        conn = _Connection(await _open_socket(self._url))
+        self._conn = conn
+        conn.listener = asyncio.create_task(self._listen(conn))
+        try:
+            await self._call(
+                conn,
+                "Target.setAutoAttach",
+                {
+                    "autoAttach": True,
+                    "waitForDebuggerOnStart": True,
+                    "flatten": True,
+                    # Pages only: a service worker or any other target is never held.
+                    "filter": [{"type": "page"}],
+                },
+            )
+        except BaseException:
+            conn.listener.cancel()
+            conn.close()
+            raise
+        conn.up = True
+
+    def expect_end(self) -> None:
+        """Note that the connection is about to end with its browser, so the end is
+        neither reconnected nor reported as lost. Safe from any thread."""
+        self._closing = True
+
+    async def aclose(self) -> None:
+        """Close the connection, on the loop it was opened on, waiting at most
+        ``_INSTALL_WAIT_S`` in all. A cancellation of the caller is re-raised, once
+        the socket's close has been started."""
+        self._closing = True
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _INSTALL_WAIT_S
+
+        def left() -> float:
+            return max(0.0, deadline - loop.time())
+
+        try:
+            reconnector = self._reconnector
+            if reconnector is not None and not reconnector.done():
+                reconnector.cancel()
+                await asyncio.wait({reconnector}, timeout=left())
+            conn = self._conn
+            if conn is not None and conn.listener is not None and not conn.listener.done():
+                # The listener closes the socket as it ends.
+                conn.listener.cancel()
+                await asyncio.wait({conn.listener}, timeout=left())
+        finally:
+            try:
+                conn = self._conn
+                if conn is not None:
+                    if conn.listener is not None:
+                        conn.listener.cancel()
+                    await asyncio.wait({conn.close()}, timeout=left())
+            finally:
+                self._ended()
+
+    def _ended(self) -> None:
+        self._ended_once = True
+        if self._conn is not None:
+            self._conn.drop()
+
+    async def _listen(self, conn: _Connection) -> None:
+        reason = "closed_by_chrome"
+        error: BaseException | None = None
+        try:
+            async for raw in conn.socket:
+                try:
+                    message = json.loads(raw)
+                except ValueError:
+                    continue
+                if "id" in message:
+                    future = conn.replies.pop(message["id"], None)
+                    if future is not None and not future.done():
+                        future.set_result(message)
+                elif "method" in message:
+                    self._on_event(conn, message)
+        except asyncio.CancelledError:
+            reason = "cancelled"
+            raise
+        except Exception as exc:  # noqa: BLE001 - reconnected below; the browser goes on
+            reason, error = "error", exc
+        finally:
+            conn.drop()
+            if conn.up and not self._closing:
+                if reason == "cancelled":
+                    # Cancelled from outside: the loop is going away, and a task
+                    # made now could outlive it.
+                    self._give_up(reason, error, attempts=0)
+                else:
+                    self._reconnector = asyncio.create_task(self._reconnect(reason, error))
+            # Auto-attach is in force while the socket is open: a page Chrome held
+            # for this connection after its listener ended would never be resumed.
+            await asyncio.wait({conn.close()})
+
+    async def _reconnect(self, reason: str, error: BaseException | None) -> None:
+        for attempt, delay in enumerate(_RECONNECT_DELAYS_S, start=1):
+            LOG.info(
+                "nodriver_dialog_answerer_reconnecting",
+                attempt=attempt,
+                reason=reason,
+                error=None if error is None else str(error),
+                exc_type=None if error is None else type(error).__name__,
+            )
+            await asyncio.sleep(delay)
+            if self._closing:
+                return
+            try:
+                await self._connect()
+            except Exception as exc:  # noqa: BLE001 - the next attempt, or the warning
+                reason, error = "reconnect_failed", exc
+                continue
+            LOG.info("nodriver_dialog_answerer_reconnected", attempt=attempt)
+            return
+        self._give_up(reason, error, attempts=len(_RECONNECT_DELAYS_S))
+
+    def _give_up(self, reason: str, error: BaseException | None, *, attempts: int) -> None:
+        self._ended_once = True
+        LOG.warning(
+            "nodriver_dialog_answerer_lost",
+            reason=reason,
+            attempts=attempts,
+            error=None if error is None else str(error),
+            exc_type=None if error is None else type(error).__name__,
+            hint="A popup paused when the connection ended, or a tab or popup opened"
+            " from now on whose first script opens an alert, confirm or prompt, may stay"
+            " paused until the browser stops.",
+        )
+
+    def _spawn(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def _on_event(self, conn: _Connection, message: dict[str, Any]) -> None:
+        method = message["method"]
+        params = message.get("params") or {}
+        session_id = message.get("sessionId")
+        if method == "Target.attachedToTarget" and session_id is None:
+            attached = params.get("sessionId")
+            if isinstance(attached, str):
+                conn.attached.add(attached)
+            self._spawn(self._on_attached(conn, params))
+        elif method == "Target.detachedFromTarget" and session_id is None:
+            detached = str(params.get("sessionId"))
+            conn.attached.discard(detached)
+            conn.pages.pop(detached, None)
+        elif method == "Page.javascriptDialogOpening" and session_id in conn.pages:
+            self._spawn(self._on_dialog(conn, session_id, message))
+
+    async def _request(
+        self, conn: _Connection, method: str, params: dict[str, Any], session_id: str | None
+    ) -> tuple[int, asyncio.Future[dict[str, Any]]]:
+        """Send one command and return its id and the future of its reply, without
+        waiting for it."""
+        if not conn.open:
+            raise ConnectionError("dialog answerer connection closed")
+        call_id = next(self._ids)
+        message: dict[str, Any] = {"id": call_id, "method": method, "params": params}
+        if session_id is not None:
+            message["sessionId"] = session_id
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        conn.replies[call_id] = future
+        try:
+            await conn.socket.send(json.dumps(message))
+        except BaseException:
+            conn.replies.pop(call_id, None)
+            raise
+        return call_id, future
+
+    async def _reply(
+        self,
+        conn: _Connection,
+        method: str,
+        params: dict[str, Any],
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Send one command and wait for its result, with no bound of its own. The
+        reply's slot goes however the wait ends (a timeout around it included)."""
+        call_id, future = await self._request(conn, method, params, session_id)
+        try:
+            reply = await future
+        finally:
+            conn.replies.pop(call_id, None)
+        return _result(method, reply)
+
+    async def _call(
+        self,
+        conn: _Connection,
+        method: str,
+        params: dict[str, Any],
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Send one command and wait, at most ``_INSTALL_WAIT_S``, for its result."""
+        async with asyncio.timeout(_INSTALL_WAIT_S):
+            return await self._reply(conn, method, params, session_id)
+
+    def _gone(self, conn: _Connection, session_id: str, errors: Sequence[BaseException]) -> bool:
+        """Whether a failed command failed because the page closed: Chrome reported
+        the session detached, or refused the command for a session or target it no
+        longer has. A connection that was dropped is not a page that closed."""
+        if conn.dropped:
+            return False
+        if session_id not in conn.attached:
+            return True
+        return bool(errors) and all("not found" in str(error).lower() for error in errors)
+
+    async def _on_attached(self, conn: _Connection, params: dict[str, Any]) -> None:
+        session_id = params.get("sessionId")
+        info = params.get("targetInfo") or {}
+        target_id = info.get("targetId")
+        kind = info.get("type")
+        if not isinstance(session_id, str):
+            return
+        answer = kind == "page" and not _answered_elsewhere(self._browser, target_id)
+        waiting = bool(params.get("waitingForDebugger"))
+        install_error: Exception | None = None
+        resume_error: Exception | None = None
+        try:
+            if answer:
+                conn.pages[session_id] = str(target_id)
+                try:
+                    await self._call(conn, "Page.enable", {}, session_id)
+                except Exception as exc:  # noqa: BLE001 - the page goes on, unanswered
+                    conn.pages.pop(session_id, None)
+                    install_error = exc
+        finally:
+            # A held target that nobody resumes never runs, so the resume goes
+            # whatever the install did. Every page gets it, held or not: a page a
+            # lost connection left held is reported not waiting when a new
+            # connection's auto-attach attaches it, and only a resume releases it.
+            if waiting or kind == "page":
+                try:
+                    await self._call(conn, "Runtime.runIfWaitingForDebugger", {}, session_id)
+                except Exception as exc:  # noqa: BLE001 - reported below
+                    resume_error = exc
+        errors = [e for e in (install_error, resume_error) if e is not None]
+        if errors and self._closing:
+            # The browser is stopping, and its pages go with it.
+            LOG.debug("nodriver_dialog_new_target_install_cut_by_close", target_type=kind)
+            return
+        if errors and self._gone(conn, session_id, errors):
+            LOG.debug("nodriver_dialog_new_target_gone", target_type=kind)
+            return
+        if install_error is not None:
+            LOG.warning(
+                "nodriver_dialog_answering_unavailable",
+                error=str(install_error),
+                exc_type=type(install_error).__name__,
+                hint="A page that opens an alert, confirm or prompt stops until it is answered.",
+            )
+        if resume_error is not None and not waiting:
+            # Most pages attached not waiting were never held.
+            LOG.debug(
+                "nodriver_dialog_page_resume_failed",
+                error=str(resume_error),
+                exc_type=type(resume_error).__name__,
+            )
+        elif resume_error is not None:
+            LOG.warning(
+                "nodriver_dialog_new_target_resume_failed",
+                target_type=kind,
+                error=str(resume_error),
+                exc_type=type(resume_error).__name__,
+            )
+        if answer:
+            return
+        try:
+            await self._call(conn, "Target.detachFromTarget", {"sessionId": session_id})
+        except Exception as exc:  # noqa: BLE001 - never stops the browser
+            if not self._closing and not self._gone(conn, session_id, [exc]):
+                LOG.warning(
+                    "nodriver_dialog_new_target_detach_failed",
+                    target_type=kind,
+                    error=str(exc),
+                    exc_type=type(exc).__name__,
+                )
+
+    async def _on_dialog(self, conn: _Connection, session_id: str, message: dict[str, Any]) -> None:
+        from nodriver.cdp.util import parse_json_event
+
+        if _answered_elsewhere(self._browser, conn.pages.get(session_id)):
+            return
+        try:
+            event = parse_json_event({"method": message["method"], "params": message["params"]})
+        except Exception as exc:  # noqa: BLE001 - an event this nodriver cannot read
+            LOG.debug("nodriver_dialog_event_unreadable", error=str(exc))
+            return
+        if await _accept_dialog(event, lambda cmd: self._send(conn, cmd, session_id)):
+            self.answered += 1
+        else:
+            self.failed += 1
+
+    async def _send(self, conn: _Connection, cmd: Any, session_id: str) -> Any:
+        """Send a nodriver CDP command generator on *session_id*, as nodriver's own
+        send does, and return its parsed result."""
+        request = next(cmd)
+        result = await self._reply(conn, request["method"], request.get("params") or {}, session_id)
+        try:
+            cmd.send(result)
+        except StopIteration as stop:
+            return stop.value
+        return None
+
+
+def _result(method: str, reply: dict[str, Any]) -> dict[str, Any]:
+    error = reply.get("error")
+    if error is not None:
+        detail = error.get("message", error) if isinstance(error, dict) else error
+        raise RuntimeError(f"{method}: {detail}")
+    return reply.get("result") or {}
+
+
+async def _open_socket(url: str) -> Any:
+    """A websocket connection to *url*; the tests replace it with a fake Chrome.
+
+    No keepalive pings: websockets' default (a ping every 20 s, the connection
+    closed when a pong is 20 s late) would end the answerer whenever the browser's
+    loop is busy for that long, and nodriver's own connection waits 900 s.
+    """
+    import websockets
+
+    return await websockets.connect(
+        url, max_size=_MAX_MESSAGE_BYTES, ping_interval=None, ping_timeout=None
+    )
+
+
+async def answer_dialogs_in_new_tabs(browser: Any) -> NewPageAnswerer | None:
+    """Answer the JavaScript dialogs of every page target *browser* gains from now
+    on: a popup a page opens (``window.open``, a ``target="_blank"`` link) from its
+    first script on, since Chrome holds it until its answerer is in place, and a tab
+    a program opens (``get(url, new_tab=True)``), which Chrome does not hold, so a
+    dialog its first script opens is answered only if the install wins that race
+    (#363). See :class:`NewPageAnswerer`.
+
+    Returns the browser's answerer: the one an earlier call made, which reconnects
+    on its own when Chrome closes its connection, or a new one, which carries the
+    earlier one's counts, when that one has ended (it was closed, or every
+    reconnect failed). graftpunk's own commands call this once per browser, as it
+    starts. Never raises (a cancellation excepted, which leaves nothing running):
+    a browser whose endpoint refuses the connection or the auto-attach is one
     warning, and its first tab is still answered.
     """
-    if getattr(browser, _BROWSER_ATTR, None) is not None:
-        return
+    existing = getattr(browser, _BROWSER_ATTR, None)
+    if existing is not None and not isinstance(existing, NewPageAnswerer):
+        return None
+    if existing is not None and not existing.ended:
+        return existing
+    url = getattr(browser, "websocket_url", None)
+    if not isinstance(url, str) or not url:
+        LOG.warning("nodriver_dialog_answering_new_tabs_unavailable", reason="no_websocket_url")
+        return None
+    answerer = NewPageAnswerer(browser, url)
+    if existing is not None:
+        answerer.answered, answerer.failed = existing.answered, existing.failed
+    setattr(browser, _BROWSER_ATTR, answerer)
     try:
-        import nodriver.cdp.target as cdp_target
-    except ImportError:
-        LOG.warning("nodriver_dialog_answering_new_tabs_unavailable", reason="no_nodriver")
-        return
-    # nodriver 0.48 reads the browser's own events on browser.connection; on 0.50
-    # the Browser is that connection itself, and its connection attribute is None.
-    connection = getattr(browser, "connection", None) or browser
-    # The targets that have an answerer, so a target Chrome reports again (target
-    # discovery reports every existing target when it is turned on) gets no second.
-    answered = {
-        _target_id(tab)
-        for tab in list(getattr(browser, "targets", None) or [])
-        if isinstance(getattr(tab, _TAB_ATTR, None), DialogAnswerer)
-    }
-
-    async def on_target_created(event: Any) -> None:
-        info = getattr(event, "target_info", None)
-        target_id = getattr(info, "target_id", None)
-        if getattr(info, "type_", None) != "page" or target_id in answered:
-            return
-        answered.add(target_id)
-        try:
-            if connection is browser:
-                tab = _own_tab(browser, info)
-            else:
-                # nodriver 0.48's own handler made the target's Tab, one websocket
-                # per target with no session to lose.
-                tab = _tab_for(browser, target_id)
-                if tab is None:
-                    await browser.update_targets()
-                    tab = _tab_for(browser, target_id)
-            if tab is None:
-                LOG.debug("nodriver_dialog_new_tab_not_found")
-                return
-            await answer_dialogs(tab)
-        except Exception as exc:  # noqa: BLE001 - never stops the browser
-            LOG.debug("nodriver_dialog_new_tab_failed", error=str(exc), exc_type=type(exc).__name__)
-
-    try:
-        connection.add_handler(cdp_target.TargetCreated, on_target_created)
-        setattr(browser, _BROWSER_ATTR, answered)
-        await connection.send(cdp_target.set_discover_targets(discover=True))
-    except Exception as exc:  # noqa: BLE001 - the first tab is answered anyway
+        await answerer.start()
+    except BaseException as exc:
+        # Shielded: a second cancellation must not leave the listener or the
+        # socket, with auto-attach on, behind.
+        await asyncio.shield(answerer.aclose())
+        if not isinstance(exc, Exception):
+            raise
         LOG.warning(
             "nodriver_dialog_answering_new_tabs_unavailable",
             error=str(exc),
@@ -195,31 +654,46 @@ async def answer_dialogs_in_new_tabs(browser: Any) -> None:
             hint="A tab or popup opened later that opens an alert, confirm or prompt"
             " stops until it is answered.",
         )
+    return answerer
 
 
-def _own_tab(browser: Any, info: Any) -> Any:
-    """A nodriver 0.50 Tab of the answerer's own on the target *info* names.
+async def close_dialogs_in_new_tabs(browser: Any) -> None:
+    """Close *browser*'s :class:`NewPageAnswerer`, if it has one, before the browser
+    stops, waiting at most ``_INSTALL_WAIT_S``. Never raises, apart from a
+    cancellation of the caller, which it passes on."""
+    answerer = getattr(browser, _BROWSER_ATTR, None)
+    if isinstance(answerer, NewPageAnswerer):
+        with contextlib.suppress(Exception):
+            await answerer.aclose()
 
-    Not the Tab in ``browser.targets``: a program's ``get(url, new_tab=True)``
-    attaches that one while the answerer would, and on nodriver 0.50.6 two attaches
-    at once on one Tab each open a websocket and the second loses the first's
-    session (measured on 2026-10-31: ``Target.getTargetInfo`` failed with "Session
-    with given id not found", and the tab's dialog was never answered). Its own Tab
-    has a websocket and session of its own; nothing closes that websocket before
-    the browser stops.
-    """
-    from nodriver.core.tab import Tab
 
-    return Tab(target=info, parent=browser)
+def expect_new_tabs_end(browser: Any) -> None:
+    """Note that *browser*'s :class:`NewPageAnswerer` connection is about to end
+    because the browser is being ended without its loop. Safe from any thread."""
+    answerer = getattr(browser, _BROWSER_ATTR, None)
+    if isinstance(answerer, NewPageAnswerer):
+        answerer.expect_end()
+
+
+def new_tab_dialog_counts(browser: Any) -> tuple[int, int]:
+    """(answered, failed) by *browser*'s :class:`NewPageAnswerer` so far, or (0, 0)."""
+    answerer = getattr(browser, _BROWSER_ATTR, None)
+    if not isinstance(answerer, NewPageAnswerer):
+        return (0, 0)
+    return (answerer.answered, answerer.failed)
+
+
+def _answered_elsewhere(browser: Any, target_id: Any) -> bool:
+    """Whether nodriver's Tab for *target_id* has an answerer of its own that has
+    enabled the Page domain."""
+    if target_id is None:
+        return False
+    for tab in list(getattr(browser, "targets", None) or []):
+        answerer = getattr(tab, _TAB_ATTR, None)
+        if _target_id(tab) == target_id and isinstance(answerer, DialogAnswerer) and answerer.ready:
+            return True
+    return False
 
 
 def _target_id(tab: Any) -> Any:
     return getattr(getattr(tab, "target", None), "target_id", None)
-
-
-def _tab_for(browser: Any, target_id: Any) -> Any:
-    """The browser's Tab object for *target_id*, or None."""
-    for tab in list(getattr(browser, "targets", None) or []):
-        if _target_id(tab) == target_id:
-            return tab
-    return None

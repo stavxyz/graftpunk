@@ -19,7 +19,7 @@ from graftpunk.browser_launch import (
     prepare_browser_launch,
 )
 from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
-from graftpunk.dialogs import answer_dialogs, answer_dialogs_in_new_tabs
+from graftpunk.dialogs import answer_dialogs, answer_dialogs_in_new_tabs, close_dialogs_in_new_tabs
 from graftpunk.exceptions import (
     SessionInvalidatedError,
     TokenExtractionError,
@@ -228,11 +228,15 @@ async def _extract_tokens_browser(
         # so without the last call every token extraction leaks one directory
         # (#96).
         try:
-            browser.stop()
+            # Before Chrome ends, on the loop the answerer's listener runs on (#353).
+            await close_dialogs_in_new_tabs(browser)
         finally:
-            _deregister_nodriver_browser(browser)
-            unregister_live_browser(handle)
-            remove_browser_temp_profile(browser)
+            try:
+                browser.stop()
+            finally:
+                _deregister_nodriver_browser(browser)
+                unregister_live_browser(handle)
+                remove_browser_temp_profile(browser)
 
 
 async def extract_tokens_from_tab(

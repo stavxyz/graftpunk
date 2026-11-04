@@ -675,6 +675,78 @@ class TestBrowserExtractionAnswersDialogs:
 
         assert order == [navigated, ("new tabs", browser), "https://example.com/app"]
 
+    @pytest.mark.asyncio
+    async def test_the_new_tab_answerer_is_closed_before_the_browser_stops(self) -> None:
+        """#353: its connection keeps auto-attach on until it is closed, so it is
+        closed on this loop first, and that end is no loss."""
+        from structlog.testing import capture_logs
+
+        from graftpunk import dialogs
+        from graftpunk.tokens import _extract_tokens_browser
+        from tests.unit.test_headless_dialogs import ChromeEndpoint
+
+        opened: list[ChromeEndpoint] = []
+
+        async def open_socket(url: str) -> ChromeEndpoint:
+            opened.append(ChromeEndpoint(url))
+            return opened[-1]
+
+        browser = _hygiene_browser()
+        browser.tabs = [MagicMock()]
+        browser.targets = []
+        browser.websocket_url = "ws://127.0.0.1:9/devtools/browser/x"
+        browser._gp_dialog_new_tabs = None
+        at_stop: list[bool] = []
+        browser.stop = MagicMock(side_effect=lambda: at_stop.append(opened[0].closed))
+
+        with (
+            _patched_nodriver(AsyncMock(return_value=browser)),
+            patch("graftpunk.tokens.answer_dialogs", AsyncMock()),
+            patch.object(dialogs, "_open_socket", open_socket),
+            capture_logs() as logs,
+        ):
+            await _extract_tokens_browser(
+                requests.Session(), [_HYGIENE_TOKEN], "https://example.com"
+            )
+
+        (endpoint,) = opened
+        assert endpoint.on(None) == ["Target.setAutoAttach"]
+        assert at_stop == [True]
+        assert browser._gp_dialog_new_tabs.ended
+        assert [e for e in logs if e["log_level"] == "warning"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_browser_still_stops_when_closing_the_answerer_raises(self) -> None:
+        """A cancellation that lands while the answerer closes still stops the
+        browser and releases it, then propagates."""
+        import asyncio
+
+        from graftpunk.tokens import _extract_tokens_browser
+
+        browser = _hygiene_browser()
+        browser.tabs = [MagicMock()]
+        close = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with (
+            _patched_nodriver(AsyncMock(return_value=browser)),
+            patch("graftpunk.tokens.answer_dialogs", AsyncMock()),
+            patch("graftpunk.tokens.answer_dialogs_in_new_tabs", AsyncMock()),
+            patch("graftpunk.tokens.close_dialogs_in_new_tabs", close),
+            patch("graftpunk.tokens._deregister_nodriver_browser") as deregister,
+            patch("graftpunk.tokens.unregister_live_browser") as unregister,
+            patch("graftpunk.tokens.remove_browser_temp_profile") as remove_profile,
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _extract_tokens_browser(
+                requests.Session(), [_HYGIENE_TOKEN], "https://example.com"
+            )
+
+        close.assert_awaited_once_with(browser)
+        browser.stop.assert_called_once_with()
+        deregister.assert_called_once_with(browser)
+        assert unregister.call_count == 1
+        remove_profile.assert_called_once_with(browser)
+
 
 class TestBrowserExtractionHygiene:
     """The third launch site marks, sweeps, registers and cleans up like the other two (#96)."""

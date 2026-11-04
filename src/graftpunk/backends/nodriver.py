@@ -67,7 +67,12 @@ from graftpunk.chrome_orphans import (
     remove_browser_temp_profile,
     terminate_nodriver_browser,
 )
-from graftpunk.dialogs import answer_dialogs, answer_dialogs_in_new_tabs
+from graftpunk.dialogs import (
+    answer_dialogs,
+    answer_dialogs_in_new_tabs,
+    close_dialogs_in_new_tabs,
+    expect_new_tabs_end,
+)
 from graftpunk.exceptions import BrowserError
 from graftpunk.logging import get_logger, suppress_asyncio_noise
 from graftpunk.signals import (
@@ -2115,6 +2120,9 @@ class NoDriverBackend:
         browser = self._browser
         if browser is None:
             return None
+        # Ended without its loop from here on, the browser closes the new-tab
+        # answerer's connection: an end that answerer was told to expect.
+        expect_new_tabs_end(browser)
         unregister_live_browser(self)
         # Out of nodriver's atexit registry as well, so its handler does not
         # re-stop a browser this code already ended.
@@ -2161,6 +2169,9 @@ class NoDriverBackend:
         # coroutine is paused, can detach the browser meanwhile.
         browser = self._browser
         if browser is not None:
+            # Before Chrome ends: the answerer's listener runs on this loop, and
+            # its connection keeps auto-attach on until it is closed (#353).
+            await close_dialogs_in_new_tabs(browser)
             # Capture the subprocess BEFORE browser.stop(): nodriver's stop()
             # sets browser._process to None when terminate() and kill() both
             # fail (nodriver 0.48.1 and 0.50.6), and reading it after would
