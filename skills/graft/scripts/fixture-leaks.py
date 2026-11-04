@@ -5,18 +5,27 @@ Usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR] [--har HAR]
 The graft skill writes each fixture from a capture on the developer's workstation,
 inventing every value. This reports what survived, so the skill can rewrite it.
 
-What it looks for, from the capture: each JSON string, number, and key (a key that
-is a plain identifier without a digit run is skipped), or each text node, attribute
-value, and comment of any other text capture, whole, and the pieces of it an
-account value hides in: each run of three or more digits, each word holding an
-``@``, a digit, or a capital letter, both halves of an email address, and each pair
-of words with one of those in it.
+What it looks for, from the capture: each JSON string, number, and key, or each
+text node, attribute value, and comment of any other text capture, whole, and the
+pieces of it an account value hides in: each run of four or more digits, each
+word holding an ``@``, a digit, or a capital letter, both halves of an email
+address, and each pair of words with one of those in it. A key that is a plain
+identifier, in any case, without a run of three digits (``orderId``,
+``created_at``) and the value under a ``__typename`` key (``User``, a GraphQL
+type's name) are the site's schema, not account data, and are skipped. So is a
+value or piece that is shorter than four characters or is ``true``, ``false`` or
+``null`` in any case, by the rule ``--har`` judges a recorded value by.
 
 Where it looks, in the fixture, in Unicode compatibility form: the raw text, its
 JSON or HTML values decoded, its backslash escapes decoded (``\\u00e9``, a
 surrogate pair, ``\\x26``, ``\\n``, ``\\/``), its HTML character references decoded
 (``&amp;``), and its percent-encoding decoded (``%40``), repeated up to
-three times while it keeps changing (``%2540``). A piece with a
+three times while it keeps changing (``%2540``). A quoted key that is a plain
+identifier without a run of three digits (``"orderId":``, ``'orderId':``, or
+``\\"orderId\\":`` inside a JSON string) is blanked in the fixture before the
+search, so a value is found where the fixture holds it as a value and never
+inside a key the site named (``Account`` is not found in ``"primaryAccount":``);
+``--har`` searches the fixture the same way. A piece with a
 space, a digit, or an ``@`` matches in any case; a single word matches as written,
 in capitals, or in lower case inside an identifier or an address
 (``test_okonkwo_order``, ``okonkwo@example.com``). FIXTURE can be any text file, so
@@ -27,7 +36,9 @@ gp's and not captured data; the rest of the phrase is still searched. A captured
 digit run written by hand into those 14 digits is therefore not caught.
 
 What it cannot see, which needs a read by eye: a captured lowercase word alone, a
-capitalised word copied in lower case on its own, a number reformatted (``12345`` as
+capitalised word copied in lower case on its own, a value of three characters or
+fewer, a captured value written into a key that is a plain identifier
+(``"okonkwoTotal":``), a number reformatted (``12345`` as
 ``12,345``), digits split across fields, and a copy re-encoded another way (base64).
 It searches each form of the fixture once per captured value, so a capture of a
 megabyte or more takes tens of seconds.
@@ -126,8 +137,23 @@ _DIGITS = re.compile(r"\d{3,}")
 # Words split at spaces, punctuation, and a URL's separators, so an email in a
 # query string (?m=ann%40myshop.example&page=2) is a word of its own.
 _WORD = re.compile(r"[^\s,;:()\[\]{}<>\"'?&=/]+")
-_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
-_MIN_LENGTH = 3
+# A key that is a plain identifier, in any case, without a run of digits is a
+# name the site chose for its schema (orderId, created_at), not account data; so
+# is the value under __typename, a GraphQL type's name (User, Location). Neither
+# is looked for, and such a key in the fixture is not searched (_without_keys).
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_TYPENAME = "__typename"
+# A JSON or Python key in single or double quotes, JSON-escaped or not, before
+# its colon.
+_QUOTED_KEY = re.compile(r"""(\\?["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*:""")
+# A value, or a form of one, shorter than this is too common to report: it is in
+# most fixtures by chance. A value that in any of its forms is one of these JSON
+# literals (in any case) is not looked for either: a name flagged by its name
+# alone records them (logged_in=true), and a fixture cannot invent the literal
+# away. The same rule skips a captured value and a recorded one
+# (graftpunk.testing.recorded; a test holds the copies equal).
+_MIN_RECORDED_LENGTH = 4
+_LITERALS = frozenset(("true", "false", "null"))
 # A \uXXXX escape as JSON and Python source spell one, decoded wherever it appears,
 # and a high and low surrogate escape side by side, which together spell one
 # character outside the Basic Multilingual Plane.
@@ -202,10 +228,33 @@ class _TextParts(HTMLParser):
         self.values.extend(value for _name, value in attrs if value)
 
 
+def _schema_key(key: str) -> bool:
+    """Whether *key* is a plain identifier without a run of digits."""
+    return _IDENTIFIER.match(key) is not None and _DIGITS.search(key) is None
+
+
+def _without_keys(text: str) -> str:
+    """*text* with each quoted key that is a plain identifier without a run of
+    digits blanked in place, so a value is found as a value and never inside a
+    key the site named (``"recentOrders":`` does not hold ``Order``)."""
+
+    def blank(match: re.Match[str]) -> str:
+        if not _schema_key(match.group(2)):
+            return match.group(0)
+        start, end = match.span(2)
+        whole = match.group(0)
+        at = start - match.start()
+        return whole[:at] + " " * (end - start) + whole[at + end - start :]
+
+    return _QUOTED_KEY.sub(blank, text)
+
+
 def _json_values(node: object) -> list[str]:
     if isinstance(node, dict):
-        keys = [str(k) for k in node if not _IDENTIFIER.match(str(k)) or _DIGITS.search(str(k))]
-        return keys + [leaf for value in node.values() for leaf in _json_values(value)]
+        keys = [str(k) for k in node if not _schema_key(str(k))]
+        return keys + [
+            leaf for key, value in node.items() if key != _TYPENAME for leaf in _json_values(value)
+        ]
     if isinstance(node, list):
         return [leaf for value in node for leaf in _json_values(value)]
     if isinstance(node, bool) or node is None:
@@ -214,8 +263,9 @@ def _json_values(node: object) -> list[str]:
 
 
 def body_values(text: str) -> list[str]:
-    """The filled-in values of a body, decoded: JSON leaves and non-identifier keys,
-    or the text parts of anything else."""
+    """The filled-in values of a body, decoded: JSON leaves other than a
+    ``__typename`` and keys other than a plain identifier without a digit run, or
+    the text parts of anything else."""
     try:
         return _json_values(json.loads(text))
     except (ValueError, RecursionError):
@@ -252,7 +302,7 @@ def captured_values(text: str) -> list[str]:
         values = [raw.strip()] + ([decoded] if decoded != raw.strip() else [])
         for piece in (p for value in values for p in _pieces(value)):
             piece = piece.strip()
-            if len(piece) >= _MIN_LENGTH:
+            if len(piece) >= _MIN_RECORDED_LENGTH and not _is_literal(piece):
                 found[piece] = None
     return list(found)
 
@@ -534,6 +584,8 @@ class _Fixture:
         # one is the same offset in the other.
         self.shown = fixture if shown is None else shown
         assert len(self.shown) == len(fixture)
+        # Blanking a key, too, replaces characters one for one.
+        fixture = _without_keys(fixture)
         self.text = fixture
         self.haystack = _normal("\n".join(_decodings(fixture)))
         self.folded = self.haystack.casefold()
@@ -568,7 +620,7 @@ class _Fixture:
         else:
             folded = matches(_joined(value), self.folded, folded_end)
             sources = [literal(), matches(_capitals(value), self.haystack, end)]
-        # A piece is at least _MIN_LENGTH characters, so a match is never empty.
+        # A piece is at least _MIN_RECORDED_LENGTH characters, so a match is never empty.
         sources.append((self._fold.back(s), self._fold.back(e, end=True)) for s, e in folded)
         return merge(*sources)
 
@@ -623,11 +675,6 @@ class RunUnreadableError(Exception):
 
 _MOST_FILES = 3
 PAGE_SOURCE_NAME = "page-source.html"
-# A recorded value's form shorter than this is too common to report, and a value
-# that in any of its forms is one of these JSON literals (in any case) is not
-# looked for (graftpunk.testing.recorded; a test holds the copies equal).
-_MIN_RECORDED_LENGTH = 4
-_LITERALS = frozenset(("true", "false", "null"))
 
 
 def _cannot_read(unreadable: list[str]) -> str:
@@ -828,7 +875,7 @@ def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
     fixture cannot invent the literal away, and neither is a form shorter than
     four characters."""
     lines: list[str] = []
-    raw_lines = fixture.shown.split("\n")
+    raw_lines = _without_keys(fixture.shown).split("\n")
     combined: str | None = None
     for name in sorted(values):
         wanted = {

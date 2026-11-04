@@ -52,7 +52,15 @@ _LITERALS = frozenset(("true", "false", "null"))
 # Lines named per leaked name before the rest are counted.
 _MOST_PLACES = 5
 _DIGITS = re.compile(r"\d{3,}")
-_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
+# A key that is a plain identifier, in any case, without a run of digits is a
+# name the site chose for its schema (orderId, created_at), and the value under
+# __typename is a GraphQL type's name (User, Location): neither is a value the
+# fixture holds, so such a key in the fixture is not searched (_without_keys).
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_TYPENAME = "__typename"
+# A JSON or Python key in single or double quotes, JSON-escaped or not, before
+# its colon.
+_QUOTED_KEY = re.compile(r"""(\\?["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*:""")
 
 
 class RunUnreadableError(Exception):
@@ -118,10 +126,33 @@ class _TextParts(HTMLParser):
         self.values.extend(value for _name, value in attrs if value)
 
 
+def _schema_key(key: str) -> bool:
+    """Whether *key* is a plain identifier without a run of digits."""
+    return _IDENTIFIER.match(key) is not None and _DIGITS.search(key) is None
+
+
+def _without_keys(text: str) -> str:
+    """*text* with each quoted key that is a plain identifier without a run of
+    digits blanked in place, so a value is found as a value and never inside a
+    key the site named (``"recentOrders":`` does not hold ``Order``)."""
+
+    def blank(match: re.Match[str]) -> str:
+        if not _schema_key(match.group(2)):
+            return match.group(0)
+        start, end = match.span(2)
+        whole = match.group(0)
+        at = start - match.start()
+        return whole[:at] + " " * (end - start) + whole[at + end - start :]
+
+    return _QUOTED_KEY.sub(blank, text)
+
+
 def _json_values(node: object) -> list[str]:
     if isinstance(node, dict):
-        keys = [str(k) for k in node if not _IDENTIFIER.match(str(k)) or _DIGITS.search(str(k))]
-        return keys + [leaf for value in node.values() for leaf in _json_values(value)]
+        keys = [str(k) for k in node if not _schema_key(str(k))]
+        return keys + [
+            leaf for key, value in node.items() if key != _TYPENAME for leaf in _json_values(value)
+        ]
     if isinstance(node, list):
         return [leaf for value in node for leaf in _json_values(value)]
     if isinstance(node, bool) or node is None:
@@ -130,8 +161,9 @@ def _json_values(node: object) -> list[str]:
 
 
 def _body_values(text: str) -> list[str]:
-    """The filled-in values of a body, decoded: JSON leaves and non-identifier keys,
-    or the text parts of anything else."""
+    """The filled-in values of a body, decoded: JSON leaves other than a
+    ``__typename`` and keys other than a plain identifier without a digit run, or
+    the text parts of anything else."""
     try:
         return _json_values(json.loads(text))
     except (ValueError, RecursionError):
@@ -368,7 +400,12 @@ def recorded_leaks(text: str, values: Mapping[str, Iterable[str]]) -> list[str]:
     name alone records such values (``logged_in=true``), and a fixture cannot
     invent the literal away. A form shorter than four characters is not looked
     for either, since it is in most fixtures by chance. Every other value is
-    looked for, a username, a name or a four-digit PIN included."""
+    looked for, a username, a name or a four-digit PIN included.
+
+    A quoted key in *text* that is a plain identifier without a run of digits
+    (``"orderId":``) is blanked first: a value is reported where the fixture
+    holds it as a value, never where it matches a key the site named."""
+    text = _without_keys(text)
     haystack = _normal("\n".join([text, "\n".join(_body_values(text)), *decoded_forms(text)]))
     raw_lines = text.split("\n")
     combined: str | None = None

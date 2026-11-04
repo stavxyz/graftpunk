@@ -31,14 +31,14 @@ name's only reason but `sent_only` or `out_of_scope_only`); past fifty values,
 names only (`not placed`); past 500, a `more values not shown` count. A
 `recorded value` line places a cookie or token value: rewrite it without printing or
 copying it. Exit 1 naming keys means the sidecar differs from gp's: write gp's text again.
-Read by eye for a lower-case word alone, a number written another way (`12345` as
+Read by eye for a lower-case word alone, a value of three characters or fewer, a
+captured value written into a key name, a number written another way (`12345` as
 `12,345`), digits split across fields, and a copy re-encoded (base64). Exit 2
-names what it could not read: rewrite a file you wrote, check a missing path,
-and tell the user of a run file it cannot read. For the capture's sidecar, rerun
-`gp observe fixtures` and the check; tell the user if it repeats. A capture that is not text
-(a PDF) was not compared: invent its fixture whole, read the module by eye for
-it, and tell the user. Rewrite each value it prints unless it holds no account
-data and the command branches or selects on it (a status, a currency code, a
+names what it could not read: rewrite a file you wrote, check a missing path, and
+tell the user of a run file it cannot read. For the capture's sidecar, rerun
+`gp observe fixtures` and the check; tell the user if it repeats. A capture that is not text (a
+PDF) was not compared: invent its fixture whole, read the module by eye for it, and
+tell the user. Rewrite each value it prints unless it holds no account data and the command branches or selects on it (a status, a currency code, a
 class name), or the site shows it to every account (a heading, a button label),
 or it is part of a format (a year, a time-zone suffix). When every value left is
 one of those, the fixture is done; tell the user which values you kept, where

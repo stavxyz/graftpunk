@@ -159,7 +159,7 @@ def test_a_closing_period_the_wrap_left_alone_still_ends_the_label(tmp_path: Pat
         ("acct_4471023.", "4471023"),
         ("4471023.", "4471023"),
         ("see\n4471023.", "4471023"),
-        ("023.", "023"),
+        ("9023.", "9023"),
     ],
 )
 def test_a_value_after_a_provenance_phrase_missing_its_period_is_still_a_leak(
@@ -168,7 +168,7 @@ def test_a_value_after_a_provenance_phrase_missing_its_period_is_still_a_leak(
     """A hand edit that drops the label's period must not let the phrase swallow what
     follows: only the run id's date and time are blanked, so an account value
     there, even one short enough to join the process id, is still reported."""
-    capture = json.dumps({"account": "ACCT_4471023", "code": "023"})
+    capture = json.dumps({"account": "ACCT_4471023", "code": "9023"})
     module = f"# seen 2 time(s) in run myshop/20261006-101500-4242\n{next_line}\n"
     result = _run(tmp_path, capture, module)
     assert result.returncode == 1
@@ -1186,3 +1186,104 @@ def test_a_har_that_is_not_json_exits_2_naming_it(tmp_path: Path) -> None:
     result = _run_har(tmp_path, "{}", har="not json")
     assert result.returncode == 2
     assert "cannot read the HAR" in result.stderr
+
+
+def _account(email: str, token: str, order: str, name: str) -> str:
+    """A GraphQL account response on myshop.example: camelCase keys, a
+    ``__typename`` on every object, and nesting."""
+    return json.dumps(
+        {
+            "data": {
+                "viewer": {
+                    "__typename": "User",
+                    "displayName": name,
+                    "primaryEmail": email,
+                    "sessionToken": token,
+                    "preferredLocation": {
+                        "__typename": "Location",
+                        "address": {"__typename": "PostalAddress", "addressLocality": "Ames"},
+                    },
+                    "recentOrders": {
+                        "__typename": "OrderConnection",
+                        "pageInfo": {"__typename": "PageInfo", "hasNextPage": False},
+                        "nodes": [{"__typename": "Order", "orderId": order}],
+                    },
+                }
+            }
+        },
+        indent=2,
+    )
+
+
+def _survivors(stdout: str) -> set[str]:
+    return {
+        line.split("'")[1]
+        for line in stdout.splitlines()
+        if line.startswith("still in the fixture")
+    }
+
+
+def test_a_graphql_fixture_reports_its_pasted_values_and_no_key_or_type_name(
+    tmp_path: Path,
+) -> None:
+    """Every key and ``__typename`` is the site's schema and is kept on purpose;
+    the email, token and id pasted from the capture are each still reported."""
+    capture = _account("ann.okafor@myshop.example", "tok_8f2b9c41d7e6", "ORD-4471023", "Ann Okafor")
+    fixture = _account("ann.okafor@myshop.example", "tok_8f2b9c41d7e6", "ORD-4471023", "Pat Lee")
+    result = _run(tmp_path, capture, fixture)
+    assert result.returncode == 1
+    assert _survivors(result.stdout) == {
+        "ann.okafor@myshop.example",
+        "ann.okafor",
+        "myshop.example",
+        "tok_8f2b9c41d7e6",
+        "ORD-4471023",
+        "4471023",
+        "Okafor",
+        "Ames",
+    }
+
+
+def test_an_invented_graphql_fixture_reports_nothing(tmp_path: Path) -> None:
+    capture = _account("ann.okafor@myshop.example", "tok_8f2b9c41d7e6", "ORD-4471023", "Ann Okafor")
+    fixture = _account("pat@example.com", "tok_example0000", "ORD-9000001", "Pat Lee").replace(
+        "Ames", "Springfield"
+    )
+    result = _run(tmp_path, capture, fixture)
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_value_inside_a_key_of_the_fixture_is_not_reported(tmp_path: Path) -> None:
+    """``Account`` is a value in the capture, and the fixture holds it only inside
+    the key ``primaryAccount``."""
+    capture = json.dumps({"kind": "Account"})
+    result = _run(tmp_path, capture, json.dumps({"primaryAccount": {"kind": "Person"}}))
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        '{"kind": "Account"}',
+        '{"primaryAccount": "Account"}',
+        'KIND = "Account"\n',
+        '{"acct_Account_4471": 1}',
+    ],
+)
+def test_the_same_value_outside_a_schema_key_is_still_reported(
+    tmp_path: Path, fixture: str
+) -> None:
+    result = _run(tmp_path, json.dumps({"kind": "Account"}), fixture)
+    assert result.returncode == 1
+    assert "'Account'" in result.stdout
+
+
+@pytest.mark.parametrize("value", ["Ann", "555", "USD", "true", "NULL", "False"])
+def test_a_value_the_recorded_check_calls_harmless_is_not_reported(
+    tmp_path: Path, value: str
+) -> None:
+    """The captured values follow the recorded check's rule: under four
+    characters, or ``true``, ``false`` or ``null`` in any case, is not looked for."""
+    capture = f"<p>{value}</p>"
+    result = _run(tmp_path, capture, f"<p>{value}</p>")
+    assert result.returncode == 0, result.stdout

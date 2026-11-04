@@ -1626,7 +1626,13 @@ surrounding double quotes). A name flagged by its name alone (`session_name`,
 `http_only`) records `logged_in=true`, and a fixture holding the JSON literal
 `true` cannot invent it away; a value of three characters or fewer is in most
 fixtures by chance. Every other value is looked for, a username, a personal
-name, a four-digit PIN or a five-digit id included. The rule the name check
+name, a four-digit PIN or a five-digit id included. A value is found where the
+fixture holds it as a value: a quoted key that is a plain identifier, in any
+case, without a run of three digits (`"orderId":`, `"created_at":`) is a name
+the site chose for its schema, and is blanked in the fixture before the search,
+so a recorded value equal to such a key, or inside one (`Order` in
+`"recentOrders":`), is not reported. A key holding an account value (an email
+address, a run of digits) is not such a key and is still searched. The rule the name check
 judges a value by (`form_state`) was the alternative. It was not chosen
 because it reads usernames, names, short numbers and dictionary-word
 passwords as holding nothing, and a flagged session or token name can record

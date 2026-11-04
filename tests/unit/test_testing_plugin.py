@@ -289,6 +289,8 @@ def test_a_symlink_loop_is_the_same_read_error_in_the_package_and_the_script(
 _COPIED_FROM = {
     "_DIGITS": recorded,
     "_IDENTIFIER": recorded,
+    "_TYPENAME": recorded,
+    "_QUOTED_KEY": recorded,
     "_MOST_PLACES": recorded,
     "_MOST_FILES": recorded,
     "PAGE_SOURCE_NAME": recorded,
@@ -303,7 +305,6 @@ _COPIED_FROM = {
 }
 _SCRIPTS_OWN = {
     "_WORD",
-    "_MIN_LENGTH",
     "_PROVENANCE",
     "_RUN_LABEL",
     "_DATE_TIME_DIGITS",
@@ -418,3 +419,76 @@ def test_the_script_reads_no_file_outside_the_run_as_the_package(tmp_path: Path)
     har = _containment_run(run_dir, outside)
     assert _load_script().recorded_values(har, {"csrf-token"}, run_dir) == {}
     assert recorded_values(har, {"csrf-token"}, run_dir) == {}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"data": {"viewer": {"__typename": "User", "primaryEmail": "pat@example.com"}}}',
+        '{"recentOrders": [{"orderId": "ORD-9000001"}], "acct_99887766": 1}',
+        '{"alice@example.com": {"plan": "pro"}, "Content-Type": "x"}',
+        '{"payload": "{\\"orderId\\": \\"ORD-9000001\\"}"}',
+        "FIXTURE = {'orderId': 'ORD-9000001', \"customerName\" : \"Pat\"}\n",
+        "<p>orderId: Pat</p>",
+        "not json at all",
+        "",
+    ],
+)
+def test_the_skill_script_reads_keys_and_values_as_gp_observe_fixtures_does(text: str) -> None:
+    """The one rule for keys (a plain identifier without a run of digits is the
+    site's schema, not a value) and for ``__typename`` values, held equal."""
+    script = _load_script()
+    assert script._without_keys(text) == recorded._without_keys(text)
+    assert script.body_values(text) == recorded._body_values(text)
+
+
+def test_a_schema_key_and_a_typename_are_not_values() -> None:
+    text = (
+        '{"__typename": "User", "orderId": "ORD-9000001", "created_at": "2026",'
+        ' "acct_99887766": "x", "alice@example.com": "y", "Content-Type": "z"}'
+    )
+    assert recorded._body_values(text) == [
+        "acct_99887766",
+        "alice@example.com",
+        "Content-Type",
+        "ORD-9000001",
+        "2026",
+        "x",
+        "y",
+        "z",
+    ]
+    assert recorded._without_keys(text) == (
+        '{"          ": "User", "       ": "ORD-9000001", "          ": "2026",'
+        ' "acct_99887766": "x", "alice@example.com": "y", "Content-Type": "z"}'
+    )
+
+
+_GRAPHQL_FIXTURE = (
+    '{"data": {"viewer": {"__typename": "User",\n'
+    '  "sessionToken": "tok_example0000",\n'
+    '  "recentOrders": {"nodes": [{"__typename": "Order", "orderId": "ORD-9000001"}]}}}}'
+)
+
+
+@pytest.mark.parametrize(
+    ("recorded_value", "where"),
+    [
+        ("sessionToken", None),
+        ("recentOrders", None),
+        ("Orders", None),
+        ("orderId", None),
+        ("tok_example0000", "line 2"),
+        ("ORD-9000001", "line 3"),
+    ],
+)
+def test_a_recorded_value_is_found_as_a_value_never_inside_a_key(
+    recorded_value: str, where: str | None
+) -> None:
+    """A recorded value that the fixture holds only as, or inside, a key the site
+    named is not reported, in both copies; one it holds as a value is."""
+    script = _load_script()
+    values = {"session": {recorded_value}}
+    package = recorded_leaks(_GRAPHQL_FIXTURE, values)
+    assert package == script.recorded_leaks(script._Fixture(_GRAPHQL_FIXTURE), values)
+    expected = f"the recorded value of flagged 'session' is still in the fixture ({where})"
+    assert package == ([expected] if where else [])
