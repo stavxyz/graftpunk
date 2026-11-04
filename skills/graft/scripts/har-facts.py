@@ -4,6 +4,9 @@ Usage:
   har-facts.py cookies HAR [--name NAME]
   har-facts.py request HAR URL_PART [--method METHOD]
   har-facts.py response HAR URL_PART [--method METHOD]
+  har-facts.py operations HAR [--operation NAME]
+
+``request`` and ``response`` also take ``--operation NAME``.
 
 A HAR holds the account's data and, from a recorded login, the session's cookies
 and tokens, and it can hold the password the user typed. The graft skill reads one
@@ -107,6 +110,22 @@ whose name reads as a password, a secret, a token, a card, or a key is listed by
 name alone. A response body streamed to ``bodies/`` is read only from the HAR's
 own ``bodies/`` directory, never through a link.
 
+``operations`` lists each GraphQL operation the recording's request bodies
+carry (graftpunk's own rule, copied and held equal by a test: a JSON object with a
+``query`` that reads as a GraphQL document, or an ``operationName`` beside
+``extensions.persistedQuery``; each element of an array of them): its method,
+templated URL, and name in parentheses (``(anonymous)`` for none), the number of
+calls and how many came in a batch, its kind (``query``, ``mutation``,
+``subscription``, or ``persisted`` for a hash sent without a document), and the
+shapes of its first recorded variables and response, nested keys and types,
+never a value. An operation name prints when it is a GraphQL Name of at most 128
+characters that ``holds_an_id`` does not read as an id; it is an identifier fixed
+in the site's client code, the same for every account, so it does not pass
+through ``printable_name``, and any other name is filed under ``(anonymous)``.
+``--operation NAME`` narrows ``operations``, ``request``, and ``response`` to one
+operation (``anonymous`` names the anonymous one), and ``request`` and
+``response`` add the operations an entry carries to its first line.
+
 At most 20 matching entries are described; past that, a count prints. Exit 0 when
 something was described, 1 when nothing matched, 2 on a usage error, a HAR that
 is missing or is not a HAR, or an entry that could not be read; no error message
@@ -131,6 +150,8 @@ from urllib.parse import unquote, urlsplit
 _MAX_ENTRIES = 20
 _MAX_KEYS = 40
 _MAX_DEPTH = 4
+# An operation's variables and response are read deeper: a GraphQL response nests.
+_OPERATION_DEPTH = 10
 _MAX_NAME_LEN = 48
 _LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 
@@ -1177,8 +1198,8 @@ def _field(name: str, detail: str) -> str:
     )
 
 
-def _shape(value: Any, indent: str, depth: int) -> list[str]:
-    """Lines describing *value*'s keys and types, never a value."""
+def _shape(value: Any, indent: str, depth: int, max_depth: int = _MAX_DEPTH) -> list[str]:
+    """Lines describing *value*'s keys and types, never a value, down to *max_depth*."""
     lines: list[str] = []
     if isinstance(value, dict):
         keys = [key for key in value if printable_name(str(key))]
@@ -1186,12 +1207,8 @@ def _shape(value: Any, indent: str, depth: int) -> list[str]:
         for key in keys[:_MAX_KEYS]:
             child = value[key]
             lines.append(f"{indent}{_field(str(key), _type(child) + _count(child))}")
-            if (
-                not looks_secret(str(key))
-                and isinstance(child, (dict, list))
-                and depth < _MAX_DEPTH
-            ):
-                lines.extend(_shape(child, indent + "  ", depth + 1))
+            if not looks_secret(str(key)) and isinstance(child, (dict, list)) and depth < max_depth:
+                lines.extend(_shape(child, indent + "  ", depth + 1, max_depth))
         if len(keys) > _MAX_KEYS:
             lines.append(f"{indent}({len(keys) - _MAX_KEYS} more keys)")
         if hidden:
@@ -1199,8 +1216,8 @@ def _shape(value: Any, indent: str, depth: int) -> list[str]:
     elif isinstance(value, list) and value:
         first = value[0]
         lines.append(f"{indent}[first item]: {_type(first)}{_count(first)}")
-        if isinstance(first, (dict, list)) and depth < _MAX_DEPTH:
-            lines.extend(_shape(first, indent + "  ", depth + 1))
+        if isinstance(first, (dict, list)) and depth < max_depth:
+            lines.extend(_shape(first, indent + "  ", depth + 1, max_depth))
     return lines
 
 
@@ -1603,6 +1620,210 @@ def describe_response(entry: dict[str, Any], har_path: Path) -> list[str]:
     return lines
 
 
+# graftpunk.har.graphql, copied: the script cannot import graftpunk, and a test holds
+# the two equal on a corpus of bodies.
+ANONYMOUS_OPERATION = "(anonymous)"
+_MAX_OPERATION_NAME = 128
+_GRAPHQL_NAME_RE = re.compile(r"[_A-Za-z][_0-9A-Za-z]*")
+_OPERATION_KEYWORDS = frozenset({"query", "mutation", "subscription"})
+_GRAPHQL_TOKEN_RE = re.compile(
+    r'(?P<block>"""(?:\\"""|[^"]|"(?!""))*""")'
+    r'|(?P<string>"(?:[^"\\\n\r]|\\.)*")'
+    r"|(?P<number>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"
+    r"|(?P<name>[_A-Za-z][_0-9A-Za-z]*)"
+    r"|(?P<punct>\.\.\.|[!$&()\[\]{}:=@|])"
+    r"|(?P<comment>#[^\n\r]*)"
+    r"|(?P<ignored>[\s,﻿]+)"
+)
+
+
+def _graphql_tokens(document: str) -> list[tuple[str, str]] | None:
+    tokens: list[tuple[str, str]] = []
+    at = 0
+    while at < len(document):
+        match = _GRAPHQL_TOKEN_RE.match(document, at)
+        if match is None:
+            return None
+        kind = match.lastgroup or ""
+        if kind not in ("ignored", "comment"):
+            tokens.append((kind, match.group()))
+        at = match.end()
+    return tokens
+
+
+def _usable_operation_name(name: str) -> bool:
+    return (
+        len(name) <= _MAX_OPERATION_NAME
+        and _GRAPHQL_NAME_RE.fullmatch(name) is not None
+        and not holds_an_id(name)
+    )
+
+
+def document_operation(document: str) -> tuple[str, str] | None:
+    """``(name, kind)`` of a GraphQL document's first operation, or None when the text
+    is not a GraphQL document (graftpunk.har.graphql.document_operation)."""
+    tokens = _graphql_tokens(document)
+    if not tokens:
+        return None
+    first = tokens[0]
+    if first != ("punct", "{") and not (
+        first[0] == "name" and (first[1] in _OPERATION_KEYWORDS or first[1] == "fragment")
+    ):
+        return None
+    depth = 0
+    found: tuple[str, str] | None = None
+    for index, (kind, text) in enumerate(tokens):
+        if kind == "punct" and text == "{":
+            if depth == 0 and found is None and (index == 0 or tokens[index - 1] == ("punct", "}")):
+                found = (ANONYMOUS_OPERATION, "query")
+            depth += 1
+        elif kind == "punct" and text == "}":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif depth == 0 and found is None and kind == "name" and text in _OPERATION_KEYWORDS:
+            following = tokens[index + 1] if index + 1 < len(tokens) else ("", "")
+            name = following[1] if following[0] == "name" else ANONYMOUS_OPERATION
+            found = (name if _usable_operation_name(name) else ANONYMOUS_OPERATION, text)
+    if depth != 0 or found is None or ("punct", "{") not in tokens:
+        return None
+    return found
+
+
+def _operation_of(body: Any, *, batched: bool) -> dict[str, Any] | None:
+    """One body object's operation: name, kind, variables, batched; None when it is
+    not GraphQL."""
+    if not isinstance(body, dict):
+        return None
+    sent = body.get("operationName")
+    variables = body.get("variables") if isinstance(body.get("variables"), dict) else None
+    query = body.get("query")
+    if isinstance(query, str):
+        read = document_operation(query)
+        if read is None:
+            return None
+        if isinstance(sent, str) and _GRAPHQL_NAME_RE.fullmatch(sent):
+            name = sent if _usable_operation_name(sent) else ANONYMOUS_OPERATION
+        else:
+            name = read[0]
+        return {"name": name, "kind": read[1], "variables": variables, "batched": batched}
+    extensions = body.get("extensions")
+    persisted = extensions.get("persistedQuery") if isinstance(extensions, dict) else None
+    if not isinstance(persisted, dict) or not isinstance(sent, str):
+        return None
+    if not _GRAPHQL_NAME_RE.fullmatch(sent):
+        return None
+    name = sent if _usable_operation_name(sent) else ANONYMOUS_OPERATION
+    return {"name": name, "kind": "persisted", "variables": variables, "batched": batched}
+
+
+def operations_in(parsed: Any) -> list[dict[str, Any]]:
+    """Every operation a decoded request body carries (graftpunk.har.graphql.operations_in)."""
+    if isinstance(parsed, dict):
+        found = _operation_of(parsed, batched=False)
+        return [] if found is None else [found]
+    if isinstance(parsed, list) and parsed:
+        operations = []
+        for element in parsed:
+            found = _operation_of(element, batched=True)
+            if found is None:
+                return []
+            operations.append(found)
+        return operations
+    return []
+
+
+def _request_text(entry: dict[str, Any], har_path: Path) -> str | None:
+    request = _part(entry, "request")
+    post = request.get("postData")
+    if isinstance(post, dict) and isinstance(post.get("text"), str):
+        return post["text"]
+    body_file = request.get("_postDataFile")
+    if isinstance(body_file, str) and body_file:
+        return _bodies_file_text(body_file, har_path)[0]
+    return None
+
+
+def _decoded(text: str | None) -> Any:
+    if text is None or _nesting(text) > _MAX_JSON_NESTING:
+        return None
+    try:
+        return json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def entry_operations(entry: dict[str, Any], har_path: Path) -> list[dict[str, Any]]:
+    """The GraphQL operations *entry*'s request body carries, in order."""
+    return operations_in(_decoded(_request_text(entry, har_path)))
+
+
+def _operation_wanted(name: str, wanted: str | None) -> bool:
+    if wanted is None:
+        return True
+    return name == wanted or (name == ANONYMOUS_OPERATION and wanted == "anonymous")
+
+
+def _operation_label(name: str) -> str:
+    return name if name == ANONYMOUS_OPERATION else f"({name})"
+
+
+def operations(entries: list[dict[str, Any]], har_path: Path, wanted: str | None) -> list[str]:
+    """One block per GraphQL operation: its request line, calls, kind, and the
+    variables' and response's shapes (keys and types, never a value)."""
+    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for entry in entries:
+        found = entry_operations(entry, har_path)
+        if not found:
+            continue
+        request = _part(entry, "request")
+        url = templated_url(str(request.get("url", "")).split("?", 1)[0])
+        response_text, _reason = _response_text(entry, har_path)
+        response = _decoded(response_text)
+        for index, operation in enumerate(found):
+            if not _operation_wanted(operation["name"], wanted):
+                continue
+            key = (_method(request), url, operation["name"])
+            group = groups.setdefault(
+                key,
+                {
+                    "calls": 0,
+                    "batched": 0,
+                    "kind": operation["kind"],
+                    "variables": None,
+                    "response": None,
+                },
+            )
+            group["calls"] += 1
+            group["batched"] += 1 if operation["batched"] else 0
+            if group["variables"] is None and operation["variables"] is not None:
+                group["variables"] = operation["variables"]
+            if group["response"] is None:
+                if not operation["batched"]:
+                    group["response"] = response
+                elif isinstance(response, list) and len(response) == len(found):
+                    group["response"] = response[index]
+    blocks: list[str] = []
+    for (method, url, name), group in groups.items():
+        batched = f", {group['batched']} in a batch" if group["batched"] else ""
+        lines = [
+            f"{method} {url} {_operation_label(name)}: {group['calls']} call(s), "
+            f"{group['kind']}{batched}"
+        ]
+        variables = group["variables"]
+        lines.append("  variables:" if variables else "  variables: none recorded")
+        if variables:
+            lines.extend(_shape(variables, "    ", 1, _OPERATION_DEPTH))
+        response = group["response"]
+        if response is None:
+            lines.append("  response: no JSON body recorded")
+        else:
+            lines.append(f"  response: JSON {_type(response)}{_count(response)}")
+            lines.extend(_shape(response, "    ", 1, _OPERATION_DEPTH))
+        blocks.append("\n".join(lines))
+    return blocks
+
+
 def main(argv: list[str]) -> int:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
@@ -1617,6 +1838,10 @@ def main(argv: list[str]) -> int:
         one.add_argument("har")
         one.add_argument("url_part")
         one.add_argument("--method")
+        one.add_argument("--operation")
+    graphql = sub.add_parser("operations")
+    graphql.add_argument("har")
+    graphql.add_argument("--operation")
     try:
         args = parser.parse_args(argv[1:])
     except SystemExit as exc:
@@ -1647,17 +1872,41 @@ def _run(args: argparse.Namespace, entries: list[dict[str, Any]]) -> int:
             return 1
         print("\n".join(lines))
         return 0
+    har_path = Path(args.har)
+    if args.command == "operations":
+        blocks = operations(entries, har_path, args.operation)
+        if not blocks:
+            which = f" named {args.operation!r}" if args.operation else ""
+            print(f"har-facts: no GraphQL operation{which} in this HAR.", file=sys.stderr)
+            return 1
+        print("\n\n".join(blocks))
+        return 0
     found = _matches(entries, args.url_part, args.method)
+    if args.operation is not None:
+        found = [
+            entry
+            for entry in found
+            if any(
+                _operation_wanted(op["name"], args.operation)
+                for op in entry_operations(entry, har_path)
+            )
+        ]
     if not found:
         method = f" with method {args.method.upper()}" if args.method else ""
+        if args.operation is not None:
+            method += f" and operation {args.operation!r}"
         print(f"har-facts: no request URL holds {args.url_part!r}{method}.", file=sys.stderr)
         return 1
     blocks = []
     for entry in found[:_MAX_ENTRIES]:
         if args.command == "request":
-            blocks.append("\n".join(describe_request(entry, Path(args.har))))
+            lines = describe_request(entry, har_path)
         else:
-            blocks.append("\n".join(describe_response(entry, Path(args.har))))
+            lines = describe_response(entry, har_path)
+        names = list(dict.fromkeys(op["name"] for op in entry_operations(entry, har_path)))
+        if names:
+            lines[0] += " " + " ".join(_operation_label(name) for name in names)
+        blocks.append("\n".join(lines))
     print("\n\n".join(blocks))
     if len(found) > _MAX_ENTRIES:
         more = len(found) - _MAX_ENTRIES
