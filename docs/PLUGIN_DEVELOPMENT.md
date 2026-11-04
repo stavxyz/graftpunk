@@ -2456,11 +2456,12 @@ read as a name. An id of capitals and
 digits is left out only when a draw holds no digit: 1.1% at 8 characters, 0.09%
 at 12 and none at 16. The graft skill's `fixture-leaks.py`, which compares a
 fixture with the capture it was derived from, still reports any value from the
-captured response body left in the fixture, each run of 4 or more digits
-included; a key that is a plain identifier (`orderId`), a `__typename` value,
-and a value shorter than four characters or `true`, `false` or `null` are not
-reported, and a value is found only where the fixture holds it as a value,
-never inside such a key. With `--har` and the run's HAR it also reports each flagged name
+captured response body left in the fixture, each run of 3 or more digits
+included. It skips a key shaped like a schema name without a digit (`orderId`,
+`created_at`), an identifier under `__typename`, `true`, `false` or `null`, and
+a value shorter than four characters unless it has three and holds a digit, and
+does not look inside such a key in the fixture; a value used as a whole key is
+still reported. With `--har` and the run's HAR it also reports each flagged name
 whose recorded value (a cookie sent or set, a header, a meta or hidden-input
 token) is in the fixture, by line number, without printing the value. It runs
 when the skill derives a fixture, not in the suite.
@@ -2589,12 +2590,11 @@ get_orders.json: the recorded value of flagged 'myshop_session' is still in the 
 It looks for the run id in each of the plugin's session directories (`myshop`,
 `myshop-alice`, and so on) and reads only that run's files. A recorded value
 is not looked for only when it is empty, `true`, `false` or `null` in any case,
-or shorter than four characters, since a fixture cannot invent `true` away;
-every other value is, a username, a name or a four-digit PIN included. A value
-is found where the fixture holds it as a value: a quoted key that is a plain
-identifier without a run of three digits (`"orderId":`) is blanked before the
-search, so a recorded value that matches such a key, or a part of one, is not
-reported. In CI
+or shorter than four characters without being three that hold a digit, since
+a fixture cannot invent `true` away; every other value is, a username, a name or
+a three-digit PIN included. A quoted key in key position shaped like a schema
+name without a digit (`"orderId":`) is blanked before the search, so a recorded
+value inside such a key is not reported; one equal to the whole key is. In CI
 and on a teammate's checkout the run is not there, and the check is the name
 check alone, with no warning; the line the check prints on every run ends with
 `, N compared with the values their observe run recorded on this machine`, so
