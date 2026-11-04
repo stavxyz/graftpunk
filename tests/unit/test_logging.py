@@ -626,3 +626,69 @@ def test_unnamed_logger_is_named_after_the_calling_module(tmp_path: Path) -> Non
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr == "plugin_mod|event='named_marker' logger='plugin_mod'\n"
+
+
+# redacted_values over a line holding a container more than once, or itself (#305).
+_ACCOUNT = "acct-secret-value"
+
+
+def _redacted_line(**values: Any) -> dict[str, Any]:
+    from structlog.testing import capture_logs
+
+    from graftpunk.logging import get_logger, redacted_values
+
+    with capture_logs() as logs, redacted_values((_ACCOUNT, "<acct>")):
+        get_logger("t").warning("line", **values)
+    (line,) = logs
+    return line
+
+
+def _shared_tower(depth: int) -> list[Any]:
+    value: list[Any] = [_ACCOUNT]
+    for _ in range(depth):
+        value = [value, value]
+    return value
+
+
+def test_redacted_values_ends_on_a_container_that_holds_itself() -> None:
+    """The rewrite once recursed to Python's limit and raised from the log call."""
+    loop: list[Any] = [_ACCOUNT]
+    loop.append(loop)
+    node: dict[str, Any] = {"key": _ACCOUNT}
+    node["self"] = node
+    line = _redacted_line(loop=loop, node=node, pair=(_ACCOUNT, loop))
+    assert line["loop"] == ["<acct>", "[...]"]
+    assert line["node"] == {"key": "<acct>", "self": "{...}"}
+    assert line["pair"] == ("<acct>", ["<acct>", "[...]"])
+    assert _ACCOUNT not in repr(line)
+
+
+def test_redacted_values_rewrites_a_shared_container_at_each_of_its_places() -> None:
+    expected: Any = ["<acct>"]
+    for _ in range(10):
+        expected = [expected, expected]
+    assert _redacted_line(value=_shared_tower(10))["value"] == expected
+
+
+def test_redacted_values_on_a_shared_container_costs_what_its_distinct_lists_cost() -> None:
+    """A list holding one sub-list twice, nested 18 levels, within 10 times the
+    CPU time of a chain of as many distinct lists. The rewrite once followed
+    every path, 2 ** 18 to the innermost list: 6.9 s of CPU for a line at 22
+    levels (2026-11-03)."""
+    import time
+
+    chain: list[Any] = [_ACCOUNT]
+    for _ in range(18):
+        chain = [chain, [_ACCOUNT]]
+    shared = _shared_tower(18)
+
+    def cpu(value: Any) -> float:
+        best = float("inf")
+        for _ in range(3):
+            start = time.process_time()
+            _redacted_line(value=value)
+            best = min(best, time.process_time() - start)
+        return best
+
+    ratio = cpu(shared) / max(cpu(chain), 1e-4)
+    assert ratio < 10, ratio

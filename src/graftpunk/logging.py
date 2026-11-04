@@ -582,21 +582,66 @@ _redactions: ContextVar[tuple[tuple[str, str], ...]] = ContextVar(
 )
 
 
+# What a container that holds itself is written as where the loop closes, as
+# Python's repr writes it.
+_LOOP_MARKS: tuple[tuple[type, str], ...] = ((dict, "{...}"), (list, "[...]"), (tuple, "(...)"))
+
+
+class _LineRewrite:
+    """One log line's values with each :func:`redacted_values` pair applied.
+
+    Strings are rewritten, inside dicts (keys too), lists and tuples. A container
+    is rewritten once however many times the line holds it (``l = [l, l]``
+    nested 22 levels holds its innermost list four million times), its result
+    kept with the container itself so its ``id`` cannot pass to another object
+    during the line. A container that holds itself is written where the loop
+    closes as Python's repr writes it (``[...]``), which holds no value; a
+    result that closed a loop is not kept, as where the loop closes depends on
+    the path the container was reached by.
+    """
+
+    def __init__(self, pairs: tuple[tuple[str, str], ...]) -> None:
+        self._pairs = pairs
+        self._open: set[int] = set()
+        self._done: dict[int, tuple[Any, Any]] = {}
+        self._loops = 0
+
+    def __call__(self, value: Any) -> Any:
+        if isinstance(value, str):
+            for secret, placeholder in self._pairs:
+                value = value.replace(secret, placeholder)
+            return value
+        if not isinstance(value, (dict, list, tuple)):
+            return value
+        key = id(value)
+        if key in self._open:
+            self._loops += 1
+            return next(mark for kind, mark in _LOOP_MARKS if isinstance(value, kind))
+        done = self._done.get(key)
+        if done is not None:
+            return done[1]
+        loops = self._loops
+        self._open.add(key)
+        try:
+            if isinstance(value, dict):
+                result: Any = {self(k): self(item) for k, item in value.items()}
+            else:
+                result = type(value)(self(item) for item in value)
+        finally:
+            self._open.discard(key)
+        if self._loops == loops:
+            self._done[key] = (value, result)
+        return result
+
+
 def _redact(value: Any) -> Any:
-    if isinstance(value, str):
-        for secret, placeholder in _redactions.get():
-            value = value.replace(secret, placeholder)
-        return value
-    if isinstance(value, dict):
-        return {_redact(key): _redact(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return type(value)(_redact(item) for item in value)
-    return value
+    return _LineRewrite(_redactions.get())(value)
 
 
 def _redacting_call(method: Any) -> Any:
     def call(*args: Any, **kwargs: Any) -> Any:
-        return method(*_redact(args), **_redact(kwargs))
+        rewrite = _LineRewrite(_redactions.get())
+        return method(*rewrite(args), **rewrite(kwargs))
 
     return call
 
