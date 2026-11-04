@@ -24,6 +24,7 @@ from graftpunk.har.paths import (
     holds_an_id,
     is_placeholder,
     normal_host,
+    reads_as_words,
     templates_a_segment,
 )
 from graftpunk.logging import get_logger
@@ -211,10 +212,6 @@ class LoginForm:
     # empty when none qualifies. Never from markup, and only ever a suggestion the
     # generator writes commented out. Set by the digest. Internal.
     opener_candidate: str = field(default="", metadata={"internal": True})
-    # The text of the submit control when it has no selector (_submit_text): a
-    # GP-FILL names the button by it, since a CSS selector cannot match text.
-    # Internal.
-    submit_text: str = field(default="", metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -258,13 +255,13 @@ class _RawInput:
     # _DocumentParser.blocks, or None; tracked for a DOM snapshot only.
     block: int | None = None
     # The attributes a selector falls back to when the control has no usable id or
-    # name (_attribute_selector): autocomplete as written, placeholder, aria-label,
-    # and the class tokens. A <button>'s text, whitespace collapsed.
+    # name (_attribute_selector), each exactly as written, since an attribute
+    # selector matches the value exactly: autocomplete, placeholder, aria-label, and
+    # the class tokens.
     autocomplete_attr: str = ""
     placeholder: str = ""
     aria_label: str = ""
     classes: tuple[str, ...] = ()
-    text: str = ""
 
 
 @dataclass
@@ -351,13 +348,6 @@ class _DocumentParser(HTMLParser):
         # Inside <svg> or <math>, where "/>" closes an element; elsewhere a browser
         # ignores it on an element that is not void.
         self._foreign = 0
-        # The <button> open now, whose text is being read.
-        self._button: _RawInput | None = None
-
-    def handle_data(self, data: str) -> None:
-        button = self._button
-        if button is not None and len(button.text) <= _MAX_BUTTON_TEXT:
-            button.text = " ".join(f"{button.text} {data}".split())
 
     def _innermost_dialog(self) -> int | None:
         while self._dialogs and self._dialogs[-1] in self._closed:
@@ -417,15 +407,13 @@ class _DocumentParser(HTMLParser):
                 autocomplete=autofill_field_name(values.get("autocomplete", "")),
                 form_owner=values.get("form", ""),
                 order=len(self.inputs),
-                autocomplete_attr=values.get("autocomplete", "").strip(),
-                placeholder=values.get("placeholder", "").strip(),
-                aria_label=values.get("aria-label", "").strip(),
+                autocomplete_attr=values.get("autocomplete", ""),
+                placeholder=values.get("placeholder", ""),
+                aria_label=values.get("aria-label", ""),
                 classes=tuple(_ASCII_WHITESPACE_RE.split(values.get("class", "").strip()))
                 if values.get("class", "").strip()
                 else (),
             )
-            if tag == "button":
-                self._button = raw_input
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
             raw_input.dialog = self._innermost_dialog()
@@ -458,8 +446,6 @@ class _DocumentParser(HTMLParser):
                 return
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "button":
-            self._button = None
         if self._track_blocks:
             self._close_blocks(tag)
         if self._open_count.get(tag, 0) > 0:
@@ -516,11 +502,12 @@ _EMPTY_ACTION_SCOPES = (
 
 def _css_string(value: str) -> str:
     """*value* escaped for the inside of a double-quoted CSS attribute value: a
-    backslash and a quote are backslash-escaped, and a newline or carriage return
-    becomes its hex escape, so a captured name or action cannot end the value early
-    or change the selector."""
+    backslash and a quote are backslash-escaped, and each control character (a
+    newline, a tab, DEL) becomes its hex escape followed by a space, so a captured
+    name, action or attribute value cannot end the value early or change the
+    selector, and the selector still matches the value exactly as written."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return escaped.replace("\n", "\\a ").replace("\r", "\\d ")
+    return "".join(f"\\{ord(ch):x} " if ord(ch) < 0x20 or ord(ch) == 0x7F else ch for ch in escaped)
 
 
 # A CSS identifier an #id selector can spell as it is.
@@ -717,50 +704,46 @@ def _outside_selector(raw: _RawInput, page_inputs: _Counts) -> tuple[str | None,
     return None, None
 
 
-# The longest attribute value an attribute selector spells, and the longest
-# button text kept: a longer one is prose, not a label.
+# The longest attribute value an attribute selector spells: a longer one is prose,
+# not a label.
 _MAX_ATTRIBUTE_VALUE = 80
-_MAX_BUTTON_TEXT = 40
 # Autocomplete values that say nothing about the control.
 _UNTELLING_AUTOCOMPLETE = frozenset({"on", "off"})
-# Splits a class token into its words for the build-hash rule.
-_CLASS_WORD_RE = re.compile(r"[^A-Za-z0-9]+")
-# A digit with a letter after it in one word (1x9k3tq, tY7r3Qp, _3kR9v), or a word
-# of six digits or more (jsx-2843710157).
-_HASHED_WORD_RE = re.compile(r"[0-9][A-Za-z]|^[0-9]{6,}$")
-# CSS modules' default suffix: two or more underscores and a five-character base64
-# hash, which holds a capital or a digit (BEM's lower-case "card__title" does not).
-_CSS_MODULE_SUFFIX_RE = re.compile(r"__+(?=[A-Za-z0-9]{5}$)(?![a-z]{5}$)")
+# Splits a class token into its parts for the written-class rule.
+_CLASS_PART_RE = re.compile(r"[-_]+")
 
 
 def is_build_hashed_class(token: str) -> bool:
-    """Whether a class token reads as one a build tool generated, which the next
-    build renames (CSS modules' ``Button_primary__3kR9v`` and ``Header__QwErT``,
-    emotion's ``css-1x9k3tq``, styled-jsx's ``jsx-2843710157``): a word of it (the
-    runs of letters and digits) holds a digit with a letter after it, or is six
-    digits or more; or it ends in two or more underscores and five letters or digits
-    that are not all lower-case letters. A word that only ends in digits
-    (``col-md-6``, ``h1``, ``arrow2``) is a written name, and so is a BEM element
-    (``card__title``). A false "hashed" only costs a selector fallback; a false
-    "written" gives a selector the next build breaks, so the rule leans to "hashed"
-    (``h-100vh``). A letters-only hash with no such suffix (styled-components'
-    ``bdVaJa``) is not caught: a class is the last fallback, used only when it picks
-    one control."""
-    if _CSS_MODULE_SUFFIX_RE.search(token):
-        return True
-    return any(_HASHED_WORD_RE.search(word) for word in _CLASS_WORD_RE.split(token) if word)
+    """Whether a class token may be one a build tool generated, which the next build
+    renames: True unless every part of it (split on ``-`` and ``_``) reads as words
+    by :func:`graftpunk.har.paths.reads_as_words` and holds no digit. A class is a
+    selector only when this is False, so ``sign-in-btn``, ``btn-primary``,
+    ``form-control`` and BEM's ``card__title`` are used, and CSS modules'
+    ``Button_primary__3kR9v``, emotion's ``css-1x9k3tq``, JSS's ``jss123``, Svelte's
+    ``svelte-1x2y3z``, and styled-components' ``sc-bdVaJa kAzCrH`` are not. A class
+    with a digit in it is never used (``col-md-6``, ``bg-blue-500``, ``h1``), and
+    neither is one with an empty part (``-x``). A hash made of letters that happen to
+    read as a word (emotion's ``css-abcdef`` reads as two parts that may) can still
+    pass: a class is the last fallback, used only when it picks one control on the
+    recorded page."""
+    parts = _CLASS_PART_RE.split(token)
+    return not all(
+        part and not any(ch.isdigit() for ch in part) and reads_as_words(part) for part in parts
+    )
 
 
 def _selectable_attributes(raw: _RawInput) -> list[tuple[str, str]]:
     """The (attribute, value) pairs a selector for *raw* may fall back to, in the
-    order it tries them: ``autocomplete`` (not ``on`` or ``off``); ``type`` for a
-    typed password input and a typed submit ``<button>``; ``placeholder``;
-    ``aria-label``; then each class token a CSS identifier spells that is not
-    build-hashed (:func:`is_build_hashed_class`). A value over
-    ``_MAX_ATTRIBUTE_VALUE`` characters, or holding an account value
-    (:func:`graftpunk.har.paths.holds_an_id`), is never one."""
+    order it tries them, each value exactly as written: ``autocomplete`` (not ``on``
+    or ``off``); ``type`` for a typed password input and a typed submit
+    ``<button>``; ``placeholder``; ``aria-label``; then each class token a CSS
+    identifier spells that is not build-hashed (:func:`is_build_hashed_class`). A
+    value that is only whitespace, one over ``_MAX_ATTRIBUTE_VALUE`` characters, one
+    holding an account value (:func:`graftpunk.har.paths.holds_an_id`), and one
+    holding the redaction a stored snapshot writes in place of a posted value
+    (``***REDACTED***``, which the live page never shows) is never one."""
     pairs: list[tuple[str, str]] = []
-    if raw.autocomplete_attr.lower() not in _UNTELLING_AUTOCOMPLETE:
+    if raw.autocomplete_attr.strip().lower() not in _UNTELLING_AUTOCOMPLETE:
         pairs.append(("autocomplete", raw.autocomplete_attr))
     if raw.typed and (
         (raw.tag == "input" and raw.input_type == "password")
@@ -777,7 +760,10 @@ def _selectable_attributes(raw: _RawInput) -> list[tuple[str, str]]:
     return [
         (attribute, value)
         for attribute, value in pairs
-        if value and len(value) <= _MAX_ATTRIBUTE_VALUE and not holds_an_id(value)
+        if value.strip()
+        and len(value) <= _MAX_ATTRIBUTE_VALUE
+        and _SNAPSHOT_REDACTION_MARK not in value.lower()
+        and not holds_an_id(value)
     ]
 
 
@@ -797,16 +783,6 @@ def _attribute_selector(raw: _RawInput, page_inputs: _Counts) -> str | None:
             return f"{raw.tag}.{value}"
         return f'{raw.tag}[{attribute}="{_css_string(value)}"]'
     return None
-
-
-def _submit_text(raw: _RawInput) -> str:
-    """The text a submit control shows (a ``<button>``'s text, an input's
-    ``value`` is not read), for a GP-FILL naming it: empty when it is longer than
-    ``_MAX_BUTTON_TEXT`` characters or holds an account value."""
-    text = raw.text
-    if not text or len(text) > _MAX_BUTTON_TEXT or holds_an_id(text):
-        return ""
-    return text
 
 
 # A selector with no form scope: by id, as _selectors_for writes one.
@@ -1649,12 +1625,10 @@ def _login_form(
             unscoped_fields[role] = unscoped
     submit: str | None = None
     unscoped_submit: str | None = None
-    submit_text = ""
     if submit_index is not None:
         submit, unscoped_submit = selectors_for(inputs[submit_index])
         if submit is None:
             unresolved.append("submit")
-            submit_text = _submit_text(inputs[submit_index])
     elif formless:
         # Nothing beside the password submits: a GP-FILL, never a guess.
         absent.append("submit")
@@ -1682,7 +1656,6 @@ def _login_form(
             tuple((i.tag, i.input_type, i.name, i.element_id) for i in inputs),
         ),
         formless=formless,
-        submit_text=submit_text,
     )
 
 

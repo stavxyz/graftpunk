@@ -1,8 +1,11 @@
 """#365: a login control with no usable id or name is selected by a stable attribute
 unique on the page (autocomplete, a password's or a submit button's type, placeholder,
-aria-label, then a class that is not build-hashed), never by a build-hashed class."""
+aria-label, then a class whose every part reads as a word and holds no digit), each value
+exactly as written, never a redaction, and never by a button's text."""
 
 from __future__ import annotations
+
+import re
 
 import pytest
 
@@ -20,6 +23,31 @@ def _only(html: str, *, snapshot: bool = False):  # noqa: ANN202
     return form
 
 
+def _css_unescaped(spelled: str) -> str:
+    """The value a double-quoted CSS string *spelled* (its inside) stands for, by the
+    CSS Syntax escape rules: a backslash and one to six hex digits (one following
+    space eaten) is that code point; a backslash and any other character is that
+    character. An unescaped quote would end the string early, so it fails here."""
+    out: list[str] = []
+    at = 0
+    while at < len(spelled):
+        ch = spelled[at]
+        assert ch != '"', f"unescaped quote in {spelled!r}"
+        if ch != "\\":
+            out.append(ch)
+            at += 1
+            continue
+        hex_digits = re.match(r"[0-9a-fA-F]{1,6}", spelled[at + 1 :])
+        if hex_digits:
+            out.append(chr(int(hex_digits.group(), 16)))
+            at += 1 + len(hex_digits.group())
+            at += spelled[at : at + 1] == " "
+        else:
+            out.append(spelled[at + 1])
+            at += 2
+    return "".join(out)
+
+
 class TestBuildHashedClasses:
     @pytest.mark.parametrize(
         "token",
@@ -32,6 +60,22 @@ class TestBuildHashedClasses:
             "Header__QwErT",
             "header__loggedIn___abcDE",
             "a3f9c2d1e0b4",
+            # styled-components: a component id and a class hash, letters only.
+            "sc-bdVaJa",
+            "kAzCrH",
+            "jss123",
+            "makeStyles-root-12",
+            "svelte-1x2y3z",
+            "ng-tns-c12-3",
+            "css-abc123",
+            "css-q7",
+            # Any digit, so written names with one are not used either.
+            "col-md-6",
+            "h1",
+            "arrow2",
+            # One part in two case shapes does not read as a word.
+            "loginPanel",
+            "-x",
         ],
     )
     def test_hashed(self, token: str) -> None:
@@ -41,13 +85,13 @@ class TestBuildHashedClasses:
         "token",
         [
             "sign-in-btn",
+            "btn-primary",
             "form-control",
             "btn-block",
-            "col-md-6",
-            "h1",
-            "arrow2",
             "card__title",
-            "loginPanel",
+            "card__title--active",
+            "login-form__submit",
+            "text-center",
         ],
     )
     def test_written(self, token: str) -> None:
@@ -173,6 +217,75 @@ class TestFieldFallbacks:
         assert form.fields == {"username": 'input[placeholder="Email"]', "password": scoped}
 
 
+class TestAttributeValuesAsWritten:
+    """An attribute selector matches the value exactly, so the value is spelled as
+    written (padding included) and CSS-escaped; a stored redaction is never one."""
+
+    @pytest.mark.parametrize(
+        ("attribute", "value"),
+        [
+            ("placeholder", " Enter your email "),
+            ("aria-label", "Email "),
+            ("autocomplete", " username"),
+            ("placeholder", 'Your "email"'),
+            ("placeholder", "Email\tor phone"),
+        ],
+    )
+    def test_a_padded_or_escaped_value_matches_the_control(
+        self, attribute: str, value: str
+    ) -> None:
+        from html import escape
+
+        html = _dialog(
+            f'<input type="text" {attribute}="{escape(value, quote=True)}">'
+            '<input type="password"><button type="submit">Go</button>'
+        )
+        selector = _only(html).fields["username"]
+        prefix = f'input[{attribute}="'
+        assert selector.startswith(prefix)
+        assert selector.endswith('"]')
+        assert _css_unescaped(selector[len(prefix) : -2]) == value
+
+    def test_a_value_of_whitespace_is_never_used(self) -> None:
+        form = _only(
+            _dialog(
+                '<input type="text" placeholder="   "><input type="password">'
+                '<button type="submit">Go</button>'
+            )
+        )
+        assert "username" in form.unresolved_roles
+
+    @pytest.mark.parametrize("value", ["***REDACTED***", "***redacted***", "Hi ***REDACTED***"])
+    def test_a_redaction_is_never_a_selector(self, value: str) -> None:
+        form = _only(
+            _dialog(
+                f'<input type="email" placeholder="{value}"><input type="password">'
+                '<button type="submit">Go</button>'
+            ),
+            snapshot=True,
+        )
+        assert "REDACTED" not in str(form.fields).upper()
+        assert "username" not in form.fields
+
+    def test_a_redacted_placeholder_from_a_stored_snapshot(self) -> None:
+        """The snapshot redaction writes ``***REDACTED***`` in place of a posted email
+        in a placeholder; the username then falls to the next attribute."""
+        import json
+
+        from graftpunk.observe.snapshot import stored_dom_snapshot
+
+        page = (
+            '<html><body><div role="dialog"><input placeholder="jsmith@example.com" '
+            'type="email" aria-label="Email"><input type="password">'
+            '<button type="submit">Go</button></div></body></html>'
+        )
+        body = json.dumps({"variables": {"email": "jsmith@example.com", "password": "pw123456"}})
+        stored = stored_dom_snapshot(page, body, "application/json")
+        assert "***REDACTED***" in stored
+        form = _only(stored, snapshot=True)
+        assert form.fields["username"] == 'input[aria-label="Email"]'
+
+
 class TestSubmitFallbacks:
     _FIELDS = '<input type="email" placeholder="Email"><input type="password">'
 
@@ -189,18 +302,32 @@ class TestSubmitFallbacks:
             )
         )
         assert form.submit == "button.sign-in-btn"
-        assert form.submit_text == ""
 
-    def test_its_text_when_nothing_picks_it(self) -> None:
+    def test_a_hashed_class_is_never_the_submit(self) -> None:
+        for classes in ("sc-bdVaJa kAzCrH", "jss123"):
+            form = _only(
+                _dialog(
+                    f'{self._FIELDS}<button type="submit" class="{classes}">Sign In</button>',
+                    after='<button type="submit" class="btn">Search</button>',
+                )
+            )
+            assert form.submit is None
+            assert "submit" in form.unresolved_roles
+
+    def test_its_text_is_not_kept(self) -> None:
+        """A button's text can name the account ("Continue as Alice Smith"), and a
+        CSS selector cannot match text, so the form keeps none of it (the generated
+        GP-FILL is pinned in test_scaffold_render.py)."""
         form = _only(
             _dialog(
-                f'{self._FIELDS}<button type="submit" class="bN4w8Zx btn">  Sign\n In </button>',
+                f'{self._FIELDS}<button type="submit" class="bN4w8Zx btn">Continue as Alice '
+                "Smith</button>",
                 after='<button type="submit" class="btn">Search</button>',
             )
         )
         assert form.submit is None
         assert "submit" in form.unresolved_roles
-        assert form.submit_text == "Sign In"
+        assert "Alice" not in repr(form)
 
 
 class TestTheScriptRenderedLoginInASnapshot:

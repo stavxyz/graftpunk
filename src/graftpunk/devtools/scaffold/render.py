@@ -897,22 +897,19 @@ def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str 
                 "for it on another page; add a LoginStep for that page by hand."
             )
         else:
+            control = "the button" if role == "submit" else "it"
             reason = (
-                "it sits outside any form, and has no id, name, autocomplete, placeholder, "
-                "aria-label, or class that is not build-hashed that is unique on the "
-                "recorded page and holds no account value"
+                f"{control} sits outside any form and has no stable selector: none of its "
+                "id, name, autocomplete, type, placeholder, aria-label, or a class whose "
+                "every part reads as a word is unique on the recorded page and free of "
+                "account values"
                 if role in form.unresolved_roles and form.formless
                 else "none picks one input of the recorded form"
                 if role in form.unresolved_roles
                 else "the form's action holds an id, and without it none picks one input "
                 "of the recorded page"
             )
-            shown = (
-                f" (the button reads {form.submit_text!r})"
-                if role == "submit" and form.submit_text
-                else ""
-            )
-            text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand{shown}."
+            text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand."
         lines.extend(wrapped_comment_lines(text, indent=indent))
     if form.from_snapshot:
         # No recorded HTML held this form: the page's script rendered it, often
