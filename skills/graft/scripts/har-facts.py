@@ -346,6 +346,59 @@ def _plain_part(part: str) -> bool:
     return True
 
 
+# Hash and MAC names and their standard sizes (sha256, HmacSha512, md5, blake2b):
+# a run of three digits otherwise reads as a value, but here it is part of the
+# algorithm's name. A size also reads as a word as a token of its own, joined by
+# - or _, after such a name or a word naming what one makes (sha3_512,
+# X-Hub-Signature-256).
+_HASH_SIZES = "64|128|224|256|384|512"
+_HASH_NAME_RE = re.compile(
+    rf"(.*?)((?:sha[123]?|hmac|md5|blake2b?)(?:{_HASH_SIZES})?)", re.IGNORECASE
+)
+_HASH_SIZE_RE = re.compile(_HASH_SIZES)
+_HASH_OUTPUT_WORDS = frozenset(("signature", "digest", "hash", "checksum"))
+_NAME_PART_RE = re.compile(r"[^_.$\-\[\]]+")
+
+
+def _hash_part(part: str) -> bool:
+    """*part* is a hash or MAC name, with a standard size after it or none, alone
+    or as a capitalised word after words ending in a letter (contentSha256,
+    HmacSha512); glued on in lower case (abcsha256) or after a digit (abc12Sha256)
+    it reads as the end of a value."""
+    match = _HASH_NAME_RE.fullmatch(part)
+    if match is None:
+        return False
+    head, name = match.groups()
+    if not head:
+        return True
+    return name[0].isupper() and head[-1].isalpha() and (_plain_part(head) or _hash_part(head))
+
+
+def _sized_part(previous: str, joiner: str, part: str) -> bool:
+    """*part* is a standard size on its own, joined by *joiner* (- or _) to
+    *previous*, a hash or MAC name or a part ending in a word naming its output."""
+    if joiner not in ("-", "_") or not _HASH_SIZE_RE.fullmatch(part):
+        return False
+    words = _CAMEL_WORD_RE.findall(previous)
+    return _hash_part(previous) or bool(words and words[-1].lower() in _HASH_OUTPUT_WORDS)
+
+
+def _parts_read_as_words(text: str) -> bool:
+    """Every part of *text* (split on ``_ . $ - [ ]``) reads as words, is a hash
+    or MAC name (:func:`_hash_part`), or is a size after one (:func:`_sized_part`)."""
+    matches = list(_NAME_PART_RE.finditer(text))
+    for index, match in enumerate(matches):
+        part = match.group()
+        if _part_reads_as_words(part) or _hash_part(part):
+            continue
+        if index:
+            before = matches[index - 1]
+            if _sized_part(before.group(), text[before.end() : match.start()], part):
+                continue
+        return False
+    return True
+
+
 # Names a framework, a browser, a CDN, or a bot manager fixes, which no account
 # varies: they pass by exact name, compared without regard to case.
 _FRAMEWORK_NAMES = frozenset(
@@ -356,7 +409,7 @@ _FRAMEWORK_NAMES = frozenset(
         "x-amz-date x-amz-request-id x-amzn-requestid x-amzn-trace-id x-amz-id-2 x-fb-debug "
         "x-aspnet-version x-aspnetmvc-version x-dtpc grpc-status grpc-message x-cdn "
         "x-akamai-transformed akamai-grn x-iinfo x-sucuri-id apollographql-client-name "
-        "apollographql-client-version upgrade x-amz-content-sha256 "
+        "apollographql-client-version upgrade "
         # cookie names
         ".aspxauth asp.net_sessionid .aspnetcore.session .aspnetcore.antiforgery "
         ".aspnetcore.cookies __cf_bm cf_clearance __cfruid __cflb _cfuvid _abck bm_sz bm_sv "
@@ -406,7 +459,7 @@ def printable_name(text: str) -> bool:
     parts = [part for part in _NAME_SPLIT_RE.split(text) if part]
     if not parts or len(parts) > _MAX_PARTS or not any(_has_letter(part) for part in parts):
         return False
-    if not all(_part_reads_as_words(part) for part in parts):
+    if not _parts_read_as_words(text):
         return False
     # Capitals beside lower case (uid_SAMCOOKIE, addr[ADDRKEY]) read as a value
     # dropped into a name; a name all in capitals (PHPSESSID, XSRF-TOKEN) does not.

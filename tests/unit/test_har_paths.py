@@ -963,10 +963,14 @@ def test_a_token_name_built_of_token_words_reads_as_a_name(name: str) -> None:
 
 
 # Ordinary request header names the gate held back before #347 widened its
-# vocabulary (the header abbreviations in _ACRONYMS, Ip in _SHORT_WORDS, and
-# upgrade and x-amz-content-sha256 in _FRAMEWORK_NAMES). Vendor prefixes are
-# placeholders.
+# vocabulary (the header abbreviations in _ACRONYMS, Ip in _SHORT_WORDS,
+# upgrade in _FRAMEWORK_NAMES, and hash and MAC names with their sizes). Vendor
+# prefixes are placeholders.
 _ORDINARY_HEADER_NAMES = (
+    "X-Hub-Signature-256",
+    "X-Acme-Hmac-Sha256",
+    "X-Acme-Content-Sha512",
+    "X-Acme-Signature_384",
     "Upgrade",
     "X-Amz-Target",
     "X-Amz-Security-Token",
@@ -1001,6 +1005,37 @@ def test_a_header_name_with_a_random_tail_is_still_held_back(name: str) -> None:
     assert not printable_name(name)
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["sha256", "SHA512", "HmacSha256", "contentSha256", "sha3_512", "blake2b-256", "md5", "Md5"],
+)
+def test_a_hash_or_mac_name_with_its_size_reads_as_a_name_in_both_gates(name: str) -> None:
+    assert printable_name(name)
+    assert _load_har_facts().printable_name(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # A size after a random or id-shaped part, or after a plain word.
+        "X-Zq9vLmKx-256",
+        "X-a3f9c2d1e0b4-Sha256",
+        "X-Qz9XvKw-Signature-256",
+        "order-256",
+        "page_512",
+        # Not a standard size, not joined by - or _, or glued on to a value.
+        "X-Signature-1024",
+        "Sha257",
+        "Signature.256",
+        "abcsha256",
+        "qeweo2Sha256",
+    ],
+)
+def test_a_size_reads_as_a_word_only_beside_a_hash_name(name: str) -> None:
+    assert not printable_name(name)
+    assert not _load_har_facts().printable_name(name)
+
+
 @pytest.mark.parametrize("name", _HELD_BACK_PROBES)
 def test_a_probe_the_reviews_held_back_is_still_held_back(name: str) -> None:
     assert not printable_name(name)
@@ -1024,6 +1059,11 @@ def _name_corpus() -> list[str]:
         + rng.choice(["", "1", "22", "333"])
         for _ in range(2_000)
     ]
+    hash_words = ["Sha256", "sha", "HMAC", "md5", "blake2b", "Signature", "256", "512", "Zq9v"]
+    corpus += [
+        rng.choice(["", "-", "_", "."]).join(rng.choices(hash_words + words, k=rng.randint(2, 4)))
+        for _ in range(2_000)
+    ]
     corpus += [
         "PHPSESSID",
         "__Host-sid",
@@ -1040,6 +1080,14 @@ def _name_corpus() -> list[str]:
         *_HELD_BACK_PROBES,
         *_ORDINARY_HEADER_NAMES,
         *(name.lower() for name in _ORDINARY_HEADER_NAMES),
+        "sha3_512",
+        "HmacSha256",
+        "abcsha256",
+        "qeweo2Sha256",
+        "X-Zq9vLmKx-256",
+        "order-256",
+        "Signature.256",
+        "X-Signature-1024",
     ]
     corpus += [
         spelling
@@ -1067,6 +1115,8 @@ _COPIED_GATE = [
     "_LONG_LOWER",
     "_FRAMEWORK_NAMES",
     "_MIN_CASELESS_ACRONYM_LEN",
+    "_HASH_SIZES",
+    "_HASH_OUTPUT_WORDS",
 ]
 _COPIED_GATE_PATTERNS = [
     "_NAME_CHARS_RE",
@@ -1077,6 +1127,9 @@ _COPIED_GATE_PATTERNS = [
     "_FORMSET_FIELD_RE",
     "_FORMSET_MANAGEMENT_RE",
     "_SHORT_PREFIX_RE",
+    "_HASH_NAME_RE",
+    "_HASH_SIZE_RE",
+    "_NAME_PART_RE",
 ]
 
 
