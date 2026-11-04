@@ -5,6 +5,7 @@ with a JSON ``errors[].message`` and no redirect."""
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -180,6 +181,48 @@ class TestTheNestedPasswordRule:
         assert password_field_names(body, _JSON) == []
         assert not is_credential_body(body, _JSON)
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "rememberPassword",
+            "passwordless",
+            "hasPassword",
+            "passwordLabel",
+            "passwordExpiresAt",
+            "passwordResetToken",
+            "passwordUpdatedAt",
+            "passwordMinLength",
+            "showPassword",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            lambda field: field,
+            lambda field: {"variables": {"input": field}},
+            lambda field: [{"operationName": "Settings", "variables": field}],
+        ],
+        ids=["top-level", "nested", "batched"],
+    )
+    def test_a_setting_about_the_password_makes_no_credential_post(
+        self, name: str, shape: Any
+    ) -> None:
+        """One rule at any depth, the scrub's (``names_a_password``): a name that
+        holds a password hint and a setting word names no password."""
+        body = json.dumps(shape({name: "2027-01-01"}))
+        assert password_field_names(body, _JSON) == []
+        assert not is_credential_post(body, _JSON, _API, ())
+
+    def test_a_batched_graphql_login_beside_a_settings_query(self) -> None:
+        body = json.dumps(
+            [
+                {"operationName": "Prefs", "variables": {"rememberPassword": "yes"}},
+                json.loads(_login_body()),
+            ]
+        )
+        assert password_field_names(body, _JSON) == ["password"]
+        assert is_credential_post(body, _JSON, _API, ())
+
     def test_a_form_body_keeps_its_top_level_names_only(self) -> None:
         """A form field holding JSON is read by its own name, as before: its keys are
         never field names of the form."""
@@ -209,6 +252,47 @@ class TestTheNestedPasswordRule:
             }
         )
         assert is_credential_post(body, _JSON, _API, ())
+
+
+def _large_json_body(megabytes: int) -> str:
+    """A JSON body of about *megabytes* MB: records sharing a few names, as a batch
+    sync or a catalogue upload posts, with a login's password nowhere in it."""
+    record = {"id": "r0000000", "name": "Item number 0", "sku": "SKU-00000000", "price": 1.5}
+    count = megabytes * 1_000_000 // len(json.dumps(record))
+    rows = [
+        {"id": f"r{i:07d}", "name": f"Item number {i}", "sku": f"SKU-{i:08d}", "price": i * 1.5}
+        for i in range(count)
+    ]
+    return json.dumps({"items": rows, "tags": ["a", "b"]})
+
+
+def _fastest(call: Any, runs: int = 3) -> float:
+    """The fastest of *runs* calls, so one slow scheduling slice does not decide."""
+    best = float("inf")
+    for _ in range(runs):
+        started = time.perf_counter()
+        call()
+        best = min(best, time.perf_counter() - started)
+    return best
+
+
+class TestTheCostOfTheNestedRule:
+    """The recorder runs the rule in its CDP request handler for every POST while
+    snapshots are on, so the nested read costs a small multiple of the JSON parse it
+    needs anyway: each distinct name is judged once, not once per value."""
+
+    def test_a_5_mb_body_costs_a_small_multiple_of_its_parse(self) -> None:
+        body = _large_json_body(5)
+        assert len(body) >= 4_900_000
+        parse = _fastest(lambda: json.loads(body))
+        read = _fastest(lambda: password_field_names(body, _JSON))
+        assert read < 10 * parse + 0.02, f"parse {parse:.3f}s, read {read:.3f}s"
+
+    def test_a_10_mb_body_is_read_well_under_a_second(self) -> None:
+        body = _large_json_body(10)
+        assert len(body) >= 9_900_000
+        seconds = _fastest(lambda: is_credential_body(body, _JSON))
+        assert seconds < 0.6, f"{seconds:.3f}s"
 
 
 class TestTheDigestOfAGraphqlLogin:

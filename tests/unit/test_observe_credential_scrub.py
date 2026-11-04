@@ -892,6 +892,15 @@ class TestWhichValuesArePasswords:
             "pw_visible",
             "secret_question",
             "pass_type",
+            "hasPassword",
+            "passwordLabel",
+            "passwordExpiresAt",
+            "passwordResetToken",
+            "passwordUpdatedAt",
+            "password_changed_at",
+            "passwordPlaceholder",
+            "passwordErrorMessage",
+            "passwordMinLength",
         ],
     )
     def test_a_setting_about_the_password_names_none(self, name: str) -> None:

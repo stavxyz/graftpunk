@@ -31,6 +31,7 @@ from graftpunk.har.documents import (
     form_action_targets,
     looks_like_new_password_name,
     looks_like_token_name,
+    names_a_password,
 )
 from graftpunk.har.inline_state import inline_json
 from graftpunk.har.login_signals import (
@@ -2573,27 +2574,48 @@ def _asks_for_a_new_password(names: Iterable[str]) -> bool:
     return any(looks_like_new_password_name(name) for name in names)
 
 
+def _json_leaf_names(parsed: object) -> dict[str, None]:
+    """The distinct own names of the strings and numbers in a parsed JSON value at
+    any depth, in the order first seen, walked without recursion and without
+    building paths, so a large body costs one pass over its values."""
+    names: dict[str, None] = {}
+    stack: list[object] = [parsed]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            inners: list[object] = []
+            for name, inner in value.items():
+                if isinstance(inner, dict | list):
+                    inners.append(inner)
+                elif isinstance(inner, str | int | float) and not isinstance(inner, bool):
+                    names[str(name)] = None
+            stack.extend(reversed(inners))
+        elif isinstance(value, list):
+            stack.extend(reversed(value))
+    return names
+
+
 def password_field_names(body_text: str | None, content_type: str = "") -> list[str]:
-    """The password-like field names (a ``PASSWORD_NAME_HINTS`` name) of a request
-    body, read as the digest reads a POST's body (:func:`body_params`) from its text
-    and the request's ``Content-Type``, each once. A JSON body's names are read at
-    any depth too: the own name of each string or number nested in it (a GraphQL
-    login's ``variables.password`` gives ``password``), held to the rule a top-level
-    key is (:func:`_plausible_field_name`). A form's names are its top-level keys
-    only, as before. The one rule for a credential post's fields: the digest reads a
-    recorded POST with it, and the recorder reads a request's body with it while the
-    request is in flight (the DOM snapshot of #267)."""
+    """The password field names of a request body, read as the digest reads a POST's
+    body (:func:`body_params`) from its text and the request's ``Content-Type``, each
+    once: a field name that :func:`graftpunk.har.documents.names_a_password` accepts
+    (a ``PASSWORD_NAME_HINTS`` hint and no setting word, so ``rememberPassword`` and
+    ``passwordExpiresAt`` are none) and :func:`_plausible_field_name` accepts. A JSON
+    body's names are read at any depth: the own name of each string or number in it
+    (a GraphQL login's ``variables.password`` gives ``password``, and a batched
+    GraphQL array is walked too). A form's names are its top-level keys only. The
+    distinct names are collected first and each is judged once, so the cost is
+    linear in the body. The one rule for a credential
+    post's fields: the digest reads a recorded POST with it, and the recorder reads
+    a request's body with it while the request is in flight (the DOM snapshot of
+    #267)."""
     declared = content_type.split(";")[0].strip().lower()
     kind, parsed = _decoded_body(body_text, declared)
     types, _kind, _dropped = _body_types(kind, parsed)
-    names = list(types)
+    names = dict.fromkeys(types)
     if kind == "json":
-        names += [
-            path[-1]
-            for path, _value in _scalar_values(parsed)
-            if path and _plausible_field_name(path[-1])
-        ]
-    return _password_like(dict.fromkeys(names))
+        names.update(_json_leaf_names(parsed))
+    return [name for name in names if names_a_password(name) and _plausible_field_name(name)]
 
 
 def is_credential_body(body_text: str | None, content_type: str = "") -> bool:

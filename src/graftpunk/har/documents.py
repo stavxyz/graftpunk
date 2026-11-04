@@ -45,6 +45,7 @@ __all__ = [
     "is_login_document",
     "looks_like_new_password_name",
     "looks_like_token_name",
+    "names_a_password",
     "printable_selectors",
     "printable_unresolved_roles",
 ]
@@ -903,6 +904,76 @@ _NEW_PASSWORD_HINTS = ("new", *_CONFIRMATION_HINTS)
 # The one owner of the password-field hints: the digest reads a credential post's
 # body names through it too.
 PASSWORD_NAME_HINTS = ("password", "passwd", "pwd")
+
+# Words that make a password-like name a setting or a fact about the password, not
+# the password (rememberPassword, showPassword, passwordStrength, savePassword,
+# passwordless, has_password, password_count, passwordLabel, passwordExpiresAt,
+# passwordUpdatedAt): its value is a flag, a label, a date, or a word or number that
+# ordinary responses hold too.
+_PASSWORD_FLAG_WORDS = frozenset(
+    {
+        "remember",
+        "show",
+        "hide",
+        "visible",
+        "toggle",
+        "forgot",
+        "reset",
+        "question",
+        "hint",
+        "strength",
+        "policy",
+        "expire",
+        "expires",
+        "expired",
+        "expiry",
+        "expiration",
+        "updated",
+        "changed",
+        "last",
+        "label",
+        "placeholder",
+        "error",
+        "message",
+        "min",
+        "max",
+        "length",
+        "type",
+        "save",
+        "has",
+        "enabled",
+        "less",
+        "mode",
+        "count",
+    }
+)
+# The words of a field name: runs of lower-case letters (one capital before them
+# allowed), of capitals, and of digits, so "savePassword" and "save_password" each
+# hold "save", and "_", "-", ".", "[" and "]" separate words.
+_NAME_WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
+
+
+def names_a_password(name: str | None) -> bool:
+    """Whether a body field *name* names a password: it holds a
+    :data:`PASSWORD_NAME_HINTS` hint (``password``, ``passwd``, ``pwd``) in any
+    letter case, and none of its words, each hint taken out of the word it sits in,
+    names a setting or a fact about the password (:data:`_PASSWORD_FLAG_WORDS`), so
+    ``rememberPassword``, ``passwordless``, ``hasPassword``, ``passwordLabel``,
+    ``passwordExpiresAt`` and ``passwordResetToken`` name none. The one rule for
+    both the digest's credential post (:func:`graftpunk.har.digest.password_field_names`)
+    and the scrub of a typed login (:func:`graftpunk.observe.run.credential_post_redaction`)."""
+    if not name:
+        return False
+    if not any(hint in name.lower() for hint in PASSWORD_NAME_HINTS):
+        return False
+    hints = "|".join(re.escape(hint) for hint in PASSWORD_NAME_HINTS)
+    words = [
+        part
+        for word in _NAME_WORD_RE.findall(name)
+        for part in re.split(hints, word.lower())
+        if part
+    ]
+    return not any(word in _PASSWORD_FLAG_WORDS for word in words)
 
 
 def looks_like_new_password_name(name: str) -> bool:
