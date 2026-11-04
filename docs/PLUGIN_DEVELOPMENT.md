@@ -216,8 +216,8 @@ applies the same rule to PUT and PATCH). It takes a value whose own field name h
 or `pwd` and no setting's word (`rememberPassword`, `savePassword`,
 `passwordless`), or is the name of a recorded page's password input (`pin`),
 when it is at least three characters and not `true`, `false`, `yes`, `no`,
-`on`, `off`, or `null`; an email address under an identifier field's own
-name (`username`, `email`, `login`, `user`, `account`); the email address of an
+`on`, `off`, or `null`; an email address under any field name that is not a
+password's (`email`, `username`, `emailOrPhoneNumber`); the email address of an
 earlier step posted at a path or with field names holding a step word such as
 `login` or `signin`; and with `--wrong-password-first` the
 password of the post marked failed. It scrubs them from `network.har`, the
@@ -625,12 +625,22 @@ that share its type) is selected by the first of these that no other control of
 its tag on the page shares, printed unscoped: its `autocomplete` (not `on` or
 `off`), its type for a password input (`input[type="password"]`) and for a
 `<button type="submit">`, its `placeholder`, its `aria-label`, then a class
-token that is not build-hashed (`graftpunk.har.documents.is_build_hashed_class`:
-a word holding a digit with a letter after it, as in `css-1x9k3tq`, a word of six
-digits or more, or a CSS-modules suffix of two or more underscores and five
-letters or digits that are not all lower case), never a value over 80 characters
-or one holding an account value, and never a build-hashed class. A submit button
-none of these picks gets a `GP-FILL` that quotes its text, since a CSS selector
+token every part of which (split on `-` and `_`) reads as words by
+`graftpunk.har.paths.reads_as_words` and holds no digit
+(`graftpunk.har.documents.is_build_hashed_class` is False for it): `sign-in-btn`,
+`btn-primary`, and `card__title` are used; `css-1x9k3tq`, `sc-bdVaJa`, `kAzCrH`,
+`jss123`, `svelte-1x2y3z`, `Button_primary__3kR9v`, and also the written
+`col-md-6` and `navbar` are not. A letters-only hash whose parts happen to read
+as words can still pass (about 4% of generated emotion `css-` hashes, 1% of
+styled-components ids, 3% of Svelte hashes, measured on 100,000 each on
+2026-11-04), so a class is the last fallback, used only when it picks one control
+on the recorded page. Each value is spelled exactly as written (a padded
+placeholder keeps its spaces) and CSS-escaped; a value of only whitespace, one
+over 80 characters, one holding an account value, and one holding the
+`***REDACTED***` a stored snapshot writes in place of a posted value are never
+used. A submit button none of these picks gets a `GP-FILL` saying it has no
+stable selector and naming what was tried; its text is never written into the
+plugin, since it can name the account (`Continue as ...`) and a CSS selector
 cannot match text. A POST to where a login form a GET
 served posts (the same host and path, the action resolved against the page as
 requested and compared before any email in it is masked) is the credential post
