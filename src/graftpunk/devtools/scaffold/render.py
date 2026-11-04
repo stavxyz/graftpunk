@@ -59,11 +59,13 @@ from graftpunk.har.digest import (
     LoginObservation,
     RunDigest,
     TokenCandidate,
+    TokenPairing,
     endpoint_key,
     header_names_not_shown,
     header_spellings,
     held_back_token_count,
     printable_custom_headers,
+    printable_token_pairs,
     printable_tokens,
 )
 from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
@@ -613,16 +615,34 @@ def _render_failure_hint(candidates: tuple[str, ...], *, indent: int) -> list[st
     return lines
 
 
-def _paired_token_candidates(d: RunDigest) -> list[tuple[TokenCandidate, TokenCandidate]]:
+def _paired_tokens(d: RunDigest) -> list[TokenPairing]:
+    """The ``Token`` pairings the plugin writes: first each header the recording
+    paired by value (``RunDigest.token_pairs``, #369), then each other header
+    candidate with a meta or cookie candidate of the same name (case aside), unless
+    the recording compared that source with the header and it never held the
+    header's value (``RunDigest.token_mismatches``). Names as every output prints
+    them (:func:`graftpunk.har.digest.printable_token_pairs`,
+    :func:`graftpunk.har.digest.printable_tokens`)."""
+    spellings = header_spellings(d)
+    pairs = list(printable_token_pairs(d, spellings))
+    paired_headers = {pair.header.lower() for pair in pairs}
+    mismatched = set(d.token_mismatches)
     by_name: dict[str, list[TokenCandidate]] = {}
-    for candidate in printable_tokens(d.tokens, header_spellings(d)):
+    for candidate in printable_tokens(d.tokens, spellings):
         by_name.setdefault(candidate.name.lower(), []).append(candidate)
-    pairs: list[tuple[TokenCandidate, TokenCandidate]] = []
-    for candidates in by_name.values():
+    for lowered, candidates in by_name.items():
+        if lowered in paired_headers:
+            continue
         headers = [c for c in candidates if c.kind == "header"]
-        sources = [c for c in candidates if c.kind in ("meta", "cookie")]
+        sources = [
+            c
+            for c in candidates
+            if c.kind in ("meta", "cookie") and (lowered, c.kind, lowered) not in mismatched
+        ]
         if headers and sources:
-            pairs.append((headers[0], sources[0]))
+            pairs.append(
+                TokenPairing(header=headers[0].name, kind=sources[0].kind, name=sources[0].name)
+            )
     return pairs
 
 
@@ -632,16 +652,22 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
             "    # token_config = TokenConfig(tokens=["
             'Token.from_meta_tag(name="...", header="...")])'
         ]
-    pairs = _paired_token_candidates(spec.digest)
-    paired = {candidate for pair in pairs for candidate in pair}
+    pairs = _paired_tokens(spec.digest)
+    paired = {("header", pair.header.lower()) for pair in pairs} | {
+        (pair.kind, pair.name.lower()) for pair in pairs
+    }
     spellings = header_spellings(spec.digest)
-    unpaired = [c for c in printable_tokens(spec.digest.tokens, spellings) if c not in paired]
+    unpaired = [
+        c
+        for c in printable_tokens(spec.digest.tokens, spellings)
+        if (c.kind, c.name.lower()) not in paired
+    ]
     lines: list[str] = []
     if pairs:
         lines.append("    token_config = TokenConfig(")
         lines.append("        tokens=[")
-        for header, source in pairs:
-            lines.extend(_render_token_call(header, source, indent=len(L3)))
+        for pair in pairs:
+            lines.extend(_render_token_call(pair, indent=len(L3)))
         lines.append("        ]")
         lines.append("    )")
     else:
@@ -944,20 +970,24 @@ def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str 
     return lines
 
 
-def _render_token_call(header: TokenCandidate, source: TokenCandidate, *, indent: int) -> list[str]:
-    """A generated ``Token.from_meta_tag(...)`` or ``Token.from_cookie(...)``, exploded
-    one keyword argument per line so a long header or cookie name cannot push the
-    whole call over the generated width."""
+def _render_token_call(pair: TokenPairing, *, indent: int) -> list[str]:
+    """A generated ``Token.from_meta_tag(...)``, ``Token.from_hidden_input(...)``, or
+    ``Token.from_cookie(...)``, exploded one keyword argument per line so a long
+    header or source name cannot push the whole call over the generated width. A
+    meta tag or hidden input paired by value on a page other than ``/`` names it."""
     pad = " " * indent
-    if source.kind == "meta":
+    if pair.kind == "meta":
         call_name, value_keyword = "Token.from_meta_tag", "name"
+    elif pair.kind == "hidden_input":
+        call_name, value_keyword = "Token.from_hidden_input", "name"
     else:
         call_name, value_keyword = "Token.from_cookie", "cookie_name"
     lines = [f"{pad}{call_name}("]
-    lines.extend(
-        literal_lines(source.name, indent=indent + INDENT_STEP, prefix=f"{value_keyword}=")
-    )
-    lines.extend(literal_lines(header.name, indent=indent + INDENT_STEP, prefix="header="))
+    lines.extend(literal_lines(pair.name, indent=indent + INDENT_STEP, prefix=f"{value_keyword}="))
+    lines.extend(literal_lines(pair.header, indent=indent + INDENT_STEP, prefix="header="))
+    # "/" is the default page_url of both, so a pairing read there renders as before.
+    if pair.page not in ("", "/") and pair.kind != "cookie":
+        lines.extend(literal_lines(pair.page, indent=indent + INDENT_STEP, prefix="page_url="))
     lines.append(f"{pad}),")
     return lines
 
@@ -2286,7 +2316,7 @@ def _plugins_import_names(*, needs_login_import: bool, needs_param_spec: bool) -
 def _render_plugin_module(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> str:
     klass = class_name_for(spec.name)
     needs_login_import = _needs_login_import(spec)
-    needs_token_import = spec.digest is not None and bool(_paired_token_candidates(spec.digest))
+    needs_token_import = spec.digest is not None and bool(_paired_tokens(spec.digest))
     needs_param_spec = any(_needs_param_specs(c.endpoint) for c in planned)
     needs_quote = any(
         URL_PLACEHOLDER_RE.search(c.endpoint.template) and not c.endpoint.operation for c in planned

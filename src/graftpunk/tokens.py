@@ -349,6 +349,32 @@ class Token:
         )
 
     @classmethod
+    def from_hidden_input(
+        cls,
+        name: str,
+        header: str,
+        page_url: str = "/",
+        cache_duration: float = 300,
+        extraction: Literal["http", "browser", "auto"] = "auto",
+    ) -> Token:
+        """Create token config for an HTML ``<input type="hidden" name="..." value="...">``
+        on *page_url*, in a form or not, its attributes in any order."""
+        attribute_end = r"""["'\s/>]"""
+        return cls(
+            name=header,
+            source="page",
+            pattern=(
+                r"<(?i:input)\b"
+                rf"""(?=[^>]*\s(?i:type)\s*=\s*["']?(?i:hidden){attribute_end})"""
+                rf"""(?=[^>]*\s(?i:name)\s*=\s*["']?{re.escape(name)}{attribute_end})"""
+                r"""[^>]*\s(?i:value)\s*=\s*["']?([^"'\s>]+)"""
+            ),
+            page_url=page_url,
+            cache_duration=cache_duration,
+            extraction=extraction,
+        )
+
+    @classmethod
     def from_cookie(cls, cookie_name: str, header: str, cache_duration: float = 300) -> Token:
         """Create token config for cookie-based CSRF (e.g. Django csrftoken)."""
         return cls(

@@ -30,6 +30,7 @@ from graftpunk.har.digest import (
     held_back_token_count,
     printable_custom_headers,
     printable_login_fields,
+    printable_token_pairs,
     printable_tokens,
     run_header_names_not_shown,
 )
@@ -310,6 +311,12 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     tokens = printable_tokens(d.tokens, spellings)
     for token in tokens:
         lines.append(f"- {token.kind} `{token.name}`, seen on: {', '.join(token.seen_on)}")
+    for pair in printable_token_pairs(d, spellings):
+        where = f" on GET {pair.page}" if pair.page else ""
+        lines.append(
+            f"- header `{pair.header}` carried the value of {_TOKEN_KIND_WORDS[pair.kind]} "
+            f"`{pair.name}`{where} on {pair.matched} of {pair.sent} requests"
+        )
     hidden = held_back_token_count(d.tokens, spellings)
     if hidden:
         lines.append(
@@ -381,6 +388,9 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+_TOKEN_KIND_WORDS = {"cookie": "cookie", "meta": "meta tag", "hidden_input": "hidden input"}
+
+
 def render_json(d: RunDigest) -> str:
     """The complete digest as JSON: nothing capped, nothing summarised. A field
     marked :data:`graftpunk.har.digest.INTERNAL` is a lookup for code and is left
@@ -393,7 +403,8 @@ def render_json(d: RunDigest) -> str:
     ``tokens`` and of each endpoint's ``custom_headers``
     (:func:`graftpunk.har.digest.printable_custom_headers`), which then carries
     ``custom_headers_not_shown``; ``header_names_not_shown`` counts them for the
-    run, computed here from the digest's tokens and endpoints."""
+    run, computed here from the digest's tokens and endpoints. ``token_pairs`` holds
+    only the pairings :func:`graftpunk.har.digest.printable_token_pairs` prints."""
     rendered = _jsonable(d)
     rendered["cookies"] = [name for name in d.cookies if printable_name(name)]
     spellings = header_spellings(d)
@@ -401,6 +412,9 @@ def render_json(d: RunDigest) -> str:
     if hidden := run_header_names_not_shown(d):
         rendered["header_names_not_shown"] = hidden
     rendered["tokens"] = _jsonable(printable_tokens(d.tokens, spellings))
+    rendered.pop("token_pairs", None)
+    if pairs := printable_token_pairs(d, spellings):
+        rendered["token_pairs"] = _jsonable(pairs)
     for observation, login in zip(d.login, rendered["login"], strict=True):
         login["fields"] = list(printable_login_fields(observation))
     for endpoint, projected in zip(d.endpoints, rendered["endpoints"], strict=True):
