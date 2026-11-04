@@ -443,7 +443,8 @@ class TestEveryNewPageIsAnsweredFromItsFirstScript:
         endpoint.attach("session-1", "target-1", waiting=False)
         await endpoint.wait_for("Target.detachFromTarget", None)
 
-        assert endpoint.on("session-1") == []
+        # Resumed (harmless when not held) and detached, never answered here.
+        assert endpoint.on("session-1") == ["Runtime.runIfWaitingForDebugger"]
         assert answerer.pages == {}
 
     async def test_a_page_that_gains_an_answerer_later_is_answered_by_that_one(
@@ -806,8 +807,9 @@ class TestPagesArriveAsChromeSendsThem:
         await endpoint.wait_for("Page.enable", "session-9")
         await _until(lambda: not answerer._tasks)
 
-        assert endpoint.on("session-1") == []
-        assert endpoint.on("session-9") == ["Page.enable"]  # not held, so no resume
+        # Resumed (harmless when not held) and detached, never answered here.
+        assert endpoint.on("session-1") == ["Runtime.runIfWaitingForDebugger"]
+        assert endpoint.on("session-9") == ["Page.enable", "Runtime.runIfWaitingForDebugger"]
         assert answerer.pages == {"session-9": "target-9"}
 
     async def test_a_popup_closed_during_its_install_is_one_debug_line(
@@ -848,9 +850,8 @@ class TestPagesArriveAsChromeSendsThem:
         self, endpoints: list[ChromeEndpoint]
     ) -> None:
         """The resume cannot be sent on a connection that is gone: the code says so
-        at warning level, and the next call starts a new connection. The page stays
-        held: measured live on 2026-11-03, Chrome kept such a popup paused after its
-        auto-attaching client disconnected, and after a new answerer connected."""
+        at warning level, and the next call starts a new connection (which resumes
+        the page: see the replacement test below)."""
         browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[])
         answerer, endpoint = await _new_tab_answerer(endpoints, browser)
         endpoint.silent = {"Page.enable"}
@@ -870,6 +871,85 @@ class TestPagesArriveAsChromeSendsThem:
         again, second = await _new_tab_answerer(endpoints, browser)
         assert again is not answerer
         assert second.on(None) == ["Target.setAutoAttach"]
+
+    async def test_a_page_a_lost_connection_left_held_is_resumed_by_the_replacement(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        """Chrome reports such a page not waiting when the new connection's
+        auto-attach attaches it (measured live on 2026-11-03), and only a resume
+        releases it: every page attached gets one, after its install."""
+        browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[])
+        answerer, endpoint = await _new_tab_answerer(endpoints, browser)
+        endpoint.silent = {"Page.enable"}
+        endpoint.attach("session-2", "target-2")
+        await endpoint.wait_for("Page.enable", "session-2")
+        await endpoint.close()
+        await _until(lambda: answerer.ended and not answerer._tasks)
+        real_open = dialogs._open_socket
+
+        async def attaching_existing(url: str) -> Any:
+            replacement = await real_open(url)
+
+            def before_reply(message: dict[str, Any]) -> None:
+                if message["method"] == "Target.setAutoAttach":
+                    replacement.attach("session-3", "target-2", waiting=False)
+
+            replacement.before_reply = before_reply
+            return replacement
+
+        with patch.object(dialogs, "_open_socket", attaching_existing):
+            again, second = await _new_tab_answerer(endpoints, browser)
+        await second.wait_for("Runtime.runIfWaitingForDebugger", "session-3")
+        await _until(lambda: not again._tasks)
+
+        assert second.on("session-3") == ["Page.enable", "Runtime.runIfWaitingForDebugger"]
+        assert again.pages == {"session-3": "target-2"}
+        second.dialog("session-3")
+        await _until(lambda: again.answered == 1)
+
+    async def test_a_resume_refused_on_a_page_that_was_not_held_is_a_debug_line(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        """A page that was never held goes on as it was: it is answered, and a
+        refused resume there warns nobody."""
+        answerer, endpoint = await _new_tab_answerer(endpoints)
+        endpoint.refuse = {"Runtime.runIfWaitingForDebugger"}
+        with capture_logs() as logs:
+            endpoint.attach("session-2", "target-2", waiting=False)
+            await endpoint.wait_for("Runtime.runIfWaitingForDebugger", "session-2")
+            await _until(lambda: not answerer._tasks)
+
+        assert _warnings(logs) == []
+        assert [e["event"] for e in logs] == ["nodriver_dialog_page_resume_failed"]
+        assert answerer.pages == {"session-2": "target-2"}
+        endpoint.dialog("session-2")
+        await _until(lambda: answerer.answered == 1)
+
+    async def test_a_replacement_leaves_the_first_tab_to_its_own_answerer(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        first = FakeTab({}, _always)
+        first.target = SimpleNamespace(type_="page", target_id="target-1")
+        await dialogs.answer_dialogs(first)
+        browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[first])
+        answerer, endpoint = await _new_tab_answerer(endpoints, browser)
+        await endpoint.close()
+        await _until(lambda: answerer.ended)
+        again, second = await _new_tab_answerer(endpoints, browser)
+        second.attach("session-1", "target-1", waiting=False)
+        await second.wait_for("Target.detachFromTarget", None)
+        await _until(lambda: not again._tasks)
+        second.dialog("session-1")
+        await first.dispatch(_alert())
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+        assert second.on("session-1") == ["Runtime.runIfWaitingForDebugger"]
+        assert again.pages == {}
+        assert _endpoint_answers(second) == []
+        assert [p for m, p in first.sent if m == "Page.handleJavaScriptDialog"] == [
+            {"accept": True}
+        ]
 
 
 class TestOneNewPageAnswererPerBrowser:

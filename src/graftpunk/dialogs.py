@@ -180,9 +180,13 @@ class NewPageAnswerer:
     :meth:`aclose` closes it, its listener is cancelled, or Chrome closes it. An
     end :meth:`aclose` did not ask for is a ``nodriver_dialog_answerer_lost``
     warning, and the next :func:`answer_dialogs_in_new_tabs` call for the browser
-    replaces the answerer. A popup held when the connection ends stays paused: the
-    resume cannot be sent, and in a live run on 2026-11-03 a new connection's
-    auto-attach did not release it (docs/HOW_IT_WORKS.md).
+    replaces the answerer. A popup held when a connection ends stays paused until
+    then, since its resume cannot be sent. The auto-attach of the replacement
+    attaches every existing page too, reporting such a popup not waiting, so every
+    page attached gets the resume, held or not, after its install: measured on
+    2026-11-03, that released a popup a lost client had left held, its
+    first-script ``alert()`` was answered, and a resume on pages that were not held
+    changed nothing (docs/HOW_IT_WORKS.md).
     """
 
     def __init__(self, browser: Any, url: str) -> None:
@@ -374,6 +378,7 @@ class NewPageAnswerer:
         if not isinstance(session_id, str):
             return
         answer = kind == "page" and not _answered_elsewhere(self._browser, target_id)
+        waiting = bool(params.get("waitingForDebugger"))
         install_error: Exception | None = None
         resume_error: Exception | None = None
         try:
@@ -386,8 +391,10 @@ class NewPageAnswerer:
                     install_error = exc
         finally:
             # A held target that nobody resumes never runs, so the resume goes
-            # whatever the install did.
-            if params.get("waitingForDebugger"):
+            # whatever the install did. Every page gets it, held or not: a page a
+            # lost connection left held is reported not waiting when a new
+            # connection's auto-attach attaches it, and only a resume releases it.
+            if waiting or kind == "page":
                 try:
                     await self._call("Runtime.runIfWaitingForDebugger", {}, session_id)
                 except Exception as exc:  # noqa: BLE001 - reported below
@@ -403,7 +410,14 @@ class NewPageAnswerer:
                 exc_type=type(install_error).__name__,
                 hint="A page that opens an alert, confirm or prompt stops until it is answered.",
             )
-        if resume_error is not None:
+        if resume_error is not None and not waiting:
+            # Most pages attached not waiting were never held.
+            LOG.debug(
+                "nodriver_dialog_page_resume_failed",
+                error=str(resume_error),
+                exc_type=type(resume_error).__name__,
+            )
+        elif resume_error is not None:
             LOG.warning(
                 "nodriver_dialog_new_target_resume_failed",
                 target_type=kind,
