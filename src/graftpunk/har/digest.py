@@ -364,6 +364,9 @@ class Endpoint:
     # JSON, or there is no fixture. The docstring's "Shape:" line reads this, so it
     # never claims a shape from a recording the generated test does not read.
     shape: ShapeNode | None
+    # Every recorded spelling of each non-standard request header name, in the
+    # order first recorded; the outputs print each name once
+    # (printable_custom_headers).
     custom_headers: tuple[str, ...]
     examples: tuple[str, ...]
     # Part of the login flow login_config drives (the login form's GET or the
@@ -1554,9 +1557,28 @@ def printable_tokens(tokens: Iterable[TokenCandidate]) -> tuple[TokenCandidate, 
     """*tokens* as every output prints them: without a cookie or header candidate
     whose name reads as a value (:func:`graftpunk.har.paths.printable_name`), which
     ``RunDigest.cookie_names_not_shown`` and ``RunDigest.header_names_not_shown``
-    count. ``RunDigest.tokens`` keeps them all: :func:`flagged_names_of` reads
-    it."""
-    return tuple(t for t in tokens if t.kind not in _GATED_TOKEN_KINDS or printable_name(t.name))
+    count. Header names differ in case only as spellings of one name, so a header
+    candidate prints once, in the first spelling recorded that passes the gate,
+    seen on every endpoint any of its spellings was. ``RunDigest.tokens`` keeps
+    them all: :func:`flagged_names_of` reads it."""
+    tokens = list(tokens)
+    seen_on: dict[str, dict[str, None]] = {}
+    for t in tokens:
+        if t.kind == "header":
+            seen_on.setdefault(t.name.lower(), {}).update(dict.fromkeys(t.seen_on))
+    printed: list[TokenCandidate] = []
+    headers_printed: set[str] = set()
+    for t in tokens:
+        if t.kind not in _GATED_TOKEN_KINDS:
+            printed.append(t)
+        elif not printable_name(t.name):
+            continue
+        elif t.kind == "cookie":
+            printed.append(t)
+        elif t.name.lower() not in headers_printed:
+            headers_printed.add(t.name.lower())
+            printed.append(replace(t, seen_on=tuple(seen_on[t.name.lower()])))
+    return tuple(printed)
 
 
 # The token kinds whose name is a recorded cookie or header name.
@@ -1574,11 +1596,16 @@ def header_names_not_shown(names: Iterable[str]) -> int:
 
 
 def printable_custom_headers(endpoint: Endpoint) -> tuple[str, ...]:
-    """*endpoint*'s ``custom_headers`` as every output prints them: without a name
-    that reads as a value (:func:`graftpunk.har.paths.printable_name`), which
-    :func:`header_names_not_shown` counts. ``Endpoint.custom_headers`` keeps them
-    all."""
-    return tuple(name for name in endpoint.custom_headers if printable_name(name))
+    """*endpoint*'s ``custom_headers`` as every output prints them, sorted: each
+    header name once, in the first spelling recorded that passes the gate
+    (:func:`graftpunk.har.paths.printable_name`), and none for a name no spelling
+    of which passes, which :func:`header_names_not_shown` counts.
+    ``Endpoint.custom_headers`` keeps every spelling."""
+    first: dict[str, str] = {}
+    for name in endpoint.custom_headers:
+        if printable_name(name):
+            first.setdefault(name.lower(), name)
+    return tuple(sorted(first.values()))
 
 
 def held_back_token_count(tokens: Iterable[TokenCandidate]) -> int:
@@ -2512,7 +2539,10 @@ class _EndpointAccumulator:
         # fixture recording finish() picks has one.
         self.bodied = False
         self.fixture_candidates: dict[str, _FixtureCandidate] = {}
-        self.custom_headers: set[str] = set()
+        # Each recorded spelling of a custom header name, with the step it was
+        # first recorded at: the outputs list a name once, in the first spelling
+        # recorded (printable_custom_headers).
+        self.custom_headers: dict[str, int] = {}
         self.examples: list[str] = []
         # Dropped names, held only to count them distinctly; never kept past finish.
         self.dropped_query: set[str] = set()
@@ -2565,7 +2595,8 @@ class _EndpointAccumulator:
         if entry.response.body:
             self.bodied = True
         header_names, headers_dropped = _custom_headers(entry)
-        self.custom_headers.update(header_names)
+        for name in header_names:
+            self.custom_headers.setdefault(name, step)
         self.dropped_headers |= headers_dropped
         if path not in self.examples and len(self.examples) < _MAX_ENDPOINT_EXAMPLES:
             self.examples.append(path)
@@ -2581,7 +2612,8 @@ class _EndpointAccumulator:
         _merged_types(self.query_params, acc.query_params, json_body=False)
         json_body = "json" in (self.body_kind, acc.body_kind)
         _merged_types(self.body_params, acc.body_params, json_body=json_body)
-        self.custom_headers.update(acc.custom_headers)
+        for name, first in acc.custom_headers.items():
+            self.custom_headers[name] = min(first, self.custom_headers.get(name, first))
         self.dropped_query |= acc.dropped_query
         self.dropped_body |= acc.dropped_body
         self.bodied = self.bodied or acc.bodied
@@ -2626,7 +2658,9 @@ class _EndpointAccumulator:
             body_params=dict(self.body_params),
             body_kind=self.body_kind,
             shape=None if fixture_type is None else candidates[fixture_type][2],
-            custom_headers=tuple(sorted(self.custom_headers)),
+            custom_headers=tuple(
+                sorted(self.custom_headers, key=lambda name: (self.custom_headers[name], name))
+            ),
             examples=tuple(self.examples),
             query_keys_dropped_as_ids=_count_ids(self.dropped_query),
             query_keys_dropped_as_non_names=len(self.dropped_query)

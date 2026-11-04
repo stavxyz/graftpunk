@@ -589,6 +589,65 @@ def test_a_held_back_header_name_prints_as_a_count_and_ordinary_ones_print(
             assert name.lower() not in text.lower()
 
 
+def test_a_header_name_recorded_in_two_cases_prints_once_in_the_first_spelling(
+    tmp_path: Path,
+) -> None:
+    """``X-Api-Key`` then ``x-api-key`` is one header: listed once, as first
+    recorded, and a token candidate in two cases is one line seen on both
+    endpoints. A spelling held back gives way to a later one that passes."""
+    first = _entry(
+        "GET",
+        f"{_HOST}/api/a",
+        request_headers={"X-Api-Key": "1", "X-CSRF-Token": "1", "X-SHOPPER-Id": "1"},
+    )
+    second = _entry(
+        "GET",
+        f"{_HOST}/api/a",
+        request_headers={"x-api-key": "1", "x-shopper-id": "1"},
+    )
+    third = _entry("POST", f"{_HOST}/api/b", request_headers={"x-csrf-token": "1"})
+    d = _digest(tmp_path, [first, second, third])
+
+    endpoint = next(e for e in d.endpoints if e.template == "/api/a")
+    assert endpoint.custom_headers == (
+        "X-Api-Key",
+        "X-CSRF-Token",
+        "X-SHOPPER-Id",
+        "x-api-key",
+        "x-shopper-id",
+    )
+    assert d.header_names_not_shown == 0
+    assert {t.name for t in d.tokens if t.kind == "header"} == {"X-CSRF-Token", "x-csrf-token"}
+
+    printed = ["X-Api-Key", "X-CSRF-Token", "x-shopper-id"]
+    markdown = render_markdown(d)
+    assert f"- custom headers: {', '.join(printed)}" in markdown
+    assert "- header `X-CSRF-Token`, seen on: GET /api/a, POST /api/b" in markdown
+    # /api/b recorded only the lower-case spelling, so its own block lists that.
+    tokens_section = markdown.split("## Tokens\n", 1)[1].split("\n\n", 1)[0]
+    assert "x-csrf-token" not in tokens_section
+    assert "not shown" not in markdown
+
+    rendered = json.loads(render_json(d))
+    dumped = next(e for e in rendered["endpoints"] if e["template"] == "/api/a")
+    assert dumped["custom_headers"] == printed
+    assert "custom_headers_not_shown" not in dumped
+    headers = [t for t in rendered["tokens"] if t["kind"] == "header"]
+    assert headers == [
+        {"kind": "header", "name": "X-CSRF-Token", "seen_on": ["GET /api/a", "POST /api/b"]}
+    ]
+
+    projected = json.loads(render_endpoints_json(d))["endpoints"]
+    assert next(e for e in projected if e["template"] == "/api/a")["custom_headers"] == printed
+
+    plugin = _plugin_text(d)
+    assert plugin.count('"X-Api-Key": "GP-FILL",') == 1
+    assert '"x-api-key"' not in plugin
+    assert '"X-SHOPPER-Id"' not in plugin
+    assert "unpaired token candidate: header 'X-CSRF-Token'" in plugin
+    assert "unpaired token candidate: header 'x-csrf-token'" not in plugin
+
+
 def test_a_run_whose_header_names_all_print_carries_no_count(tmp_path: Path) -> None:
     d = _digest(tmp_path, [_entry("GET", f"{_HOST}/api/a", request_headers={"X-Api-Key": "1"})])
     assert d.header_names_not_shown == 0
