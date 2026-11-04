@@ -98,9 +98,17 @@ def make_run_id() -> str:
 
 
 def _secret_forms(secret: str) -> set[str]:
-    """Every encoding of ``secret`` that can appear on the wire in a login flow."""
+    """Every encoding of ``secret`` that can appear on the wire in a login flow,
+    or in a log line's text."""
+    # As Python's repr writes it inside a str's repr (alone, or in a
+    # container's or an object's repr): "\\", control and non-printable
+    # characters escaped, and "'" escaped when the whole string holds both
+    # quote kinds. Python escapes each character on its own.
+    in_repr = "".join(repr(character)[1:-1] for character in secret)
     return {
         secret,
+        in_repr,
+        in_repr.replace("'", "\\'"),
         urllib.parse.quote_plus(secret),
         urllib.parse.quote(secret, safe=""),
         # Twice: a return URL inside a return URL.

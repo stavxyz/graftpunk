@@ -8,11 +8,16 @@ program configures them. Only the ``gp`` CLI, which owns its process, calls
 
 from __future__ import annotations
 
+import datetime
+import decimal
+import fractions
 import logging as stdlib_logging
 import os
+import pathlib
 import sys
 import threading
 import traceback
+import uuid
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -167,7 +172,24 @@ def _texts(value: Any) -> list[str]:
     return texts
 
 
-class _StructlogValue:
+class _ReadText:
+    """What a value with clean ``str`` and ``repr`` and no ``__structlog__``
+    method is logged as inside a secret scope: its texts as the scrub read them.
+    The value itself could change before the renderer reads it, for one through
+    a later ``__structlog__`` call in the same line."""
+
+    def __init__(self, text: str, representation: str) -> None:
+        self._text = text
+        self._representation = representation
+
+    def __str__(self) -> str:
+        return self._text
+
+    def __repr__(self) -> str:
+        return self._representation
+
+
+class _StructlogValue(_ReadText):
     """What a value with a ``__structlog__`` method and clean ``str`` and
     ``repr`` is logged as: the method's return, scrubbed, for a renderer that
     calls the method (structlog's ``JSONRenderer``), and the value's own texts
@@ -175,18 +197,46 @@ class _StructlogValue:
     value's own method, whose next return could differ from the one scrubbed."""
 
     def __init__(self, structlog_value: Any, text: str, representation: str) -> None:
+        super().__init__(text, representation)
         self._structlog_value = structlog_value
-        self._text = text
-        self._representation = representation
 
     def __structlog__(self) -> Any:
         return self._structlog_value
 
-    def __str__(self) -> str:
-        return self._text
 
-    def __repr__(self) -> str:
-        return self._representation
+# Values whose texts cannot change, kept as they are when clean: a renderer
+# writes an int or a float (an IntEnum too) natively, ``%d`` formats them, and a
+# program's serializer may know the others.
+_FIXED_TYPES = frozenset(
+    {
+        complex,
+        decimal.Decimal,
+        fractions.Fraction,
+        datetime.date,
+        datetime.datetime,
+        datetime.time,
+        datetime.timedelta,
+        datetime.timezone,
+        uuid.UUID,
+        pathlib.PurePosixPath,
+        pathlib.PureWindowsPath,
+        pathlib.PosixPath,
+        pathlib.WindowsPath,
+    }
+)
+
+
+def _key(key: Any) -> Any:
+    """A rebuilt dict key, or its text when the rebuild is not hashable: a
+    hashable list subclass is rebuilt as a plain list."""
+    try:
+        hash(key)
+    except Exception:  # noqa: BLE001 - unhashable, or a __hash__ that raises
+        try:
+            return repr(key)
+        except Exception:  # noqa: BLE001 - inside the logger: logging it would recurse
+            return _unprintable(key)
+    return key
 
 
 # How many values one log line's scrub (or redacted_values rewrite) visits
@@ -334,10 +384,14 @@ class _LineScrub(_LineWalk):
     no more than the line's remaining values, else as a fixed placeholder. Any
     other value (an exception, a ``Path``, ``bytes`` decoded with replacement, a
     set, an object) is logged as its text, scrubbed, when that text holds a
-    secret. One whose texts are clean and whose ``__structlog__`` method returns
-    is logged as :class:`_StructlogValue`; one with no such method is kept as it
-    is. A value whose ``str`` and ``repr`` both raise is logged as a fixed
-    placeholder.
+    secret. One whose texts are clean is logged as what the scrub read: an int,
+    a float, ``bytes`` and the types in ``_FIXED_TYPES`` as they are, one whose
+    ``__structlog__`` method returns as :class:`_StructlogValue`, one whose
+    method raises as a :class:`_StructlogValue` carrying a fixed placeholder,
+    and any other as :class:`_ReadText`. A value whose ``str`` and ``repr``
+    both raise, or whose type cannot be checked, is logged as a fixed
+    placeholder. A dict key rebuilt as an unhashable value is logged as its
+    text.
     """
 
     def __init__(self, redact: Callable[[str], str]) -> None:
@@ -379,7 +433,7 @@ class _LineScrub(_LineWalk):
         if isinstance(value, dict):
             result: dict[Any, Any] = {}
             for key, item in value.items():
-                scrubbed_key = self(key, depth)
+                scrubbed_key = _key(self(key, depth))
                 # Two keys that scrub to the same text both stay, the later one numbered.
                 candidate, number = scrubbed_key, 1
                 while candidate in result:
@@ -393,7 +447,10 @@ class _LineScrub(_LineWalk):
         if isinstance(value, bytes | bytearray):
             text = bytes(value).decode("utf-8", errors="replace")
             scrubbed = self.text(text)
-            return value if scrubbed == text else scrubbed
+            if scrubbed != text:
+                return scrubbed
+            # A copy of a bytearray, as read: a later member could change it.
+            return bytearray(value) if isinstance(value, bytearray) else value
         texts = _texts(value)
         if not texts:
             return _unprintable(value)
@@ -405,13 +462,18 @@ class _LineScrub(_LineWalk):
             scrubbed = self.text(text)
             if scrubbed != text:
                 return scrubbed
+        if isinstance(value, int | float) or type(value) in _FIXED_TYPES:
+            return value
         if self._closes_loop(value, depth):
             # Its own __structlog__ return led back to it: its repr ends the loop.
             return texts[1]
         try:
             returned = value.__structlog__()
-        except Exception:  # noqa: BLE001 - no such method, or the renderer would fail on it too
-            return value
+        except AttributeError:
+            # No such method, as structlog's JSONRenderer reads it.
+            return _ReadText(texts[0], texts[1])
+        except Exception:  # noqa: BLE001 - the renderer's call could raise, or return a secret
+            return _StructlogValue(_unprintable(value), texts[0], texts[1])
         if depth >= _MAX_SCRUB_DEPTH:
             structlog_value: Any = self._as_text(returned, _TOO_MANY)
         else:
@@ -424,13 +486,16 @@ class _LineScrub(_LineWalk):
 
     def __call__(self, value: Any, depth: int = 0) -> Any:
         self._values += 1
-        if value is None or isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return self.text(value)
-        if isinstance(value, dict | list | tuple):
-            return self._container(value, depth)
-        return self._other(value, depth)
+        try:
+            if value is None or isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return self.text(value)
+            if isinstance(value, dict | list | tuple):
+                return self._container(value, depth)
+            return self._other(value, depth)
+        except Exception:  # noqa: BLE001 - a type check that raises (a __class__ property)
+            return _unprintable(value)
 
 
 def _scrubbing_call(logger: GraftpunkLogger, name: str, secrets: tuple[str, ...]) -> Any:
@@ -685,7 +750,8 @@ class _LineRewrite(_LineWalk):
     never raises.
 
     Strings are rewritten, inside dicts (keys too), lists and tuples (see
-    :class:`_LineWalk`); any other value is kept as it is. A container that
+    :class:`_LineWalk`); any other value is kept as it is, and a dict key
+    rebuilt as an unhashable value is written as its text. A container that
     holds itself is written where the loop closes as Python's repr writes it
     (``[...]``), and one nested past ``_MAX_SCRUB_DEPTH`` as ``_TOO_DEEP``:
     neither holds a value.
@@ -703,17 +769,20 @@ class _LineRewrite(_LineWalk):
 
     def _members(self, value: Any, depth: int) -> Any:
         if isinstance(value, dict):
-            return {self(key, depth): self(item, depth) for key, item in value.items()}
+            return {_key(self(key, depth)): self(item, depth) for key, item in value.items()}
         return _rebuilt(value, [self(item, depth) for item in value])
 
     def __call__(self, value: Any, depth: int = 0) -> Any:
         self._values += 1
-        if isinstance(value, str):
-            for secret, placeholder in self._pairs:
-                value = value.replace(secret, placeholder)
-            return value
-        if isinstance(value, dict | list | tuple):
-            return self._container(value, depth)
+        try:
+            if isinstance(value, str):
+                for secret, placeholder in self._pairs:
+                    value = value.replace(secret, placeholder)
+                return value
+            if isinstance(value, dict | list | tuple):
+                return self._container(value, depth)
+        except Exception:  # noqa: BLE001 - a type check that raises (a __class__ property)
+            return _unprintable(value)
         return value
 
 

@@ -723,6 +723,35 @@ def test_redacted_values_rebuilds_a_namedtuple() -> None:
     assert line["subclass"] == ["<acct>"]
 
 
+class _HashableList(list):  # noqa: FURB189 - a hashable list subclass is the case under test
+    def __hash__(self) -> int:  # type: ignore[override]
+        return 0
+
+
+class _HashableDict(dict):  # noqa: FURB189 - a hashable dict subclass is the case under test
+    def __hash__(self) -> int:  # type: ignore[override]
+        return 0
+
+
+def test_redacted_values_writes_a_hashable_subclass_key_as_its_text() -> None:
+    """Rebuilt as a plain list or dict, such a key is no longer hashable, and
+    the whole dict was written ``<unprintable dict>``."""
+    line = _redacted_line(
+        value={
+            _HashableList(["a", _ACCOUNT]): "list",
+            _HashableDict(k=_ACCOUNT): "dict",
+            (_HashableList([_ACCOUNT]),): "tuple",
+            "other": "kept",
+        }
+    )
+    assert line["value"] == {
+        "['a', '<acct>']": "list",
+        "{'k': '<acct>'}": "dict",
+        "(['<acct>'],)": "tuple",
+        "other": "kept",
+    }
+
+
 @pytest.mark.parametrize("kind", ["list", "dict"])
 def test_redacted_values_ends_nesting_two_thousand_levels_deep(kind: str) -> None:
     """The rewrite once recursed past Python's limit at about 500 nested lists

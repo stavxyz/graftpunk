@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import collections
+import dataclasses
 import json
 import os
 import subprocess
@@ -2040,44 +2041,48 @@ def _awkward_values(with_objects: bool) -> dict[str, Any]:
     return values
 
 
+_RENDERERS = ["gp json", "gp console", "json", "console", "key-value", "logfmt"]
+
+
+def _configure_renderer(renderer: str) -> None:
+    """gp's JSON or console format, or a program's own structlog configuration
+    with one of structlog's renderers, writing to the stderr of this moment."""
+    import structlog
+
+    from graftpunk.logging import configure_logging
+
+    if renderer.startswith("gp "):
+        configure_logging(level="DEBUG", json_output=renderer == "gp json")
+        return
+    structlog.configure(
+        processors=[
+            {
+                "json": structlog.processors.JSONRenderer(),
+                "console": structlog.dev.ConsoleRenderer(colors=False),
+                "key-value": structlog.processors.KeyValueRenderer(),
+                "logfmt": structlog.processors.LogfmtRenderer(),
+            }[renderer]
+        ],
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+    )
+
+
 class TestEveryAwkwardShape:
     """A log call on each shape logs, raises nothing, and no renderer writes the
     secret, inside ``log_secrets``, inside ``redacted_values``, and inside both
     (#305). ``redacted_values`` rewrites strings only, so alone it gets no
     object that holds the secret."""
 
-    @pytest.mark.parametrize(
-        "renderer", ["gp json", "gp console", "json", "console", "key-value", "logfmt"]
-    )
+    @pytest.mark.parametrize("renderer", _RENDERERS)
     @pytest.mark.parametrize("scope", ["log_secrets", "redacted_values", "both"])
     def test_no_secret_and_no_raise(
         self, capsys: pytest.CaptureFixture[str], renderer: str, scope: str
     ) -> None:
         import contextlib
 
-        import structlog
+        from graftpunk.logging import get_logger, log_secrets, redacted_values
 
-        from graftpunk.logging import (
-            configure_logging,
-            get_logger,
-            log_secrets,
-            redacted_values,
-        )
-
-        if renderer.startswith("gp "):
-            configure_logging(level="DEBUG", json_output=renderer == "gp json")
-        else:
-            structlog.configure(
-                processors=[
-                    {
-                        "json": structlog.processors.JSONRenderer(),
-                        "console": structlog.dev.ConsoleRenderer(colors=False),
-                        "key-value": structlog.processors.KeyValueRenderer(),
-                        "logfmt": structlog.processors.LogfmtRenderer(),
-                    }[renderer]
-                ],
-                logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-            )
+        _configure_renderer(renderer)
         with contextlib.ExitStack() as scopes:
             if scope in ("log_secrets", "both"):
                 scopes.enter_context(log_secrets([SCOPE_KEY]))
@@ -2088,6 +2093,248 @@ class TestEveryAwkwardShape:
         text = capsys.readouterr().err
         assert "awkward" in text
         assert SCOPE_KEY not in text
+
+
+@dataclasses.dataclass
+class _Credentials:
+    user: str
+    password: str
+
+
+class TestASecretThatReprEscapes:
+    """A secret holding a quote, a backslash, a control character or a
+    non-printable character is written escaped in a repr, and the scrub finds it
+    there too (#305): in an object's repr, a set's, and a container cut at a
+    loop or past the depth limit. 1.37.1 wrote such a secret in a dataclass's
+    repr in full. Each secret is ``kq7v``, the characters, ``w3zr``, so either
+    end left behind shows a partial scrub."""
+
+    @pytest.mark.parametrize(
+        "middle",
+        ["'\"", "\\", "\x07", "é​"],
+        ids=["both quotes", "backslash", "bell", "non-ascii and zero-width"],
+    )
+    @pytest.mark.parametrize("renderer", _RENDERERS)
+    def test_no_renderer_writes_it(
+        self, capsys: pytest.CaptureFixture[str], renderer: str, middle: str
+    ) -> None:
+        from graftpunk.logging import _MAX_SCRUB_DEPTH, get_logger, log_secrets
+
+        secret = f"kq7v{middle}w3zr"
+        loop: list[Any] = [secret]
+        loop.append(loop)
+        deep: Any = [secret]
+        for _ in range(_MAX_SCRUB_DEPTH + 5):
+            deep = [deep]
+        _configure_renderer(renderer)
+        with log_secrets([secret]):
+            get_logger("t").warning(
+                "escaped",
+                dataclass=_Credentials("u", secret),
+                set={secret},
+                with_both_quotes={f"{secret} \"'"},
+                loop=loop,
+                deep=deep,
+            )
+        text = capsys.readouterr().err
+        assert "escaped" in text
+        assert "kq7v" not in text
+        assert "w3zr" not in text
+        assert REDACTED in text
+
+
+class _Box:
+    """Its text is what *box* holds as it is read."""
+
+    def __init__(self, box: list[str]) -> None:
+        self.box = box
+
+    def __repr__(self) -> str:
+        return f"_Box({self.box!r})"
+
+
+class _FillsTheBox(_StructlogCarrier):
+    """Clean text; its ``__structlog__`` puts the secret in *box*."""
+
+    def __init__(self, box: list[str]) -> None:
+        super().__init__("filled")
+        self.box = box
+
+    def __structlog__(self) -> Any:
+        self.box.append(SCOPE_KEY)
+        return "filled"
+
+
+class _RaisesThenReturnsTheSecret(_StructlogCarrier):
+    """Its ``__structlog__`` raises on the first call and returns the secret on the next."""
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.calls = 0
+
+    def __structlog__(self) -> Any:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("not ready")
+        return SCOPE_KEY
+
+
+class TestAValueIsLoggedAsTheScrubReadIt:
+    """The renderer gets each value's texts as the scrub read them, never the
+    live object a later ``__structlog__`` call in the same line could change
+    (#305)."""
+
+    @pytest.mark.parametrize("box_first", [True, False], ids=["box first", "box last"])
+    @pytest.mark.parametrize("renderer", _RENDERERS)
+    def test_a_value_changed_by_a_later_structlog_call(
+        self, capsys: pytest.CaptureFixture[str], renderer: str, box_first: bool
+    ) -> None:
+        from graftpunk.logging import get_logger, log_secrets
+
+        box: list[str] = ["clean"]
+        pair: list[Any] = [_Box(box), _FillsTheBox(box)]
+        _configure_renderer(renderer)
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("boxes", value=pair if box_first else pair[::-1])
+        text = capsys.readouterr().err
+        assert "boxes" in text
+        assert SCOPE_KEY not in text
+        assert ("_Box(['clean'])" if box_first else f"_Box(['clean', '{REDACTED}'])") in text
+
+    @pytest.mark.parametrize("renderer", _RENDERERS)
+    def test_a_structlog_method_that_raised_is_not_called_again(
+        self, capsys: pytest.CaptureFixture[str], renderer: str
+    ) -> None:
+        from graftpunk.logging import get_logger, log_secrets
+
+        value = _RaisesThenReturnsTheSecret()
+        _configure_renderer(renderer)
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("raised", value=value)
+        text = capsys.readouterr().err
+        assert SCOPE_KEY not in text
+        assert value.calls == 1
+        if "json" in renderer:
+            assert json.loads(text)["value"] == "<unprintable _RaisesThenReturnsTheSecret>"
+        else:
+            # Its own texts, as read: logfmt writes str, the others repr.
+            assert ("carrier" if renderer == "logfmt" else "_StructlogCarrier()") in text
+
+
+class _HashableList(list):  # noqa: FURB189 - a hashable list subclass is the case under test
+    def __hash__(self) -> int:  # type: ignore[override]
+        return 0
+
+
+class _HashableDict(dict):  # noqa: FURB189 - a hashable dict subclass is the case under test
+    def __hash__(self) -> int:  # type: ignore[override]
+        return 0
+
+
+def test_a_hashable_subclass_key_is_logged_as_its_scrubbed_text(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Rebuilt as a plain list or dict, such a key is no longer hashable, and
+    the whole dict was logged as ``<unprintable dict>`` (#305)."""
+    _json_logging()
+    from graftpunk.logging import get_logger, log_secrets
+
+    with log_secrets([SCOPE_KEY]):
+        get_logger("t").warning(
+            "keys",
+            value={
+                _HashableList(["a", SCOPE_KEY]): "list",
+                _HashableDict(k=SCOPE_KEY): "dict",
+                (_HashableList([SCOPE_KEY]),): "tuple",
+                "other": "kept",
+            },
+        )
+    (line,) = _json_lines(capsys)
+    assert line["value"] == {
+        f"['a', '{REDACTED}']": "list",
+        f"{{'k': '{REDACTED}'}}": "dict",
+        f"(['{REDACTED}'],)": "tuple",
+        "other": "kept",
+    }
+
+
+class _TypeCannotBeChecked:
+    """An object whose ``__class__`` raises, so ``isinstance`` on it raises."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        raise RuntimeError("no class")
+
+    def __repr__(self) -> str:
+        return "_TypeCannotBeChecked()"
+
+
+@pytest.mark.parametrize("scope", ["log_secrets", "redacted_values", "both"])
+@pytest.mark.parametrize("renderer", _RENDERERS)
+def test_a_value_whose_type_cannot_be_checked_is_a_placeholder(
+    capsys: pytest.CaptureFixture[str], renderer: str, scope: str
+) -> None:
+    """Its failure turned the line's keyword values, positional arguments or
+    bound values into one string, and the log call raised (#305). Now it costs
+    only its own place, as a keyword, bound or ``%s`` value."""
+    import contextlib
+
+    from graftpunk.logging import get_logger, log_secrets, redacted_values
+
+    _configure_renderer(renderer)
+    with contextlib.ExitStack() as scopes:
+        if scope in ("log_secrets", "both"):
+            scopes.enter_context(log_secrets([SCOPE_KEY]))
+        if scope in ("redacted_values", "both"):
+            scopes.enter_context(redacted_values((SCOPE_KEY, "<acct>")))
+        log = get_logger("t").bind(bound=_TypeCannotBeChecked(), kept_bound="b")
+        log.warning("arg %s", _TypeCannotBeChecked(), value=_TypeCannotBeChecked(), kept="k")
+    text = capsys.readouterr().err
+    assert text.count("<unprintable _TypeCannotBeChecked>") == 3
+    assert "kept_bound" in text
+    assert "kept" in text
+
+
+def test_a_loop_whose_repr_does_not_fit_is_its_mark(capsys: pytest.CaptureFixture[str]) -> None:
+    """A container cut at a loop is written as its scrubbed repr only when that
+    repr writes no more values than the line has left; else as ``[...]``."""
+    _json_logging()
+    from graftpunk.logging import _MAX_LINE_VALUES, get_logger, log_secrets
+
+    loop: list[Any] = [SCOPE_KEY, *(str(n) for n in range(_MAX_LINE_VALUES))]
+    loop.append(loop)
+    small: list[Any] = [SCOPE_KEY]
+    small.append(small)
+    with log_secrets([SCOPE_KEY]):
+        get_logger("t").warning("loops", small=small, loop=loop)
+    (line,) = _json_lines(capsys)
+    assert line["small"] == [REDACTED, f"['{REDACTED}', [...]]"]
+    assert line["loop"][0] == REDACTED
+    assert line["loop"][-1] == "[...]"
+
+
+def _too_deep_sharing(member: list[Any], count: int) -> list[Any]:
+    """*count* distinct lists, each holding *member*, nested so that each sits at
+    ``_MAX_SCRUB_DEPTH``, where it is cut and its repr counted."""
+    from graftpunk.logging import _MAX_SCRUB_DEPTH
+
+    value: list[Any] = [[member] for _ in range(count)]
+    # The line's keyword dict is depth 0, so the outermost list is depth 1.
+    for _ in range(_MAX_SCRUB_DEPTH - 2):
+        value = [value]
+    return value
+
+
+def test_once_a_count_does_not_fit_the_line_counts_no_more() -> None:
+    """2,000 cuts sharing a 50,000-string list within 10 times the CPU time of
+    2,000 cuts sharing a one-string list. The first count that does not fit
+    spends the rest of the line, so every later count ends on its first
+    container; without that, each cut counts into the wide list again (0.24 s
+    for 5,000 cuts sharing a 20,000-string list, 2026-11-04)."""
+    wide = _too_deep_sharing([str(n) for n in range(50_000)], 2_000)
+    narrow = _too_deep_sharing(["0"], 2_000)
+    ratio = _dropped_line_cost(wide) / max(_dropped_line_cost(narrow), 1e-4)
+    assert ratio < 10, ratio
 
 
 class _CountsItsTexts:
