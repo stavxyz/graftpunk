@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.37.2] - 2026-11-03
+## [1.37.2] - 2026-11-04
 
 This is a patch release. A long cookie value no longer stalls the digest or `gp observe fixtures`, and a long value in a credential post no longer stalls the search for email addresses in it (#304). Inside a command's secret scope, a log value's `__structlog__` return and the members of a list or tuple subclass are scrubbed; inside `redacted_values`, a container that holds itself, a namedtuple, and nesting hundreds of levels deep no longer raise from the log call; in both, one log line's cost is bounded, however its values share and loop (#305). Every line stays scrubbed. A line can differ from 1.37.1's in the ways the #305 entries list: placeholders past 10,000 values and past 64 levels, plain lists and tuples for subclasses, and a loop near the depth limit cut at a different place. Item 1 is about upgrading itself.
 
