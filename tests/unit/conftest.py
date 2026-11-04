@@ -1,10 +1,14 @@
 """Shared test helpers for unit tests."""
 
 import asyncio
+import importlib
+import os
+import shlex
+import subprocess
 import threading
 from collections.abc import Iterator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 
@@ -53,6 +57,87 @@ def _disarm_chrome_orphan_cleanup(monkeypatch):  # noqa: ANN001, ANN201
     and inject a fake process table.
     """
     monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", False)
+
+
+_BROWSER_EXECUTABLE_MARKERS = ("chrome", "chromium")
+
+
+def _browser_executable(args: Any, kwargs: dict[str, Any]) -> str | None:
+    """The Chrome, Chromium or chromedriver executable a Popen call would run, if any."""
+    executable = kwargs.get("executable")
+    if executable is None:
+        if isinstance(args, (str, bytes, os.PathLike)):
+            command = os.fsdecode(args)
+            if kwargs.get("shell"):
+                parts = shlex.split(command)
+                command = parts[0] if parts else ""
+            executable = command
+        else:
+            argv = list(args)
+            executable = argv[0] if argv else ""
+    name = os.path.basename(os.fsdecode(executable)).lower()
+    if any(marker in name for marker in _BROWSER_EXECUTABLE_MARKERS):
+        return os.fsdecode(executable)
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _no_real_browser(request, tmp_path, monkeypatch):  # noqa: ANN001, ANN201
+    """Fail any unit test that starts a real Chrome or chromedriver (#351).
+
+    A launch with the default profile can touch the developer's real Chrome
+    data and, on macOS, the Keychain. graftpunk's launch paths end at one of
+    the two points patched here: ``subprocess.Popen`` for a Chrome, Chromium
+    or chromedriver executable (undetected-chromedriver's Chrome, selenium's
+    driver service, webdriver-manager's version probe, and nodriver through
+    ``asyncio.create_subprocess_exec``), and undetected-chromedriver's
+    ``start_detached`` (its ``use_subprocess=False`` launch, from a child
+    process this patch of ``Popen`` does not reach). The library functions
+    themselves are left alone because seam tests read their source. An
+    executable under the test's own ``tmp_path`` is a fake the test wrote
+    and may run. An attempt raises ``pytest.fail``'s exception, which
+    ``except Exception`` does not catch, and is also recorded so the test
+    fails at teardown when the attempt was made on a thread or swallowed some
+    other way. A test that needs a real browser says so with
+    ``@pytest.mark.real_browser``; no unit test does today.
+
+    Yields the list of recorded attempts, for the guard's own tests.
+    """
+    attempts: list[str] = []
+    if request.node.get_closest_marker("real_browser") is not None:
+        yield attempts
+        return
+
+    def refuse(what: str) -> NoReturn:
+        attempts.append(what)
+        pytest.fail(f"a unit test tried to start a real browser: {what}", pytrace=True)
+
+    own_fakes = os.path.realpath(tmp_path)
+
+    class _GuardedPopen(subprocess.Popen):
+        def __init__(self, args: Any, *pargs: Any, **kwargs: Any) -> None:
+            executable = _browser_executable(args, kwargs)
+            if executable is not None and not os.path.realpath(executable).startswith(
+                own_fakes + os.sep
+            ):
+                refuse(f"subprocess.Popen({executable!r})")
+            super().__init__(args, *pargs, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", _GuardedPopen)
+
+    def refuse_detached(*args: Any, **kwargs: Any) -> NoReturn:
+        refuse("undetected_chromedriver.start_detached")
+
+    try:
+        uc = importlib.import_module("undetected_chromedriver")
+    except ImportError:
+        pass
+    else:
+        monkeypatch.setattr(uc, "start_detached", refuse_detached)
+
+    yield attempts
+    if attempts:
+        pytest.fail(f"a unit test tried to start a real browser: {attempts}", pytrace=False)
 
 
 @pytest.fixture(autouse=True)

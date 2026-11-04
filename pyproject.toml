@@ -185,6 +185,7 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "unit: Unit tests",
     "integration: Integration tests",
+    "real_browser: may start a real Chrome or chromedriver (exempt from the unit suite's guard)",
 ]
 
 [tool.coverage.run]
