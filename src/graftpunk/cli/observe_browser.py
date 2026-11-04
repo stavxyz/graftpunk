@@ -236,8 +236,8 @@ async def setup_observe_session(
         )
         await backend.start_capture_async()
         if headless:
-            # A tab or popup the page opens gets an answerer of its own, whose
-            # answers are logged but not in the capture's count (#320).
+            # A tab or popup the page opens is answered from its first script,
+            # and the capture counts those answers (#320, #353).
             await answer_dialogs_in_new_tabs(browser)
 
         tab = await browser.get(url)

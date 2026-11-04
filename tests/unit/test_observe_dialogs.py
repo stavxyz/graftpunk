@@ -1,4 +1,4 @@
-"""JavaScript dialogs in a headless recording (#320).
+"""JavaScript dialogs in a headless recording (#320, #353).
 
 A page's ``alert()``, ``confirm()``, ``prompt()`` or ``beforeunload`` dialog stops its
 script until someone answers it, and in a headless run nobody can, so the recording
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -137,6 +138,26 @@ class TestTheCountTheRunReports:
 
         assert len(_answers(tab)) == 2
         assert backend.dialogs_answered == 2
+
+    @pytest.mark.asyncio
+    async def test_popup_and_new_tab_answers_are_counted(self) -> None:
+        """#353: a tab or popup the page opens is answered by the browser's new-tab
+        answerer, whose answers count with the recorded tab's, as stop ended."""
+        browser = SimpleNamespace(websocket_url="ws://127.0.0.1:9/devtools/browser/x")
+        new_tabs = dialogs.NewPageAnswerer(browser, browser.websocket_url)
+        browser._gp_dialog_new_tabs = new_tabs
+        tab = FakeTab({}, _always)
+        backend = NodriverCaptureBackend(browser, get_tab=lambda: tab, answer_dialogs=True)
+        await backend.start_capture_async()
+        await tab.dispatch(_dialog("alert"))
+        new_tabs.answered, new_tabs.failed = 2, 1  # two popup answers, one failed
+        with capture_logs() as logs:
+            await _stop(backend, tab)
+        new_tabs.answered = 5  # after stop: not in the run's count
+
+        (summary,) = [e for e in logs if e["event"] == "nodriver_dialog_summary"]
+        assert (summary["answered"], summary["failed"]) == (3, 1)
+        assert backend.dialogs_answered == 3
 
     @pytest.mark.asyncio
     async def test_the_summary_ends_stop_and_matches_the_saved_count(self) -> None:
