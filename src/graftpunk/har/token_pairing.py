@@ -5,10 +5,12 @@ A CSRF header's value comes from somewhere the client read it: a cookie, a
 site can send ``x-csrf`` from a hidden input named ``csrf`` while a cookie named
 ``x-csrf-v1`` rotates on every response), so the digest compares values: each
 time a token-named request header is sent, its value is compared with each cookie
-that same request sent and with the latest value of each meta tag and hidden input
-on the pages loaded before it. Page values are read by graftpunk.page_values, the
-reader ``Token.from_meta_tag`` and ``Token.from_hidden_input`` extract with, so a
-pairing is the value the generated ``Token`` sends. The source holding the
+that same request sent and with every value each meta tag and hidden input held
+on the pages loaded before it (a prefetched page, a frame document or a back
+navigation can come between the page a value was read on and the request). Page
+values are read by graftpunk.page_values, the reader ``Token.from_meta_tag`` and
+``Token.from_hidden_input`` extract with, so a pairing is the value the generated
+``Token`` sends. The source holding the
 header's value most often pairs with it. Values are held only in memory, for the
 length of one digest, and are never printed.
 """
@@ -80,6 +82,10 @@ class TokenValueTracker:
     def __init__(self) -> None:
         # (kind, name) -> its value on the latest page that carried it.
         self._page_values: dict[tuple[TokenKind, str], _PageValue] = {}
+        # (kind, name) -> every value it held on a page so far -> the template of
+        # the latest page that carried that value. A header matching any of them
+        # carried that source: the page the user acted on need not be the latest.
+        self._held: dict[tuple[TokenKind, str], dict[str, str | None]] = {}
         self._tallies: dict[str, _HeaderTally] = {}
 
     def request(self, headers: dict[str, str], sent_cookies: Iterable[tuple[str, str]]) -> None:
@@ -99,13 +105,12 @@ class TokenValueTracker:
             tally = self._tallies.setdefault(name.lower(), _HeaderTally(header=name))
             tally.sent += 1
             for (kind, source), held in self._page_values.items():
-                if len(held.value) < MIN_PAIRING_VALUE_LENGTH:
-                    continue
-                if held.current:
+                if held.current and len(held.value) >= MIN_PAIRING_VALUE_LENGTH:
                     tally.measured.add((kind, source.lower()))
-                if held.value == value:
+                pages = self._held[(kind, source)]
+                if value in pages:  # the header is at least eight characters
                     by_page = tally.matches.setdefault((kind, source), {})
-                    by_page[held.page] = by_page.get(held.page, 0) + 1
+                    by_page[pages[value]] = by_page.get(pages[value], 0) + 1
             for cookie, held_value in cookies:
                 tally.measured.add(("cookie", cookie.lower()))
                 if held_value == value:
@@ -117,6 +122,7 @@ class TokenValueTracker:
         path template when a Token can fetch it again, else None."""
         for (kind, name), value in page_values(html).items():
             self._page_values[(kind, name)] = _PageValue(value, template)
+            self._held.setdefault((kind, name), {})[value] = template
 
     def unread_page(self) -> None:
         """A page loaded whose body the recording did not keep: every value read
@@ -163,8 +169,10 @@ class TokenValueTracker:
         """``(header, kind, source name)``, names lower-cased, for each source
         compared with a header that never held its value, so a pairing by name
         alone does not pick a source the recording shows the header did not carry.
-        A page value counts as compared only while no page loaded after it went
-        unread, and a match on any page, one no Token can fetch included, counts."""
+        A page value counts as compared only while it is the source's latest and
+        no page loaded after it went unread; a match with any value the source held
+        before the request, on any page, one no Token can fetch included, counts
+        against a mismatch."""
         return tuple(
             (header, kind, name)
             for header, tally in self._tallies.items()

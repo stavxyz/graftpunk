@@ -186,17 +186,19 @@ def test_a_page_other_than_the_root_is_the_page_url(tmp_path: Path) -> None:
     )
 
 
-def test_each_request_is_compared_with_the_page_loaded_before_it(tmp_path: Path) -> None:
-    """A header carrying the previous load's value after a new load does not match:
-    only the latest value of each input counts."""
+def test_a_value_an_input_held_on_an_earlier_load_still_matches(tmp_path: Path) -> None:
+    """A header carrying the previous load's value after a new load matches: the
+    page the user acted on need not be the one loaded last. A value only a later
+    page carries does not match a request sent before that page."""
     run = _Run()
+    run.post({"x-csrf": _PAGE_TOKENS[1]})
     run.page("/", _shell(_PAGE_TOKENS[0]))
     run.post({"x-csrf": _PAGE_TOKENS[0]})
     run.page("/", _shell(_PAGE_TOKENS[1]))
     run.post({"x-csrf": _PAGE_TOKENS[0]})
     run.post({"x-csrf": _PAGE_TOKENS[1]})
     (pair,) = run.digest(tmp_path).token_pairs
-    assert (pair.matched, pair.sent) == (2, 3)
+    assert (pair.matched, pair.sent) == (3, 4)
 
 
 def test_a_rotating_cookie_named_as_the_header_does_not_pair_by_name(tmp_path: Path) -> None:
@@ -736,3 +738,59 @@ def test_no_token_value_reaches_the_log_at_any_level(
     logged = repr(captured_logs) + "".join(capfd.readouterr())
     for value in (*_PAGE_TOKENS, "rot0000"):
         assert value not in logged
+
+
+def _navigation(path: str, value: str, at: int, headers: dict[str, str]) -> dict[str, Any]:
+    return _entry(
+        "GET",
+        f"{_HOST}{path}",
+        content_type="text/html; charset=utf-8",
+        body=_META_PAGE.format(value),
+        request_headers=headers,
+        started=f"2026-11-04T10:00:{at:02d}.000Z",
+    )
+
+
+_DOCUMENT = {"Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate"}
+
+
+@pytest.mark.parametrize(
+    "later",
+    [
+        pytest.param(
+            {"X-Sec-Purpose": "prefetch", "Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors"},
+            id="a prefetched page",
+        ),
+        pytest.param({"Sec-Fetch-Dest": "iframe", "Sec-Fetch-Mode": "navigate"}, id="an iframe"),
+        pytest.param(_DOCUMENT, id="a page left by a back navigation"),
+    ],
+)
+def test_a_later_page_the_post_was_not_sent_from_keeps_the_meta_pairing(
+    tmp_path: Path, later: dict[str, str]
+) -> None:
+    """GET / carries A; a later page (prefetched, framed, or navigated away from
+    and back again with no entry) carries B; the posts send A. The meta held A
+    before the posts, so it pairs, and the plugin reads it from /."""
+    entries = [
+        _navigation("/", "metaValueAAAA1111", 0, _DOCUMENT),
+        _navigation("/b", "metaValueBBBB2222", 1, later),
+        _entry(
+            "POST",
+            f"{_HOST}/api/save",
+            request_headers={"x-csrf-token": "metaValueAAAA1111"},
+            post_data="{}",
+            started="2026-11-04T10:00:02.000Z",
+        ),
+    ]
+    d = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+    assert [(p.kind, p.name, p.page) for p in d.token_pairs] == [("meta", "x-csrf-token", "/")]
+    assert d.token_mismatches == ()
+    plugin = _plugin(d)
+    assert (
+        "            Token.from_meta_tag(\n"
+        '                name="x-csrf-token",\n'
+        '                header="x-csrf-token",\n'
+        "            ),\n"
+    ) in plugin
+    assert "unpaired token candidate: meta" not in plugin
+
