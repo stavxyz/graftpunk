@@ -5,7 +5,9 @@ not win, and no value is ever printed."""
 
 from __future__ import annotations
 
+import html
 import json
+import random
 import re
 from pathlib import Path
 from typing import Any
@@ -844,3 +846,89 @@ def test_a_meta_tag_inside_a_comment_names_the_comment(tmp_path: Path) -> None:
         extract_token(FixtureSession(tmp_path), token, _HOST)
     assert "extraction=" not in str(raised.value)
 
+
+# Generated pages for the digest-versus-runtime check: attribute order, case and
+# quoting, encoded characters, a ">" in an earlier attribute, a decoy inside a
+# script, comment, template, textarea, or style, and a later duplicate.
+_VALUE_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_-.~"
+
+
+def _generated_attribute(rng: random.Random, key: str, value: str) -> str:
+    key = "".join(c.upper() if rng.random() < 0.3 else c for c in key)
+    written = value
+    if rng.random() < 0.4:
+        written = "".join(f"&#{ord(c)};" if c in "+/=" and rng.random() < 0.5 else c for c in value)
+    style = rng.choice(["double", "single", "unquoted", "spaced"])
+    if style == "double":
+        return f'{key}="{written}"'
+    if style == "single":
+        return f"{key}='{written}'"
+    if style == "spaced":
+        return f'{key} = "{written}"'
+    if any(c in written for c in " \t\n\"'=<>`&/"):
+        return f'{key}="{html.escape(value)}"'
+    return f"{key}={written}"
+
+
+def _generated_element(rng: random.Random, kind: str, name: str, value: str) -> str:
+    if kind == "meta":
+        tag = "meta"
+        attributes = [
+            _generated_attribute(rng, "name", name),
+            _generated_attribute(rng, "content", value),
+        ]
+    else:
+        tag = "input"
+        attributes = [
+            _generated_attribute(rng, "type", "hidden"),
+            _generated_attribute(rng, "name", name),
+            _generated_attribute(rng, "value", value),
+        ]
+    if rng.random() < 0.4:
+        attributes.append('data-x="a>b"')
+    rng.shuffle(attributes)
+    tag = tag.upper() if rng.random() < 0.3 else tag
+    return f"<{tag} {' '.join(attributes)}{rng.choice(['>', ' />'])}"
+
+
+def _generated_decoy(rng: random.Random, inner: str) -> str:
+    wrapper = rng.choice(["script", "comment", "template", "textarea", "style"])
+    if wrapper == "comment":
+        return f"<!-- {inner} -->"
+    if wrapper == "script":
+        return f"<script>var s = '{inner}';</script>"
+    return f"<{wrapper}>{inner}</{wrapper}>"
+
+
+def _generated_page(seed: int) -> tuple[str, str, str, str]:
+    rng = random.Random(seed)  # noqa: S311 - a fixed sample, not a secret
+    kind = rng.choice(["meta", "hidden_input"])
+    name = rng.choice(["csrf-token", "csrf", "_token", "authenticity_token", "X-CSRF", "tok.en"])
+    value = "".join(rng.choice(_VALUE_CHARACTERS) for _ in range(rng.randint(10, 40)))
+    decoy = "".join(rng.choice(_VALUE_CHARACTERS) for _ in range(20))
+    parts = ["<!DOCTYPE html><html><head><title>t</title>"]
+    if rng.random() < 0.5:
+        parts.append(_generated_decoy(rng, _generated_element(rng, kind, name, decoy)))
+    parts.append(_generated_element(rng, kind, name, value))
+    if rng.random() < 0.5:
+        parts.append(_generated_element(rng, kind, name, decoy))
+    parts.append("</head><body><p>x</p></body></html>")
+    return kind, name, value, "".join(parts)
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_the_digest_and_the_runtime_agree_on_generated_pages(tmp_path: Path, seed: int) -> None:
+    """The digest pairs the header with the generated page's real element, and the
+    generated Token reads the header's value from that page."""
+    kind, name, value, page = _generated_page(seed)
+    run = _Run()
+    run.page("/", page)
+    run.post({"x-csrf-token": value})
+    run.post({"x-csrf-token": value})
+    d = run.digest(tmp_path)
+    pairs = [p for p in d.token_pairs if p.header == "x-csrf-token"]
+    assert [(p.kind, p.name) for p in pairs] == [(kind, name)], page
+    config = _token_config(_plugin(d))
+    assert config is not None
+    (token,) = (t for t in config.tokens if t.name == "x-csrf-token")
+    assert read_page_token(token, page) == value, page
