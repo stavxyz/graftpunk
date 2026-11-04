@@ -28,9 +28,12 @@ _SINGULAR_BEFORE_FINAL_S = frozenset("sui")
 # so it collapses like an id and is masked in every URL the digest keeps. One
 # shape, searched for rather than matched whole, so a segment or a name holding
 # an email anywhere in it (a display-name form, two emails joined by a
-# separator) is caught the same as a segment that is only an email.
-_EMAIL_SHAPE = r"[^@\s/]+@[^@\s/]+\.[^@\s/.]+"
-_EMAIL_SEARCH_RE = re.compile(_EMAIL_SHAPE)
+# separator) is caught the same as a segment that is only an email. The shape
+# is [^@\s/]+@[^@\s/]+\.[^@\s/.]+, searched from each "@" with the local part
+# reduced to the one character before it, which finds the same texts: searched
+# from every start, the local-part run was rescanned to its end at each one, so
+# a long run with no "@" took time quadratic in its length (#304).
+_EMAIL_SEARCH_RE = re.compile(r"(?<=[^@\s/])@[^@\s/]+\.[^@\s/.]+")
 
 __all__ = [
     "bare_host",

@@ -139,7 +139,9 @@ _LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 _MIN_HEX_LEN = 12
 _MIN_PREFIXED_TAIL = 12
 _MIN_BASE64_LEN = 24
-_EMAIL_SEARCH_RE = re.compile(r"[^@\s/]+@[^@\s/]+\.[^@\s/.]+")
+# From each "@" with the one character before it: a search from every start
+# was quadratic in a long run with no "@" (#304).
+_EMAIL_SEARCH_RE = re.compile(r"(?<=[^@\s/])@[^@\s/]+\.[^@\s/.]+")
 _PART_SPLIT_RE = re.compile(r"[_.\-~$]")
 _DIGIT_RUN_RE = re.compile(r"\d{6,}")
 _MIXED_HEX_RE = re.compile(rf"[0-9a-fA-F]{{{_MIN_HEX_LEN},}}")
