@@ -13,6 +13,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from nodriver.cdp.page import JavascriptDialogOpening
@@ -22,6 +23,7 @@ from structlog.testing import capture_logs
 from graftpunk import dialogs
 from graftpunk.observe import capture
 from graftpunk.observe.capture import NodriverCaptureBackend
+from tests.unit.test_headless_dialogs import ChromeEndpoint, _until
 from tests.unit.test_observe_post_data import FakeTab, _always, _start, _stop
 
 MESSAGE = "Your balance for account 0042-7731 is due"
@@ -143,17 +145,38 @@ class TestTheCountTheRunReports:
     async def test_popup_and_new_tab_answers_are_counted(self) -> None:
         """#353: a tab or popup the page opens is answered by the browser's new-tab
         answerer, whose answers count with the recorded tab's, as stop ended."""
-        browser = SimpleNamespace(websocket_url="ws://127.0.0.1:9/devtools/browser/x")
-        new_tabs = dialogs.NewPageAnswerer(browser, browser.websocket_url)
-        browser._gp_dialog_new_tabs = new_tabs
+        opened: list[ChromeEndpoint] = []
+
+        async def open_socket(url: str) -> ChromeEndpoint:
+            opened.append(ChromeEndpoint(url))
+            return opened[-1]
+
+        browser = SimpleNamespace(websocket_url="ws://127.0.0.1:9/devtools/browser/x", targets=[])
         tab = FakeTab({}, _always)
         backend = NodriverCaptureBackend(browser, get_tab=lambda: tab, answer_dialogs=True)
         await backend.start_capture_async()
+        with patch.object(dialogs, "_open_socket", open_socket):
+            new_tabs = await dialogs.answer_dialogs_in_new_tabs(browser)
+        assert new_tabs is not None
+        (endpoint,) = opened
         await tab.dispatch(_dialog("alert"))
-        new_tabs.answered, new_tabs.failed = 2, 1  # two popup answers, one failed
+        # Two popups: two dialogs answered on the first, one refused on the second.
+        endpoint.attach("session-2", "target-2")
+        endpoint.attach("session-3", "target-3")
+        await endpoint.wait_for("Runtime.runIfWaitingForDebugger", "session-2")
+        await endpoint.wait_for("Runtime.runIfWaitingForDebugger", "session-3")
+        endpoint.dialog("session-2")
+        endpoint.dialog("session-2")
+        await _until(lambda: new_tabs.answered == 2)
+        endpoint.refuse = {"Page.handleJavaScriptDialog"}
+        endpoint.dialog("session-3")
+        await _until(lambda: new_tabs.failed == 1)
         with capture_logs() as logs:
             await _stop(backend, tab)
-        new_tabs.answered = 5  # after stop: not in the run's count
+        endpoint.refuse = set()
+        endpoint.dialog("session-2")
+        await _until(lambda: new_tabs.answered == 3)  # after stop: not in the run's count
+        await new_tabs.aclose()
 
         (summary,) = [e for e in logs if e["event"] == "nodriver_dialog_summary"]
         assert (summary["answered"], summary["failed"]) == (3, 1)

@@ -78,6 +78,18 @@ def stop_observe_browser(browser: Any, handle: NodriverBrowserHandle) -> None:
         remove_browser_temp_profile(browser)
 
 
+async def end_observe_browser(browser: Any, handle: NodriverBrowserHandle) -> None:
+    """Close the browser's new-tab dialog answerer on this loop, then
+    :func:`stop_observe_browser`: the answerer's connection keeps auto-attach on
+    until it is closed (#353)."""
+    from graftpunk.dialogs import close_dialogs_in_new_tabs
+
+    try:
+        await close_dialogs_in_new_tabs(browser)
+    finally:
+        stop_observe_browser(browser, handle)
+
+
 async def setup_observe_session(
     namespace: str,
     url: str,
@@ -250,7 +262,7 @@ async def setup_observe_session(
             own_session=own_session,
         )
     except Exception:
-        stop_observe_browser(browser, handle)
+        await end_observe_browser(browser, handle)
         raise
 
 
@@ -274,7 +286,7 @@ async def run_observe_go(
             scrub_credential_posts=True,
         )
     finally:
-        stop_observe_browser(observed.browser, observed.handle)
+        await end_observe_browser(observed.browser, observed.handle)
 
 
 # The throwaway the prompt offers: generated, so it is no word on any page and no
@@ -440,4 +452,4 @@ async def run_observe_interactive(
             scrub_credential_posts=True,
         )
     finally:
-        stop_observe_browser(observed.browser, observed.handle)
+        await end_observe_browser(observed.browser, observed.handle)

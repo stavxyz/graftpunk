@@ -23,6 +23,7 @@ from structlog.testing import capture_logs
 
 from graftpunk import dialogs
 from graftpunk.backends.nodriver import NoDriverBackend
+from graftpunk.dialogs import _open_socket as _real_open_socket
 from graftpunk.plugins import LoginConfig, LoginStep, SitePlugin
 from tests.unit.conftest import FakeChrome, LoopBoundBrowser, LoopBoundTab
 from tests.unit.test_observe_post_data import FakeTab, _always
@@ -103,29 +104,37 @@ class ChromeEndpoint:
     """Chrome's browser endpoint as the new-tab answerer's own connection sees it.
 
     Each command is recorded and answered with an empty result, unless its method
-    is in ``refuse`` (an error reply) or ``silent`` (no reply at all). A test plays
-    Chrome's side with :meth:`attach`, :meth:`dialog` and :meth:`detach`."""
+    is in ``refuse`` (an error reply, ``refusal`` its message) or ``silent`` (no
+    reply until the test sends one with :meth:`reply`). ``before_reply`` runs as each
+    command arrives, before its reply. A test plays Chrome's side with
+    :meth:`attach`, :meth:`dialog` and :meth:`detach`."""
 
     def __init__(self, url: str) -> None:
         self.url = url
         self.sent: list[dict[str, Any]] = []
         self.refuse: set[str] = set()
+        self.refusal = "no"
         self.silent: set[str] = set()
+        self.before_reply: Any = None
         self.closed = False
         self._inbox: asyncio.Queue[str | None] = asyncio.Queue()
 
     async def send(self, text: str) -> None:
         message = json.loads(text)
         self.sent.append(message)
+        if self.before_reply is not None:
+            self.before_reply(message)
         if message["method"] in self.silent:
             return
-        if message["method"] in self.refuse:
-            reply: dict[str, Any] = {
-                "id": message["id"],
-                "error": {"code": -32000, "message": "no"},
-            }
+        self.reply(message, refused=message["method"] in self.refuse)
+
+    def reply(self, message: dict[str, Any], *, refused: bool = False) -> None:
+        """Chrome's reply to *message*: an empty result, or the ``refusal`` error."""
+        reply: dict[str, Any] = {"id": message["id"]}
+        if refused:
+            reply["error"] = {"code": -32000, "message": self.refusal}
         else:
-            reply = {"id": message["id"], "result": {}}
+            reply["result"] = {}
         self._inbox.put_nowait(json.dumps(reply))
 
     def __aiter__(self) -> ChromeEndpoint:
@@ -173,6 +182,10 @@ class ChromeEndpoint:
 
     def detach(self, session: str, target_id: str) -> None:
         self._event("Target.detachedFromTarget", {"sessionId": session, "targetId": target_id})
+
+    def commands(self, method: str, session: str | None) -> list[dict[str, Any]]:
+        """The *method* commands sent on *session*, in order."""
+        return [m for m in self.sent if m["method"] == method and m.get("sessionId") == session]
 
     def on(self, session: str | None) -> list[str]:
         """The methods sent on *session* (None: on the browser target itself)."""
@@ -367,6 +380,7 @@ class TestEveryNewPageIsAnsweredFromItsFirstScript:
         with capture_logs() as logs:
             endpoint.attach("session-2", "target-2")
             await endpoint.wait_for("Runtime.runIfWaitingForDebugger", "session-2")
+            await _until(lambda: not answerer._tasks)
 
         assert endpoint.on("session-2") == ["Page.enable", "Runtime.runIfWaitingForDebugger"]
         assert answerer.pages == {}
@@ -441,13 +455,109 @@ class TestEveryNewPageIsAnsweredFromItsFirstScript:
         answerer, endpoint = await _new_tab_answerer(endpoints, browser)
         endpoint.attach("session-2", "target-2")
         await endpoint.wait_for("Runtime.runIfWaitingForDebugger", "session-2")
-        await dialogs.answer_dialogs(tab)
+        tab_answerer = await dialogs.answer_dialogs(tab)
+        assert tab_answerer is not None and tab_answerer.ready
+        # Chrome reports the dialog on every session with the Page domain on.
+        endpoint.dialog("session-2")
+        await tab.dispatch(_alert())
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+        assert [p for m, p in tab.sent if m == "Page.handleJavaScriptDialog"] == [{"accept": True}]
+        assert tab_answerer.answered == 1
+        assert _endpoint_answers(endpoint) == []
+        assert answerer.answered == 0
+
+    async def test_a_page_whose_own_answerer_is_still_installing_is_answered_here(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        """Until the Tab's answerer has enabled the Page domain, Chrome may report the
+        dialog to it on no session, so the new-page answerer keeps the page; once it
+        has, the page is left to it."""
+        gate = asyncio.Event()
+
+        class SlowTab(FakeTab):
+            async def send(self, cmd: Any, **kwargs: Any) -> Any:
+                if getattr(cmd, "__name__", "") == "enable":
+                    await gate.wait()
+                return await super().send(cmd, **kwargs)
+
+        tab = SlowTab({}, _always)
+        tab.target = SimpleNamespace(type_="page", target_id="target-2")
+        browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[tab])
+        answerer, endpoint = await _new_tab_answerer(endpoints, browser)
+        installing = asyncio.create_task(dialogs.answer_dialogs(tab))
+        await _until(lambda: hasattr(tab, dialogs._TAB_ATTR))
+        endpoint.attach("session-2", "target-2")
+        await endpoint.wait_for("Runtime.runIfWaitingForDebugger", "session-2")
+        endpoint.dialog("session-2")
+        await _until(lambda: answerer.answered == 1)
+
+        gate.set()
+        tab_answerer = await installing
+        assert tab_answerer is not None and tab_answerer.ready
         endpoint.dialog("session-2")
         for _ in range(20):
             await asyncio.sleep(0)
 
-        assert _endpoint_answers(endpoint) == []
-        assert answerer.answered == 0
+        assert answerer.pages == {"session-2": "target-2"}
+        assert _endpoint_answers(endpoint) == [("session-2", {"accept": True})]
+        assert answerer.answered == 1
+
+    async def test_a_page_whose_own_answerer_failed_is_answered_here(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        tab = FakeTab({}, _always)
+        tab.refuse = {"Page.enable"}
+        tab.target = SimpleNamespace(type_="page", target_id="target-2")
+        tab_answerer = await dialogs.answer_dialogs(tab)
+        assert tab_answerer is not None and not tab_answerer.ready
+        browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[tab])
+        answerer, endpoint = await _new_tab_answerer(endpoints, browser)
+        endpoint.attach("session-2", "target-2")
+        await endpoint.wait_for("Runtime.runIfWaitingForDebugger", "session-2")
+        endpoint.dialog("session-2")
+        await _until(lambda: answerer.answered == 1)
+
+        assert _endpoint_answers(endpoint) == [("session-2", {"accept": True})]
+
+    async def test_a_dialog_both_answerers_hear_is_answered_once(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        """A dialog that opens while the Tab's answerer is still installing is
+        answered here; should the Tab's answerer hear it too once installed, Chrome
+        refuses that second answer, which is a debug line."""
+        gate = asyncio.Event()
+
+        class SlowTab(FakeTab):
+            async def send(self, cmd: Any, **kwargs: Any) -> Any:
+                if getattr(cmd, "__name__", "") == "enable":
+                    await gate.wait()
+                return await super().send(cmd, **kwargs)
+
+        tab = SlowTab({}, _always)
+        tab.target = SimpleNamespace(type_="page", target_id="target-2")
+        browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[tab])
+        answerer, endpoint = await _new_tab_answerer(endpoints, browser)
+        installing = asyncio.create_task(dialogs.answer_dialogs(tab))
+        await _until(lambda: hasattr(tab, dialogs._TAB_ATTR))
+        endpoint.attach("session-2", "target-2")
+        await endpoint.wait_for("Runtime.runIfWaitingForDebugger", "session-2")
+        endpoint.dialog("session-2")
+        await _until(lambda: answerer.answered == 1)
+        gate.set()
+        tab_answerer = await installing
+        assert tab_answerer is not None
+        tab.refuse = {"Page.handleJavaScriptDialog"}  # the dialog is closed by now
+        with capture_logs() as logs:
+            await tab.dispatch(_alert())
+            await _until(lambda: tab_answerer.failed == 1)
+
+        assert _endpoint_answers(endpoint) == [("session-2", {"accept": True})]
+        assert tab_answerer.answered == 0
+        failed = [e for e in logs if e["event"] == "nodriver_dialog_answer_failed"]
+        assert [e["log_level"] for e in failed] == ["debug"]
+        assert [e for e in logs if e["log_level"] == "warning"] == []
 
     async def test_a_refused_answer_is_counted_failed(
         self, endpoints: list[ChromeEndpoint]
@@ -500,6 +610,266 @@ class TestANewPageAnswererLetsGo:
 
         assert endpoint.closed
         assert answerer.closed
+
+
+def _warnings(logs: list[dict[str, Any]]) -> list[str]:
+    return [e["event"] for e in logs if e["log_level"] == "warning"]
+
+
+class TestTheConnectionLastsAsLongAsTheBrowser:
+    """The answerer's connection ends only when asked to or when Chrome ends it, and
+    an end nobody asked for is reported and repaired by the next call."""
+
+    async def test_the_connection_sends_no_keepalive_pings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import websockets
+
+        connect = AsyncMock(return_value="socket")
+        monkeypatch.setattr(websockets, "connect", connect)
+
+        assert await _real_open_socket(ENDPOINT_URL) == "socket"
+        connect.assert_awaited_once_with(
+            ENDPOINT_URL,
+            max_size=dialogs._MAX_MESSAGE_BYTES,
+            ping_interval=None,
+            ping_timeout=None,
+        )
+
+    async def test_aclose_is_no_loss(self, endpoints: list[ChromeEndpoint]) -> None:
+        answerer, endpoint = await _new_tab_answerer(endpoints)
+        with capture_logs() as logs:
+            await answerer.aclose()
+
+        assert endpoint.closed
+        assert answerer.ended
+        assert _warnings(logs) == []
+
+    async def test_a_listener_ended_without_aclose_closes_the_socket_and_is_replaced(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        """Cancelled from outside (a loop shutting down): the socket must close, or
+        Chrome keeps holding new pages for a connection nobody reads."""
+        browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[])
+        answerer, endpoint = await _new_tab_answerer(endpoints, browser)
+        answerer.answered, answerer.failed = 2, 1
+        assert answerer._listener is not None
+        with capture_logs() as logs:
+            answerer._listener.cancel()
+            await _until(lambda: endpoint.closed)
+
+        assert answerer.ended
+        (lost,) = [e for e in logs if e["event"] == "nodriver_dialog_answerer_lost"]
+        assert (lost["log_level"], lost["reason"]) == ("warning", "cancelled")
+        assert ENDPOINT_URL not in json.dumps(logs, default=str)
+
+        again, second = await _new_tab_answerer(endpoints, browser)
+        assert again is not answerer
+        assert second is not endpoint and not second.closed
+        assert second.on(None) == ["Target.setAutoAttach"]
+        assert dialogs.new_tab_dialog_counts(browser) == (2, 1)
+
+    async def test_a_connection_chrome_ends_is_a_warning_and_is_replaced(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[])
+        answerer, endpoint = await _new_tab_answerer(endpoints, browser)
+        with capture_logs() as logs:
+            await endpoint.close()
+            await _until(lambda: answerer.ended)
+
+        assert _warnings(logs) == ["nodriver_dialog_answerer_lost"]
+        again, _second = await _new_tab_answerer(endpoints, browser)
+        assert again is not answerer
+        assert len(endpoints) == 2
+
+    async def test_a_cancelled_start_leaves_nothing_running(
+        self, endpoints: list[ChromeEndpoint], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_open = dialogs._open_socket
+
+        async def unanswered(url: str) -> Any:
+            endpoint = await real_open(url)
+            endpoint.silent = {"Target.setAutoAttach"}
+            return endpoint
+
+        monkeypatch.setattr(dialogs, "_open_socket", unanswered)
+        browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[])
+        starting = asyncio.create_task(dialogs.answer_dialogs_in_new_tabs(browser))
+        await _until(lambda: bool(endpoints) and bool(endpoints[0].sent))
+        half_started = getattr(browser, dialogs._BROWSER_ATTR)
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+
+        assert endpoints[0].closed
+        assert half_started.ended and half_started.closed
+        monkeypatch.setattr(dialogs, "_open_socket", real_open)
+        again = await dialogs.answer_dialogs_in_new_tabs(browser)
+        assert again is not half_started
+        assert len(endpoints) == 2
+
+    async def test_a_timed_out_command_leaves_no_reply_slot(
+        self, endpoints: list[ChromeEndpoint], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(dialogs, "_INSTALL_WAIT_S", 0.01)
+        answerer, endpoint = await _new_tab_answerer(endpoints)
+        endpoint.silent = {"Page.enable"}
+        for n in range(2, 5):
+            endpoint.attach(f"session-{n}", f"target-{n}")
+        for n in range(2, 5):
+            await endpoint.wait_for("Runtime.runIfWaitingForDebugger", f"session-{n}")
+        await _until(lambda: not answerer._tasks)
+
+        assert answerer._replies == {}
+
+    async def test_a_timed_out_answer_leaves_no_reply_slot(
+        self, endpoints: list[ChromeEndpoint], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(dialogs, "_DIALOG_ANSWER_WAIT_S", 0.01)
+        answerer, endpoint = await _new_tab_answerer(endpoints)
+        endpoint.attach("session-2", "target-2")
+        await endpoint.wait_for("Runtime.runIfWaitingForDebugger", "session-2")
+        endpoint.silent = {"Page.handleJavaScriptDialog"}
+        endpoint.dialog("session-2")
+        await _until(lambda: answerer.failed == 1)
+
+        assert answerer._replies == {}
+
+    async def test_the_backend_s_stop_closes_the_connection(
+        self, dialog_chrome: FakeChrome, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        backend = NoDriverBackend(headless=True)
+        await backend.start_async()
+        (browser,) = dialog_chrome.browsers
+        answerer = getattr(browser, dialogs._BROWSER_ATTR)
+        (endpoint,) = endpoints
+        assert not endpoint.closed
+        with capture_logs() as logs:
+            await backend.stop_async()
+
+        assert endpoint.closed
+        assert answerer.ended
+        assert "nodriver_dialog_answerer_lost" not in [e["event"] for e in logs]
+
+
+class TestPagesArriveAsChromeSendsThem:
+    async def test_a_burst_of_attaches_with_replies_out_of_order(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        answerer, endpoint = await _new_tab_answerer(endpoints)
+        endpoint.silent = {"Page.enable"}
+        sessions = [f"session-{n}" for n in range(2, 8)]
+        for session in sessions:
+            endpoint.attach(session, session.replace("session", "target"))
+        for session in sessions:
+            await endpoint.wait_for("Page.enable", session)
+        enables = [m for m in endpoint.sent if m["method"] == "Page.enable"]
+        for message in reversed(enables):
+            endpoint.reply(message)
+        for session in sessions:
+            await endpoint.wait_for("Runtime.runIfWaitingForDebugger", session)
+
+        for session in sessions:
+            assert endpoint.on(session) == ["Page.enable", "Runtime.runIfWaitingForDebugger"]
+        assert answerer.pages == {s: s.replace("session", "target") for s in sessions}
+        for session in sessions:
+            endpoint.dialog(session)
+        await _until(lambda: answerer.answered == len(sessions))
+        assert sorted(s for s, _p in _endpoint_answers(endpoint)) == sorted(sessions)
+
+    async def test_attaches_before_the_auto_attach_reply_are_handled(
+        self, endpoints: list[ChromeEndpoint], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Chrome attaches the targets that already exist as it turns auto-attach on,
+        before its reply: the first tab (left to its own answerer) and another page."""
+        first = FakeTab({}, _always)
+        first.target = SimpleNamespace(type_="page", target_id="target-1")
+        await dialogs.answer_dialogs(first)
+        real_open = dialogs._open_socket
+
+        async def attaching_first(url: str) -> Any:
+            endpoint = await real_open(url)
+
+            def before_reply(message: dict[str, Any]) -> None:
+                if message["method"] == "Target.setAutoAttach":
+                    endpoint.attach("session-1", "target-1", waiting=False)
+                    endpoint.attach("session-9", "target-9", waiting=False)
+
+            endpoint.before_reply = before_reply
+            return endpoint
+
+        monkeypatch.setattr(dialogs, "_open_socket", attaching_first)
+        browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[first])
+        answerer, endpoint = await _new_tab_answerer(endpoints, browser)
+        await endpoint.wait_for("Target.detachFromTarget", None)
+        await endpoint.wait_for("Page.enable", "session-9")
+        await _until(lambda: not answerer._tasks)
+
+        assert endpoint.on("session-1") == []
+        assert endpoint.on("session-9") == ["Page.enable"]  # not held, so no resume
+        assert answerer.pages == {"session-9": "target-9"}
+
+    async def test_a_popup_closed_during_its_install_is_one_debug_line(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        answerer, endpoint = await _new_tab_answerer(endpoints)
+        endpoint.silent = {"Page.enable"}
+        endpoint.refusal = "Session with given id not found."
+        endpoint.refuse = {"Runtime.runIfWaitingForDebugger"}
+        with capture_logs() as logs:
+            endpoint.attach("session-2", "target-2")
+            await endpoint.wait_for("Page.enable", "session-2")
+            endpoint.detach("session-2", "target-2")
+            await _until(lambda: "session-2" not in answerer._attached)
+            (enable,) = endpoint.commands("Page.enable", "session-2")
+            endpoint.reply(enable, refused=True)
+            await endpoint.wait_for("Runtime.runIfWaitingForDebugger", "session-2")
+            await _until(lambda: not answerer._tasks)
+
+        assert answerer.pages == {}
+        assert [(e["event"], e["log_level"]) for e in logs] == [
+            ("nodriver_dialog_new_target_gone", "debug")
+        ]
+
+    async def test_a_failed_detach_has_its_own_warning(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        answerer, endpoint = await _new_tab_answerer(endpoints)
+        endpoint.refuse = {"Target.detachFromTarget"}
+        with capture_logs() as logs:
+            endpoint.attach("session-w", "worker-1", kind="service_worker")
+            await endpoint.wait_for("Target.detachFromTarget", None)
+            await _until(lambda: not answerer._tasks)
+
+        assert _warnings(logs) == ["nodriver_dialog_new_target_detach_failed"]
+
+    async def test_a_connection_lost_between_attach_and_resume_is_reported(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        """The resume cannot be sent on a connection that is gone: the code says so
+        at warning level, and the next call starts a new connection. The page stays
+        held: measured live on 2026-11-03, Chrome kept such a popup paused after its
+        auto-attaching client disconnected, and after a new answerer connected."""
+        browser = SimpleNamespace(websocket_url=ENDPOINT_URL, targets=[])
+        answerer, endpoint = await _new_tab_answerer(endpoints, browser)
+        endpoint.silent = {"Page.enable"}
+        with capture_logs() as logs:
+            endpoint.attach("session-2", "target-2")
+            await endpoint.wait_for("Page.enable", "session-2")
+            await endpoint.close()
+            await _until(lambda: answerer.ended and not answerer._tasks)
+
+        assert endpoint.on("session-2") == ["Page.enable"]
+        assert answerer.pages == {}
+        assert sorted(_warnings(logs)) == [
+            "nodriver_dialog_answerer_lost",
+            "nodriver_dialog_answering_unavailable",
+            "nodriver_dialog_new_target_resume_failed",
+        ]
+        again, second = await _new_tab_answerer(endpoints, browser)
+        assert again is not answerer
+        assert second.on(None) == ["Target.setAutoAttach"]
 
 
 class TestOneNewPageAnswererPerBrowser:
