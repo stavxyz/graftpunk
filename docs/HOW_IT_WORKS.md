@@ -782,8 +782,8 @@ prints is decided once for the run: it prints in every output and on every
 endpoint that recorded it, in the first spelling recorded that passes the
 gate, and is counted once when none does. A name whose spellings all fail
 still prints, in its first spelling recorded, when the digest already prints
-the same name elsewhere (a meta tag's token candidate, or a cookie name that
-passes), so a generated `token_config` still pairs that header with its meta
+the same name elsewhere (a meta tag's or hidden input's token candidate, or a cookie name
+the Cookies section prints, set or only sent), so a generated `token_config` still pairs that header with its meta
 tag. The fixture safety
 net (`flagged_names`) still holds every name. The words are those
 of the graft skill's `har-facts.py cookies`, which also prints the `Domain` and

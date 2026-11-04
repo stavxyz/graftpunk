@@ -31,6 +31,7 @@ from graftpunk.har.digest import (
     printable_custom_headers,
     printable_login_fields,
     printable_tokens,
+    run_header_names_not_shown,
 )
 from graftpunk.har.documents import LoginForm, printable_selectors, printable_unresolved_roles
 from graftpunk.har.paths import printable_name, templated_url, templates_a_segment
@@ -359,10 +360,13 @@ def render_json(d: RunDigest) -> str:
     ``tokens`` and of each endpoint's ``custom_headers``
     (:func:`graftpunk.har.digest.printable_custom_headers`), which then carries
     ``custom_headers_not_shown``; ``header_names_not_shown`` counts them for the
-    run."""
+    run, computed here from the digest's tokens and endpoints."""
     rendered = _jsonable(d)
     rendered["cookies"] = [name for name in d.cookies if printable_name(name)]
     spellings = header_spellings(d)
+    rendered.pop("header_names_not_shown", None)
+    if hidden := run_header_names_not_shown(d):
+        rendered["header_names_not_shown"] = hidden
     rendered["tokens"] = _jsonable(printable_tokens(d.tokens, spellings))
     for observation, login in zip(d.login, rendered["login"], strict=True):
         login["fields"] = list(printable_login_fields(observation))

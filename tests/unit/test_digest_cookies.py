@@ -757,6 +757,55 @@ def test_a_header_name_a_passing_cookie_name_prints_is_printed(tmp_path: Path) -
     assert "- 1 custom header whose name reads as a value is not shown" in markdown
 
 
+def test_a_cookie_only_sent_makes_a_header_of_its_name_print(tmp_path: Path) -> None:
+    """The Cookies section prints a cookie a request sends and no response sets,
+    so a header of that name in a held-back spelling prints too."""
+    sent = _entry(
+        "POST",
+        f"{_HOST}/api/a",
+        request_headers={"X-SHOPPER-Id": "1", "Cookie": "x-shopper-id=1"},
+    )
+    d = _digest(tmp_path, [sent])
+    assert header_spellings(d) == {"x-shopper-id": "X-SHOPPER-Id"}
+    assert d.header_names_not_shown == 0
+    assert "- custom headers: X-SHOPPER-Id" in render_markdown(d)
+    assert '"X-SHOPPER-Id": "GP-FILL"' in _plugin_text(d)
+
+
+def test_a_hidden_input_candidate_makes_a_held_back_header_name_print(tmp_path: Path) -> None:
+    """A hidden input's token candidate prints ungated, so a header of the same
+    lower-cased name prints in its recorded spelling."""
+    page = _entry(
+        "GET",
+        f"{_HOST}/",
+        content_type="text/html",
+        body='<form method="post" action="/x"><input type="hidden" name="x-csrf-qz9xvkw"></form>',
+    )
+    post = _entry("POST", f"{_HOST}/x", request_headers={"X-Csrf-Qz9XvKw": "1"})
+    d = _digest(tmp_path, [page, post])
+    assert any(t.kind == "hidden_input" and t.name == "x-csrf-qz9xvkw" for t in d.tokens)
+    assert header_spellings(d) == {"x-csrf-qz9xvkw": "X-Csrf-Qz9XvKw"}
+    assert d.header_names_not_shown == 0
+    assert "- custom headers: X-Csrf-Qz9XvKw" in render_markdown(d)
+
+
+def test_the_run_count_is_decided_when_rendering_not_when_digesting(tmp_path: Path) -> None:
+    """A digest changed with dataclasses.replace renders a run count that agrees
+    with its endpoints' counts, whatever count it stored."""
+    d = _digest(
+        tmp_path, [_entry("GET", f"{_HOST}/api/a", request_headers={"X-Csrf-Qz9XvKw": "1"})]
+    )
+    assert d.header_names_not_shown == 1
+    stale = dataclasses.replace(d, header_names_not_shown=0)
+    assert json.loads(render_json(stale))["header_names_not_shown"] == 1
+
+    meta = TokenCandidate(kind="meta", name="x-csrf-qz9xvkw", seen_on=("GET /",))
+    printed = dataclasses.replace(d, tokens=(*d.tokens, meta))
+    rendered = json.loads(render_json(printed))
+    assert "header_names_not_shown" not in rendered
+    assert all("custom_headers_not_shown" not in e for e in rendered["endpoints"])
+
+
 def test_one_header_name_a_run_decides_prints_alike_on_every_endpoint(tmp_path: Path) -> None:
     """A name recorded held back on one endpoint and passing on another prints
     in the passing spelling on both, in every output, and is counted nowhere."""

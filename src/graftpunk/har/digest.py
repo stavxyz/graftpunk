@@ -1567,7 +1567,8 @@ def header_spellings(d: RunDigest) -> dict[str, str]:
     prints in the first spelling recorded that passes the gate
     (:func:`graftpunk.har.paths.printable_name`). When no spelling passes but the
     digest already prints the same lower-cased name elsewhere (an ungated token
-    candidate such as a meta tag's, or a cookie name that passes), it prints in
+    candidate such as a meta tag's or a hidden input's, or a cookie name the
+    Cookies section prints, set or only sent), it prints in
     its first spelling recorded, which tells a reader nothing the digest does not.
     Spellings are taken in the order the run first recorded them
     (``RunDigest.header_spellings``), then the header token candidates' and each
@@ -1578,7 +1579,22 @@ def header_spellings(d: RunDigest) -> dict[str, str]:
             *(t.name for t in d.tokens if t.kind == "header"),
             *(name for endpoint in d.endpoints for name in endpoint.custom_headers),
         ],
-        _names_printed_elsewhere(d.tokens, d.cookies),
+        _names_printed_elsewhere(d.tokens, (*d.cookies, *(f.name for f in d.cookie_facts))),
+    )
+
+
+def run_header_names_not_shown(d: RunDigest) -> int:
+    """How many header names *d* prints nowhere, counted once each over every
+    endpoint's custom headers and the header token candidates. Computed from
+    ``header_spellings(d)`` on each call, so a digest built by hand or changed with
+    :func:`dataclasses.replace` agrees with what renders; the stored
+    ``RunDigest.header_names_not_shown`` is what :func:`digest` computed."""
+    return header_names_not_shown(
+        [
+            *(name for endpoint in d.endpoints for name in endpoint.custom_headers),
+            *(t.name for t in d.tokens if t.kind == "header"),
+        ],
+        header_spellings(d),
     )
 
 
@@ -3640,17 +3656,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             ],
         ),
     )
-    spellings = header_spellings(run)
-    return replace(
-        run,
-        header_names_not_shown=header_names_not_shown(
-            [
-                *(name for endpoint in run.endpoints for name in endpoint.custom_headers),
-                *(token.name for token in tokens if token.kind == "header"),
-            ],
-            spellings,
-        ),
-    )
+    return replace(run, header_names_not_shown=run_header_names_not_shown(run))
 
 
 # A segment that names a fixed part of a site's routing rather than a value: when
