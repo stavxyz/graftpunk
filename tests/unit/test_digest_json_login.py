@@ -394,6 +394,22 @@ class TestFailureTextFromAJsonResponse:
         assert _digest_run(run).failure_candidates == ()
 
 
+class TestTheSnapshotRedaction:
+    """A login-time snapshot is scrubbed of the post's email address by the rule the
+    run's scrub uses: an address under any name of a credential post."""
+
+    @pytest.mark.parametrize("name", ["emailOrPhoneNumber", "email", "loginId"])
+    def test_an_email_in_a_stored_placeholder_is_redacted(self, name: str) -> None:
+        page = (
+            f'<html><body><input placeholder="{_EMAIL}" type="text">'
+            '<input type="password"></body></html>'
+        )
+        body = json.dumps({"variables": {name: _EMAIL, "password": _PASSWORD}})
+        stored = stored_dom_snapshot(page, body, _JSON)
+        assert _EMAIL not in stored
+        assert 'placeholder="***REDACTED***"' in stored
+
+
 class TestAFormLoginIsReadAsBefore:
     _LOGIN = (
         "<html><body><form action='/session' method='post'>"

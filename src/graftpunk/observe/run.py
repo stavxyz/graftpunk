@@ -667,7 +667,7 @@ def _not_redacted(value: str) -> bool:
     return bool(value) and value != REDACTED
 
 
-def _is_email(value: str) -> bool:
+def is_email_address(value: str) -> bool:
     """Whether *value* is an email address, the only identifier the scrub takes: a
     login form's other identifier-named fields send values nobody typed (a submit
     button's ``login=Log In``, a hidden ``account=guest``), which a run-wide scrub
@@ -702,11 +702,13 @@ def credential_post_redaction(
     value at any depth under its nearest name). One whose own field name is
     password-like (:func:`names_a_password`), or is the ``name`` of an ``<input
     type="password">`` a recorded page holds, is a secret when it is at least 3
-    characters and no flag word (:func:`_password_value`); one whose own field name
-    is an identifier field's (:func:`graftpunk.session_identity.is_identifier_field`)
-    is an identifier when it is an email address (:func:`_is_email`). An
-    identifier-first login posts its username in an earlier step: the email
-    addresses under an identifier field's own name in each other request before the
+    characters and no flag word (:func:`_password_value`); one that is an email
+    address (:func:`is_email_address`) under any other name (``email``,
+    ``emailOrPhoneNumber``, ``input.login``) is an identifier, since in a credential
+    post's own body an address is the account's. An identifier-first login posts
+    its username in an earlier step: the email addresses under an identifier field's
+    own name (:func:`graftpunk.session_identity.is_identifier_field`, an allowlist,
+    since such a post is no credential post) in each other request before the
     last credential post that the digest reads as a step of a login
     (:func:`graftpunk.har.login_signals.is_login_step_post`) are taken too. *typed*
     adds secrets the recorder knew of (the password of a post the user marked
@@ -738,14 +740,16 @@ def credential_post_redaction(
     indices: list[int] = []
     value_posts = step_posts = 0
 
-    def emails(values: list[tuple[tuple[str, ...], str]]) -> list[str]:
+    def emails(
+        values: list[tuple[tuple[str, ...], str]], *, identifier_names_only: bool = False
+    ) -> list[str]:
         return [
             value
             for path, value in values
             if path
-            and _is_email(value)
+            and is_email_address(value)
             and not password_name(path[-1])
-            and is_identifier_field(identifier_key(path[-1]))
+            and (not identifier_names_only or is_identifier_field(identifier_key(path[-1])))
         ]
 
     # The requests that are no credential post, for an identifier-first login's step.
@@ -807,7 +811,7 @@ def credential_post_redaction(
         if is_login_step_post(
             urllib.parse.urlsplit(url).path, {name for path, _value in values for name in path}
         ):
-            users = emails(values)
+            users = emails(values, identifier_names_only=True)
             step_posts += bool(users)
             identifiers.update(dict.fromkeys(users))
     marked = [value for value in typed if _not_redacted(value) and value not in secrets]

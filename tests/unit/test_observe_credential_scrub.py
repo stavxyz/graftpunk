@@ -17,9 +17,9 @@ import pytest
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.observe.run import (
     REDACTED,
-    _is_email,
     _marked_failed_secrets,
     credential_post_redaction,
+    is_email_address,
     names_a_password,
     save_observe_run,
 )
@@ -710,6 +710,43 @@ class TestTheDigestsRule:
             "password": REDACTED,
         }
         assert b"sunflower99" not in _everything(storage.run_dir)
+
+    @pytest.mark.asyncio
+    async def test_an_email_under_any_name_of_a_credential_post_is_scrubbed(
+        self, tmp_path: Path
+    ) -> None:
+        """In a credential post's own body an email address is the account's, whatever
+        its field is named: a GraphQL login's ``emailOrPhoneNumber`` is no identifier
+        field, and its address is scrubbed from the whole run. A value under such a
+        name that is no address (a phone number) is left."""
+        storage = _storage(tmp_path)
+        post = _json_post()
+        post["request"]["postData"]["text"] = json.dumps(
+            {
+                "operationName": "LoginMutation",
+                "variables": {
+                    "emailOrPhoneNumber": _EMAIL,
+                    "password": "sunflower99",
+                    "deviceLabel": "5551234567",
+                },
+            }
+        )
+        backend = _Backend([post])
+        backend.page_source = f"<html><body><span>{_EMAIL}</span></body></html>"
+        found = credential_post_redaction([post], storage.run_dir)
+        assert found.run_values == ("sunflower99", _EMAIL)
+        assert found.left == 0
+
+        await _save(storage, backend)
+
+        assert json.loads(_har(storage)[0]["request"]["postData"]["text"])["variables"] == {
+            "emailOrPhoneNumber": REDACTED,
+            "password": REDACTED,
+            "deviceLabel": "5551234567",
+        }
+        everything = _everything(storage.run_dir)
+        assert _EMAIL.encode() not in everything
+        assert b"sunflower99" not in everything
 
     @pytest.mark.asyncio
     async def test_a_nested_json_password_change_is_left(self, tmp_path: Path) -> None:
@@ -1520,7 +1557,10 @@ class TestOnlyAnEmailAddressIsTakenAsAnIdentifier:
         self, tmp_path: Path
     ) -> None:
         step = _entry("POST", "/login/identify", post_data=json.dumps({"username": _EMAIL}))
-        login = _entry("POST", "/session", post_data=json.dumps({"u": _EMAIL, "p": "secretword"}))
+        # The login post sends no email address and no password-named field, so only
+        # the step gives a value (an address under any name of a credential post is
+        # taken since 1.38.0).
+        login = _entry("POST", "/session", post_data=json.dumps({"u": "alice", "p": "secretword"}))
         storage = _storage(tmp_path)
         console = MagicMock()
 
@@ -1545,7 +1585,7 @@ class TestOnlyAnEmailAddressIsTakenAsAnIdentifier:
         ],
     )
     def test_what_is_an_email_address(self, value: str, expected: bool) -> None:
-        assert _is_email(value) is expected
+        assert is_email_address(value) is expected
 
     @pytest.mark.parametrize(
         ("value", "expected"),
@@ -1561,7 +1601,7 @@ class TestOnlyAnEmailAddressIsTakenAsAnIdentifier:
     )
     def test_the_dot_and_whitespace_rules(self, value: str, expected: bool) -> None:
         """The answers the full match ``[^@\\s]+@[^@\\s]+\\.[^@\\s]+`` gave."""
-        assert _is_email(value) is expected
+        assert is_email_address(value) is expected
 
     def test_a_long_dotted_domain_is_judged_in_linear_time(self) -> None:
         """Eight times the domain within 24 times the CPU time (#304). The full
@@ -1573,7 +1613,7 @@ class TestOnlyAnEmailAddressIsTakenAsAnIdentifier:
             best = float("inf")
             for _ in range(3):
                 start = time.process_time()
-                _is_email(value)
+                is_email_address(value)
                 best = min(best, time.process_time() - start)
             return best
 
