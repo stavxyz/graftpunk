@@ -340,6 +340,8 @@ class TestSeleniumSessionRecordsTheNetwork:
             patch.object(stealth.uc, "Chrome") as chrome,
             patch.object(stealth, "stealth"),
             patch.object(stealth, "get_chrome_version", return_value="155"),
+            patch("webdriver_manager.chrome.ChromeDriverManager"),
+            patch.object(stealth, "_patch_driver"),
             patch.object(Path, "mkdir"),
         ):
             stealth.create_stealth_driver(
@@ -369,6 +371,8 @@ class TestSeleniumSessionRecordsTheNetwork:
             patch.object(stealth.uc, "Chrome") as chrome,
             patch.object(stealth, "stealth"),
             patch.object(stealth, "get_chrome_version", return_value="155"),
+            patch("webdriver_manager.chrome.ChromeDriverManager"),
+            patch.object(stealth, "_patch_driver"),
             patch.object(Path, "mkdir"),
         ):
             stealth.create_stealth_driver(
