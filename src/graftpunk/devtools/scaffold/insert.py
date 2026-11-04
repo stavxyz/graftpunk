@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 import tokenize
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -176,6 +177,44 @@ def _layout_refusal(module_path: str) -> str:
     )
 
 
+def _command_reading(source: str, stem: str) -> str:
+    """The method in *source* that passes ``document="<stem>"``, or a description
+    when none does."""
+    reader = None
+    for line in source.splitlines():
+        defined = re.match(r"\s*def (\w+)\(", line)
+        if defined:
+            reader = defined.group(1)
+        if f'document="{stem}"' in line and reader is not None:
+            return reader
+    return "no command of this module"
+
+
+def _document_to_write(path: Path, source: str, identifier: str) -> bool:
+    """Whether the GraphQL document file at *path* is to be written: not when a file
+    of that exact name is there (the same operation on the same path, or one an
+    author edited, which the stub then reads as it is).
+
+    Raises:
+        CommandInsertError: a file whose name differs from *path*'s in case alone is
+            there, which a case-insensitive filesystem would overwrite.
+    """
+    if not path.parent.is_dir():
+        return True
+    for existing in path.parent.iterdir():
+        if existing.name == path.name:
+            return False
+        if existing.name.casefold() == path.name.casefold():
+            reader = _command_reading(source, existing.stem)
+            raise CommandInsertError(
+                f"{existing}: {identifier} would write its GraphQL document to "
+                f"{path.name}, a name that differs from this file's in case alone, which "
+                f"{reader} reads; rename one of the two files and the document= its "
+                "command passes."
+            )
+    return True
+
+
 def add_command(
     root: Path, entry_point: str, d: RunDigest, selection: CommandSelection
 ) -> AddedCommand:
@@ -257,12 +296,10 @@ def add_command(
             f"{plugin.module_path}: does not parse after the stub is placed ({exc.msg})."
         ) from exc
     floor, floor_changes = planned_graftpunk_floor(root)
-    # A document file already there (another command of the same operation, or one
-    # an author edited) is the one the stub reads, and is left as it is.
     documents = [
         PlannedChange(module.parent / where, content)
         for where, content in rendered.files
-        if not (module.parent / where).exists()
+        if _document_to_write(module.parent / where, original, command.identifier)
     ]
     apply_changes(
         [

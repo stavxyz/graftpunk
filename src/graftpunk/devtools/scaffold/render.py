@@ -69,7 +69,7 @@ from graftpunk.har.digest import (
 from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
 from graftpunk.har.graphql import (
     ANONYMOUS_OPERATION,
-    document_literals_to_fill,
+    FilledDocument,
     filled_document,
 )
 from graftpunk.har.naming import capture_filename, capture_slug
@@ -93,6 +93,7 @@ __all__ = [
     "base_host",
     "class_name_for",
     "graphql_document_file",
+    "graphql_document_stem",
     "fixture_paths",
     "fixtures_root_for",
     "graftpunk_version_floor",
@@ -1124,7 +1125,7 @@ def _needs_param_specs(endpoint: Endpoint) -> bool:
     """Whether the stub declares its parameters explicitly (see _Declaration.needs_spec);
     a GraphQL stub also does for a variable with a recorded default."""
     if endpoint.operation:
-        declared = _body_declarations(endpoint).values()
+        declared = {**_body_declarations(endpoint), **_filled_declarations(endpoint)}.values()
         return bool(endpoint.graphql_defaults) or any(
             isinstance(d, _Declaration) and d.needs_spec for d in declared
         )
@@ -1399,28 +1400,102 @@ def _value_lines(value: object, *, indent: int, prefix: str, suffix: str) -> lis
     return [f"{pad}{prefix}{_python_literal(value)}{suffix}"]
 
 
-def graphql_document_file(command: PlannedCommand) -> str | None:
-    """Where *command*'s GraphQL document is written, relative to the plugin
-    module's directory: ``graphql/<Operation>.graphql``, the command's own name for
-    an anonymous operation; None for a command with no operation, or one whose
-    recordings sent a persisted query's hash alone."""
+_FILE_SLUG_RE = re.compile(r"[^0-9A-Za-z]+")
+
+
+def graphql_document_stem(command: PlannedCommand) -> str | None:
+    """The stem of *command*'s GraphQL document file: the path's slug and the
+    operation, ``graphql_OrdersByCustomer`` for ``POST /graphql (OrdersByCustomer)``
+    (the command's own name in place of the operation for an anonymous one), so
+    one operation name on two paths gets two files; None for a command with no
+    operation, or one whose recordings sent no document."""
     endpoint = command.endpoint
     if not endpoint.operation or endpoint.graphql_document is None:
         return None
+    slug = _FILE_SLUG_RE.sub("_", endpoint.template).strip("_") or "root"
     stem = command.identifier if endpoint.operation == ANONYMOUS_OPERATION else endpoint.operation
-    return f"{GRAPHQL_DIR}/{stem}.graphql"
+    return f"{slug}_{stem}"
+
+
+def graphql_document_file(command: PlannedCommand) -> str | None:
+    """Where *command*'s GraphQL document is written, relative to the plugin
+    module's directory: ``graphql/<stem>.graphql`` (:func:`graphql_document_stem`)."""
+    stem = graphql_document_stem(command)
+    return None if stem is None else f"{GRAPHQL_DIR}/{stem}.graphql"
+
+
+def _filled(endpoint: Endpoint) -> FilledDocument | None:
+    document = endpoint.graphql_document
+    return None if document is None else filled_document(document)
+
+
+def _fill_lines(filled: FilledDocument) -> list[str]:
+    """The GP-FILL comment at the top of a document file that lost inline values,
+    naming each by where it was, never its value."""
+    if not filled.fills:
+        return []
+    lines = [
+        f"# {GP_FILL_MARKER}: the recorded document held these inline values, which are not",
+        "# written here (only form state is):",
+    ]
+    for fill in filled.fills:
+        if fill.removed_default:
+            lines.append(f"# - the default of ${fill.variable}: removed")
+        elif fill.placeholder:
+            lines.append(
+                f'# - the value of "{fill.name}" in a variable\'s directive: replaced with '
+                f'"{GP_FILL_MARKER}"'
+            )
+        else:
+            lines.append(
+                f'# - the value of "{fill.name}": now the variable ${fill.variable} '
+                f"({fill.type}, guessed from the value; check it against the schema)"
+            )
+    return lines
+
+
+def _document_text(endpoint: Endpoint) -> str | None:
+    """The text of *endpoint*'s document file: the recorded document byte for byte,
+    or, when it held inline values that are not form state, the document
+    :func:`graftpunk.har.graphql.filled_document` writes under a GP-FILL comment
+    naming each."""
+    filled = _filled(endpoint)
+    if filled is None:
+        return None
+    header = _fill_lines(filled)
+    return "\n".join(header) + "\n" + filled.text if header else filled.text
 
 
 def _graphql_files(planned: list[PlannedCommand]) -> dict[str, str]:
     """Each GraphQL command's document file, relative to the plugin module's
-    directory: as recorded, or with the inline literals that could hold a value
-    replaced (:func:`graftpunk.har.graphql.filled_document`)."""
+    directory (:func:`_document_text`).
+
+    Raises:
+        CommandSelectionError: two commands would write different documents to one
+            file, compared without regard to case as a case-insensitive filesystem
+            compares names.
+    """
     files: dict[str, str] = {}
+    owners: dict[str, tuple[str, PlannedCommand]] = {}
     for command in planned:
         where = graphql_document_file(command)
-        document = command.endpoint.graphql_document
-        if where is not None and document is not None:
-            files[where] = filled_document(document)
+        text = _document_text(command.endpoint)
+        if where is None or text is None:
+            continue
+        seen = owners.get(where.casefold())
+        if seen is not None:
+            other_where, other = seen
+            if other_where == where and files[where] == text:
+                continue
+            raise CommandSelectionError(
+                f"Commands {other.identifier} ({other.endpoint.key}) and "
+                f"{command.identifier} ({command.endpoint.key}) would write their GraphQL "
+                f"documents to one file, {other_where} and {where} compared without regard "
+                "to case; select one of them, and write the other's document by hand under "
+                "another name."
+            )
+        owners[where.casefold()] = (where, command)
+        files[where] = text
     return files
 
 
@@ -1483,19 +1558,19 @@ def _render_graphql_helper(
     lines.extend(
         wrapped_docstring_block(
             "Send one GraphQL operation as the recording sent it: its name, its document "
-            f"from {GRAPHQL_DIR}/<document or operation>.graphql beside this module (or "
-            "the persisted query, sent by hash), the variables given (None left out), and "
-            "the extensions and headers every recorded GraphQL request carried.",
+            f"from {GRAPHQL_DIR}/<document>.graphql beside this module (or the persisted "
+            "query, sent by hash), the variables given (None left out), and the "
+            "extensions and headers every recorded GraphQL request carried.",
             indent=len(L2),
         )
     )
-    held = sorted({key for e in endpoints for key in e.graphql_held_extensions} - set(extensions))
+    held = sorted({key for e in endpoints for key in e.graphql_held_extensions})
     if held:
         lines.extend(
             wrapped_comment_lines(
-                f"{GP_FILL_MARKER}: the recording also sent the extension(s) "
-                f"{', '.join(held)} with recorded values, which are not written here: only "
-                "form state is. Add them to extensions below if the site needs them.",
+                f"{GP_FILL_MARKER}: the recording also sent extension values that are not "
+                f"written here, only form state is: {'; '.join(held)}. Add them to "
+                "extensions below if the site needs them.",
                 indent=len(L2),
             )
         )
@@ -1507,9 +1582,8 @@ def _render_graphql_helper(
     lines.extend(_value_lines(extensions, indent=len(L2), prefix="extensions: dict = ", suffix=""))
     lines.append(f"{L2}if persisted_query is not None:")
     lines.append(f'{L3}extensions = {{**extensions, "persistedQuery": persisted_query}}')
-    lines.append(f"{L2}else:")
-    lines.append(f"{L3}name = document or operation")
-    lines.append(f'{L3}source = Path(__file__).parent / "{GRAPHQL_DIR}" / f"{{name}}.graphql"')
+    lines.append(f"{L2}elif document is not None:")
+    lines.append(f'{L3}source = Path(__file__).parent / "{GRAPHQL_DIR}" / f"{{document}}.graphql"')
     lines.append(f'{L3}body["query"] = source.read_text(encoding="utf-8")')
     lines.append(f"{L2}if extensions:")
     lines.append(f'{L3}body["extensions"] = extensions')
@@ -1529,20 +1603,29 @@ def _render_graphql_helper(
 def _graphql_operation_notes(endpoint: Endpoint) -> list[str]:
     """The GP-FILL notes a GraphQL stub carries about what it did not copy."""
     notes: list[str] = []
-    document = endpoint.graphql_document
-    filled = 0 if document is None else document_literals_to_fill(document)
-    if filled:
+    filled = _filled(endpoint)
+    if filled is not None and filled.fills:
         notes.append(
-            f"{GP_FILL_MARKER}: {filled} inline value(s) in the recorded document were "
-            f'replaced with "{GP_FILL_MARKER}" in its .graphql file (a string, or a number '
-            "that reads as an id); put each value back, or pass it as a variable."
+            f"{GP_FILL_MARKER}: the recorded document held {len(filled.fills)} inline "
+            "value(s) that are not form state, which its .graphql file does not hold (its "
+            "first lines say where each was). A value now passed as a variable is an "
+            "option here with no default; check the variable's type there against the "
+            "site's schema."
+        )
+    if _persisted_without_hash(endpoint):
+        notes.append(
+            f"{GP_FILL_MARKER}: every recording sent this operation as a persisted query "
+            "with no sha256Hash and no document, so neither was recorded and this command "
+            f"raises until you add one: write the document to {GRAPHQL_DIR}/<name>.graphql "
+            "and pass document=<name>, or pass persisted_query= with the hash."
         )
     for name in endpoint.graphql_held_variables:
         label = endpoint.body_params.get(name, "a value")
         notes.append(
             f'{GP_FILL_MARKER}: variable "{name}" ({label}) has a recorded value, which is '
-            "not written here: only form state (a bool, a small number, a capitalised enum "
-            "value) becomes a default. Pass it as an option, or give the option a default "
+            "not written here: only form state (a bool, a small number under a paging name, "
+            "an enum value under a setting name) becomes a default. Pass it as an option, or "
+            "give the option a default "
             "of your own; gp observe digest's Shared values says which response returns it."
         )
     if endpoint.operation_batched == endpoint.count:
@@ -1559,6 +1642,37 @@ def _graphql_operation_notes(endpoint: Endpoint) -> list[str]:
     return notes
 
 
+def _persisted_without_hash(endpoint: Endpoint) -> bool:
+    """True for an operation row whose recordings sent neither a document nor a
+    persisted query's hash, so a stub has nothing to send it with."""
+    return (
+        bool(endpoint.operation)
+        and endpoint.graphql_document is None
+        and not endpoint.graphql_persisted_hash
+    )
+
+
+_LABEL_BY_GRAPHQL_TYPE = {"Int": "int", "Float": "float", "Boolean": "bool"}
+
+
+def _filled_declarations(endpoint: Endpoint) -> dict[str, _Declaration | str]:
+    """A declaration for each variable the document file gained in place of an inline
+    value, or lost a default of, that the recordings did not send: the option the
+    stub needs to send it. A list type is left to the author, with why."""
+    filled = _filled(endpoint)
+    found: dict[str, _Declaration | str] = {}
+    for fill in () if filled is None else filled.fills:
+        if fill.placeholder or fill.variable in endpoint.body_params or fill.variable in found:
+            continue
+        base = fill.type.rstrip("!")
+        if base.startswith("["):
+            found[fill.variable] = "a list value written in the document"
+            continue
+        declared = _declaration(_LABEL_BY_GRAPHQL_TYPE.get(base, "str"), json_body=True)
+        found[fill.variable] = declared
+    return found
+
+
 def _render_graphql_stub(
     command: PlannedCommand,
     run_label: str,
@@ -1573,7 +1687,7 @@ def _render_graphql_stub(
     the path the helper defaults to; the stub passes its own when it differs."""
     endpoint = command.endpoint
     seen_params = {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
-    declarations = _body_declarations(endpoint)
+    declarations = {**_body_declarations(endpoint), **_filled_declarations(endpoint)}
     declared = {n: d for n, d in declarations.items() if isinstance(d, _Declaration)}
     identifier_for = {name: _param_identifier(name, seen_params) for name in sorted(declared)}
     option_names = {_option_name(i) for i in identifier_for.values()}
@@ -1635,6 +1749,13 @@ def _render_graphql_stub(
             )
         )
     named = endpoint.operation != ANONYMOUS_OPERATION
+    if _persisted_without_hash(endpoint):
+        lines.append(f"{L2}raise NotImplementedError(")
+        lines.append(f'{L3}"No GraphQL document or persisted query hash was recorded for this "')
+        lines.append(f'{L3}"operation: see the {GP_FILL_MARKER} note above."')
+        lines.append(f"{L2})")
+        lines.append("")
+        return lines
     lines.append(f"{L2}return self.{GRAPHQL_HELPER}(")
     lines.append(f"{L3}ctx,")
     lines.append(f"{L3}{quoted_literal(endpoint.operation) if named else 'None'},")
@@ -1648,9 +1769,9 @@ def _render_graphql_stub(
         lines.append(f"{L3}}},")
     else:
         lines.append(f"{L3}{{}},")
-    document_file = graphql_document_file(command)
-    if not named and document_file is not None:
-        lines.append(f"{L3}document={quoted_literal(command.identifier)},")
+    document_stem = graphql_document_stem(command)
+    if document_stem is not None:
+        lines.append(f"{L3}document={quoted_literal(document_stem)},")
     if endpoint.graphql_document is None and endpoint.graphql_persisted_hash:
         persisted = {
             "version": endpoint.graphql_persisted_version or 1,
@@ -2322,7 +2443,7 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
     stems: set[str] = set()
     for command in _planned(spec):
         endpoint = command.endpoint
-        if _no_fixture_is_written(endpoint):
+        if _no_fixture_is_written(endpoint) or _persisted_without_hash(endpoint):
             continue  # no generated test reads one (see _render_test_module)
         # Case-folded, as a case-insensitive filesystem compares them.
         template = _fixture_template(endpoint)
@@ -2363,7 +2484,10 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
     # fixture_context is only used by the per-endpoint tests below: importing
     # it when there is nothing to call it with is an unused import in the
     # generated file's own ruff run (F401).
-    has_endpoint_tests = any(not _no_fixture_is_written(c.endpoint) for c in planned)
+    has_endpoint_tests = any(
+        not _no_fixture_is_written(c.endpoint) and not _persisted_without_hash(c.endpoint)
+        for c in planned
+    )
     lines = [
         f'"""Tests for the {spec.name} plugin."""',
         "",
@@ -2410,6 +2534,16 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
         method = command.method
         name = command.identifier
         label = endpoint_key(method, endpoint.template, endpoint.operation)
+        if _persisted_without_hash(endpoint):
+            note = (
+                f"{GP_FILL_MARKER}: no test for {name} ({label}): no document and no "
+                "persisted query hash was recorded, so the command raises until you add "
+                "one; write its test then."
+            )
+            lines.extend(wrapped_comment_lines(note, indent=0))
+            lines.append("")
+            lines.append("")
+            continue
         if _no_fixture_is_written(endpoint):
             note = (
                 f"{GP_FILL_MARKER}: no test for {name} ({label}): no "

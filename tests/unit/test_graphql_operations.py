@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,7 @@ from typer.testing import CliRunner
 from graftpunk.cli.main import app as main_app
 from graftpunk.cli.observe_commands import observe_app
 from graftpunk.cli.scaffold_commands import plugin_app
+from graftpunk.har import graphql
 from graftpunk.har.digest import (
     DigestSource,
     Endpoint,
@@ -33,9 +35,9 @@ from graftpunk.har.digest import (
 )
 from graftpunk.har.graphql import (
     ANONYMOUS_OPERATION,
-    document_literals_to_fill,
     document_operation,
     filled_document,
+    form_state_value,
     operations_in,
     request_operation,
 )
@@ -57,6 +59,7 @@ from tests.unit.cli_harness import strip_ansi
 from tests.unit.test_har_digest import _entry, _write_har
 
 _ORDERS = "POST /graphql (OrdersByCustomer)"
+_PATH = "/graphql"
 
 
 @pytest.fixture(autouse=True)
@@ -94,47 +97,194 @@ class TestTheReader:
         assert document_operation(document) == (ANONYMOUS_OPERATION, "query")
 
     @pytest.mark.parametrize(
-        "text", ["red shoes", "query shoes", "{ unbalanced", "}{", "", "SELECT 1;", "{ a } }"]
+        "text",
+        [
+            "red shoes",
+            "query shoes",
+            "{ unbalanced",
+            "}{",
+            "",
+            "SELECT 1;",
+            "{ a } }",
+            "{}",
+            "{brand} shoes",
+            "{name} {city}",
+            "query: shoes {size}",
+            json.dumps({"status": "open", "customer": "jane"}),
+            "query Q { a(x: ) }",
+            "query Q($id: ID = $other) { a }",
+        ],
     )
     def test_text_that_is_not_a_document_is_not_graphql(self, text: str) -> None:
         assert document_operation(text) is None
-        assert operations_in({"query": text}) == ()
+        assert operations_in({"query": text}, path=_PATH) == ()
+        assert operations_in({"query": text, "operationName": "Q"}, path=_PATH) == ()
+
+    @pytest.mark.parametrize("text", ["{name:jane}", "{status:open}", "{ viewer { name } }"])
+    def test_a_shorthand_alone_counts_only_on_a_graphql_path_or_beside_variables(
+        self, text: str
+    ) -> None:
+        """A search API may send a brace-wrapped query that parses as a selection set."""
+        assert operations_in({"query": text}, path="/api/search") == ()
+        assert operations_in({"query": text, "page": 1}, path="/api/search") == ()
+        for body, path in [
+            ({"query": text}, "/GraphQLController"),
+            ({"query": text, "variables": {}}, "/api/search"),
+            ({"query": text, "extensions": {}}, "/api/search"),
+            ({"query": text, "operationName": "Q"}, "/api/search"),
+        ]:
+            (operation,) = operations_in(body, path=path)
+            assert operation.name in (ANONYMOUS_OPERATION, "Q")
+
+    def test_a_named_document_needs_no_graphql_path(self) -> None:
+        (operation,) = operations_in({"query": "query Orders { a }"}, path="/api/search")
+        assert operation.name == "Orders"
 
     def test_a_name_reading_as_an_id_is_filed_as_anonymous(self) -> None:
-        (operation,) = operations_in({"operationName": "Q40912873", "query": "query Q { a }"})
+        (operation,) = operations_in(
+            {"operationName": "Q40912873", "query": "query Q { a }"}, path=_PATH
+        )
         assert operation.name == ANONYMOUS_OPERATION
 
     def test_operation_name_wins_over_the_document(self) -> None:
         body = {"operationName": "Second", "query": "query First { a } query Second { b }"}
-        assert request_operation(body).name == "Second"  # type: ignore[union-attr]
+        assert request_operation(body, path=_PATH).name == "Second"  # type: ignore[union-attr]
 
     def test_a_batch_is_each_element_and_a_mixed_array_is_nothing(self) -> None:
         batch = [{"query": "query A { a }"}, {"operationName": "B", "query": "query B { b }"}]
-        assert [(o.name, o.batched) for o in operations_in(batch)] == [("A", True), ("B", True)]
-        assert operations_in([*batch, {"page": 1}]) == ()
-        assert request_operation(batch) is None
+        found = operations_in(batch, path=_PATH)
+        assert [(o.name, o.batched) for o in found] == [("A", True), ("B", True)]
+        assert operations_in([*batch, {"page": 1}], path=_PATH) == ()
+        assert request_operation(batch, path=_PATH) is None
 
     def test_a_persisted_query_carries_its_hash(self) -> None:
         body = {
             "operationName": "ProductPage",
             "extensions": {"persistedQuery": {"version": 1, "sha256Hash": "ab" * 32}},
         }
-        operation = request_operation(body)
+        operation = request_operation(body, path=_PATH)
         assert operation is not None
         assert (operation.name, operation.document) == ("ProductPage", None)
         assert (operation.persisted_hash, operation.persisted_version) == ("ab" * 32, 1)
 
-    def test_a_document_without_inline_values_is_kept_byte_for_byte(self) -> None:
-        document = "# a comment\nquery Q($id: ID!) {\n  node(id: $id, first: 10) { id }\n}\n"
-        assert document_literals_to_fill(document) == 0
-        assert filled_document(document) == document
+    def test_a_document_is_read_once_per_distinct_text(self) -> None:
+        graphql._parsed.cache_clear()
+        for _ in range(50):
+            operations_in({"query": graphql_har.ORDERS_DOCUMENT}, path=_PATH)
+        info = graphql._parsed.cache_info()
+        assert info.misses == 1
 
-    def test_inline_strings_and_id_shaped_numbers_are_filled(self) -> None:
-        document = 'query Q { a(id: 40912873, email: "jane@myshop.example", n: 5) { b } }'
-        assert document_literals_to_fill(document) == 2
-        assert filled_document(document) == (
-            'query Q { a(id: "GP-FILL", email: "GP-FILL", n: 5) { b } }'
+
+class TestTheDocumentFile:
+    def test_a_document_without_inline_values_is_kept_byte_for_byte(self) -> None:
+        document = (
+            '# a comment\nquery Q($id: ID!, $first: Int = 10, $status: S = "OPEN") {\n'
+            '  node(id: $id, first: 10, sortBy: "DESC", archived: false) { id }\n}\n'
         )
+        filled = filled_document(document)
+        assert filled.text == document
+        assert filled.fills == ()
+
+    @pytest.mark.parametrize(
+        ("document", "expected"),
+        [
+            (
+                "query Q { customer(id: 40213) { orders(storeId: 4021) { id } } }",
+                "query Q($id: ID!, $storeId: ID!) { customer(id: $id) "
+                "{ orders(storeId: $storeId) { id } } }",
+            ),
+            (
+                "query Q($id: ID = 98765) { a(id: $id) { b } }",
+                "query Q($id: ID) { a(id: $id) { b } }",
+            ),
+            (
+                "{ near(lat: 30.2672, lng: -97.7431) { id } }",
+                "query ($lat: Float!, $lng: Float!) { near(lat: $lat, lng: $lng) { id } }",
+            ),
+            (
+                'query Q { a(where: {lastName: "SMITH", age: 34, status: "OPEN"}) { b } }',
+                "query Q($lastName: String!, $age: Int!) { a(where: {lastName: $lastName, "
+                'age: $age, status: "OPEN"}) { b } }',
+            ),
+            (
+                "mutation Pay($n: Int) { pay(cvv: 123, pin: 482, first: 5000) { ok } }",
+                "mutation Pay($n: Int, $cvv: Int!, $pin: Int!, $first: Int!) "
+                "{ pay(cvv: $cvv, pin: $pin, first: $first) { ok } }",
+            ),
+        ],
+    )
+    def test_an_inline_value_that_is_not_form_state_becomes_a_variable(
+        self, document: str, expected: str
+    ) -> None:
+        filled = filled_document(document)
+        assert filled.text == expected
+        assert document_operation(filled.text) is not None
+        for value in ("40213", "4021", "98765", "30.2672", "97.7431", "SMITH", "34", "123"):
+            assert value not in filled.text
+
+    def test_a_fragment_s_value_is_declared_on_each_operation_that_spreads_it(self) -> None:
+        document = (
+            "fragment F on T { b(pin: 482) }\n"
+            "query A { ...F }\n"
+            "query B { c { ...G } }\n"
+            "fragment G on T { ...F }\n"
+            "query C { d }"
+        )
+        filled = filled_document(document)
+        assert filled.text == (
+            "fragment F on T { b(pin: $pin) }\n"
+            "query A($pin: Int!) { ...F }\n"
+            "query B($pin: Int!) { c { ...G } }\n"
+            "fragment G on T { ...F }\n"
+            "query C { d }"
+        )
+        assert [(f.variable, f.type, f.name) for f in filled.added_variables] == [
+            ("pin", "Int!", "pin")
+        ]
+
+    def test_a_value_where_no_variable_may_stand_is_a_placeholder(self) -> None:
+        filled = filled_document('query Q($id: ID @d(note: "jane")) { a }')
+        assert filled.text == 'query Q($id: ID @d(note: "GP-FILL")) { a }'
+        assert [f.placeholder for f in filled.fills] == [True]
+
+    def test_new_variable_names_never_clash(self) -> None:
+        filled = filled_document("query Q($id: ID) { a(id: 7) { b(id: 8) } c(id: $id) }")
+        assert filled.text == (
+            "query Q($id: ID, $id2: ID!, $id3: ID!) { a(id: $id2) { b(id: $id3) } c(id: $id) }"
+        )
+
+
+class TestFormState:
+    @pytest.mark.parametrize(
+        ("name", "value", "kept"),
+        [
+            ("first", 10, True),
+            ("page_size", 50, True),
+            ("PER-PAGE", 20, True),
+            ("first", 1000, False),
+            ("first", 2.5, False),
+            ("quantity", 2, False),
+            ("age", 34, False),
+            ("cvv", 123, False),
+            ("pin", 482, False),
+            ("storeNumber", 412, False),
+            ("lat", 30.2672, False),
+            ("status", "OPEN", True),
+            ("sortBy", "CREATED_AT", True),
+            ("currency", "USD", True),
+            ("status", "Open", False),
+            ("lastName", "SMITH", False),
+            ("country", "US", False),
+            ("status", "A40912873", False),
+            ("anything", True, True),
+            ("anything", None, True),
+            ("filter", ["OPEN"], False),
+        ],
+    )
+    def test_form_state_is_a_name_and_a_value_together(
+        self, name: str, value: object, kept: bool
+    ) -> None:
+        assert form_state_value(name, value) is kept
 
 
 class TestTheDigest:
@@ -188,8 +338,9 @@ class TestTheDigest:
         assert orders.graphql_defaults == {"first": 10, "status": "OPEN"}
         assert orders.graphql_held_variables == ("customerId", "contact")
         cart = _row(d, "POST /graphql (AddToCart)")
-        assert cart.graphql_defaults == {"quantity": 2}
-        assert cart.graphql_held_variables == ("sku",)
+        # quantity is no paging word, so its 2 is a recorded value like any other.
+        assert cart.graphql_defaults == {}
+        assert cart.graphql_held_variables == ("sku", "quantity")
         product = _row(d, "POST /graphql (ProductPage)")
         assert product.graphql_defaults == {}
         assert product.graphql_held_variables == ("slug", "session")
@@ -200,8 +351,7 @@ class TestTheDigest:
             ("first", 10, True),
             ("status", "OPEN", True),
             ("sortBy", "DESC", True),
-            # form_state does not read an underscore-joined constant as words.
-            ("sortBy", "CREATED_AT", False),
+            ("sortBy", "CREATED_AT", True),
             ("includeArchived", False, True),
             ("customerId", "4021", False),
             ("customerId", 4021, False),
@@ -212,6 +362,11 @@ class TestTheDigest:
             ("slug", "red-mug", False),
             ("state", "CLOSED", True),
             ("contact", graphql_har.EMAIL, False),
+            ("lat", 30.2672, False),
+            ("lastName", "SMITH", False),
+            ("age", 34, False),
+            ("cvv", 123, False),
+            ("pin", 482, False),
         ],
     )
     def test_a_default_is_form_state_alone(self, name: str, value: object, kept: bool) -> None:
@@ -231,11 +386,48 @@ class TestTheDigest:
         d = _digest(tmp_path)
         # clientLibrary's name and version are recorded values, not form state.
         assert _row(d, _ORDERS).graphql_extensions == {}
-        assert _row(d, _ORDERS).graphql_held_extensions == ("clientLibrary",)
+        assert _row(d, _ORDERS).graphql_held_extensions == (
+            "clientLibrary.name",
+            "clientLibrary.version",
+        )
         product = _row(d, "POST /graphql (ProductPage)")
         assert product.graphql_document is None
         assert product.graphql_persisted_hash == graphql_har.PERSISTED_HASH
         assert product.graphql_extensions == {}
+
+    def test_every_nested_extension_key_and_value_passes_the_gate(self) -> None:
+        extensions = {
+            "tracking": {
+                "acct_40912873": True,
+                graphql_har.EMAIL: None,
+                "a3f9c2d1e0b4": None,
+                "mode": "FAST",
+                "deep": {"sortBy": "DESC", "userName": "jane"},
+            },
+            "flags": [True, False],
+            "persistedQueries": {"status": "OPEN"},
+        }
+        entries = [
+            _entry(
+                "POST",
+                graphql_har.GRAPHQL_URL,
+                post_data=json.dumps({"query": "query Q { a }", "extensions": extensions}),
+                body='{"data": {"a": 1}}',
+            )
+        ]
+        row = _row(digest_of(entries), "POST /graphql (Q)")
+        assert row.graphql_extensions == {
+            "tracking": {"mode": "FAST", "deep": {"sortBy": "DESC"}},
+            "flags": [True, False],
+            "persistedQueries": {"status": "OPEN"},
+        }
+        assert row.graphql_held_extensions == (
+            "a key under tracking that reads as a value",
+            "tracking.deep.userName",
+        )
+        held = json.dumps(row.graphql_held_extensions)
+        for value in ("40912873", graphql_har.EMAIL, "a3f9c2d1e0b4", "jane"):
+            assert value not in held
 
     def test_shared_values_pair_a_variable_with_the_field_that_produced_it(
         self, tmp_path: Path
@@ -276,6 +468,25 @@ class TestTheDigest:
         assert digest_of(entries).shared_values == ()
         assert "## Shared values" not in render_markdown(digest_of(entries))
 
+    def test_form_state_and_short_values_link_nothing(self) -> None:
+        response = {"data": {"o": {"status": "OPEN", "currency": "USD", "total": 100}}}
+        variables = {"status": "OPEN", "currency": "USD", "limit": 100}
+        entries = [
+            _entry(
+                "POST",
+                graphql_har.GRAPHQL_URL,
+                post_data=json.dumps({"query": "query A { o { status } }"}),
+                body=json.dumps(response),
+            ),
+            _entry(
+                "POST",
+                graphql_har.GRAPHQL_URL,
+                post_data=json.dumps({"query": "query B { p }", "variables": variables}),
+                body='{"data": {"p": 1}}',
+            ),
+        ]
+        assert digest_of(entries).shared_values == ()
+
     def test_the_markdown_prints_one_block_per_operation(self, tmp_path: Path) -> None:
         text = render_markdown(_digest(tmp_path))
         block = text.split(f"### {_ORDERS}\n", 1)[1].split("\n### ", 1)[0]
@@ -301,9 +512,10 @@ class TestTheDigest:
         assert "operation" not in rows[("/graphql", None)]
         assert "4021" not in json.dumps(rendered)
 
-    def test_the_projection_adds_operation_within_schema_1(self, tmp_path: Path) -> None:
+    def test_the_projection_with_operations_is_schema_2(self, tmp_path: Path) -> None:
         projected = endpoints_projection(_digest(tmp_path))
-        assert projected["schema"] == 1
+        # A schema 1 reader would key rows by (method, template), which repeat here.
+        assert projected["schema"] == 2
         rows = projected["endpoints"]
         assert sum(1 for row in rows if row["template"] == "/graphql") == 7
         orders = next(row for row in rows if row.get("operation") == "OrdersByCustomer")
@@ -324,6 +536,7 @@ class TestTheDigest:
         assert [e.operation for e in d.endpoints] == [""]
         assert "operation" not in render_json(d)
         assert "operation" not in json.dumps(endpoints_projection(d))
+        assert endpoints_projection(d)["schema"] == 1
 
 
 class TestTheKey:
@@ -363,10 +576,17 @@ class TestTheKey:
         assert capture_filename("POST", "/graphql", "application/json") == "post_graphql.json"
 
 
-def _app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
+def _app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entries: list[dict] | None = None
+) -> typer.Typer:
     observe_base = tmp_path / "observe"
     monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
-    graphql_har.write(observe_base / "myshop" / "run-1")
+    run = observe_base / "myshop" / "run-1"
+    if entries is None:
+        graphql_har.write(run)
+    else:
+        run.mkdir(parents=True)
+        _write_har(run, entries)
     app = typer.Typer()
     app.add_typer(plugin_app)
     app.add_typer(observe_app)
@@ -420,6 +640,9 @@ class TestFixtures:
         ]
         plain = load_sidecar(out / "post_graphql.json.meta.json")
         assert plain.graphql_operation is None
+        # Only an operation's sidecar is schema 5; any other stays schema 4 (#367).
+        assert json.loads((out / "post_graphql.json.meta.json").read_text())["schema"] == 4
+        assert "graphql_operation" not in (out / "post_graphql.json.meta.json").read_text()
         anonymous = load_sidecar(out / "post_graphql(anonymous).json.meta.json")
         assert anonymous.graphql_operation == ANONYMOUS_OPERATION
         assert json.loads((out / "post_graphql.json").read_text()) == {"results": [], "page": 1}
@@ -453,14 +676,19 @@ class TestTheSidecar:
         path.write_text(sidecar_text(sidecar))
         assert load_sidecar(path).graphql_operation == "Cart"
 
-    def test_schema_4_holds_no_operation(self, tmp_path: Path) -> None:
+    def test_a_sidecar_without_an_operation_is_written_as_schema_4(self, tmp_path: Path) -> None:
         payload = json.loads(sidecar_text(Sidecar(status=200, content_type="text/html")))
-        payload["schema"] = 4
+        assert payload["schema"] == 4
+        assert "graphql_operation" not in payload
         path = tmp_path / "x.html.meta.json"
+        path.write_text(json.dumps(payload))
+        assert load_sidecar(path).graphql_operation is None
+        payload["graphql_operation"] = "Cart"
         path.write_text(json.dumps(payload))
         with pytest.raises(SidecarError, match="keys outside sidecar schema 4: graphql_operation"):
             load_sidecar(path)
-        del payload["graphql_operation"]
+        payload["schema"] = 5
+        payload["graphql_operation"] = None
         path.write_text(json.dumps(payload))
         assert load_sidecar(path).graphql_operation is None
 
@@ -502,16 +730,20 @@ class TestFixtureSession:
         with pytest.raises(FixtureNotFoundError, match=r"post_graphql\(OrdersByCustomer\)"):
             FixtureSession(tree).post(graphql_har.GRAPHQL_URL, json=self._orders_body())
 
-    def test_every_request_answered_is_recorded(self, tmp_path: Path) -> None:
+    def test_every_request_sent_is_recorded_one_that_raised_included(self, tmp_path: Path) -> None:
         tree = _fixture_dir(tmp_path, **{"post_graphql(OrdersByCustomer).json": "{}"})
         session = FixtureSession(tree)
         session.post(graphql_har.GRAPHQL_URL, json=self._orders_body("4021"))
         session.post(graphql_har.GRAPHQL_URL, json=self._orders_body("4022"))
         session.get(f"{graphql_har.HOST}/api/missing")
+        cart = {"operationName": "Cart", "query": graphql_har.CART_DOCUMENT}
+        with pytest.raises(FixtureNotFoundError):
+            session.post(graphql_har.GRAPHQL_URL, json=cart)
         assert [(r.method, r.path, r.operation) for r in session.requests] == [
             ("POST", "/graphql", "OrdersByCustomer"),
             ("POST", "/graphql", "OrdersByCustomer"),
             ("GET", "/api/missing", None),
+            ("POST", "/graphql", "Cart"),
         ]
         assert session.requests[1].variables == {
             "customerId": "4022",
@@ -602,19 +834,23 @@ class TestTheGeneratedPlugin:
         assert 'variable "customerId" (str) has a recorded value, which is not' in " ".join(
             line.strip().lstrip("#").strip() for line in orders.splitlines()
         )
+        assert 'document="graphql_OrdersByCustomer",' in orders
         cart = plugin.split("def add_to_cart(", 1)[1]
         assert '"AddToCart",' in cart
         assert "sku: str | None = None," in cart
-        assert "quantity: int | None = 2," in cart
+        # quantity is no paging word, so its recorded 2 is not a default.
+        assert "quantity: int | None = None," in cart
         # The documents are files, written verbatim, never inline.
         assert documents == {
-            "OrdersByCustomer.graphql": graphql_har.ORDERS_DOCUMENT,
-            "AddToCart.graphql": graphql_har.ADD_TO_CART_DOCUMENT,
+            "graphql_OrdersByCustomer.graphql": graphql_har.ORDERS_DOCUMENT,
+            "graphql_AddToCart.graphql": graphql_har.ADD_TO_CART_DOCUMENT,
         }
         assert "fragment OrderFields" not in plugin
-        # The helper names the held-back extension and sends the header names.
+        # The helper names the held-back extension values and sends the header names.
         helper = plugin.split("def _graphql(", 1)[1].split("@command(", 1)[0]
-        assert "extension(s) clientLibrary with recorded values" in helper
+        assert "clientLibrary.name; clientLibrary.version." in " ".join(
+            line.strip().lstrip("#").strip() for line in helper.splitlines()
+        )
         assert "extensions: dict = {}" in helper
         assert '"x-app-name": "GP-FILL",' in helper
         recorded = ("4021", "red-mug", "3.8.1", graphql_har.EMAIL, graphql_har.PASSWORD)
@@ -634,10 +870,10 @@ class TestTheGeneratedPlugin:
         assert "def login_mutation(" not in plugin
         assert "persisted_query={" in plugin
         assert set(documents) == {
-            "OrdersByCustomer.graphql",
-            "AddToCart.graphql",
-            "Cart.graphql",
-            "graphql_2.graphql",
+            "graphql_OrdersByCustomer.graphql",
+            "graphql_AddToCart.graphql",
+            "graphql_Cart.graphql",
+            "graphql_graphql_2.graphql",
         }
         matches = ("POST /graphql (*)", "POST /graphql", "GET /")
         _fixtures(app, target / "tests" / "fixtures", *matches)
@@ -655,8 +891,8 @@ class TestTheGeneratedPlugin:
         plugin, documents = _new_project(app, tmp_path / "out", "viewer=POST /graphql (anonymous)")
         stub = plugin.split("def viewer(", 1)[1]
         assert "            None,\n" in stub
-        assert 'document="viewer",' in stub
-        assert documents == {"viewer.graphql": graphql_har.ANONYMOUS_DOCUMENT}
+        assert 'document="graphql_viewer",' in stub
+        assert documents == {"graphql_viewer.graphql": graphql_har.ANONYMOUS_DOCUMENT}
 
     def test_a_template_with_operations_refuses_the_plain_key_with_a_hint(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -711,11 +947,181 @@ class TestTheGeneratedPlugin:
         assert 'path="/graphql",' in cart
         orders = plugin.split("def orders(", 1)[1].split("def cart(", 1)[0]
         assert "path=" not in orders
-        assert (package / "graphql" / "OrdersByCustomer.graphql").read_text() == (
+        assert (package / "graphql" / "graphql_OrdersByCustomer.graphql").read_text() == (
             graphql_har.ORDERS_DOCUMENT
         )
-        assert (package / "graphql" / "AddToCart.graphql").exists()
+        assert (package / "graphql" / "graphql_AddToCart.graphql").exists()
         _assert_ruff_clean(target)
+
+    def test_no_recorded_value_reaches_the_plugin_s_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Inline literals, variable defaults, floats, capitalised personal values
+        and an extension keyed by an email address all stay out of the project."""
+        app = _app(tmp_path, monkeypatch, _adversarial_entries())
+        target = tmp_path / "out"
+        plugin, documents = _new_project(
+            app,
+            target,
+            "near=POST /graphql (StoreNear)",
+            "profile=POST /graphql (Profile)",
+            "secret=POST /graphql (Secret)",
+        )
+        near = documents["graphql_StoreNear.graphql"]
+        assert near.startswith("# GP-FILL: the recorded document held these inline values")
+        assert "store(customer: $customer, cvv: $cvv, pin: $pin)" in near
+        assert "$customer: Int!, $cvv: Int!, $pin: Int!" in near
+        assert documents["graphql_Profile.graphql"].endswith(
+            "query Profile($id: ID) { profile(id: $id) { name } }"
+        )
+        stub = plugin.split("def near(", 1)[1].split("@command(", 1)[0]
+        for option in ("customer: int | None = None,", "cvv: int | None = None,"):
+            assert option in stub
+        for option in ("lat: float | None = None,", "last_name: str | None = None,"):
+            assert option in stub
+        assert '"customer": customer,' in stub
+        profile = plugin.split("def profile(", 1)[1].split("@command(", 1)[0]
+        assert "id: str | None = None," in profile
+        # A persisted query recorded with neither a document nor a hash raises.
+        secret = plugin.split("def secret(", 1)[1]
+        assert "raise NotImplementedError(" in secret
+        assert "persisted query with no sha256Hash and no document" in " ".join(
+            line.strip().lstrip("#").strip() for line in secret.splitlines()
+        )
+        assert "secret.graphql" not in " ".join(documents)
+        tests = (target / "tests" / "test_plugin.py").read_text()
+        assert "no test for secret (POST /graphql (Secret))" in tests
+        source = [*(target / "src").rglob("*.py"), *(target / "src").rglob("*.graphql")]
+        written = "\n".join(
+            path.read_text() for path in [*source, target / "tests" / "test_plugin.py"]
+        )
+        for value in _ADVERSARIAL_VALUES:
+            assert re.search(rf"\b{re.escape(value)}\b", written) is None, value
+        _assert_ruff_clean(target)
+        _fixtures(app, target / "tests" / "fixtures", "POST /graphql (*)", "GET /")
+        assert "3 passed" in _project_pytest(target)
+
+    def test_one_operation_name_on_two_paths_writes_two_documents(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cart = {"operationName": "Cart", "query": graphql_har.CART_DOCUMENT}
+        other = {"operationName": "Cart", "query": "query Cart { adminCart { id } }"}
+        entries = [
+            graphql_har.entries()[0],
+            _graphql_entry(graphql_har.GRAPHQL_URL, cart),
+            _graphql_entry(f"{graphql_har.HOST}/admin/graphql", other),
+        ]
+        app = _app(tmp_path, monkeypatch, entries)
+        _plugin, documents = _new_project(
+            app,
+            tmp_path / "out",
+            "cart=POST /graphql (Cart)",
+            "admin-cart=POST /admin/graphql (Cart)",
+        )
+        assert documents == {
+            "graphql_Cart.graphql": graphql_har.CART_DOCUMENT,
+            "admin_graphql_Cart.graphql": "query Cart { adminCart { id } }",
+        }
+
+    def test_two_documents_whose_names_differ_in_case_alone_are_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        upper = {"operationName": "Orders", "query": "query Orders { orders { id } }"}
+        lower = {"operationName": "orders", "query": "query orders { orders { total } }"}
+        entries = [
+            graphql_har.entries()[0],
+            _graphql_entry(graphql_har.GRAPHQL_URL, upper),
+            _graphql_entry(graphql_har.GRAPHQL_URL, lower),
+        ]
+        app = _app(tmp_path, monkeypatch, entries)
+        target = tmp_path / "out"
+        argv = ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)]
+        commands = ["--command", "big=POST /graphql (Orders)"]
+        commands += ["--command", "small=POST /graphql (orders)"]
+        result = CliRunner().invoke(app, [*argv, *commands])
+        assert result.exit_code == 1
+        output = " ".join(strip_ansi(result.output).split())
+        assert "Commands big (POST /graphql (Orders)) and small (POST /graphql (orders))" in output
+        assert not target.exists()
+
+    def test_add_command_refuses_a_document_whose_name_differs_in_case_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        upper = {"operationName": "Orders", "query": "query Orders { orders { id } }"}
+        lower = {"operationName": "orders", "query": "query orders { orders { total } }"}
+        entries = [
+            graphql_har.entries()[0],
+            _graphql_entry(graphql_har.GRAPHQL_URL, upper),
+            _graphql_entry(graphql_har.GRAPHQL_URL, lower),
+        ]
+        _app(tmp_path, monkeypatch, entries)
+        target = tmp_path / "out"
+        new = ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)]
+        result = CliRunner().invoke(main_app, [*new, "--command", "big=POST /graphql (Orders)"])
+        assert result.exit_code == 0, result.output
+        add = ["plugin", "add-command", "myshop", "--from-run", "myshop", "--dir", str(target)]
+        added = CliRunner().invoke(main_app, [*add, "--command", "small=POST /graphql (orders)"])
+        assert added.exit_code == 1
+        output = " ".join(strip_ansi(added.output).split())
+        assert "small would write its GraphQL document to graphql_orders.graphql" in output
+        assert "which big reads" in output
+        assert "def small(" not in (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+
+
+_ADVERSARIAL_VALUES = (
+    "40213",
+    "98765",
+    "30.2672",
+    "97.7431",
+    "SMITH",
+    "34",
+    "123",
+    "482",
+    graphql_har.EMAIL,
+)
+
+
+def _graphql_entry(url: str, body: object, response: object | None = None) -> dict:
+    return _entry(
+        "POST",
+        url,
+        post_data=json.dumps(body),
+        body=json.dumps({"data": {"ok": True}} if response is None else response),
+        request_headers={"Content-Type": "application/json"},
+    )
+
+
+def _adversarial_entries() -> list[dict]:
+    near = (
+        "query StoreNear($lat: Float, $lng: Float, $lastName: String, $age: Int) {\n"
+        "  near(lat: $lat, lng: $lng, lastName: $lastName, age: $age) {\n"
+        "    store(customer: 40213, cvv: 123, pin: 482) { id }\n"
+        "  }\n"
+        "}"
+    )
+    return [
+        graphql_har.entries()[0],
+        _graphql_entry(
+            graphql_har.GRAPHQL_URL,
+            {
+                "operationName": "StoreNear",
+                "variables": {"lat": 30.2672, "lng": -97.7431, "lastName": "SMITH", "age": 34},
+                "extensions": {"tracking": {graphql_har.EMAIL: True}},
+                "query": near,
+            },
+        ),
+        _graphql_entry(
+            graphql_har.GRAPHQL_URL,
+            {
+                "operationName": "Profile",
+                "query": "query Profile($id: ID = 98765) { profile(id: $id) { name } }",
+            },
+        ),
+        _graphql_entry(
+            graphql_har.GRAPHQL_URL,
+            {"operationName": "Secret", "extensions": {"persistedQuery": {"version": 1}}},
+        ),
+    ]
 
 
 class TestALongDocument:
@@ -738,4 +1144,4 @@ class TestALongDocument:
         ]
         row = _row(_digest(tmp_path, entries), "POST /graphql (LongOne)")
         assert row.graphql_document == document
-        assert filled_document(document) == document
+        assert filled_document(document).text == document

@@ -53,7 +53,7 @@ class FixtureNotFoundError(GraftpunkError, LookupError):
 
 @dataclass(frozen=True)
 class FixtureRequest:
-    """One request a ``FixtureSession`` answered: its method, URL path, GraphQL
+    """One request a ``FixtureSession`` was sent: its method, URL path, GraphQL
     operation (None for a request that carried none, a batch included) and that
     operation's variables, and the decoded body (``json=``, or ``data=`` read as
     JSON when it parses, else as given; None when it sent none)."""
@@ -163,9 +163,11 @@ class FixtureSession(GraftpunkSession):
     sending an operation no fixture holds fails its test (#367). A batch is looked
     up by the plain stem.
 
-    ``requests`` lists every request answered, in order, as :class:`FixtureRequest`
-    (method, path, operation, variables, decoded body), for a test to assert what a
-    command sent. :meth:`answer` registers a response for one row (an error status,
+    ``requests`` lists every request the session was sent, in order, as
+    :class:`FixtureRequest` (method, path, operation, variables, decoded body), for
+    a test to assert what a command sent; a request is listed before it is answered,
+    so one that raised :class:`FixtureNotFoundError` or was answered 404 is listed
+    too. :meth:`answer` registers a response for one row (an error status,
     an empty or HTML body) that wins over the directory.
     """
 
@@ -204,7 +206,7 @@ class FixtureSession(GraftpunkSession):
     ) -> requests.Response:
         path = urlparse(url).path or "/"
         body = _request_body(kwargs)
-        operation = request_operation(body)
+        operation = request_operation(body, path=path)
         name = "" if operation is None else operation.name
         self.requests.append(
             FixtureRequest(

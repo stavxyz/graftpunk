@@ -34,7 +34,12 @@ from graftpunk.har.documents import (
     names_a_password,
     selector_attribute_value,
 )
-from graftpunk.har.graphql import ANONYMOUS_OPERATION, GraphQLOperation, operations_in
+from graftpunk.har.graphql import (
+    ANONYMOUS_OPERATION,
+    GraphQLOperation,
+    form_state_value,
+    operations_in,
+)
 from graftpunk.har.inline_state import inline_json
 from graftpunk.har.login_signals import (
     account_needles,
@@ -483,8 +488,8 @@ class Endpoint:
     graphql_defaults: dict[str, Any] = field(default_factory=dict, metadata={INTERNAL: True})
     graphql_held_variables: tuple[str, ...] = field(default=(), metadata={INTERNAL: True})
     # The request's ``extensions`` keys every recording sent with one value, less
-    # persistedQuery, each kept only when every leaf passes _writable_default; and
-    # the names of the keys held back.
+    # persistedQuery, with every nested key and leaf that fails _writable_default
+    # taken out (_graphql_extensions); and the dotted names of what was taken out.
     graphql_extensions: dict[str, Any] = field(default_factory=dict, metadata={INTERNAL: True})
     graphql_held_extensions: tuple[str, ...] = field(default=(), metadata={INTERNAL: True})
 
@@ -3085,54 +3090,21 @@ class _EndpointAccumulator:
 
 _PERSISTED_QUERY = "persistedQuery"
 _GRAPHQL_CODE = frozenset({"query", "operationName", "extensions"})
-_MAX_DEFAULT_TEXT = 64
-# A small number a form sends (a page size, a quantity): at most three digits.
-_MAX_DEFAULT_NUMBER = 1000
-# An enum value as GraphQL spells one by convention: capitals, digits, underscores.
-_ENUM_VALUE_RE = re.compile(r"[A-Z][A-Z0-9_]*")
-_ID_NAME_PARTS = frozenset({"id", "ids", "uuid", "guid", "key", "token"})
-_NAME_WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
-
-
-def _names_an_id(name: str) -> bool:
-    """True when *name* (a variable or an extension key) says it holds an id:
-    a word of it, split at case changes and punctuation, is ``id``, ``uuid``,
-    ``key``, ``token``, and the like (``customerId``, ``order_ids``)."""
-    return any(word.lower() in _ID_NAME_PARTS for word in _NAME_WORD_RE.findall(name))
 
 
 def _writable_default(name: str, value: Any, held_values: frozenset[str]) -> bool:
-    """True when a recorded GraphQL value may be written into a generated plugin, as
-    a variable's default or a constant extension (#367): only form state, which
-    every account sends alike. That is a bool or null; a number under 1000 under a
-    name that does not say it holds an id (a page size, a quantity); or an enum
-    value spelled in capitals (``OPEN``, ``DESC``) that is form state by
-    :func:`form_state`'s rule, is no email address, holds no id, is none of
-    *held_values* (every value a credential post of the run sent, and every cookie
-    and token-header value it recorded), and sits under a name that does not say it
-    holds an id; or an array or object whose every element passes. An id of any
-    length (``"4021"``), a name, a slug, an email address, and free text never
-    pass: those stay out of the plugin's source, and the stub says a value was
-    recorded without writing it."""
-    if value is None or isinstance(value, bool):
-        return True
-    if isinstance(value, (int, float)):
-        return abs(value) < _MAX_DEFAULT_NUMBER and not _names_an_id(name)
-    if isinstance(value, str):
-        return (
-            len(value) <= _MAX_DEFAULT_TEXT
-            and _ENUM_VALUE_RE.fullmatch(value) is not None
-            and form_state(value)
-            and not _emails_in(value)
-            and not holds_an_id(value)
-            and value not in held_values
-            and not _names_an_id(name)
-        )
-    if isinstance(value, list):
-        return all(_writable_default(name, item, held_values) for item in value)
-    if isinstance(value, Mapping):
-        return all(_writable_default(str(k), v, held_values) for k, v in value.items())
-    return False
+    """True when a recorded GraphQL value sent under *name* may be written into a
+    generated plugin, as a variable's default or a constant extension's value
+    (#367): only form state by :func:`graftpunk.har.graphql.form_state_value` (a
+    bool or null; a small integer under a paging word; a capitalised enum token
+    under a setting word), and never a text among *held_values* (every value a
+    credential post of the run sent, and every cookie and token-header value it
+    recorded). An id of any length, a name, a float, and free text never pass:
+    those stay out of the plugin's source, and the stub says a value was recorded
+    without writing it."""
+    if not form_state_value(name, value):
+        return False
+    return not (isinstance(value, str) and value in held_values)
 
 
 def _graphql_defaults(
@@ -3153,19 +3125,65 @@ def _graphql_defaults(
     return defaults, tuple(held)
 
 
+_DROPPED = object()
+_MAX_EXTENSION_DEPTH = 8
+
+
+def _extension_key(key: object) -> bool:
+    """True when an extension's key may be written as source: a field name that
+    reads as words (:func:`printable_name`), never an id, an email, or a value."""
+    text = str(key)
+    return _plausible_field_name(text) and printable_name(text)
+
+
+def _kept_extension(
+    label: str, name: str, value: Any, held_values: frozenset[str], held: list[str], depth: int
+) -> Any:
+    """*value*, an extension's value at *label* read under the key *name*, with
+    every key and leaf that fails the gate taken out and named in *held* (a key by
+    its parent's label alone, since the key itself may be the value), or
+    :data:`_DROPPED` when nothing of it may be written. An object whose every entry
+    was taken out is taken out too; an array is kept only whole."""
+    if isinstance(value, Mapping):
+        if depth >= _MAX_EXTENSION_DEPTH:
+            held.append(label)
+            return _DROPPED
+        kept: dict[str, Any] = {}
+        for key, item in value.items():
+            if not _extension_key(key):
+                held.append(f"a key under {label} that reads as a value")
+                continue
+            child = _kept_extension(f"{label}.{key}", str(key), item, held_values, held, depth + 1)
+            if child is not _DROPPED:
+                kept[str(key)] = child
+        return kept if kept or not value else _DROPPED
+    if isinstance(value, list):
+        if all(_writable_default(name, item, held_values) for item in value):
+            return list(value)
+        held.append(label)
+        return _DROPPED
+    if _writable_default(name, value, held_values):
+        return value
+    held.append(label)
+    return _DROPPED
+
+
 def _graphql_extensions(
     extensions: Mapping[str, Any], held_values: frozenset[str]
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
-    """The constant extensions a generated helper may send, and the keys held back
-    (a key that is not a field name, or a value failing :func:`_writable_default`)."""
-    kept: dict[str, Any] = {}
+    """The constant extensions a generated helper may send, every nested key and
+    leaf through the same gate as a default (:func:`_writable_default`, under its
+    own key), and the dotted names of what was held back, never a value."""
     held: list[str] = []
+    kept: dict[str, Any] = {}
     for key, value in extensions.items():
-        if _plausible_field_name(key) and _writable_default(key, value, held_values):
-            kept[key] = value
-        elif _plausible_field_name(key) and printable_name(key):
-            held.append(key)
-    return kept, tuple(held)
+        if not _extension_key(key):
+            held.append("a key of extensions that reads as a value")
+            continue
+        child = _kept_extension(str(key), str(key), value, held_values, held, 1)
+        if child is not _DROPPED:
+            kept[str(key)] = child
+    return kept, tuple(dict.fromkeys(held))
 
 
 def _held_values(
@@ -3197,7 +3215,13 @@ def _held_values(
 _MAX_SHARED_LEAVES = 2000  # leaves read from one response or one variables object
 _MAX_SHARED_DEPTH = 24
 _MAX_PRODUCERS = 8  # response fields remembered per value
-_MIN_SHARED_TEXT = 3  # a shorter value (1, 10, "ok") links by chance
+# A shorter text (a quantity, "ok", USD) or a number of fewer digits (100) links by
+# chance.
+_MIN_SHARED_TEXT = 4
+_MIN_SHARED_DIGITS = 4
+# A capitalised enum token without a digit (OPEN, DESC, CREATED_AT) is form state,
+# the same for every account, so two of them link by chance too.
+_FORM_STATE_TOKEN_RE = re.compile(r"[A-Z]+(?:_[A-Z]+)*")
 
 
 def _key_label(key: object) -> str:
@@ -3223,11 +3247,17 @@ def _leaves(value: Any, path: str = "", depth: int = 0) -> Iterable[tuple[str, A
 
 def _linkable(value: Any) -> str | None:
     """*value* as the text two recordings are compared by, or None for a value that
-    links by chance: a bool, null, or text shorter than three characters."""
+    links by chance: a bool, null, form state (a capitalised enum token without a
+    digit), text shorter than four characters, or a number of fewer than four
+    digits."""
     if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return None
-    text = value if isinstance(value, str) else repr(value)
-    return text if len(text.strip()) >= _MIN_SHARED_TEXT else None
+    if not isinstance(value, str):
+        text = repr(value)
+        return text if sum(ch.isdigit() for ch in text) >= _MIN_SHARED_DIGITS else None
+    if len(value.strip()) < _MIN_SHARED_TEXT or _FORM_STATE_TOKEN_RE.fullmatch(value):
+        return None
+    return value
 
 
 def _response_json(entry: HAREntry) -> Any:
@@ -3293,7 +3323,13 @@ def entry_operations(entry: HAREntry) -> tuple[GraphQLOperation, ...]:
     GraphQL. The digest keys rows by them and ``gp observe fixtures`` names
     fixtures by them, from this one reading."""
     kind, parsed = _decoded_body(entry.request.post_data, _declared_request_content_type(entry))
-    return operations_in(parsed) if kind == "json" else ()
+    if kind != "json":
+        return ()
+    try:
+        path = urlparse(entry.request.url).path
+    except ValueError:
+        path = ""
+    return operations_in(parsed, path=path)
 
 
 def operation_groups(
