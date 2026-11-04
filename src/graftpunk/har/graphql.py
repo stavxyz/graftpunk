@@ -161,6 +161,9 @@ def _names_an_id(name: str) -> bool:
 # --- the parser ---------------------------------------------------------------
 
 
+_KEYWORD_VALUES = frozenset({"true", "false", "null"})
+
+
 class _NotADocumentError(Exception):
     """The text is not an executable GraphQL document."""
 
@@ -175,7 +178,7 @@ class _Token:
 
 @dataclass(frozen=True)
 class _Literal:
-    """An inline number or string: where it is, the name it is read under (the
+    """An inline number, string, or enum value: where it is, the name it is read under (the
     argument's, the input object field's, or for a variable's default the
     variable's; a list element takes its list's), the definition holding it, and
     whether it is in a variable's default (*default_of*, the variable) or in
@@ -432,12 +435,15 @@ class _Parser:
 
     def value(self, name: str, *, const: bool, default_of: str | None) -> None:
         token = self.take()
-        if token.kind in ("number", "string", "block"):
+        if token.kind == "name" and token.text in _KEYWORD_VALUES:
+            return
+        if token.kind in ("number", "string", "block", "name"):
+            # A bare name here is an enum value: recorded text like a string.
             self.literals.append(
                 _Literal(
                     token.start,
                     token.end,
-                    token.kind,
+                    "enum" if token.kind == "name" else token.kind,
                     token.text,
                     name,
                     self.definition,
@@ -446,8 +452,6 @@ class _Parser:
                 )
             )
             return
-        if token.kind == "name":
-            return  # true, false, null, or an enum value
         if token.kind != "punct":
             raise _NotADocumentError
         if token.text == "$" and not const:
@@ -642,6 +646,8 @@ def _literal_value(literal: _Literal) -> Any:
         if re.fullmatch(r"-?\d+", literal.text):
             return int(literal.text)
         return float(literal.text)
+    if literal.kind == "enum":
+        return literal.text
     if literal.kind == "string":
         try:
             return json.loads(literal.text)
@@ -657,7 +663,8 @@ def _kept(literal: _Literal) -> bool:
 def _guessed_type(literal: _Literal) -> str:
     """The type a variable standing in for *literal* is declared with: ``ID!`` under
     a name that says it holds an id, else the literal's own scalar, non-null so the
-    variable fits a nullable and a non-null position alike."""
+    variable fits a nullable and a non-null position alike; ``String!`` for an enum
+    value, whose enum type the recording does not name."""
     if _names_an_id(literal.name):
         return "ID!"
     if literal.kind == "number":
@@ -697,8 +704,9 @@ def _variable_name(base: str, taken: set[str]) -> str:
 def filled_document(document: str) -> FilledDocument:
     """*document* as a generated plugin carries it.
 
-    Every inline number and string literal is kept only when it is form state under
-    the name it is read under (:func:`form_state_value`): the argument's name
+    Every inline number, string, and enum literal (``owner: JSMITH``, a recorded
+    value like a string) is kept only when it is form state under the name it is
+    read under (:func:`form_state_value`): the argument's name
     (``first`` in ``orders(first: 10)``), an input object field's name (``status``
     in ``where: {status: "OPEN"}``), the enclosing name for an element of a list,
     and the variable's name for a variable definition's default. Any other literal

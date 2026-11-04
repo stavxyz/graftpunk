@@ -222,6 +222,19 @@ class TestTheDocumentFile:
         for value in ("40213", "4021", "98765", "30.2672", "97.7431", "SMITH", "34", "123"):
             assert value not in filled.text
 
+    def test_an_enum_value_is_a_recorded_value_like_a_string(self) -> None:
+        filled = filled_document("query Q { orders(owner: JSMITH, status: OPEN, x: true) { id } }")
+        assert filled.text == (
+            "query Q($owner: String!) { orders(owner: $owner, status: OPEN, x: true) { id } }"
+        )
+        assert [(f.variable, f.name) for f in filled.fills] == [("owner", "owner")]
+        assert filled_document("query Q($status: S = CLOSED) { a(s: $status) }").text == (
+            "query Q($status: S = CLOSED) { a(s: $status) }"
+        )
+        assert filled_document("query Q($who: W = JSMITH) { a(w: $who) }").text == (
+            "query Q($who: W) { a(w: $who) }"
+        )
+
     def test_a_fragment_s_value_is_declared_on_each_operation_that_spreads_it(self) -> None:
         document = (
             "fragment F on T { b(pin: 482) }\n"
