@@ -24,6 +24,9 @@ from graftpunk.har.digest import (
     RunDigest,
     ShapeNode,
     family_values,
+    header_names_not_shown,
+    held_back_token_count,
+    printable_custom_headers,
     printable_login_fields,
     printable_tokens,
 )
@@ -162,8 +165,16 @@ def _endpoint_block(endpoint: Endpoint) -> list[str]:
             f"a binary body, kept as `{endpoint.body_binary_file}`"
             f"{_size_note(endpoint.body_binary_size)}"
         )
-    if endpoint.custom_headers:
-        lines.append(f"- custom headers: {', '.join(endpoint.custom_headers)}")
+    headers = printable_custom_headers(endpoint)
+    if headers:
+        lines.append(f"- custom headers: {', '.join(headers)}")
+    hidden = header_names_not_shown(endpoint.custom_headers)
+    if hidden:
+        lines.append(
+            "- 1 custom header whose name reads as a value is not shown"
+            if hidden == 1
+            else f"- {hidden} custom headers whose names read as values are not shown"
+        )
     lines.append(f"- shape: {summarize_shape(endpoint.shape)}")
     if endpoint.inline_json is not None:
         lines.append(
@@ -274,10 +285,16 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
 
     lines.append("## Tokens")
     tokens = printable_tokens(d.tokens)
-    if tokens:
-        for token in tokens:
-            lines.append(f"- {token.kind} `{token.name}`, seen on: {', '.join(token.seen_on)}")
-    else:
+    for token in tokens:
+        lines.append(f"- {token.kind} `{token.name}`, seen on: {', '.join(token.seen_on)}")
+    hidden = held_back_token_count(d.tokens)
+    if hidden:
+        lines.append(
+            "- 1 token candidate whose name reads as a value is not shown"
+            if hidden == 1
+            else f"- {hidden} token candidates whose names read as values are not shown"
+        )
+    if not tokens and not hidden:
         lines.append("(none found)")
     lines.append("")
 
@@ -334,12 +351,18 @@ def render_json(d: RunDigest) -> str:
     (:func:`graftpunk.har.paths.printable_name`), which
     ``cookie_names_not_shown`` counts: in ``cookies``, in ``login`` fields
     (:func:`graftpunk.har.digest.printable_login_fields`), and in ``tokens``
-    (:func:`graftpunk.har.digest.printable_tokens`)."""
+    (:func:`graftpunk.har.digest.printable_tokens`). A header name that reads as a
+    value is left out of ``tokens`` and of each endpoint's ``custom_headers``
+    (:func:`graftpunk.har.digest.printable_custom_headers`), which then carries
+    ``custom_headers_not_shown``; ``header_names_not_shown`` counts them for the
+    run."""
     rendered = _jsonable(d)
     rendered["cookies"] = [name for name in d.cookies if printable_name(name)]
     rendered["tokens"] = _jsonable(printable_tokens(d.tokens))
     for observation, login in zip(d.login, rendered["login"], strict=True):
         login["fields"] = list(printable_login_fields(observation))
+    for endpoint, projected in zip(d.endpoints, rendered["endpoints"], strict=True):
+        _put_custom_headers(projected, endpoint)
     return json.dumps(rendered, indent=2, sort_keys=True)
 
 
@@ -374,6 +397,16 @@ def _projected_form(form: LoginForm) -> dict[str, Any]:
     }
 
 
+def _put_custom_headers(projected: dict[str, Any], endpoint: Endpoint) -> None:
+    """Set *projected*'s ``custom_headers`` to *endpoint*'s printable ones
+    (:func:`graftpunk.har.digest.printable_custom_headers`), and
+    ``custom_headers_not_shown`` to how many it leaves out, only when any."""
+    projected["custom_headers"] = list(printable_custom_headers(endpoint))
+    hidden = header_names_not_shown(endpoint.custom_headers)
+    if hidden:
+        projected["custom_headers_not_shown"] = hidden
+
+
 def _projected_endpoint(endpoint: Endpoint, method: str) -> dict[str, Any]:
     """One ``endpoints`` entry of the projection: *endpoint* under *method*. A family
     row (``Endpoint.family_members``) also carries ``family_members``, its members'
@@ -395,8 +428,8 @@ def _projected_endpoint(endpoint: Endpoint, method: str) -> dict[str, Any]:
         + endpoint.body_omitted
         + endpoint.body_binary
         > 0,
-        "custom_headers": list(endpoint.custom_headers),
     }
+    _put_custom_headers(projected, endpoint)
     if endpoint.family_members:
         projected["family_members"] = list(endpoint.family_members)
     if endpoint.inline_json is not None:
@@ -438,6 +471,11 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     script it is in, and ``shape``, its summary as ``shape`` reads for a JSON body.
     Added within schema 1, on those entries only, so a run without one prints what
     it printed before.
+
+    ``custom_headers`` leaves out a header name that reads as a value
+    (:func:`graftpunk.har.digest.printable_custom_headers`, #347), and an entry
+    that left any out carries ``custom_headers_not_shown``, how many. Added within
+    schema 1, on those entries only.
     """
     source = d.source
     return {

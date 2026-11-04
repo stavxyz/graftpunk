@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
-from graftpunk.har.digest import DigestSource, RunDigest, digest
+from graftpunk.har.digest import DigestSource, RunDigest, digest, header_names_not_shown
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from tests.unit.test_har_digest import _entry, _write_har
 
@@ -463,9 +463,10 @@ _HELD_BACK = ("sessionZq9vLm2x", "xsrfQz9XvKw", "authTokenQx7vK", _VALUE_AS_NAME
 
 
 def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
-    """Login steps, token candidates, and the Cookies section, in the markdown,
-    --json, --endpoints-json, and a scaffolded plugin, print no held-back name;
-    the digest's own model keeps each one for the fixture safety net."""
+    """Login steps, token candidates, the Cookies section, and endpoints' custom
+    headers, in the markdown, --json, --endpoints-json, and a scaffolded plugin,
+    print no held-back name; the digest's own model keeps each one for the
+    fixture safety net."""
     session, xsrf, auth, nameless = _HELD_BACK
     page = _entry(
         "GET",
@@ -497,10 +498,15 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     echoes_xsrf["request"]["cookies"] = [{"name": xsrf, "value": _VALUE}]
     sends = _entry("GET", f"{_HOST}/api/c")
     sends["request"]["cookies"] = [{"name": auth, "value": _VALUE}, {"name": nameless, "value": ""}]
-    d = _digest(tmp_path, [page, login, account, sets_xsrf, echoes_xsrf, sends])
+    headers = _entry(
+        "GET", f"{_HOST}/api/d", request_headers=dict.fromkeys(_HELD_BACK_HEADERS, _VALUE)
+    )
+    d = _digest(tmp_path, [page, login, account, sets_xsrf, echoes_xsrf, sends, headers])
 
     assert (session,) in [obs.fields for obs in d.login if obs.kind == "set_cookie"]
     assert {xsrf, auth} <= {token.name for token in d.tokens if token.kind == "cookie"}
+    assert set(_HELD_BACK_HEADERS) <= {name for e in d.endpoints for name in e.custom_headers}
+    assert {"X-Csrf-Qz9XvKw", "x-csrf-qz9xvkw"} <= {t.name for t in d.tokens if t.kind == "header"}
     assert d.cookie_names_not_shown == len(_HELD_BACK)
     plugin = render(
         ScaffoldSpec(
@@ -508,6 +514,101 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
         )
     )
     for text in (render_markdown(d), render_json(d), render_endpoints_json(d), *plugin.values()):
-        for name in _HELD_BACK:
+        assert _VALUE not in text
+        for name in (*_HELD_BACK, *_HELD_BACK_HEADERS):
             assert name.lower() not in text.lower()
     assert "- 4 cookies whose names read as values are not shown" in _cookie_lines(d)
+
+
+# Header names printable_name holds back and holds_an_id does not: a token-shaped
+# header (a token candidate as well as a custom header), the same name in lower
+# case (one header name, counted once), and a custom header that is no token name.
+_HELD_BACK_HEADERS = ("X-Csrf-Qz9XvKw", "x-csrf-qz9xvkw", "X-Zq9vLmKx")
+# Ordinary header names, each of which still prints: a token candidate, a custom
+# header, and one the gate's header vocabulary passes (#347).
+_ORDINARY_HEADERS = ("X-CSRF-Token", "X-Api-Key", "X-Amz-Target")
+
+
+def _plugin_text(d: RunDigest) -> str:
+    """The scaffolded plugin module for *d*, its comment lines joined into prose so
+    a wrapped GP-FILL note reads as one sentence."""
+    files = render(
+        ScaffoldSpec(
+            name="myshop", mode="new_project", backend="nodriver", base_url=_HOST, digest=d
+        )
+    )
+    code = files["src/graftpunk_myshop/plugin.py"]
+    return " ".join(line.strip().removeprefix("# ") for line in code.splitlines())
+
+
+def test_a_held_back_header_name_prints_as_a_count_and_ordinary_ones_print(
+    tmp_path: Path,
+) -> None:
+    """Each output counts the header names it leaves out, a name in two cases
+    once, and prints every ordinary one."""
+    upper, lower, plain = _HELD_BACK_HEADERS
+    first = _entry(
+        "GET",
+        f"{_HOST}/api/a",
+        request_headers={upper: _VALUE, plain: _VALUE, **dict.fromkeys(_ORDINARY_HEADERS, "1")},
+    )
+    # Recorded again in lower case, as an HTTP/2 capture spells it.
+    second = _entry("GET", f"{_HOST}/api/a", request_headers={lower: _VALUE})
+    d = _digest(tmp_path, [first, second])
+
+    (endpoint,) = d.endpoints
+    assert set(_HELD_BACK_HEADERS) <= set(endpoint.custom_headers)
+    assert d.header_names_not_shown == 2
+
+    markdown = render_markdown(d)
+    assert "- custom headers: X-Amz-Target, X-Api-Key, X-CSRF-Token" in markdown
+    assert "- 2 custom headers whose names read as values are not shown" in markdown
+    assert "- header `X-CSRF-Token`, seen on: GET /api/a" in markdown
+    assert "- 1 token candidate whose name reads as a value is not shown" in markdown
+
+    rendered = json.loads(render_json(d))
+    assert rendered["header_names_not_shown"] == 2
+    (dumped,) = rendered["endpoints"]
+    assert dumped["custom_headers"] == ["X-Amz-Target", "X-Api-Key", "X-CSRF-Token"]
+    assert dumped["custom_headers_not_shown"] == 2
+    assert [t["name"] for t in rendered["tokens"] if t["kind"] == "header"] == ["X-CSRF-Token"]
+
+    (projected,) = json.loads(render_endpoints_json(d))["endpoints"]
+    assert projected["custom_headers"] == ["X-Amz-Target", "X-Api-Key", "X-CSRF-Token"]
+    assert projected["custom_headers_not_shown"] == 2
+
+    plugin = _plugin_text(d)
+    for name in _ORDINARY_HEADERS:
+        assert f'"{name}": "GP-FILL",' in plugin
+    assert "2 recorded header name(s) were left out because they read as values" in plugin
+    assert "1 token candidate(s) were left out because their names read as values" in plugin
+    assert "unpaired token candidate: header 'X-CSRF-Token'" in plugin
+
+    for text in (markdown, render_json(d), render_endpoints_json(d), plugin):
+        for name in _HELD_BACK_HEADERS:
+            assert name.lower() not in text.lower()
+
+
+def test_a_run_whose_header_names_all_print_carries_no_count(tmp_path: Path) -> None:
+    d = _digest(tmp_path, [_entry("GET", f"{_HOST}/api/a", request_headers={"X-Api-Key": "1"})])
+    assert d.header_names_not_shown == 0
+    assert "not_shown" not in render_json(d)
+    assert "not_shown" not in render_endpoints_json(d)
+    assert "read as values" not in render_markdown(d)
+    assert "reads as a value" not in render_markdown(d)
+
+
+@pytest.mark.parametrize(
+    ("names", "count"),
+    [
+        (["X-Zq9vLmKx"], 1),
+        (["X-Zq9vLmKx", "x-zq9vlmkx", "X-ZQ9VLMKX"], 1),
+        (["X-Zq9vLmKx", "X-Qz9XvKw"], 2),
+        # Held back in one spelling and printed in another: printed, so not counted.
+        (["X-SHOPPER-Id", "x-shopper-id"], 0),
+        (["X-SHOPPER-Id"], 1),
+        (["X-Api-Key", "x-api-key"], 0),
+    ],
+)
+def test_header_names_differing_only_in_case_are_one_name(names: list[str], count: int) -> None:
+    assert header_names_not_shown(names) == count

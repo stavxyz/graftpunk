@@ -109,6 +109,9 @@ __all__ = [
     "password_field_names",
     "post_account_values",
     "post_every_value",
+    "header_names_not_shown",
+    "held_back_token_count",
+    "printable_custom_headers",
     "printable_login_fields",
     "printable_tokens",
     "read_body_values",
@@ -578,6 +581,14 @@ class RunDigest:
     # ``cookies``, ``login``, and ``tokens`` keep every name for the fixture
     # safety net. A name holding an id counts here too.
     cookie_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
+    # How many distinct header names, compared without regard to case, read as a
+    # value in every spelling the run recorded (graftpunk.har.paths.printable_name)
+    # and so print nowhere: not in an endpoint's custom headers
+    # (printable_custom_headers) and not as a header token candidate
+    # (printable_tokens), in the markdown, --json, --endpoints-json, or a
+    # scaffolded plugin (#347). ``Endpoint.custom_headers`` and ``tokens`` keep
+    # every name. Each place a name is left out counts its own there.
+    header_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
 
 
 def _scope_root(primary_host: str) -> str:
@@ -1540,12 +1551,44 @@ def _cookie_names_not_shown(*names: Iterable[str]) -> int:
 
 
 def printable_tokens(tokens: Iterable[TokenCandidate]) -> tuple[TokenCandidate, ...]:
-    """*tokens* as every output prints them: without a cookie candidate whose name
-    reads as a value (:func:`graftpunk.har.paths.printable_name`), which
-    ``RunDigest.cookie_names_not_shown`` counts. A header candidate is a header
-    name and prints as the endpoints' custom headers do. ``RunDigest.tokens``
-    keeps them all: :func:`flagged_names_of` reads it."""
-    return tuple(t for t in tokens if t.kind != "cookie" or printable_name(t.name))
+    """*tokens* as every output prints them: without a cookie or header candidate
+    whose name reads as a value (:func:`graftpunk.har.paths.printable_name`), which
+    ``RunDigest.cookie_names_not_shown`` and ``RunDigest.header_names_not_shown``
+    count. ``RunDigest.tokens`` keeps them all: :func:`flagged_names_of` reads
+    it."""
+    return tuple(t for t in tokens if t.kind not in _GATED_TOKEN_KINDS or printable_name(t.name))
+
+
+# The token kinds whose name is a recorded cookie or header name.
+_GATED_TOKEN_KINDS = frozenset({"cookie", "header"})
+
+
+def header_names_not_shown(names: Iterable[str]) -> int:
+    """How many distinct header names of *names* print in no spelling: each name
+    is gated as recorded (:func:`graftpunk.har.paths.printable_name`), and names
+    that differ only in case are one header name, so ``X-Token-Q`` and
+    ``x-token-q`` count once, and not at all when either spelling prints."""
+    names = list(names)
+    printed = {name.lower() for name in names if printable_name(name)}
+    return len({name.lower() for name in names if name.lower() not in printed})
+
+
+def printable_custom_headers(endpoint: Endpoint) -> tuple[str, ...]:
+    """*endpoint*'s ``custom_headers`` as every output prints them: without a name
+    that reads as a value (:func:`graftpunk.har.paths.printable_name`), which
+    :func:`header_names_not_shown` counts. ``Endpoint.custom_headers`` keeps them
+    all."""
+    return tuple(name for name in endpoint.custom_headers if printable_name(name))
+
+
+def held_back_token_count(tokens: Iterable[TokenCandidate]) -> int:
+    """How many cookie and header token candidates of *tokens* :func:`printable_tokens`
+    leaves out, a header name counted once whatever its case
+    (:func:`header_names_not_shown`)."""
+    tokens = list(tokens)
+    cookies = {t.name for t in tokens if t.kind == "cookie" and not printable_name(t.name)}
+    headers = header_names_not_shown(t.name for t in tokens if t.kind == "header")
+    return len(cookies) + headers
 
 
 def printable_login_fields(observation: LoginObservation) -> tuple[str, ...]:
@@ -3449,6 +3492,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             tuple(cookies_seen), cookie_settings, cookies_sent, collapse_map
         ),
         cookie_names_not_shown=_cookie_names_not_shown(cookies_seen, id_cookie_names, cookies_sent),
+        header_names_not_shown=header_names_not_shown(
+            [
+                *(name for endpoint in literal_endpoints for name in endpoint.custom_headers),
+                *(token.name for token in tokens if token.kind == "header"),
+            ]
+        ),
         # Only for a run that recorded a login. The final page is the last of
         # after_post_pages (page-source.html when it went there); success_candidates
         # finds the leading run of login steps among them. The last credential post's

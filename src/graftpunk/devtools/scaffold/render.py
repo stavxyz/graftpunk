@@ -58,6 +58,9 @@ from graftpunk.har.digest import (
     LoginObservation,
     RunDigest,
     TokenCandidate,
+    header_names_not_shown,
+    held_back_token_count,
+    printable_custom_headers,
     printable_tokens,
 )
 from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
@@ -638,6 +641,13 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
             f"{GP_FILL_MARKER}: {spec.digest.token_names_dropped_as_ids} token candidate(s) were "
             "left out because their names held an account value; configure any this plugin "
             "needs by hand."
+        )
+        lines.extend(wrapped_comment_lines(text, indent=len(L1)))
+    unshown = held_back_token_count(spec.digest.tokens)
+    if unshown:
+        text = (
+            f"{GP_FILL_MARKER}: {unshown} token candidate(s) were left out because their names "
+            "read as values; configure any this plugin needs by hand."
         )
         lines.extend(wrapped_comment_lines(text, indent=len(L1)))
     for candidate in unpaired:
@@ -1381,8 +1391,9 @@ def _render_command_stub(
             # json= is sent as given, so an option left off is left out here,
             # rather than sent as null.
             call_lines.extend(given_entries_dict_lines("json", entries))
-    if endpoint.custom_headers:
-        entries = [(h, f'"{GP_FILL_MARKER}"') for h in endpoint.custom_headers]
+    custom_headers = printable_custom_headers(endpoint)
+    if custom_headers:
+        entries = [(h, f'"{GP_FILL_MARKER}"') for h in custom_headers]
         call_lines.extend(exploded_dict_lines("headers", entries))
 
     summary = f"{method} {endpoint.template}: seen {endpoint.count} time(s) in run {run_label}."
@@ -1658,6 +1669,12 @@ def _recording_gap_notes(endpoint: Endpoint, bodies_where: str) -> list[str]:
             f"{GP_FILL_MARKER}: {endpoint.header_names_dropped_as_ids} recorded header name(s) "
             "were left out because they held an account value; add any this command needs "
             "by hand."
+        )
+    unshown_headers = header_names_not_shown(endpoint.custom_headers)
+    if unshown_headers:
+        notes.append(
+            f"{GP_FILL_MARKER}: {unshown_headers} recorded header name(s) were left out "
+            "because they read as values; add any this command needs by hand."
         )
     if endpoint.body_not_captured:
         recorded = f"{endpoint.body_not_captured} of {endpoint.count} recording(s)"

@@ -796,7 +796,9 @@ did not set, and `Path=(not shown)` a path holding anything outside a plain
 path. A cookie no response the digest kept set says so (a recording made with a
 cached session never sees the session set, and the digest leaves static and
 third-party responses out). A name that reads as a value is counted here and
-printed in no section, Login and Tokens included. See
+printed in no section, Login and Tokens included. A header name that reads as a
+value is held back the same way: an endpoint's block and the Tokens section
+each say how many they leave out. See
 [How graftpunk Works](HOW_IT_WORKS.md#building-a-plugin-from-a-recording) for
 each word.
 

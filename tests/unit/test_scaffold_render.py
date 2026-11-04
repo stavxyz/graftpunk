@@ -3210,9 +3210,11 @@ class TestRenderedTreeIsRuffClean:
         observation = LoginObservation(
             order=1, method="GET", url=long_url, status=200, kind="form_page", fields=()
         )
+        # A meta tag's name: a header name this long reads as a value and is
+        # left out (#347), and a meta candidate's name is not gated.
         long_token_name = "X-" + "B" * 88
         assert len(long_token_name) == 90
-        lone = TokenCandidate(kind="header", name=long_token_name, seen_on=("GET /dashboard",))
+        lone = TokenCandidate(kind="meta", name=long_token_name, seen_on=("GET /dashboard",))
         digest = _digest(login=(observation,), tokens=(lone,))
         long_base_url = "https://" + "x" * 100 + ".example.com"
         assert 110 <= len(long_base_url) <= 130
@@ -3388,15 +3390,20 @@ class TestRenderedTreeIsRuffClean:
         plugin_code = files[f"src/graftpunk_{name}/plugin.py"]
         # Non-vacuous, and each assertion names which guard fired: both stubs are
         # present; the 78-character template still fits one line; the 155-character
-        # one split at a "/" boundary; the 75-character header name became a
-        # parenthesised dict key; the 41-character query parameter became a
+        # one split at a "/" boundary; the 75-character header name is held back
+        # and counted; the 41-character query parameter became a
         # truncated identifier.
         assert plugin_code.count("@command(") == 2
         assert f'f"{deep_template}",' in plugin_code
         assert 'f"/api/v2/customer-accounts/{account_id}/payment-methods' in plugin_code
         assert 'f"/scheduled-deliveries' in plugin_code
-        assert f'"{header_75}": "GP-FILL",' not in plugin_code
-        assert '): "GP-FILL",' in plugin_code
+        # A header name past 48 characters reads as a value (#347): counted, never
+        # printed, so no headers= dict is written for it.
+        assert header_75 not in plugin_code
+        assert "headers={" not in plugin_code
+        assert "1 recorded header name(s) were left out because they read as values" in (
+            " ".join(line.strip().removeprefix("# ") for line in plugin_code.splitlines())
+        )
         assert f"{query_41[:_MAX_PARAM_NAME]}: str | None = None," in plugin_code
         test_code = files["tests/test_plugin.py"]
         assert "ctx = fixture_context(" in test_code
