@@ -4,6 +4,8 @@ Note: Serialization, state management, and context manager tests have been
 moved to test_backends_serialization.py to keep this file under 800 lines.
 """
 
+import inspect
+import typing
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,14 +20,39 @@ from graftpunk.backends import (
 )
 from graftpunk.backends.selenium import SeleniumBackend
 
+_ABSENT = object()
+
+
+def _protocol_members(protocol: type) -> frozenset[str]:
+    """The member names a runtime-checkable protocol's isinstance check looks for."""
+    get_members = getattr(typing, "get_protocol_members", None)  # Python 3.13+
+    if get_members is not None:
+        return get_members(protocol)
+    attrs = getattr(protocol, "__protocol_attrs__", None)  # Python 3.12
+    if attrs is None:
+        attrs = typing._get_protocol_attrs(protocol)  # Python 3.11
+    return frozenset(attrs)
+
 
 class TestBrowserBackendProtocol:
     """Tests for BrowserBackend Protocol."""
 
     def test_selenium_backend_implements_protocol(self) -> None:
-        """SeleniumBackend should satisfy BrowserBackend protocol."""
+        """SeleniumBackend should satisfy BrowserBackend protocol.
+
+        Checked with inspect.getattr_static, not isinstance: on Python 3.11
+        isinstance against a runtime-checkable protocol calls hasattr on each
+        member, which evaluates the ``driver`` property, and that starts a
+        real Chrome (#351).
+        """
         backend = SeleniumBackend(headless=True)
-        assert isinstance(backend, BrowserBackend)
+        members = _protocol_members(BrowserBackend)
+        assert {"BACKEND_TYPE", "start", "stop", "driver", "get_cookies"} <= members
+        missing = sorted(
+            name for name in members if inspect.getattr_static(backend, name, _ABSENT) is _ABSENT
+        )
+        assert missing == []
+        assert backend.is_running is False
 
     def test_protocol_is_runtime_checkable(self) -> None:
         """Protocol should support isinstance checks."""
