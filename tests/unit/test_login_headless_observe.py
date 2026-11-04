@@ -26,7 +26,14 @@ pytestmark = pytest.mark.usefixtures("_fast_login_timings")
 
 @pytest.fixture(autouse=True)
 def _mock_capture_backend():
-    """Default header capture mock; tests that assert on the factory re-patch it."""
+    """Default header capture mock; tests that assert on the factory re-patch it.
+
+    graftpunk.session binds create_capture_backend by name when it is first
+    imported. Import it before patching, or a first import while this patch is
+    active binds the mock into it for the rest of the process (#352).
+    """
+    import graftpunk.session  # noqa: F401
+
     capture = MagicMock()
     capture.start_capture_async = AsyncMock()
     capture.get_header_roles = MagicMock(return_value={})
