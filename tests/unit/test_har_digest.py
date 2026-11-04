@@ -8864,3 +8864,66 @@ def test_every_cookie_attribute_word_is_the_scripts(tmp_path: Path, started: str
     ]
     assert len(ours) == len(_PARITY_SET_COOKIES) + len(_PARITY_ARRAY_COOKIES)
     assert ours == theirs
+
+
+# The email finder (_emails_in): what a regex findall of its shape finds, in
+# linear time (#304's cause, found again here).
+_EMAIL_SHAPE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+
+
+@pytest.mark.parametrize(
+    ("text", "emails"),
+    [
+        ("ann@myshop.example", ["ann@myshop.example"]),
+        ("to: x+y@ex.co.uk, z@q.io", ["x+y@ex.co.uk", "z@q.io"]),
+        ("a@b.c_x@d.e", ["a@b.c", "_x@d.e"]),
+        ("a@b.c@d.e", ["a@b.c"]),
+        ("@a.b", []),
+        ("a@b", []),
+        ("", []),
+    ],
+)
+def test_the_emails_a_value_holds(text: str, emails: list[str]) -> None:
+    from graftpunk.har.digest import _emails_in
+
+    assert _emails_in(text) == emails
+
+
+def test_the_email_finder_finds_what_a_findall_of_its_shape_finds() -> None:
+    import string
+
+    from graftpunk.har.digest import _emails_in
+
+    rng = random.Random(2133)  # noqa: S311 - a fixed sample, not a secret
+    alphabets = ["ab.@", "a@.-_%+", "ab@. /é", string.printable, "ab@..c%-"]
+    values = [
+        "".join(rng.choices(rng.choice(alphabets), k=rng.randint(0, 60))) for _ in range(20_000)
+    ]
+    assert [v for v in values if _emails_in(v) != _EMAIL_SHAPE.findall(v)] == []
+
+
+def test_a_long_value_in_a_credential_post_is_read_in_linear_time() -> None:
+    """Eight times the letters within 24 times the CPU time, through
+    post_account_values. A findall of the shape retried the run from each of its
+    characters, 64 times at this ratio: 200,000 letters took 27.9 s (2026-11-03)."""
+    import string
+    import time
+
+    from graftpunk.har.digest import post_account_values
+
+    rng = random.Random(304)  # noqa: S311 - a fixed sample, not a secret
+
+    def body(length: int) -> str:
+        letters = "".join(rng.choices(string.ascii_lowercase, k=length))
+        return f"username=ann&password=pw&note={letters}"
+
+    def cpu(post: str) -> float:
+        best = float("inf")
+        for _ in range(3):
+            start = time.process_time()
+            post_account_values(post, "application/x-www-form-urlencoded")
+            best = min(best, time.process_time() - start)
+        return best
+
+    small, large = body(5_000), body(40_000)
+    assert cpu(large) / max(cpu(small), 1e-4) < 24

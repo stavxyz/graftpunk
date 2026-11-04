@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -626,3 +626,182 @@ def test_unnamed_logger_is_named_after_the_calling_module(tmp_path: Path) -> Non
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr == "plugin_mod|event='named_marker' logger='plugin_mod'\n"
+
+
+# redacted_values over a line holding a container more than once, or itself (#305).
+_ACCOUNT = "acct-secret-value"
+
+
+def _redacted_line(**values: Any) -> dict[str, Any]:
+    from structlog.testing import capture_logs
+
+    from graftpunk.logging import get_logger, redacted_values
+
+    with capture_logs() as logs, redacted_values((_ACCOUNT, "<acct>")):
+        get_logger("t").warning("line", **values)
+    (line,) = logs
+    return line
+
+
+def _shared_tower(depth: int, bottom: str = "plain") -> list[Any]:
+    """A list holding one sub-list twice, nested *depth* levels, its innermost
+    list also holding a list that holds itself, a dict that holds itself, or
+    (``back edge``) the outermost list."""
+    innermost: list[Any] = [_ACCOUNT]
+    value = innermost
+    for _ in range(depth):
+        value = [value, value]
+    if bottom == "list cycle":
+        loop: list[Any] = []
+        loop.append(loop)
+        innermost.append(loop)
+    elif bottom == "dict cycle":
+        node: dict[str, Any] = {}
+        node["self"] = node
+        innermost.append(node)
+    elif bottom == "back edge":
+        innermost.append(value)
+    return value
+
+
+def test_redacted_values_ends_on_a_container_that_holds_itself() -> None:
+    """The rewrite once recursed to Python's limit and raised from the log call."""
+    loop: list[Any] = [_ACCOUNT]
+    loop.append(loop)
+    node: dict[str, Any] = {"key": _ACCOUNT}
+    node["self"] = node
+    line = _redacted_line(loop=loop, node=node, pair=(_ACCOUNT, loop))
+    assert line["loop"] == ["<acct>", "[...]"]
+    assert line["node"] == {"key": "<acct>", "self": "{...}"}
+    assert line["pair"] == ("<acct>", ["<acct>", "[...]"])
+    assert _ACCOUNT not in repr(line)
+
+
+def test_redacted_values_rewrites_a_shared_container_at_each_of_its_places() -> None:
+    expected: Any = ["<acct>"]
+    for _ in range(10):
+        expected = [expected, expected]
+    assert _redacted_line(value=_shared_tower(10))["value"] == expected
+
+
+class _Pair(NamedTuple):
+    a: Any
+    b: Any
+
+
+class _KeywordPair(_Pair):
+    """A namedtuple subclass whose constructor takes keywords only."""
+
+    def __new__(cls, *, a: Any, b: Any) -> _KeywordPair:
+        return super().__new__(cls, a, b)
+
+
+class _List(list):  # noqa: FURB189 - a list subclass is the case under test
+    pass
+
+
+def test_redacted_values_rebuilds_a_namedtuple() -> None:
+    """The rewrite once passed a namedtuple one generator, and the log call
+    raised TypeError, logged or bound."""
+    from structlog.testing import capture_logs
+
+    from graftpunk.logging import get_logger, redacted_values
+
+    with capture_logs() as logs, redacted_values((_ACCOUNT, "<acct>")):
+        get_logger("t").bind(bound=_Pair(_ACCOUNT, 1)).warning(
+            "line",
+            pair=_Pair(_ACCOUNT, [_ACCOUNT]),
+            keywords=_KeywordPair(a=_ACCOUNT, b=1),
+            subclass=_List([_ACCOUNT]),
+        )
+    (line,) = logs
+    assert line["bound"] == _Pair("<acct>", 1)
+    assert type(line["pair"]) is _Pair
+    assert line["pair"] == _Pair("<acct>", ["<acct>"])
+    assert line["keywords"] == ("<acct>", 1)
+    assert type(line["subclass"]) is list
+    assert line["subclass"] == ["<acct>"]
+
+
+class _HashableList(list):  # noqa: FURB189 - a hashable list subclass is the case under test
+    def __hash__(self) -> int:  # type: ignore[override]
+        return 0
+
+
+class _HashableDict(dict):  # noqa: FURB189 - a hashable dict subclass is the case under test
+    def __hash__(self) -> int:  # type: ignore[override]
+        return 0
+
+
+def test_redacted_values_writes_a_hashable_subclass_key_as_its_text() -> None:
+    """Rebuilt as a plain list or dict, such a key is no longer hashable, and
+    the whole dict was written ``<unprintable dict>``."""
+    line = _redacted_line(
+        value={
+            _HashableList(["a", _ACCOUNT]): "list",
+            _HashableDict(k=_ACCOUNT): "dict",
+            (_HashableList([_ACCOUNT]),): "tuple",
+            "other": "kept",
+        }
+    )
+    assert line["value"] == {
+        "['a', '<acct>']": "list",
+        "{'k': '<acct>'}": "dict",
+        "(['<acct>'],)": "tuple",
+        "other": "kept",
+    }
+
+
+@pytest.mark.parametrize("kind", ["list", "dict"])
+def test_redacted_values_ends_nesting_two_thousand_levels_deep(kind: str) -> None:
+    """The rewrite once recursed past Python's limit at about 500 nested lists
+    and 1,000 nested dicts, and the log call raised RecursionError. Past
+    ``_MAX_SCRUB_DEPTH`` levels a container is a placeholder."""
+    from graftpunk.logging import _MAX_SCRUB_DEPTH, _TOO_DEEP
+
+    deep: Any = [_ACCOUNT] if kind == "list" else {"k": _ACCOUNT}
+    for _ in range(2_000):
+        deep = [deep] if kind == "list" else {"k": deep}
+    value = _redacted_line(value=deep)["value"]
+    # The line's keyword dict is depth 0, so *value* is depth 1.
+    for _ in range(_MAX_SCRUB_DEPTH - 2):
+        value = value[0] if kind == "list" else value["k"]
+    assert value == ([_TOO_DEEP] if kind == "list" else {"k": _TOO_DEEP})
+
+
+def _rewrite_cost(value: Any) -> float:
+    import time
+
+    best = float("inf")
+    for _ in range(3):
+        start = time.process_time()
+        _redacted_line(value=value)
+        best = min(best, time.process_time() - start)
+    return best
+
+
+@pytest.mark.parametrize("bottom", ["plain", "list cycle", "dict cycle"])
+def test_redacted_values_on_a_shared_container_costs_what_its_distinct_lists_cost(
+    bottom: str,
+) -> None:
+    """A list holding one sub-list twice, nested 18 levels, within 10 times the
+    CPU time of a chain of as many distinct lists. The rewrite once followed
+    every path, 2 ** 18 to the innermost list: 6.9 s of CPU for a line at 22
+    levels (2026-11-03). With a loop at the bottom it still did, as a container
+    whose rewrite closed a loop anywhere below was not kept: about 0.5 s at 18
+    levels (2026-11-04)."""
+    chain: list[Any] = [_ACCOUNT]
+    for _ in range(18):
+        chain = [chain, [_ACCOUNT]]
+    ratio = _rewrite_cost(_shared_tower(18, bottom)) / max(_rewrite_cost(chain), 1e-4)
+    assert ratio < 10, ratio
+
+
+def test_redacted_values_on_a_shared_container_that_holds_the_outermost() -> None:
+    """Six more levels within 16 times the CPU time. With the innermost list
+    holding the outermost, no level's result can be kept, so the rewrite follows
+    every path until the line's value budget runs out; it once followed all of
+    them: 0.025 s at 14 levels and 0.40 s at 18 (2026-11-04), doubling with each."""
+    small = _rewrite_cost(_shared_tower(12, "back edge"))
+    large = _rewrite_cost(_shared_tower(18, "back edge"))
+    assert large / max(small, 1e-4) < 16, (small, large)

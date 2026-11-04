@@ -7,6 +7,7 @@ import random
 import string
 import time
 import uuid
+from collections.abc import Callable
 from types import ModuleType
 
 import pytest
@@ -928,6 +929,34 @@ def test_the_har_readers_spelling_rule_is_graftpunks() -> None:
     words = ["".join(rng.choices(string.ascii_letters, k=rng.randint(1, 12))) for _ in range(5_000)]
     words += ["csrf", "CSRF", "ABC", "ABCD", "upgrade", "jsessionid", "JSESSIONID", ""]
     assert [w for w in words if script._spelled(w) != paths_module._spelled(w)] == []
+
+
+def _cpu_seconds(work: Callable[[], object]) -> float:
+    """The least CPU time of three runs of *work*: CPU time, never wall clock, and
+    the least of three, so a busy machine slows neither side of a ratio."""
+    times = []
+    for _ in range(3):
+        start = time.process_time()
+        work()
+        times.append(time.process_time() - start)
+    return min(times)
+
+
+@pytest.mark.parametrize("rule", ["reads_as_words", "holds_an_id", "har-facts holds_an_id"])
+def test_a_long_run_of_letters_is_judged_in_linear_time(rule: str) -> None:
+    """Eight times the letters within 24 times the CPU time (#304). The email
+    search once rescanned the run from every start, 64 times at this ratio: a
+    200,000-letter cookie value took 76 s."""
+    judge: Callable[[str], bool] = {
+        "reads_as_words": reads_as_words,
+        "holds_an_id": holds_an_id,
+        "har-facts holds_an_id": _load_har_facts().holds_an_id,
+    }[rule]
+    rng = random.Random(304)  # noqa: S311 - a fixed sample, not a secret
+    small = "".join(rng.choices(string.ascii_lowercase, k=5_000))
+    large = "".join(rng.choices(string.ascii_lowercase, k=40_000))
+    ratio = _cpu_seconds(lambda: judge(large)) / max(_cpu_seconds(lambda: judge(small)), 1e-4)
+    assert ratio < 24, ratio
 
 
 # The abbreviations cookie and token names use, several spelled with no vowel.

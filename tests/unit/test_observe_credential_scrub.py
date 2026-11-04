@@ -1514,3 +1514,39 @@ class TestOnlyAnEmailAddressIsTakenAsAnIdentifier:
     )
     def test_what_is_an_email_address(self, value: str, expected: bool) -> None:
         assert _is_email(value) is expected
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("a@b.c", True),
+            ("a@.c", False),
+            ("a@b.", False),
+            ("a@b..c", True),
+            ("a@b.c ", False),
+            ("a　b@c.d", False),
+            ("a@b@c.d", False),
+        ],
+    )
+    def test_the_dot_and_whitespace_rules(self, value: str, expected: bool) -> None:
+        """The answers the full match ``[^@\\s]+@[^@\\s]+\\.[^@\\s]+`` gave."""
+        assert _is_email(value) is expected
+
+    def test_a_long_dotted_domain_is_judged_in_linear_time(self) -> None:
+        """Eight times the domain within 24 times the CPU time (#304). The full
+        match retried each dot to the end of the value, 64 times at this ratio:
+        32,000 characters took 2.8 s (2026-11-03)."""
+        import time
+
+        def cpu(value: str) -> float:
+            best = float("inf")
+            for _ in range(3):
+                start = time.process_time()
+                _is_email(value)
+                best = min(best, time.process_time() - start)
+            return best
+
+        def dotted(length: int) -> str:
+            return "a@" + "b." * (length // 2) + " "
+
+        ratio = cpu(dotted(32_000)) / max(cpu(dotted(4_000)), 1e-4)
+        assert ratio < 24, ratio

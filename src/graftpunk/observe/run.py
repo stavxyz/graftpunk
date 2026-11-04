@@ -98,9 +98,17 @@ def make_run_id() -> str:
 
 
 def _secret_forms(secret: str) -> set[str]:
-    """Every encoding of ``secret`` that can appear on the wire in a login flow."""
+    """Every encoding of ``secret`` that can appear on the wire in a login flow,
+    or in a log line's text."""
+    # As Python's repr writes it inside a str's repr (alone, or in a
+    # container's or an object's repr): "\\", control and non-printable
+    # characters escaped, and "'" escaped when the whole string holds both
+    # quote kinds. Python escapes each character on its own.
+    in_repr = "".join(repr(character)[1:-1] for character in secret)
     return {
         secret,
+        in_repr,
+        in_repr.replace("'", "\\'"),
         urllib.parse.quote_plus(secret),
         urllib.parse.quote(secret, safe=""),
         # Twice: a return URL inside a return URL.
@@ -715,16 +723,24 @@ def _not_redacted(value: str) -> bool:
     return bool(value) and value != REDACTED
 
 
-# An email address: one @, a local part, and a domain with a dot after the @.
-_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
-
-
 def _is_email(value: str) -> bool:
     """Whether *value* is an email address, the only identifier the scrub takes: a
     login form's other identifier-named fields send values nobody typed (a submit
     button's ``login=Log In``, a hidden ``account=guest``), which a run-wide scrub
-    would rewrite wherever they appear."""
-    return _EMAIL_RE.fullmatch(value) is not None
+    would rewrite wherever they appear.
+
+    An address is one ``@``, no whitespace, a local part, and a domain with a dot
+    that has a character on each side. It is checked without a regex: the full
+    match ``[^@\\s]+@[^@\\s]+\\.[^@\\s]+`` retried each dot of a long domain
+    to the end, quadratic in its length (#304).
+    """
+    local, _, domain = value.partition("@")
+    return (
+        bool(local)
+        and "." in domain[1:-1]
+        and "@" not in domain
+        and not any(character.isspace() for character in value)
+    )
 
 
 def credential_post_redaction(

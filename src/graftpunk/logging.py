@@ -8,11 +8,16 @@ program configures them. Only the ``gp`` CLI, which owns its process, calls
 
 from __future__ import annotations
 
+import datetime
+import decimal
+import fractions
 import logging as stdlib_logging
 import os
+import pathlib
 import sys
 import threading
 import traceback
+import uuid
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -145,7 +150,8 @@ _LOG_METHODS = frozenset(
 )
 
 
-# How deep the scrub walks nested containers before it scrubs the rest as text.
+# How deep the scrub and the redacted_values rewrite walk nested containers:
+# past it the scrub writes the rest as its scrubbed repr, the rewrite as _TOO_DEEP.
 _MAX_SCRUB_DEPTH = 64
 
 
@@ -166,80 +172,330 @@ def _texts(value: Any) -> list[str]:
     return texts
 
 
-def _scrubbed_text(value: Any, redact: Callable[[str], str]) -> str:
-    """*value*'s ``repr``, scrubbed, for a container the walk does not enter: one
-    it is already inside (a cycle) or one past the depth limit."""
+class _ReadText:
+    """What a value with clean ``str`` and ``repr`` and no ``__structlog__``
+    method is logged as inside a secret scope: its texts as the scrub read them.
+    The value itself could change before the renderer reads it, for one through
+    a later ``__structlog__`` call in the same line."""
+
+    def __init__(self, text: str, representation: str) -> None:
+        self._text = text
+        self._representation = representation
+
+    def __str__(self) -> str:
+        return self._text
+
+    def __repr__(self) -> str:
+        return self._representation
+
+
+class _StructlogValue(_ReadText):
+    """What a value with a ``__structlog__`` method and clean ``str`` and
+    ``repr`` is logged as: the method's return, scrubbed, for a renderer that
+    calls the method (structlog's ``JSONRenderer``), and the value's own texts
+    for one that prints ``str`` or ``repr``. The renderer never calls the
+    value's own method, whose next return could differ from the one scrubbed."""
+
+    def __init__(self, structlog_value: Any, text: str, representation: str) -> None:
+        super().__init__(text, representation)
+        self._structlog_value = structlog_value
+
+    def __structlog__(self) -> Any:
+        return self._structlog_value
+
+
+# Values whose texts cannot change, kept as they are when clean: a renderer
+# writes an int or a float (an IntEnum too) natively, ``%d`` formats them, and a
+# program's serializer may know the others.
+_FIXED_TYPES = frozenset(
+    {
+        complex,
+        decimal.Decimal,
+        fractions.Fraction,
+        datetime.date,
+        datetime.datetime,
+        datetime.time,
+        datetime.timedelta,
+        datetime.timezone,
+        uuid.UUID,
+        pathlib.PurePosixPath,
+        pathlib.PureWindowsPath,
+        pathlib.PosixPath,
+        pathlib.WindowsPath,
+    }
+)
+
+
+def _key(key: Any) -> Any:
+    """A rebuilt dict key, or its text when the rebuild is not hashable: a
+    hashable list subclass is rebuilt as a plain list."""
     try:
-        return redact(repr(value))
-    except Exception:  # noqa: BLE001 - too deep for repr too
-        return _unprintable(value)
-
-
-def _scrubbed_dict(
-    value: dict[Any, Any], redact: Callable[[str], str], ancestors: frozenset[int], depth: int
-) -> dict[Any, Any]:
-    result: dict[Any, Any] = {}
-    for key, item in value.items():
-        scrubbed_key = _scrubbed(key, redact, ancestors, depth)
-        # Two keys that scrub to the same text both stay, the later one numbered.
-        candidate, number = scrubbed_key, 1
-        while candidate in result:
-            number += 1
-            candidate = f"{scrubbed_key} ({number})"
-        result[candidate] = _scrubbed(item, redact, ancestors, depth)
-    return result
-
-
-def _scrubbed(
-    value: Any,
-    redact: Callable[[str], str],
-    ancestors: frozenset[int] = frozenset(),
-    depth: int = 0,
-) -> Any:
-    """*value* with every secret replaced, whatever its type; it never raises.
-
-    Strings are scrubbed; dicts (keys too, two that collide both kept), lists,
-    tuples and namedtuples are rebuilt with scrubbed members. A container that
-    holds itself, or one nested past ``_MAX_SCRUB_DEPTH``, is logged as its
-    scrubbed ``repr``. Any other value (an exception, a ``Path``, ``bytes``
-    decoded with replacement, a set, an object) is kept as it is unless its text
-    holds a secret, in which case the line carries that text scrubbed. A value
-    whose ``str`` and ``repr`` both raise is logged as a fixed placeholder.
-    """
-    if value is None or isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return redact(value)
-    is_container = isinstance(value, dict) or type(value) in (list, tuple)
-    is_namedtuple = isinstance(value, tuple) and hasattr(value, "_fields")
-    if is_container or is_namedtuple:
-        if id(value) in ancestors or depth >= _MAX_SCRUB_DEPTH:
-            return _scrubbed_text(value, redact)
-        inner = ancestors | {id(value)}
-        if isinstance(value, dict):
-            return _scrubbed_dict(value, redact, inner, depth + 1)
-        members = [_scrubbed(v, redact, inner, depth + 1) for v in value]
-        if is_container:
-            return type(value)(members)
+        hash(key)
+    except Exception:  # noqa: BLE001 - unhashable, or a __hash__ that raises
         try:
+            return repr(key)
+        except Exception:  # noqa: BLE001 - inside the logger: logging it would recurse
+            return _unprintable(key)
+    return key
+
+
+# How many values one log line's scrub (or redacted_values rewrite) visits
+# before it writes each container it has not yet entered as _TOO_MANY. A
+# container shared at every level whose innermost list holds the outermost has
+# a path count exponential in its depth, and no cache bounds that (#305).
+_MAX_LINE_VALUES = 10_000
+_TOO_MANY = "<too many values>"
+_TOO_DEEP = "<nested too deep>"
+_NO_LOOP = sys.maxsize
+
+# What a container that holds itself is written as where the loop closes, as
+# Python's repr writes it.
+_LOOP_MARKS: tuple[tuple[type, str], ...] = ((dict, "{...}"), (list, "[...]"), (tuple, "(...)"))
+
+
+def _loop_mark(value: Any) -> str:
+    return next((mark for kind, mark in _LOOP_MARKS if isinstance(value, kind)), "...")
+
+
+def _rebuilt(value: list[Any] | tuple[Any, ...], members: list[Any]) -> Any:
+    """*members* in a plain list or tuple, or in *value*'s own type for a
+    namedtuple whose constructor takes them."""
+    if isinstance(value, list):
+        return members
+    try:
+        if hasattr(value, "_fields"):
             return type(value)(*members)
-        except Exception:  # noqa: BLE001, S110 - a namedtuple subclass with its own constructor
-            pass
-    if isinstance(value, bytes | bytearray):
-        texts = [bytes(value).decode("utf-8", errors="replace")]
-    else:
+    except Exception:  # noqa: BLE001, S110 - a namedtuple subclass with its own constructor
+        pass
+    return tuple(members)
+
+
+def _repr_cost(value: Any, limit: int) -> int | None:
+    """How many values ``repr(value)`` writes, following lists, tuples and dicts
+    as repr does (a container it is already inside is written ``[...]``), or None
+    when that is more than *limit* or the count fails."""
+    count = 0
+    inside: set[int] = set()
+    stack: list[tuple[Any, bool]] = [(value, False)]
+    try:
+        while stack:
+            item, leaving = stack.pop()
+            if leaving:
+                inside.discard(id(item))
+                continue
+            count += 1
+            if not isinstance(item, dict | list | tuple) or id(item) in inside:
+                continue
+            members: list[Any] = (
+                [part for pair in dict.items(item) for part in pair]
+                if isinstance(item, dict)
+                else list(list.__iter__(item) if isinstance(item, list) else tuple.__iter__(item))
+            )
+            if count + len(members) > limit:
+                return None
+            inside.add(id(item))
+            stack.append((item, True))
+            stack.extend((member, False) for member in members)
+    except Exception:  # noqa: BLE001 - inside the logger: logging it would recurse
+        return None
+    return count if count <= limit else None
+
+
+class _LineWalk:
+    """The walk :class:`_LineScrub` and :class:`_LineRewrite` share over one
+    log line's values: dicts, lists and tuples (their subclasses too) are
+    rebuilt as plain ones, a namedtuple as its own type when its constructor
+    takes its members; it never raises.
+
+    A container is walked once for each depth it sits at, however many paths
+    reach it there: ``l = [l, l]`` nested 22 levels has four million paths to
+    its innermost list and 23 lists. Its result is kept with the container
+    itself, so the ``id`` it is kept by cannot pass to another object during the
+    line. A result is not kept when a loop closed inside it on a container
+    above it, whose place depends on the path: a loop that closes on the
+    container whose member it is (``l.append(l)``) closes there from any path,
+    so it does not count.
+
+    Past ``_MAX_SCRUB_DEPTH`` levels a container is written as the subclass's
+    ``_too_deep``, and past ``_MAX_LINE_VALUES`` values each container not yet
+    entered is written as ``_TOO_MANY``; the outermost one is always entered.
+    """
+
+    def __init__(self) -> None:
+        # The depth of each container (or __structlog__ value) being walked.
+        self._open: dict[int, int] = {}
+        self._done: dict[tuple[int, int], tuple[Any, Any]] = {}
+        # The shallowest open container a loop closed on, since the walk
+        # entered the current container, not counting its own member loops.
+        self._loop_depth = _NO_LOOP
+        self._values = 0
+
+    def _loop(self, value: Any) -> Any:
+        raise NotImplementedError
+
+    def _too_deep(self, value: Any) -> Any:
+        raise NotImplementedError
+
+    def _members(self, value: Any, depth: int) -> Any:
+        raise NotImplementedError
+
+    def _closes_loop(self, value: Any, depth: int) -> bool:
+        """Whether *value*, met at *depth*, is being walked already."""
+        opened = self._open.get(id(value))
+        if opened is None:
+            return False
+        if opened != depth - 1:
+            self._loop_depth = min(self._loop_depth, opened)
+        return True
+
+    def _container(self, value: Any, depth: int) -> Any:
+        if self._closes_loop(value, depth):
+            return self._loop(value)
+        if depth >= _MAX_SCRUB_DEPTH:
+            return self._too_deep(value)
+        key = (id(value), depth)
+        done = self._done.get(key)
+        if done is not None:
+            return done[1]
+        if depth and self._values >= _MAX_LINE_VALUES:
+            return _TOO_MANY
+        outer, self._loop_depth = self._loop_depth, _NO_LOOP
+        self._open[id(value)] = depth
+        try:
+            result = self._members(value, depth + 1)
+        except Exception:  # noqa: BLE001 - a subclass whose iteration raises
+            result = _unprintable(value)
+        finally:
+            del self._open[id(value)]
+        if self._loop_depth > depth:
+            self._done[key] = (value, result)
+        self._loop_depth = min(outer, self._loop_depth)
+        return result
+
+
+class _LineScrub(_LineWalk):
+    """Every secret replaced in one log line's values, whatever their types; it
+    never raises.
+
+    Strings are scrubbed; dicts (keys too, two that collide both kept), lists
+    and tuples are rebuilt with scrubbed members (see :class:`_LineWalk`). A
+    container that holds itself, where the loop closes, and one nested past
+    ``_MAX_SCRUB_DEPTH``, are logged as their scrubbed ``repr`` when that costs
+    no more than the line's remaining values, else as a fixed placeholder. Any
+    other value (an exception, a ``Path``, ``bytes`` decoded with replacement, a
+    set, an object) is logged as its text, scrubbed, when that text holds a
+    secret. One whose texts are clean is logged as what the scrub read: an int,
+    a float, ``bytes`` and the types in ``_FIXED_TYPES`` as they are, one whose
+    ``__structlog__`` method returns as :class:`_StructlogValue`, one whose
+    method raises as a :class:`_StructlogValue` carrying a fixed placeholder,
+    and any other as :class:`_ReadText`. A value whose ``str`` and ``repr``
+    both raise, or whose type cannot be checked, is logged as a fixed
+    placeholder. A dict key rebuilt as an unhashable value is logged as its
+    text.
+    """
+
+    def __init__(self, redact: Callable[[str], str]) -> None:
+        super().__init__()
+        self._redact = redact
+        self._reprs: dict[int, tuple[Any, str]] = {}
+
+    def text(self, text: str) -> str:
+        return self._redact(text)
+
+    def _as_text(self, value: Any, placeholder: str) -> str:
+        """*value*'s ``repr``, scrubbed, for a container the walk does not enter,
+        or *placeholder* when that repr writes more values than the line has
+        left. Python's repr follows every path, so a shared container's repr can
+        cost far more than its walk."""
+        known = self._reprs.get(id(value))
+        if known is not None:
+            return known[1]
+        cost = _repr_cost(value, _MAX_LINE_VALUES - self._values)
+        if cost is None:
+            self._values = _MAX_LINE_VALUES
+            text = placeholder
+        else:
+            self._values += cost
+            try:
+                text = self.text(repr(value))
+            except Exception:  # noqa: BLE001 - too deep for repr too
+                text = _unprintable(value)
+        self._reprs[id(value)] = (value, text)
+        return text
+
+    def _loop(self, value: Any) -> str:
+        return self._as_text(value, _loop_mark(value))
+
+    def _too_deep(self, value: Any) -> str:
+        return self._as_text(value, _TOO_MANY)
+
+    def _members(self, value: Any, depth: int) -> Any:
+        if isinstance(value, dict):
+            result: dict[Any, Any] = {}
+            for key, item in value.items():
+                scrubbed_key = _key(self(key, depth))
+                # Two keys that scrub to the same text both stay, the later one numbered.
+                candidate, number = scrubbed_key, 1
+                while candidate in result:
+                    number += 1
+                    candidate = f"{scrubbed_key} ({number})"
+                result[candidate] = self(item, depth)
+            return result
+        return _rebuilt(value, [self(member, depth) for member in value])
+
+    def _other(self, value: Any, depth: int) -> Any:
+        if isinstance(value, bytes | bytearray):
+            text = bytes(value).decode("utf-8", errors="replace")
+            scrubbed = self.text(text)
+            if scrubbed != text:
+                return scrubbed
+            # A copy of a bytearray, as read: a later member could change it.
+            return bytearray(value) if isinstance(value, bytearray) else value
         texts = _texts(value)
         if not texts:
             return _unprintable(value)
         if len(texts) == 1:
             # One of str and repr raises; the renderer would hit it (it prints a
             # repr), so the line carries the text that works.
-            return redact(texts[0])
-    for text in texts:
-        scrubbed = redact(text)
-        if scrubbed != text:
-            return scrubbed
-    return value
+            return self.text(texts[0])
+        for text in texts:
+            scrubbed = self.text(text)
+            if scrubbed != text:
+                return scrubbed
+        if isinstance(value, int | float) or type(value) in _FIXED_TYPES:
+            return value
+        if self._closes_loop(value, depth):
+            # Its own __structlog__ return led back to it: its repr ends the loop.
+            return texts[1]
+        try:
+            returned = value.__structlog__()
+        except AttributeError:
+            # No such method, as structlog's JSONRenderer reads it.
+            return _ReadText(texts[0], texts[1])
+        except Exception:  # noqa: BLE001 - the renderer's call could raise, or return a secret
+            return _StructlogValue(_unprintable(value), texts[0], texts[1])
+        if depth >= _MAX_SCRUB_DEPTH:
+            structlog_value: Any = self._as_text(returned, _TOO_MANY)
+        else:
+            self._open[id(value)] = depth
+            try:
+                structlog_value = self(returned, depth + 1)
+            finally:
+                del self._open[id(value)]
+        return _StructlogValue(structlog_value, texts[0], texts[1])
+
+    def __call__(self, value: Any, depth: int = 0) -> Any:
+        self._values += 1
+        try:
+            if value is None or isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return self.text(value)
+            if isinstance(value, dict | list | tuple):
+                return self._container(value, depth)
+            return self._other(value, depth)
+        except Exception:  # noqa: BLE001 - a type check that raises (a __class__ property)
+            return _unprintable(value)
 
 
 def _scrubbing_call(logger: GraftpunkLogger, name: str, secrets: tuple[str, ...]) -> Any:
@@ -263,9 +519,9 @@ def _scrubbing_call(logger: GraftpunkLogger, name: str, secrets: tuple[str, ...]
             # structlog's level filter drops this line: nothing is rendered, so
             # nothing needs scrubbing.
             return getattr(plain, name)(*args, **kwargs)
-        redact = text_redactor(secrets)
+        scrub = _LineScrub(text_redactor(secrets))
         # A fresh logger with scrubbed bound values: a module's LOG is shared.
-        bound = logger._with(_scrubbed(logger._initial_values, redact))._resolve()
+        bound = logger._with(scrub(logger._initial_values))._resolve()
         exc_info = kwargs.pop("exc_info", base == "exception" or None)
         target = name
         if exc_info:
@@ -277,7 +533,7 @@ def _scrubbing_call(logger: GraftpunkLogger, name: str, secrets: tuple[str, ...]
                 kwargs["exception"] = "".join(traceback.format_exception(*exc_info)).rstrip("\n")
             if base == "exception":
                 target = "aerror" if is_async else "error"
-        return getattr(bound, target)(*_scrubbed(args, redact), **_scrubbed(kwargs, redact))
+        return getattr(bound, target)(*scrub(args), **scrub(kwargs))
 
     return call
 
@@ -489,21 +745,55 @@ _redactions: ContextVar[tuple[tuple[str, str], ...]] = ContextVar(
 )
 
 
-def _redact(value: Any) -> Any:
-    if isinstance(value, str):
-        for secret, placeholder in _redactions.get():
-            value = value.replace(secret, placeholder)
+class _LineRewrite(_LineWalk):
+    """One log line's values with each :func:`redacted_values` pair applied; it
+    never raises.
+
+    Strings are rewritten, inside dicts (keys too), lists and tuples (see
+    :class:`_LineWalk`); any other value is kept as it is, and a dict key
+    rebuilt as an unhashable value is written as its text. A container that
+    holds itself is written where the loop closes as Python's repr writes it
+    (``[...]``), and one nested past ``_MAX_SCRUB_DEPTH`` as ``_TOO_DEEP``:
+    neither holds a value.
+    """
+
+    def __init__(self, pairs: tuple[tuple[str, str], ...]) -> None:
+        super().__init__()
+        self._pairs = pairs
+
+    def _loop(self, value: Any) -> str:
+        return _loop_mark(value)
+
+    def _too_deep(self, value: Any) -> str:
+        return _TOO_DEEP
+
+    def _members(self, value: Any, depth: int) -> Any:
+        if isinstance(value, dict):
+            return {_key(self(key, depth)): self(item, depth) for key, item in value.items()}
+        return _rebuilt(value, [self(item, depth) for item in value])
+
+    def __call__(self, value: Any, depth: int = 0) -> Any:
+        self._values += 1
+        try:
+            if isinstance(value, str):
+                for secret, placeholder in self._pairs:
+                    value = value.replace(secret, placeholder)
+                return value
+            if isinstance(value, dict | list | tuple):
+                return self._container(value, depth)
+        except Exception:  # noqa: BLE001 - a type check that raises (a __class__ property)
+            return _unprintable(value)
         return value
-    if isinstance(value, dict):
-        return {_redact(key): _redact(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return type(value)(_redact(item) for item in value)
-    return value
+
+
+def _redact(value: Any) -> Any:
+    return _LineRewrite(_redactions.get())(value)
 
 
 def _redacting_call(method: Any) -> Any:
     def call(*args: Any, **kwargs: Any) -> Any:
-        return method(*_redact(args), **_redact(kwargs))
+        rewrite = _LineRewrite(_redactions.get())
+        return method(*rewrite(args), **rewrite(kwargs))
 
     return call
 

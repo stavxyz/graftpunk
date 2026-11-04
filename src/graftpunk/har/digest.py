@@ -2129,8 +2129,31 @@ def _is_top_level_page_load(entry: HAREntry, method: str, content_type: str) -> 
 # What a run's redaction writes in place of a value (graftpunk.observe.run.REDACTED,
 # which this module cannot import): a text holding it can never match a page.
 REDACTED_MARK = "***REDACTED***"
-# An email address inside a value.
-_EMAIL_IN_VALUE_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+# An email address inside a value: [A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+,
+# found from each "@" by _emails_in.
+_EMAIL_LOCAL_CHARS = frozenset(string.ascii_letters + string.digits + "._%+-")
+_EMAIL_DOMAIN_RE = re.compile(r"@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+
+
+def _emails_in(text: str) -> list[str]:
+    """Every email address in *text*, as ``re.findall`` with the shape above finds
+    them, in time linear in its length. ``findall`` itself retried the local-part
+    run from each of its characters when no "@" ended it, which was quadratic in a
+    long value (#304's cause, here too). Each address starts where its local-part
+    run does, or where the address before it ended, if that is later."""
+    found: list[str] = []
+    floor = 0
+    at = text.find("@")
+    while at != -1:
+        start = at
+        while start > floor and text[start - 1] in _EMAIL_LOCAL_CHARS:
+            start -= 1
+        domain = _EMAIL_DOMAIN_RE.match(text, at) if start < at else None
+        if domain is not None:
+            found.append(text[start : domain.end()])
+            floor = domain.end()
+        at = text.find("@", at + 1)
+    return found
 
 
 def _after_read(credential_entries: Sequence[HAREntry], stepped_since: bool) -> str | None:
@@ -2191,7 +2214,7 @@ def _failure_candidates(
         text
         for text in credential_entries[marked[-1]].request.failure_text_candidates
         if REDACTED_MARK not in text
-        and not _EMAIL_IN_VALUE_RE.search(text)
+        and not _emails_in(text)
         and not holds_an_account_value(text, needles)
         and not any(failure_text_on_lowered_page(page, text) for page in lowered_pages)
     )
@@ -2274,9 +2297,7 @@ def post_account_values(
     if not usernames:
         usernames = _every_value_but_tokens(values)
     passwords = [value for path, value, _named in values if path and _password_like([path[-1]])]
-    emails = [
-        email for _path, value, _named in values for email in _EMAIL_IN_VALUE_RE.findall(value)
-    ]
+    emails = [email for _path, value, _named in values for email in _emails_in(value)]
     return [*usernames, *inner, *passwords, *emails]
 
 
