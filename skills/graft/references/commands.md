@@ -58,6 +58,7 @@ gp observe digest <session> <run> --json
 uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py cookies '<har>' --name '<cookie>'
 uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py request '<har>' '<url-part>' --method <METHOD>
 uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py response '<har>' '<url-part>' --method <METHOD>
+uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/har-facts.py operations '<har>'
 ```
 
 ### Scaffold

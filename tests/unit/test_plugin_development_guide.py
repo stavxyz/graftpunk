@@ -28,7 +28,7 @@ from graftpunk.devtools.plugin_info import info_payload
 from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.selection import command_identifier
-from graftpunk.har.naming import parse_command_spec
+from graftpunk.har.naming import parse_command_key
 from graftpunk.testing.sidecar import ObserveRun, Sidecar, sidecar_text
 from tests.unit.guide_harness import (
     GUIDE,
@@ -85,6 +85,7 @@ def test_the_sidecar_json_example_matches_sidecar_text_byte_for_byte() -> None:
         checked_names=tuple(doc_json["checked_names"]),
         observe_run=ObserveRun(**doc_json["observe_run"]),
         redacted_names=doc_json["redacted_names"],
+        graphql_operation=doc_json.get("graphql_operation"),
     )
     assert block.strip() == sidecar_text(sidecar).strip()
 
@@ -356,7 +357,7 @@ def test_every_command_value_parses(where: str, value: str) -> None:
     one the CLI accepts; a value it refuses would fail in the reader's terminal.
     The name rules the digest does not decide are all checked here: the
     identifier rule, the reserved names, and the generated module's own names."""
-    name, _method, _template = parse_command_spec(value)
+    name, _method, _template, _operation = parse_command_key(value)
     identifier = command_identifier(name)
     assert identifier not in policy.RESERVED_COMMAND_NAMES, f"{where}: {value}"
     assert identifier not in policy.GENERATED_MODULE_NAMES, f"{where}: {value}"

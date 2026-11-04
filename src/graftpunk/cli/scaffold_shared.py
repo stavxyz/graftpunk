@@ -17,7 +17,7 @@ from rich.markup import escape
 
 from graftpunk.devtools.scaffold.render import OtherHostCommand
 from graftpunk.devtools.scaffold.selection import CommandSelection
-from graftpunk.har.naming import EndpointSpecError, parse_command_spec
+from graftpunk.har.naming import EndpointSpecError, parse_command_key
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -30,17 +30,20 @@ plugin_app = typer.Typer(
 
 def command_selections(values: list[str]) -> tuple[CommandSelection, ...]:
     """Every ``--command`` value as a selection, refusing the first that does not parse
-    with :func:`parse_command_spec`'s own text. Every scaffold command that takes
-    ``--command`` calls this, and none splits a value itself."""
+    with :func:`parse_command_key`'s own text (a GraphQL operation in parentheses
+    included). Every scaffold command that takes ``--command`` calls this, and none
+    splits a value itself."""
     selections: list[CommandSelection] = []
     for value in values:
         try:
-            name, method, template = parse_command_spec(value)
+            name, method, template, operation = parse_command_key(value)
         except EndpointSpecError as exc:
             LOG.debug("scaffold_refused", reason="bad_command")
             console.print(f"[red]--command: {escape(str(exc))}[/red]", soft_wrap=True)
             raise typer.Exit(1) from None
-        selections.append(CommandSelection(name=name, method=method, template=template))
+        selections.append(
+            CommandSelection(name=name, method=method, template=template, operation=operation)
+        )
     return tuple(selections)
 
 

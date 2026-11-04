@@ -670,6 +670,7 @@ class TestFixturesCommand:
             "observe_run",
             "redacted_names",
         }
+        # No GraphQL operation: schema 4, which a graftpunk before 1.39.0 reads (#367).
         assert sidecar["schema"] == 4
         assert sidecar["observe_run"] == {"plugin": "myshop", "run": "run-1"}
         assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
@@ -1138,10 +1139,10 @@ class TestMatchPatternValidation:
         )
         assert result.exit_code == 0, result.output
 
-    def test_the_matcher_takes_its_halves_from_parse_endpoint(
+    def test_the_matcher_takes_its_halves_from_parse_endpoint_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A grammar change made in parse_endpoint alone reaches the matcher: the
+        """A grammar change made in parse_endpoint_key alone reaches the matcher: the
         matcher never splits a pattern itself."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
@@ -1152,8 +1153,8 @@ class TestMatchPatternValidation:
             [_entry("GET", "https://api.myshop.example.com/synthetic/1", body='{"id": 1}')],
         )
         monkeypatch.setattr(
-            "graftpunk.cli.observe_commands.parse_endpoint",
-            lambda value: ("GET", "/synthetic/*"),
+            "graftpunk.cli.observe_commands.parse_endpoint_key",
+            lambda value: ("GET", "/synthetic/*", ""),
         )
         out_dir = tmp_path / "out"
         result = runner.invoke(

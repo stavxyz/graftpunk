@@ -9,30 +9,31 @@ summary and the recording's `primary_host`. A row's `custom_headers_not_shown`
 counts header names held back as values: ask the user for them. A row with
 `body_not_captured` set has a request body gp could not read field names from,
 so its `body_params` are empty or partial: say so in the row rather than
-proposing a command with no inputs. The markdown digest's line for the endpoint
-says why. For `body not text`, the body is binary and its file in the run's
-`bodies/` directory is named on the line; the HAR reader reports its size
-class, and the user decides what the command sends. For `body left out`, the
-capture that made the recording had nowhere on disk to put the body, which gp's
-own recorders never lack; a new recording of that flow, made the way
-`references/commands.md` records one, keeps the body. For `body not captured`,
-the recording holds no copy of the body at all. Build the proposal from that projection, which is shaped for it;
-`references/har.md` says where to look for what it leaves out.
+proposing a command with no inputs. The markdown digest's line says why: `body
+not text` names the binary body's file in `bodies/` (the user decides what the
+command sends); `body left out` means the capture had nowhere to put it, and a
+new recording made the way `references/commands.md` records one keeps it; `body
+not captured` means the recording holds no copy. Build the proposal from the
+projection; `references/har.md` says where to look for what it leaves out.
+
+A row with `operation` (schema 2) is one GraphQL operation, `body_params` its
+variables, `<METHOD> <template> (<operation>)` its `--command` key, and for the
+unnamed ones `POST /graphql (anonymous)`, never `((anonymous))`. Propose a command
+per wanted operation, named from it (`orders` for `OrdersByCustomer`); the HAR
+reader's `operations` gives the key, calls, kind, shapes, and variables' sources.
 
 ## The base host
 
 Each row's `host` is compared with the base host, the host of the plugin's
 `base_url`: the generator writes a relative path for an endpoint on it and an
 absolute URL for any other. In enhance mode it is the host of the plugin's
-`base_url` in `project.plugins`; when that is null or has no host, every row
-shows its host. In create mode it is `primary_host` (the host the digest picks
-as the recording's main one, which can be a CDN or an API subdomain; guide:
-Scaffold) unless the user picks another: when the host of the site URL the user
-gave differs from `primary_host`, ask once, before showing the table, which of
-the two is the plugin's base, naming both. If the user picks the site URL's
-host, the scaffold step runs the `--url` line of the Scaffold block with the
-site URL's scheme and host, and its port if it has one, in place of
-`<base-url>`, with no path and no trailing slash.
+`base_url` in `project.plugins` (when null or hostless, every row shows its
+host). In create mode it is `primary_host` (the digest's pick, which can be a
+CDN or an API subdomain; guide: Scaffold) unless the user picks another: when
+the host of the site URL the user gave differs, ask once, before the table,
+which of the two is the base, naming both. If the user picks the site URL's,
+the scaffold step runs the `--url` line of the Scaffold block with its scheme,
+host and any port as `<base-url>`, with no path and no trailing slash.
 
 ## The rules, in order
 
@@ -62,8 +63,8 @@ site URL's scheme and host, and its port if it has one, in place of
 5. Ask one question, "keep, rename, or drop any of these?", and apply the
    answer. A want with no endpoint goes back to the capture step for that flow.
 
-The stub's request call (`request_json` or `request_text`) is the generator's
-decision; the table reports `content_type` and `shape`, never the call.
+The stub's request call is the generator's decision; the table reports
+`content_type` and `shape`, never the call.
 
 The `login` summary tells a plain form from a redirect. `auth_urls` lists only
 the login's own observations, each of kind `form_page`, `credential_post`,
@@ -80,14 +81,13 @@ opens it and add a click-only `LoginStep`. No `forms` beside a credential post
 means no login form was recorded. Confirm the login shape only when the summary
 leaves it open, alone, after the keep, rename, or drop answer, before scaffolding.
 
-`forms` holds each login form's `action`, its `fields` selectors by role, its
-`submit` selector, `neutral_roles`, `unresolved_roles`, and `opener_candidate` (the
-selector of the click the recording suggests opened the form, or null). Name every
-unresolved role in the proposal: the generated login config carries a `GP-FILL` for
-each, which the implement step fills from the login form's field names the HAR reader
-prints for the login page (`references/har.md`), or, when the recording does not hold
-them, with a selector the user reads off the login page in their browser (guide:
-Login). `success_candidates` and `failure_candidates` hold suggestions (step 5).
+`forms` holds each login form's `action`, `fields` selectors by role, `submit`
+selector, `neutral_roles`, `unresolved_roles`, and `opener_candidate` (the click
+the recording suggests opened the form, or null). Name every unresolved role in the
+proposal: the generated login config carries a `GP-FILL` for each, which the
+implement step fills from the login page's field names the HAR reader prints
+(`references/har.md`), or else with a selector the user reads off the login page
+(guide: Login). `success_candidates` and `failure_candidates` hold suggestions.
 
 ## A worked example
 

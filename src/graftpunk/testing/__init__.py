@@ -11,18 +11,30 @@ design note).
 from __future__ import annotations
 
 import glob
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import requests
 
+from graftpunk.exceptions import GraftpunkError
 from graftpunk.graftpunk_session import GraftpunkSession
-from graftpunk.har.naming import capture_slug
+from graftpunk.har.graphql import request_operation
+from graftpunk.har.naming import capture_slug, parse_endpoint_key
 from graftpunk.plugins.cli_plugin import CommandContext, PluginConfig
 from graftpunk.testing.sidecar import is_sidecar, load_sidecar, sidecar_path
 
-__all__ = ["FixtureSession", "fixture_context", "make_context"]
+__all__ = [
+    "FixtureAnswer",
+    "FixtureNotFoundError",
+    "FixtureRequest",
+    "FixtureSession",
+    "fixture_context",
+    "make_context",
+]
 
 _CONTENT_TYPE_BY_SUFFIX: dict[str, str] = {
     ".json": "application/json",
@@ -32,6 +44,53 @@ _CONTENT_TYPE_BY_SUFFIX: dict[str, str] = {
 }
 _DEFAULT_FIXTURE_CONTENT_TYPE = "application/octet-stream"
 _PREFERRED_FIXTURE_SUFFIX = ".json"
+
+
+class FixtureNotFoundError(GraftpunkError, LookupError):
+    """A GraphQL request ``FixtureSession`` has no fixture or answer for. Raised, not
+    answered 404, so a command sending an operation nobody recorded fails its test."""
+
+
+@dataclass(frozen=True)
+class FixtureRequest:
+    """One request a ``FixtureSession`` was sent: its method, URL path, GraphQL
+    operation (None for a request that carried none, a batch included) and that
+    operation's variables, and the decoded body (``json=``, or ``data=`` read as
+    JSON when it parses, else as given; None when it sent none)."""
+
+    method: str
+    path: str
+    operation: str | None
+    variables: dict[str, Any] | None
+    body: Any
+
+
+@dataclass(frozen=True)
+class FixtureAnswer:
+    """A response ``FixtureSession.answer`` registered for a row."""
+
+    status: int
+    content_type: str
+    body: bytes
+
+
+def _request_body(kwargs: Mapping[str, Any]) -> Any:
+    """The body a request call sends, decoded: ``json=`` as given, ``data=`` text
+    or bytes parsed as JSON when it is JSON, else as given."""
+    if kwargs.get("json") is not None:
+        return kwargs["json"]
+    data = kwargs.get("data")
+    if isinstance(data, bytes):
+        try:
+            data = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return data
+    if isinstance(data, str):
+        try:
+            return json.loads(data)
+        except ValueError:
+            return data
+    return data
 
 
 def _fixture_preference(path: Path) -> tuple[int, str]:
@@ -95,17 +154,81 @@ class FixtureSession(GraftpunkSession):
     directory holds both a ``.html`` and a ``.json`` for one stem is a JSON
     endpoint with an error page beside it, and plain sorted order served the
     error page.
+
+    A request whose body (``json=``, or ``data=`` that parses as JSON) is one
+    GraphQL operation (:func:`graftpunk.har.graphql.request_operation`) is
+    answered from the stem with the operation added, ``post_graphql(OrdersByCustomer)``,
+    the name ``gp observe fixtures`` writes for that operation, and from nothing
+    else: with no such file it raises :class:`FixtureNotFoundError`, so a command
+    sending an operation no fixture holds fails its test (#367). A batch is looked
+    up by the plain stem.
+
+    ``requests`` lists every request the session was sent, in order, as
+    :class:`FixtureRequest` (method, path, operation, variables, decoded body), for
+    a test to assert what a command sent; a request is listed before it is answered,
+    so one that raised :class:`FixtureNotFoundError` or was answered 404 is listed
+    too. :meth:`answer` registers a response for one row (an error status,
+    an empty or HTML body) that wins over the directory.
     """
 
     def __init__(self, fixtures_dir: Path | str, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._fixtures_dir = Path(fixtures_dir)
+        self._answers: dict[tuple[str, str, str], FixtureAnswer] = {}
+        self.requests: list[FixtureRequest] = []
+
+    def answer(
+        self,
+        key: str,
+        *,
+        status: int = 200,
+        content_type: str = "application/json",
+        body: str | bytes = b"",
+    ) -> None:
+        """Answer every later request for *key* with this response instead of a
+        fixture file: an error, an empty, or an HTML response a test needs beside
+        the recorded fixtures, with no file to write. *key* is a row as the digest
+        prints it, ``"POST /graphql (OrdersByCustomer)"`` or ``"GET /api/orders"``,
+        the path literal (no placeholder, no glob). A later call for the same key
+        replaces the earlier one.
+
+        Raises:
+            graftpunk.har.naming.EndpointSpecError: *key* does not read as a row.
+        """
+        method, path, operation = parse_endpoint_key(key)
+        content = body.encode("utf-8") if isinstance(body, str) else bytes(body)
+        self._answers[(method, capture_slug(method, path), operation)] = FixtureAnswer(
+            status=status, content_type=content_type, body=content
+        )
 
     def request(  # ty: ignore[invalid-method-override]
         self, method: str, url: str, **kwargs: Any
     ) -> requests.Response:
         path = urlparse(url).path or "/"
-        stem = capture_slug(method, path)
+        body = _request_body(kwargs)
+        operation = request_operation(body, path=path)
+        name = "" if operation is None else operation.name
+        self.requests.append(
+            FixtureRequest(
+                method=method.upper(),
+                path=path,
+                operation=operation.name if operation is not None else None,
+                variables=dict(operation.variables or {}) if operation is not None else None,
+                body=body,
+            )
+        )
+        response = requests.Response()
+        response.request = requests.PreparedRequest()
+        response.request.method = method.upper()
+        response.request.url = url
+        response.url = url
+        override = self._answers.get((method.upper(), capture_slug(method, path), name))
+        if override is not None:
+            response.status_code = override.status
+            response.headers["Content-Type"] = override.content_type
+            response._content = override.body
+            return response
+        stem = capture_slug(method, path, name)
         matches = sorted(
             (
                 p
@@ -116,11 +239,15 @@ class FixtureSession(GraftpunkSession):
             ),
             key=_fixture_preference,
         )
-        response = requests.Response()
-        response.request = requests.PreparedRequest()
-        response.request.method = method.upper()
-        response.request.url = url
-        response.url = url
+        if not matches and operation is not None:
+            # Loud, never a 404 or another operation's file: a test of a command
+            # sending an operation it has no fixture for must fail (#367).
+            raise FixtureNotFoundError(
+                f"No fixture answers {method.upper()} {path} operation {operation.name}: "
+                f"{self._fixtures_dir / stem}.<ext> does not exist. Write it with gp observe "
+                f'fixtures --match "{method.upper()} {path} ({operation.name.strip("()")})", '
+                "or answer it with FixtureSession.answer."
+            )
         if not matches:
             response.status_code = 404
             response._content = b""

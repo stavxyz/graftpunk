@@ -73,6 +73,9 @@ header, query, or body value; answer from its output:
   header and set cookie names, and the body's shape, JSON keys and types or an
   HTML page's title length and its forms, each with its method, templated
   action, and controls by name (or by position) and input type.
+- `operations`: each GraphQL operation on the digest's hosts, keyed as the digest
+  keys it, its calls (and batched ones), kind, nested variable and response keys
+  and types, then which response field fed which later variable, by name.
 
 Names and path segments print only when they pass a heuristic gate for field
 names, which also lets fixed framework names through (CDN and bot-manager

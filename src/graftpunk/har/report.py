@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from graftpunk.contracts import current_schema
+from graftpunk.contracts import ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS, current_schema
 from graftpunk.har.digest import (
     INTERNAL,
     OMIT_EMPTY,
@@ -34,6 +34,7 @@ from graftpunk.har.digest import (
     run_header_names_not_shown,
 )
 from graftpunk.har.documents import LoginForm, printable_selectors, printable_unresolved_roles
+from graftpunk.har.graphql import operation_kind
 from graftpunk.har.paths import printable_name, templated_url, templates_a_segment
 
 __all__ = [
@@ -134,7 +135,9 @@ def _cookie_lines(d: RunDigest) -> list[str]:
 
 
 def _endpoint_block(endpoint: Endpoint, spellings: Mapping[str, str]) -> list[str]:
-    lines = [f"### {'/'.join(endpoint.methods)} {endpoint.template}", ""]
+    lines = [f"### {endpoint.key}", ""]
+    if endpoint.operation:
+        lines.append(f"- GraphQL operation: {_operation_kind(endpoint)}")
     if endpoint.family_members:
         values = ", ".join(family_values(endpoint))
         lines.append(
@@ -149,7 +152,13 @@ def _endpoint_block(endpoint: Endpoint, spellings: Mapping[str, str]) -> list[st
         lines.append(f"- query params: {params}")
     if endpoint.body_params:
         params = ", ".join(f"{k}: {v}" for k, v in sorted(endpoint.body_params.items()))
-        lines.append(f"- body params ({endpoint.body_kind}): {params}")
+        label = "variables" if endpoint.operation else f"body params ({endpoint.body_kind})"
+        lines.append(f"- {label}: {params}")
+    if endpoint.operation_batched:
+        lines.append(
+            f"- batched: {endpoint.operation_batched} of {endpoint.count} recording(s) sent it "
+            "in a batch, which is never a fixture"
+        )
     if endpoint.body_not_captured:
         lines.append(
             f"- body not captured: {endpoint.body_not_captured} of {endpoint.count} "
@@ -178,7 +187,10 @@ def _endpoint_block(endpoint: Endpoint, spellings: Mapping[str, str]) -> list[st
             if hidden == 1
             else f"- {hidden} custom headers whose names read as values are not shown"
         )
-    lines.append(f"- shape: {summarize_shape(endpoint.shape)}")
+    if endpoint.operation and endpoint.operation_batched == endpoint.count:
+        lines.append("- shape: unknown (every recording was in a batch)")
+    else:
+        lines.append(f"- shape: {summarize_shape(endpoint.shape)}")
     if endpoint.inline_json is not None:
         lines.append(
             f"- inline JSON state: `{endpoint.inline_json.target}`, "
@@ -190,8 +202,15 @@ def _endpoint_block(endpoint: Endpoint, spellings: Mapping[str, str]) -> list[st
     return lines
 
 
-def _endpoint_sort_key(endpoint: Endpoint) -> tuple[bool, int, str]:
-    return (endpoint.shape is None, -endpoint.count, endpoint.template)
+def _operation_kind(endpoint: Endpoint) -> str:
+    """``query``, ``mutation``, ``subscription``, or ``persisted query (no document
+    recorded)`` for an operation row."""
+    kind = operation_kind(endpoint.graphql_document)
+    return "persisted query (no document recorded)" if kind == "persisted" else kind
+
+
+def _endpoint_sort_key(endpoint: Endpoint) -> tuple[bool, int, str, str]:
+    return (endpoint.shape is None, -endpoint.count, endpoint.template, endpoint.operation)
 
 
 def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
@@ -321,6 +340,20 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
         )
         lines.append("")
 
+    if d.shared_values:
+        lines.append("## Shared values")
+        lines.append(
+            "GraphQL variables that sent a value an earlier response field held, by name "
+            "only (the values are not shown):"
+        )
+        for shared in d.shared_values:
+            lines.append(
+                f"- {shared.source_operation} `{shared.source_path}` -> "
+                f"{shared.target_operation} `variables.{shared.target_variable}` "
+                f"({shared.count} request(s))"
+            )
+        lines.append("")
+
     other_hosts = {h: c for h, c in d.hosts.items() if h != d.primary_host}
     if other_hosts:
         lines.append("## Other hosts")
@@ -443,6 +476,8 @@ def _projected_endpoint(
         > 0,
     }
     _put_custom_headers(projected, endpoint, spellings)
+    if endpoint.operation:
+        projected["operation"] = endpoint.operation
     if endpoint.family_members:
         projected["family_members"] = list(endpoint.family_members)
     if endpoint.inline_json is not None:
@@ -489,11 +524,22 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     (:func:`graftpunk.har.digest.printable_custom_headers`, #347), and an entry
     that left any out carries ``custom_headers_not_shown``, how many. Added within
     schema 1, on those entries only.
+
+    Schema 2 (#367) adds ``operation`` on a GraphQL operation row, the operation's
+    name or ``(anonymous)``, whose ``body_params`` are the operation's variables. On
+    such a run ``method`` and ``template`` repeat across entries, and ``operation``
+    tells them apart, so a projection holding any operation row is schema 2, which
+    a reader written for schema 1 refuses at once. A run without one is written as
+    schema 1, what it printed before
+    (:data:`graftpunk.contracts.ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS`).
     """
     source = d.source
     spellings = header_spellings(d)
+    with_operations = any(endpoint.operation for endpoint in d.endpoints)
     return {
-        "schema": current_schema("endpoints"),
+        "schema": current_schema("endpoints")
+        if with_operations
+        else ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS,
         "source": {
             "session": source.session,
             "run_id": source.run_id,

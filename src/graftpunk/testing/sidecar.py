@@ -41,6 +41,11 @@ every value that run recorded when the run is on the machine running the suite
 (:mod:`graftpunk.testing.recorded`); null for a fixture that came off no run. It
 is never a path, never holds an account label, and holds nothing derived from a
 recorded value. Schema 4 also adds the context reason ``out_of_scope_only``.
+From schema 5, ``graphql_operation`` names the GraphQL operation the captured
+request carried (``graftpunk.har.graphql``), its name or ``(anonymous)``, the same
+one the fixture's file name holds; null in a hand-made schema 5 sidecar (#367). A
+sidecar of a request that carried no operation is written as schema 4, so a
+graftpunk older than 1.39.0 still reads it.
 A name that holds an account value
 (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``
@@ -71,7 +76,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from graftpunk.contracts import UnknownSchemaError, current_schema, refuse_unknown_schema
+from graftpunk.contracts import (
+    SIDECAR_SCHEMA_WITHOUT_OPERATION,
+    UnknownSchemaError,
+    current_schema,
+    refuse_unknown_schema,
+)
 from graftpunk.exceptions import GraftpunkError
 
 __all__ = [
@@ -142,6 +152,20 @@ SIDECAR_FIELDS: dict[int, frozenset[str]] = {
             "flagged_reasons",
             "checked_names",
             "observe_run",
+            "redacted_names",
+        }
+    ),
+    5: frozenset(
+        {
+            "status",
+            "content_type",
+            "body_params",
+            "capture_sha256",
+            "flagged_names",
+            "flagged_reasons",
+            "checked_names",
+            "observe_run",
+            "graphql_operation",
             "redacted_names",
         }
     ),
@@ -248,6 +272,9 @@ class Sidecar:
     # The observe run the capture came from; None for a sidecar from before schema
     # 4, a hand-made fixture's, or one whose writer was not given the run.
     observe_run: ObserveRun | None = None
+    # The GraphQL operation the captured request carried; None for a sidecar from
+    # before schema 5, a request that was not GraphQL, or a hand-made fixture's.
+    graphql_operation: str | None = None
 
     def __post_init__(self) -> None:
         """Hold every field to the loader's own type and sign checks, sort and dedupe
@@ -293,6 +320,13 @@ class Sidecar:
         if self.observe_run is not None and not isinstance(self.observe_run, ObserveRun):
             raise SidecarError(
                 f"observe_run must be an ObserveRun or None, got {self.observe_run!r}"
+            )
+        if self.graphql_operation is not None and (
+            not isinstance(self.graphql_operation, str) or not self.graphql_operation.strip()
+        ):
+            raise SidecarError(
+                "graphql_operation must be a non-empty string or None, got "
+                f"{self.graphql_operation!r}"
             )
 
     @property
@@ -353,7 +387,8 @@ def is_sidecar(path: Path) -> bool:
 
 
 def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
-    """*sidecar* as the current schema's JSON object.
+    """*sidecar* as a JSON object: the current schema when it names a GraphQL
+    operation, else schema 4, which holds every other key.
 
     Raises:
         SidecarError: *sidecar* has flagged names and no reasons for them (a
@@ -370,7 +405,7 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
     # copies), and one changed after construction must not reach a file the
     # loader would refuse.
     reasons = _checked_reasons(sidecar)
-    return {
+    payload: dict[str, object] = {
         "schema": current_schema("sidecar"),
         "status": sidecar.status,
         "content_type": sidecar.content_type,
@@ -384,8 +419,13 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
             if sidecar.observe_run is None
             else {"plugin": sidecar.observe_run.plugin, "run": sidecar.observe_run.run}
         ),
+        "graphql_operation": sidecar.graphql_operation,
         "redacted_names": sidecar.redacted_names,
     }
+    if sidecar.graphql_operation is None:
+        payload["schema"] = SIDECAR_SCHEMA_WITHOUT_OPERATION
+        del payload["graphql_operation"]
+    return payload
 
 
 def sidecar_text(sidecar: Sidecar) -> str:
@@ -436,6 +476,9 @@ def load_sidecar(path: Path) -> Sidecar:
     flagged_reasons = _reasons(data, path) if "flagged_reasons" in fields else {}
     checked_names = _names(data, "checked_names", path) if "checked_names" in fields else None
     observe_run = _observe_run(data, path) if "observe_run" in fields else None
+    graphql_operation = (
+        _optional_text(data, "graphql_operation", path) if "graphql_operation" in fields else None
+    )
     for name, why in flagged_reasons.items():
         newer = sorted(r for r in why if _REASON_SINCE.get(r, 0) > version)
         if newer:
@@ -460,6 +503,7 @@ def load_sidecar(path: Path) -> Sidecar:
             flagged_reasons=flagged_reasons,
             checked_names=checked_names,
             observe_run=observe_run,
+            graphql_operation=graphql_operation,
         )
     except SidecarError as exc:
         raise SidecarError(f"{path}: {exc}") from exc

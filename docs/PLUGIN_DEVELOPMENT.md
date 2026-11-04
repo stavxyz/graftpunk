@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.38.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.39.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -1240,6 +1240,98 @@ because `login_config` drives it. A value that does not split into a name, an
 ```text
 --command: 'get /api/orders' is not a "METHOD template" pair. Write the method in capitals, a space, then the template, as in "GET /orders/{order_id}".
 ```
+
+### GraphQL operations
+
+A GraphQL site sends most of its requests to one path, so the digest does not
+make that path one row. A request whose JSON body holds a `query` that parses as
+a GraphQL document, or an `operationName` beside `extensions.persistedQuery`, is
+filed under its operation, and each operation is a row of its own with its own
+count, variables, and response shape. A document that is only the `{ ... }`
+shorthand, sent with no `operationName`, counts only on a path holding `graphql`
+or beside a `variables` or `extensions` object, so a search API's
+`{"query": "{name:jane}"}` keeps its plain row:
+
+```text
+### POST /graphql (OrdersByCustomer)
+
+- GraphQL operation: query
+- host: `myshop.example.com`, count: 3, statuses: [200]
+- content type: `application/json`
+- variables: customerId: str, first: int, status: str
+- shape: object{data}
+```
+
+The operation is the request's `operationName`, else the name in the document,
+else `(anonymous)`. Each element of a batch (a JSON array of operations) counts
+for its operation, but a batch is never an operation's fixture, since its one
+response answers them all. A JSON POST to the same path that is not GraphQL
+keeps a plain `POST /graphql` row. `--endpoints-json` carries `operation` on these
+rows, and their `body_params` are the variables; a projection holding any of them
+is schema 2.
+
+Take the whole row as the key:
+
+```bash
+gp plugin new myshop --from-run myshop --command "orders=POST /graphql (OrdersByCustomer)" --command "add-to-cart=POST /graphql (AddToCart)"
+```
+
+Each GraphQL command calls one helper on the plugin class, `_graphql`, with its
+operation, its variables, and its document file's name. The helper sends
+`operationName`, the document it reads from
+`src/graftpunk_myshop/graphql/<path>_<Operation>.graphql`
+(`graphql_OrdersByCustomer.graphql` here; the command's name stands in for an
+anonymous operation), the variables you gave, the `extensions` the recording
+sent unchanged on every operation, less any part that is not form state, and the
+custom header names the GraphQL requests carried, whose values you fill in.
+
+Only form state, the same for every account, is written into the plugin as a
+value: a bool or null under any name; an integer under 1000 under a paging or
+size name (`first`, `last`, `limit`, `offset`, `page`, `pageSize`, `perPage`,
+`size`, `count`, `take`, `skip`); or a capitalised enum value such as `OPEN`
+under a setting name (`status`, `state`, `sort`, `sortBy`, `order`, `orderBy`,
+`direction`, `type`, `kind`, `mode`, `filter`, `format`, `locale`, `currency`,
+`category`) that no login, cookie, or token header carried. Names compare in any
+case and with any separator. A float, an id of any length, a name, an email
+address, and any other value stay out of the source. That rule decides three
+things:
+
+- A variable is an option, and its recorded value is the option's default only
+  when it passes. Otherwise the option defaults to None, and a `GP-FILL` names
+  the variable and its type and says a value was recorded.
+- A value written inline in the document (a number, a string, or an enum value
+  such as `owner: JSMITH`) is read under its argument's name
+  (`first` in `orders(first: 10)`), an input object field's name, or, for a
+  variable's default, the variable's name. One that fails is taken out of the
+  `.graphql` file, which stays valid GraphQL: an argument's value becomes a new
+  variable (`customer(id: 40213)` becomes `customer(id: $id)`, with `$id: ID!`
+  added to the operation, a type guessed for you to check) and an option of the
+  command, and a variable's default is removed. A `GP-FILL` comment at the top of
+  the file lists each, without its value.
+- An extension's keys and values go through it one by one, and one that fails is
+  left out and named in a `GP-FILL` in the helper.
+
+A persisted query recorded with no document is sent by its hash. One recorded
+with neither a document nor a hash gets a stub that raises until you add one,
+and no generated test.
+
+To find where such a value comes from, read the digest's Shared values section
+(and `--json`'s `shared_values`): each pair of a response field and a later
+operation's variable that carried the same value in the recording, by name only,
+such as ``LoginMutation `data.login.customer.customerId` -> OrdersByCustomer
+`variables.customerId` ``. The values themselves are never printed.
+
+`gp observe fixtures` names a fixture by its operation, so
+`--match "POST /graphql (OrdersByCustomer)"` writes
+`post_graphql(OrdersByCustomer).json`, and `--match "POST /graphql (*)"` writes
+one per operation. `FixtureSession` answers a GraphQL request from that file
+only. When it is missing it raises `FixtureNotFoundError` rather than answer
+404, so a command that sends an operation nobody recorded fails its test. It
+records every request it is sent in `session.requests` (method, path,
+operation, variables, and body), a request that raised or was answered 404
+included, and `session.answer("POST /graphql
+(OrdersByCustomer)", status=400, body=...)` answers one row without a file,
+for an error path.
 
 ### Add a command to an existing plugin
 
@@ -2507,6 +2599,14 @@ the run is on disk to turn the value check on. A graftpunk older than 1.35.0
 refuses a schema 4 sidecar, so a suite pinned below 1.35.0 needs its pin raised
 before it reads one.
 
+`graphql_operation` (from schema 5, graftpunk 1.39.0) names the GraphQL
+operation the captured request carried (`OrdersByCustomer`, or `(anonymous)`
+for one without a name), the same one the fixture's file name holds. Only a
+fixture of a GraphQL operation gets a schema 5 sidecar; every other sidecar is
+written as schema 4, as before. A graftpunk older than 1.39.0 refuses a schema 5
+sidecar (`sidecar: schema 5 is not one this graftpunk reads`), so a suite pinned
+below 1.39.0 needs its pin raised before it reads a GraphQL fixture's sidecar.
+
 `flagged_reasons` says why each flagged name is flagged, and the suite's
 problem line repeats it, so you can tell a form-state cookie from a session
 value without the recording: `token_candidate` (the digest found the name as a
@@ -2856,14 +2956,16 @@ gp version --contract info=1 --contract endpoints=1
 `gp version --json` prints one line:
 
 ```json
-{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "1.17.0"}
+{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "1.39.0"}
 ```
 
 `graftpunk` is the installed version, and `contracts` maps each machine-read
 surface a `gp` command prints to the schema version this graftpunk writes:
 `endpoints` is `gp observe digest --endpoints-json`, and `info` is
 `gp plugin info --json`. Both fields are permanent; fields are added to this
-payload and never renamed or removed.
+payload and never renamed or removed. `endpoints` is the schema every run is
+written at: a run with GraphQL operation rows is written at schema 2, which adds
+`operation`, so a reader that accepts it checks the projection's own `schema`.
 
 `--at-least VERSION` exits 0 when the installed graftpunk is at least VERSION
 and 1 when it is older, printing nothing either way unless `--json` is also

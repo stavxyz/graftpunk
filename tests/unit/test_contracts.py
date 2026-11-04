@@ -22,24 +22,26 @@ from graftpunk.contracts import (
     cli_contracts,
     contract_mismatch,
     current_schema,
+    handshake_schema,
     refuse_unknown_schema,
+    written_schemas,
 )
 
 _PACKAGE = Path(graftpunk.__file__).parent
 # A schema number written as a literal anywhere but contracts.py: a "schema" key
-# with a digit, a schema= keyword with a digit, or a *_SCHEMA constant with a digit.
+# with a digit, a schema= keyword with a digit, or a *_SCHEMA* constant with a digit.
 _LITERAL_SCHEMA_RE = re.compile(
-    r"""["']schema["']\s*:\s*\d|\bschema\s*=\s*\d|_SCHEMA\s*(?::[^=\n]*)?=\s*\d"""
+    r"""["']schema["']\s*:\s*\d|\bschema\s*=\s*\d|_SCHEMA\w*\s*(?::[^=\n]*)?=\s*\d"""
 )
 
 
 class TestCurrentNumbers:
     def test_one_number_per_surface(self) -> None:
-        assert current_schema("endpoints") == ENDPOINTS_SCHEMA == 1
-        assert current_schema("sidecar") == SIDECAR_SCHEMA == 4
+        assert current_schema("endpoints") == ENDPOINTS_SCHEMA == 2
+        assert current_schema("sidecar") == SIDECAR_SCHEMA == 5
 
     def test_cli_contracts_lists_every_surface_a_caller_reads_through_the_cli(self) -> None:
-        assert cli_contracts() == {surface: current_schema(surface) for surface in CLI_SURFACES}
+        assert cli_contracts() == {surface: handshake_schema(surface) for surface in CLI_SURFACES}
         assert "sidecar" not in cli_contracts()
 
     def test_every_surface_has_a_number_and_the_cli_ones_are_among_them(self) -> None:
@@ -47,6 +49,17 @@ class TestCurrentNumbers:
         without being declared, fails here rather than at a KeyError in a reader."""
         assert set(_CURRENT) == set(get_args(Surface))
         assert set(CLI_SURFACES) <= set(_CURRENT)
+
+    def test_the_handshake_reports_the_schema_every_run_writes(self) -> None:
+        """A GraphQL run's projection is schema 2 and any other run's schema 1, so the
+        handshake reports 1: a caller written for schema 1 keeps working (#367)."""
+        assert handshake_schema("endpoints") == 1
+        assert written_schemas("endpoints") == (1, 2)
+        assert written_schemas("info") == (1,)
+        assert written_schemas("sidecar") == (SIDECAR_SCHEMA,)
+        assert contract_mismatch("endpoints", 1) is None
+        assert "graftpunk is older than the caller" in (contract_mismatch("endpoints", 2) or "")
+        assert refuse_unknown_schema("endpoints", 2) == 2
 
     def test_the_info_surface_is_read_through_the_cli(self) -> None:
         assert current_schema("info") == INFO_SCHEMA == 1
@@ -61,7 +74,7 @@ class TestRefuseUnknownSchema:
         with pytest.raises(UnknownSchemaError, match="sidecar"):
             refuse_unknown_schema("sidecar", None)
 
-    @pytest.mark.parametrize("value", [0, 2, "1", True, 1.0])
+    @pytest.mark.parametrize("value", [0, 3, "1", True, 1.0])
     def test_an_unknown_number_is_refused_with_the_surface_named(self, value: object) -> None:
         with pytest.raises(UnknownSchemaError, match="endpoints"):
             refuse_unknown_schema("endpoints", value)
@@ -91,15 +104,16 @@ class TestAnUnknownSurface:
 class TestContractMismatch:
     """The gp version --contract handshake: equality, with the older side named."""
 
-    def test_the_current_number_matches(self) -> None:
-        assert contract_mismatch("endpoints", current_schema("endpoints")) is None
+    def test_the_handshake_number_matches(self) -> None:
+        assert contract_mismatch("endpoints", handshake_schema("endpoints")) is None
 
-    def test_an_older_caller_is_named(self) -> None:
-        message = contract_mismatch("endpoints", current_schema("endpoints") - 1)
+    def test_an_older_caller_is_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(contracts._HANDSHAKE, "endpoints", 2)
+        message = contract_mismatch("endpoints", 1)
         assert message is not None and "the caller is older than graftpunk" in message
 
     def test_a_newer_caller_is_named(self) -> None:
-        message = contract_mismatch("endpoints", current_schema("endpoints") + 1)
+        message = contract_mismatch("endpoints", handshake_schema("endpoints") + 1)
         assert message is not None and "graftpunk is older than the caller" in message
 
     def test_a_surface_no_caller_reads_through_the_cli_is_a_mismatch(self) -> None:

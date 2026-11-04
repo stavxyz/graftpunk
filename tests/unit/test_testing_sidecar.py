@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from graftpunk.contracts import current_schema
+from graftpunk.contracts import SIDECAR_SCHEMA_WITHOUT_OPERATION, current_schema
 from graftpunk.testing.sidecar import (
     CONTEXT_REASONS,
     FIXTURES_PLACEHOLDER,
@@ -75,9 +75,18 @@ class TestTheFormat:
         assert set(SIDECAR_FIELDS) == set(range(1, current_schema("sidecar") + 1))
 
     def test_the_payload_writes_exactly_the_current_schemas_keys(self) -> None:
-        payload = sidecar_payload(Sidecar(status=200, content_type="text/html"))
+        payload = sidecar_payload(
+            Sidecar(status=200, content_type="application/json", graphql_operation="Cart")
+        )
         assert set(payload) == SIDECAR_FIELDS[current_schema("sidecar")] | {"schema"}
         assert payload["schema"] == current_schema("sidecar")
+
+    def test_a_payload_naming_no_operation_writes_schema_4_s_keys(self) -> None:
+        """Schema 5 adds graphql_operation alone, so any other sidecar stays one a
+        graftpunk from 1.35.0 to 1.38.x reads (#367)."""
+        payload = sidecar_payload(Sidecar(status=200, content_type="text/html"))
+        assert set(payload) == SIDECAR_FIELDS[SIDECAR_SCHEMA_WITHOUT_OPERATION] | {"schema"}
+        assert payload["schema"] == SIDECAR_SCHEMA_WITHOUT_OPERATION == 4
 
     def test_a_version_with_no_key_set_is_a_sidecar_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
