@@ -142,6 +142,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ipaddress
 import json
 import re
 import sys
@@ -151,7 +152,7 @@ from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlparse, urlsplit
 
 _MAX_ENTRIES = 20
 _MAX_KEYS = 40
@@ -1641,6 +1642,7 @@ _GRAPHQL_TOKEN_RE = re.compile(
     r"|(?P<comment>#[^\n\r]*)"
     r"|(?P<ignored>[\s,﻿]+)"
 )
+_MAX_GRAPHQL_NESTING = 128
 
 
 def _graphql_tokens(document: str) -> list[tuple[str, str]] | None:
@@ -1657,6 +1659,211 @@ def _graphql_tokens(document: str) -> list[tuple[str, str]] | None:
     return tokens
 
 
+class _NotADocumentError(Exception):
+    pass
+
+
+class _DocumentReader:
+    """The executable document grammar's structure, as graftpunk's parser checks it:
+    ``(kind, name)`` per definition, kind ``shorthand`` for ``{ ... }``."""
+
+    def __init__(self, tokens: list[tuple[str, str]]) -> None:
+        self.tokens = tokens
+        self.at = 0
+        self.depth = 0
+
+    def _peek(self) -> tuple[str, str] | None:
+        return self.tokens[self.at] if self.at < len(self.tokens) else None
+
+    def _is(self, text: str) -> bool:
+        return self._peek() == ("punct", text)
+
+    def _is_name(self) -> bool:
+        token = self._peek()
+        return token is not None and token[0] == "name"
+
+    def _take(self) -> tuple[str, str]:
+        token = self._peek()
+        if token is None:
+            raise _NotADocumentError
+        self.at += 1
+        return token
+
+    def _punct(self, text: str) -> None:
+        if not self._is(text):
+            raise _NotADocumentError
+        self.at += 1
+
+    def _name(self) -> str:
+        if not self._is_name():
+            raise _NotADocumentError
+        return self._take()[1]
+
+    def _nest(self) -> None:
+        self.depth += 1
+        if self.depth > _MAX_GRAPHQL_NESTING:
+            raise _NotADocumentError
+
+    def document(self) -> list[tuple[str, str]]:
+        found: list[tuple[str, str]] = []
+        while self._peek() is not None:
+            found.append(self._definition())
+        operations = [d for d in found if d[0] != "fragment"]
+        if not found or (len(operations) > 1 and any(not d[1] for d in operations)):
+            raise _NotADocumentError
+        return found
+
+    def _definition(self) -> tuple[str, str]:
+        if self._is("{"):
+            self._selection_set()
+            return ("shorthand", "")
+        first = self._name()
+        if first == "fragment":
+            name = self._name()
+            if name == "on" or self._name() != "on":
+                raise _NotADocumentError
+            self._name()
+            self._directives(const=False)
+            self._selection_set()
+            return ("fragment", name)
+        if first not in _OPERATION_KEYWORDS:
+            raise _NotADocumentError
+        name = self._take()[1] if self._is_name() else ""
+        if self._is("("):
+            self._take()
+            count = 0
+            while not self._is(")"):
+                self._punct("$")
+                self._name()
+                self._punct(":")
+                self._type()
+                if self._is("="):
+                    self._take()
+                    self._value(const=True)
+                self._directives(const=True)
+                count += 1
+            if not count:
+                raise _NotADocumentError
+            self._take()
+        self._directives(const=False)
+        self._selection_set()
+        return (first, name)
+
+    def _type(self) -> None:
+        if self._is("["):
+            self._take()
+            self._nest()
+            self._type()
+            self.depth -= 1
+            self._punct("]")
+        else:
+            self._name()
+        if self._is("!"):
+            self._take()
+
+    def _directives(self, *, const: bool) -> None:
+        while self._is("@"):
+            self._take()
+            self._name()
+            if self._is("("):
+                self._arguments(const=const)
+
+    def _arguments(self, *, const: bool) -> None:
+        self._punct("(")
+        count = 0
+        while not self._is(")"):
+            self._name()
+            self._punct(":")
+            self._value(const=const)
+            count += 1
+        if not count:
+            raise _NotADocumentError
+        self._take()
+
+    def _selection_set(self) -> None:
+        self._punct("{")
+        self._nest()
+        count = 0
+        while not self._is("}"):
+            self._selection()
+            count += 1
+        if not count:
+            raise _NotADocumentError
+        self._take()
+        self.depth -= 1
+
+    def _selection(self) -> None:
+        if self._is("..."):
+            self._take()
+            following = self._peek()
+            if following is not None and following[0] == "name" and following[1] != "on":
+                self._take()
+                self._directives(const=False)
+                return
+            if following is not None and following[0] == "name":
+                self._take()
+                self._name()
+            self._directives(const=False)
+            self._selection_set()
+            return
+        self._name()
+        if self._is(":"):
+            self._take()
+            self._name()
+        if self._is("("):
+            self._arguments(const=False)
+        self._directives(const=False)
+        if self._is("{"):
+            self._selection_set()
+
+    def _value(self, *, const: bool) -> None:
+        kind, text = self._take()
+        if kind in ("number", "string", "block", "name"):
+            return
+        if kind != "punct":
+            raise _NotADocumentError
+        if text == "$" and not const:
+            self._name()
+        elif text == "[":
+            self._nest()
+            while not self._is("]"):
+                self._value(const=const)
+            self._take()
+            self.depth -= 1
+        elif text == "{":
+            self._nest()
+            while not self._is("}"):
+                self._name()
+                self._punct(":")
+                self._value(const=const)
+            self._take()
+            self.depth -= 1
+        else:
+            raise _NotADocumentError
+
+
+_DOCUMENTS: dict[str, list[tuple[str, str]] | None] = {}
+_MAX_DOCUMENTS = 256
+
+
+def _definitions(document: str) -> list[tuple[str, str]] | None:
+    """*document*'s definitions, read once per distinct text, or None when it is
+    not an executable GraphQL document."""
+    if document in _DOCUMENTS:
+        return _DOCUMENTS[document]
+    tokens = _graphql_tokens(document)
+    found: list[tuple[str, str]] | None = None
+    if tokens:
+        try:
+            found = _DocumentReader(tokens).document()
+        except (_NotADocumentError, RecursionError):
+            found = None
+    if len(_DOCUMENTS) >= _MAX_DOCUMENTS:
+        _DOCUMENTS.clear()
+    _DOCUMENTS[document] = found
+    return found
+
+
 def _usable_operation_name(name: str) -> bool:
     return (
         len(name) <= _MAX_OPERATION_NAME
@@ -1667,36 +1874,15 @@ def _usable_operation_name(name: str) -> bool:
 
 def document_operation(document: str) -> tuple[str, str] | None:
     """``(name, kind)`` of a GraphQL document's first operation, or None when the text
-    is not a GraphQL document (graftpunk.har.graphql.document_operation)."""
-    tokens = _graphql_tokens(document)
-    if not tokens:
-        return None
-    first = tokens[0]
-    if first != ("punct", "{") and not (
-        first[0] == "name" and (first[1] in _OPERATION_KEYWORDS or first[1] == "fragment")
-    ):
-        return None
-    depth = 0
-    found: tuple[str, str] | None = None
-    for index, (kind, text) in enumerate(tokens):
-        if kind == "punct" and text == "{":
-            if depth == 0 and found is None and (index == 0 or tokens[index - 1] == ("punct", "}")):
-                found = (ANONYMOUS_OPERATION, "query")
-            depth += 1
-        elif kind == "punct" and text == "}":
-            depth -= 1
-            if depth < 0:
-                return None
-        elif depth == 0 and found is None and kind == "name" and text in _OPERATION_KEYWORDS:
-            following = tokens[index + 1] if index + 1 < len(tokens) else ("", "")
-            name = following[1] if following[0] == "name" else ANONYMOUS_OPERATION
-            found = (name if _usable_operation_name(name) else ANONYMOUS_OPERATION, text)
-    if depth != 0 or found is None or ("punct", "{") not in tokens:
-        return None
-    return found
+    is not an executable GraphQL document (graftpunk.har.graphql.document_operation)."""
+    for kind, name in _definitions(document) or []:
+        if kind != "fragment":
+            usable = name if _usable_operation_name(name) else ANONYMOUS_OPERATION
+            return usable, "query" if kind == "shorthand" else kind
+    return None
 
 
-def _operation_of(body: Any, *, batched: bool) -> dict[str, Any] | None:
+def _operation_of(body: Any, path: str, *, batched: bool) -> dict[str, Any] | None:
     """One body object's operation: name, kind, variables, batched; None when it is
     not GraphQL."""
     if not isinstance(body, dict):
@@ -1707,6 +1893,15 @@ def _operation_of(body: Any, *, batched: bool) -> dict[str, Any] | None:
     if isinstance(query, str):
         read = document_operation(query)
         if read is None:
+            return None
+        definitions = _definitions(query) or []
+        if (
+            not (isinstance(sent, str) and sent)
+            and definitions[0][0] == "shorthand"
+            and "graphql" not in path.casefold()
+            and variables is None
+            and not isinstance(body.get("extensions"), dict)
+        ):
             return None
         if isinstance(sent, str) and _GRAPHQL_NAME_RE.fullmatch(sent):
             name = sent if _usable_operation_name(sent) else ANONYMOUS_OPERATION
@@ -1723,15 +1918,16 @@ def _operation_of(body: Any, *, batched: bool) -> dict[str, Any] | None:
     return {"name": name, "kind": "persisted", "variables": variables, "batched": batched}
 
 
-def operations_in(parsed: Any) -> list[dict[str, Any]]:
-    """Every operation a decoded request body carries (graftpunk.har.graphql.operations_in)."""
+def operations_in(parsed: Any, path: str) -> list[dict[str, Any]]:
+    """Every operation a decoded request body sent to *path* carries
+    (graftpunk.har.graphql.operations_in)."""
     if isinstance(parsed, dict):
-        found = _operation_of(parsed, batched=False)
+        found = _operation_of(parsed, path, batched=False)
         return [] if found is None else [found]
     if isinstance(parsed, list) and parsed:
         operations = []
         for element in parsed:
-            found = _operation_of(element, batched=True)
+            found = _operation_of(element, path, batched=True)
             if found is None:
                 return []
             operations.append(found)
@@ -1759,9 +1955,237 @@ def _decoded(text: str | None) -> Any:
         return None
 
 
+def _url_path(entry: dict[str, Any]) -> str:
+    try:
+        return urlsplit(str(_part(entry, "request").get("url", ""))).path
+    except ValueError:
+        return ""
+
+
 def entry_operations(entry: dict[str, Any], har_path: Path) -> list[dict[str, Any]]:
     """The GraphQL operations *entry*'s request body carries, in order."""
-    return operations_in(_decoded(_request_text(entry, har_path)))
+    return operations_in(_decoded(_request_text(entry, har_path)), _url_path(entry))
+
+
+# graftpunk.har.paths.template_path, copied (a test holds the two equal): the
+# digest's key for a path keeps a segment as it is unless it reads as an id
+# (/GraphQLController stays), so an operation's line names the key the digest,
+# --command and --match take.
+_JOIN_SPLIT_RE = re.compile(r"[_\-]")
+_WORD_WITH_DIGITS_RE = re.compile(r"([A-Za-z]+)\d{1,2}")
+_VERSION_RE = re.compile(r"v\d{1,2}(?:alpha|beta|rc)?\d{0,2}")
+_PATH_PARAMS_RE = re.compile(r";[^/]*")
+_SINGULAR_BEFORE_FINAL_S = frozenset("sui")
+
+
+def _literal_part(part: str) -> bool:
+    if not _has_digit(part):
+        return True
+    if _VERSION_RE.fullmatch(part) or (part.isdigit() and len(part) <= 2):
+        return True
+    match = _WORD_WITH_DIGITS_RE.fullmatch(part)
+    return match is not None and _spelled(match.group(1))
+
+
+def _literal_segment(text: str) -> bool:
+    parts = _parts(text)
+    if not all(_literal_part(part) for part in parts):
+        return False
+    digit_parts = [part for part in parts if _has_digit(part)]
+    return not (len(digit_parts) > 1 and any(part.isdigit() for part in digit_parts))
+
+
+def _joined_token(text: str) -> bool:
+    parts = _JOIN_SPLIT_RE.split(text)
+    return len(parts) >= 3 and all(
+        2 <= len(part) <= 6 and _has_digit(part) and _has_letter(part) and part.isalnum()
+        for part in parts
+    )
+
+
+def looks_dynamic(segment: str) -> bool:
+    """graftpunk.har.paths.looks_dynamic, copied."""
+    if not segment:
+        return False
+    if holds_an_id(segment):
+        return True
+    text = unquote(segment)
+    if not _has_digit(text):
+        return False
+    return _joined_token(text) or not _literal_segment(text)
+
+
+def _param_name(previous: str) -> str:
+    if not previous or previous.startswith("{"):
+        return "id"
+    plural = previous.endswith("s") and len(previous) > 1
+    plural = plural and previous[-2] not in _SINGULAR_BEFORE_FINAL_S
+    return f"{previous[:-1] if plural else previous}_id"
+
+
+def template_path(path: str) -> str:
+    """*path* as the digest keys it (graftpunk.har.paths.template_path)."""
+    path = _PATH_PARAMS_RE.sub("", path)
+    leading = "/" if path.startswith("/") else ""
+    trailing = "/" if len(path) > 1 and path.endswith("/") else ""
+    segments = path.strip("/").split("/") if path.strip("/") else []
+    result: list[str] = []
+    for segment in segments:
+        if looks_dynamic(segment):
+            result.append(f"{{{_param_name(result[-1] if result else '')}}}")
+        else:
+            result.append(segment)
+    body = "/".join(result)
+    return f"{leading}{body}{trailing}" if body else (leading or "/")
+
+
+def _operation_url(url: str) -> str:
+    """*url* as an operation's line prints it: scheme and host as ``templated_url``
+    prints them, and the path as the digest keys it."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "a URL that does not parse"
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https"):
+        return templated_url(url)
+    host = (parts.hostname or "").lower()
+    host = host if _HOST_RE.fullmatch(host) else "{host}"
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    return f"{scheme}://{host}{f':{port}' if port else ''}{template_path(parts.path)}"
+
+
+# graftpunk.har.digest's scope rule, copied (a test holds the two equal): the
+# digest reads only the run's own hosts (the one that answered the most requests
+# that are not assets, a host that served an HTML page first, and its parent
+# domain's subtree) and leaves assets, trackers and beacons out, so the operations
+# and shared values here come from the entries the digest reads.
+_ASSET_EXTENSION_RE = re.compile(
+    r"\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|map)$", re.IGNORECASE
+)
+_EXCLUDE_HOST_PATTERNS = [
+    r"google-analytics",
+    r"googletagmanager",
+    r"facebook\.com",
+    r"analytics",
+    r"tracking",
+    r"cdn\.",
+    r"static\.",
+    r"assets\.",
+    r"fonts\.",
+]
+_EXCLUDE_HOST_REGEX = re.compile("|".join(_EXCLUDE_HOST_PATTERNS), re.IGNORECASE)
+_EXCLUDE_PATH_SEGMENTS = frozenset({"pixel", "beacon"})
+_STATIC_MAIN_TYPES = frozenset({"image", "font", "audio", "video"})
+_STATIC_CONTENT_TYPES = frozenset(
+    {
+        "text/css",
+        "text/javascript",
+        "application/javascript",
+        "application/x-javascript",
+        "application/ecmascript",
+        "text/hyperscript",
+        "application/wasm",
+        "application/font-woff",
+        "application/font-woff2",
+        "application/vnd.ms-fontobject",
+        "image/svg+xml",
+    }
+)
+_DEFAULT_PORTS = {"http": "80", "https": "443"}
+
+
+def _response_content_type(entry: dict[str, Any]) -> str:
+    return _header(_list(_part(entry, "response"), "headers"), "content-type")
+
+
+def _is_static(entry: dict[str, Any], path: str, netloc: str) -> bool:
+    if _ASSET_EXTENSION_RE.search(path) or _EXCLUDE_HOST_REGEX.search(netloc):
+        return True
+    if any(segment.lower() in _EXCLUDE_PATH_SEGMENTS for segment in path.split("/")):
+        return True
+    content_type = _response_content_type(entry).split(";")[0].strip().lower()
+    if not content_type:
+        return False
+    return content_type.split("/")[0] in _STATIC_MAIN_TYPES or content_type in _STATIC_CONTENT_TYPES
+
+
+def _normal_host(scheme: str, netloc: str) -> str:
+    host = netloc.rpartition("@")[2].lower()
+    port = _DEFAULT_PORTS.get(scheme.lower())
+    if port and host.endswith(f":{port}"):
+        host = host[: -len(port) - 1]
+    return host
+
+
+def _is_ip(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _host_name(host: str) -> str:
+    if host.startswith("["):
+        end = host.find("]")
+        return host[: end + 1] if end != -1 else host
+    if _is_ip(host):
+        return host
+    name, colon, port = host.rpartition(":")
+    return name if colon and port.isdigit() else host
+
+
+def _ip_literal(host: str) -> bool:
+    name = _host_name(host)
+    if name.startswith("[") and name.endswith("]"):
+        name = name[1:-1]
+    return _is_ip(name)
+
+
+def _scope_root(primary_host: str) -> str:
+    if _ip_literal(primary_host):
+        return primary_host
+    labels = primary_host.split(".")
+    return primary_host if len(labels) <= 2 else ".".join(labels[1:])
+
+
+def _in_scope(host: str, root: str) -> bool:
+    if not root:
+        return False
+    if _ip_literal(root) or _ip_literal(host):
+        return host == root
+    return host == root or host.endswith(f".{root}")
+
+
+def in_scope_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The entries the digest reads: on the run's own hosts, and no asset, tracker,
+    or beacon (graftpunk.har.digest's static and scope rules)."""
+    kept: list[tuple[dict[str, Any], str]] = []
+    counts: dict[str, int] = {}
+    documents: set[str] = set()
+    for entry in entries:
+        try:
+            parts = urlparse(str(_part(entry, "request").get("url", "")))
+        except ValueError:
+            continue
+        if parts.scheme.lower() not in ("http", "https"):
+            continue
+        host = _normal_host(parts.scheme, parts.netloc)
+        if _is_static(entry, parts.path, parts.netloc):
+            continue
+        counts[host] = counts.get(host, 0) + 1
+        status = _part(entry, "response").get("status")
+        served = "html" in _response_content_type(entry).lower()
+        if served and isinstance(status, int) and 200 <= status < 300:
+            documents.add(host)
+        kept.append((entry, host))
+    primary = max(counts, key=lambda host: (host in documents, counts[host]), default="")
+    root = _scope_root(primary) if primary else ""
+    return [entry for entry, host in kept if _in_scope(host, root)]
 
 
 def _operation_wanted(name: str, wanted: str | None) -> bool:
@@ -1775,15 +2199,17 @@ def _operation_label(name: str) -> str:
 
 
 def operations(entries: list[dict[str, Any]], har_path: Path, wanted: str | None) -> list[str]:
-    """One block per GraphQL operation: its request line, calls, kind, and the
+    """One block per GraphQL operation on the run's own hosts (:func:`in_scope_entries`):
+    its request line (the path as the digest keys it), calls, kind, and the
     variables' and response's shapes (keys and types, never a value)."""
+    entries = in_scope_entries(entries)
     groups: dict[tuple[str, str, str], dict[str, Any]] = {}
     for entry in entries:
         found = entry_operations(entry, har_path)
         if not found:
             continue
         request = _part(entry, "request")
-        url = templated_url(str(request.get("url", "")).split("?", 1)[0])
+        url = _operation_url(str(request.get("url", "")))
         response_text, _reason = _response_text(entry, har_path)
         response = _decoded(response_text)
         for index, operation in enumerate(found):
@@ -1841,7 +2267,9 @@ def operations(entries: list[dict[str, Any]], har_path: Path, wanted: str | None
 _MAX_SHARED_LEAVES = 2000
 _MAX_SHARED_DEPTH = 24
 _MAX_PRODUCERS = 8
-_MIN_SHARED_TEXT = 3
+_MIN_SHARED_TEXT = 4
+_MIN_SHARED_DIGITS = 4
+_FORM_STATE_TOKEN_RE = re.compile(r"[A-Z]+(?:_[A-Z]+)*")
 
 
 def _shared_leaves(value: Any, path: str = "", depth: int = 0) -> list[tuple[str, Any]]:
@@ -1861,13 +2289,18 @@ def _shared_leaves(value: Any, path: str = "", depth: int = 0) -> list[tuple[str
 def _linkable(value: Any) -> str | None:
     if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return None
-    text = value if isinstance(value, str) else repr(value)
-    return text if len(text.strip()) >= _MIN_SHARED_TEXT else None
+    if not isinstance(value, str):
+        text = repr(value)
+        return text if sum(ch.isdigit() for ch in text) >= _MIN_SHARED_DIGITS else None
+    if len(value.strip()) < _MIN_SHARED_TEXT or _FORM_STATE_TOKEN_RE.fullmatch(value):
+        return None
+    return value
 
 
 def shared_values(entries: list[dict[str, Any]], har_path: Path) -> list[str]:
     """One line per pair of a GraphQL response field and a later request's variable
-    that carried the same value, by names only, most frequent first."""
+    that carried the same value, by names only, most frequent first. *entries* are
+    the ones the digest reads (:func:`in_scope_entries`)."""
     producers: dict[str, list[tuple[str, str]]] = {}
     counts: dict[tuple[str, str, str, str], int] = {}
     for entry in entries:
@@ -1988,6 +2421,9 @@ def _run(args: argparse.Namespace, entries: list[dict[str, Any]]) -> int:
             lines = describe_response(entry, har_path)
         names = list(dict.fromkeys(op["name"] for op in entry_operations(entry, har_path)))
         if names:
+            # The operation's key, as the digest prints it and --command takes it.
+            url = str(_part(entry, "request").get("url", ""))
+            lines[0] = lines[0].replace(templated_url(url), _operation_url(url), 1)
             lines[0] += " " + " ".join(_operation_label(name) for name in names)
         blocks.append("\n".join(lines))
     print("\n\n".join(blocks))

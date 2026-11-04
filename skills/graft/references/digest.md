@@ -16,11 +16,11 @@ new recording made the way `references/commands.md` records one keeps it; `body
 not captured` means the recording holds no copy. Build the proposal from the
 projection; `references/har.md` says where to look for what it leaves out.
 
-A row with `operation` is one GraphQL operation (`(anonymous)` holds the unnamed
-ones): its `body_params` are the variables, and its endpoint is `<METHOD>
-<template> (<operation>)`, the whole key `--command` takes. Propose a command per
-operation the user wants, named from it (`orders` for `OrdersByCustomer`); the
-HAR reader's `operations` line gives its calls, kind (a mutation changes data), shapes, and which response field fed each variable; a variable's recorded id is never a default.
+A row with `operation` (schema 2) is one GraphQL operation, `body_params` its
+variables, `<METHOD> <template> (<operation>)` its `--command` key, and for the
+unnamed ones `POST /graphql (anonymous)`, never `((anonymous))`. Propose a command
+per wanted operation, named from it (`orders` for `OrdersByCustomer`); the HAR
+reader's `operations` gives the key, calls, kind, shapes, and variables' sources.
 
 ## The base host
 
