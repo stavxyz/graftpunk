@@ -512,7 +512,10 @@ requests pairs with it (a cookie before a meta tag before a hidden input on a
 tie), and `token_config` writes `Token.from_cookie`, `Token.from_meta_tag`, or
 `Token.from_hidden_input`. A meta tag or hidden input pairs only through a match
 on a page a `Token` can fetch again, a successful GET of the primary host at a
-path with no placeholder, which the call names as `page_url` when it is not `/`.
+path with no placeholder, which the call names as `page_url` when it is not `/`;
+a value the source held on several pages counts under the latest of those a
+`Token` can fetch, so a token rendered on `/` and again on `/orders/123` pairs
+with `/`.
 A header no source matched pairs with a meta or cookie candidate of the same
 name, as before, unless the recording compared that source with the header and
 it never held the header's value: a cookie that rotates on every response never

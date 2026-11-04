@@ -30,12 +30,21 @@ patch releases. It follows the spec for what decides which tags a browser sees:
 - ``<template>`` content, which is not part of the document: skipped until the
   matching end tag, nested templates counted.
 
-It does not build a tree. What differs from a browser: inside ``<svg>`` or
-``<math>`` a browser reads ``<style>``, ``<script>`` and ``<title>`` content as
-markup and ``<![CDATA[`` as a CDATA section, where this reader skips the first
-three as raw text and the last to the next ``>``; a value a script writes into
-the page after it loads is not in the text this reader is given; and of several
-elements with one name it takes the first with a non-empty value.
+It does not build a tree, so it does not model ``<svg>`` or ``<math>`` content
+or the tree builder's reordering. What differs from a browser, as far as known:
+
+- inside ``<svg>`` or ``<math>`` a browser reads every element's content as
+  markup and ``<![CDATA[`` as a CDATA section, so the raw-text and template
+  skipping above does not apply there: a ``<meta>`` inside an svg
+  ``<textarea>`` or ``<template>`` or a math ``<noscript>`` is in a browser's
+  document and is not read here, and an ``<input type="hidden">`` inside
+  ``<svg>`` is an SVG element in a browser and is read here as an HTML input;
+- it reads in source order, where a browser can move an element ahead of a
+  ``<table>`` (foster parenting), so of two inputs with one name it can take the
+  other one first;
+- a value a script writes into the page after it loads is not in the text this
+  reader is given;
+- of several elements with one name it takes the first with a non-empty value.
 """
 
 from __future__ import annotations
