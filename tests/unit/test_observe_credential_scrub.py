@@ -1622,3 +1622,48 @@ class TestOnlyAnEmailAddressIsTakenAsAnIdentifier:
 
         ratio = cpu(dotted(32_000)) / max(cpu(dotted(4_000)), 1e-4)
         assert ratio < 24, ratio
+
+
+class TestAContainerPrefixDoesNotHideAPassword:
+    """A form login posting under an ASP.NET naming container whose id holds a
+    setting word, with no login page recorded: the scrub takes the password by its
+    name, judged in the name's own segment."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "ctl00$MainPlaceholder$Password",
+            "ctl00$ContentPlaceholder1$Password",
+            "ctl00$Content$Placeholder$Password",
+            "ctl00$LoginMode$Password",
+            "ctl00$MessagePanel$txtPwd",
+            "ctl00$Main$ErrorPanel$Password",
+            "ctl00$placeholder$txtPassword",
+        ],
+    )
+    def test_the_password_is_taken(self, tmp_path: Path, name: str) -> None:
+        from urllib.parse import urlencode
+
+        post = _entry(
+            "POST",
+            "/Login.aspx",
+            post_data=urlencode({name: _FORM_PASSWORD, "user": "alice"}),
+            post_type="application/x-www-form-urlencoded",
+        )
+
+        found = credential_post_redaction([post], tmp_path)
+
+        assert found.posts == 1
+        assert _FORM_PASSWORD in found.redaction.secrets
+
+    def test_a_password_in_a_json_list_is_taken(self, tmp_path: Path) -> None:
+        post = _entry(
+            "POST",
+            "/graphql",
+            post_data=json.dumps({"v": {"password": [_JSON_PASSWORD]}, "user": "alice"}),
+        )
+
+        found = credential_post_redaction([post], tmp_path)
+
+        assert found.posts == 1
+        assert _JSON_PASSWORD in found.redaction.secrets

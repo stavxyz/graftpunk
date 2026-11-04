@@ -256,6 +256,78 @@ class TestTheNestedPasswordRule:
         assert is_credential_post(body, _JSON, _API, ())
 
 
+# ASP.NET WebForms names: a naming container whose id holds a setting word
+# (placeholder, mode, message, error) before the password's own segment.
+_CONTAINER_NAMES = (
+    "ctl00$MainPlaceholder$Password",
+    "ctl00$ContentPlaceholder1$Password",
+    "ctl00$Content$Placeholder$Password",
+    "ctl00$LoginMode$Password",
+    "ctl00$MessagePanel$txtPwd",
+    "ctl00$Main$ErrorPanel$Password",
+    "ctl00$placeholder$txtPassword",
+    "main_0$placeholder_0$txtPassword",
+)
+
+
+class TestASettingWordCountsOnlyInThePasswordsOwnSegment:
+    @pytest.mark.parametrize("name", _CONTAINER_NAMES)
+    def test_a_container_s_setting_word_leaves_a_form_login(self, name: str) -> None:
+        from urllib.parse import urlencode
+
+        body = urlencode({name: "hunter22", "user": "alice"})
+        assert password_field_names(body, _FORM) == [name]
+        assert is_credential_body(body, _FORM)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "showPassword",
+            "ctl00$Main$showPassword",
+            "ctl00$Main$Password$Show",
+            "settings.passwordLabel",
+            "password[type]",
+            "user[rememberPassword]",
+        ],
+    )
+    def test_a_setting_in_the_password_s_segment_or_after_it_still_names_none(
+        self, name: str
+    ) -> None:
+        from urllib.parse import urlencode
+
+        body = urlencode({name: "1", "user": "alice"})
+        assert password_field_names(body, _FORM) == []
+        assert not is_credential_body(body, _FORM)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["user[password]", "login.password", "ctl00$ShowPanel$txtPassword", "Login1$Password"],
+    )
+    def test_a_password_after_any_container_is_one(self, name: str) -> None:
+        from urllib.parse import urlencode
+
+        assert is_credential_body(urlencode({name: "hunter22", "user": "alice"}), _FORM)
+
+
+class TestAPasswordInAJsonList:
+    def test_it_is_read_by_the_name_of_the_key_holding_the_list(self) -> None:
+        """The scrub reads a list item under the key holding the list
+        (``body_values``); the digest's rule reads it the same way."""
+        from graftpunk.har.digest import body_values
+
+        body = json.dumps({"v": {"password": ["hunter22"]}, "user": "alice"})
+        assert password_field_names(body, _JSON) == ["password"]
+        assert is_credential_body(body, _JSON)
+        assert (("v", "password"), "hunter22") in body_values(body, _JSON)
+
+    def test_a_list_under_no_key_gives_no_name(self) -> None:
+        assert password_field_names(json.dumps(["hunter22", ["x"]]), _JSON) == []
+
+    def test_a_list_of_objects_is_read_by_their_own_names(self) -> None:
+        body = json.dumps({"v": {"password": [{"hint": "x"}], "items": [{"pwd": "y"}]}})
+        assert password_field_names(body, _JSON) == ["pwd"]
+
+
 def _large_json_body(megabytes: int, *, distinct: bool = False) -> str:
     """A JSON body of about *megabytes* MB with a login's password nowhere in it:
     records sharing a few names, as a batch sync or a catalogue upload posts, or with

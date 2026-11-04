@@ -2577,21 +2577,29 @@ def _asks_for_a_new_password(names: Iterable[str]) -> bool:
 def _json_leaf_names(parsed: object) -> dict[str, None]:
     """The distinct own names of the strings and numbers in a parsed JSON value at
     any depth, in the order first seen, walked without recursion and without
-    building paths, so a large body costs one pass over its values."""
+    building paths, so a large body costs one pass over its values. A list's items
+    take the name of the key that holds the list, as :func:`body_values` reads them
+    (``{"password": ["x"]}`` gives ``password``); an item of a list under no key
+    has none."""
     names: dict[str, None] = {}
-    stack: list[object] = [parsed]
+    stack: list[tuple[object, str | None]] = [(parsed, None)]
     while stack:
-        value = stack.pop()
+        value, owner = stack.pop()
+        inners: list[tuple[object, str | None]] = []
         if isinstance(value, dict):
-            inners: list[object] = []
-            for name, inner in value.items():
+            for key, inner in value.items():
                 if isinstance(inner, dict | list):
-                    inners.append(inner)
+                    inners.append((inner, str(key)))
                 elif isinstance(inner, str | int | float) and not isinstance(inner, bool):
-                    names[str(name)] = None
-            stack.extend(reversed(inners))
+                    names[str(key)] = None
         elif isinstance(value, list):
-            stack.extend(reversed(value))
+            for inner in value:
+                if isinstance(inner, dict | list):
+                    inners.append((inner, owner))
+                elif owner is not None and isinstance(inner, str | int | float):
+                    if not isinstance(inner, bool):
+                        names[owner] = None
+        stack.extend(reversed(inners))
     return names
 
 
@@ -2601,9 +2609,10 @@ def password_field_names(body_text: str | None, content_type: str = "") -> list[
     once: a field name that :func:`graftpunk.har.documents.names_a_password` accepts
     (a ``PASSWORD_NAME_HINTS`` hint and no setting word, so ``rememberPassword`` and
     ``passwordExpiresAt`` are none) and :func:`_plausible_field_name` accepts. A JSON
-    body's names are read at any depth: the own name of each string or number in it
-    (a GraphQL login's ``variables.password`` gives ``password``, and a batched
-    GraphQL array is walked too). A form's names are its top-level keys only. The
+    body's names are read at any depth: the own name of each string or number in it,
+    a list's items under the name of the key holding the list, as the scrub reads
+    them (a GraphQL login's ``variables.password`` gives ``password``, so does
+    ``{"password": ["x"]}``, and a batched GraphQL array is walked too). A form's names are its top-level keys only. The
     distinct names are collected first and each is judged once, so the cost is
     linear in the body. The one rule for a credential
     post's fields: the digest reads a recorded POST with it, and the recorder reads

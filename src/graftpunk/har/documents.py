@@ -927,25 +927,41 @@ _PASSWORD_FLAG_WORDS = frozenset(
 # allowed), of capitals, and of digits, so "savePassword" and "save_password" each
 # hold "save", and "_", "-", ".", "[" and "]" separate words.
 _NAME_WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
+# What separates a flattened field name's segments: an ASP.NET naming container
+# (ctl00$Main$Password), a dotted or bracketed path (login.password,
+# user[password]), a JSF id (loginForm:password), or a path-like name.
+_NAME_SEGMENT_RE = re.compile(r"[$.\[\]:/]")
 
 
 def names_a_password(name: str | None) -> bool:
     """Whether a body field *name* names a password: it holds a
     :data:`PASSWORD_NAME_HINTS` hint (``password``, ``passwd``, ``pwd``) in any
-    letter case, and none of its words, each hint taken out of the word it sits in,
-    names a setting or a fact about the password (:data:`_PASSWORD_FLAG_WORDS`), so
-    ``rememberPassword``, ``passwordless``, ``hasPassword``, ``passwordLabel``,
-    ``passwordExpiresAt`` and ``passwordResetToken`` name none. The one rule for
-    both the digest's credential post (:func:`graftpunk.har.digest.password_field_names`)
-    and the scrub of a typed login (:func:`graftpunk.observe.run.credential_post_redaction`)."""
+    letter case, and no word of the part of the name that holds the hint names a
+    setting or a fact about the password (:data:`_PASSWORD_FLAG_WORDS`, each hint
+    taken out of the word it sits in), so ``rememberPassword``, ``passwordless``,
+    ``hasPassword``, ``passwordLabel``, ``passwordExpiresAt`` and
+    ``passwordResetToken`` name none. That part is the last segment holding a hint
+    and the segments after it (segments split on ``$``, ``.``, ``[``, ``]``, ``:``
+    and ``/``), so a naming container before it is not read:
+    ``ctl00$MainPlaceholder$Password`` and ``ctl00$LoginMode$Password`` name a
+    password, and ``password[type]`` does not. The one rule for both the digest's
+    credential post (:func:`graftpunk.har.digest.password_field_names`) and the scrub
+    of a typed login (:func:`graftpunk.observe.run.credential_post_redaction`)."""
     if not name:
         return False
     if not any(hint in name.lower() for hint in PASSWORD_NAME_HINTS):
         return False
+    segments = _NAME_SEGMENT_RE.split(name)
+    last = max(
+        index
+        for index, segment in enumerate(segments)
+        if any(hint in segment.lower() for hint in PASSWORD_NAME_HINTS)
+    )
     hints = "|".join(re.escape(hint) for hint in PASSWORD_NAME_HINTS)
     words = [
         part
-        for word in _NAME_WORD_RE.findall(name)
+        for segment in segments[last:]
+        for word in _NAME_WORD_RE.findall(segment)
         for part in re.split(hints, word.lower())
         if part
     ]
