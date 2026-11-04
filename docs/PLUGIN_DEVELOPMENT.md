@@ -822,8 +822,10 @@ pages each was seen on. A candidate is a name, not a value, and not yet a
 decision: see [How graftpunk Works](HOW_IT_WORKS.md#token-and-csrf-support)
 for turning one into a `Token`. A line such as ``- header `x-csrf` carried the
 value of hidden input `csrf` on GET / on 8 of 8 requests`` is a pairing by
-value: each time the run sent that header, its value equalled that source's
-(the value itself is never printed). The scaffold writes it as
+value: on 8 of the 8 requests that sent the header, its value equalled that
+source's as `Token.from_hidden_input` reads it (the value itself is never
+printed). A paired source is listed as a candidate whatever its name. The
+scaffold writes it as
 `Token.from_hidden_input(name="csrf", header="x-csrf")`, with `page_url=` when
 the page is not `/`; a cookie pairing is `Token.from_cookie` and a meta tag's is
 `Token.from_meta_tag`. A header no source matched pairs by name with a meta or
