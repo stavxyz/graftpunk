@@ -1724,15 +1724,16 @@ def extract_token_candidates(html: str, source: str) -> tuple[TokenCandidate, ..
     for name, _content in parsed.metas:
         if looks_like_token_name(name):
             candidates.append(TokenCandidate(kind="meta", name=name, seen_on=(source,)))
-    for raw_form in parsed.forms:
-        for raw_input in raw_form.inputs:
-            if raw_input.input_type != "hidden" or not raw_input.name:
-                continue
-            lowered = raw_input.name.lower()
-            if any(hint in lowered for hint in _HIDDEN_TOKEN_NAME_HINTS):
-                candidates.append(
-                    TokenCandidate(kind="hidden_input", name=raw_input.name, seen_on=(source,))
-                )
+    # Every hidden input, in a form or not: a single-page app's shell carries its
+    # CSRF input outside any form (#369).
+    for raw_input in parsed.inputs:
+        if raw_input.input_type != "hidden" or not raw_input.name:
+            continue
+        lowered = raw_input.name.lower()
+        if any(hint in lowered for hint in _HIDDEN_TOKEN_NAME_HINTS):
+            candidates.append(
+                TokenCandidate(kind="hidden_input", name=raw_input.name, seen_on=(source,))
+            )
     return tuple(candidates)
 
 

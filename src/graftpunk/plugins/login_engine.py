@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 import urllib.parse
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -635,7 +634,7 @@ async def _extract_and_cache_tokens_nodriver(
 
     from graftpunk.tokens import _CACHE_ATTR, extract_tokens_from_tab
 
-    page_tokens = [t for t in token_config.tokens if t.source == "page" and t.pattern]
+    page_tokens = [t for t in token_config.tokens if t.source == "page"]
     token_results = await extract_tokens_from_tab(tab, page_tokens, base_url) if page_tokens else {}
 
     # Build token cache from page extraction results and cookie lookups
@@ -667,7 +666,7 @@ def _extract_and_cache_tokens_selenium(
     if token_config is None:
         return
 
-    from graftpunk.tokens import _CACHE_ATTR
+    from graftpunk.tokens import _CACHE_ATTR, read_page_token
 
     token_results: dict[str, str] = {}
     for t in token_config.tokens:
@@ -675,13 +674,13 @@ def _extract_and_cache_tokens_selenium(
             val = session.cookies.get(t.cookie_name)
             if val:
                 token_results[t.name] = val
-        elif t.source == "page" and t.pattern:
+        elif t.source == "page":
             try:
                 session.driver.get(_resolve_url(base_url, t.page_url))
                 time.sleep(2)
-                match = re.search(t.pattern, session.driver.page_source)
-                if match:
-                    token_results[t.name] = match.group(1)
+                value = read_page_token(t, session.driver.page_source)
+                if value is not None:
+                    token_results[t.name] = value
                 else:
                     LOG.warning(
                         "login_token_pattern_not_found",

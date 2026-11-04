@@ -490,12 +490,42 @@ Discovery errors are accumulated as `PluginDiscoveryError` / `YAMLDiscoveryError
 
 `gp plugin new <name> --from-run SESSION [--run RUN_ID]` fills a scaffold
 from a run's digest: `base_url` from the primary host, `login_config` from
-the first detected login form, `token_config` from paired header/meta or
-header/cookie candidates, and one command stub per endpoint (JSON first, up
+the first detected login form, `token_config` from each token header paired
+with its source, and one command stub per endpoint (JSON first, up
 to twelve). `--run` names a specific run instead of the session's newest
 one, and is an error without `--from-run`. Everything the digest could not
 determine is marked `# GP-FILL: <what to fill in>`. `gp plugin new <name>`
 with no `--from-run` scaffolds a bare project from `--url` alone.
+
+A token header pairs with its source by value first (#369). Each time a
+request sends a header whose name looks like a token and whose value is eight
+characters or longer, the digest compares that value with each cookie the same
+request sent and with every value each `<meta>` tag and hidden input held on
+the pages the run loaded before it, on any host the digest keeps, at any path,
+and with any status whose body the recording kept: a prefetched page, a frame,
+or a back navigation can come between the page the user acted on and the
+request, so the latest value is not the only one that counts. It reads a page with
+`graftpunk.page_values`, the reader `Token.from_meta_tag` and
+`Token.from_hidden_input` extract with, so a value it pairs is the value the
+generated `Token` sends. The source that held the header's value on the most
+requests pairs with it (a cookie before a meta tag before a hidden input on a
+tie), and `token_config` writes `Token.from_cookie`, `Token.from_meta_tag`, or
+`Token.from_hidden_input`. A meta tag or hidden input pairs only through a match
+on a page a `Token` can fetch again, a successful GET of the primary host at a
+path with no placeholder, which the call names as `page_url` when it is not `/`;
+a value the source held on several pages counts under the latest of those a
+`Token` can fetch, so a token rendered on `/` and again on `/orders/123` pairs
+with `/`.
+A header no source matched pairs with a meta or cookie candidate of the same
+name, as before, unless the recording compared that source with the header and
+it never held the header's value: a cookie that rotates on every response never
+pairs with a header that carries the page's hidden input. A source counts as
+compared only through its latest value read before the request; after a page
+load whose body the recording did not keep (a 304, a body file gone), no earlier
+page value counts until a page carries it again. The values are held in memory
+for the digest only and are never printed; the digest prints each pairing in its
+Tokens section (and `--json`'s `token_pairs`) as names, the page template, and
+how many of the requests carrying the header matched.
 
 A plugin name starts with a letter, uses letters, digits, hyphens, and
 underscores, does not end with a hyphen or underscore, and is at most 40
@@ -2198,6 +2228,8 @@ Token sources:
 - **`cookie`** — Extract from a named cookie in the session
 - **`response_header`** — Extract from a response header
 - **`page`** — Fetch a page and extract via regex pattern
+
+In Python, `Token`'s constructors build these: `Token.from_cookie(cookie_name, header)`, `Token.from_response_header(response_header, request_header, page_url="/")`, `Token.from_js_variable(pattern, header, page_url="/")`, `Token.from_meta_tag(name, header, page_url="/")` for `<meta name="..." content="...">`, and `Token.from_hidden_input(name, header, page_url="/")` for `<input type="hidden" name="..." value="...">`, in a form or not, its attributes in any order and in any case. The last two are `page` tokens: each fetches `page_url` over HTTP, falls back to the browser with `extraction="auto"`, and caches the value for `cache_duration` seconds (300 by default). Both read the page with `graftpunk.page_values`, a tokenizer written to the WHATWG HTML parsing rules that does not depend on the Python release: the first element of that name in document order with a non-empty value (`document.querySelector` would return the first even when it is empty), its attributes in any order and case, quoted or not, the value with its character references decoded by the attribute rule (a named reference without `;` followed by a letter, a digit, or `=` stays as written), and no tag inside `<script>`, `<style>`, `<textarea>`, `<title>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>`, `<noscript>`, `<plaintext>`, `<template>`, or a comment. It does not model `<svg>` or `<math>` content, and it reads the page as served, so a tag a script writes is not there; when the tag's text is only inside a script or another skipped region, the `extraction="http"` error says where. Such a token has `pattern=None` and names its element in `element` (`"meta"` or `"hidden_input"`) and `element_name`; a `Token(source="page", pattern=...)` and `from_js_variable` still match their regex.
 
 ### EAFP Injection and 403 Retry
 

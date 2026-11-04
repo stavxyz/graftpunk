@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.39.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.40.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -816,10 +816,20 @@ the captured HTML. This is what fills in `LoginConfig`. The `-> /dashboard` on a
 redirecting credential post is where the login landed, and is what
 `success_url` is derived from.
 
-**Tokens** lists header, meta-tag, and cookie candidates whose names look like
-tokens, and the endpoints each was seen on. A candidate is a name, not a value,
-and not yet a decision: see [How graftpunk Works](HOW_IT_WORKS.md#token-and-csrf-support)
-for turning one into a `Token`.
+**Tokens** lists header, meta-tag, hidden-input, and cookie candidates whose
+names look like tokens (a hidden input in a form or not), and the endpoints or
+pages each was seen on. A candidate is a name, not a value, and not yet a
+decision: see [How graftpunk Works](HOW_IT_WORKS.md#token-and-csrf-support)
+for turning one into a `Token`. A line such as ``- header `x-csrf` carried the
+value of hidden input `csrf` on GET / on 8 of 8 requests`` is a pairing by
+value: on 8 of the 8 requests that sent the header, its value equalled that
+source's as `Token.from_hidden_input` reads it (the value itself is never
+printed). A paired source is listed as a candidate whatever its name. The
+scaffold writes it as
+`Token.from_hidden_input(name="csrf", header="x-csrf")`, with `page_url=` when
+the page is not `/`; a cookie pairing is `Token.from_cookie` and a meta tag's is
+`Token.from_meta_tag`. A header no source matched pairs by name with a meta or
+cookie candidate as before, never with one the recording shows it did not carry.
 
 **Cookies** has one line per cookie a host the digest kept (the primary host's
 domain, or every host with `--all-hosts`) set or sent, never its value. A cookie
@@ -2956,7 +2966,7 @@ gp version --contract info=1 --contract endpoints=1
 `gp version --json` prints one line:
 
 ```json
-{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "1.39.0"}
+{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "1.40.0"}
 ```
 
 `graftpunk` is the installed version, and `contracts` maps each machine-read

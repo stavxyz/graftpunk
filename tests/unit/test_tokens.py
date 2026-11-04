@@ -16,6 +16,7 @@ from graftpunk.tokens import (
     clear_cached_tokens,
     extract_token,
     prepare_session,
+    read_page_token,
 )
 
 
@@ -46,8 +47,8 @@ class TestToken:
         token = Token.from_meta_tag("csrf-token", "X-CSRF-Token")
         assert token.name == "X-CSRF-Token"
         assert token.source == "page"
-        assert token.pattern is not None
-        assert "csrf\\-token" in token.pattern
+        assert (token.element, token.element_name, token.pattern) == ("meta", "csrf-token", None)
+        assert read_page_token(token, '<meta name="csrf-token" content="Tok12345">') == "Tok12345"
         assert token.page_url == "/"
         assert token.cache_duration == 300
 

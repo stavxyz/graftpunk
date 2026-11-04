@@ -77,6 +77,7 @@ from graftpunk.har.paths import (
     template_path,
 )
 from graftpunk.har.selectors import bounded_selector, selector_holds_an_id, selector_keys
+from graftpunk.har.token_pairing import TokenPairing, TokenValueTracker
 from graftpunk.logging import get_logger
 from graftpunk.plugins.login_settle import failure_text_on_lowered_page
 from graftpunk.session_identity import identifier_key, is_identifier_field
@@ -109,6 +110,7 @@ __all__ = [
     "SharedValue",
     "TokenCandidate",
     "TokenKind",
+    "TokenPairing",
     "body_layout",
     "body_params",
     "body_values",
@@ -125,6 +127,7 @@ __all__ = [
     "held_back_token_count",
     "printable_custom_headers",
     "printable_login_fields",
+    "printable_token_pairs",
     "printable_tokens",
     "read_body_values",
     "BodyValue",
@@ -678,6 +681,17 @@ class RunDigest:
     # the operations link (an id one returns and another takes). Empty, and left
     # out of render_json, for a run without such a pair (#367).
     shared_values: tuple[SharedValue, ...] = field(default=(), metadata={OMIT_EMPTY: True})
+    # Each token-named request header paired with the cookie, meta tag, or hidden
+    # input whose value it carried (graftpunk.har.token_pairing), by names and the
+    # page's path template only; read through printable_token_pairs, which holds
+    # back a name no output prints. Empty, and left out of render_json, for a run
+    # with none (#369).
+    token_pairs: tuple[TokenPairing, ...] = field(default=(), metadata={OMIT_EMPTY: True})
+    # (header, kind, source name), lower-cased, for each source the run compared
+    # with a header that never carried its value: a pairing by name alone skips it.
+    token_mismatches: tuple[tuple[str, TokenKind, str], ...] = field(
+        default=(), repr=False, metadata={INTERNAL: True}
+    )
 
 
 def _scope_root(primary_host: str) -> str:
@@ -1751,6 +1765,24 @@ def printable_tokens(
     return tuple(printed)
 
 
+def printable_token_pairs(
+    d: RunDigest, spellings: Mapping[str, str] | None = None
+) -> tuple[TokenPairing, ...]:
+    """*d*'s ``token_pairs`` as every output prints them: the header in its spelling
+    of *spellings* (:func:`header_spellings`, computed from *d* when not given), and
+    none whose header name prints nowhere or whose cookie name reads as a value
+    (:func:`graftpunk.har.paths.printable_name`), the rules :func:`printable_tokens`
+    applies to the candidates themselves."""
+    if spellings is None:
+        spellings = header_spellings(d)
+    return tuple(
+        replace(pairing, header=spellings[pairing.header.lower()])
+        for pairing in d.token_pairs
+        if pairing.header.lower() in spellings
+        and (pairing.kind != "cookie" or printable_name(pairing.name))
+    )
+
+
 # The token kinds whose name is a recorded cookie or header name.
 _GATED_TOKEN_KINDS = frozenset({"cookie", "header"})
 
@@ -2184,6 +2216,19 @@ def _is_page_load(entry: HAREntry, method: str, content_type: str) -> bool:
     if mode or dest:
         return mode == "navigate" or dest in ("document", "iframe")
     return method == "GET" and "html" in content_type and 200 <= entry.response.status < 300
+
+
+def _loads_an_unread_page(entry: HAREntry) -> bool:
+    """Whether *entry* showed the browser a page the recording kept no body for (a
+    304 from cache, a body file gone): a top-level page load, not a redirect hop.
+    Its token values, which the next request may carry, are unknown (#369)."""
+    method = entry.request.method.upper()
+    content_type = (entry.response.content_type or "").lower()
+    return (
+        entry.response.status not in _REDIRECT_STATUSES
+        and not entry.response.body
+        and _is_top_level_page_load(entry, method, content_type)
+    )
 
 
 # A navigation into one of these is a frame's document, never the page the engine
@@ -3581,6 +3626,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     graphql_entries: list[tuple[HAREntry, tuple[GraphQLOperation, ...]]] = []
     login_forms: list[LoginForm] = []
     token_seen: dict[tuple[TokenKind, str], list[str]] = {}
+    # Which source each token-named request header carried, by value (#369).
+    token_values = TokenValueTracker()
     cookies_seen: dict[str, None] = {}
     id_cookie_names: set[str] = set()
     # Each cookie a kept response set: its attributes, method, and raw template,
@@ -3681,6 +3728,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             continue
         if _body_missing(entry):
             dropped["error"] += 1
+            if _loads_an_unread_page(entry):
+                token_values.unread_page()
             if entry.response.body_file_outside:
                 LOG.warning("digest_body_file_outside_har_dir", url=bare_url(entry.request.url))
             else:
@@ -3767,6 +3816,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             cname = cookie.get("name", "")
             if cname and looks_like_token_name(cname):
                 token_seen.setdefault(("cookie", cname), []).append(f"{method} {raw_template}")
+        token_values.request(entry.request.headers, _sent_cookie_values(entry))
 
         # Every host reaching this point already passed the in-scope check
         # above, not just the primary one: a second first-party host (a
@@ -3816,6 +3866,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 submitted_a_step.add(latest_after_post)
             latest_after_post = None
         forms_in_entry: tuple[LoginForm, ...] = ()
+        if _loads_an_unread_page(entry):
+            token_values.unread_page()
         if "html" in content_type and entry.response.body:
             document_source = url
             forms_in_entry = extract_login_forms(
@@ -3846,6 +3898,17 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
                 token_key = (candidate.kind, candidate.name)
                 token_seen.setdefault(token_key, []).extend(candidate.seen_on)
+            # Every page's values replace what earlier pages held, so a header is
+            # compared with the latest value wherever the page was; only a served
+            # GET of the primary host at a literal path is one a Token can fetch
+            # again and name as its page_url.
+            fetchable = (
+                method == "GET"
+                and 200 <= entry.response.status < 300
+                and host == primary_host
+                and "{" not in raw_template
+            )
+            token_values.page(entry.response.body, raw_template if fetchable else None)
             if holds_a_login_form:
                 logged_out_pages.append(entry.response.body)
             elif (
@@ -4189,6 +4252,17 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         )
     )
 
+    # A value pairing whose source name holds an id is left out like its candidate.
+    token_pairs = tuple(
+        pairing for pairing in token_values.pairings() if not holds_an_id(pairing.name)
+    )
+    # A paired source is a token candidate whatever its name (a hidden input named
+    # for no token still pairs by value).
+    for pairing in token_pairs:
+        page_source = f"GET {pairing.page}" if pairing.page else ""
+        seen = token_seen.setdefault((pairing.kind, pairing.name), [])
+        if not seen and page_source:
+            seen.append(page_source)
     # A token name holding an id is left out and counted, never written.
     tokens = tuple(
         TokenCandidate(kind=kind, name=name, seen_on=tuple(dict.fromkeys(seen_on)))
@@ -4224,6 +4298,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         cookie_names_not_shown=_cookie_names_not_shown(cookies_seen, id_cookie_names, cookies_sent),
         header_spellings=header_order,
         shared_values=_shared_values(graphql_entries),
+        token_pairs=token_pairs,
+        token_mismatches=token_values.mismatches(),
         # Only for a run that recorded a login. The final page is the last of
         # after_post_pages (page-source.html when it went there); success_candidates
         # finds the leading run of login steps among them. The last credential post's
