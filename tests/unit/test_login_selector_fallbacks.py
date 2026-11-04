@@ -245,6 +245,11 @@ class TestAttributeValuesAsWritten:
         assert selector.startswith(prefix)
         assert selector.endswith('"]')
         assert _css_unescaped(selector[len(prefix) : -2]) == value
+        # And a CSS engine (lxml's cssselect) picks the control with it.
+        import lxml.html
+
+        (match,) = lxml.html.fromstring(html).cssselect(selector)
+        assert match.get(attribute) == value
 
     def test_a_value_of_whitespace_is_never_used(self) -> None:
         form = _only(
