@@ -1236,12 +1236,16 @@ def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
         # The page read a few seconds after a credential post's response, structure
         # only (HAR 1.2 custom field): the file under the run.
         entry["request"]["_domAfter"] = request_data["_dom_after"]
-    if request_data.get("_user_marked_failed") and request_data.get("_failure_text_candidates"):
+    if request_data.get("_user_marked_failed"):
         # The credential post the user marked as a wrong password (HAR 1.2 custom
-        # fields), only when the page after it suggested a failure text: those texts,
-        # text only; never the page itself.
+        # fields), whether or not the page after it kept a failure text: the digest
+        # also reads the post's own JSON errors[].message. The texts, when any were
+        # kept, are text only; never the page itself.
         entry["request"]["_userMarkedFailed"] = True
-        entry["request"]["_failureTextCandidates"] = list(request_data["_failure_text_candidates"])
+        if request_data.get("_failure_text_candidates"):
+            entry["request"]["_failureTextCandidates"] = list(
+                request_data["_failure_text_candidates"]
+            )
     if isinstance(request_data.get("resource_type"), str):
         # Chrome's resource type for the request (HAR 1.2 custom field): "Document"
         # is a navigation, the digest's test for a page load. The Sec-Fetch headers

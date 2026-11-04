@@ -39,6 +39,7 @@ from tests.unit.test_observe_post_data import (
     FakeTab,
     _binding_called,
     _idle,
+    _loading_finished,
     _never,
     _response_received,
     _start,
@@ -406,7 +407,9 @@ class TestOnlyFailureReadsCount:
         await _idle(backend, clock)
         await _stop(backend, tab)
         assert backend.marked_failure_candidates() == ()
-        assert "_userMarkedFailed" not in _request(backend)
+        request = _request(backend)
+        assert request["_userMarkedFailed"] is True
+        assert "_failureTextCandidates" not in request
 
 
 class TestThePageAtThePost:
@@ -616,9 +619,10 @@ class TestStopAndPrivacy:
         assert not enter_read.done()
         await _stop(backend, tab)
         assert enter_read.cancelled()
-        # No text was kept, so the entry carries no mark at all.
+        # No text was kept: the entry carries the mark, so the digest can still read
+        # the post's own errors[].message, and no texts.
         request = _request(backend)
-        assert "_userMarkedFailed" not in request
+        assert request["_userMarkedFailed"] is True
         assert "_failureTextCandidates" not in request
         assert backend.marked_failure_candidates() == ()
 
@@ -922,6 +926,42 @@ class TestTheThrowawayScrub:
 # The prompt: gp observe interactive --wrong-password-first reads Enter on stdin
 # inside the asyncio loop, beside the SIGINT handler that stops the recording. A pipe
 # stands in for the terminal; the loop's own reader and signal handler are real.
+
+
+class TestAMarkThatKeptNoPageText:
+    """The recorder writes the mark on the post the user marked failed even when the
+    page after it kept no text, so the digest still reads that post's own JSON
+    ``errors[].message``: the case a toast that faded leaves."""
+
+    @pytest.mark.asyncio
+    async def test_the_digest_suggests_the_response_s_error_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.har.digest import DigestSource, digest
+        from graftpunk.observe.run import save_observe_run
+        from tests.unit import test_observe_post_data
+
+        monkeypatch.setattr(
+            test_observe_post_data,
+            "RESPONSE",
+            json.dumps({"errors": [{"message": "Invalid Credentials"}], "data": None}),
+        )
+        storage, tab, backend, clock = await _saved_recording(tmp_path)
+        # The page after the post shows nothing the page before it did not.
+        tab.dom_html = _LOGIN_MODAL
+        await _post(tab, "99.7")
+        await tab.dispatch(_loading_finished("99.7"))
+        await clock.advance(2, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        assert backend.marked_failure_candidates() == ()
+        await save_observe_run(storage, backend, "interactive-final")
+
+        (entry,) = json.loads((storage.run_dir / "network.har").read_text())["log"]["entries"]
+        assert entry["request"]["_userMarkedFailed"] is True
+        assert "_failureTextCandidates" not in entry["request"]
+        result = digest(DigestSource.from_run_dir(storage.run_dir, session="myshop", run_id="r1"))
+        assert result.failure_candidates == ("Invalid Credentials",)
 
 
 class _FakeTerminal:

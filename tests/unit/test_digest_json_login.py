@@ -109,8 +109,10 @@ def _graphql_run(run: Path, *, failed_step: bool = True, recorded: tuple[str, ..
         wrong = _login_body("***REDACTED***")
         failed = _post(wrong, _ERRORS, "2026-11-04T10:00:05.000Z")
         _snapshot(run, failed, "41.1", _RENDERED, _login_body("wrongpass1"))
+        # As the recorder writes it: the mark always, the texts only when any were kept.
         failed["request"]["_userMarkedFailed"] = True
-        failed["request"]["_failureTextCandidates"] = list(recorded)
+        if recorded:
+            failed["request"]["_failureTextCandidates"] = list(recorded)
         entries.append(failed)
     real = _post(
         _login_body(), {"data": {"LoginMutation": {"id": "u-1"}}}, "2026-11-04T10:00:09.000Z"
