@@ -428,6 +428,56 @@ class TestTheDigestOfAGraphqlLogin:
         assert _EMAIL not in code
 
 
+class TestAPostedValueNeverBecomesASelector:
+    """A login page served as HTML (no DOM snapshot to redact it) whose placeholder
+    and button label show the username the login then posts: neither reaches the
+    digest's selectors or the generated plugin."""
+
+    _PAGE = (
+        "<!DOCTYPE html><html><body>"
+        '<form action="/search"><input name="q"><button type="submit">Go</button></form>'
+        '<div role="dialog"><input placeholder="jsmith" type="text">'
+        '<input type="password" placeholder="Password">'
+        '<button type="submit" aria-label="Continue as jsmith">Go</button></div>'
+        "</body></html>"
+    )
+
+    def _result(self, tmp_path: Path, username: str) -> RunDigest:
+        body = json.dumps(
+            {
+                "operationName": "LoginMutation",
+                "variables": {"username": username, "password": _PASSWORD},
+                "query": _MUTATION,
+            }
+        )
+        entries = [
+            _entry("GET", f"{_HOST}/log-in", content_type="text/html", body=self._PAGE),
+            _post(body, {"data": {"LoginMutation": {"id": "u-1"}}}, "2026-11-04T10:00:09.000Z"),
+            _entry("GET", f"{_HOST}/account", content_type="text/html", body=_LOGGED_IN),
+        ]
+        tmp_path.mkdir(exist_ok=True)
+        return digest(DigestSource(har_path=_write_har(tmp_path, entries)))
+
+    def test_a_placeholder_holding_the_posted_username_is_dropped(self, tmp_path: Path) -> None:
+        result = self._result(tmp_path, "jsmith")
+        (form,) = result.login_forms
+        assert "username" in form.unresolved_roles
+        assert "submit" in form.unresolved_roles
+        assert form.fields == {"password": 'input[type="password"]'}
+        assert "jsmith" not in repr(result.login_forms)
+        assert "jsmith" not in _plugin(result)
+
+    def test_the_placeholder_is_used_when_the_login_posts_another_value(
+        self, tmp_path: Path
+    ) -> None:
+        """The same page with a login that posts another username: the placeholder
+        holds no posted value, so it is the username's selector (the button's label
+        is still never one)."""
+        (form,) = self._result(tmp_path, "alice.w").login_forms
+        assert form.fields["username"] == 'input[placeholder="jsmith"]'
+        assert form.submit is None
+
+
 class TestFailureTextFromAJsonResponse:
     def test_the_recorder_s_texts_come_first_and_one_text_is_given_once(
         self, tmp_path: Path

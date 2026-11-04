@@ -185,6 +185,33 @@ class TestFieldFallbacks:
         assert "username" in form.unresolved_roles
         assert "40912873" not in str(form.fields)
 
+    def test_a_label_naming_a_person_who_posted_nothing_is_used(self) -> None:
+        """Pinned known gap: a placeholder that names the person but holds no value
+        the run posted, no email address, and no id is used as it reads. The digest
+        drops only values a credential post sent (test_digest_json_login.py)."""
+        label = "Welcome back Jane Doe, your username"
+        form = _only(
+            _dialog(
+                f'<input type="text" placeholder="{label}">'
+                '<input type="password"><button type="submit">Go</button>'
+            )
+        )
+        assert form.fields["username"] == f'input[placeholder="{label}"]'
+
+    @pytest.mark.parametrize(
+        "value", ["jsmith@example.com", "Sign in as jsmith@example.com", "Account 40912873"]
+    )
+    def test_an_email_address_or_a_long_number_is_never_used(self, value: str) -> None:
+        form = _only(
+            _dialog(
+                f'<input type="text" aria-label="{value}" placeholder="{value}">'
+                '<input type="password"><button type="submit">Go</button>'
+            )
+        )
+        assert "username" in form.unresolved_roles
+        assert "example.com" not in repr(form.fields)
+        assert "40912873" not in repr(form.fields)
+
     def test_an_id_or_a_name_still_comes_first(self) -> None:
         form = _only(
             _dialog(
@@ -268,6 +295,31 @@ class TestAttributeValuesAsWritten:
         (match,) = lxml.html.fromstring(html).cssselect(selector)
         assert match.get("placeholder") == "Email or\nphone"
 
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            'input[placeholder="Email or\\a phone"]',
+            'input[aria-label="Your \\"email\\""]',
+            'input[autocomplete=" username"]',
+            "button.sign-in-btn",
+        ],
+    )
+    def test_the_digest_reads_the_value_back_as_written(self, selector: str) -> None:
+        from graftpunk.har.documents import selector_attribute_value
+
+        value = selector_attribute_value(selector)
+        spelled = selector.split('="', 1)[1][:-2] if '="' in selector else None
+        expected = _css_unescaped(spelled) if spelled is not None else "sign-in-btn"
+        assert value == expected
+
+    @pytest.mark.parametrize(
+        "selector", ["#email", 'input[name="email"]', 'input[type="password"]', "form input"]
+    )
+    def test_a_selector_by_id_name_or_type_has_no_attribute_value(self, selector: str) -> None:
+        from graftpunk.har.documents import selector_attribute_value
+
+        assert selector_attribute_value(selector) is None
+
     def test_a_value_of_whitespace_is_never_used(self) -> None:
         form = _only(
             _dialog(
@@ -335,6 +387,20 @@ class TestSubmitFallbacks:
             )
             assert form.submit is None
             assert "submit" in form.unresolved_roles
+
+    def test_its_aria_label_is_never_used(self) -> None:
+        """A button's ``aria-label`` is its text by another name ("Continue as
+        jsmith"), so it is never a selector, even when it is the only unique one."""
+        form = _only(
+            _dialog(
+                f'{self._FIELDS}<button type="submit" aria-label="Continue as jsmith">Go'
+                "</button>",
+                after='<button type="submit">Search</button>',
+            )
+        )
+        assert form.submit is None
+        assert "submit" in form.unresolved_roles
+        assert "jsmith" not in repr(form)
 
     def test_its_text_is_not_kept(self) -> None:
         """A button's text can name the account ("Continue as Alice Smith"), and a

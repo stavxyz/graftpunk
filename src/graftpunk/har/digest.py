@@ -32,6 +32,7 @@ from graftpunk.har.documents import (
     looks_like_new_password_name,
     looks_like_token_name,
     names_a_password,
+    selector_attribute_value,
 )
 from graftpunk.har.inline_state import inline_json
 from graftpunk.har.login_signals import (
@@ -2541,6 +2542,55 @@ def _snapshot_page_forms(
     return source, forms
 
 
+def _posted_needles(
+    credential_entries: Sequence[HAREntry], username_names: frozenset[str]
+) -> frozenset[str]:
+    """The account values of the run's credential posts (:func:`_account_values`: the
+    password, the username, and each email address; every value but a token when no
+    field reads as the username), as
+    :func:`graftpunk.har.login_signals.account_needles` compares a name with them. A
+    post whose body cannot be read by its field names adds every value read from it."""
+    found: list[str] = []
+    for entry in credential_entries:
+        values = _account_values(entry, username_names)
+        if values is None:
+            read, _by_names = read_body_values(
+                entry.request.post_data, _request_content_type(entry)
+            )
+            values = [value for _names, value, _named in read]
+        found.extend(values)
+    return account_needles(found)
+
+
+def _without_posted_values(form: LoginForm, needles: frozenset[str]) -> LoginForm:
+    """*form* with each role whose selector picks its control by an attribute value
+    or class (:func:`graftpunk.har.documents.selector_attribute_value`) holding a
+    value the run posted in a credential post (*needles*) left unresolved, so a
+    placeholder or ``aria-label`` that shows the username never reaches a generated
+    plugin. A recorded HTML page shows what the server rendered for the account
+    before the login posted it; a DOM snapshot has those values redacted already."""
+
+    def holds(selector: str | None) -> bool:
+        value = None if selector is None else selector_attribute_value(selector)
+        return value is not None and holds_an_account_value(value, needles)
+
+    dropped = [role for role, selector in form.fields.items() if holds(selector)]
+    drop_submit = holds(form.submit)
+    if not needles or not (dropped or drop_submit):
+        return form
+    unresolved = [*form.unresolved_roles, *dropped]
+    if drop_submit:
+        unresolved.append("submit")
+    return replace(
+        form,
+        fields={role: s for role, s in form.fields.items() if role not in dropped},
+        unscoped_fields={r: s for r, s in form.unscoped_fields.items() if r not in dropped},
+        submit=None if drop_submit else form.submit,
+        unscoped_submit=None if drop_submit else form.unscoped_submit,
+        unresolved_roles=tuple(dict.fromkeys(unresolved)),
+    )
+
+
 def _unique_forms(forms: list[LoginForm]) -> list[LoginForm]:
     """*forms* with a form recorded again (the same site-wide form on several pages)
     kept once, at its first position, as the copy whose selectors resolve best
@@ -3636,6 +3686,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         else form
         for form in ranked_forms
     ]
+    posted_needles = _posted_needles(credential_entries, username_names)
+    ranked_forms = [_without_posted_values(form, posted_needles) for form in ranked_forms]
     # A page a post was credited to only through a formless group shown on several
     # pages is a content page showing a site-wide modal, so its GET keeps its command.
     owned_pages -= {

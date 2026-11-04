@@ -47,6 +47,7 @@ __all__ = [
     "looks_like_new_password_name",
     "looks_like_token_name",
     "names_a_password",
+    "selector_attribute_value",
     "printable_selectors",
     "printable_unresolved_roles",
 ]
@@ -738,14 +739,19 @@ def is_build_hashed_class(token: str) -> bool:
 
 def _selectable_attributes(raw: _RawInput) -> list[tuple[str, str]]:
     """The (attribute, value) pairs a selector for *raw* may fall back to, in the
-    order it tries them, each value exactly as written: ``autocomplete`` (not ``on``
-    or ``off``); ``type`` for a typed password input and a typed submit
-    ``<button>``; ``placeholder``; ``aria-label``; then each class token a CSS
-    identifier spells that is not build-hashed (:func:`is_build_hashed_class`). A
-    value that is only whitespace, one over ``_MAX_ATTRIBUTE_VALUE`` characters, one
-    holding an account value (:func:`graftpunk.har.paths.holds_an_id`), and one
-    holding the redaction a stored snapshot writes in place of a posted value
-    (``***REDACTED***``, which the live page never shows) is never one."""
+    order it tries them, each value as the page spells it (newlines normalized as
+    :func:`_parse` does): ``autocomplete`` (not ``on`` or ``off``); ``type`` for a
+    typed password input and a typed submit ``<button>``; ``placeholder``;
+    ``aria-label``, but never a button's (:func:`_is_button_like`), since it is the
+    button's text by another name and can name the account ("Continue as ...");
+    then each class token a CSS identifier spells that is not build-hashed
+    (:func:`is_build_hashed_class`). A value that is only whitespace, one over
+    ``_MAX_ATTRIBUTE_VALUE`` characters, one holding an id, an email address, or a
+    long number (:func:`graftpunk.har.paths.holds_an_id`), and one holding the
+    redaction a stored snapshot writes in place of a posted value
+    (``***REDACTED***``, which the live page never shows) is never one. A value
+    holding what the run posted in a credential post is dropped later, by the
+    digest, which knows those values (:func:`selector_attribute_value`)."""
     pairs: list[tuple[str, str]] = []
     if raw.autocomplete_attr.strip().lower() not in _UNTELLING_AUTOCOMPLETE:
         pairs.append(("autocomplete", raw.autocomplete_attr))
@@ -755,7 +761,8 @@ def _selectable_attributes(raw: _RawInput) -> list[tuple[str, str]]:
     ):
         pairs.append(("type", raw.input_type))
     pairs.append(("placeholder", raw.placeholder))
-    pairs.append(("aria-label", raw.aria_label))
+    if not _is_button_like(raw):
+        pairs.append(("aria-label", raw.aria_label))
     pairs.extend(
         ("class", token)
         for token in raw.classes
@@ -778,8 +785,8 @@ def _attribute_selector(raw: _RawInput, page_inputs: _Counts) -> str | None:
     ``input[type="password"]``, ``input[placeholder="..."]``,
     ``input[aria-label="..."]``, or ``button.sign-in-btn``. None when none is
     unique. For a control with no usable id or name, so a login rendered by a script
-    with build-hashed classes and no names still gets a selector, never a hashed
-    class."""
+    with build-hashed classes and no names still gets a selector, and a class only
+    when every part of it reads as words (:func:`is_build_hashed_class`)."""
     for attribute, value in _selectable_attributes(raw):
         if page_inputs.by_attribute[(raw.tag, attribute, value)] != 1:
             continue
@@ -787,6 +794,33 @@ def _attribute_selector(raw: _RawInput, page_inputs: _Counts) -> str | None:
             return f"{raw.tag}.{value}"
         return f'{raw.tag}[{attribute}="{_css_string(value)}"]'
     return None
+
+
+# An attribute selector as _attribute_selector writes one, and the escapes
+# _css_string writes inside its value.
+_ATTRIBUTE_SELECTOR_RE = re.compile(
+    r'[a-z]+(?:\[(?:autocomplete|placeholder|aria-label)="((?:[^"\\]|\\.)*)"\]'
+    r"|\.(-?[A-Za-z_][\w-]*))"
+)
+_CSS_ESCAPE_RE = re.compile(r"\\([0-9a-f]{1,6}) |\\(.)", re.DOTALL)
+
+
+def selector_attribute_value(selector: str) -> str | None:
+    """The attribute value or class token *selector* picks its control by, unescaped,
+    when it is a selector by a stable attribute (:func:`_attribute_selector`):
+    ``Email or phone`` for ``input[placeholder="Email or phone"]``, ``sign-in-btn``
+    for ``button.sign-in-btn``. None for any other selector (by id, by name, by a
+    type, which names no account). The digest drops a role whose value holds what the
+    run posted in a credential post."""
+    match = _ATTRIBUTE_SELECTOR_RE.fullmatch(selector)
+    if match is None:
+        return None
+    if match.group(2) is not None:
+        return match.group(2)
+    return _CSS_ESCAPE_RE.sub(
+        lambda escape: chr(int(escape.group(1), 16)) if escape.group(1) else escape.group(2),
+        match.group(1),
+    )
 
 
 # A selector with no form scope: by id, as _selectors_for writes one.
