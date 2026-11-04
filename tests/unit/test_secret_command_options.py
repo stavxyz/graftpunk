@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 import urllib.parse
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -1636,6 +1637,202 @@ class TestTheScrubNeverRaises:
             get_logger("t").warning("keys", d={f"a{SCOPE_KEY}": 1, f"a{REDACTED}": 2})
         (line,) = _json_lines(capsys)
         assert line["d"] == {f"a{REDACTED}": 1, f"a{REDACTED} (2)": 2}
+
+
+class _StructlogCarrier:
+    """Clean text, and a secret in what structlog's JSONRenderer logs it as (#305)."""
+
+    def __init__(self, returned: Any) -> None:
+        self.returned = returned
+
+    def __str__(self) -> str:
+        return "carrier"
+
+    def __repr__(self) -> str:
+        return "_StructlogCarrier()"
+
+    def __structlog__(self) -> Any:
+        return self.returned
+
+
+class _ReturnsItself(_StructlogCarrier):
+    def __init__(self) -> None:
+        super().__init__(self)
+
+    def __repr__(self) -> str:
+        return f"_ReturnsItself(key={SCOPE_KEY!r})"
+
+
+class TestStructlogValues:
+    def test_what_structlog_returns_is_scrubbed_in_the_json_format(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+        from graftpunk.logging import get_logger, log_secrets
+
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning(
+                "structlog_value",
+                flat=_StructlogCarrier(f"key={SCOPE_KEY}"),
+                nested=_StructlogCarrier({"k": [SCOPE_KEY, _StructlogCarrier(SCOPE_KEY)]}),
+                clean=_StructlogCarrier({"k": "plain"}),
+            )
+        (line,) = _json_lines(capsys)
+        assert line["flat"] == f"key={REDACTED}"
+        assert line["nested"] == {"k": [REDACTED, REDACTED]}
+        assert line["clean"] == {"k": "plain"}
+
+    def test_the_console_format_still_prints_its_text(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=False)
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("structlog_value", value=_StructlogCarrier(SCOPE_KEY))
+        text = strip_ansi(capsys.readouterr().err)
+        assert "value=_StructlogCarrier()" in text
+        assert SCOPE_KEY not in text
+
+    def test_a_structlog_method_that_returns_its_own_value(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The scrub cuts the loop where it closes, as for a container that
+        holds itself: what the line carries there is the value's repr, scrubbed."""
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        logged = f"_ReturnsItself(key='{REDACTED}')"
+        for json_output in (False, True):
+            configure_logging(level="DEBUG", json_output=json_output)
+            with log_secrets([SCOPE_KEY]):
+                get_logger("t").warning("itself", value=_ReturnsItself())
+            text = strip_ansi(capsys.readouterr().err)
+            assert SCOPE_KEY not in text
+            if json_output:
+                assert json.loads(text)["value"] == logged
+            else:
+                assert f"value={logged}" in text
+
+
+def _shared(depth: int) -> list[Any]:
+    """A list holding one sub-list twice, nested *depth* levels: 2 ** depth paths
+    to the innermost list, *depth* + 1 lists."""
+    value: list[Any] = [SCOPE_KEY]
+    for _ in range(depth):
+        value = [value, value]
+    return value
+
+
+class TestEveryDepthIsScrubbed:
+    """The lines a renderer writes, in gp's formats and in a program's own
+    structlog configuration, hold no secret at any depth (#305)."""
+
+    @staticmethod
+    def _value() -> dict[str, Any]:
+        deep: Any = [SCOPE_KEY]
+        for level in range(100):
+            deep = [f"level {level} {SCOPE_KEY}", {SCOPE_KEY: deep}]
+        return {"deep": deep, "shared": _shared(8), "carrier": _StructlogCarrier([SCOPE_KEY])}
+
+    def _log(self) -> None:
+        from graftpunk.logging import get_logger, log_secrets
+
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("every_depth", **self._value())
+
+    @pytest.mark.parametrize("json_output", [True, False], ids=["json", "console"])
+    def test_in_gps_formats(self, capsys: pytest.CaptureFixture[str], json_output: bool) -> None:
+        from graftpunk.logging import configure_logging
+
+        configure_logging(level="DEBUG", json_output=json_output)
+        self._log()
+        text = strip_ansi(capsys.readouterr().err)
+        assert "every_depth" in text
+        assert SCOPE_KEY not in text
+        # Each of the 100 levels and each of the 256 shared leaves, at least.
+        assert text.count(REDACTED) > 100 + 256
+
+    @pytest.mark.parametrize(
+        "renderer",
+        ["json", "key-value", "logfmt"],
+    )
+    def test_in_a_programs_own_structlog_configuration(
+        self, capsys: pytest.CaptureFixture[str], renderer: str
+    ) -> None:
+        import structlog
+
+        structlog.configure(
+            processors=[
+                {
+                    "json": structlog.processors.JSONRenderer(),
+                    "key-value": structlog.processors.KeyValueRenderer(),
+                    "logfmt": structlog.processors.LogfmtRenderer(),
+                }[renderer]
+            ],
+            logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        )
+        self._log()
+        text = capsys.readouterr().err
+        assert "every_depth" in text
+        assert SCOPE_KEY not in text
+        assert text.count(REDACTED) > 100 + 256
+
+    def test_a_shared_container_is_scrubbed_at_each_of_its_places(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _json_logging()
+        from graftpunk.logging import get_logger, log_secrets
+
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("shared", value=_shared(10))
+        (line,) = _json_lines(capsys)
+        expected: Any = [REDACTED]
+        for _ in range(10):
+            expected = [expected, expected]
+        assert line["value"] == expected
+
+
+def _cpu_seconds(work: Callable[[], object]) -> float:
+    """The least CPU time of three runs of *work*: CPU time, never wall clock, and
+    the least of three, so a busy machine slows neither side of a ratio."""
+    times = []
+    for _ in range(3):
+        start = time.process_time()
+        work()
+        times.append(time.process_time() - start)
+    return min(times)
+
+
+def test_a_shared_container_costs_what_its_distinct_lists_cost() -> None:
+    """A list holding one sub-list twice, nested 18 levels, within 10 times the
+    CPU time of a chain of as many distinct lists (#305). The scrub once walked
+    every path to each list: 2 ** 18 for the innermost, over 4,000 times the
+    chain's cost here, and 11.7 s of CPU at 22 levels (2026-11-03). The line is dropped after the
+    scrub, so only the scrub is timed, not the renderer, whose own output is
+    2 ** 18 leaves."""
+    import structlog
+
+    from graftpunk.logging import get_logger, log_secrets
+
+    def drop(_logger: Any, _method: str, _event: Any) -> Any:
+        raise structlog.DropEvent
+
+    structlog.configure(processors=[drop])
+    shared = _shared(18)
+    chain: list[Any] = [SCOPE_KEY]
+    for _ in range(18):
+        chain = [chain, [SCOPE_KEY]]
+    log = get_logger("t")
+
+    def log_value(value: Any) -> Callable[[], None]:
+        def work() -> None:
+            with log_secrets([SCOPE_KEY]):
+                log.warning("shared", value=value)
+
+        return work
+
+    ratio = _cpu_seconds(log_value(shared)) / max(_cpu_seconds(log_value(chain)), 1e-4)
+    assert ratio < 10, ratio
 
 
 class _CountsItsTexts:
