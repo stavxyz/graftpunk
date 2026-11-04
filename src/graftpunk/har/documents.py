@@ -46,7 +46,6 @@ __all__ = [
     "is_login_document",
     "looks_like_new_password_name",
     "looks_like_token_name",
-    "token_source_values",
     "names_a_password",
     "selector_attribute_value",
     "printable_selectors",
@@ -264,10 +263,6 @@ class _RawInput:
     placeholder: str = ""
     aria_label: str = ""
     classes: tuple[str, ...] = ()
-    # A hidden input's value attribute, read only to pair a request header with the
-    # input whose value it carries (token_source_values); never printed, so out of
-    # the repr.
-    value: str = field(default="", repr=False, compare=False)
 
 
 @dataclass
@@ -419,7 +414,6 @@ class _DocumentParser(HTMLParser):
                 classes=tuple(_ASCII_WHITESPACE_RE.split(values.get("class", "").strip()))
                 if values.get("class", "").strip()
                 else (),
-                value=values.get("value", "") if input_type.lower() == "hidden" else "",
             )
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
@@ -1741,23 +1735,6 @@ def extract_token_candidates(html: str, source: str) -> tuple[TokenCandidate, ..
                 TokenCandidate(kind="hidden_input", name=raw_input.name, seen_on=(source,))
             )
     return tuple(candidates)
-
-
-def token_source_values(html: str) -> tuple[tuple[TokenKind, str, str], ...]:
-    """``(kind, name, value)`` for every ``<meta name content>`` (kind ``meta``) and
-    every named hidden input, in a form or not (kind ``hidden_input``), in *html*,
-    in document order, whatever the name. Values are for comparing with a request
-    header's (graftpunk.har.token_pairing) and are never printed."""
-    parsed = _parse(html)
-    found: list[tuple[TokenKind, str, str]] = [
-        ("meta", name, content) for name, content in parsed.metas
-    ]
-    found.extend(
-        ("hidden_input", raw_input.name, raw_input.value)
-        for raw_input in parsed.inputs
-        if raw_input.input_type == "hidden" and raw_input.name
-    )
-    return tuple(found)
 
 
 def is_login_document(html: str) -> bool:

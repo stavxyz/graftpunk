@@ -26,6 +26,7 @@ from graftpunk.exceptions import (
     TokenPatternMismatchError,
 )
 from graftpunk.logging import get_logger
+from graftpunk.page_values import PageValueKind, page_values
 from graftpunk.session_identity import GP_ACCOUNT_ATTR, GP_SESSION_NAME_ATTR
 from graftpunk.signals import register_live_browser, unregister_live_browser
 
@@ -118,11 +119,9 @@ async def _poll_for_tokens(
         still_unmatched = []
 
         for token in unmatched:
-            if token.pattern is None:
-                raise ValueError(f"Token '{token.name}' has source='page' but no pattern")
-            match = re.search(token.pattern, content)
-            if match:
-                results[token.name] = match.group(1)
+            value = read_page_token(token, content)
+            if value is not None:
+                results[token.name] = value
                 LOG.info(f"{log_prefix}_extracted", name=token.name, url=url)
             else:
                 still_unmatched.append(token)
@@ -259,7 +258,7 @@ async def extract_tokens_from_tab(
     """
     by_url: dict[str, list[Token]] = defaultdict(list)
     for token in tokens:
-        if token.source == "page" and token.pattern:
+        if token.source == "page":
             by_url[token.page_url].append(token)
 
     results: dict[str, str] = {}
@@ -308,6 +307,11 @@ class Token:
     #   source="page"             -> "http": requests only, "browser": nodriver only,
     #                                "auto": try HTTP then fall back to browser
     #   source="response_header"  -> same as "page"
+    # A "page" token built by from_meta_tag or from_hidden_input names the element
+    # instead of a pattern, read by graftpunk.page_values: the reader the digest
+    # pairs a header with, so the value extracted is the value it compared (#369).
+    element: PageValueKind | None = None
+    element_name: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -316,7 +320,16 @@ class Token:
             raise ValueError(
                 f"Token.source must be 'page', 'cookie', or 'response_header', got {self.source!r}"
             )
-        if self.source == "page" and not self.pattern:
+        if self.element is not None:
+            if self.source != "page" or self.pattern or not self.element_name:
+                raise ValueError(
+                    "Token with element requires source='page', an element_name, and no pattern"
+                )
+            if self.element not in ("meta", "hidden_input"):
+                raise ValueError(
+                    f"Token.element must be 'meta' or 'hidden_input', got {self.element!r}"
+                )
+        elif self.source == "page" and not self.pattern:
             raise ValueError("Token with source='page' requires a pattern")
         if self.source == "cookie" and not self.cookie_name:
             raise ValueError("Token with source='cookie' requires cookie_name")
@@ -338,11 +351,14 @@ class Token:
         cache_duration: float = 300,
         extraction: Literal["http", "browser", "auto"] = "auto",
     ) -> Token:
-        """Create token config for HTML <meta name="..." content="..."> extraction."""
+        """Create token config for HTML ``<meta name="..." content="...">`` on
+        *page_url*: the first such tag with a non-empty content, its attributes in
+        any order and case, the content decoded (graftpunk.page_values)."""
         return cls(
             name=header,
             source="page",
-            pattern=rf'<meta\s+name=["\']?{re.escape(name)}["\']?\s+content=["\']([^"\']+)',
+            element="meta",
+            element_name=name,
             page_url=page_url,
             cache_duration=cache_duration,
             extraction=extraction,
@@ -358,17 +374,14 @@ class Token:
         extraction: Literal["http", "browser", "auto"] = "auto",
     ) -> Token:
         """Create token config for an HTML ``<input type="hidden" name="..." value="...">``
-        on *page_url*, in a form or not, its attributes in any order."""
-        attribute_end = r"""["'\s/>]"""
+        on *page_url*, in a form or not: the first such input with a non-empty value,
+        its attributes in any order and case, the value decoded
+        (graftpunk.page_values)."""
         return cls(
             name=header,
             source="page",
-            pattern=(
-                r"<(?i:input)\b"
-                rf"""(?=[^>]*\s(?i:type)\s*=\s*["']?(?i:hidden){attribute_end})"""
-                rf"""(?=[^>]*\s(?i:name)\s*=\s*["']?{re.escape(name)}{attribute_end})"""
-                r"""[^>]*\s(?i:value)\s*=\s*["']?([^"'\s>]+)"""
-            ),
+            element="hidden_input",
+            element_name=name,
             page_url=page_url,
             cache_duration=cache_duration,
             extraction=extraction,
@@ -421,6 +434,25 @@ class Token:
             cache_duration=cache_duration,
             extraction=extraction,
         )
+
+
+def read_page_token(token: Token, html: str) -> str | None:
+    """The value a ``page`` *token* reads from *html*, or None when absent: the
+    named element's (graftpunk.page_values) for a token built with ``element``,
+    else the first group of the first match of its pattern."""
+    if token.element is not None:
+        return page_values(html).get((token.element, token.element_name or ""))
+    if token.pattern is None:
+        raise ValueError(f"Token '{token.name}' has source='page' but no pattern")
+    match = re.search(token.pattern, html)
+    return match.group(1) if match else None
+
+
+def _element_target(token: Token) -> str:
+    """The element a token built with ``element`` reads, for an error message."""
+    if token.element == "meta":
+        return f'<meta name="{token.element_name}">'
+    return f'<input type="hidden" name="{token.element_name}">'
 
 
 @dataclass(frozen=True)
@@ -556,14 +588,14 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
             if token.extraction == "auto":
                 raise _BrowserExtractionNeeded(token.name) from None
             raise
-        if token.pattern is None:
-            raise ValueError(f"Token '{token.name}' has source='page' but no pattern")
-        match = re.search(token.pattern, resp.text)
-        if not match:
+        value = read_page_token(token, resp.text)
+        if value is None:
             if token.extraction == "auto":
                 raise _BrowserExtractionNeeded(token.name)
+            if token.element is not None:
+                raise TokenPatternMismatchError(f"{_element_target(token)} not found in {url}")
             raise TokenPatternMismatchError(f"Token pattern not found in {url}: {token.pattern}")
-        return match.group(1)
+        return value
 
     raise ValueError(f"Unknown token source: {token.source}")
 

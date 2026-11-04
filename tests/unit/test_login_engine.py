@@ -3563,6 +3563,67 @@ class TestSeleniumTokenExtraction:
         assert "X-Session" in token_cache
         assert token_cache["X-Session"].value == "session-abc"
 
+    def test_selenium_login_reads_a_hidden_input_token_as_the_digest_does(self) -> None:
+        """A from_hidden_input token is read by graftpunk.page_values: the first
+        input of that name, its value decoded, an input inside a script ignored."""
+        from graftpunk.plugins.login_engine import generate_login_method
+        from graftpunk.tokens import _CACHE_ATTR, Token, TokenConfig
+
+        class SeleniumPageTokenPlugin(SitePlugin):
+            site_name = "selpage"
+            session_name = "selpage"
+            help_text = "Selenium page token"
+            base_url = "https://example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#user", "password": "#pass"},
+                        submit="#submit",
+                    ),
+                ],
+                url="/login",
+                success=".dashboard",
+                timeout=0.05,
+                settle=0.0,
+            )
+            token_config = TokenConfig(
+                tokens=(
+                    Token.from_hidden_input("csrf", "X-CSRF"),
+                    Token.from_meta_tag("absent-token", "X-Absent"),
+                )
+            )
+
+        login_method = generate_login_method(SeleniumPageTokenPlugin())
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.find_element = MagicMock(return_value=MagicMock())
+        instance.driver.page_source = (
+            "<script>var s = '<input type=hidden name=csrf value=fromScript1>';</script>"
+            '<input value="ab&#43;cd1234" type="hidden" name="csrf">'
+            '<input type="hidden" name="csrf" value="secondOne123">'
+        )
+        instance.transfer_driver_cookies_to_session = MagicMock()
+        instance.cookies = MagicMock()
+        mock_capture = MagicMock()
+        mock_capture.get_header_roles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+        ):
+            assert login_method({"username": "user", "password": "test"}) is True  # noqa: S106
+
+        token_cache = getattr(instance, _CACHE_ATTR)
+        assert {name: cached.value for name, cached in token_cache.items()} == {
+            "X-CSRF": "ab+cd1234"
+        }
+
     def test_selenium_login_no_token_config_skips(self) -> None:
         """Selenium login without token_config does not attempt extraction."""
         from graftpunk.plugins.login_engine import generate_login_method

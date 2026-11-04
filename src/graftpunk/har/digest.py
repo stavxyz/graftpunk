@@ -2218,6 +2218,19 @@ def _is_page_load(entry: HAREntry, method: str, content_type: str) -> bool:
     return method == "GET" and "html" in content_type and 200 <= entry.response.status < 300
 
 
+def _loads_an_unread_page(entry: HAREntry) -> bool:
+    """Whether *entry* showed the browser a page the recording kept no body for (a
+    304 from cache, a body file gone): a top-level page load, not a redirect hop.
+    Its token values, which the next request may carry, are unknown (#369)."""
+    method = entry.request.method.upper()
+    content_type = (entry.response.content_type or "").lower()
+    return (
+        entry.response.status not in _REDIRECT_STATUSES
+        and not entry.response.body
+        and _is_top_level_page_load(entry, method, content_type)
+    )
+
+
 # A navigation into one of these is a frame's document, never the page the engine
 # queries.
 _FRAME_DESTINATIONS = frozenset({"iframe", "frame", "embed", "object"})
@@ -3715,6 +3728,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             continue
         if _body_missing(entry):
             dropped["error"] += 1
+            if _loads_an_unread_page(entry):
+                token_values.unread_page()
             if entry.response.body_file_outside:
                 LOG.warning("digest_body_file_outside_har_dir", url=bare_url(entry.request.url))
             else:
@@ -3851,6 +3866,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 submitted_a_step.add(latest_after_post)
             latest_after_post = None
         forms_in_entry: tuple[LoginForm, ...] = ()
+        if _loads_an_unread_page(entry):
+            token_values.unread_page()
         if "html" in content_type and entry.response.body:
             document_source = url
             forms_in_entry = extract_login_forms(
@@ -3881,15 +3898,17 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
                 token_key = (candidate.kind, candidate.name)
                 token_seen.setdefault(token_key, []).extend(candidate.seen_on)
-            # A page a Token can fetch again: a served GET of the primary host at a
-            # literal path.
-            if (
+            # Every page's values replace what earlier pages held, so a header is
+            # compared with the latest value wherever the page was; only a served
+            # GET of the primary host at a literal path is one a Token can fetch
+            # again and name as its page_url.
+            fetchable = (
                 method == "GET"
                 and 200 <= entry.response.status < 300
                 and host == primary_host
                 and "{" not in raw_template
-            ):
-                token_values.page(entry.response.body, raw_template)
+            )
+            token_values.page(entry.response.body, raw_template if fetchable else None)
             if holds_a_login_form:
                 logged_out_pages.append(entry.response.body)
             elif (

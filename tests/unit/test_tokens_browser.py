@@ -466,6 +466,34 @@ class TestExtractTokensFromTab:
         assert results == {"X-CSRF": "tok123"}
 
     @pytest.mark.asyncio
+    async def test_reads_meta_and_hidden_input_tokens_as_the_digest_does(self) -> None:
+        """from_meta_tag and from_hidden_input read the rendered page through
+        graftpunk.page_values: attributes in any order, the value decoded, the first
+        of a name, nothing inside a script."""
+        from graftpunk.tokens import Token, extract_tokens_from_tab
+
+        tokens = [
+            Token.from_meta_tag("csrf-token", "X-CSRF", extraction="browser"),
+            Token.from_hidden_input("csrf", "X-Form", extraction="browser"),
+        ]
+        mock_tab = _AwaitableMock()
+        mock_tab.get_content = AsyncMock(
+            return_value=(
+                '<html><head><meta content="meta&#43;Value1" name="csrf-token"></head><body>'
+                "<script>'<input type=hidden name=csrf value=scriptValue1>'</script>"
+                '<input value="formValue1" type="hidden" name="csrf">'
+                '<input type="hidden" name="csrf" value="laterValue1"></body></html>'
+            )
+        )
+        mock_browser = MagicMock()
+        mock_browser.get = AsyncMock(return_value=mock_tab)
+        mock_tab.browser = mock_browser
+
+        results = await extract_tokens_from_tab(mock_tab, tokens, "https://example.com")
+        assert results == {"X-CSRF": "meta+Value1", "X-Form": "formValue1"}
+        mock_browser.get.assert_awaited_once_with("https://example.com/")
+
+    @pytest.mark.asyncio
     async def test_no_browser_started(self) -> None:
         """extract_tokens_from_tab does NOT start a new browser."""
         from graftpunk.tokens import Token, extract_tokens_from_tab
