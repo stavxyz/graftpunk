@@ -704,8 +704,10 @@ def credential_post_redaction(
     type="password">`` a recorded page holds, is a secret when it is at least 3
     characters and no flag word (:func:`_password_value`); one that is an email
     address (:func:`is_email_address`) under any other name (``email``,
-    ``emailOrPhoneNumber``, ``input.login``) is an identifier, since in a credential
-    post's own body an address is the account's. An identifier-first login posts
+    ``emailOrPhoneNumber``, ``input.login``) is an identifier, whether it is the
+    account's or another address the post sends (a support or referral address),
+    and is then scrubbed wherever it stands as a whole word. An identifier-first
+    login posts
     its username in an earlier step: the email addresses under an identifier field's
     own name (:func:`graftpunk.session_identity.is_identifier_field`, an allowlist,
     since such a post is no credential post) in each other request before the

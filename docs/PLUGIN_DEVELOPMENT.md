@@ -634,11 +634,22 @@ token every part of which (split on `-` and `_`) reads as words by
 as words can still pass (about 4% of generated emotion `css-` hashes, 1% of
 styled-components ids, 3% of Svelte hashes, measured on 100,000 each on
 2026-11-04), so a class is the last fallback, used only when it picks one control
-on the recorded page. Each value is spelled exactly as written (a padded
-placeholder keeps its spaces) and CSS-escaped; a value of only whitespace, one
-over 80 characters, one holding an account value, and one holding the
-`***REDACTED***` a stored snapshot writes in place of a posted value are never
-used. A submit button none of these picks gets a `GP-FILL` saying it has no
+on the recorded page. Each value is spelled as the page writes it (a padded
+placeholder keeps its spaces), with each CRLF and lone CR read as LF, as the HTML
+standard's input stream preprocessing reads them (WHATWG HTML 13.2.3.5; that
+Chrome's DOM holds the same is per the standard and not checked against a
+browser), and CSS-escaped. These values are never used: one of only whitespace,
+one over 80 characters, one holding an id, an email address, or a long number
+(`graftpunk.har.paths.holds_an_id`), one holding the `***REDACTED***` a stored
+snapshot writes in place of a posted value, and a button's `aria-label`, which
+is its text by another name. The digest then leaves a role unresolved when its
+selector's value holds a value a credential post of the run sent (the password,
+the username, or an email address, compared as
+`graftpunk.har.login_signals.holds_an_account_value` compares them), so a
+placeholder that shows the username on a recorded HTML page never reaches the
+plugin. A label naming the person that holds no posted value
+(`placeholder="Welcome back Jane Doe, your username"`) is used as it reads: a
+known gap. A submit button none of these picks gets a `GP-FILL` saying it has no
 stable selector and naming what was tried; its text is never written into the
 plugin, since it can name the account (`Continue as ...`) and a CSS selector
 cannot match text. A POST to where a login form a GET
