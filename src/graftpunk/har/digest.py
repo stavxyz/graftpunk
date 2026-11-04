@@ -2646,9 +2646,12 @@ def _json_leaf_names(parsed: object) -> dict[str, None]:
             for inner in value:
                 if isinstance(inner, dict | list):
                     inners.append((inner, owner))
-                elif owner is not None and isinstance(inner, str | int | float):
-                    if not isinstance(inner, bool):
-                        names[owner] = None
+                elif (
+                    owner is not None
+                    and isinstance(inner, str | int | float)
+                    and not isinstance(inner, bool)
+                ):
+                    names[owner] = None
         stack.extend(reversed(inners))
     return names
 
@@ -2662,10 +2665,10 @@ def password_field_names(body_text: str | None, content_type: str = "") -> list[
     body's names are read at any depth: the own name of each string or number in it,
     a list's items under the name of the key holding the list, as the scrub reads
     them (a GraphQL login's ``variables.password`` gives ``password``, so does
-    ``{"password": ["x"]}``, and a batched GraphQL array is walked too). A form's names are its top-level keys only. The
-    distinct names are collected first and each is judged once, so the cost is
-    linear in the body. The one rule for a credential
-    post's fields: the digest reads a recorded POST with it, and the recorder reads
+    ``{"password": ["x"]}``, and a batched GraphQL array is walked too). A form's
+    names are its top-level keys only. The distinct names are collected first and
+    each is judged once, so the cost is linear in the body. The one rule for a
+    credential post's fields: the digest reads a recorded POST with it, and the recorder reads
     a request's body with it while the request is in flight (the DOM snapshot of
     #267)."""
     declared = content_type.split(";")[0].strip().lower()

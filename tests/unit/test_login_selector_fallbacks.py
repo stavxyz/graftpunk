@@ -393,8 +393,7 @@ class TestSubmitFallbacks:
         jsmith"), so it is never a selector, even when it is the only unique one."""
         form = _only(
             _dialog(
-                f'{self._FIELDS}<button type="submit" aria-label="Continue as jsmith">Go'
-                "</button>",
+                f'{self._FIELDS}<button type="submit" aria-label="Continue as jsmith">Go</button>',
                 after='<button type="submit">Search</button>',
             )
         )
