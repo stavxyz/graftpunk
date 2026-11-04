@@ -620,6 +620,7 @@ def write_sidecar(
     flagged_values: Mapping[str, frozenset[str] | None] | None = None,
     redacted_names: int = 0,
     observe_run: ObserveRun | None = None,
+    graphql_operation: str | None = None,
 ) -> Path:
     """Write *fixture*'s committable sidecar beside it and return its path.
 
@@ -634,7 +635,9 @@ def write_sidecar(
     :func:`checked_names_of` finds in *fixture*'s text. Without it every flagged
     name is checked, as a sidecar from before schema 3 is read. A name in it that
     is not flagged is ignored. *observe_run* is the run the capture came from,
-    written as the sidecar's ``observe_run`` (null without it).
+    written as the sidecar's ``observe_run`` (null without it). *graphql_operation*
+    is the GraphQL operation the captured request carried, written as the
+    sidecar's ``graphql_operation`` (null without it).
     """
     body = fixture.read_bytes()
     names = tuple(flagged_reasons)
@@ -658,6 +661,7 @@ def write_sidecar(
         checked_names=checked,
         redacted_names=redacted_names,
         observe_run=observe_run,
+        graphql_operation=graphql_operation,
     )
     path = sidecar_path(fixture)
     path.write_text(sidecar_text(sidecar), encoding="utf-8")

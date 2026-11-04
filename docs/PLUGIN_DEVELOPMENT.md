@@ -1241,6 +1241,60 @@ because `login_config` drives it. A value that does not split into a name, an
 --command: 'get /api/orders' is not a "METHOD template" pair. Write the method in capitals, a space, then the template, as in "GET /orders/{order_id}".
 ```
 
+### GraphQL operations
+
+A GraphQL site sends most of its requests to one path, so the digest does not
+make that path one row. A request whose JSON body holds a `query` that reads as
+a GraphQL document, or an `operationName` beside `extensions.persistedQuery`, is
+filed under its operation, and each operation is a row of its own with its own
+count, variables, and response shape:
+
+```text
+### POST /graphql (OrdersByCustomer)
+
+- GraphQL operation: query
+- host: `myshop.example.com`, count: 3, statuses: [200]
+- content type: `application/json`
+- variables: customerId: str, first: int, status: str
+- shape: object{data}
+```
+
+The operation is the request's `operationName`, else the name in the document,
+else `(anonymous)`. Each element of a batch (a JSON array of operations) counts
+for its operation, but a batch is never an operation's fixture, since its one
+response answers them all. A JSON POST to the same path that is not GraphQL
+keeps a plain `POST /graphql` row. `--endpoints-json` carries `operation` on these
+rows, and their `body_params` are the variables.
+
+Take the whole row as the key:
+
+```bash
+gp plugin new myshop --from-run myshop --command "orders=POST /graphql (OrdersByCustomer)" --command "add-to-cart=POST /graphql (AddToCart)"
+```
+
+Each GraphQL command calls one helper on the plugin class, `_graphql`, with its
+operation and its variables. The helper sends `operationName`, the document it
+reads from `src/graftpunk_myshop/graphql/<Operation>.graphql` (written as
+recorded; a string or an id-shaped number written inline in the document is
+replaced with `"GP-FILL"`), the variables you gave, the `extensions` the
+recording sent unchanged on every operation (`clientLibrary`, say), and the
+custom header names the GraphQL requests carried, whose values you fill in. Each
+variable is an option whose default is the value the recording sent, unless the
+value reads as account data: an email address, an id, a value a login posted or
+a cookie or token header carried, or text over 64 characters. A persisted query
+recorded with no document is sent by its hash.
+
+`gp observe fixtures` names a fixture by its operation, so
+`--match "POST /graphql (OrdersByCustomer)"` writes
+`post_graphql(OrdersByCustomer).json`, and `--match "POST /graphql (*)"` writes
+one per operation. `FixtureSession` answers a GraphQL request from that file
+only. When it is missing it raises `FixtureNotFoundError` rather than answer
+404, so a command that sends an operation nobody recorded fails its test. It
+records every request it answers in `session.requests` (method, path,
+operation, variables, and body), and `session.answer("POST /graphql
+(OrdersByCustomer)", status=400, body=...)` answers one row without a file,
+for an error path.
+
 ### Add a command to an existing plugin
 
 Once the project exists, a later recording can supply one more command. Say a
@@ -2507,6 +2561,13 @@ the run is on disk to turn the value check on. A graftpunk older than 1.35.0
 refuses a schema 4 sidecar, so a suite pinned below 1.35.0 needs its pin raised
 before it reads one.
 
+`graphql_operation` (from schema 5, graftpunk 1.39.0) names the GraphQL
+operation the captured request carried, and is null for any other request. Every
+sidecar 1.39.0 writes is schema 5, GraphQL or not, and a graftpunk older than
+1.39.0 refuses it (`sidecar: schema 5 is not one this graftpunk reads`), so a
+suite pinned below 1.39.0 needs its pin raised before it reads a regenerated
+sidecar.
+
 `flagged_reasons` says why each flagged name is flagged, and the suite's
 problem line repeats it, so you can tell a form-state cookie from a session
 value without the recording: `token_candidate` (the digest found the name as a
@@ -2554,15 +2615,20 @@ is kept: read both lists before you commit a sidecar.
       "session_name"
     ]
   },
+  "graphql_operation": null,
   "observe_run": {
     "plugin": "myshop",
     "run": "20261006-101500-4242"
   },
   "redacted_names": 0,
-  "schema": 4,
+  "schema": 5,
   "status": 200
 }
 ```
+
+`graphql_operation` names the GraphQL operation the captured request carried
+(`OrdersByCustomer`, or `(anonymous)` for one without a name), the same one the
+fixture's file name holds, and is null for any other request.
 
 Here `X-Csrf-Token`, a token name, is looked for in the fixture, and
 `myshop_session` is not, since the captured body did not hold the session
@@ -2573,11 +2639,11 @@ Without a sidecar, `FixtureSession` answers with status 200 and guesses the
 content type from the extension, but the generated suite's fixtures check fails
 on any fixture that has none (see
 [Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture)). A
-fixture you make by hand gets a sidecar of its own with all ten keys shown
+fixture you make by hand gets a sidecar of its own with all eleven keys shown
 above (the key set is closed, so a sidecar missing one is refused), its own
 `status` and `content_type`, and `"body_params": []`, `"capture_sha256": null`,
 `"checked_names": []`, `"flagged_names": []`, `"flagged_reasons": {}`,
-`"observe_run": null`, and `"redacted_names": 0`. A sidecar is how you test an
+`"graphql_operation": null`, `"observe_run": null`, and `"redacted_names": 0`. A sidecar is how you test an
 error path: copy a fixture together with its sidecar, set the copied sidecar's
 `status` to 403, and assert that the command raises `SessionRejectedError`.
 
@@ -2664,10 +2730,11 @@ sidecar's own fields are not scanned: gp writes `status` and `content_type` from
 the response, and a media type such as `text/html` is not a cookie value. When a
 checked name turns up, rename it in the fixture. It cannot tell
 whether invented content was invented well; that part stays yours. A fixture
-you wrote from nothing needs a sidecar too, with all ten keys: its own
-`status` and `content_type`, `"schema": 4`, `"body_params": []`,
+you wrote from nothing needs a sidecar too, with all eleven keys: its own
+`status` and `content_type`, `"schema": 5`, `"body_params": []`,
 `"capture_sha256": null`, `"checked_names": []`, `"flagged_names": []`,
-`"flagged_reasons": {}`, `"observe_run": null`, and `"redacted_names": 0`. The
+`"flagged_reasons": {}`, `"graphql_operation": null`, `"observe_run": null`, and
+`"redacted_names": 0`. The
 null hash declares the file came off no account. The check trusts that
 declaration rather than verifying it, and prints on every run how many
 fixtures it accepted that way, so the number shows up in review.

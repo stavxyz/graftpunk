@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.scaffold import policy
 from graftpunk.har import naming
-from graftpunk.har.digest import Endpoint, RunDigest
+from graftpunk.har.digest import Endpoint, RunDigest, endpoint_key
 from graftpunk.har.naming import to_cli_name
 
 __all__ = [
@@ -41,11 +41,14 @@ _COMMAND_NAME_RE = re.compile(rf"[A-Za-z][A-Za-z0-9_-]{{0,{MAX_COMMAND_NAME - 1}
 
 @dataclass(frozen=True)
 class CommandSelection:
-    """One ``--command "<name>=<METHOD> <template>"``: an endpoint, under a name."""
+    """One ``--command "<name>=<METHOD> <template>[ (<Operation>)]"``: an endpoint,
+    under a name. *operation* names a GraphQL operation row (#367), empty for any
+    other."""
 
     name: str
     method: str
     template: str
+    operation: str = ""
 
 
 class CommandSelectionError(DevtoolsRefusal, ValueError):
@@ -113,15 +116,27 @@ def plan_command(d: RunDigest, selection: CommandSelection) -> PlannedCommand:
         (
             e
             for e in d.endpoints
-            if e.template == selection.template and selection.method in e.methods
+            if e.template == selection.template
+            and selection.method in e.methods
+            and e.operation == selection.operation
         ),
         None,
     )
-    shown = f"{selection.method} {selection.template}"
+    shown = endpoint_key(selection.method, selection.template, selection.operation)
     if endpoint is None:
+        operations = not selection.operation and any(
+            e.operation and e.template == selection.template and selection.method in e.methods
+            for e in d.endpoints
+        )
+        hint = (
+            f' Its GraphQL operations are rows of their own: name one, as in "{shown} '
+            '(OperationName)".'
+            if operations
+            else ""
+        )
         raise CommandSelectionError(
             f"{shown} is not an endpoint in this run's digest; gp observe digest lists the "
-            f"ones it holds."
+            f"ones it holds.{hint}"
         )
     if endpoint.login_flow:
         raise CommandSelectionError(

@@ -38,7 +38,9 @@ from graftpunk.har.digest import (
     RunDigest,
     body_params,
     digest,
+    endpoint_key,
     endpoint_template,
+    entry_operations,
     flagged_reasons_of,
     flagged_values_of,
     redacted_names_of,
@@ -50,7 +52,7 @@ from graftpunk.har.naming import (
     capture_slug,
     capture_text,
     fixture_order,
-    parse_endpoint,
+    parse_endpoint_key,
 )
 from graftpunk.har.parser import HAREntry, HARParseError, parse_har_file
 from graftpunk.har.report import (
@@ -202,26 +204,51 @@ def digest_cmd(
         console.print(text, markup=False, highlight=False, soft_wrap=True)
 
 
-def _matches_template(entry_method: str, entry_template: str, endpoint: tuple[str, str]) -> bool:
-    """True when the entry is *endpoint*: the same method, and a template equal to the
-    pattern's or matching it as a glob. *endpoint* is :func:`parse_endpoint`'s pair;
-    this function never splits a pattern itself."""
-    method, template = endpoint
+Pattern = tuple[str, str, str]
+"""A ``--match`` value as :func:`graftpunk.har.naming.parse_endpoint_key` reads it:
+method, template (a glob), and GraphQL operation (a glob, or empty)."""
+
+
+def _matches_template(
+    entry_method: str, entry_template: str, entry_operation: str, endpoint: Pattern
+) -> bool:
+    """True when the entry is *endpoint*: the same method, a template equal to the
+    pattern's or matching it as a glob, and, for a pattern naming a GraphQL operation,
+    an operation equal to it or matching it as a glob; a pattern naming none matches
+    only an entry that carries none (#367). *endpoint* is
+    :func:`parse_endpoint_key`'s triple; this function never splits a pattern
+    itself."""
+    method, template, operation = endpoint
     if method != entry_method:
         return False
-    return entry_template == template or fnmatch.fnmatch(entry_template, template)
+    if not (entry_template == template or fnmatch.fnmatch(entry_template, template)):
+        return False
+    if not operation:
+        return not entry_operation
+    return bool(entry_operation) and (
+        entry_operation == operation or fnmatch.fnmatchcase(entry_operation, operation)
+    )
 
 
-def _parsed_matches(patterns: list[str]) -> list[tuple[str, str]]:
-    """Every ``--match`` value as its pair, refusing the first that does not parse."""
-    parsed: list[tuple[str, str]] = []
+def _parsed_matches(patterns: list[str]) -> list[Pattern]:
+    """Every ``--match`` value as its triple, refusing the first that does not parse."""
+    parsed: list[Pattern] = []
     for pattern in patterns:
         try:
-            parsed.append(parse_endpoint(pattern))
+            parsed.append(parse_endpoint_key(pattern))
         except EndpointSpecError as exc:
             console.print(f"[red]--match: {escape(str(exc))}[/red]")
             raise typer.Exit(1) from None
     return parsed
+
+
+def _entry_operation(entry: HAREntry) -> tuple[str, tuple[str, ...]]:
+    """*entry*'s GraphQL operation, empty when it carries none, and, for a batch,
+    the operations it carries (it is never written: its response answers them all)."""
+    operations = entry_operations(entry)
+    if any(operation.batched for operation in operations):
+        return "", tuple(dict.fromkeys(operation.name for operation in operations))
+    return (operations[0].name if operations else ""), ()
 
 
 def _capture_text(entry: HAREntry) -> str | None:
@@ -230,18 +257,18 @@ def _capture_text(entry: HAREntry) -> str | None:
 
 
 def _family_patterns(
-    run_digest: RunDigest, endpoints: list[tuple[str, str]]
-) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    run_digest: RunDigest, endpoints: list[Pattern]
+) -> dict[tuple[str, str], list[Pattern]]:
     """Each ``(method, member template)`` of a family row whose own template a
     ``--match`` names exactly, to those patterns. The member's recordings are written
     under the member's own template: a generated family command's test passes a
     recorded member's value, so it reads that member's fixture. A glob never names a
-    family row."""
+    family row, and neither does a pattern naming a GraphQL operation."""
     named = set(endpoints)
-    patterns: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    patterns: dict[tuple[str, str], list[Pattern]] = {}
     for endpoint in run_digest.endpoints:
         for method in endpoint.methods:
-            pattern = (method, endpoint.template)
+            pattern = (method, endpoint.template, "")
             if endpoint.family_members and pattern in named:
                 for member in endpoint.family_members:
                     patterns.setdefault((method, member), []).append(pattern)
@@ -251,21 +278,22 @@ def _family_patterns(
 def _hits(
     method: str,
     template: str,
-    endpoints: list[tuple[str, str]],
-    families: dict[tuple[str, str], list[tuple[str, str]]],
-) -> list[tuple[str, str]]:
-    """The ``--match`` patterns an entry filed under *method* and *template* answers:
-    each one matching its template, and each family row it is a member of
-    (:func:`_family_patterns`)."""
-    hits = [e for e in endpoints if _matches_template(method, template, e)]
-    return hits + families.get((method, template), [])
+    operation: str,
+    endpoints: list[Pattern],
+    families: dict[tuple[str, str], list[Pattern]],
+) -> list[Pattern]:
+    """The ``--match`` patterns an entry filed under *method*, *template* and
+    *operation* answers: each one matching it, and each family row it is a member of
+    (:func:`_family_patterns`; never for an operation)."""
+    hits = [e for e in endpoints if _matches_template(method, template, operation, e)]
+    return hits if operation else hits + families.get((method, template), [])
 
 
 def _colliding_file_names(
     entries: list[HAREntry],
     run_digest: RunDigest,
-    endpoints: list[tuple[str, str]],
-    families: dict[tuple[str, str], list[tuple[str, str]]],
+    endpoints: list[Pattern],
+    families: dict[tuple[str, str], list[Pattern]],
 ) -> dict[str, set[str]]:
     """The capture stems two or more matched endpoints would share (``/a_b`` and
     ``/a/b`` both name ``get_a_b``, whatever each one's extension), each with those
@@ -280,14 +308,17 @@ def _colliding_file_names(
             continue
         template = endpoint_template(run_digest, path)
         method = entry.request.method.upper()
-        if _capture_text(entry) is None or not _hits(method, template, endpoints, families):
+        operation, batch = _entry_operation(entry)
+        if batch or _capture_text(entry) is None:
+            continue
+        if not _hits(method, template, operation, endpoints, families):
             continue
         # Case-folded: on a case-insensitive filesystem get_Users and get_users
         # are one file.
-        stem = capture_slug(method, template)
+        stem = capture_slug(method, template, operation)
         name = stem.casefold()
         shown.setdefault(name, stem)
-        keys_by_name.setdefault(name, set()).add(f"{method} {template}")
+        keys_by_name.setdefault(name, set()).add(endpoint_key(method, template, operation))
     return {shown[name]: keys for name, keys in keys_by_name.items() if len(keys) > 1}
 
 
@@ -295,7 +326,10 @@ def fixtures_cmd(
     session: Annotated[str, typer.Argument(metavar="SESSION")],
     run: Annotated[str | None, typer.Argument(metavar="RUN_ID")] = None,
     match: Annotated[
-        list[str], typer.Option("--match", help='"METHOD template" (repeatable)')
+        list[str],
+        typer.Option(
+            "--match", help='"METHOD template" or "METHOD template (Operation)" (repeatable)'
+        ),
     ] = [],  # noqa: B006 - Typer reads this default at decoration time, never mutated per-call
     out: Annotated[Path | None, typer.Option("--out", help=f"Defaults to ./{CAPTURES_DIR}")] = None,
     limit: Annotated[
@@ -424,24 +458,26 @@ def fixtures_cmd(
         _refuse_write(target_dir, exc)
     per_template_count: dict[str, int] = {}
     written: list[Path] = []
-    matched: set[tuple[str, str]] = set()
-    # Each template's fixture recording is written first, so it takes the unsuffixed
+    matched: set[Pattern] = set()
+    # Each row's fixture recording is written first, so it takes the unsuffixed
     # name a generated test reads. fixture_order (content type, then body) orders
     # the rest; fixture_index names the digest's own choice by its exact HAR entry,
     # ahead of that, so an out-of-scope or a static entry sharing the same method
     # and template (fixture_order alone cannot tell those apart from an entry the
-    # digest actually kept) never outranks it. The sort is stable.
+    # digest actually kept) never outranks it. The sort is stable. A row is keyed
+    # by its GraphQL operation too (#367).
     fixture_types = {
-        (method, endpoint.template): endpoint.fixture_content_type
+        (method, endpoint.template, endpoint.operation): endpoint.fixture_content_type
         for endpoint in run_digest.endpoints
         for method in endpoint.methods
     }
     fixture_index = {
-        (method, endpoint.template): endpoint.fixture_entry_index
+        (method, endpoint.template, endpoint.operation): endpoint.fixture_entry_index
         for endpoint in run_digest.endpoints
         for method in endpoint.methods
         if endpoint.fixture_entry_index is not None
     }
+    operations = [_entry_operation(entry) for entry in entries]
 
     def written_first(indexed: tuple[int, HAREntry]) -> tuple[int, int, int, int]:
         entry_index, entry = indexed
@@ -449,14 +485,15 @@ def fixtures_cmd(
             path = urlparse(entry.request.url).path or "/"
         except ValueError:
             path = "/"
-        key = (entry.request.method.upper(), endpoint_template(run_digest, path))
+        operation = operations[entry_index][0]
+        key = (entry.request.method.upper(), endpoint_template(run_digest, path), operation)
         is_the_fixture = entry_index == fixture_index.get(key)
         type_rank, body_rank = fixture_order(
             _capture_text(entry), entry.response.content_type or "", fixture_types.get(key, "")
         )
         return (0 if is_the_fixture else 1, type_rank, body_rank, entry_index)
 
-    for _entry_index, entry in sorted(enumerate(entries), key=written_first):
+    for entry_index, entry in sorted(enumerate(entries), key=written_first):
         try:
             path = urlparse(entry.request.url).path or "/"
         except ValueError:
@@ -467,10 +504,27 @@ def fixtures_cmd(
         # named after it.
         template = endpoint_template(run_digest, path)
         method = entry.request.method.upper()
-        hits = _hits(method, template, endpoints, families)
+        operation, batch = operations[entry_index]
+        if batch:
+            batch_hits = [
+                pattern
+                for name in batch
+                for pattern in _hits(method, template, name, endpoints, families)
+            ]
+            if batch_hits:
+                matched.update(batch_hits)
+                console.print(
+                    f"[dim]Skipped a batch of {escape(', '.join(batch))} on "
+                    f"{escape(method)} {escape(template)}: its response answers every "
+                    "operation of the batch at once, so it is no operation's fixture[/dim]",
+                    soft_wrap=True,
+                )
+            continue
+        hits = _hits(method, template, operation, endpoints, families)
         if not hits:
             continue
         matched.update(hits)
+        key = endpoint_key(method, template, operation)
         content_type = entry.response.content_type or UNNAMED_CONTENT_TYPE
         text = _capture_text(entry)
         if text is None:
@@ -478,18 +532,16 @@ def fixtures_cmd(
             # `body or ""` put a zero-byte file on disk that reads as a real
             # (empty) fixture.
             console.print(
-                f"[dim]Skipped {escape(method)} {escape(template)}: "
-                f"no text body ({escape(content_type)})[/dim]"
+                f"[dim]Skipped {escape(key)}: no text body ({escape(content_type)})[/dim]"
             )
             continue
 
-        key = f"{method} {template}"
         seen = per_template_count.get(key, 0)
         if seen >= limit:
             continue
         per_template_count[key] = seen + 1
 
-        filename = capture_filename(method, template, content_type)
+        filename = capture_filename(method, template, content_type, operation)
         if seen > 0:
             # "#" never occurs in a path (it starts the fragment), so a repeat
             # cannot take the name of a template with a numeric last segment.
@@ -507,6 +559,7 @@ def fixtures_cmd(
                 flagged_values=recorded_values,
                 redacted_names=redacted,
                 observe_run=observe_run,
+                graphql_operation=operation or None,
             )
         except OSError as exc:
             _refuse_write(file_path, exc)
@@ -517,12 +570,32 @@ def fixtures_cmd(
 
     for pattern in endpoints:
         if pattern not in matched:
-            method, template = pattern
+            method, template, operation = pattern
             console.print(
-                f"[yellow]No entries matched --match {escape(method)} {escape(template)}.[/yellow]",
+                f"[yellow]No entries matched --match "
+                f"{escape(endpoint_key(method, template, operation))}.[/yellow]",
                 soft_wrap=True,
                 highlight=False,
             )
+            if not operation and _has_operations(run_digest, method, template):
+                console.print(
+                    f"[yellow]Its GraphQL requests are rows of their own: name one, as in "
+                    f'--match "{escape(method)} {escape(template)} (OperationName)", or all '
+                    f'of them with --match "{escape(method)} {escape(template)} (*)".[/yellow]',
+                    soft_wrap=True,
+                    highlight=False,
+                )
+
+
+def _has_operations(run_digest: RunDigest, method: str, template: str) -> bool:
+    """True when a row of *run_digest* matching *method* and *template* (a glob) is a
+    GraphQL operation's."""
+    return any(
+        endpoint.operation
+        and method in endpoint.methods
+        and (endpoint.template == template or fnmatch.fnmatch(endpoint.template, template))
+        for endpoint in run_digest.endpoints
+    )
 
 
 # Attached here, above the decorated commands below, because Typer lists

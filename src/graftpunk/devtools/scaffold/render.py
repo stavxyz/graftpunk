@@ -59,6 +59,7 @@ from graftpunk.har.digest import (
     LoginObservation,
     RunDigest,
     TokenCandidate,
+    endpoint_key,
     header_names_not_shown,
     header_spellings,
     held_back_token_count,
@@ -66,6 +67,11 @@ from graftpunk.har.digest import (
     printable_tokens,
 )
 from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
+from graftpunk.har.graphql import (
+    ANONYMOUS_OPERATION,
+    document_literals_to_fill,
+    filled_document,
+)
 from graftpunk.har.naming import capture_filename, capture_slug
 from graftpunk.har.paths import (
     normal_host,
@@ -82,8 +88,11 @@ __all__ = [
     "RenderedCommand",
     "RequestTarget",
     "ScaffoldSpec",
+    "GRAPHQL_DIR",
+    "GRAPHQL_HELPER",
     "base_host",
     "class_name_for",
+    "graphql_document_file",
     "fixture_paths",
     "fixtures_root_for",
     "graftpunk_version_floor",
@@ -1112,7 +1121,13 @@ def _undeclared_body_fields(endpoint: Endpoint) -> dict[str, str]:
 
 
 def _needs_param_specs(endpoint: Endpoint) -> bool:
-    """Whether the stub declares its parameters explicitly (see _Declaration.needs_spec)."""
+    """Whether the stub declares its parameters explicitly (see _Declaration.needs_spec);
+    a GraphQL stub also does for a variable with a recorded default."""
+    if endpoint.operation:
+        declared = _body_declarations(endpoint).values()
+        return bool(endpoint.graphql_defaults) or any(
+            isinstance(d, _Declaration) and d.needs_spec for d in declared
+        )
     return any(d.needs_spec for d in _declared_extras(endpoint).values())
 
 
@@ -1199,7 +1214,9 @@ def _decorator_lines(command: PlannedCommand, param_specs: list[str]) -> list[st
         lines.append(f"{L2}params=[")
         lines.extend(f"{L3}{spec}," for spec in param_specs)
         lines.append(f"{L2}],")
-    endpoint_literal = f"{command.method} {command.endpoint.template}"
+    endpoint_literal = endpoint_key(
+        command.method, command.endpoint.template, command.endpoint.operation
+    )
     lines.extend(literal_lines(endpoint_literal, indent=len(L2), prefix="endpoint="))
     lines.append(f"{L1})")
     return lines
@@ -1335,14 +1352,328 @@ def _target_for(command: PlannedCommand, base_url: str | None) -> RequestTarget:
     return request_target(command.endpoint.host, base_url)
 
 
+GRAPHQL_HELPER = "_graphql"
+"""The plugin method every GraphQL command stub calls (#367)."""
+
+GRAPHQL_DIR = "graphql"
+"""The directory beside the plugin module that holds the operations' documents."""
+
+
+def _python_literal(value: object) -> str:
+    """A recorded JSON scalar as a one-line Python literal."""
+    if isinstance(value, str):
+        return quoted_literal(value)
+    if value is None or isinstance(value, bool):
+        return repr(value)
+    if isinstance(value, (int, float)):
+        return repr(value)
+    raise TypeError(f"not a JSON scalar: {value!r}")
+
+
+def _value_lines(value: object, *, indent: int, prefix: str, suffix: str) -> list[str]:
+    """*value*, a JSON value, as Python source at *indent* spaces after *prefix*:
+    an object or array exploded one entry per line with a magic trailing comma
+    (the shape ``ruff format`` keeps), a scalar on its own line (a long string
+    wrapped by ``literal_lines``)."""
+    pad = " " * indent
+    if isinstance(value, Mapping):
+        if not value:
+            return [f"{pad}{prefix}{{}}{suffix}"]
+        lines = [f"{pad}{prefix}{{"]
+        for key, item in value.items():
+            lines.extend(
+                _value_lines(
+                    item, indent=indent + INDENT_STEP, prefix=f"{quoted_literal(key)}: ", suffix=","
+                )
+            )
+        return [*lines, f"{pad}}}{suffix}"]
+    if isinstance(value, list):
+        if not value:
+            return [f"{pad}{prefix}[]{suffix}"]
+        lines = [f"{pad}{prefix}["]
+        for item in value:
+            lines.extend(_value_lines(item, indent=indent + INDENT_STEP, prefix="", suffix=","))
+        return [*lines, f"{pad}]{suffix}"]
+    if isinstance(value, str):
+        return literal_lines(value, indent=indent, prefix=prefix, trailing_comma=suffix == ",")
+    return [f"{pad}{prefix}{_python_literal(value)}{suffix}"]
+
+
+def graphql_document_file(command: PlannedCommand) -> str | None:
+    """Where *command*'s GraphQL document is written, relative to the plugin
+    module's directory: ``graphql/<Operation>.graphql``, the command's own name for
+    an anonymous operation; None for a command with no operation, or one whose
+    recordings sent a persisted query's hash alone."""
+    endpoint = command.endpoint
+    if not endpoint.operation or endpoint.graphql_document is None:
+        return None
+    stem = command.identifier if endpoint.operation == ANONYMOUS_OPERATION else endpoint.operation
+    return f"{GRAPHQL_DIR}/{stem}.graphql"
+
+
+def _graphql_files(planned: list[PlannedCommand]) -> dict[str, str]:
+    """Each GraphQL command's document file, relative to the plugin module's
+    directory: as recorded, or with the inline literals that could hold a value
+    replaced (:func:`graftpunk.har.graphql.filled_document`)."""
+    files: dict[str, str] = {}
+    for command in planned:
+        where = graphql_document_file(command)
+        document = command.endpoint.graphql_document
+        if where is not None and document is not None:
+            files[where] = filled_document(document)
+    return files
+
+
+def _graphql_path(command: PlannedCommand, base_url: str | None) -> str:
+    """The URL *command*'s GraphQL request goes to, as the stub writes it."""
+    return (_target_for(command, base_url).origin or "") + command.endpoint.template
+
+
+def _shared_extensions(endpoints: list[Endpoint]) -> dict[str, object]:
+    """The constant extensions every one of *endpoints* that recorded any recorded
+    with one value. A row with none (a persisted query, an anonymous probe) does not
+    empty the set: the helper sends what the site's client sends alongside."""
+    recorded = [endpoint for endpoint in endpoints if endpoint.graphql_extensions]
+    if not recorded:
+        return {}
+    shared = dict(recorded[0].graphql_extensions)
+    for endpoint in recorded[1:]:
+        shared = {
+            k: v
+            for k, v in shared.items()
+            if k in endpoint.graphql_extensions and endpoint.graphql_extensions[k] == v
+        }
+    return shared
+
+
+def _shared_headers(endpoints: list[Endpoint], spellings: Mapping[str, str]) -> list[str]:
+    """The printable custom header names every one of *endpoints* recorded."""
+    if not endpoints:
+        return []
+    names = list(printable_custom_headers(endpoints[0], spellings))
+    for endpoint in endpoints[1:]:
+        others = {h.casefold() for h in printable_custom_headers(endpoint, spellings)}
+        names = [name for name in names if name.casefold() in others]
+    return names
+
+
+def _render_graphql_helper(
+    endpoints: list[Endpoint], path: str, spellings: Mapping[str, str]
+) -> list[str]:
+    """The plugin's one GraphQL transport, ``_graphql``, at class-body indentation:
+    every GraphQL stub calls it with its operation and variables. It sends what
+    every recorded GraphQL request of *endpoints* carried: ``operationName``, the
+    document read from ``graphql/`` beside the module (or a persisted query's
+    hash), the variables (``None`` left out), the constant extensions, and the
+    custom header names, whose values are left to fill as every stub's are."""
+    extensions = _shared_extensions(endpoints)
+    headers = _shared_headers(endpoints, spellings)
+    lines = [
+        f"{L1}def {GRAPHQL_HELPER}(",
+        f"{L2}self,",
+        f"{L2}ctx: CommandContext,",
+        f"{L2}operation: str | None,",
+        f"{L2}variables: dict[str, object],",
+        f"{L2}*,",
+        f"{L2}document: str | None = None,",
+        f"{L2}persisted_query: dict[str, object] | None = None,",
+        *literal_lines(path, indent=len(L2), prefix="path: str = "),
+        f"{L1}) -> dict:",
+    ]
+    lines.extend(
+        wrapped_docstring_block(
+            "Send one GraphQL operation as the recording sent it: its name, its document "
+            f"from {GRAPHQL_DIR}/<document or operation>.graphql beside this module (or "
+            "the persisted query, sent by hash), the variables given (None left out), and "
+            "the extensions and headers every recorded GraphQL request carried.",
+            indent=len(L2),
+        )
+    )
+    lines.append(f"{L2}body: dict[str, object] = {{")
+    lines.append(f"{L3}" + '"variables": {k: v for k, v in variables.items() if v is not None},')
+    lines.append(f"{L2}}}")
+    lines.append(f"{L2}if operation is not None:")
+    lines.append(f'{L3}body["operationName"] = operation')
+    lines.extend(_value_lines(extensions, indent=len(L2), prefix="extensions: dict = ", suffix=""))
+    lines.append(f"{L2}if persisted_query is not None:")
+    lines.append(f'{L3}extensions = {{**extensions, "persistedQuery": persisted_query}}')
+    lines.append(f"{L2}else:")
+    lines.append(f"{L3}name = document or operation")
+    lines.append(f'{L3}source = Path(__file__).parent / "{GRAPHQL_DIR}" / f"{{name}}.graphql"')
+    lines.append(f'{L3}body["query"] = source.read_text(encoding="utf-8")')
+    lines.append(f"{L2}if extensions:")
+    lines.append(f'{L3}body["extensions"] = extensions')
+    call = [
+        f"{L2}return ctx.request_json(",
+        f'{L3}"POST",',
+        f"{L3}path,",
+        f'{L3}role="xhr",',
+        f"{L3}json=body,",
+    ]
+    if headers:
+        call.extend(exploded_dict_lines("headers", [(h, f'"{GP_FILL_MARKER}"') for h in headers]))
+    lines.extend([*call, f"{L2})"])
+    return lines
+
+
+def _graphql_operation_notes(endpoint: Endpoint) -> list[str]:
+    """The GP-FILL notes a GraphQL stub carries about what it did not copy."""
+    notes: list[str] = []
+    document = endpoint.graphql_document
+    filled = 0 if document is None else document_literals_to_fill(document)
+    if filled:
+        notes.append(
+            f"{GP_FILL_MARKER}: {filled} inline value(s) in the recorded document were "
+            f'replaced with "{GP_FILL_MARKER}" in its .graphql file (a string, or a number '
+            "that reads as an id); put each value back, or pass it as a variable."
+        )
+    if endpoint.graphql_defaults_held_back:
+        notes.append(
+            f"{GP_FILL_MARKER}: {endpoint.graphql_defaults_held_back} recorded variable "
+            "value(s) were not made defaults because they read as account data (an email "
+            "address, an id, a value a login or a cookie carried, or longer than 64 "
+            "characters); those options default to None."
+        )
+    if endpoint.graphql_extensions_held_back:
+        notes.append(
+            f"{GP_FILL_MARKER}: {endpoint.graphql_extensions_held_back} recorded extension(s) "
+            "were left out because a value read as account data; add any this site needs "
+            f"to {GRAPHQL_HELPER}."
+        )
+    if endpoint.operation_batched == endpoint.count:
+        notes.append(
+            f"{GP_FILL_MARKER}: every recording sent this operation in a batch, so gp "
+            "observe fixtures writes no fixture for it."
+        )
+    if endpoint.query_params:
+        notes.append(
+            f"{GP_FILL_MARKER}: the recording also sent query parameters "
+            f"({', '.join(sorted(endpoint.query_params))}), which {GRAPHQL_HELPER} does not "
+            "send; add them by hand if this operation needs them."
+        )
+    return notes
+
+
+def _render_graphql_stub(
+    command: PlannedCommand,
+    run_label: str,
+    path: str,
+    spellings: Mapping[str, str],
+    *,
+    helper_path: str | None,
+) -> list[str]:
+    """A GraphQL operation's command stub: each variable an option, its recorded
+    value the default when :func:`graftpunk.har.digest`'s gate passed it, and a
+    call to ``_graphql`` with the operation and the variables. *helper_path* is
+    the path the helper defaults to; the stub passes its own when it differs."""
+    endpoint = command.endpoint
+    seen_params = {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
+    declarations = _body_declarations(endpoint)
+    declared = {n: d for n, d in declarations.items() if isinstance(d, _Declaration)}
+    identifier_for = {name: _param_identifier(name, seen_params) for name in sorted(declared)}
+    option_names = {_option_name(i) for i in identifier_for.values()}
+    params = ["self", "ctx: CommandContext"]
+    param_specs: list[str] = []
+    flag_notes: list[str] = []
+    for name in sorted(declared):
+        declaration = declared[name]
+        identifier = identifier_for[name]
+        default = endpoint.graphql_defaults.get(name)
+        literal = "None" if default is None else _python_literal(default)
+        params.append(f"{identifier}: {declaration.annotation} | None = {literal}")
+        click_kwargs: ClickKwargs = ()
+        if declaration.multiple:
+            click_kwargs = (("multiple", True),)
+        elif declaration.label == "bool":
+            flag = _negatable_flag(identifier, option_names)
+            click_kwargs = (("is_flag", True), ("flag", flag))
+            if "/" not in flag:
+                positive = flag.removeprefix("--")
+                flag_notes.append(
+                    f'{GP_FILL_MARKER}: "{name}" can send true but not false: --no-{positive} '
+                    f"and --{positive}-false are both other options of this command."
+                )
+        keywords = declaration.keywords
+        if default is not None:
+            keywords = (*keywords, f"default={literal}")
+        param_specs.append(_param_spec(identifier, keywords, click_kwargs=click_kwargs))
+    needs_specs = _needs_param_specs(endpoint)
+    summary = f"{command.method} {endpoint.key.partition(' ')[2]}: seen {endpoint.count} time(s) "
+    summary += f"in run {run_label}."
+    lines = _decorator_lines(command, param_specs if needs_specs else [])
+    lines.append(f"{L1}def {command.identifier}(")
+    lines.extend(f"{L2}{p}," for p in params)
+    lines.append(f"{L1}) -> dict:")
+    lines.append(f'{L2}"""')
+    lines.extend(wrapped_docstring_lines(summary))
+    if endpoint.shape is not None and endpoint.shape.kind != "unavailable":
+        shape_line = f"Shape: {summarize_shape(endpoint.shape, depth=_SCAFFOLD_SHAPE_DEPTH)}."
+        lines.append("")
+        lines.extend(wrapped_docstring_lines(shape_line))
+    lines.append(f'{L2}"""')
+    notes = [
+        *_graphql_operation_notes(endpoint),
+        *_recording_gap_notes(endpoint, "", spellings),
+        *flag_notes,
+    ]
+    for note in notes:
+        lines.extend(wrapped_comment_lines(note, indent=len(L2)))
+    for field_name, reason in sorted(
+        (n, d) for n, d in declarations.items() if not isinstance(d, _Declaration)
+    ):
+        lines.extend(
+            wrapped_comment_lines(
+                f'{GP_FILL_MARKER}: variable "{field_name}" is not an option: the recording '
+                f"sent {reason}, which no command-line option sends as recorded. Add it to the "
+                "variables by hand if this command needs it.",
+                indent=len(L2),
+            )
+        )
+    named = endpoint.operation != ANONYMOUS_OPERATION
+    lines.append(f"{L2}return self.{GRAPHQL_HELPER}(")
+    lines.append(f"{L3}ctx,")
+    lines.append(f"{L3}{quoted_literal(endpoint.operation) if named else 'None'},")
+    if identifier_for:
+        lines.append(f"{L3}{{")
+        for name in sorted(identifier_for):
+            entry = (
+                f"{' ' * (len(L3) + INDENT_STEP)}{quoted_literal(name)}: {identifier_for[name]},"
+            )
+            lines.append(entry)
+        lines.append(f"{L3}}},")
+    else:
+        lines.append(f"{L3}{{}},")
+    document_file = graphql_document_file(command)
+    if not named and document_file is not None:
+        lines.append(f"{L3}document={quoted_literal(command.identifier)},")
+    if endpoint.graphql_document is None and endpoint.graphql_persisted_hash:
+        persisted = {
+            "version": endpoint.graphql_persisted_version or 1,
+            "sha256Hash": endpoint.graphql_persisted_hash,
+        }
+        lines.extend(_value_lines(persisted, indent=len(L3), prefix="persisted_query=", suffix=","))
+    if path != helper_path:
+        lines.extend(literal_lines(path, indent=len(L3), prefix="path="))
+    lines.append(f"{L2})")
+    lines.append("")
+    return lines
+
+
 def _render_command_stub(
     command: PlannedCommand,
     run_label: str,
     target: RequestTarget,
     bodies_where: str,
     spellings: Mapping[str, str],
+    *,
+    graphql_helper_path: str | None = None,
 ) -> list[str]:
     endpoint = command.endpoint
+    if endpoint.operation:
+        path = (target.origin or "") + endpoint.template
+        return _render_graphql_stub(
+            command, run_label, path, spellings, helper_path=graphql_helper_path
+        )
     method = command.method
     name = command.identifier
     # "self" and "ctx" are taken before any site parameter is named, so a site
@@ -1599,16 +1930,32 @@ class RenderedCommand:
     imports: tuple[tuple[str, str], ...]
     fixture: str | None
     other_host: OtherHostCommand | None = None
+    # A GraphQL command's document file, relative to the plugin module's directory,
+    # and its text; and the ``_graphql`` helper's lines (class-body indentation, no
+    # trailing blank line) when the stub needs the class to gain one (#367).
+    files: tuple[tuple[str, str], ...] = ()
+    helper: tuple[str, ...] = ()
 
 
 def _default_commands(d: RunDigest) -> list[PlannedCommand]:
     """Every eligible endpoint up to ``_MAX_SCAFFOLD_ENDPOINTS``, under generated names:
     what a render produces when the spec selects nothing."""
     seen_names: set[str] = set(policy.RESERVED_COMMAND_NAMES) | set(policy.GENERATED_MODULE_NAMES)
+    seen_names.add(GRAPHQL_HELPER)
     return [
-        PlannedCommand(_command_name(e.template, seen_names), None, e.methods[0], e)
+        PlannedCommand(_default_name(e, seen_names), None, e.methods[0], e)
         for e in _ordered_endpoints(d)[:_MAX_SCAFFOLD_ENDPOINTS]
     ]
+
+
+def _default_name(endpoint: Endpoint, seen: set[str]) -> str:
+    """A default command's method name: a named GraphQL operation's own name snake
+    cased (``OrdersByCustomer`` gives ``orders_by_customer``, #367), else the
+    template's (:func:`_command_name`)."""
+    if not endpoint.operation or endpoint.operation == ANONYMOUS_OPERATION:
+        return _command_name(endpoint.template, seen)
+    base = _snake_cased(endpoint.operation).strip("_")[:MAX_COMMAND_NAME] or "operation"
+    return _deduped(_safe_identifier(base, digit_prefix="n_"), seen)
 
 
 def _planned(spec: ScaffoldSpec) -> list[PlannedCommand]:
@@ -1622,23 +1969,43 @@ def _planned(spec: ScaffoldSpec) -> list[PlannedCommand]:
     return _default_commands(spec.digest)
 
 
-def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) -> RenderedCommand:
+def render_command(
+    command: PlannedCommand, d: RunDigest, base_url: str | None, *, has_helper: bool = False
+) -> RenderedCommand:
     """The single-command entry point: the stub ``gp plugin new`` writes for *command*,
     which ``gp plugin add-command`` inserts on its own. *base_url* is the plugin's, or
     ``None`` when it has none to read; ``_target_for`` is evaluated once, and both
-    the stub's request and ``other_host`` read that one result."""
+    the stub's request and ``other_host`` read that one result.
+
+    For a GraphQL command, *has_helper* says whether the plugin class already
+    defines ``_graphql``: when it does, the stub passes its own path, since the
+    helper's default is not known here; when it does not, the result carries the
+    helper, defaulting to this command's path, for the inserter to add."""
     target = _target_for(command, base_url)
+    spellings = header_spellings(d)
+    graphql = bool(command.endpoint.operation)
+    path = _graphql_path(command, base_url) if graphql else None
+    helper_path = None if has_helper else path
     lines = _render_command_stub(
-        command, _run_label(d), target, _bodies_location(d), header_spellings(d)
+        command,
+        _run_label(d),
+        target,
+        _bodies_location(d),
+        spellings,
+        graphql_helper_path=helper_path,
     )
     imports = [(_PLUGINS_MODULE, "CommandContext"), (_PLUGINS_MODULE, "command")]
     if _needs_param_specs(command.endpoint):
         imports.append((_PLUGINS_MODULE, "PluginParamSpec"))
-    if URL_PLACEHOLDER_RE.search(command.endpoint.template):
+    if URL_PLACEHOLDER_RE.search(command.endpoint.template) and not graphql:
         # Under a private alias, the same reason _render_plugin_module gives one:
         # a site parameter may be named quote. The stub always calls it when the
         # endpoint templates a path segment (see _render_command_stub above).
         imports.append(("urllib.parse", "quote as _quote_path"))
+    helper: tuple[str, ...] = ()
+    if graphql and helper_path is not None:
+        helper = tuple(_render_graphql_helper([command.endpoint], helper_path, spellings))
+        imports.append(("pathlib", "Path"))
     fixture = (
         None
         if _no_fixture_is_written(command.endpoint)
@@ -1646,6 +2013,7 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
             command.method,
             _fixture_template(command.endpoint),
             _fixture_type(command.endpoint),
+            command.endpoint.operation,
         )
     )
     return RenderedCommand(
@@ -1653,6 +2021,8 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
         imports=tuple(imports),
         fixture=fixture,
         other_host=_other_host(command.registered_name, target),
+        files=tuple(_graphql_files([command]).items()),
+        helper=helper,
     )
 
 
@@ -1751,11 +2121,21 @@ def _render_command_stubs(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> 
         ]
     lines: list[str] = []
     spellings = header_spellings(spec.digest)
+    graphql = [command for command in planned if command.endpoint.operation]
+    helper_path = _graphql_path(graphql[0], spec.base_url) if graphql else None
+    if graphql and helper_path is not None:
+        lines.extend(_render_graphql_helper([c.endpoint for c in graphql], helper_path, spellings))
+        lines.append("")
     for command in planned:
         target = _target_for(command, spec.base_url)
         lines.extend(
             _render_command_stub(
-                command, _run_label(spec.digest), target, _bodies_location(spec.digest), spellings
+                command,
+                _run_label(spec.digest),
+                target,
+                _bodies_location(spec.digest),
+                spellings,
+                graphql_helper_path=helper_path,
             )
         )
     return lines
@@ -1782,7 +2162,10 @@ def _render_plugin_module(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> 
     needs_login_import = _needs_login_import(spec)
     needs_token_import = spec.digest is not None and bool(_paired_token_candidates(spec.digest))
     needs_param_spec = any(_needs_param_specs(c.endpoint) for c in planned)
-    needs_quote = any(URL_PLACEHOLDER_RE.search(c.endpoint.template) for c in planned)
+    needs_quote = any(
+        URL_PLACEHOLDER_RE.search(c.endpoint.template) and not c.endpoint.operation for c in planned
+    )
+    needs_path = spec.digest is not None and any(c.endpoint.operation for c in planned)
     plugins_names = _plugins_import_names(
         needs_login_import=needs_login_import, needs_param_spec=needs_param_spec
     )
@@ -1794,8 +2177,11 @@ def _render_plugin_module(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> 
         "",
         "from __future__ import annotations",
         "",
+        # The GraphQL helper reads each operation's document beside the module.
+        *(["from pathlib import Path"] if needs_path else []),
         # Under a private alias: a site parameter may be named quote.
-        *(["from urllib.parse import quote as _quote_path", ""] if needs_quote else []),
+        *(["from urllib.parse import quote as _quote_path"] if needs_quote else []),
+        *([""] if needs_path or needs_quote else []),
         *import_lines(_PLUGINS_MODULE, *plugins_names),
     ]
     if needs_token_import:
@@ -1935,16 +2321,16 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
             continue  # no generated test reads one (see _render_test_module)
         # Case-folded, as a case-insensitive filesystem compares them.
         template = _fixture_template(endpoint)
-        stem = capture_slug(command.method, template).casefold()
+        stem = capture_slug(command.method, template, endpoint.operation).casefold()
         if stem in stems:
             # Either the file another test already reads (a family and its fixture
             # member) or one no generated test reads (see _render_test_module).
             continue
         stems.add(stem)
-        paths.append(
-            f"{fixtures_root_for(spec)}"
-            f"{capture_filename(command.method, template, _fixture_type(endpoint))}"
+        name = capture_filename(
+            command.method, template, _fixture_type(endpoint), endpoint.operation
         )
+        paths.append(f"{fixtures_root_for(spec)}{name}")
     return paths
 
 
@@ -2018,9 +2404,10 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
         endpoint = command.endpoint
         method = command.method
         name = command.identifier
+        label = endpoint_key(method, endpoint.template, endpoint.operation)
         if _no_fixture_is_written(endpoint):
             note = (
-                f"{GP_FILL_MARKER}: no test for {name} ({method} {endpoint.template}): no "
+                f"{GP_FILL_MARKER}: no test for {name} ({label}): no "
                 "recording kept any text, and none was a redirect or a 204, so gp observe "
                 "fixtures writes no fixture for it; write its test against a fixture of your "
                 "own."
@@ -2029,7 +2416,7 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
             lines.append("")
             lines.append("")
             continue
-        fixture_request = (method, _fixture_template(endpoint))
+        fixture_request = (method, _fixture_template(endpoint), endpoint.operation)
         stem = capture_slug(*fixture_request)
         family = bool(endpoint.family_members)
         taken = stems.get(stem.casefold())
@@ -2041,7 +2428,7 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
         # other endpoint's fixture.
         if taken is not None and not (taken[0] == fixture_request and (family or not taken[1])):
             note = (
-                f"{GP_FILL_MARKER}: no test for {name} ({method} {endpoint.template}): its "
+                f"{GP_FILL_MARKER}: no test for {name} ({label}): its "
                 f"fixture would share the stem {stem} with {taken[2]}; write its "
                 "test against a fixture of its own."
             )
@@ -2050,7 +2437,7 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
             lines.append("")
             continue
         if taken is None:
-            stems[stem.casefold()] = [fixture_request, not family, f"{method} {endpoint.template}"]
+            stems[stem.casefold()] = [fixture_request, not family, label]
         elif not family:
             taken[1] = True
         test_name = _deduped(name, seen_tests)
@@ -2059,6 +2446,9 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
         _, path_params = _templated_url(
             endpoint.template, {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
         )
+        if endpoint.operation:
+            # A GraphQL stub declares its variables only (_render_graphql_stub).
+            path_params = []
         # A family's placeholder gets the value its fixture recording sent, so the
         # request is one the run recorded, answered from that member's own fixture
         # (_fixture_template).
@@ -2092,6 +2482,10 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
                 indent=len(L1),
             )
         )
+        if endpoint.operation:
+            # FixtureSession records what each command sent (#367).
+            sent = quoted_literal(endpoint.operation)
+            lines.append(f"{L1}assert ctx.session.requests[-1].operation == {sent}")
         falsy = endpoint.falsy_first_response
         if endpoint.response_body_empty:
             # The fixture is empty, and the command reads it as text.
@@ -2160,6 +2554,14 @@ def render(spec: ScaffoldSpec) -> dict[str, str]:
     planned = _planned(spec)
     package = f"graftpunk_{policy.module_name_for(spec.name)}"
     plugin_module = _render_plugin_module(spec, planned)
+    documents = {f"src/{package}/{where}": text for where, text in _graphql_files(planned).items()}
+    return {**_rendered_files(spec, planned, package, plugin_module), **documents}
+
+
+def _rendered_files(
+    spec: ScaffoldSpec, planned: list[PlannedCommand], package: str, plugin_module: str
+) -> dict[str, str]:
+    """Every file of :func:`render` but the GraphQL documents."""
     if spec.mode == "new_project":
         return {
             "pyproject.toml": _render_pyproject(spec),

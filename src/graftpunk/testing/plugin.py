@@ -218,8 +218,9 @@ def _missing_sidecar(relative: Path, sidecar_name: str) -> str:
         f"copy the sidecar gp observe fixtures wrote beside the capture. For a hand-made "
         f'fixture, write {sidecar_name} with "schema": {schema}, a status, a content type, '
         f'"body_params": [], "capture_sha256": null, "flagged_names": [], '
-        f'"flagged_reasons": {{}}, "checked_names": [], "observe_run": null, and '
-        f'"redacted_names": 0, which declares that the file came off no account.'
+        f'"flagged_reasons": {{}}, "checked_names": [], "observe_run": null, '
+        f'"graphql_operation": null, and "redacted_names": 0, which declares that the file '
+        f"came off no account."
     )
 
 

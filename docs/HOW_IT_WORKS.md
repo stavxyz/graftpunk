@@ -1648,7 +1648,8 @@ on its side. A schema 3 sidecar is not refused either and names no run, so
 its fixture is checked by names alone wherever it runs; regenerating it with
 `gp observe fixtures` from a run still on disk turns the local value check on.
 A schema 4 sidecar is refused by a graftpunk older than 1.35.0, since the
-loader refuses an unknown schema (`graftpunk.contracts`).
+loader refuses an unknown schema (`graftpunk.contracts`), and a schema 5 sidecar
+(1.39.0, #367: it adds `graphql_operation`) by a graftpunk older than 1.39.0.
 
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
 fixture that removes prefixed environment variables for the duration of each

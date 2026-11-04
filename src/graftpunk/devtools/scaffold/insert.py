@@ -12,7 +12,10 @@ spliced in, read from the first body statement's source line. It inserts a
 stub, the imports the rendered stub says it references, and, in the same
 ``apply_changes`` call, the project's plain ``graftpunk>=`` lower bound raised
 to the running release (``project.planned_graftpunk_floor``), since the stub's
-``@command(..., endpoint=...)`` needs that graftpunk; nothing else.
+``@command(..., endpoint=...)`` needs that graftpunk. For a GraphQL operation
+(#367) it also writes the operation's document under ``graphql/`` beside the
+module when no file of that name is there, and adds the ``_graphql`` helper
+before the stub when the class does not define one; nothing else.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ from graftpunk.devtools.scaffold.pysrc import (
     source_lines,
     with_import,
 )
-from graftpunk.devtools.scaffold.render import OtherHostCommand, render_command
+from graftpunk.devtools.scaffold.render import GRAPHQL_HELPER, OtherHostCommand, render_command
 from graftpunk.devtools.scaffold.selection import CommandSelection, plan_command
 from graftpunk.devtools.scaffold.write import (
     PlannedChange,
@@ -234,8 +237,13 @@ def add_command(
     indent_unit = first_body_line[: len(first_body_line) - len(first_body_line.lstrip(" \t"))]
     if not _body_starts_new_line(original, klass):
         raise CommandInsertError(_layout_refusal(plugin.module_path))
-    rendered = render_command(command, d, plugin.base_url)
+    rendered = render_command(
+        command, d, plugin.base_url, has_helper=GRAPHQL_HELPER in plugin.class_names
+    )
     stub_lines = _reindented(rendered.lines, indent_unit)
+    if rendered.helper:
+        # A GraphQL command in a class without the transport gains it beside the stub.
+        stub_lines = [*_reindented(rendered.helper, indent_unit), "", *stub_lines]
     at = insertion_line(plugin, lines, indent_unit)
     text = joined_like(original, [*lines[:at], "", *stub_lines, *lines[at:]])
     first_party = view.first_party_packages
@@ -249,8 +257,19 @@ def add_command(
             f"{plugin.module_path}: does not parse after the stub is placed ({exc.msg})."
         ) from exc
     floor, floor_changes = planned_graftpunk_floor(root)
+    # A document file already there (another command of the same operation, or one
+    # an author edited) is the one the stub reads, and is left as it is.
+    documents = [
+        PlannedChange(module.parent / where, content)
+        for where, content in rendered.files
+        if not (module.parent / where).exists()
+    ]
     apply_changes(
-        [PlannedChange(module, text, original=original, validate=validate_python), *floor_changes]
+        [
+            PlannedChange(module, text, original=original, validate=validate_python),
+            *documents,
+            *floor_changes,
+        ]
     )
     fixture = None if rendered.fixture is None else f"{plugin.fixtures_root}{rendered.fixture}"
     return AddedCommand(

@@ -668,9 +668,11 @@ class TestFixturesCommand:
             "flagged_reasons",
             "checked_names",
             "observe_run",
+            "graphql_operation",
             "redacted_names",
         }
-        assert sidecar["schema"] == 4
+        assert sidecar["schema"] == 5
+        assert sidecar["graphql_operation"] is None
         assert sidecar["observe_run"] == {"plugin": "myshop", "run": "run-1"}
         assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
         assert sidecar["flagged_names"] == ["shop_session"]
@@ -1138,10 +1140,10 @@ class TestMatchPatternValidation:
         )
         assert result.exit_code == 0, result.output
 
-    def test_the_matcher_takes_its_halves_from_parse_endpoint(
+    def test_the_matcher_takes_its_halves_from_parse_endpoint_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A grammar change made in parse_endpoint alone reaches the matcher: the
+        """A grammar change made in parse_endpoint_key alone reaches the matcher: the
         matcher never splits a pattern itself."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
@@ -1152,8 +1154,8 @@ class TestMatchPatternValidation:
             [_entry("GET", "https://api.myshop.example.com/synthetic/1", body='{"id": 1}')],
         )
         monkeypatch.setattr(
-            "graftpunk.cli.observe_commands.parse_endpoint",
-            lambda value: ("GET", "/synthetic/*"),
+            "graftpunk.cli.observe_commands.parse_endpoint_key",
+            lambda value: ("GET", "/synthetic/*", ""),
         )
         out_dir = tmp_path / "out"
         result = runner.invoke(
@@ -1628,7 +1630,7 @@ class TestFlaggedNamesAreJudgedByTheirValues:
         """A sidecar committed by 1.32.x keeps today's behaviour: every flagged
         name is looked for, and the problem says how to regenerate it."""
         tree, sidecar = self._sidecar(tmp_path, monkeypatch, {"id": 4411, "total": "12.50"})
-        del sidecar["checked_names"], sidecar["observe_run"]
+        del sidecar["checked_names"], sidecar["observe_run"], sidecar["graphql_operation"]
         sidecar["schema"] = 2
         (meta,) = tree.glob("*.meta.json")
         meta.write_text(json.dumps(sidecar))
