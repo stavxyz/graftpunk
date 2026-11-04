@@ -290,11 +290,14 @@ class TestTheCostOfTheNestedRule:
         read = _fastest(lambda: password_field_names(body, _JSON))
         assert read < 10 * parse + 0.02, f"parse {parse:.3f}s, read {read:.3f}s"
 
-    def test_a_10_mb_body_is_read_well_under_a_second(self) -> None:
+    def test_a_10_mb_body_costs_a_small_multiple_of_its_parse(self) -> None:
+        # Measured against the parse on the same machine: a fixed bound in seconds
+        # failed on a loaded CI runner (0.635s against 0.6s).
         body = _large_json_body(10)
         assert len(body) >= 9_900_000
+        parse = _fastest(lambda: json.loads(body))
         seconds = _fastest(lambda: is_credential_body(body, _JSON))
-        assert seconds < 0.6, f"{seconds:.3f}s"
+        assert seconds < 10 * parse + 0.02, f"parse {parse:.3f}s, read {seconds:.3f}s"
 
 
 class TestTheDigestOfAGraphqlLogin:
