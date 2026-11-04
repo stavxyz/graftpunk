@@ -1985,6 +1985,33 @@ class TestDomSnapshotAtTheCredentialPost:
         assert not (tmp_path / "snapshots").exists()
 
     @pytest.mark.asyncio
+    async def test_a_graphql_login_with_a_nested_password_takes_one(self, tmp_path: Path) -> None:
+        """#365: the password one level down a JSON body (``variables.password``) makes
+        the post credential-shaped, and the snapshot is redacted of its values."""
+        body = json.dumps(
+            {
+                "operationName": "LoginMutation",
+                "variables": {"email": "alice@example.com", "password": "hunter2hunter2"},
+                "query": "mutation LoginMutation($email: String!, $password: String!) { x }",
+            }
+        )
+        tab, backend, _logs = await self._run(tmp_path, body)
+
+        assert _only_entry(backend)["request"]["_domSnapshot"] == "snapshots/21.1.html"
+        text = (tmp_path / "snapshots" / "21.1.html").read_text()
+        assert 'id="login-password"' in text
+        assert "hunter2hunter2" not in text
+        assert "alice@example.com" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_nested_password_change_takes_no_snapshot(self, tmp_path: Path) -> None:
+        body = json.dumps({"variables": {"currentPassword": "a1b2c3", "newPassword": "d4e5f6"}})
+        tab, backend, _logs = await self._run(tmp_path, body)
+
+        assert "_domSnapshot" not in _only_entry(backend)["request"]
+        assert tab.dom_requests == []
+
+    @pytest.mark.asyncio
     async def test_a_new_password_post_takes_no_snapshot(self, tmp_path: Path) -> None:
         body = '{"email": "alice@example.com", "new_password": "x1y2z3", "password_confirm": "x"}'
         tab, backend, _logs = await self._run(tmp_path, body)

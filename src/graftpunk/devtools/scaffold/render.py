@@ -897,9 +897,12 @@ def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str 
                 "for it on another page; add a LoginStep for that page by hand."
             )
         else:
+            control = "the button" if role == "submit" else "it"
             reason = (
-                "it sits outside any form, and has no id and no name that is unique on the "
-                "recorded page and holds no account value"
+                f"{control} sits outside any form and has no stable selector: none of its "
+                "id, name, autocomplete, type, placeholder, aria-label, or a class whose "
+                "every part reads as a word is unique on the recorded page and free of "
+                "account values"
                 if role in form.unresolved_roles and form.formless
                 else "none picks one input of the recorded form"
                 if role in form.unresolved_roles

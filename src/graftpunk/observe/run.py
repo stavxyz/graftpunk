@@ -20,6 +20,7 @@ from typing import Any
 
 from requests.utils import requote_uri
 
+from graftpunk.har.documents import names_a_password as names_a_password
 from graftpunk.logging import get_logger
 from graftpunk.observe.storage import ObserveStorage, write_private_file
 
@@ -437,66 +438,9 @@ def redact_request_body_files(
             )
 
 
-# Words that make a password-like name a setting about the password, not the password
-# (rememberPassword, showPassword, passwordStrength, savePassword, passwordless,
-# has_password, password_count): its value is a flag, or a word or number that
-# ordinary responses hold too.
-_PASSWORD_FLAG_WORDS = frozenset(
-    {
-        "remember",
-        "show",
-        "hide",
-        "visible",
-        "toggle",
-        "forgot",
-        "reset",
-        "question",
-        "hint",
-        "strength",
-        "policy",
-        "expire",
-        "expiry",
-        "length",
-        "type",
-        "save",
-        "has",
-        "enabled",
-        "less",
-        "mode",
-        "count",
-    }
-)
 # A form's spelling of a flag under a password-like name, in any letter case; a JSON
 # boolean or null is never read as a value (graftpunk.har.digest.body_values).
 _FLAG_VALUES = frozenset({"true", "false", "yes", "no", "on", "off", "null"})
-# The words of a field name: runs of lower-case letters (one capital before them
-# allowed), of capitals, and of digits, so "savePassword" and "save_password" each
-# hold "save", and "_", "-", ".", "[" and "]" separate words.
-_NAME_WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
-
-
-def names_a_password(name: str | None) -> bool:
-    """Whether a body field *name* names a password for the scrub of a typed login:
-    it holds a :data:`graftpunk.har.documents.PASSWORD_NAME_HINTS` hint
-    (``password``, ``passwd``, ``pwd``), the digest's own rule for a password field
-    (:func:`graftpunk.har.digest.password_field_names`), in any letter case, and none
-    of its words, each hint taken out of the word it sits in, names a setting
-    (:data:`_PASSWORD_FLAG_WORDS`), so ``rememberPassword``, ``passwordless``,
-    ``has_password`` and ``password_count`` name none."""
-    from graftpunk.har.documents import PASSWORD_NAME_HINTS
-
-    if not name:
-        return False
-    if not any(hint in name.lower() for hint in PASSWORD_NAME_HINTS):
-        return False
-    hints = "|".join(re.escape(hint) for hint in PASSWORD_NAME_HINTS)
-    words = [
-        part
-        for word in _NAME_WORD_RE.findall(name)
-        for part in re.split(hints, word.lower())
-        if part
-    ]
-    return not any(word in _PASSWORD_FLAG_WORDS for word in words)
 
 
 def _password_value(value: str) -> bool:
@@ -723,7 +667,7 @@ def _not_redacted(value: str) -> bool:
     return bool(value) and value != REDACTED
 
 
-def _is_email(value: str) -> bool:
+def is_email_address(value: str) -> bool:
     """Whether *value* is an email address, the only identifier the scrub takes: a
     login form's other identifier-named fields send values nobody typed (a submit
     button's ``login=Log In``, a hidden ``account=guest``), which a run-wide scrub
@@ -758,11 +702,15 @@ def credential_post_redaction(
     value at any depth under its nearest name). One whose own field name is
     password-like (:func:`names_a_password`), or is the ``name`` of an ``<input
     type="password">`` a recorded page holds, is a secret when it is at least 3
-    characters and no flag word (:func:`_password_value`); one whose own field name
-    is an identifier field's (:func:`graftpunk.session_identity.is_identifier_field`)
-    is an identifier when it is an email address (:func:`_is_email`). An
-    identifier-first login posts its username in an earlier step: the email
-    addresses under an identifier field's own name in each other request before the
+    characters and no flag word (:func:`_password_value`); one that is an email
+    address (:func:`is_email_address`) under any other name (``email``,
+    ``emailOrPhoneNumber``, ``input.login``) is an identifier, whether it is the
+    account's or another address the post sends (a support or referral address),
+    and is then scrubbed wherever it stands as a whole word. An identifier-first
+    login posts
+    its username in an earlier step: the email addresses under an identifier field's
+    own name (:func:`graftpunk.session_identity.is_identifier_field`, an allowlist,
+    since such a post is no credential post) in each other request before the
     last credential post that the digest reads as a step of a login
     (:func:`graftpunk.har.login_signals.is_login_step_post`) are taken too. *typed*
     adds secrets the recorder knew of (the password of a post the user marked
@@ -794,14 +742,16 @@ def credential_post_redaction(
     indices: list[int] = []
     value_posts = step_posts = 0
 
-    def emails(values: list[tuple[tuple[str, ...], str]]) -> list[str]:
+    def emails(
+        values: list[tuple[tuple[str, ...], str]], *, identifier_names_only: bool = False
+    ) -> list[str]:
         return [
             value
             for path, value in values
             if path
-            and _is_email(value)
+            and is_email_address(value)
             and not password_name(path[-1])
-            and is_identifier_field(identifier_key(path[-1]))
+            and (not identifier_names_only or is_identifier_field(identifier_key(path[-1])))
         ]
 
     # The requests that are no credential post, for an identifier-first login's step.
@@ -863,7 +813,7 @@ def credential_post_redaction(
         if is_login_step_post(
             urllib.parse.urlsplit(url).path, {name for path, _value in values for name in path}
         ):
-            users = emails(values)
+            users = emails(values, identifier_names_only=True)
             step_posts += bool(users)
             identifiers.update(dict.fromkeys(users))
     marked = [value for value in typed if _not_redacted(value) and value not in secrets]

@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.37.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.38.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -209,14 +209,15 @@ the terminal to stop and save.
 
 When it saves, graftpunk reads the password and username you typed from the
 run's credential posts only: each POST, PUT, or PATCH that meets the digest's
-rule for a login, by a password field in its body or by being sent where a
+rule for a login, by a password field in its body (in a JSON body at any depth,
+such as a GraphQL login's `variables.password`) or by being sent where a
 recorded login form posts (the digest itself reports POSTs only; the scrub
 applies the same rule to PUT and PATCH). It takes a value whose own field name holds `password`, `passwd`,
 or `pwd` and no setting's word (`rememberPassword`, `savePassword`,
 `passwordless`), or is the name of a recorded page's password input (`pin`),
 when it is at least three characters and not `true`, `false`, `yes`, `no`,
-`on`, `off`, or `null`; an email address under an identifier field's own
-name (`username`, `email`, `login`, `user`, `account`); the email address of an
+`on`, `off`, or `null`; an email address under any field name that is not a
+password's (`email`, `username`, `emailOrPhoneNumber`); the email address of an
 earlier step posted at a path or with field names holding a step word such as
 `login` or `signin`; and with `--wrong-password-first` the
 password of the post marked failed. It scrubs them from `network.har`, the
@@ -496,7 +497,7 @@ show-password toggle or a Close button right after the password ends the fields
 there, so an input after it (a one-time code) is left out and the submit is a
 `GP-FILL`: a `GP-FILL` is the safer failure than a wrong selector. Each of its
 inputs is selected by its id, else by a name no other input on the page shares,
-else it is unresolved; a control inside `<noscript>` is left out; its `action`
+else by a stable attribute (see the fallbacks below), else it is unresolved; a control inside `<noscript>` is left out; its `action`
 and `method` are empty; and several such dialogs are listed with one holding a
 `current-password` input first, then one whose id or class and whose controls'
 ids and names do not name a sign-up (`signup`, `register`, `create`, `join`, and
@@ -530,8 +531,9 @@ text-like and password inputs (buttons, checkboxes, radios, and hidden inputs do
 not count), never `<html>` or `<body>`: a login block asks for a username and a
 password, and a page's wrapper asks for more. The group is the controls inside
 the nearest such element that holds a username-like input before the password (a
-`username` or `email` autocomplete, an email type, or a name or id holding
-`user`, `email`, `login`, or `account`), a button-like control after it, and no
+`username` or `email` autocomplete, an email type, or a name, id, placeholder,
+or `aria-label` holding `user`, `email`, `login`, or `account`, as in
+`placeholder="Enter your email"`), a button-like control after it, and no
 button-like control between that input and the password, starting after the last
 button-like control before that input (an input with a button of its own, such
 as a search box, belongs to something else); else, from the password on, those
@@ -616,7 +618,41 @@ id or a token by the path rule (`javascript:go(12345678)`) or an email anywhere
 selector is listed in `LoginForm.unresolved_roles` and the projection's
 `unresolved_roles`, and the generated `LoginStep` carries a `GP-FILL` naming it
 and why; a username the form has no input for (the password page of a multi-step
-login) gets its own `GP-FILL` saying so. A POST to where a login form a GET
+login) gets its own `GP-FILL` saying so. Since 1.38.0 (#365), a control the
+rules above leave without a selector (one with no usable id or name outside
+every form, as a script-rendered login often is, or one of two inputs of a form
+that share its type) is selected by the first of these that no other control of
+its tag on the page shares, printed unscoped: its `autocomplete` (not `on` or
+`off`), its type for a password input (`input[type="password"]`) and for a
+`<button type="submit">`, its `placeholder`, its `aria-label`, then a class
+token every part of which (split on `-` and `_`) reads as words by
+`graftpunk.har.paths.reads_as_words` and holds no digit
+(`graftpunk.har.documents.is_build_hashed_class` is False for it): `sign-in-btn`,
+`btn-primary`, and `card__title` are used; `css-1x9k3tq`, `sc-bdVaJa`, `kAzCrH`,
+`jss123`, `svelte-1x2y3z`, `Button_primary__3kR9v`, and also the written
+`col-md-6` and `navbar` are not. A letters-only hash whose parts happen to read
+as words can still pass (about 4% of generated emotion `css-` hashes, 1% of
+styled-components ids, 3% of Svelte hashes, measured on 100,000 each on
+2026-11-04), so a class is the last fallback, used only when it picks one control
+on the recorded page. Each value is spelled as the page writes it (a padded
+placeholder keeps its spaces), with each CRLF and lone CR read as LF, as the HTML
+standard's input stream preprocessing reads them (WHATWG HTML 13.2.3.5; that
+Chrome's DOM holds the same is per the standard and not checked against a
+browser), and CSS-escaped. These values are never used: one of only whitespace,
+one over 80 characters, one holding an id, an email address, or a long number
+(`graftpunk.har.paths.holds_an_id`), one holding the `***REDACTED***` a stored
+snapshot writes in place of a posted value, and a button's `aria-label`, which
+is its text by another name. The digest then leaves a role unresolved when its
+selector's value holds a value a credential post of the run sent (the password,
+the username, or an email address, compared as
+`graftpunk.har.login_signals.holds_an_account_value` compares them), so a
+placeholder that shows the username on a recorded HTML page never reaches the
+plugin. A label naming the person that holds no posted value
+(`placeholder="Welcome back Jane Doe, your username"`) is used as it reads: a
+known gap. A submit button none of these picks gets a `GP-FILL` saying it has no
+stable selector and naming what was tried; its text is never written into the
+plugin, since it can name the account (`Continue as ...`) and a CSS selector
+cannot match text. A POST to where a login form a GET
 served posts (the same host and path, the action resolved against the page as
 requested and compared before any email in it is masked) is the credential post
 whatever its password field is named; a form in a POST's own response never
@@ -1860,7 +1896,10 @@ would find there and not on the login page, holding no value either login sent
 and no value of three or more characters a POST sent up to the real login (an
 identifier-first login's username step, under any field name), and none on the
 page the real login landed on as the recording read it (with no read of that
-page, there are none). They are written just below the
+page, there are none). A login that answers the wrong password with a JSON
+`errors[].message` (a GraphQL login does) gives that message too, after the
+page's texts; check that the page shows it, since the engine matches page text.
+They are written just below the
 live `failure="GP-FILL: ..."` line, which stays, each commented out under one
 `GP-FILL`:
 

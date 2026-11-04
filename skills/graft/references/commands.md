@@ -24,7 +24,7 @@ gp plugin info --json
 ## Run by the user
 
 ```bash
-gp observe --no-session interactive <url>
+gp observe --no-session interactive <url> --wrong-password-first
 gp observe -s <session> interactive <url>
 gp config set <variable> '<value>'
 ```

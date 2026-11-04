@@ -100,9 +100,13 @@ class TestSanitizer:
             'autocomplete="username"',
             'for="login-username"',
             'href="/help"',
+            # Kept since #365: a script-rendered input with no name or id is
+            # selected by them.
+            'placeholder="you@example.com"',
+            'aria-label="Sign in now"',
         ):
             assert kept in out
-        for dropped in ("style=", "data-user", "data-track", "placeholder", "aria-label"):
+        for dropped in ("style=", "data-user", "data-track"):
             assert dropped not in out
 
     def test_kept_text_is_truncated(self) -> None:

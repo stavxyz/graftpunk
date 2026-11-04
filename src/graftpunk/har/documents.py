@@ -24,6 +24,7 @@ from graftpunk.har.paths import (
     holds_an_id,
     is_placeholder,
     normal_host,
+    reads_as_words,
     templates_a_segment,
 )
 from graftpunk.logging import get_logger
@@ -41,9 +42,12 @@ __all__ = [
     "extract_login_forms",
     "extract_token_candidates",
     "form_action_targets",
+    "is_build_hashed_class",
     "is_login_document",
     "looks_like_new_password_name",
     "looks_like_token_name",
+    "names_a_password",
+    "selector_attribute_value",
     "printable_selectors",
     "printable_unresolved_roles",
 ]
@@ -251,6 +255,14 @@ class _RawInput:
     # The innermost element this control sits in, as its index in
     # _DocumentParser.blocks, or None; tracked for a DOM snapshot only.
     block: int | None = None
+    # The attributes a selector falls back to when the control has no usable id or
+    # name (_attribute_selector), each exactly as written, since an attribute
+    # selector matches the value exactly: autocomplete, placeholder, aria-label, and
+    # the class tokens.
+    autocomplete_attr: str = ""
+    placeholder: str = ""
+    aria_label: str = ""
+    classes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -396,6 +408,12 @@ class _DocumentParser(HTMLParser):
                 autocomplete=autofill_field_name(values.get("autocomplete", "")),
                 form_owner=values.get("form", ""),
                 order=len(self.inputs),
+                autocomplete_attr=values.get("autocomplete", ""),
+                placeholder=values.get("placeholder", ""),
+                aria_label=values.get("aria-label", ""),
+                classes=tuple(_ASCII_WHITESPACE_RE.split(values.get("class", "").strip()))
+                if values.get("class", "").strip()
+                else (),
             )
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
@@ -451,7 +469,11 @@ class _DocumentParser(HTMLParser):
 
 def _parse(html: str, *, track_blocks: bool = False) -> _DocumentParser:
     parser = _DocumentParser(track_blocks=track_blocks)
-    parser.feed(html)
+    # The HTML standard's input stream preprocessing ("normalize newlines", WHATWG
+    # HTML 13.2.3.5) turns each CRLF and each lone CR into LF before tokenizing, so a
+    # browser's DOM holds an attribute value with LF only. HTMLParser does not, and a
+    # selector spelled with a CR would match nothing.
+    parser.feed(html.replace("\r\n", "\n").replace("\r", "\n"))
     if parser._current is not None:  # an unclosed <form>: keep what was seen
         parser.forms.append(parser._current)
     for index in parser._block_stack:  # elements still open run to the end
@@ -485,11 +507,12 @@ _EMPTY_ACTION_SCOPES = (
 
 def _css_string(value: str) -> str:
     """*value* escaped for the inside of a double-quoted CSS attribute value: a
-    backslash and a quote are backslash-escaped, and a newline or carriage return
-    becomes its hex escape, so a captured name or action cannot end the value early
-    or change the selector."""
+    backslash and a quote are backslash-escaped, and each control character (a
+    newline, a tab, DEL) becomes its hex escape followed by a space, so a captured
+    name, action or attribute value cannot end the value early or change the
+    selector, and the selector still matches the value exactly as written."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return escaped.replace("\n", "\\a ").replace("\r", "\\d ")
+    return "".join(f"\\{ord(ch):x} " if ord(ch) < 0x20 or ord(ch) == 0x7F else ch for ch in escaped)
 
 
 # A CSS identifier an #id selector can spell as it is.
@@ -574,6 +597,9 @@ class _Counts:
     by_type: Counter[tuple[str, str]] = field(default_factory=Counter)
     by_owner_name: Counter[tuple[str, str, str]] = field(default_factory=Counter)
     by_owner_type: Counter[tuple[str, str, str]] = field(default_factory=Counter)
+    # Each (tag, attribute, value) an attribute selector can pick
+    # (_attribute_selectors), a class by each of its tokens.
+    by_attribute: Counter[tuple[str, str, str]] = field(default_factory=Counter)
 
     @classmethod
     def of(cls, controls: Iterable[_RawInput]) -> _Counts:
@@ -583,6 +609,8 @@ class _Counts:
             counts.by_type[(raw.tag, raw.input_type)] += 1
             counts.by_owner_name[(raw.form_owner, raw.tag, raw.name)] += 1
             counts.by_owner_type[(raw.form_owner, raw.tag, raw.input_type)] += 1
+            for attribute, value in _selectable_attributes(raw):
+                counts.by_attribute[(raw.tag, attribute, value)] += 1
         return counts
 
     def named(self, raw: _RawInput) -> int:
@@ -648,11 +676,15 @@ def _selectors_for(
     if by_name is not None and page_inputs.named(raw) == 1:
         unscoped = by_name
     if not form_scopes:
-        return (unscoped, unscoped) if by_name is not None else (None, None)
+        if unscoped is not None:
+            return unscoped, unscoped
+        by_attribute = _attribute_selector(raw, page_inputs)
+        return by_attribute, by_attribute
     if by_name is not None:
         return _scoped((by_name,), form_scopes), unscoped
     if contained.typed(raw) > 1:
-        return None, None
+        by_attribute = _attribute_selector(raw, page_inputs)
+        return by_attribute, by_attribute
     return _scoped(_type_selectors(raw), form_scopes), None
 
 
@@ -675,6 +707,120 @@ def _outside_selector(raw: _RawInput, page_inputs: _Counts) -> tuple[str | None,
         selector = ", ".join(suffixes)
         return selector, selector
     return None, None
+
+
+# The longest attribute value an attribute selector spells: a longer one is prose,
+# not a label.
+_MAX_ATTRIBUTE_VALUE = 80
+# Autocomplete values that say nothing about the control.
+_UNTELLING_AUTOCOMPLETE = frozenset({"on", "off"})
+# Splits a class token into its parts for the written-class rule.
+_CLASS_PART_RE = re.compile(r"[-_]+")
+
+
+def is_build_hashed_class(token: str) -> bool:
+    """Whether a class token may be one a build tool generated, which the next build
+    renames: True unless every part of it (split on ``-`` and ``_``) reads as words
+    by :func:`graftpunk.har.paths.reads_as_words` and holds no digit. A class is a
+    selector only when this is False, so ``sign-in-btn``, ``btn-primary``,
+    ``form-control`` and BEM's ``card__title`` are used, and CSS modules'
+    ``Button_primary__3kR9v``, emotion's ``css-1x9k3tq``, JSS's ``jss123``, Svelte's
+    ``svelte-1x2y3z``, and styled-components' ``sc-bdVaJa kAzCrH`` are not. A class
+    with a digit in it is never used (``col-md-6``, ``bg-blue-500``, ``h1``), and
+    neither is one with an empty part (``-x``). A hash made of letters that happen to
+    read as a word (emotion's ``css-abcdef`` reads as two parts that may) can still
+    pass: a class is the last fallback, used only when it picks one control on the
+    recorded page."""
+    parts = _CLASS_PART_RE.split(token)
+    return not all(
+        part and not any(ch.isdigit() for ch in part) and reads_as_words(part) for part in parts
+    )
+
+
+def _selectable_attributes(raw: _RawInput) -> list[tuple[str, str]]:
+    """The (attribute, value) pairs a selector for *raw* may fall back to, in the
+    order it tries them, each value as the page spells it (newlines normalized as
+    :func:`_parse` does): ``autocomplete`` (not ``on`` or ``off``); ``type`` for a
+    typed password input and a typed submit ``<button>``; ``placeholder``;
+    ``aria-label``, but never a button's (:func:`_is_button_like`), since it is the
+    button's text by another name and can name the account ("Continue as ...");
+    then each class token a CSS identifier spells that is not build-hashed
+    (:func:`is_build_hashed_class`). A value that is only whitespace, one over
+    ``_MAX_ATTRIBUTE_VALUE`` characters, one holding an id, an email address, or a
+    long number (:func:`graftpunk.har.paths.holds_an_id`), and one holding the
+    redaction a stored snapshot writes in place of a posted value
+    (``***REDACTED***``, which the live page never shows) is never one. A value
+    holding what the run posted in a credential post is dropped later, by the
+    digest, which knows those values (:func:`selector_attribute_value`)."""
+    pairs: list[tuple[str, str]] = []
+    if raw.autocomplete_attr.strip().lower() not in _UNTELLING_AUTOCOMPLETE:
+        pairs.append(("autocomplete", raw.autocomplete_attr))
+    if raw.typed and (
+        (raw.tag == "input" and raw.input_type == "password")
+        or (raw.tag == "button" and raw.input_type == "submit")
+    ):
+        pairs.append(("type", raw.input_type))
+    pairs.append(("placeholder", raw.placeholder))
+    if not _is_button_like(raw):
+        pairs.append(("aria-label", raw.aria_label))
+    pairs.extend(
+        ("class", token)
+        for token in raw.classes
+        if _CSS_IDENTIFIER_RE.fullmatch(token) and not is_build_hashed_class(token)
+    )
+    return [
+        (attribute, value)
+        for attribute, value in pairs
+        if value.strip()
+        and len(value) <= _MAX_ATTRIBUTE_VALUE
+        and _SNAPSHOT_REDACTION_MARK not in value.lower()
+        and not holds_an_id(value)
+    ]
+
+
+def _attribute_selector(raw: _RawInput, page_inputs: _Counts) -> str | None:
+    """*raw*'s selector by the first of its stable attributes
+    (:func:`_selectable_attributes`) that no other control of its tag on the page
+    (*page_inputs*) shares, unscoped: ``input[autocomplete="username"]``,
+    ``input[type="password"]``, ``input[placeholder="..."]``,
+    ``input[aria-label="..."]``, or ``button.sign-in-btn``. None when none is
+    unique. For a control with no usable id or name, so a login rendered by a script
+    with build-hashed classes and no names still gets a selector, and a class only
+    when every part of it reads as words (:func:`is_build_hashed_class`)."""
+    for attribute, value in _selectable_attributes(raw):
+        if page_inputs.by_attribute[(raw.tag, attribute, value)] != 1:
+            continue
+        if attribute == "class":
+            return f"{raw.tag}.{value}"
+        return f'{raw.tag}[{attribute}="{_css_string(value)}"]'
+    return None
+
+
+# An attribute selector as _attribute_selector writes one, and the escapes
+# _css_string writes inside its value.
+_ATTRIBUTE_SELECTOR_RE = re.compile(
+    r'[a-z]+(?:\[(?:autocomplete|placeholder|aria-label)="((?:[^"\\]|\\.)*)"\]'
+    r"|\.(-?[A-Za-z_][\w-]*))"
+)
+_CSS_ESCAPE_RE = re.compile(r"\\([0-9a-f]{1,6}) |\\(.)", re.DOTALL)
+
+
+def selector_attribute_value(selector: str) -> str | None:
+    """The attribute value or class token *selector* picks its control by, unescaped,
+    when it is a selector by a stable attribute (:func:`_attribute_selector`):
+    ``Email or phone`` for ``input[placeholder="Email or phone"]``, ``sign-in-btn``
+    for ``button.sign-in-btn``. None for any other selector (by id, by name, by a
+    type, which names no account). The digest drops a role whose value holds what the
+    run posted in a credential post."""
+    match = _ATTRIBUTE_SELECTOR_RE.fullmatch(selector)
+    if match is None:
+        return None
+    if match.group(2) is not None:
+        return match.group(2)
+    return _CSS_ESCAPE_RE.sub(
+        lambda escape: chr(int(escape.group(1), 16)) if escape.group(1) else escape.group(2),
+        match.group(1),
+    )
 
 
 # A selector with no form scope: by id, as _selectors_for writes one.
@@ -772,6 +918,92 @@ _NEW_PASSWORD_HINTS = ("new", *_CONFIRMATION_HINTS)
 # The one owner of the password-field hints: the digest reads a credential post's
 # body names through it too.
 PASSWORD_NAME_HINTS = ("password", "passwd", "pwd")
+
+# Words that make a password-like name a setting or a fact about the password, not
+# the password (rememberPassword, showPassword, passwordStrength, savePassword,
+# passwordless, has_password, password_count, passwordLabel, passwordExpiresAt,
+# passwordUpdatedAt): its value is a flag, a label, a date, or a word or number that
+# ordinary responses hold too.
+_PASSWORD_FLAG_WORDS = frozenset(
+    {
+        "remember",
+        "show",
+        "hide",
+        "visible",
+        "toggle",
+        "forgot",
+        "reset",
+        "question",
+        "hint",
+        "strength",
+        "policy",
+        "expire",
+        "expires",
+        "expired",
+        "expiry",
+        "expiration",
+        "updated",
+        "changed",
+        "last",
+        "label",
+        "placeholder",
+        "error",
+        "message",
+        "min",
+        "max",
+        "length",
+        "type",
+        "save",
+        "has",
+        "enabled",
+        "less",
+        "mode",
+        "count",
+    }
+)
+# The words of a field name: runs of lower-case letters (one capital before them
+# allowed), of capitals, and of digits, so "savePassword" and "save_password" each
+# hold "save", and "_", "-", ".", "[" and "]" separate words.
+_NAME_WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
+# What separates a flattened field name's segments: an ASP.NET naming container
+# (ctl00$Main$Password), a dotted or bracketed path (login.password,
+# user[password]), a JSF id (loginForm:password), or a path-like name.
+_NAME_SEGMENT_RE = re.compile(r"[$.\[\]:/]")
+
+
+def names_a_password(name: str | None) -> bool:
+    """Whether a body field *name* names a password: it holds a
+    :data:`PASSWORD_NAME_HINTS` hint (``password``, ``passwd``, ``pwd``) in any
+    letter case, and no word of the part of the name that holds the hint names a
+    setting or a fact about the password (:data:`_PASSWORD_FLAG_WORDS`, each hint
+    taken out of the word it sits in), so ``rememberPassword``, ``passwordless``,
+    ``hasPassword``, ``passwordLabel``, ``passwordExpiresAt`` and
+    ``passwordResetToken`` name none. That part is the last segment holding a hint
+    and the segments after it (segments split on ``$``, ``.``, ``[``, ``]``, ``:``
+    and ``/``), so a naming container before it is not read:
+    ``ctl00$MainPlaceholder$Password`` and ``ctl00$LoginMode$Password`` name a
+    password, and ``password[type]`` does not. The one rule for both the digest's
+    credential post (:func:`graftpunk.har.digest.password_field_names`) and the scrub
+    of a typed login (:func:`graftpunk.observe.run.credential_post_redaction`)."""
+    if not name:
+        return False
+    if not any(hint in name.lower() for hint in PASSWORD_NAME_HINTS):
+        return False
+    segments = _NAME_SEGMENT_RE.split(name)
+    last = max(
+        index
+        for index, segment in enumerate(segments)
+        if any(hint in segment.lower() for hint in PASSWORD_NAME_HINTS)
+    )
+    hints = "|".join(re.escape(hint) for hint in PASSWORD_NAME_HINTS)
+    words = [
+        part
+        for segment in segments[last:]
+        for word in _NAME_WORD_RE.findall(segment)
+        for part in re.split(hints, word.lower())
+        if part
+    ]
+    return not any(word in _PASSWORD_FLAG_WORDS for word in words)
 
 
 def looks_like_new_password_name(name: str) -> bool:
@@ -948,7 +1180,8 @@ def _formless_selectors(raw: _RawInput, page_inputs: _Counts) -> tuple[str | Non
     by_name = _name_selector(raw)
     if by_name is not None and page_inputs.named(raw) == 1:
         return by_name, by_name
-    return None, None
+    by_attribute = _attribute_selector(raw, page_inputs)
+    return by_attribute, by_attribute
 
 
 def _formless_controls(parsed: _DocumentParser) -> list[_RawInput]:
@@ -1046,11 +1279,13 @@ def _counts_as_field(raw: _RawInput) -> bool:
 
 def _username_hinted(raw: _RawInput) -> bool:
     """A text-like input the digest's username rule names: a ``username`` or
-    ``email`` autocomplete, an email type, or a name or id holding a username hint
-    (``user``, ``email``, ``login``, ``account``)."""
+    ``email`` autocomplete, an email type, or a name, id, placeholder, or
+    ``aria-label`` holding a username hint (``user``, ``email``, ``login``,
+    ``account``): a script-rendered login often names its inputs only by a
+    placeholder ("Enter your email")."""
     if _has_username_hint(raw):
         return True
-    lowered = raw.element_id.lower()
+    lowered = f"{raw.element_id} {raw.placeholder} {raw.aria_label}".lower()
     return any(hint in lowered for hint in _USERNAME_HINTS)
 
 

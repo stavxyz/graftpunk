@@ -1283,10 +1283,10 @@ class TestLoginFieldsInADialogOutsideAnyForm:
         assert form.action == ""
         assert form.method == ""
         assert form.formless
-        # The submit button has neither an id nor a name, and with no form scope
-        # nothing else picks it.
-        assert form.submit is None
-        assert form.unresolved_roles == ("submit",)
+        # The submit button has neither an id nor a name; it is the page's one
+        # <button type="submit">, so its type picks it (#365).
+        assert form.submit == 'button[type="submit"]'
+        assert form.unresolved_roles == ()
         assert form.absent_roles == ()
         # No target of its own: the digest never matches a POST to it by target.
         assert form.action_target == ("", "")

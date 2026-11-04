@@ -1009,10 +1009,15 @@ class TestPluginModuleWithLoginForm:
         assert "form" not in step.lower()
         assert 'url="/",' in plugin_code
 
-    def test_an_unresolved_formless_submit_says_why(self) -> None:
+    @pytest.mark.parametrize("label", ["Go", "Continue as Alice Smith"])
+    def test_an_unresolved_formless_submit_says_why(self, label: str) -> None:
+        """A second submit button elsewhere on the page: the dialog's has no id, no
+        name, and nothing else unique to pick it by. Its text is never written into
+        the plugin, since it can name the account and a selector cannot match it."""
         html = (
             '<div role="dialog"><input id="u"><input type="password" id="p">'
-            '<button type="submit">Go</button></div>'
+            f'<button type="submit">{label}</button></div>'
+            '<button type="submit">Search</button>'
         )
         (form,) = extract_login_forms(html, source="https://myshop.example.com/")
         spec = ScaffoldSpec(
@@ -1029,11 +1034,13 @@ class TestPluginModuleWithLoginForm:
             if line.strip().startswith("#")
         )
         assert (
-            "GP-FILL: submit has no selector: it sits outside any form, and has no id and no "
-            "name that is unique on the recorded page and holds no account value; write one "
-            "by hand."
+            "GP-FILL: submit has no selector: the button sits outside any form and has no "
+            "stable selector: none of its id, name, autocomplete, type, placeholder, "
+            "aria-label, or a class whose every part reads as a word is unique on the "
+            "recorded page and free of account values; write one by hand."
         ) in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
+        assert label not in plugin_code
 
     def test_an_unresolved_formless_field_whose_id_holds_an_account_value(self) -> None:
         """Review round 3 (toolkit M7, superpowers M5): the input has an id and a
@@ -1058,9 +1065,10 @@ class TestPluginModuleWithLoginForm:
             if line.strip().startswith("#")
         )
         assert (
-            "GP-FILL: username has no selector: it sits outside any form, and has no id and "
-            "no name that is unique on the recorded page and holds no account value; write "
-            "one by hand."
+            "GP-FILL: username has no selector: it sits outside any form and has no stable "
+            "selector: none of its id, name, autocomplete, type, placeholder, aria-label, or "
+            "a class whose every part reads as a word is unique on the recorded page and "
+            "free of account values; write one by hand."
         ) in comment
         assert "12345678" not in plugin_code
 

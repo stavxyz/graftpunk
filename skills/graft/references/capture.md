@@ -19,6 +19,14 @@ the recorder without saving. In that terminal they log in, work through every
 item on the list below, and press Ctrl+C, which ends the recorder and saves what
 it captured. Then they come back here and say it is done.
 
+The `--no-session` line carries `--wrong-password-first`, so the digest can
+suggest the login's `failure` text: tell the user that at its prompt they sign
+in once using the decoy password it shows, press Enter in the terminal once the
+site has rejected it, and then sign in for real (the guide's Capture section has
+the details). The `-s <session>` line starts logged in, so it has no login to
+fail and no flag. Drop the flag when the account is near a lockout: the decoy
+counts as a failed sign-in.
+
 ## What to exercise
 
 Turn each want the user named in the frame step into something to click, and
