@@ -41,6 +41,7 @@ __all__ = [
     "extract_login_forms",
     "extract_token_candidates",
     "form_action_targets",
+    "is_build_hashed_class",
     "is_login_document",
     "looks_like_new_password_name",
     "looks_like_token_name",
@@ -209,6 +210,10 @@ class LoginForm:
     # empty when none qualifies. Never from markup, and only ever a suggestion the
     # generator writes commented out. Set by the digest. Internal.
     opener_candidate: str = field(default="", metadata={"internal": True})
+    # The text of the submit control when it has no selector (_submit_text): a
+    # GP-FILL names the button by it, since a CSS selector cannot match text.
+    # Internal.
+    submit_text: str = field(default="", metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -251,6 +256,14 @@ class _RawInput:
     # The innermost element this control sits in, as its index in
     # _DocumentParser.blocks, or None; tracked for a DOM snapshot only.
     block: int | None = None
+    # The attributes a selector falls back to when the control has no usable id or
+    # name (_attribute_selector): autocomplete as written, placeholder, aria-label,
+    # and the class tokens. A <button>'s text, whitespace collapsed.
+    autocomplete_attr: str = ""
+    placeholder: str = ""
+    aria_label: str = ""
+    classes: tuple[str, ...] = ()
+    text: str = ""
 
 
 @dataclass
@@ -337,6 +350,13 @@ class _DocumentParser(HTMLParser):
         # Inside <svg> or <math>, where "/>" closes an element; elsewhere a browser
         # ignores it on an element that is not void.
         self._foreign = 0
+        # The <button> open now, whose text is being read.
+        self._button: _RawInput | None = None
+
+    def handle_data(self, data: str) -> None:
+        button = self._button
+        if button is not None and len(button.text) <= _MAX_BUTTON_TEXT:
+            button.text = " ".join(f"{button.text} {data}".split())
 
     def _innermost_dialog(self) -> int | None:
         while self._dialogs and self._dialogs[-1] in self._closed:
@@ -396,7 +416,15 @@ class _DocumentParser(HTMLParser):
                 autocomplete=autofill_field_name(values.get("autocomplete", "")),
                 form_owner=values.get("form", ""),
                 order=len(self.inputs),
+                autocomplete_attr=values.get("autocomplete", "").strip(),
+                placeholder=values.get("placeholder", "").strip(),
+                aria_label=values.get("aria-label", "").strip(),
+                classes=tuple(_ASCII_WHITESPACE_RE.split(values.get("class", "").strip()))
+                if values.get("class", "").strip()
+                else (),
             )
+            if tag == "button":
+                self._button = raw_input
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
             raw_input.dialog = self._innermost_dialog()
@@ -429,6 +457,8 @@ class _DocumentParser(HTMLParser):
                 return
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "button":
+            self._button = None
         if self._track_blocks:
             self._close_blocks(tag)
         if self._open_count.get(tag, 0) > 0:
@@ -574,6 +604,9 @@ class _Counts:
     by_type: Counter[tuple[str, str]] = field(default_factory=Counter)
     by_owner_name: Counter[tuple[str, str, str]] = field(default_factory=Counter)
     by_owner_type: Counter[tuple[str, str, str]] = field(default_factory=Counter)
+    # Each (tag, attribute, value) an attribute selector can pick
+    # (_attribute_selectors), a class by each of its tokens.
+    by_attribute: Counter[tuple[str, str, str]] = field(default_factory=Counter)
 
     @classmethod
     def of(cls, controls: Iterable[_RawInput]) -> _Counts:
@@ -583,6 +616,8 @@ class _Counts:
             counts.by_type[(raw.tag, raw.input_type)] += 1
             counts.by_owner_name[(raw.form_owner, raw.tag, raw.name)] += 1
             counts.by_owner_type[(raw.form_owner, raw.tag, raw.input_type)] += 1
+            for attribute, value in _selectable_attributes(raw):
+                counts.by_attribute[(raw.tag, attribute, value)] += 1
         return counts
 
     def named(self, raw: _RawInput) -> int:
@@ -648,11 +683,15 @@ def _selectors_for(
     if by_name is not None and page_inputs.named(raw) == 1:
         unscoped = by_name
     if not form_scopes:
-        return (unscoped, unscoped) if by_name is not None else (None, None)
+        if unscoped is not None:
+            return unscoped, unscoped
+        by_attribute = _attribute_selector(raw, page_inputs)
+        return by_attribute, by_attribute
     if by_name is not None:
         return _scoped((by_name,), form_scopes), unscoped
     if contained.typed(raw) > 1:
-        return None, None
+        by_attribute = _attribute_selector(raw, page_inputs)
+        return by_attribute, by_attribute
     return _scoped(_type_selectors(raw), form_scopes), None
 
 
@@ -675,6 +714,98 @@ def _outside_selector(raw: _RawInput, page_inputs: _Counts) -> tuple[str | None,
         selector = ", ".join(suffixes)
         return selector, selector
     return None, None
+
+
+# The longest attribute value an attribute selector spells, and the longest
+# button text kept: a longer one is prose, not a label.
+_MAX_ATTRIBUTE_VALUE = 80
+_MAX_BUTTON_TEXT = 40
+# Autocomplete values that say nothing about the control.
+_UNTELLING_AUTOCOMPLETE = frozenset({"on", "off"})
+# Splits a class token into its words for the build-hash rule.
+_CLASS_WORD_RE = re.compile(r"[^A-Za-z0-9]+")
+# A digit with a letter after it in one word (1x9k3tq, tY7r3Qp, _3kR9v), or a word
+# of six digits or more (jsx-2843710157).
+_HASHED_WORD_RE = re.compile(r"[0-9][A-Za-z]|^[0-9]{6,}$")
+# CSS modules' default suffix: two or more underscores and a five-character base64
+# hash, which holds a capital or a digit (BEM's lower-case "card__title" does not).
+_CSS_MODULE_SUFFIX_RE = re.compile(r"__+(?=[A-Za-z0-9]{5}$)(?![a-z]{5}$)")
+
+
+def is_build_hashed_class(token: str) -> bool:
+    """Whether a class token reads as one a build tool generated, which the next
+    build renames (CSS modules' ``Button_primary__3kR9v`` and ``Header__QwErT``,
+    emotion's ``css-1x9k3tq``, styled-jsx's ``jsx-2843710157``): a word of it (the
+    runs of letters and digits) holds a digit with a letter after it, or is six
+    digits or more; or it ends in two or more underscores and five letters or digits
+    that are not all lower-case letters. A word that only ends in digits
+    (``col-md-6``, ``h1``, ``arrow2``) is a written name, and so is a BEM element
+    (``card__title``). A false "hashed" only costs a selector fallback; a false
+    "written" gives a selector the next build breaks, so the rule leans to "hashed"
+    (``h-100vh``). A letters-only hash with no such suffix (styled-components'
+    ``bdVaJa``) is not caught: a class is the last fallback, used only when it picks
+    one control."""
+    if _CSS_MODULE_SUFFIX_RE.search(token):
+        return True
+    return any(_HASHED_WORD_RE.search(word) for word in _CLASS_WORD_RE.split(token) if word)
+
+
+def _selectable_attributes(raw: _RawInput) -> list[tuple[str, str]]:
+    """The (attribute, value) pairs a selector for *raw* may fall back to, in the
+    order it tries them: ``autocomplete`` (not ``on`` or ``off``); ``type`` for a
+    typed password input and a typed submit ``<button>``; ``placeholder``;
+    ``aria-label``; then each class token a CSS identifier spells that is not
+    build-hashed (:func:`is_build_hashed_class`). A value over
+    ``_MAX_ATTRIBUTE_VALUE`` characters, or holding an account value
+    (:func:`graftpunk.har.paths.holds_an_id`), is never one."""
+    pairs: list[tuple[str, str]] = []
+    if raw.autocomplete_attr.lower() not in _UNTELLING_AUTOCOMPLETE:
+        pairs.append(("autocomplete", raw.autocomplete_attr))
+    if raw.typed and (
+        (raw.tag == "input" and raw.input_type == "password")
+        or (raw.tag == "button" and raw.input_type == "submit")
+    ):
+        pairs.append(("type", raw.input_type))
+    pairs.append(("placeholder", raw.placeholder))
+    pairs.append(("aria-label", raw.aria_label))
+    pairs.extend(
+        ("class", token)
+        for token in raw.classes
+        if _CSS_IDENTIFIER_RE.fullmatch(token) and not is_build_hashed_class(token)
+    )
+    return [
+        (attribute, value)
+        for attribute, value in pairs
+        if value and len(value) <= _MAX_ATTRIBUTE_VALUE and not holds_an_id(value)
+    ]
+
+
+def _attribute_selector(raw: _RawInput, page_inputs: _Counts) -> str | None:
+    """*raw*'s selector by the first of its stable attributes
+    (:func:`_selectable_attributes`) that no other control of its tag on the page
+    (*page_inputs*) shares, unscoped: ``input[autocomplete="username"]``,
+    ``input[type="password"]``, ``input[placeholder="..."]``,
+    ``input[aria-label="..."]``, or ``button.sign-in-btn``. None when none is
+    unique. For a control with no usable id or name, so a login rendered by a script
+    with build-hashed classes and no names still gets a selector, never a hashed
+    class."""
+    for attribute, value in _selectable_attributes(raw):
+        if page_inputs.by_attribute[(raw.tag, attribute, value)] != 1:
+            continue
+        if attribute == "class":
+            return f"{raw.tag}.{value}"
+        return f'{raw.tag}[{attribute}="{_css_string(value)}"]'
+    return None
+
+
+def _submit_text(raw: _RawInput) -> str:
+    """The text a submit control shows (a ``<button>``'s text, an input's
+    ``value`` is not read), for a GP-FILL naming it: empty when it is longer than
+    ``_MAX_BUTTON_TEXT`` characters or holds an account value."""
+    text = raw.text
+    if not text or len(text) > _MAX_BUTTON_TEXT or holds_an_id(text):
+        return ""
+    return text
 
 
 # A selector with no form scope: by id, as _selectors_for writes one.
@@ -948,7 +1079,8 @@ def _formless_selectors(raw: _RawInput, page_inputs: _Counts) -> tuple[str | Non
     by_name = _name_selector(raw)
     if by_name is not None and page_inputs.named(raw) == 1:
         return by_name, by_name
-    return None, None
+    by_attribute = _attribute_selector(raw, page_inputs)
+    return by_attribute, by_attribute
 
 
 def _formless_controls(parsed: _DocumentParser) -> list[_RawInput]:
@@ -1046,11 +1178,13 @@ def _counts_as_field(raw: _RawInput) -> bool:
 
 def _username_hinted(raw: _RawInput) -> bool:
     """A text-like input the digest's username rule names: a ``username`` or
-    ``email`` autocomplete, an email type, or a name or id holding a username hint
-    (``user``, ``email``, ``login``, ``account``)."""
+    ``email`` autocomplete, an email type, or a name, id, placeholder, or
+    ``aria-label`` holding a username hint (``user``, ``email``, ``login``,
+    ``account``): a script-rendered login often names its inputs only by a
+    placeholder ("Enter your email")."""
     if _has_username_hint(raw):
         return True
-    lowered = raw.element_id.lower()
+    lowered = f"{raw.element_id} {raw.placeholder} {raw.aria_label}".lower()
     return any(hint in lowered for hint in _USERNAME_HINTS)
 
 
@@ -1444,10 +1578,12 @@ def _login_form(
             unscoped_fields[role] = unscoped
     submit: str | None = None
     unscoped_submit: str | None = None
+    submit_text = ""
     if submit_index is not None:
         submit, unscoped_submit = selectors_for(inputs[submit_index])
         if submit is None:
             unresolved.append("submit")
+            submit_text = _submit_text(inputs[submit_index])
     elif formless:
         # Nothing beside the password submits: a GP-FILL, never a guess.
         absent.append("submit")
@@ -1475,6 +1611,7 @@ def _login_form(
             tuple((i.tag, i.input_type, i.name, i.element_id) for i in inputs),
         ),
         formless=formless,
+        submit_text=submit_text,
     )
 
 

@@ -898,7 +898,8 @@ def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str 
             )
         else:
             reason = (
-                "it sits outside any form, and has no id and no name that is unique on the "
+                "it sits outside any form, and has no id, name, autocomplete, placeholder, "
+                "aria-label, or class that is not build-hashed that is unique on the "
                 "recorded page and holds no account value"
                 if role in form.unresolved_roles and form.formless
                 else "none picks one input of the recorded form"
@@ -906,7 +907,12 @@ def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str 
                 else "the form's action holds an id, and without it none picks one input "
                 "of the recorded page"
             )
-            text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand."
+            shown = (
+                f" (the button reads {form.submit_text!r})"
+                if role == "submit" and form.submit_text
+                else ""
+            )
+            text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand{shown}."
         lines.extend(wrapped_comment_lines(text, indent=indent))
     if form.from_snapshot:
         # No recorded HTML held this form: the page's script rendered it, often

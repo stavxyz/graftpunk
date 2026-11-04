@@ -29,6 +29,7 @@ from graftpunk.cli.main import app
 from graftpunk.cli.observe_browser import ObserveSession, run_observe_interactive
 from graftpunk.observe import capture
 from graftpunk.observe.capture import NodriverCaptureBackend
+from graftpunk.observe.run import REDACTED
 from tests.unit.cli_harness import strip_ansi
 from tests.unit.test_observe_post_data import (
     _LOGIN_MODAL,
@@ -126,6 +127,35 @@ class TestTheReadsForTheFailedPost:
         # Text only: no failure page is written, and the after-read keeps no text.
         assert _TOAST not in _run_text(tmp_path)
         assert _STAYS not in _run_text(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_a_graphql_login_s_wrong_password_is_held_marked_and_scrubbed(
+        self, tmp_path: Path
+    ) -> None:
+        """#365: a credential post whose password is nested in a JSON body
+        (``variables.password``) is held by the step, read after, marked, and its
+        wrong password scrubbed from its own body."""
+        wrong = json.dumps(
+            {
+                "operationName": "LoginMutation",
+                "variables": {"emailOrPhoneNumber": "jsmith", "password": "wrongpass1"},
+            }
+        )
+        tab, backend, clock, _reads = await _recording(tmp_path)
+        await _post(tab, "90.9", wrong)
+        await clock.advance(capture.FAILURE_READ_S, backend)
+        assert backend.mark_failed_login() is True
+        await _idle(backend, clock)
+        await _stop(backend, tab)
+
+        request = _request(backend)
+        assert request["_userMarkedFailed"] is True
+        assert request["_failureTextCandidates"] == [_TOAST, _STAYS]
+        assert json.loads(request["postData"]["text"])["variables"] == {
+            "emailOrPhoneNumber": "jsmith",
+            "password": REDACTED,
+        }
+        assert "wrongpass1" not in _run_text(tmp_path)
 
     @pytest.mark.asyncio
     async def test_enter_before_the_1_5_s_read_waits_for_it(self, tmp_path: Path) -> None:

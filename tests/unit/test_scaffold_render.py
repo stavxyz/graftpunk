@@ -1010,9 +1010,12 @@ class TestPluginModuleWithLoginForm:
         assert 'url="/",' in plugin_code
 
     def test_an_unresolved_formless_submit_says_why(self) -> None:
+        # A second submit button elsewhere on the page: the dialog's has no id, no
+        # name, and nothing else unique to pick it by.
         html = (
             '<div role="dialog"><input id="u"><input type="password" id="p">'
             '<button type="submit">Go</button></div>'
+            '<button type="submit">Search</button>'
         )
         (form,) = extract_login_forms(html, source="https://myshop.example.com/")
         spec = ScaffoldSpec(
@@ -1029,9 +1032,10 @@ class TestPluginModuleWithLoginForm:
             if line.strip().startswith("#")
         )
         assert (
-            "GP-FILL: submit has no selector: it sits outside any form, and has no id and no "
-            "name that is unique on the recorded page and holds no account value; write one "
-            "by hand."
+            "GP-FILL: submit has no selector: it sits outside any form, and has no id, name, "
+            "autocomplete, placeholder, aria-label, or class that is not build-hashed that is "
+            "unique on the recorded page and holds no account value; write one by hand (the "
+            "button reads 'Go')."
         ) in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
 
@@ -1058,9 +1062,10 @@ class TestPluginModuleWithLoginForm:
             if line.strip().startswith("#")
         )
         assert (
-            "GP-FILL: username has no selector: it sits outside any form, and has no id and "
-            "no name that is unique on the recorded page and holds no account value; write "
-            "one by hand."
+            "GP-FILL: username has no selector: it sits outside any form, and has no id, "
+            "name, autocomplete, placeholder, aria-label, or class that is not build-hashed "
+            "that is unique on the recorded page and holds no account value; write one by "
+            "hand."
         ) in comment
         assert "12345678" not in plugin_code
 

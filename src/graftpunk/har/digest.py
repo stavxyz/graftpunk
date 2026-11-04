@@ -43,6 +43,8 @@ from graftpunk.har.login_signals import (
 )
 from graftpunk.har.naming import capture_text, fixture_rank, normalize_media_type
 from graftpunk.har.parser import (
+    FAILURE_TEXT_LENGTH,
+    MAX_FAILURE_TEXTS,
     UNPARSED_TIMESTAMP,
     HAREntry,
     LoginInteraction,
@@ -943,7 +945,11 @@ def _parse_body_text(
 ) -> tuple[dict[str, str], BodyKind, set[str]]:
     """:func:`_parse_body_keys` on a body's text and the media type its request
     declared (lowered, without parameters; empty when it declared none)."""
-    kind, parsed = _decoded_body(post_data, declared)
+    return _body_types(*_decoded_body(post_data, declared))
+
+
+def _body_types(kind: BodyKind, parsed: Any) -> tuple[dict[str, str], BodyKind, set[str]]:
+    """:func:`_parse_body_text` of a body already decoded (:func:`_decoded_body`)."""
     if kind == "json":
         if isinstance(parsed, dict):
             types, dropped = _json_body_types(parsed)
@@ -2182,8 +2188,11 @@ def _failure_candidates(
     posted_values: Sequence[str] = (),
 ) -> tuple[str, ...]:
     """The failure texts the last credential post the user marked failed carries
-    (``request._failureTextCandidates``), less each one holding an account value of
-    any credential post of the run (*account_values*) or a value any request
+    (``request._failureTextCandidates``), then the error messages its own JSON
+    response gives (:func:`_json_error_messages`: a GraphQL login answers a wrong
+    password with ``errors[].message`` and no redirect), each once in any letter
+    case and at most ``MAX_FAILURE_TEXTS`` in all, less each one holding an account
+    value of any credential post of the run (*account_values*) or a value any request
     posted up to the real login (*posted_values*, :func:`posted_account_values`:
     the username of an identifier-first login, under any name), by the rule the
     success suggestions are kept by
@@ -2210,14 +2219,44 @@ def _failure_candidates(
         return ()
     needles = account_needles([*account_values, *posted_values])
     lowered_pages = [page.lower() for page in logged_in_pages]
-    return tuple(
+    failed = credential_entries[marked[-1]]
+    offered: dict[str, str] = {}
+    for text in (*failed.request.failure_text_candidates, *_json_error_messages(failed)):
+        offered.setdefault(text.lower(), text)
+    kept = [
         text
-        for text in credential_entries[marked[-1]].request.failure_text_candidates
+        for text in offered.values()
         if REDACTED_MARK not in text
         and not _emails_in(text)
         and not holds_an_account_value(text, needles)
         and not any(failure_text_on_lowered_page(page, text) for page in lowered_pages)
+    ]
+    return tuple(kept[:MAX_FAILURE_TEXTS])
+
+
+def _json_error_messages(entry: HAREntry) -> tuple[str, ...]:
+    """The ``errors[].message`` strings of *entry*'s response when it is a JSON
+    object (the GraphQL error shape), whitespace-trimmed, of ``FAILURE_TEXT_LENGTH``
+    characters, in order. The response does not say whether the page shows the
+    message, so it is only a suggestion, as the recorder's are, which the generator
+    writes commented out for the author to confirm."""
+    media_type = normalize_media_type(entry.response.content_type or "")
+    body = entry.response.body
+    if not body or not _is_json_media_type(media_type):
+        return ()
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError, RecursionError):
+        return ()
+    errors = parsed.get("errors") if isinstance(parsed, dict) else None
+    if not isinstance(errors, list):
+        return ()
+    messages = (
+        error["message"].strip()
+        for error in errors
+        if isinstance(error, dict) and isinstance(error.get("message"), str)
     )
+    return tuple(text for text in messages if len(text) in FAILURE_TEXT_LENGTH)
 
 
 def _pages_after_the_real_login(
@@ -2522,8 +2561,8 @@ def _unique_forms(forms: list[LoginForm]) -> list[LoginForm]:
 
 
 def _has_password_field(entry: HAREntry) -> list[str]:
-    """Field names on a POST whose body has a password-like field."""
-    return _password_like(body_params(entry))
+    """The password-like field names of a POST's body (:func:`password_field_names`)."""
+    return password_field_names(entry.request.post_data, _request_content_type(entry))
 
 
 def _password_like(names: Iterable[str]) -> list[str]:
@@ -2537,12 +2576,24 @@ def _asks_for_a_new_password(names: Iterable[str]) -> bool:
 def password_field_names(body_text: str | None, content_type: str = "") -> list[str]:
     """The password-like field names (a ``PASSWORD_NAME_HINTS`` name) of a request
     body, read as the digest reads a POST's body (:func:`body_params`) from its text
-    and the request's ``Content-Type``. The one rule for a credential post's fields:
-    the digest reads a recorded POST with it, and the recorder reads a request's body
-    with it while the request is in flight (the DOM snapshot of #267)."""
+    and the request's ``Content-Type``, each once. A JSON body's names are read at
+    any depth too: the own name of each string or number nested in it (a GraphQL
+    login's ``variables.password`` gives ``password``), held to the rule a top-level
+    key is (:func:`_plausible_field_name`). A form's names are its top-level keys
+    only, as before. The one rule for a credential post's fields: the digest reads a
+    recorded POST with it, and the recorder reads a request's body with it while the
+    request is in flight (the DOM snapshot of #267)."""
     declared = content_type.split(";")[0].strip().lower()
-    types, _kind, _dropped = _parse_body_text(body_text, declared)
-    return _password_like(types)
+    kind, parsed = _decoded_body(body_text, declared)
+    types, _kind, _dropped = _body_types(kind, parsed)
+    names = list(types)
+    if kind == "json":
+        names += [
+            path[-1]
+            for path, _value in _scalar_values(parsed)
+            if path and _plausible_field_name(path[-1])
+        ]
+    return _password_like(dict.fromkeys(names))
 
 
 def is_credential_body(body_text: str | None, content_type: str = "") -> bool:

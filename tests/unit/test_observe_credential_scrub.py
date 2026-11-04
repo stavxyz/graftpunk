@@ -688,12 +688,36 @@ class TestTheDigestsRule:
         )
 
     @pytest.mark.asyncio
-    async def test_a_nested_json_login_with_no_login_form_is_left(self, tmp_path: Path) -> None:
-        """No login form in the run, and the digest reads no password field in a
-        nested JSON body, so it is no credential post and nothing is taken."""
+    async def test_a_nested_json_login_with_no_login_form_is_scrubbed(self, tmp_path: Path) -> None:
+        """No login form in the run, and the password sits one level down in a JSON
+        body (a GraphQL login's ``variables.password``): the digest reads a password
+        field at any depth of a JSON body (#365), so it is a credential post and its
+        values are taken."""
+        storage = _storage(tmp_path)
+        post = _json_post()
+        post["request"]["postData"]["text"] = json.dumps(
+            {
+                "operationName": "LoginMutation",
+                "variables": {"email": _EMAIL, "password": "sunflower99"},
+            }
+        )
+        console = MagicMock()
+
+        await _save(storage, _Backend([post]), console)
+
+        assert json.loads(_har(storage)[0]["request"]["postData"]["text"])["variables"] == {
+            "email": REDACTED,
+            "password": REDACTED,
+        }
+        assert b"sunflower99" not in _everything(storage.run_dir)
+
+    @pytest.mark.asyncio
+    async def test_a_nested_json_password_change_is_left(self, tmp_path: Path) -> None:
+        """A nested JSON body that asks for a new password (a password change) is no
+        credential post by the digest's rule, so nothing is taken."""
         entries = [_json_post()]
         entries[0]["request"]["postData"]["text"] = json.dumps(
-            {"user": {"email": _EMAIL, "password": "sunflower99"}}
+            {"variables": {"currentPassword": "sunflower99", "newPassword": "sunflower100"}}
         )
         plain, scrubbed = _storage(tmp_path / "a"), _storage(tmp_path / "b")
         console = MagicMock()
@@ -703,7 +727,6 @@ class TestTheDigestsRule:
 
         assert _run_bytes(scrubbed.run_dir) == _run_bytes(plain.run_dir)
         assert "Scrubbed" not in _printed(console)
-        assert "could not be read" not in _printed(console)
 
     @pytest.mark.asyncio
     async def test_a_run_with_no_login_prints_nothing_about_credentials(

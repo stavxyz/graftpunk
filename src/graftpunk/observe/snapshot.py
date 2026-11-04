@@ -51,13 +51,17 @@ __all__ = [
 ]
 
 # The attributes the digest reads a login form from (graftpunk.har.documents), plus
-# href and for, which say what a link opens and which input a label names.
+# href and for, which say what a link opens and which input a label names. A
+# placeholder and an aria-label name a control a script rendered with no name or id
+# (#365): the digest's selectors fall back to them.
 KEPT_ATTRIBUTES = frozenset(
     {
         "id",
         "name",
         "type",
         "autocomplete",
+        "placeholder",
+        "aria-label",
         "form",
         "role",
         "aria-modal",
@@ -99,8 +103,10 @@ _VOID = frozenset(
 _URL_ATTRIBUTES = frozenset({"href", "action"})
 # The attributes a structure-only read replaces a part of when it holds an account
 # value (_account_scrub): an id, each class token, the id a label or a control
-# names, a name, and each path segment.
-_ACCOUNT_ATTRIBUTES = frozenset({"id", "class", "for", "form", "name", "href", "action"})
+# names, a name, a placeholder, an aria-label, and each path segment.
+_ACCOUNT_ATTRIBUTES = frozenset(
+    {"id", "class", "for", "form", "name", "placeholder", "aria-label", "href", "action"}
+)
 # HTML splits a class attribute, and a token list, on ASCII whitespace.
 _TOKEN_RE = re.compile(r"[^\t\n\f\r ]+")
 _SEGMENT_RE = re.compile(r"[^/]+")
@@ -476,7 +482,8 @@ def _account_scrub(
     values: Iterable[str], field_names: Iterable[str]
 ) -> Callable[[str, str], str] | None:
     """A scrub of an attribute's value given its name: each part of it (an ``id``,
-    ``for``, ``form``, or ``name`` value whole, a ``class`` token, a path segment of
+    ``for``, ``form``, ``name``, ``placeholder``, or ``aria-label`` value whole, a
+    ``class`` token, a path segment of
     an ``href`` or ``action``), as written or percent-decoded, that holds one of the
     account needles of *values* anywhere is replaced
     (:func:`graftpunk.har.login_signals.account_needles` and
