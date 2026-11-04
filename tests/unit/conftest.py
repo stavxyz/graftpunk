@@ -13,6 +13,11 @@ from typing import Any, NoReturn
 
 import pytest
 
+# A module that imports a factory by name keeps whatever is bound when it is
+# first imported, so graftpunk.session must be imported before any test patches
+# graftpunk.observe.capture.create_capture_backend (#352).
+import graftpunk.session  # noqa: F401
+
 # The local site the HTTP observe tests record (fixture: site).
 from tests.unit.observe_http_site import site  # noqa: F401
 
