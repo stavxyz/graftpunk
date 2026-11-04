@@ -963,9 +963,10 @@ def test_a_token_name_built_of_token_words_reads_as_a_name(name: str) -> None:
 
 
 # Ordinary request header names the gate held back before #347 widened its
-# vocabulary (the header abbreviations in _ACRONYMS, Ip in _SHORT_WORDS,
-# upgrade in _FRAMEWORK_NAMES, and hash and MAC names with their sizes). Vendor
-# prefixes are placeholders.
+# vocabulary (the header abbreviations in _ACRONYMS, Ip and Ms in _SHORT_WORDS,
+# upgrade in _FRAMEWORK_NAMES, hash and MAC names with their sizes, and CRC
+# checksum names). Vendor prefixes outside the public cloud SDKs are
+# placeholders.
 _ORDINARY_HEADER_NAMES = (
     "X-Hub-Signature-256",
     "X-Acme-Hmac-Sha256",
@@ -989,6 +990,17 @@ _ORDINARY_HEADER_NAMES = (
     "X-PJAX",
     "X-Real-Ip",
     "X-ProxyUser-Ip",
+    "x-amz-checksum-crc32c",
+    "X-Amz-Checksum-Crc64nvme",
+    "X-Amz-Sdk-Checksum-Algorithm",
+    "X-Amz-Sns-Message-Type",
+    "X-Amz-Apigw-Id",
+    "x-goog-hash-crc32c",
+    "X-Firebase-GMPID",
+    "X-Ms-Client-Request-Id",
+    "X-Ms-Version",
+    "X-Ms-Content-Crc64",
+    "X-MSEdge-Ref",
 )
 
 
@@ -1007,7 +1019,20 @@ def test_a_header_name_with_a_random_tail_is_still_held_back(name: str) -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["sha256", "SHA512", "HmacSha256", "contentSha256", "sha3_512", "blake2b-256", "md5", "Md5"],
+    [
+        "sha256",
+        "SHA512",
+        "HmacSha256",
+        "contentSha256",
+        "sha3_512",
+        "blake2b-256",
+        "md5",
+        "Md5",
+        "crc32",
+        "CRC32C",
+        "contentCrc64",
+        "crc64nvme",
+    ],
 )
 def test_a_hash_or_mac_name_with_its_size_reads_as_a_name_in_both_gates(name: str) -> None:
     assert printable_name(name)
@@ -1029,6 +1054,9 @@ def test_a_hash_or_mac_name_with_its_size_reads_as_a_name_in_both_gates(name: st
         "Signature.256",
         "abcsha256",
         "qeweo2Sha256",
+        "abccrc32c",
+        "qeweo2Crc32",
+        "Crc33",
     ],
 )
 def test_a_size_reads_as_a_word_only_beside_a_hash_name(name: str) -> None:
@@ -1059,7 +1087,19 @@ def _name_corpus() -> list[str]:
         + rng.choice(["", "1", "22", "333"])
         for _ in range(2_000)
     ]
-    hash_words = ["Sha256", "sha", "HMAC", "md5", "blake2b", "Signature", "256", "512", "Zq9v"]
+    hash_words = [
+        "Sha256",
+        "sha",
+        "HMAC",
+        "md5",
+        "blake2b",
+        "Crc32c",
+        "crc64nvme",
+        "Signature",
+        "256",
+        "512",
+        "Zq9v",
+    ]
     corpus += [
         rng.choice(["", "-", "_", "."]).join(rng.choices(hash_words + words, k=rng.randint(2, 4)))
         for _ in range(2_000)

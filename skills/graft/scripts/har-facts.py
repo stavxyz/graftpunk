@@ -265,8 +265,10 @@ _ACRONYMS = frozenset(
         # the abbreviations cookie and token names use, some spelled with no vowel
         "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP "
         # the abbreviations header names use (X-Amz-Target, Grpc-Timeout,
-        # HX-Request, Ocp-Apim-Trace, Sec-GPC, X-DNS-Prefetch-Control, X-PJAX)
-        "AMZ AMZN GRPC HX OCP GPC DPR DNS CDN PJAX"
+        # HX-Request, Ocp-Apim-Trace, Sec-GPC, X-DNS-Prefetch-Control, X-PJAX), cloud
+        # SDKs' among them (X-Amz-Sdk-Checksum-Algorithm, X-Amz-Sns-Message-Type,
+        # X-Amz-Apigw-Id, X-Firebase-GMPID, X-MSEdge-Ref)
+        "AMZ AMZN GRPC HX OCP GPC DPR DNS CDN PJAX SDK SNS APIGW GMPID MS"
     ).split()
 )
 # An acronym this long or longer reads as one in any case inside camel case
@@ -274,7 +276,7 @@ _ACRONYMS = frozenset(
 _MIN_CASELESS_ACRONYM_LEN = 3
 # A capitalised word of two letters in camel case must be one of these (userId).
 _SHORT_WORDS = frozenset(
-    "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am Ip".split()  # noqa: SIM905
+    "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am Ip Ms".split()  # noqa: SIM905
 )
 _MAX_PARTS = 8
 _MAX_CAPITALS = 16
@@ -346,14 +348,16 @@ def _plain_part(part: str) -> bool:
     return True
 
 
-# Hash and MAC names and their standard sizes (sha256, HmacSha512, md5, blake2b):
+# Hash and MAC names and their standard sizes (sha256, HmacSha512, md5, blake2b),
+# and the checksum names crc32, crc32c, crc64, and crc64nvme:
 # a run of three digits otherwise reads as a value, but here it is part of the
 # algorithm's name. A size also reads as a word as a token of its own, joined by
 # - or _, after such a name or a word naming what one makes (sha3_512,
 # X-Hub-Signature-256).
 _HASH_SIZES = "64|128|224|256|384|512"
 _HASH_NAME_RE = re.compile(
-    rf"(.*?)((?:sha[123]?|hmac|md5|blake2b?)(?:{_HASH_SIZES})?)", re.IGNORECASE
+    rf"(.*?)((?:sha[123]?|hmac|md5|blake2b?)(?:{_HASH_SIZES})?|crc(?:32c?|64(?:nvme)?))",
+    re.IGNORECASE,
 )
 _HASH_SIZE_RE = re.compile(_HASH_SIZES)
 _HASH_OUTPUT_WORDS = frozenset(("signature", "digest", "hash", "checksum"))
