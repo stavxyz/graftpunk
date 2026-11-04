@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.1] - 2026-11-04
+
+This is a patch release. The graft skill's `fixture-leaks.py` no longer reports a JSON key name or a GraphQL `__typename` value as a captured value left in a fixture, and the suite's check of a fixture against the values its observe run recorded no longer reports a value that the fixture holds only as, or inside, such a key (#368). Item 1 is what a suite already written does differently on its first run after the upgrade, and item 2 is about upgrading itself.
+
+### Upgrading
+
+1. **The fixtures check can pass where 1.40.0 failed, never the reverse.** When a sidecar's observe run is on the machine running the suite, `fixtures_are_sanitised` compares the fixture with every value that run recorded for each flagged name. It now blanks each quoted key that is a plain identifier without a run of three digits (`"orderId":`, `"created_at":`) before the search, so a recorded value equal to such a key, or inside one, is no longer reported. A recorded value the fixture holds as a value, or inside a key holding an email address or a run of digits, is reported as before.
+2. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Fixed
+
+- **`fixture-leaks.py` reports the values a fixture kept, not its schema** (#368). It read a capture's keys as values unless they were lowercase identifiers, so every camelCase key (`orderId`, `primaryEmail`) was looked for; it read each `__typename` value (`User`, `Location`) too; and it searched the fixture's keys, where a type name such as `Order` matched inside `"recentOrders":`. A fixture that kept a GraphQL response's keys and type names and invented every account value still listed each of them. On a synthetic GraphQL account response on `myshop.example` (nested objects, 12 type names, camelCase keys) whose fixture invents every account value but has an email address, a session token, and an order id pasted back in, it reported 67 values, 48 of them keys or type names; it now reports 17: the three pasted values and five pieces of them (the email's local part and domain, the order id's digits, and the name parts the email holds), and nine values a reviewer keeps or rewrites by judgment (a status, a fulfilment type, a card brand, a tier, a weekday, two opening times, an amount, and the store's brand). A key that is a plain identifier in any case without a run of three digits, and the value under a `__typename` key, are no longer looked for, and such a key in the fixture is blanked before the search. A key holding an email address or a run of digits is looked for and searched as before. A captured value or piece is skipped by the rule the `--har` check already used for a recorded value: shorter than four characters, or `true`, `false` or `null` in any case; so a three-letter value (`USD`) and a three-digit run are no longer reported and are left to a read by eye, which the harden reference now names. `graftpunk.testing.recorded` and the script share the key rule, the `__typename` rule, and the blanking, and the parity tests cover all three.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.29 and still needs graftpunk 1.40.0 or later** (#368). Its `fixture-leaks.py` runs on the standard library alone and relies on nothing 1.40.1 changes, so the floor stays.
+
 ## [1.40.0] - 2026-11-04
 
 This is a minor release. The digest pairs a token header with the source whose value it carried, by comparing values, and `Token.from_hidden_input` reads a hidden input (#369). Before, a site whose `x-csrf` header carried the page's hidden `<input name="csrf">` left that header unpaired beside a rotating `x-csrf-v1` cookie, and the generated comment pointed at `Token.from_meta_tag`. Item 1 is what a plugin already written does differently on its first run after the upgrade, item 2 is what a regenerated digest or scaffold shows differently, and item 3 is about upgrading itself.
