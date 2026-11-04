@@ -251,6 +251,23 @@ class TestAttributeValuesAsWritten:
         (match,) = lxml.html.fromstring(html).cssselect(selector)
         assert match.get(attribute) == value
 
+    @pytest.mark.parametrize("newline", ["\r\n", "\r"])
+    def test_a_carriage_return_is_read_as_the_html_parser_reads_it(self, newline: str) -> None:
+        """HTML input stream preprocessing (WHATWG HTML 13.2.3.5) turns CRLF and a
+        lone CR into LF before the DOM holds the value, so the selector spells LF.
+        lxml's parser normalizes the same way; that Chrome's DOM does is per the
+        standard, not checked against a browser here."""
+        html = _dialog(
+            f'<input type="text" placeholder="Email or{newline}phone">'
+            '<input type="password"><button type="submit">Go</button>'
+        )
+        selector = _only(html).fields["username"]
+        assert selector == 'input[placeholder="Email or\\a phone"]'
+        import lxml.html
+
+        (match,) = lxml.html.fromstring(html).cssselect(selector)
+        assert match.get("placeholder") == "Email or\nphone"
+
     def test_a_value_of_whitespace_is_never_used(self) -> None:
         form = _only(
             _dialog(

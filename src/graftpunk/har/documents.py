@@ -468,7 +468,11 @@ class _DocumentParser(HTMLParser):
 
 def _parse(html: str, *, track_blocks: bool = False) -> _DocumentParser:
     parser = _DocumentParser(track_blocks=track_blocks)
-    parser.feed(html)
+    # The HTML standard's input stream preprocessing ("normalize newlines", WHATWG
+    # HTML 13.2.3.5) turns each CRLF and each lone CR into LF before tokenizing, so a
+    # browser's DOM holds an attribute value with LF only. HTMLParser does not, and a
+    # selector spelled with a CR would match nothing.
+    parser.feed(html.replace("\r\n", "\n").replace("\r", "\n"))
     if parser._current is not None:  # an unclosed <form>: keep what was seen
         parser.forms.append(parser._current)
     for index in parser._block_stack:  # elements still open run to the end
