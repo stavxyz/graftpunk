@@ -2,7 +2,8 @@
 
 ``gp observe fixtures``, :mod:`graftpunk.testing`'s ``FixtureSession``, and
 the scaffold's generated tests all name a file the same way, so this module
-depends on ``paths.py`` and nothing else (plugin tooling spec, 2026-09-11).
+depends on ``paths.py`` and ``graphql.py`` (which depends on ``paths.py`` alone)
+and nothing else (plugin tooling spec, 2026-09-11; #367).
 
 It also owns the kebab-case rule a command's CLI name follows (``to_cli_name``)
 and the name a command registers (``registered_name``), which the plugin
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import re
 
+from graftpunk.har.graphql import ANONYMOUS_OPERATION
 from graftpunk.har.paths import template_path
 
 __all__ = [
@@ -25,8 +27,10 @@ __all__ = [
     "fixture_order",
     "fixture_rank",
     "normalize_media_type",
+    "parse_command_key",
     "parse_command_spec",
     "parse_endpoint",
+    "parse_endpoint_key",
     "registered_name",
     "to_cli_name",
 ]
@@ -48,16 +52,21 @@ _EXTENSION_BY_MIME: dict[str, str] = {
 _TEXT_MIME_KEYWORDS = ("text", "xml")
 
 
-def capture_slug(method: str, path: str) -> str:
+def capture_slug(method: str, path: str, operation: str = "") -> str:
     """The method+templated-path stem shared by a capture, a fixture, and its sidecar.
 
     *path* may already be a template, such as the digest's collapsed
     ``/products/{product_id}``; its ``{placeholder}`` segments pass through as
-    written.
+    written. A GraphQL *operation* (``graftpunk.har.graphql``) is added in
+    parentheses, ``post_graphql(OrdersByCustomer)``, and the anonymous one as
+    ``post_graphql(anonymous)`` (#367).
     """
     template, _ = template_path(path)
     body = template.strip("/").replace("/", "_")
-    return f"{method.lower()}_{body or 'root'}"
+    stem = f"{method.lower()}_{body or 'root'}"
+    if not operation:
+        return stem
+    return f"{stem}({operation.strip('()')})"
 
 
 # The content type a capture is named by when its response named none: gp observe
@@ -83,9 +92,11 @@ def _extension_for_content_type(content_type: str) -> str:
     return "bin"
 
 
-def capture_filename(method: str, path: str, content_type: str) -> str:
-    """``<method>_<slug>.<ext>``, the one name a capture, fixture, and test share."""
-    return f"{capture_slug(method, path)}.{_extension_for_content_type(content_type)}"
+def capture_filename(method: str, path: str, content_type: str, operation: str = "") -> str:
+    """``<method>_<slug>.<ext>``, the one name a capture, fixture, and test share;
+    a GraphQL *operation* names it as :func:`capture_slug` says."""
+    stem = capture_slug(method, path, operation)
+    return f"{stem}.{_extension_for_content_type(content_type)}"
 
 
 def capture_text(body: str | None, status: int) -> str | None:
@@ -212,6 +223,49 @@ def parse_command_spec(value: str) -> tuple[str, str, str]:
         )
     method, template = parse_endpoint(endpoint)
     return name, method, template
+
+
+_OPERATION_SUFFIX_RE = re.compile(r"\s+\(([^()\s]+)\)\s*\Z")
+
+
+def parse_endpoint_key(value: str) -> tuple[str, str, str]:
+    """``"<METHOD> <template>"`` or ``"<METHOD> <template> (<Operation>)"``, the
+    way the digest prints a row (#367), as ``(method, template, operation)``.
+
+    The operation is empty for a key with no parenthesised suffix, and
+    ``(anonymous)`` (``graftpunk.har.graphql.ANONYMOUS_OPERATION``) for
+    ``(anonymous)``; otherwise it is the text inside the parentheses, which a
+    consumer may read as a glob. The rest goes through :func:`parse_endpoint`.
+
+    Raises:
+        EndpointSpecError: See :func:`parse_endpoint`.
+    """
+    operation = ""
+    match = _OPERATION_SUFFIX_RE.search(value)
+    if match is not None:
+        inner = match.group(1)
+        operation = ANONYMOUS_OPERATION if f"({inner})" == ANONYMOUS_OPERATION else inner
+        value = value[: match.start()]
+    method, template = parse_endpoint(value)
+    return method, template, operation
+
+
+def parse_command_key(value: str) -> tuple[str, str, str, str]:
+    """``"<name>=<METHOD> <template>[ (<Operation>)]"`` as ``(name, method, template,
+    operation)``: :func:`parse_command_spec` with :func:`parse_endpoint_key`'s
+    optional GraphQL operation.
+
+    Raises:
+        EndpointSpecError: See :func:`parse_command_spec`.
+    """
+    name, separator, endpoint = value.partition("=")
+    operation = ""
+    match = _OPERATION_SUFFIX_RE.search(endpoint) if separator else None
+    if match is not None:
+        _method, _template, operation = parse_endpoint_key(endpoint)
+        value = f"{name}={endpoint[: match.start()]}"
+    name, method, template = parse_command_spec(value)
+    return name, method, template, operation
 
 
 def to_cli_name(name: str) -> str:
