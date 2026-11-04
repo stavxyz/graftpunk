@@ -22,7 +22,9 @@ from graftpunk.contracts import (
     cli_contracts,
     contract_mismatch,
     current_schema,
+    handshake_schema,
     refuse_unknown_schema,
+    written_schemas,
 )
 
 _PACKAGE = Path(graftpunk.__file__).parent
@@ -39,7 +41,7 @@ class TestCurrentNumbers:
         assert current_schema("sidecar") == SIDECAR_SCHEMA == 5
 
     def test_cli_contracts_lists_every_surface_a_caller_reads_through_the_cli(self) -> None:
-        assert cli_contracts() == {surface: current_schema(surface) for surface in CLI_SURFACES}
+        assert cli_contracts() == {surface: handshake_schema(surface) for surface in CLI_SURFACES}
         assert "sidecar" not in cli_contracts()
 
     def test_every_surface_has_a_number_and_the_cli_ones_are_among_them(self) -> None:
@@ -48,9 +50,20 @@ class TestCurrentNumbers:
         assert set(_CURRENT) == set(get_args(Surface))
         assert set(CLI_SURFACES) <= set(_CURRENT)
 
+    def test_the_handshake_reports_the_schema_every_run_writes(self) -> None:
+        """A GraphQL run's projection is schema 2 and any other run's schema 1, so the
+        handshake reports 1: a caller written for schema 1 keeps working (#367)."""
+        assert handshake_schema("endpoints") == 1
+        assert written_schemas("endpoints") == (1, 2)
+        assert written_schemas("info") == (1,)
+        assert written_schemas("sidecar") == (SIDECAR_SCHEMA,)
+        assert contract_mismatch("endpoints", 1) is None
+        assert "graftpunk is older than the caller" in (contract_mismatch("endpoints", 2) or "")
+        assert refuse_unknown_schema("endpoints", 2) == 2
+
     def test_the_info_surface_is_read_through_the_cli(self) -> None:
         assert current_schema("info") == INFO_SCHEMA == 1
-        assert cli_contracts() == {"endpoints": 2, "info": 1}
+        assert cli_contracts() == {"endpoints": 1, "info": 1}
 
 
 class TestRefuseUnknownSchema:
@@ -91,15 +104,16 @@ class TestAnUnknownSurface:
 class TestContractMismatch:
     """The gp version --contract handshake: equality, with the older side named."""
 
-    def test_the_current_number_matches(self) -> None:
-        assert contract_mismatch("endpoints", current_schema("endpoints")) is None
+    def test_the_handshake_number_matches(self) -> None:
+        assert contract_mismatch("endpoints", handshake_schema("endpoints")) is None
 
-    def test_an_older_caller_is_named(self) -> None:
-        message = contract_mismatch("endpoints", current_schema("endpoints") - 1)
+    def test_an_older_caller_is_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(contracts._HANDSHAKE, "endpoints", 2)
+        message = contract_mismatch("endpoints", 1)
         assert message is not None and "the caller is older than graftpunk" in message
 
     def test_a_newer_caller_is_named(self) -> None:
-        message = contract_mismatch("endpoints", current_schema("endpoints") + 1)
+        message = contract_mismatch("endpoints", handshake_schema("endpoints") + 1)
         assert message is not None and "graftpunk is older than the caller" in message
 
     def test_a_surface_no_caller_reads_through_the_cli_is_a_mismatch(self) -> None:

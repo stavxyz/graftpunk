@@ -1299,7 +1299,8 @@ things:
 - A variable is an option, and its recorded value is the option's default only
   when it passes. Otherwise the option defaults to None, and a `GP-FILL` names
   the variable and its type and says a value was recorded.
-- A value written inline in the document is read under its argument's name
+- A value written inline in the document (a number, a string, or an enum value
+  such as `owner: JSMITH`) is read under its argument's name
   (`first` in `orders(first: 10)`), an input object field's name, or, for a
   variable's default, the variable's name. One that fails is taken out of the
   `.graphql` file, which stays valid GraphQL: an argument's value becomes a new
@@ -2955,14 +2956,16 @@ gp version --contract info=1 --contract endpoints=1
 `gp version --json` prints one line:
 
 ```json
-{"contracts": {"endpoints": 2, "info": 1}, "graftpunk": "1.39.0"}
+{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "1.39.0"}
 ```
 
 `graftpunk` is the installed version, and `contracts` maps each machine-read
 surface a `gp` command prints to the schema version this graftpunk writes:
 `endpoints` is `gp observe digest --endpoints-json`, and `info` is
 `gp plugin info --json`. Both fields are permanent; fields are added to this
-payload and never renamed or removed.
+payload and never renamed or removed. `endpoints` is the schema every run is
+written at: a run with GraphQL operation rows is written at schema 2, which adds
+`operation`, so a reader that accepts it checks the projection's own `schema`.
 
 `--at-least VERSION` exits 0 when the installed graftpunk is at least VERSION
 and 1 when it is older, printing nothing either way unless `--json` is also

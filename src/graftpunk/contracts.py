@@ -32,6 +32,9 @@ is written as the earlier version, so a reader of that version keeps reading it.
 The ``--endpoints-json`` projection of a run with no GraphQL operation row is
 schema 1 (:data:`ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS`), and a sidecar naming no
 GraphQL operation is schema 4 (:data:`SIDECAR_SCHEMA_WITHOUT_OPERATION`), #367.
+The version handshake reports such a surface's earlier number, the one every run
+writes (:func:`handshake_schema`), so a caller written for it keeps working, and
+:func:`written_schemas` lists every number a payload of it may carry.
 """
 
 from __future__ import annotations
@@ -52,8 +55,10 @@ __all__ = [
     "cli_contracts",
     "contract_mismatch",
     "current_schema",
+    "handshake_schema",
     "installation_facts",
     "refuse_unknown_schema",
+    "written_schemas",
 ]
 
 Surface = Literal["endpoints", "info", "sidecar"]
@@ -76,6 +81,16 @@ _CURRENT: Final[dict[Surface, int]] = {
     "info": INFO_SCHEMA,
     "sidecar": SIDECAR_SCHEMA,
 }
+
+_HANDSHAKE: Final[dict[Surface, int]] = {
+    "endpoints": ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS,
+}
+"""The number the ``gp version --contract`` handshake reports for a surface whose
+current schema is written only on some runs: the one every run writes. A GraphQL
+run's projection is schema 2, any other run's schema 1, so a caller written for
+schema 1 (the graft skill before 0.1.27) passes the handshake and reads every
+run that holds no operation row as it always did (#367). A surface not listed
+reports its current number."""
 
 CLI_SURFACES: Final[tuple[Surface, ...]] = ("endpoints", "info")
 """The surfaces a caller reads through the CLI, which ``gp version --json`` lists.
@@ -114,9 +129,32 @@ def current_schema(surface: Surface) -> int:
     return _current(surface)
 
 
+def handshake_schema(surface: Surface) -> int:
+    """The number the version handshake reports for *surface* (:data:`_HANDSHAKE`):
+    the schema every payload of it is written at or above.
+
+    Raises:
+        UnknownSchemaError: *surface* is not a surface this graftpunk versions.
+    """
+    current = _current(surface)
+    return _HANDSHAKE.get(surface, current)
+
+
+def written_schemas(surface: Surface) -> tuple[int, ...]:
+    """Every schema this graftpunk writes *surface* at, from the handshake's number
+    to the current one: ``(1, 2)`` for ``endpoints``. A reader that accepts more
+    than the handshake's number checks each payload's own ``schema``.
+
+    Raises:
+        UnknownSchemaError: *surface* is not a surface this graftpunk versions.
+    """
+    return tuple(range(handshake_schema(surface), _current(surface) + 1))
+
+
 def cli_contracts() -> dict[str, int]:
-    """Each CLI-read surface and its current number, as ``gp version --json`` prints them."""
-    return {surface: _current(surface) for surface in CLI_SURFACES}
+    """Each CLI-read surface and its handshake number (:func:`handshake_schema`), as
+    ``gp version --json`` prints them."""
+    return {surface: handshake_schema(surface) for surface in CLI_SURFACES}
 
 
 def refuse_unknown_schema(surface: Surface, value: object) -> int:
@@ -158,8 +196,10 @@ def installation_facts() -> dict[str, object]:
 def contract_mismatch(surface: str, reads: int) -> str | None:
     """Why a caller that reads *surface* at schema *reads* cannot use this graftpunk, or None.
 
-    The ``gp version --contract`` handshake. Equality, not a range: a caller is
-    written for one schema of a surface and reads that one. The message names the
+    The ``gp version --contract`` handshake. Equality with the handshake number
+    (:func:`handshake_schema`), not a range: a caller is written for one schema of
+    a surface and reads that one, and checks a payload's own ``schema`` for any
+    later one it also reads (:func:`written_schemas`). The message names the
     older side, so the caller can say which of the two to update.
     """
     current = cli_contracts().get(surface)

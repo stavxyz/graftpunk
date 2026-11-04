@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from importlib.metadata import PackageNotFoundError
 
 import pytest
@@ -12,6 +13,7 @@ import graftpunk
 from graftpunk import _distribution, contracts
 from graftpunk.cli.main import app
 from graftpunk.contracts import cli_contracts, installation_facts
+from tests.unit.guide_harness import REPO_ROOT
 
 runner = CliRunner()
 
@@ -85,16 +87,16 @@ def test_matching_contracts_exit_0_and_still_print_the_facts() -> None:
 def test_a_caller_reading_an_older_schema_is_named_the_older_side(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setitem(contracts._CURRENT, "endpoints", 3)
-    result = runner.invoke(app, ["version", "--json", "--contract", "endpoints=2"])
+    monkeypatch.setitem(contracts._HANDSHAKE, "endpoints", 2)
+    result = runner.invoke(app, ["version", "--json", "--contract", "endpoints=1"])
     assert result.exit_code == 3
     assert "endpoints" in result.output
     assert "the caller is older than graftpunk" in result.output
-    assert json.loads(result.stdout)["contracts"]["endpoints"] == 3
+    assert json.loads(result.stdout)["contracts"]["endpoints"] == 2
 
 
 def test_a_caller_reading_a_newer_schema_names_graftpunk_the_older_side() -> None:
-    result = runner.invoke(app, ["version", "--contract", "endpoints=3"])
+    result = runner.invoke(app, ["version", "--contract", "endpoints=2"])
     assert result.exit_code == 3
     assert "graftpunk is older than the caller" in result.output
 
@@ -135,7 +137,7 @@ def test_a_dev_or_local_version_is_ordered_not_rejected(
 
 
 def test_two_mismatches_in_one_call_print_one_stderr_line_each() -> None:
-    result = runner.invoke(app, ["version", "--contract", "endpoints=3", "--contract", "nosuch=1"])
+    result = runner.invoke(app, ["version", "--contract", "endpoints=2", "--contract", "nosuch=1"])
     assert result.exit_code == 3
     lines = result.stderr.splitlines()
     assert len(lines) == 2
@@ -236,3 +238,33 @@ def test_the_panel_on_this_environment_has_no_browser_line() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0, result.output
     assert "Browser:" not in result.stdout
+
+
+def _preflight_constant(name: str) -> str:
+    text = (REPO_ROOT / "skills" / "graft" / "scripts" / "preflight.sh").read_text()
+    (value,) = re.findall(rf'^{name}="?([^"\n]+)"?$', text, flags=re.MULTILINE)
+    return value
+
+
+@pytest.mark.parametrize(
+    ("skill", "floor", "info", "endpoints"),
+    [
+        # The graft skill 0.1.26's preflight, as released with 1.38.0.
+        ("0.1.26", "1.38.0", "1", "1"),
+        (
+            "current",
+            _preflight_constant("SKILL_REQUIRES_GRAFTPUNK"),
+            _preflight_constant("SKILL_READS_INFO_SCHEMA"),
+            _preflight_constant("SKILL_READS_ENDPOINTS_SCHEMA"),
+        ),
+    ],
+)
+def test_the_skill_before_and_after_graphql_rows_passes_the_handshake(
+    skill: str, floor: str, info: str, endpoints: str
+) -> None:
+    """The handshake reports the endpoints schema every run writes (1), so a skill
+    written before GraphQL rows keeps running on 1.39.0; a GraphQL run's projection
+    says schema 2 in its own payload (#367)."""
+    argv = ["version", "--json", "--at-least", floor, "--contract", f"info={info}"]
+    result = runner.invoke(app, [*argv, "--contract", f"endpoints={endpoints}"])
+    assert result.exit_code == 0, (skill, result.output)
