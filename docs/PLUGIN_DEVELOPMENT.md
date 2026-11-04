@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.39.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.40.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -2964,7 +2964,7 @@ gp version --contract info=1 --contract endpoints=1
 `gp version --json` prints one line:
 
 ```json
-{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "1.39.0"}
+{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "1.40.0"}
 ```
 
 `graftpunk` is the installed version, and `contracts` maps each machine-read

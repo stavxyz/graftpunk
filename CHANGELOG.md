@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.0] - 2026-11-04
+
+This is a minor release. The digest pairs a token header with the source whose value it carried, by comparing values, and `Token.from_hidden_input` reads a hidden input (#369). Before, a site whose `x-csrf` header carried the page's hidden `<input name="csrf">` left that header unpaired beside a rotating `x-csrf-v1` cookie, and the generated comment pointed at `Token.from_meta_tag`. Item 1 is what a regenerated digest or scaffold shows differently; item 2 is about upgrading itself. A plugin already written runs as before.
+
+### Upgrading
+
+1. **A regenerated digest can print token pairings, and `gp plugin new --from-run` can write a `token_config` it did not write before, or leave out one it wrote.** The Tokens section gains a line per pairing (``- header `x-csrf` carried the value of hidden input `csrf` on GET / on 8 of 8 requests``) and `--json` a top-level `token_pairs` list (`header`, `kind`, `name`, `page`, `matched`, `sent`), absent when a run has none. A hidden input whose name holds `csrf`, `_token`, or `authenticity_token` outside any form is now a token candidate, where 1.39.0 read only those inside a form. The scaffold writes `Token.from_hidden_input(...)` for a hidden input pairing, and `page_url=` on it or on a `Token.from_meta_tag(...)` when the page is not `/`. A header whose same-named meta or cookie candidate the recording compared with it and never matched is no longer paired with it by name; it is listed as an unpaired `GP-FILL` instead. A run with no such header prints what 1.39.0 printed.
+2. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Added
+
+- **`Token.from_hidden_input(name, header, page_url="/", cache_duration=300, extraction="auto")`** (#369): a `page` token reading `<input type="hidden" name="..." value="...">` on `page_url`, in a form or not, its attributes in any order and case, fetched and cached as `Token.from_meta_tag` is. It reads the value up to the first quote, whitespace, or `>`, and does not decode character references.
+- **Token pairing by value** (#369). Each time a request sends a header whose name looks like a token and whose value has eight characters or more, the digest compares that value with each cookie the same request sent and with the latest value of each meta tag and hidden input on a page of the primary host loaded earlier by a successful GET at a path with no placeholder. The source that held the value on the most requests pairs with the header, a cookie before a meta tag before a hidden input on a tie, so a double-submit cookie keeps its `Token.from_cookie`. Values stay in memory for the digest and are never printed. `graftpunk.har.digest` gains `RunDigest.token_pairs`, `TokenPairing`, and `printable_token_pairs`; `graftpunk.har.documents` gains `token_source_values`; the comparison lives in `graftpunk.har.token_pairing`.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.28 and needs graftpunk 1.40.0 or later** (#369). The guide it reads describes the pairing lines of the Tokens section and `Token.from_hidden_input`, which 1.39.0 does not have.
+
 ## [1.39.0] - 2026-11-04
 
 This is a minor release. The digest files each GraphQL operation as a row of its own, keyed `POST /graphql (OrdersByCustomer)`, where 1.38.0 made every operation sent to one path a single row (#367). `gp plugin new --command`, `gp plugin add-command --command` and `gp observe fixtures --match` take that key, fixtures are named and looked up by operation, and the graft skill's `har-facts.py` lists operations. Items 1 to 4 are what a program, a regenerated digest, or a plugin's suite sees differently on the first run after the upgrade; item 5 is about upgrading itself.
