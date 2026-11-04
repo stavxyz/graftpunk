@@ -130,7 +130,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.35.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.37.0 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -796,7 +796,9 @@ did not set, and `Path=(not shown)` a path holding anything outside a plain
 path. A cookie no response the digest kept set says so (a recording made with a
 cached session never sees the session set, and the digest leaves static and
 third-party responses out). A name that reads as a value is counted here and
-printed in no section, Login and Tokens included. See
+printed in no section, Login and Tokens included. A header name that reads as a
+value is held back the same way: an endpoint's block and the Tokens section
+each say how many they leave out. See
 [How graftpunk Works](HOW_IT_WORKS.md#building-a-plugin-from-a-recording) for
 each word.
 

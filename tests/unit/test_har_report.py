@@ -298,6 +298,9 @@ _FAMILY_ENDPOINT_V1 = _ENDPOINT_V1 | {"family_members"}
 # An HTML page holding inline JSON state (#271) carries one field more, added within
 # schema 1.
 _INLINE_ENDPOINT_V1 = _ENDPOINT_V1 | {"inline_json"}
+# An entry that left out a header name reading as a value (#347) carries one
+# field more, added within schema 1.
+_HEADERS_HELD_BACK_ENDPOINT_V1 = _ENDPOINT_V1 | {"custom_headers_not_shown"}
 _LOGIN_V1 = {"auth_urls", "forms", "success_candidates", "failure_candidates"}
 _AUTH_URL_V1 = {"method", "url", "kind"}
 _FORM_V1 = {"action", "fields", "submit", "neutral_roles", "unresolved_roles", "opener_candidate"}
@@ -417,6 +420,15 @@ class TestEndpointsProjection:
         fields = sorted((sorted(entry) for entry in payload["endpoints"]), key=len)
         assert [set(f) for f in fields] == [_ENDPOINT_V1, _INLINE_ENDPOINT_V1]
         assert set(payload["endpoints"][1]["inline_json"]) == {"target", "shape"}
+
+    def test_a_row_that_held_back_a_header_name_s_field_set(self, tmp_path: Path) -> None:
+        held = _entry("GET", "https://myshop.example.com/api/orders")
+        held["request"]["headers"] = [{"name": "X-Zq9vLmKx", "value": "1"}]
+        entries = [held, _entry("GET", "https://myshop.example.com/search")]
+        payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
+        assert payload["schema"] == 1
+        fields = sorted((sorted(entry) for entry in payload["endpoints"]), key=len)
+        assert [set(f) for f in fields] == [_ENDPOINT_V1, _HEADERS_HELD_BACK_ENDPOINT_V1]
 
     def test_no_cookie_name_token_candidate_example_path_or_body(self, tmp_path: Path) -> None:
         result = digest(DigestSource.from_har(_planted_run(tmp_path)))

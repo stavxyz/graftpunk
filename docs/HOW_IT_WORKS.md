@@ -770,8 +770,22 @@ as a name) is left out of the section, `cookie_facts`, `--json`'s `cookies`,
 the Login section's `set_cookie` steps and `--json`'s `login`, the Tokens
 section's cookie candidates and `--json`'s `tokens`, and the `token_config` a
 generated plugin gets, and the section ends with a count (`1 cookie whose name
-reads as a value is not shown`), which `--json` carries as `cookie_names_not_shown`. The
-fixture safety net (`flagged_names`) still holds every name. The words are those
+reads as a value is not shown`), which `--json` carries as `cookie_names_not_shown`. A
+recorded header name goes through the same gate: one that reads as a value is
+left out of an endpoint's custom headers (the markdown, `--json`,
+`--endpoints-json`, and a generated stub's `headers=`) and of the header token
+candidates (the Tokens section, `--json`'s `tokens`, and `token_config`), and
+each place prints a count instead (`custom_headers_not_shown` on an endpoint,
+`header_names_not_shown` for the run). Header names are compared without
+regard to case, so `X-Token-Q` and `x-token-q` are one name, and whether it
+prints is decided once for the run: it prints in every output and on every
+endpoint that recorded it, in the first spelling recorded that passes the
+gate, and is counted once when none does. A name whose spellings all fail
+still prints, in its first spelling recorded, when the digest already prints
+the same name elsewhere (a meta tag's or hidden input's token candidate, or a cookie name
+the Cookies section prints, set or only sent), so a generated `token_config` still pairs that header with its meta
+tag. The fixture safety
+net (`flagged_names`) still holds every name. The words are those
 of the graft skill's `har-facts.py cookies`, which also prints the `Domain` and
 each response's full URL, and says `never set in this recording`, since it
 reads every entry. `--json` carries the same facts as `cookie_facts`: one

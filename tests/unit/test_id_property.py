@@ -26,6 +26,7 @@ from graftpunk.har.digest import (
     redacted_names_of,
 )
 from graftpunk.har.parser import parse_har_file
+from graftpunk.har.paths import printable_name
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from graftpunk.testing.sidecar import Sidecar, sidecar_text
 from tests.unit.test_har_paths import (
@@ -220,7 +221,12 @@ def test_an_ordinary_name_survives_in_every_name_position(tmp_path: Path, name: 
         elif position in ("json_key", "form_key"):
             found = any(name in e["body_params"] for e in projection["endpoints"])
         elif position == "header_name":
-            found = any(name in e["custom_headers"] for e in projection["endpoints"])
+            # The digest keeps it; the projection prints it, or counts it when it
+            # reads as a value (printable_name, #347).
+            kept = any(name in e.custom_headers for e in result.endpoints)
+            printed = any(name in e["custom_headers"] for e in projection["endpoints"])
+            counted = any(e.get("custom_headers_not_shown") for e in projection["endpoints"])
+            found = kept and (printed if printable_name(name) else counted)
         else:
             found = any(e.shape is not None and name in e.shape.children for e in result.endpoints)
         assert found, position
