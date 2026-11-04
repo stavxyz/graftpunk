@@ -43,8 +43,10 @@ HAR_NAME = "network.har"
 PAGE_SOURCE_NAME = "page-source.html"
 
 # A recorded value's form shorter than this is too common to report: it is in
-# most fixtures by chance.
+# most fixtures by chance (USD, Ann). One that holds a digit is reported from
+# the second constant's length up (a PIN, a house number, an area code).
 _MIN_RECORDED_LENGTH = 4
+_MIN_WITH_DIGIT_LENGTH = 3
 # A recorded value that, in any of its forms, is one of these JSON literals (in
 # any case) is not looked for: a name flagged by its name alone records them
 # (logged_in=true), and a fixture cannot invent the literal away.
@@ -52,15 +54,23 @@ _LITERALS = frozenset(("true", "false", "null"))
 # Lines named per leaked name before the rest are counted.
 _MOST_PLACES = 5
 _DIGITS = re.compile(r"\d{3,}")
-# A key that is a plain identifier, in any case, without a run of digits is a
-# name the site chose for its schema (orderId, created_at), and the value under
-# __typename is a GraphQL type's name (User, Location): neither is a value the
-# fixture holds, so such a key in the fixture is not searched (_without_keys).
+# A key shaped like a name the site chose for its schema, and without a digit, is
+# not account data: lowercase or snake_case (account, created_at), camelCase
+# (accountNumber), or SCREAMING_SNAKE (NEXT_DATA), with leading or trailing
+# underscores (__typename). Any other key (a surname, Okonkwo; an id, cus_Nf3x; a
+# token) is a value. A string under __typename that is an identifier is a
+# GraphQL type's name (User, Location). Neither is a value the fixture holds, so
+# such a key in the fixture is not searched (_without_keys).
+_SCHEMA_KEY = re.compile(
+    r"_*(?:[a-z]+(?:_+[a-z]+)*|[a-z]+(?:[A-Z][a-z]+)+|[A-Z]+(?:_+[A-Z]+)*)_*\Z"
+)
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _TYPENAME = "__typename"
 # A JSON or Python key in single or double quotes, JSON-escaped or not, before
-# its colon.
-_QUOTED_KEY = re.compile(r"""(\\?["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*:""")
+# its colon, where an object key stands: after the object's opening brace or a
+# comma. A quoted word before a colon anywhere else (a ternary, a case label,
+# quoted prose) is not a key.
+_QUOTED_KEY = re.compile(r"""([{,]\s*)(\\?["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:""")
 
 
 class RunUnreadableError(Exception):
@@ -127,19 +137,43 @@ class _TextParts(HTMLParser):
 
 
 def _schema_key(key: str) -> bool:
-    """Whether *key* is a plain identifier without a run of digits."""
-    return _IDENTIFIER.match(key) is not None and _DIGITS.search(key) is None
+    """Whether *key* is shaped like a name the site chose for its schema."""
+    return _SCHEMA_KEY.match(key) is not None
+
+
+def _long_enough(value: str) -> bool:
+    """Whether *value* is long enough to report: four characters, or three that
+    hold a digit."""
+    if len(value) >= _MIN_RECORDED_LENGTH:
+        return True
+    return len(value) >= _MIN_WITH_DIGIT_LENGTH and any(c.isdigit() for c in value)
+
+
+def _schema_keys(text: str) -> dict[str, list[tuple[int, int, int]]]:
+    """Each schema key quoted in key position in *text*, with the 0-based line,
+    start and end of each place it stands, in order."""
+    keys: dict[str, list[tuple[int, int, int]]] = {}
+    line, at = 0, 0
+    for match in _QUOTED_KEY.finditer(text):
+        key = match.group(3)
+        if _schema_key(key):
+            start, end = match.span(3)
+            line += text.count("\n", at, start)
+            at = start
+            keys.setdefault(key, []).append((line, start, end))
+    return keys
 
 
 def _without_keys(text: str) -> str:
-    """*text* with each quoted key that is a plain identifier without a run of
-    digits blanked in place, so a value is found as a value and never inside a
-    key the site named (``"recentOrders":`` does not hold ``Order``)."""
+    """*text* with each schema key quoted in key position blanked in place, so a
+    value is found as a value and never inside a key the site named
+    (``"recentOrders":`` does not hold ``Order``). A value equal to a whole key
+    is looked for in :func:`_schema_keys` instead."""
 
     def blank(match: re.Match[str]) -> str:
-        if not _schema_key(match.group(2)):
+        if not _schema_key(match.group(3)):
             return match.group(0)
-        start, end = match.span(2)
+        start, end = match.span(3)
         whole = match.group(0)
         at = start - match.start()
         return whole[:at] + " " * (end - start) + whole[at + end - start :]
@@ -147,11 +181,19 @@ def _without_keys(text: str) -> str:
     return _QUOTED_KEY.sub(blank, text)
 
 
+def _type_name(key: object, value: object) -> bool:
+    """Whether *value*, under *key*, is a GraphQL type's name."""
+    return key == _TYPENAME and isinstance(value, str) and _IDENTIFIER.match(value) is not None
+
+
 def _json_values(node: object) -> list[str]:
     if isinstance(node, dict):
         keys = [str(k) for k in node if not _schema_key(str(k))]
         return keys + [
-            leaf for key, value in node.items() if key != _TYPENAME for leaf in _json_values(value)
+            leaf
+            for key, value in node.items()
+            if not _type_name(key, value)
+            for leaf in _json_values(value)
         ]
     if isinstance(node, list):
         return [leaf for value in node for leaf in _json_values(value)]
@@ -161,9 +203,9 @@ def _json_values(node: object) -> list[str]:
 
 
 def _body_values(text: str) -> list[str]:
-    """The filled-in values of a body, decoded: JSON leaves other than a
-    ``__typename`` and keys other than a plain identifier without a digit run, or
-    the text parts of anything else."""
+    """The filled-in values of a body, decoded: JSON leaves other than a type name
+    under ``__typename`` and keys other than schema keys, or the text parts of
+    anything else."""
     try:
         return _json_values(json.loads(text))
     except (ValueError, RecursionError):
@@ -399,15 +441,20 @@ def recorded_leaks(text: str, values: Mapping[str, Iterable[str]]) -> list[str]:
     forms, ``true``, ``false`` or ``null`` in any case: a name flagged by its
     name alone records such values (``logged_in=true``), and a fixture cannot
     invent the literal away. A form shorter than four characters is not looked
-    for either, since it is in most fixtures by chance. Every other value is
-    looked for, a username, a name or a four-digit PIN included.
+    for either, since it is in most fixtures by chance, unless it has three
+    characters and holds a digit. Every other value is looked for, a username, a
+    name or a three-digit PIN included.
 
-    A quoted key in *text* that is a plain identifier without a run of digits
-    (``"orderId":``) is blanked first: a value is reported where the fixture
-    holds it as a value, never where it matches a key the site named."""
-    text = _without_keys(text)
-    haystack = _normal("\n".join([text, "\n".join(_body_values(text)), *decoded_forms(text)]))
-    raw_lines = text.split("\n")
+    A quoted key in key position (after ``{`` or ``,``) shaped like a schema
+    name, digit-free lowercase, snake_case, camelCase or SCREAMING_SNAKE
+    (``"orderId":``), is blanked in the text and its decoded forms: a value is
+    not reported for matching part of such a key. A value equal to a whole such
+    key is reported, since it is a value used as a key. The filled-in values are
+    read from *text* as written."""
+    keys = _schema_keys(text)
+    blanked = _without_keys(text)
+    haystack = _normal("\n".join([blanked, "\n".join(_body_values(text)), *decoded_forms(blanked)]))
+    raw_lines = blanked.split("\n")
     combined: str | None = None
     lines: list[str] = []
     for name in sorted(values):
@@ -416,19 +463,20 @@ def recorded_leaks(text: str, values: Mapping[str, Iterable[str]]) -> list[str]:
             for value in values[name]
             if value and not _is_literal(value)
             for form in value_forms(value)
-            if len(form) >= _MIN_RECORDED_LENGTH
+            if _long_enough(form)
         }
-        hits = [value for value in wanted if value in haystack]
+        hits = [value for value in wanted if value in haystack or value in keys]
         if not hits and wanted:
             if combined is None:
-                combined = _normal("\n".join(combined_forms(text)))
+                combined = _normal("\n".join(combined_forms(blanked)))
             hits = [value for value in wanted if value in combined]
         if not hits:
             continue
+        keyed = {line + 1 for value in hits for line, _start, _end in keys.get(value, ())}
         at = [
             str(number)
             for number, line in enumerate(raw_lines, 1)
-            if any(value in _normal(line) for value in hits)
+            if number in keyed or any(value in _normal(line) for value in hits)
         ]
         where = f"line {', '.join(at[:_MOST_PLACES])}" if at else "found decoded"
         if len(at) > _MOST_PLACES:

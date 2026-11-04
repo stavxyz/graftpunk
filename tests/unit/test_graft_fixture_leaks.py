@@ -159,7 +159,7 @@ def test_a_closing_period_the_wrap_left_alone_still_ends_the_label(tmp_path: Pat
         ("acct_4471023.", "4471023"),
         ("4471023.", "4471023"),
         ("see\n4471023.", "4471023"),
-        ("9023.", "9023"),
+        ("023.", "023"),
     ],
 )
 def test_a_value_after_a_provenance_phrase_missing_its_period_is_still_a_leak(
@@ -168,7 +168,7 @@ def test_a_value_after_a_provenance_phrase_missing_its_period_is_still_a_leak(
     """A hand edit that drops the label's period must not let the phrase swallow what
     follows: only the run id's date and time are blanked, so an account value
     there, even one short enough to join the process id, is still reported."""
-    capture = json.dumps({"account": "ACCT_4471023", "code": "9023"})
+    capture = json.dumps({"account": "ACCT_4471023", "code": "023"})
     module = f"# seen 2 time(s) in run myshop/20261006-101500-4242\n{next_line}\n"
     result = _run(tmp_path, capture, module)
     assert result.returncode == 1
@@ -1278,12 +1278,122 @@ def test_the_same_value_outside_a_schema_key_is_still_reported(
     assert "'Account'" in result.stdout
 
 
-@pytest.mark.parametrize("value", ["Ann", "555", "USD", "true", "NULL", "False"])
+@pytest.mark.parametrize("value", ["Ann", "USD", "A1", "55", "true", "NULL", "False"])
 def test_a_value_the_recorded_check_calls_harmless_is_not_reported(
     tmp_path: Path, value: str
 ) -> None:
     """The captured values follow the recorded check's rule: under four
-    characters, or ``true``, ``false`` or ``null`` in any case, is not looked for."""
+    characters without being three that hold a digit, or ``true``, ``false`` or
+    ``null`` in any case, is not looked for. A three-letter name or currency code
+    is left to a read by eye."""
     capture = f"<p>{value}</p>"
     result = _run(tmp_path, capture, f"<p>{value}</p>")
     assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize("value", ["512", "731", "A12", "4b7"])
+def test_a_three_character_value_holding_a_digit_is_reported(tmp_path: Path, value: str) -> None:
+    """A house number, a PIN, an area code: three characters that hold a digit
+    are account data far more often than chance."""
+    result = _run(tmp_path, json.dumps({"street": f"{value} Main St"}), f"<p>{value}</p>")
+    assert result.returncode == 1
+    assert f"still in the fixture: {value!r} (line 1:" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        'var n = ok ? "aokonkwo" : "guest";\n',
+        'match login:\n    case "aokonkwo":\n        pass\n',
+        "if login == 'aokonkwo':\n    pass\n",
+        '{"msg": "hello \\"aokonkwo\\": welcome"}',
+        "<p>Customer 'aokonkwo': balance due</p>",
+        '<p>Customer "aokonkwo": 3 orders</p>',
+    ],
+    ids=["ternary", "case-label", "comparison", "escaped-in-value", "single-quoted", "html"],
+)
+def test_a_quoted_value_before_a_colon_that_is_not_a_key_is_reported(
+    tmp_path: Path, fixture: str
+) -> None:
+    """Only a quoted word after ``{`` or ``,`` stands where a key does; the same
+    word before a colon anywhere else is a value, searched as text."""
+    result = _run(tmp_path, json.dumps({"login": "aokonkwo"}), fixture)
+    assert result.returncode == 1
+    assert "still in the fixture: 'aokonkwo'" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("fixture", "line"),
+    [
+        ('{"reposByOwner": {"aokonkwo": [1]}}', 1),
+        ('{\n  "byUser": {\n    "aokonkwo": 1}}', 3),
+        ("USERS = {'plan': 'pro', 'aokonkwo': 1}\n", 1),
+        ('{"payload": "{\\"aokonkwo\\": 1}"}', 1),
+    ],
+)
+def test_a_captured_value_used_whole_as_a_key_is_reported(
+    tmp_path: Path, fixture: str, line: int
+) -> None:
+    """A schema key is blanked so a value is not found inside one, but a key equal
+    to a whole captured value is that value used as a key."""
+    result = _run(tmp_path, json.dumps({"viewer": {"login": "aokonkwo"}}), fixture)
+    assert result.returncode == 1
+    assert f"still in the fixture: 'aokonkwo' (line {line}: " in result.stdout
+    assert "»aokonkwo«" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "Okonkwo",
+        "AliceOkonkwo",
+        "A1B2C3D4",
+        "cus_NffrFeUfNV2Hib",
+        "QmFzZTYyVG9rZW5YeXo",
+        "orderId2",
+    ],
+    ids=["surname", "pascal-run", "digits", "prefixed-id", "base62", "camel-with-digit"],
+)
+def test_a_capture_key_not_shaped_like_a_schema_name_is_a_value(tmp_path: Path, key: str) -> None:
+    capture = json.dumps({"byOwner": {key: {"n": 1}}})
+    result = _run(tmp_path, capture, json.dumps({"note": key}))
+    assert result.returncode == 1
+    assert f"still in the fixture: {key!r}" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "key", ["account", "accountNumber", "created_at", "NEXT_DATA", "__typename", "_id"]
+)
+def test_a_capture_key_shaped_like_a_schema_name_is_not_looked_for(
+    tmp_path: Path, key: str
+) -> None:
+    """Lowercase, camelCase, snake_case and SCREAMING_SNAKE keys without a digit
+    are the site's schema; the fixture holds the same word as a value and passes."""
+    capture = json.dumps({key: "Pat Lee"})
+    result = _run(tmp_path, capture, json.dumps({"note": f"{key} {key.upper()}"}))
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_value_beside_a_blanked_key_of_its_length_is_still_read(tmp_path: Path) -> None:
+    """Two blanked keys of one length are one key to a JSON parser; the values are
+    read from the fixture as written, so a JSON-escaped value is not dropped."""
+    capture = json.dumps({"pw": 's3cr"etWord'})
+    result = _run(tmp_path, capture, json.dumps({"pw": 's3cr"etWord', "id": "x"}))
+    assert result.returncode == 1
+    assert _survivors(result.stdout) >= {'s3cr"etWord', "s3cr", "etWord"}
+    assert "still in the fixture: 's3cr\"etWord' (found decoded:" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "capture",
+    [
+        {"__typename": {"email": "a.okonkwo@myshop.example"}},
+        {"__typename": ["a.okonkwo@myshop.example"]},
+        {"__typename": "a.okonkwo@myshop.example"},
+    ],
+    ids=["object", "array", "not-an-identifier"],
+)
+def test_only_an_identifier_under_typename_is_a_type_name(tmp_path: Path, capture: dict) -> None:
+    result = _run(tmp_path, json.dumps(capture), '{"x": "a.okonkwo@myshop.example"}')
+    assert result.returncode == 1
+    assert "still in the fixture: 'a.okonkwo@myshop.example'" in result.stdout

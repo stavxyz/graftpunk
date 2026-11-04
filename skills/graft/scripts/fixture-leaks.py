@@ -7,24 +7,29 @@ inventing every value. This reports what survived, so the skill can rewrite it.
 
 What it looks for, from the capture: each JSON string, number, and key, or each
 text node, attribute value, and comment of any other text capture, whole, and the
-pieces of it an account value hides in: each run of four or more digits, each
+pieces of it an account value hides in: each run of three or more digits, each
 word holding an ``@``, a digit, or a capital letter, both halves of an email
-address, and each pair of words with one of those in it. A key that is a plain
-identifier, in any case, without a run of three digits (``orderId``,
-``created_at``) and the value under a ``__typename`` key (``User``, a GraphQL
-type's name) are the site's schema, not account data, and are skipped. So is a
-value or piece that is shorter than four characters or is ``true``, ``false`` or
-``null`` in any case, by the rule ``--har`` judges a recorded value by.
+address, and each pair of words with one of those in it. A key shaped like a
+schema name and holding no digit, lowercase, snake_case, camelCase or
+SCREAMING_SNAKE (``orderId``, ``created_at``), and an identifier under a
+``__typename`` key (``User``, a GraphQL type's name) are the site's schema, not
+account data, and are skipped; any other key (``Okonkwo``, ``cus_Nf3x``, a token)
+is a value. A value or piece is skipped too when it is ``true``, ``false`` or
+``null`` in any case, or shorter than four characters unless it has three and
+holds a digit (``USD`` is skipped, ``512`` is not), by the rule ``--har`` judges a
+recorded value by.
 
 Where it looks, in the fixture, in Unicode compatibility form: the raw text, its
 JSON or HTML values decoded, its backslash escapes decoded (``\\u00e9``, a
 surrogate pair, ``\\x26``, ``\\n``, ``\\/``), its HTML character references decoded
 (``&amp;``), and its percent-encoding decoded (``%40``), repeated up to
-three times while it keeps changing (``%2540``). A quoted key that is a plain
-identifier without a run of three digits (``"orderId":``, ``'orderId':``, or
-``\\"orderId\\":`` inside a JSON string) is blanked in the fixture before the
-search, so a value is found where the fixture holds it as a value and never
-inside a key the site named (``Account`` is not found in ``"primaryAccount":``);
+three times while it keeps changing (``%2540``). A schema key quoted where an
+object key stands, after ``{`` or ``,`` (``"orderId":``, ``'orderId':``, or
+``\\"orderId\\":`` inside a JSON string), is blanked in the fixture before the
+search, so a value is not found inside a key the site named (``Account`` is not
+found in ``"primaryAccount":``). A value equal to a whole such key is still
+reported, since it is a value used as a key, and a quoted word before a colon
+anywhere else (a ternary, a ``case`` label, quoted prose) is searched as text.
 ``--har`` searches the fixture the same way. A piece with a
 space, a digit, or an ``@`` matches in any case; a single word matches as written,
 in capitals, or in lower case inside an identifier or an address
@@ -36,8 +41,8 @@ gp's and not captured data; the rest of the phrase is still searched. A captured
 digit run written by hand into those 14 digits is therefore not caught.
 
 What it cannot see, which needs a read by eye: a captured lowercase word alone, a
-capitalised word copied in lower case on its own, a value of three characters or
-fewer, a captured value written into a key that is a plain identifier
+capitalised word copied in lower case on its own, a value of three characters
+without a digit or shorter, a captured value written into part of a schema key
 (``"okonkwoTotal":``), a number reformatted (``12345`` as
 ``12,345``), digits split across fields, and a copy re-encoded another way (base64).
 It searches each form of the fixture once per captured value, so a capture of a
@@ -93,10 +98,11 @@ applied one after the other (JSON-escaped inside an HTML attribute), as ``the
 recorded value of flagged 'sessionid' is still in the fixture (line 3)``, or
 ``(found decoded)``. It never prints the value or the text around it: such a
 value is a credential. A recorded value is not looked for only when it is empty,
-or ``true``, ``false`` or ``null`` in any case, or shorter than four characters,
-each after the decodings above: a name flagged by its name alone records such
-values, and a fixture cannot invent ``true`` away. Every other value is looked
-for, a username, a name or a four-digit PIN included. It reports and never
+or ``true``, ``false`` or ``null`` in any case, or shorter than four characters
+without being three that hold a digit, each after the decodings above: a name
+flagged by its name alone records such values, and a fixture cannot invent
+``true`` away. Every other value is looked for, a username, a name or a
+three-digit PIN included. It reports and never
 decides what the suite checks: reading one more source can only find more.
 This catches a value the capture's body never held, which the fixtures check in
 the suite does not: it holds names only, and from sidecar schema 3 it looks for a
@@ -137,22 +143,32 @@ _DIGITS = re.compile(r"\d{3,}")
 # Words split at spaces, punctuation, and a URL's separators, so an email in a
 # query string (?m=ann%40myshop.example&page=2) is a word of its own.
 _WORD = re.compile(r"[^\s,;:()\[\]{}<>\"'?&=/]+")
-# A key that is a plain identifier, in any case, without a run of digits is a
-# name the site chose for its schema (orderId, created_at), not account data; so
-# is the value under __typename, a GraphQL type's name (User, Location). Neither
-# is looked for, and such a key in the fixture is not searched (_without_keys).
+# A key shaped like a name the site chose for its schema, and without a digit, is
+# not account data: lowercase or snake_case (account, created_at), camelCase
+# (accountNumber), or SCREAMING_SNAKE (NEXT_DATA), with leading or trailing
+# underscores (__typename). Any other key (a surname, Okonkwo; an id, cus_Nf3x; a
+# token) is a value. A string under __typename that is an identifier is a
+# GraphQL type's name (User, Location). Neither is looked for, and such a key in
+# the fixture is not searched (_without_keys).
+_SCHEMA_KEY = re.compile(
+    r"_*(?:[a-z]+(?:_+[a-z]+)*|[a-z]+(?:[A-Z][a-z]+)+|[A-Z]+(?:_+[A-Z]+)*)_*\Z"
+)
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _TYPENAME = "__typename"
 # A JSON or Python key in single or double quotes, JSON-escaped or not, before
-# its colon.
-_QUOTED_KEY = re.compile(r"""(\\?["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*:""")
+# its colon, where an object key stands: after the object's opening brace or a
+# comma. A quoted word before a colon anywhere else (a ternary, a case label,
+# quoted prose) is not a key.
+_QUOTED_KEY = re.compile(r"""([{,]\s*)(\\?["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:""")
 # A value, or a form of one, shorter than this is too common to report: it is in
-# most fixtures by chance. A value that in any of its forms is one of these JSON
-# literals (in any case) is not looked for either: a name flagged by its name
-# alone records them (logged_in=true), and a fixture cannot invent the literal
-# away. The same rule skips a captured value and a recorded one
-# (graftpunk.testing.recorded; a test holds the copies equal).
+# most fixtures by chance (USD, Ann). One that holds a digit is reported from the
+# second constant's length up (a PIN, a house number, an area code). A value that
+# in any of its forms is one of these JSON literals (in any case) is not looked
+# for either: a name flagged by its name alone records them (logged_in=true), and
+# a fixture cannot invent the literal away. The same rule skips a captured value
+# and a recorded one (graftpunk.testing.recorded; a test holds the copies equal).
 _MIN_RECORDED_LENGTH = 4
+_MIN_WITH_DIGIT_LENGTH = 3
 _LITERALS = frozenset(("true", "false", "null"))
 # A \uXXXX escape as JSON and Python source spell one, decoded wherever it appears,
 # and a high and low surrogate escape side by side, which together spell one
@@ -229,19 +245,43 @@ class _TextParts(HTMLParser):
 
 
 def _schema_key(key: str) -> bool:
-    """Whether *key* is a plain identifier without a run of digits."""
-    return _IDENTIFIER.match(key) is not None and _DIGITS.search(key) is None
+    """Whether *key* is shaped like a name the site chose for its schema."""
+    return _SCHEMA_KEY.match(key) is not None
+
+
+def _long_enough(value: str) -> bool:
+    """Whether *value* is long enough to report: four characters, or three that
+    hold a digit."""
+    if len(value) >= _MIN_RECORDED_LENGTH:
+        return True
+    return len(value) >= _MIN_WITH_DIGIT_LENGTH and any(c.isdigit() for c in value)
+
+
+def _schema_keys(text: str) -> dict[str, list[tuple[int, int, int]]]:
+    """Each schema key quoted in key position in *text*, with the 0-based line,
+    start and end of each place it stands, in order."""
+    keys: dict[str, list[tuple[int, int, int]]] = {}
+    line, at = 0, 0
+    for match in _QUOTED_KEY.finditer(text):
+        key = match.group(3)
+        if _schema_key(key):
+            start, end = match.span(3)
+            line += text.count("\n", at, start)
+            at = start
+            keys.setdefault(key, []).append((line, start, end))
+    return keys
 
 
 def _without_keys(text: str) -> str:
-    """*text* with each quoted key that is a plain identifier without a run of
-    digits blanked in place, so a value is found as a value and never inside a
-    key the site named (``"recentOrders":`` does not hold ``Order``)."""
+    """*text* with each schema key quoted in key position blanked in place, so a
+    value is found as a value and never inside a key the site named
+    (``"recentOrders":`` does not hold ``Order``). A value equal to a whole key
+    is looked for in :func:`_schema_keys` instead."""
 
     def blank(match: re.Match[str]) -> str:
-        if not _schema_key(match.group(2)):
+        if not _schema_key(match.group(3)):
             return match.group(0)
-        start, end = match.span(2)
+        start, end = match.span(3)
         whole = match.group(0)
         at = start - match.start()
         return whole[:at] + " " * (end - start) + whole[at + end - start :]
@@ -249,11 +289,19 @@ def _without_keys(text: str) -> str:
     return _QUOTED_KEY.sub(blank, text)
 
 
+def _type_name(key: object, value: object) -> bool:
+    """Whether *value*, under *key*, is a GraphQL type's name."""
+    return key == _TYPENAME and isinstance(value, str) and _IDENTIFIER.match(value) is not None
+
+
 def _json_values(node: object) -> list[str]:
     if isinstance(node, dict):
         keys = [str(k) for k in node if not _schema_key(str(k))]
         return keys + [
-            leaf for key, value in node.items() if key != _TYPENAME for leaf in _json_values(value)
+            leaf
+            for key, value in node.items()
+            if not _type_name(key, value)
+            for leaf in _json_values(value)
         ]
     if isinstance(node, list):
         return [leaf for value in node for leaf in _json_values(value)]
@@ -263,9 +311,9 @@ def _json_values(node: object) -> list[str]:
 
 
 def body_values(text: str) -> list[str]:
-    """The filled-in values of a body, decoded: JSON leaves other than a
-    ``__typename`` and keys other than a plain identifier without a digit run, or
-    the text parts of anything else."""
+    """The filled-in values of a body, decoded: JSON leaves other than a type name
+    under ``__typename`` and keys other than schema keys, or the text parts of
+    anything else."""
     try:
         return _json_values(json.loads(text))
     except (ValueError, RecursionError):
@@ -302,7 +350,7 @@ def captured_values(text: str) -> list[str]:
         values = [raw.strip()] + ([decoded] if decoded != raw.strip() else [])
         for piece in (p for value in values for p in _pieces(value)):
             piece = piece.strip()
-            if len(piece) >= _MIN_RECORDED_LENGTH and not _is_literal(piece):
+            if _long_enough(piece) and not _is_literal(piece):
                 found[piece] = None
     return list(found)
 
@@ -379,9 +427,12 @@ def _value_forms(value: str) -> frozenset[str]:
     return frozenset(forms | {_without_quotes(form) for form in forms})
 
 
-def _decodings(fixture: str) -> list[str]:
-    """*fixture* and the forms a copied value can hide behind in it."""
-    return [fixture, "\n".join(body_values(fixture)), *_escape_decodings(fixture)]
+def _decodings(fixture: str, blanked: str) -> list[str]:
+    """*blanked*, *fixture* with its schema keys blanked, and the forms a copied
+    value can hide behind in it. The values are read from *fixture* itself, since
+    blanked keys of one length are one key to a JSON parser, which keeps only the
+    last of their values."""
+    return [blanked, "\n".join(body_values(fixture)), *_escape_decodings(blanked)]
 
 
 # Around a single word: no letter or digit on either side. An underscore counts as a
@@ -584,21 +635,23 @@ class _Fixture:
         # one is the same offset in the other.
         self.shown = fixture if shown is None else shown
         assert len(self.shown) == len(fixture)
-        # Blanking a key, too, replaces characters one for one.
-        fixture = _without_keys(fixture)
-        self.text = fixture
-        self.haystack = _normal("\n".join(_decodings(fixture)))
+        # Blanking a key, too, replaces characters one for one. A value equal to
+        # a whole blanked key is still found, through the keys.
+        self.keys = _schema_keys(fixture)
+        blanked = _without_keys(fixture)
+        self.text = blanked
+        self.haystack = _normal("\n".join(_decodings(fixture, blanked)))
         self.folded = self.haystack.casefold()
-        self._normal = _Derived(fixture, self.haystack, _normal_chunks, _normal)
+        self._normal = _Derived(blanked, self.haystack, _normal_chunks, _normal)
         self._fold = _Derived(self.haystack, self.folded, _fold_chunks, str.casefold)
         # The raw form is the haystack's first lines, as many as the file has:
         # neither normalising nor folding makes or removes a newline.
-        lines = fixture.count("\n") + 1
+        lines = blanked.count("\n") + 1
         self._raw_end = self._normal.starts[lines] - 1
         self._raw_folded_end = self._fold.starts[lines] - 1
 
     def holds(self, value: str) -> bool:
-        return _found(value, self.haystack, self.folded)
+        return value in self.keys or _found(value, self.haystack, self.folded)
 
     def _spans(self, value: str, end: int, folded_end: int) -> Iterator[tuple[int, int]]:
         """Where *value* is in the haystack before *end* (*folded_end* in the folded
@@ -620,7 +673,7 @@ class _Fixture:
         else:
             folded = matches(_joined(value), self.folded, folded_end)
             sources = [literal(), matches(_capitals(value), self.haystack, end)]
-        # A piece is at least _MIN_RECORDED_LENGTH characters, so a match is never empty.
+        # A piece is at least three characters (_long_enough): a match is never empty.
         sources.append((self._fold.back(s), self._fold.back(e, end=True)) for s, e in folded)
         return merge(*sources)
 
@@ -628,24 +681,22 @@ class _Fixture:
         """Where *value* is: ``line N: <neighborhood>`` for each line of the file that
         holds it, at most :data:`_MOST_PLACES`, or, when none does, ``found decoded:
         <neighborhood>`` at its first place in a decoded form."""
-        first: list[tuple[int, int, int]] = []
-        lines, last = 0, -1
+        # Each line that holds it, with its first place there: in the haystack, to
+        # be mapped back to the file, or a whole key, already in the file.
+        first: dict[int, tuple[int, int, bool]] = {}
         for start, end in self._spans(value, self._raw_end, self._raw_folded_end):
-            line = self._normal.line_of(start)
-            if line != last:
-                lines, last = lines + 1, line
-                if len(first) < _MOST_PLACES:
-                    first.append((line, start, end))
+            first.setdefault(self._normal.line_of(start), (start, end, True))
+        for line, start, end in self.keys.get(value, ()):
+            first.setdefault(line, (start, end, False))
         if first:
-            places = [
-                f"line {line + 1}: "
-                + _neighborhood(
-                    self.shown, self._normal.back(start), self._normal.back(end, end=True)
-                )
-                for line, start, end in first
-            ]
-            if lines > _MOST_PLACES:
-                places.append(f"and {lines - _MOST_PLACES} more lines")
+            places = []
+            for line in sorted(first)[:_MOST_PLACES]:
+                start, end, derived = first[line]
+                if derived:
+                    start, end = self._normal.back(start), self._normal.back(end, end=True)
+                places.append(f"line {line + 1}: {_neighborhood(self.shown, start, end)}")
+            if len(first) > _MOST_PLACES:
+                places.append(f"and {len(first) - _MOST_PLACES} more lines")
             return places
         # Not in the raw form, so in a decoded one, or, rarely, only across the
         # newline that joins two forms, which the haystack holds too.
@@ -873,7 +924,8 @@ def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
     :func:`_combined_decodings` of it. A value that is empty or, in any of its
     forms, ``true``, ``false`` or ``null`` in any case is not looked for, since a
     fixture cannot invent the literal away, and neither is a form shorter than
-    four characters."""
+    four characters, unless it has three and holds a digit. A value equal to a
+    whole blanked schema key is reported on the key's line."""
     lines: list[str] = []
     raw_lines = _without_keys(fixture.shown).split("\n")
     combined: str | None = None
@@ -883,19 +935,20 @@ def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
             for value in values[name]
             if value and not _is_literal(value)
             for form in _value_forms(value)
-            if len(form) >= _MIN_RECORDED_LENGTH
+            if _long_enough(form)
         }
-        hits = [value for value in wanted if value in fixture.haystack]
+        hits = [value for value in wanted if value in fixture.haystack or value in fixture.keys]
         if not hits and wanted:
             if combined is None:
                 combined = _normal("\n".join(_combined_decodings(fixture.text)))
             hits = [value for value in wanted if value in combined]
         if not hits:
             continue
+        keyed = {line + 1 for value in hits for line, _start, _end in fixture.keys.get(value, ())}
         at = [
             str(number)
             for number, line in enumerate(raw_lines, 1)
-            if any(value in _normal(line) for value in hits)
+            if number in keyed or any(value in _normal(line) for value in hits)
         ]
         where = f"line {', '.join(at[:_MOST_PLACES])}" if at else "found decoded"
         if len(at) > _MOST_PLACES:
