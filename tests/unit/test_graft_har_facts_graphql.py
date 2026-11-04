@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.graphql import document_operation, operations_in
 from tests.unit import graphql_har
 from tests.unit.guide_harness import REPO_ROOT
@@ -86,6 +87,28 @@ def test_operations_lists_calls_kind_and_nested_shapes(tmp_path: Path) -> None:
     assert ": 1 call(s), persisted" in product.splitlines()[0]
     for value in ("4021", graphql_har.EMAIL, graphql_har.PASSWORD, "red-mug", "OPEN"):
         assert value not in result.stdout
+
+
+def test_shared_values_match_the_digest_and_print_no_value(tmp_path: Path) -> None:
+    har = graphql_har.write(tmp_path / "run")
+    result = _run("operations", str(har))
+    shared = result.stdout.split("shared values (names only):\n", 1)[1].splitlines()
+    d = digest(DigestSource.from_har(har))
+    assert shared == [
+        f"  {s.source_operation} {s.source_path} -> {s.target_operation} "
+        f"variables.{s.target_variable}: {s.count} request(s)"
+        for s in d.shared_values
+    ]
+    assert (
+        "  LoginMutation data.login.customer.customerId -> OrdersByCustomer "
+        "variables.customerId: 1 request(s)"
+    ) in shared
+    for value in ("4021", "red-mug"):
+        assert value not in result.stdout
+    narrowed = _run("operations", str(har), "--operation", "ProductPage").stdout
+    assert narrowed.endswith(
+        "  Cart data.cart.items[].sku -> ProductPage variables.slug: 1 request(s)\n"
+    )
 
 
 def test_operation_narrows_operations_request_and_response(tmp_path: Path) -> None:

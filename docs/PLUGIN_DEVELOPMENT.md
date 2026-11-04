@@ -1277,12 +1277,23 @@ operation and its variables. The helper sends `operationName`, the document it
 reads from `src/graftpunk_myshop/graphql/<Operation>.graphql` (written as
 recorded; a string or an id-shaped number written inline in the document is
 replaced with `"GP-FILL"`), the variables you gave, the `extensions` the
-recording sent unchanged on every operation (`clientLibrary`, say), and the
-custom header names the GraphQL requests carried, whose values you fill in. Each
-variable is an option whose default is the value the recording sent, unless the
-value reads as account data: an email address, an id, a value a login posted or
-a cookie or token header carried, or text over 64 characters. A persisted query
-recorded with no document is sent by its hash.
+recording sent unchanged on every operation when their values are form state,
+and the custom header names the GraphQL requests carried, whose values you fill
+in. Each variable is an option. A recorded value becomes its default only when it
+is form state, the same for every account: a bool, a number under 1000 whose
+variable name does not say it holds an id (a page size), or a capitalised enum
+value such as `OPEN` that the cookie form-state rule reads as words and that no
+login, cookie, or token header carried. An id of any length, a name, a slug, an
+email address, and any other value stay out of the source: the option defaults
+to None, and a `GP-FILL` names the variable and its type and says a value was
+recorded. An extension held back that way is named in a `GP-FILL` in the helper.
+A persisted query recorded with no document is sent by its hash.
+
+To find where such a value comes from, read the digest's Shared values section
+(and `--json`'s `shared_values`): each pair of a response field and a later
+operation's variable that carried the same value in the recording, by name only,
+such as ``LoginMutation `data.login.customer.customerId` -> OrdersByCustomer
+`variables.customerId` ``. The values themselves are never printed.
 
 `gp observe fixtures` names a fixture by its operation, so
 `--match "POST /graphql (OrdersByCustomer)"` writes

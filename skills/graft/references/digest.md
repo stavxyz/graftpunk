@@ -20,7 +20,7 @@ A row with `operation` is one GraphQL operation (`(anonymous)` holds the unnamed
 ones): its `body_params` are the variables, and its endpoint is `<METHOD>
 <template> (<operation>)`, the whole key `--command` takes. Propose a command per
 operation the user wants, named from it (`orders` for `OrdersByCustomer`); the
-HAR reader's `operations` line gives its calls, its kind (a mutation changes data), and its shapes.
+HAR reader's `operations` line gives its calls, kind (a mutation changes data), shapes, and which response field fed each variable; a variable's recorded id is never a default.
 
 ## The base host
 

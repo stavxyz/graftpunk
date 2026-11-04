@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,11 @@ def _digest(tmp_path: Path, entries: list[dict] | None = None) -> RunDigest:
     run.mkdir(parents=True, exist_ok=True)
     har = _write_har(run, graphql_har.entries() if entries is None else entries)
     return digest(DigestSource.from_har(har))
+
+
+def digest_of(entries: list[dict]) -> RunDigest:
+    with tempfile.TemporaryDirectory() as scratch:
+        return digest(DigestSource.from_har(_write_har(Path(scratch), entries)))
 
 
 def _row(d: RunDigest, key: str) -> Endpoint:
@@ -177,23 +183,98 @@ class TestTheDigest:
     def test_defaults_leave_out_account_data(self, tmp_path: Path) -> None:
         d = _digest(tmp_path)
         orders = _row(d, _ORDERS)
-        # The fixture recording sent contact=<the login's email>: never a default.
-        assert orders.graphql_defaults == {"customerId": "4021", "first": 10, "status": "OPEN"}
-        assert orders.graphql_defaults_held_back == 1
+        # Only form state becomes a default: the page size and the enum value. The
+        # id "4021" and the login's email are held back by name, never kept.
+        assert orders.graphql_defaults == {"first": 10, "status": "OPEN"}
+        assert orders.graphql_held_variables == ("customerId", "contact")
+        cart = _row(d, "POST /graphql (AddToCart)")
+        assert cart.graphql_defaults == {"quantity": 2}
+        assert cart.graphql_held_variables == ("sku",)
         product = _row(d, "POST /graphql (ProductPage)")
-        # A variable carrying the session cookie's value is held back too.
-        assert product.graphql_defaults == {"slug": "red-mug"}
-        assert product.graphql_defaults_held_back == 1
+        assert product.graphql_defaults == {}
+        assert product.graphql_held_variables == ("slug", "session")
 
-    def test_constant_extensions_are_kept_and_a_persisted_hash_is_recorded(
-        self, tmp_path: Path
-    ) -> None:
+    @pytest.mark.parametrize(
+        ("name", "value", "kept"),
+        [
+            ("first", 10, True),
+            ("status", "OPEN", True),
+            ("sortBy", "DESC", True),
+            # form_state does not read an underscore-joined constant as words.
+            ("sortBy", "CREATED_AT", False),
+            ("includeArchived", False, True),
+            ("customerId", "4021", False),
+            ("customerId", 4021, False),
+            ("orderId", 7, False),
+            ("page", 4021, False),
+            ("status", "Open", False),
+            ("name", "Jane", False),
+            ("slug", "red-mug", False),
+            ("state", "CLOSED", True),
+            ("contact", graphql_har.EMAIL, False),
+        ],
+    )
+    def test_a_default_is_form_state_alone(self, name: str, value: object, kept: bool) -> None:
+        entries = [
+            _entry(
+                "POST",
+                graphql_har.GRAPHQL_URL,
+                post_data=json.dumps({"variables": {name: value}, "query": "query Q { a }"}),
+                body='{"data": {"a": 1}}',
+            )
+        ]
+        row = _row(digest_of(entries), "POST /graphql (Q)")
+        assert (name in row.graphql_defaults) is kept
+        assert (name in row.graphql_held_variables) is not kept
+
+    def test_extensions_that_are_not_form_state_are_held_by_name(self, tmp_path: Path) -> None:
         d = _digest(tmp_path)
-        assert _row(d, _ORDERS).graphql_extensions == graphql_har.CLIENT_LIBRARY
+        # clientLibrary's name and version are recorded values, not form state.
+        assert _row(d, _ORDERS).graphql_extensions == {}
+        assert _row(d, _ORDERS).graphql_held_extensions == ("clientLibrary",)
         product = _row(d, "POST /graphql (ProductPage)")
         assert product.graphql_document is None
         assert product.graphql_persisted_hash == graphql_har.PERSISTED_HASH
         assert product.graphql_extensions == {}
+
+    def test_shared_values_pair_a_variable_with_the_field_that_produced_it(
+        self, tmp_path: Path
+    ) -> None:
+        d = _digest(tmp_path)
+        assert [
+            (s.source_operation, s.source_path, s.target_operation, s.target_variable, s.count)
+            for s in d.shared_values
+        ] == [
+            ("Cart", "data.cart.items[].sku", "ProductPage", "slug", 1),
+            (
+                "LoginMutation",
+                "data.login.customer.customerId",
+                "OrdersByCustomer",
+                "customerId",
+                1,
+            ),
+        ]
+        text = render_markdown(d)
+        section = text.split("## Shared values\n", 1)[1].split("\n## ", 1)[0]
+        assert (
+            "- LoginMutation `data.login.customer.customerId` -> OrdersByCustomer "
+            "`variables.customerId` (1 request(s))"
+        ) in section
+        for value in ("4021", "red-mug", graphql_har.EMAIL):
+            assert value not in section
+        shared = json.loads(render_json(d))["shared_values"]
+        assert shared[1]["source_path"] == "data.login.customer.customerId"
+        assert "4021" not in json.dumps(shared)
+
+    def test_a_value_an_earlier_response_did_not_hold_links_nothing(self, tmp_path: Path) -> None:
+        later = graphql_har.entries()
+        # The orders request moved ahead of the login that returns its id.
+        later.insert(1, later.pop(2))
+        d = _digest(tmp_path, later)
+        assert not any(s.target_variable == "customerId" for s in d.shared_values)
+        entries = [_entry("POST", "https://myshop.example.com/api/x", post_data='{"a": "4021"}')]
+        assert digest_of(entries).shared_values == ()
+        assert "## Shared values" not in render_markdown(digest_of(entries))
 
     def test_the_markdown_prints_one_block_per_operation(self, tmp_path: Path) -> None:
         text = render_markdown(_digest(tmp_path))
@@ -513,24 +594,31 @@ class TestTheGeneratedPlugin:
         assert 'endpoint="POST /graphql (AddToCart)"' in plugin
         orders = plugin.split("def orders(", 1)[1].split("@command(", 1)[0]
         assert '"OrdersByCustomer",' in orders
-        assert 'customer_id: str | None = "4021",' in orders
+        assert "customer_id: str | None = None," in orders
         assert "first: int | None = 10," in orders
+        assert 'status: str | None = "OPEN",' in orders
         assert "contact: str | None = None," in orders
         assert '"customerId": customer_id,' in orders
+        assert 'variable "customerId" (str) has a recorded value, which is not' in " ".join(
+            line.strip().lstrip("#").strip() for line in orders.splitlines()
+        )
         cart = plugin.split("def add_to_cart(", 1)[1]
         assert '"AddToCart",' in cart
-        assert 'sku: str | None = "red-mug",' in cart
+        assert "sku: str | None = None," in cart
+        assert "quantity: int | None = 2," in cart
         # The documents are files, written verbatim, never inline.
         assert documents == {
             "OrdersByCustomer.graphql": graphql_har.ORDERS_DOCUMENT,
             "AddToCart.graphql": graphql_har.ADD_TO_CART_DOCUMENT,
         }
         assert "fragment OrderFields" not in plugin
-        # The helper sends the recorded constant extensions and the header names.
+        # The helper names the held-back extension and sends the header names.
         helper = plugin.split("def _graphql(", 1)[1].split("@command(", 1)[0]
-        assert '"clientLibrary": {' in helper
+        assert "extension(s) clientLibrary with recorded values" in helper
+        assert "extensions: dict = {}" in helper
         assert '"x-app-name": "GP-FILL",' in helper
-        for value in (graphql_har.EMAIL, graphql_har.PASSWORD, graphql_har.SESSION_VALUE):
+        recorded = ("4021", "red-mug", "3.8.1", graphql_har.EMAIL, graphql_har.PASSWORD)
+        for value in (*recorded, graphql_har.SESSION_VALUE):
             assert value not in plugin
         _assert_ruff_clean(target)
 

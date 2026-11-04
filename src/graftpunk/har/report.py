@@ -340,6 +340,20 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
         )
         lines.append("")
 
+    if d.shared_values:
+        lines.append("## Shared values")
+        lines.append(
+            "GraphQL variables that sent a value an earlier response field held, by name "
+            "only (the values are not shown):"
+        )
+        for shared in d.shared_values:
+            lines.append(
+                f"- {shared.source_operation} `{shared.source_path}` -> "
+                f"{shared.target_operation} `variables.{shared.target_variable}` "
+                f"({shared.count} request(s))"
+            )
+        lines.append("")
+
     other_hosts = {h: c for h, c in d.hosts.items() if h != d.primary_host}
     if other_hosts:
         lines.append("## Other hosts")

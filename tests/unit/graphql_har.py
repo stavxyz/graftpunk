@@ -93,7 +93,7 @@ def entries() -> list[dict]:
                 "extensions": CLIENT_LIBRARY,
                 "query": LOGIN_DOCUMENT,
             },
-            {"data": {"login": {"id": "u1"}}},
+            {"data": {"login": {"id": "u1", "customer": {"customerId": "4021"}}}},
         ),
         _graphql(orders_body(contact=EMAIL), ORDERS_RESPONSE),
         _graphql(orders_body(customer_id="4022", status="CLOSED"), ORDERS_RESPONSE),

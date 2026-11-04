@@ -101,6 +101,7 @@ __all__ = [
     "SHAPE_UNAVAILABLE",
     "RunDigest",
     "ShapeNode",
+    "SharedValue",
     "TokenCandidate",
     "TokenKind",
     "body_layout",
@@ -476,15 +477,16 @@ class Endpoint:
     graphql_document: str | None = field(default=None, metadata={INTERNAL: True})
     graphql_persisted_hash: str = field(default="", metadata={INTERNAL: True})
     graphql_persisted_version: int | None = field(default=None, metadata={INTERNAL: True})
-    # Each scalar variable value of the recording the defaults come from that passes
-    # _default_value, by variable name, and how many scalar values it held back.
+    # Each scalar variable value of the recording the defaults come from that is
+    # form state a plugin may carry (_writable_default), by variable name, and the
+    # names of the variables whose recorded scalar value is not (never the value).
     graphql_defaults: dict[str, Any] = field(default_factory=dict, metadata={INTERNAL: True})
-    graphql_defaults_held_back: int = field(default=0, metadata={INTERNAL: True})
+    graphql_held_variables: tuple[str, ...] = field(default=(), metadata={INTERNAL: True})
     # The request's ``extensions`` keys every recording sent with one value, less
-    # persistedQuery, each kept only when every leaf passes _default_value; and how
-    # many such keys were held back.
+    # persistedQuery, each kept only when every leaf passes _writable_default; and
+    # the names of the keys held back.
     graphql_extensions: dict[str, Any] = field(default_factory=dict, metadata={INTERNAL: True})
-    graphql_extensions_held_back: int = field(default=0, metadata={INTERNAL: True})
+    graphql_held_extensions: tuple[str, ...] = field(default=(), metadata={INTERNAL: True})
 
     @property
     def key(self) -> str:
@@ -588,6 +590,22 @@ class CookieFacts:
 
 
 @dataclass(frozen=True)
+class SharedValue:
+    """A value a GraphQL response field held and a later operation sent as a
+    variable (#367), by names only, never the value: the producing operation and
+    the field's path in its response (``data.login.customerId``, ``[]`` for each
+    array), the consuming operation and the variable's path in its variables
+    (``customerId``), and how many requests sent it so. A key that reads as a value
+    (:func:`graftpunk.har.paths.printable_name`) is written ``{}``."""
+
+    source_operation: str
+    source_path: str
+    target_operation: str
+    target_variable: str
+    count: int
+
+
+@dataclass(frozen=True)
 class RunDigest:
     source: DigestSource
     primary_host: str
@@ -650,6 +668,11 @@ class RunDigest:
     # recorded it: header_spellings reads it to pick the first spelling that
     # passes the gate. A lookup, so render_json leaves it out.
     header_spellings: tuple[str, ...] = field(default=(), repr=False, metadata={INTERNAL: True})
+    # Each pair of a GraphQL response field and a later operation's variable that
+    # carried the same value in the recording (_shared_values), by names only: how
+    # the operations link (an id one returns and another takes). Empty, and left
+    # out of render_json, for a run without such a pair (#367).
+    shared_values: tuple[SharedValue, ...] = field(default=(), metadata={OMIT_EMPTY: True})
 
 
 def _scope_root(primary_host: str) -> str:
@@ -3001,7 +3024,7 @@ class _EndpointAccumulator:
 
     def finish(self, template: str, held_values: frozenset[str] = frozenset()) -> Endpoint:
         """This row as an :class:`Endpoint` under *template*. *held_values* are the
-        values no GraphQL default or extension may hold (:func:`_default_value`)."""
+        values no GraphQL default or extension may hold (:func:`_writable_default`)."""
         primary_content_type = max(
             self.content_types, key=lambda ct: self.content_types[ct], default=""
         )
@@ -3023,9 +3046,9 @@ class _EndpointAccumulator:
             graphql_persisted_hash="" if persisted is None else persisted[0],
             graphql_persisted_version=None if persisted is None else persisted[1],
             graphql_defaults=defaults,
-            graphql_defaults_held_back=defaults_held,
+            graphql_held_variables=defaults_held,
             graphql_extensions=extensions,
-            graphql_extensions_held_back=extensions_held,
+            graphql_held_extensions=extensions_held,
             host=self.host,
             template=template,
             methods=tuple(self.methods),
@@ -3063,65 +3086,86 @@ class _EndpointAccumulator:
 _PERSISTED_QUERY = "persistedQuery"
 _GRAPHQL_CODE = frozenset({"query", "operationName", "extensions"})
 _MAX_DEFAULT_TEXT = 64
+# A small number a form sends (a page size, a quantity): at most three digits.
+_MAX_DEFAULT_NUMBER = 1000
+# An enum value as GraphQL spells one by convention: capitals, digits, underscores.
+_ENUM_VALUE_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+_ID_NAME_PARTS = frozenset({"id", "ids", "uuid", "guid", "key", "token"})
+_NAME_WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
 
 
-def _default_value(value: Any, held_values: frozenset[str]) -> bool:
-    """True when a recorded GraphQL value may be written into a generated plugin as
-    a default or a constant extension (#367): a bool or null; a number whose text
-    :func:`graftpunk.har.paths.holds_an_id` does not read as an id; a string of at
-    most 64 characters that is not an email address, does not hold an id, and is
-    none of *held_values* (every value a credential post of the run sent, and every
-    cookie and token-header value it recorded); an array or object whose every
-    element passes. Account data never becomes a default."""
+def _names_an_id(name: str) -> bool:
+    """True when *name* (a variable or an extension key) says it holds an id:
+    a word of it, split at case changes and punctuation, is ``id``, ``uuid``,
+    ``key``, ``token``, and the like (``customerId``, ``order_ids``)."""
+    return any(word.lower() in _ID_NAME_PARTS for word in _NAME_WORD_RE.findall(name))
+
+
+def _writable_default(name: str, value: Any, held_values: frozenset[str]) -> bool:
+    """True when a recorded GraphQL value may be written into a generated plugin, as
+    a variable's default or a constant extension (#367): only form state, which
+    every account sends alike. That is a bool or null; a number under 1000 under a
+    name that does not say it holds an id (a page size, a quantity); or an enum
+    value spelled in capitals (``OPEN``, ``DESC``) that is form state by
+    :func:`form_state`'s rule, is no email address, holds no id, is none of
+    *held_values* (every value a credential post of the run sent, and every cookie
+    and token-header value it recorded), and sits under a name that does not say it
+    holds an id; or an array or object whose every element passes. An id of any
+    length (``"4021"``), a name, a slug, an email address, and free text never
+    pass: those stay out of the plugin's source, and the stub says a value was
+    recorded without writing it."""
     if value is None or isinstance(value, bool):
         return True
     if isinstance(value, (int, float)):
-        return not holds_an_id(str(value).lstrip("-"))
+        return abs(value) < _MAX_DEFAULT_NUMBER and not _names_an_id(name)
     if isinstance(value, str):
         return (
             len(value) <= _MAX_DEFAULT_TEXT
+            and _ENUM_VALUE_RE.fullmatch(value) is not None
+            and form_state(value)
             and not _emails_in(value)
             and not holds_an_id(value)
             and value not in held_values
+            and not _names_an_id(name)
         )
     if isinstance(value, list):
-        return all(_default_value(item, held_values) for item in value)
+        return all(_writable_default(name, item, held_values) for item in value)
     if isinstance(value, Mapping):
-        return all(_default_value(item, held_values) for item in value.values())
+        return all(_writable_default(str(k), v, held_values) for k, v in value.items())
     return False
 
 
 def _graphql_defaults(
     variables: Mapping[str, Any], declared: Mapping[str, str], held_values: frozenset[str]
-) -> tuple[dict[str, Any], int]:
+) -> tuple[dict[str, Any], tuple[str, ...]]:
     """The scalar values of *variables* a stub may take as defaults, by name (only
-    names the row kept, *declared*), and how many scalar values were held back."""
+    names the row kept, *declared*), and the names of the variables whose recorded
+    scalar value was held back."""
     defaults: dict[str, Any] = {}
-    held = 0
+    held: list[str] = []
     for name, value in variables.items():
         if name not in declared or value is None or isinstance(value, (list, Mapping)):
             continue
-        if _default_value(value, held_values):
+        if _writable_default(name, value, held_values):
             defaults[name] = value
         else:
-            held += 1
-    return defaults, held
+            held.append(name)
+    return defaults, tuple(held)
 
 
 def _graphql_extensions(
     extensions: Mapping[str, Any], held_values: frozenset[str]
-) -> tuple[dict[str, Any], int]:
-    """The constant extensions a generated helper may send, and how many keys were
-    held back (a key that is not a field name, or a value failing
-    :func:`_default_value`)."""
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """The constant extensions a generated helper may send, and the keys held back
+    (a key that is not a field name, or a value failing :func:`_writable_default`)."""
     kept: dict[str, Any] = {}
-    held = 0
+    held: list[str] = []
     for key, value in extensions.items():
-        if _plausible_field_name(key) and _default_value(value, held_values):
+        if _plausible_field_name(key) and _writable_default(key, value, held_values):
             kept[key] = value
-        else:
-            held += 1
-    return kept, held
+        elif _plausible_field_name(key) and printable_name(key):
+            held.append(key)
+    return kept, tuple(held)
 
 
 def _held_values(
@@ -3148,6 +3192,99 @@ def _held_values(
         )
     held.discard("")
     return frozenset(held)
+
+
+_MAX_SHARED_LEAVES = 2000  # leaves read from one response or one variables object
+_MAX_SHARED_DEPTH = 24
+_MAX_PRODUCERS = 8  # response fields remembered per value
+_MIN_SHARED_TEXT = 3  # a shorter value (1, 10, "ok") links by chance
+
+
+def _key_label(key: object) -> str:
+    text = str(key)
+    return text if printable_name(text) else "{}"
+
+
+def _leaves(value: Any, path: str = "", depth: int = 0) -> Iterable[tuple[str, Any]]:
+    """``(path, value)`` for each scalar under *value*: keys joined with ``.``
+    (``{}`` for a key that reads as a value), ``[]`` for each array element."""
+    if depth > _MAX_SHARED_DEPTH:
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            label = _key_label(key)
+            yield from _leaves(item, f"{path}.{label}" if path else label, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _leaves(item, f"{path}[]", depth + 1)
+    else:
+        yield path, value
+
+
+def _linkable(value: Any) -> str | None:
+    """*value* as the text two recordings are compared by, or None for a value that
+    links by chance: a bool, null, or text shorter than three characters."""
+    if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    text = value if isinstance(value, str) else repr(value)
+    return text if len(text.strip()) >= _MIN_SHARED_TEXT else None
+
+
+def _response_json(entry: HAREntry) -> Any:
+    if not entry.response.body:
+        return None
+    try:
+        return json.loads(entry.response.body)
+    except (ValueError, RecursionError):
+        return None
+
+
+def _shared_values(
+    graphql_entries: Sequence[tuple[HAREntry, tuple[GraphQLOperation, ...]]],
+) -> tuple[SharedValue, ...]:
+    """Each pair of a GraphQL response field and a later request's variable that
+    carried the same value, by names only, most frequent first (#367): the links
+    between operations, such as an id a login returns and an order query takes.
+    Values are compared in memory and never kept. A batch's response is read
+    element by element, each answering its own operation."""
+    producers: dict[str, list[tuple[str, str]]] = {}
+    counts: dict[tuple[str, str, str, str], int] = {}
+    for entry, operations in graphql_entries:
+        for operation in operations:
+            seen: set[tuple[str, str, str, str]] = set()
+            leaves = _leaves(operation.variables or {})
+            for count, (path, value) in enumerate(leaves):
+                if count >= _MAX_SHARED_LEAVES:
+                    break
+                text = _linkable(value)
+                for source in producers.get(text, []) if text is not None else []:
+                    seen.add((source[0], source[1], operation.name, path))
+            for key in seen:
+                counts[key] = counts.get(key, 0) + 1
+        response = _response_json(entry)
+        answers: list[tuple[str, Any]]
+        if any(operation.batched for operation in operations):
+            answers = (
+                [(op.name, item) for op, item in zip(operations, response, strict=True)]
+                if isinstance(response, list) and len(response) == len(operations)
+                else []
+            )
+        else:
+            answers = [(operations[0].name, response)]
+        for name, answer in answers:
+            for count, (path, value) in enumerate(_leaves(answer)):
+                if count >= _MAX_SHARED_LEAVES:
+                    break
+                text = _linkable(value)
+                if text is None:
+                    continue
+                known = producers.setdefault(text, [])
+                if (name, path) not in known and len(known) < _MAX_PRODUCERS:
+                    known.append((name, path))
+    return tuple(
+        SharedValue(*key, count=n)
+        for key, n in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    )
 
 
 def entry_operations(entry: HAREntry) -> tuple[GraphQLOperation, ...]:
@@ -3404,6 +3541,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
 
     # Keyed (method, raw template, GraphQL operation or "").
     accumulators: dict[tuple[str, str, str], _EndpointAccumulator] = {}
+    # Each kept GraphQL recording with its operations, in order: _shared_values.
+    graphql_entries: list[tuple[HAREntry, tuple[GraphQLOperation, ...]]] = []
     login_forms: list[LoginForm] = []
     token_seen: dict[tuple[TokenKind, str], list[str]] = {}
     cookies_seen: dict[str, None] = {}
@@ -3571,6 +3710,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         raw_template, _ = template_path(path)
         operations = entry_operations(entry)
         if operations:
+            graphql_entries.append((entry, operations))
             # A GraphQL recording files under each operation it carries, never
             # under the plain template (#367).
             for name, group in operation_groups(operations).items():
@@ -4047,6 +4187,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         ),
         cookie_names_not_shown=_cookie_names_not_shown(cookies_seen, id_cookie_names, cookies_sent),
         header_spellings=header_order,
+        shared_values=_shared_values(graphql_entries),
         # Only for a run that recorded a login. The final page is the last of
         # after_post_pages (page-source.html when it went there); success_candidates
         # finds the leading run of login steps among them. The last credential post's

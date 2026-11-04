@@ -1489,6 +1489,16 @@ def _render_graphql_helper(
             indent=len(L2),
         )
     )
+    held = sorted({key for e in endpoints for key in e.graphql_held_extensions} - set(extensions))
+    if held:
+        lines.extend(
+            wrapped_comment_lines(
+                f"{GP_FILL_MARKER}: the recording also sent the extension(s) "
+                f"{', '.join(held)} with recorded values, which are not written here: only "
+                "form state is. Add them to extensions below if the site needs them.",
+                indent=len(L2),
+            )
+        )
     lines.append(f"{L2}body: dict[str, object] = {{")
     lines.append(f"{L3}" + '"variables": {k: v for k, v in variables.items() if v is not None},')
     lines.append(f"{L2}}}")
@@ -1527,18 +1537,13 @@ def _graphql_operation_notes(endpoint: Endpoint) -> list[str]:
             f'replaced with "{GP_FILL_MARKER}" in its .graphql file (a string, or a number '
             "that reads as an id); put each value back, or pass it as a variable."
         )
-    if endpoint.graphql_defaults_held_back:
+    for name in endpoint.graphql_held_variables:
+        label = endpoint.body_params.get(name, "a value")
         notes.append(
-            f"{GP_FILL_MARKER}: {endpoint.graphql_defaults_held_back} recorded variable "
-            "value(s) were not made defaults because they read as account data (an email "
-            "address, an id, a value a login or a cookie carried, or longer than 64 "
-            "characters); those options default to None."
-        )
-    if endpoint.graphql_extensions_held_back:
-        notes.append(
-            f"{GP_FILL_MARKER}: {endpoint.graphql_extensions_held_back} recorded extension(s) "
-            "were left out because a value read as account data; add any this site needs "
-            f"to {GRAPHQL_HELPER}."
+            f'{GP_FILL_MARKER}: variable "{name}" ({label}) has a recorded value, which is '
+            "not written here: only form state (a bool, a small number, a capitalised enum "
+            "value) becomes a default. Pass it as an option, or give the option a default "
+            "of your own; gp observe digest's Shared values says which response returns it."
         )
     if endpoint.operation_batched == endpoint.count:
         notes.append(

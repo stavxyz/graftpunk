@@ -75,7 +75,7 @@ header, query, or body value; answer from its output:
   action, and controls by name (or by position) and input type.
 - `operations`: each GraphQL operation in the request bodies, its calls (and how many in a batch),
   kind (`query`, `mutation`, `subscription`, or `persisted`), and its variables' and response's
-  nested keys and types. `--operation <name>` narrows it, `request`, and `response`.
+  nested keys and types, then the shared values: which response field fed which later variable, by name.
 
 Names and path segments print only when they pass a heuristic gate for field
 names, which also lets fixed framework names through (CDN and bot-manager

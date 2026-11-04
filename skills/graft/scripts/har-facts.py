@@ -122,8 +122,14 @@ never a value. An operation name prints when it is a GraphQL Name of at most 128
 characters that ``holds_an_id`` does not read as an id; it is an identifier fixed
 in the site's client code, the same for every account, so it does not pass
 through ``printable_name``, and any other name is filed under ``(anonymous)``.
-``--operation NAME`` narrows ``operations``, ``request``, and ``response`` to one
-operation (``anonymous`` names the anonymous one), and ``request`` and
+``operations`` ends with ``shared values (names only)``: each pair of a response
+field and a later request's variable that carried the same value (text of three
+characters or more, never a bool or null), as ``<Operation> <response path> ->
+<Operation> variables.<path>`` with a request count, so the links between
+operations (an id one returns and another takes) show without any value; a key
+that fails the gate is written ``{}``. ``--operation NAME`` narrows
+``operations``, ``request``, and ``response`` to one operation (``anonymous``
+names the anonymous one), and ``request`` and
 ``response`` add the operations an entry carries to its first line.
 
 At most 20 matching entries are described; past that, a count prints. Exit 0 when
@@ -1821,7 +1827,84 @@ def operations(entries: list[dict[str, Any]], har_path: Path, wanted: str | None
             lines.append(f"  response: JSON {_type(response)}{_count(response)}")
             lines.extend(_shape(response, "    ", 1, _OPERATION_DEPTH))
         blocks.append("\n".join(lines))
+    shared = [
+        line
+        for line in shared_values(entries, har_path)
+        if wanted is None or f" {wanted} " in f" {line} " or f"({wanted})" in line
+    ]
+    if blocks and shared:
+        blocks.append("\n".join(["shared values (names only):", *shared]))
     return blocks
+
+
+# graftpunk.har.digest._shared_values, copied (a test holds the two equal).
+_MAX_SHARED_LEAVES = 2000
+_MAX_SHARED_DEPTH = 24
+_MAX_PRODUCERS = 8
+_MIN_SHARED_TEXT = 3
+
+
+def _shared_leaves(value: Any, path: str = "", depth: int = 0) -> list[tuple[str, Any]]:
+    if depth > _MAX_SHARED_DEPTH:
+        return []
+    if isinstance(value, dict):
+        found: list[tuple[str, Any]] = []
+        for key, item in value.items():
+            label = str(key) if printable_name(str(key)) else "{}"
+            found += _shared_leaves(item, f"{path}.{label}" if path else label, depth + 1)
+        return found
+    if isinstance(value, list):
+        return [leaf for item in value for leaf in _shared_leaves(item, f"{path}[]", depth + 1)]
+    return [(path, value)]
+
+
+def _linkable(value: Any) -> str | None:
+    if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    text = value if isinstance(value, str) else repr(value)
+    return text if len(text.strip()) >= _MIN_SHARED_TEXT else None
+
+
+def shared_values(entries: list[dict[str, Any]], har_path: Path) -> list[str]:
+    """One line per pair of a GraphQL response field and a later request's variable
+    that carried the same value, by names only, most frequent first."""
+    producers: dict[str, list[tuple[str, str]]] = {}
+    counts: dict[tuple[str, str, str, str], int] = {}
+    for entry in entries:
+        found = entry_operations(entry, har_path)
+        if not found:
+            continue
+        for operation in found:
+            seen: set[tuple[str, str, str, str]] = set()
+            leaves = _shared_leaves(operation["variables"] or {})[:_MAX_SHARED_LEAVES]
+            for path, value in leaves:
+                text = _linkable(value)
+                for source in producers.get(text, []) if text is not None else []:
+                    seen.add((source[0], source[1], operation["name"], path))
+            for key in seen:
+                counts[key] = counts.get(key, 0) + 1
+        response = _decoded(_response_text(entry, har_path)[0])
+        if any(operation["batched"] for operation in found):
+            answers = (
+                [(found[i]["name"], response[i]) for i in range(len(found))]
+                if isinstance(response, list) and len(response) == len(found)
+                else []
+            )
+        else:
+            answers = [(found[0]["name"], response)]
+        for name, answer in answers:
+            for path, value in _shared_leaves(answer)[:_MAX_SHARED_LEAVES]:
+                text = _linkable(value)
+                if text is None:
+                    continue
+                known = producers.setdefault(text, [])
+                if (name, path) not in known and len(known) < _MAX_PRODUCERS:
+                    known.append((name, path))
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [
+        f"  {source} {source_path} -> {target} variables.{variable}: {n} request(s)"
+        for (source, source_path, target, variable), n in ordered
+    ]
 
 
 def main(argv: list[str]) -> int:
