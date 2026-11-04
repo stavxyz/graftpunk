@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from graftpunk.har.digest import (
     ShapeNode,
     family_values,
     header_names_not_shown,
+    header_spellings,
     held_back_token_count,
     printable_custom_headers,
     printable_login_fields,
@@ -130,7 +132,7 @@ def _cookie_lines(d: RunDigest) -> list[str]:
     return lines or ["(none)"]
 
 
-def _endpoint_block(endpoint: Endpoint) -> list[str]:
+def _endpoint_block(endpoint: Endpoint, spellings: Mapping[str, str]) -> list[str]:
     lines = [f"### {'/'.join(endpoint.methods)} {endpoint.template}", ""]
     if endpoint.family_members:
         values = ", ".join(family_values(endpoint))
@@ -165,10 +167,10 @@ def _endpoint_block(endpoint: Endpoint) -> list[str]:
             f"a binary body, kept as `{endpoint.body_binary_file}`"
             f"{_size_note(endpoint.body_binary_size)}"
         )
-    headers = printable_custom_headers(endpoint)
+    headers = printable_custom_headers(endpoint, spellings)
     if headers:
         lines.append(f"- custom headers: {', '.join(headers)}")
-    hidden = header_names_not_shown(endpoint.custom_headers)
+    hidden = header_names_not_shown(endpoint.custom_headers, spellings)
     if hidden:
         lines.append(
             "- 1 custom header whose name reads as a value is not shown"
@@ -235,6 +237,7 @@ def _other_host_sort_key(item: tuple[str, int]) -> int:
 def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str:
     """A person-readable digest: Summary, Login, Tokens, Cookies, Endpoints, Other hosts."""
     lines: list[str] = ["# Observe digest", ""]
+    spellings = header_spellings(d)
 
     lines.append("## Summary")
     source_label = (
@@ -284,10 +287,10 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     lines.append("")
 
     lines.append("## Tokens")
-    tokens = printable_tokens(d.tokens)
+    tokens = printable_tokens(d.tokens, spellings)
     for token in tokens:
         lines.append(f"- {token.kind} `{token.name}`, seen on: {', '.join(token.seen_on)}")
-    hidden = held_back_token_count(d.tokens)
+    hidden = held_back_token_count(d.tokens, spellings)
     if hidden:
         lines.append(
             "- 1 token candidate whose name reads as a value is not shown"
@@ -306,7 +309,7 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     ordered = _ordered_endpoints(d)
     shown = _limited(ordered, limit)
     for endpoint in shown:
-        lines.extend(_endpoint_block(endpoint))
+        lines.extend(_endpoint_block(endpoint, spellings))
     # Counted as the summary line counts: literal endpoints, and family rows apart.
     more_families = sum(1 for e in ordered[len(shown) :] if e.family_members)
     more_endpoints = len(ordered) - len(shown) - more_families
@@ -351,18 +354,20 @@ def render_json(d: RunDigest) -> str:
     (:func:`graftpunk.har.paths.printable_name`), which
     ``cookie_names_not_shown`` counts: in ``cookies``, in ``login`` fields
     (:func:`graftpunk.har.digest.printable_login_fields`), and in ``tokens``
-    (:func:`graftpunk.har.digest.printable_tokens`). A header name that reads as a
-    value is left out of ``tokens`` and of each endpoint's ``custom_headers``
+    (:func:`graftpunk.har.digest.printable_tokens`). A header name the run prints
+    nowhere (:func:`graftpunk.har.digest.header_spellings`) is left out of
+    ``tokens`` and of each endpoint's ``custom_headers``
     (:func:`graftpunk.har.digest.printable_custom_headers`), which then carries
     ``custom_headers_not_shown``; ``header_names_not_shown`` counts them for the
     run."""
     rendered = _jsonable(d)
     rendered["cookies"] = [name for name in d.cookies if printable_name(name)]
-    rendered["tokens"] = _jsonable(printable_tokens(d.tokens))
+    spellings = header_spellings(d)
+    rendered["tokens"] = _jsonable(printable_tokens(d.tokens, spellings))
     for observation, login in zip(d.login, rendered["login"], strict=True):
         login["fields"] = list(printable_login_fields(observation))
     for endpoint, projected in zip(d.endpoints, rendered["endpoints"], strict=True):
-        _put_custom_headers(projected, endpoint)
+        _put_custom_headers(projected, endpoint, spellings)
     return json.dumps(rendered, indent=2, sort_keys=True)
 
 
@@ -397,17 +402,21 @@ def _projected_form(form: LoginForm) -> dict[str, Any]:
     }
 
 
-def _put_custom_headers(projected: dict[str, Any], endpoint: Endpoint) -> None:
+def _put_custom_headers(
+    projected: dict[str, Any], endpoint: Endpoint, spellings: Mapping[str, str]
+) -> None:
     """Set *projected*'s ``custom_headers`` to *endpoint*'s printable ones
     (:func:`graftpunk.har.digest.printable_custom_headers`), and
     ``custom_headers_not_shown`` to how many it leaves out, only when any."""
-    projected["custom_headers"] = list(printable_custom_headers(endpoint))
-    hidden = header_names_not_shown(endpoint.custom_headers)
+    projected["custom_headers"] = list(printable_custom_headers(endpoint, spellings))
+    hidden = header_names_not_shown(endpoint.custom_headers, spellings)
     if hidden:
         projected["custom_headers_not_shown"] = hidden
 
 
-def _projected_endpoint(endpoint: Endpoint, method: str) -> dict[str, Any]:
+def _projected_endpoint(
+    endpoint: Endpoint, method: str, spellings: Mapping[str, str]
+) -> dict[str, Any]:
     """One ``endpoints`` entry of the projection: *endpoint* under *method*. A family
     row (``Endpoint.family_members``) also carries ``family_members``, its members'
     templates, and an HTML page holding inline JSON state (``Endpoint.inline_json``)
@@ -429,7 +438,7 @@ def _projected_endpoint(endpoint: Endpoint, method: str) -> dict[str, Any]:
         + endpoint.body_binary
         > 0,
     }
-    _put_custom_headers(projected, endpoint)
+    _put_custom_headers(projected, endpoint, spellings)
     if endpoint.family_members:
         projected["family_members"] = list(endpoint.family_members)
     if endpoint.inline_json is not None:
@@ -472,12 +481,13 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     Added within schema 1, on those entries only, so a run without one prints what
     it printed before.
 
-    ``custom_headers`` leaves out a header name that reads as a value
+    ``custom_headers`` leaves out a header name the run prints nowhere
     (:func:`graftpunk.har.digest.printable_custom_headers`, #347), and an entry
     that left any out carries ``custom_headers_not_shown``, how many. Added within
     schema 1, on those entries only.
     """
     source = d.source
+    spellings = header_spellings(d)
     return {
         "schema": current_schema("endpoints"),
         "source": {
@@ -487,7 +497,7 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
         },
         "primary_host": d.primary_host,
         "endpoints": [
-            _projected_endpoint(endpoint, method)
+            _projected_endpoint(endpoint, method, spellings)
             for endpoint in _ordered_endpoints(d)
             for method in endpoint.methods
         ],

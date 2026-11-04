@@ -14,6 +14,7 @@ import glob
 import ipaddress
 import keyword
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
@@ -59,6 +60,7 @@ from graftpunk.har.digest import (
     RunDigest,
     TokenCandidate,
     header_names_not_shown,
+    header_spellings,
     held_back_token_count,
     printable_custom_headers,
     printable_tokens,
@@ -603,7 +605,7 @@ def _render_failure_hint(candidates: tuple[str, ...], *, indent: int) -> list[st
 
 def _paired_token_candidates(d: RunDigest) -> list[tuple[TokenCandidate, TokenCandidate]]:
     by_name: dict[str, list[TokenCandidate]] = {}
-    for candidate in printable_tokens(d.tokens):
+    for candidate in printable_tokens(d.tokens, header_spellings(d)):
         by_name.setdefault(candidate.name.lower(), []).append(candidate)
     pairs: list[tuple[TokenCandidate, TokenCandidate]] = []
     for candidates in by_name.values():
@@ -622,7 +624,8 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
         ]
     pairs = _paired_token_candidates(spec.digest)
     paired = {candidate for pair in pairs for candidate in pair}
-    unpaired = [c for c in printable_tokens(spec.digest.tokens) if c not in paired]
+    spellings = header_spellings(spec.digest)
+    unpaired = [c for c in printable_tokens(spec.digest.tokens, spellings) if c not in paired]
     lines: list[str] = []
     if pairs:
         lines.append("    token_config = TokenConfig(")
@@ -643,7 +646,7 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
             "needs by hand."
         )
         lines.extend(wrapped_comment_lines(text, indent=len(L1)))
-    unshown = held_back_token_count(spec.digest.tokens)
+    unshown = held_back_token_count(spec.digest.tokens, spellings)
     if unshown:
         text = (
             f"{GP_FILL_MARKER}: {unshown} token candidate(s) were left out because their names "
@@ -1330,7 +1333,11 @@ def _target_for(command: PlannedCommand, base_url: str | None) -> RequestTarget:
 
 
 def _render_command_stub(
-    command: PlannedCommand, run_label: str, target: RequestTarget, bodies_where: str
+    command: PlannedCommand,
+    run_label: str,
+    target: RequestTarget,
+    bodies_where: str,
+    spellings: Mapping[str, str],
 ) -> list[str]:
     endpoint = command.endpoint
     method = command.method
@@ -1391,7 +1398,7 @@ def _render_command_stub(
             # json= is sent as given, so an option left off is left out here,
             # rather than sent as null.
             call_lines.extend(given_entries_dict_lines("json", entries))
-    custom_headers = printable_custom_headers(endpoint)
+    custom_headers = printable_custom_headers(endpoint, spellings)
     if custom_headers:
         entries = [(h, f'"{GP_FILL_MARKER}"') for h in custom_headers]
         call_lines.extend(exploded_dict_lines("headers", entries))
@@ -1427,7 +1434,7 @@ def _render_command_stub(
                 indent=len(L2),
             )
         )
-    for note in [*_recording_gap_notes(endpoint, bodies_where), *flag_notes]:
+    for note in [*_recording_gap_notes(endpoint, bodies_where, spellings), *flag_notes]:
         lines.extend(wrapped_comment_lines(note, indent=len(L2)))
     for field_name, reason in sorted(undeclared.items()):
         lines.extend(
@@ -1618,7 +1625,9 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
     ``None`` when it has none to read; ``_target_for`` is evaluated once, and both
     the stub's request and ``other_host`` read that one result."""
     target = _target_for(command, base_url)
-    lines = _render_command_stub(command, _run_label(d), target, _bodies_location(d))
+    lines = _render_command_stub(
+        command, _run_label(d), target, _bodies_location(d), header_spellings(d)
+    )
     imports = [(_PLUGINS_MODULE, "CommandContext"), (_PLUGINS_MODULE, "command")]
     if _needs_param_specs(command.endpoint):
         imports.append((_PLUGINS_MODULE, "PluginParamSpec"))
@@ -1644,7 +1653,9 @@ def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) 
     )
 
 
-def _recording_gap_notes(endpoint: Endpoint, bodies_where: str) -> list[str]:
+def _recording_gap_notes(
+    endpoint: Endpoint, bodies_where: str, spellings: Mapping[str, str]
+) -> list[str]:
     """The GP-FILL notes for what the recording holds and the stub cannot use: names
     the digest dropped, one note per cause, and a request body the recorder could
     not capture. A stub never loses a recorded field without saying so and why."""
@@ -1670,7 +1681,7 @@ def _recording_gap_notes(endpoint: Endpoint, bodies_where: str) -> list[str]:
             "were left out because they held an account value; add any this command needs "
             "by hand."
         )
-    unshown_headers = header_names_not_shown(endpoint.custom_headers)
+    unshown_headers = header_names_not_shown(endpoint.custom_headers, spellings)
     if unshown_headers:
         notes.append(
             f"{GP_FILL_MARKER}: {unshown_headers} recorded header name(s) were left out "
@@ -1736,11 +1747,12 @@ def _render_command_stubs(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> 
             f'        return ctx.request_json("GET", "/{GP_FILL_MARKER}/path")',
         ]
     lines: list[str] = []
+    spellings = header_spellings(spec.digest)
     for command in planned:
         target = _target_for(command, spec.base_url)
         lines.extend(
             _render_command_stub(
-                command, _run_label(spec.digest), target, _bodies_location(spec.digest)
+                command, _run_label(spec.digest), target, _bodies_location(spec.digest), spellings
             )
         )
     return lines

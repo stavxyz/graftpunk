@@ -11,7 +11,16 @@ from pathlib import Path
 import pytest
 
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
-from graftpunk.har.digest import DigestSource, RunDigest, digest, header_names_not_shown
+from graftpunk.har.digest import (
+    DigestSource,
+    RunDigest,
+    TokenCandidate,
+    digest,
+    header_names_not_shown,
+    header_spellings,
+    held_back_token_count,
+    printable_tokens,
+)
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from tests.unit.test_har_digest import _entry, _write_har
 
@@ -623,9 +632,8 @@ def test_a_header_name_recorded_in_two_cases_prints_once_in_the_first_spelling(
     markdown = render_markdown(d)
     assert f"- custom headers: {', '.join(printed)}" in markdown
     assert "- header `X-CSRF-Token`, seen on: GET /api/a, POST /api/b" in markdown
-    # /api/b recorded only the lower-case spelling, so its own block lists that.
-    tokens_section = markdown.split("## Tokens\n", 1)[1].split("\n\n", 1)[0]
-    assert "x-csrf-token" not in tokens_section
+    # /api/b recorded only the lower-case spelling, and still lists the run's one.
+    assert "x-csrf-token" not in markdown
     assert "not shown" not in markdown
 
     rendered = json.loads(render_json(d))
@@ -669,5 +677,148 @@ def test_a_run_whose_header_names_all_print_carries_no_count(tmp_path: Path) -> 
         (["X-Api-Key", "x-api-key"], 0),
     ],
 )
-def test_header_names_differing_only_in_case_are_one_name(names: list[str], count: int) -> None:
-    assert header_names_not_shown(names) == count
+def test_header_names_differing_only_in_case_are_one_name(
+    tmp_path: Path, names: list[str], count: int
+) -> None:
+    d = dataclasses.replace(
+        _digest(tmp_path, [_entry("GET", f"{_HOST}/api/a")]), header_spellings=tuple(names)
+    )
+    assert header_names_not_shown(names, header_spellings(d)) == count
+
+
+# A header name held back as spelled (printable_name refuses "TOKENx") whose
+# lower-case spelling passes.
+_SPLIT_HEADER = "X-CSRF-TOKENx"
+
+
+def _meta_page(name: str) -> dict:
+    return _entry(
+        "GET",
+        f"{_HOST}/",
+        content_type="text/html",
+        body=f'<html><head><meta name="{name}" content="{_VALUE}"></head></html>',
+    )
+
+
+def test_a_header_name_a_meta_tag_prints_keeps_its_token_config_pairing(
+    tmp_path: Path,
+) -> None:
+    """A header spelling held back whose name a meta candidate already prints
+    is printed and paired as in 1.36.4: the name tells a reader nothing new."""
+    d = _digest(
+        tmp_path,
+        [
+            _meta_page(_SPLIT_HEADER.lower()),
+            _entry("POST", f"{_HOST}/api/save", request_headers={_SPLIT_HEADER: _VALUE}),
+        ],
+    )
+    assert header_spellings(d) == {_SPLIT_HEADER.lower(): _SPLIT_HEADER}
+    assert d.header_names_not_shown == 0
+
+    markdown = render_markdown(d)
+    assert f"- header `{_SPLIT_HEADER}`, seen on: POST /api/save" in markdown
+    assert f"- custom headers: {_SPLIT_HEADER}" in markdown
+    assert "not shown" not in markdown
+    for text in (render_json(d), render_endpoints_json(d)):
+        assert "not_shown" not in text
+        assert f'"{_SPLIT_HEADER}"' in text
+
+    plugin = _plugin_text(d)
+    assert (
+        f'Token.from_meta_tag( name="{_SPLIT_HEADER.lower()}", header="{_SPLIT_HEADER}", )'
+        in plugin
+    )
+    assert f'"{_SPLIT_HEADER}": "GP-FILL",' in plugin
+    assert "unpaired token candidate" not in plugin
+    assert "were left out because" not in plugin
+
+
+def test_a_header_name_a_passing_cookie_name_prints_is_printed(tmp_path: Path) -> None:
+    """A cookie name that passes the gate prints, so a header of the same name
+    in a held-back spelling prints too; a cookie name that is held back does
+    not make a header print."""
+    printed = _entry(
+        "GET",
+        f"{_HOST}/api/a",
+        request_headers={"X-SHOPPER-Id": "1"},
+        set_cookies=["x-shopper-id=1; Path=/"],
+    )
+    held = _entry(
+        "GET",
+        f"{_HOST}/api/b",
+        request_headers={"X-Zq9vLmKx": "1"},
+        set_cookies=["x-zq9vlmkx=1; Path=/"],
+    )
+    d = _digest(tmp_path, [printed, held])
+    assert header_spellings(d) == {"x-shopper-id": "X-SHOPPER-Id"}
+    assert d.header_names_not_shown == 1
+    markdown = render_markdown(d)
+    assert "- custom headers: X-SHOPPER-Id" in markdown
+    assert "- 1 custom header whose name reads as a value is not shown" in markdown
+
+
+def test_one_header_name_a_run_decides_prints_alike_on_every_endpoint(tmp_path: Path) -> None:
+    """A name recorded held back on one endpoint and passing on another prints
+    in the passing spelling on both, in every output, and is counted nowhere."""
+    d = _digest(
+        tmp_path,
+        [
+            _entry("GET", f"{_HOST}/api/a", request_headers={_SPLIT_HEADER: "1"}),
+            _entry("GET", f"{_HOST}/api/b", request_headers={_SPLIT_HEADER.lower(): "1"}),
+        ],
+    )
+    printed = _SPLIT_HEADER.lower()
+    assert d.header_names_not_shown == 0
+
+    markdown = render_markdown(d)
+    assert markdown.count(f"- custom headers: {printed}\n") == len(d.endpoints) == 3
+    assert f"- header `{printed}`, seen on: GET /api/a, GET /api/b" in markdown
+    assert "not shown" not in markdown
+
+    for text in (render_json(d), render_endpoints_json(d)):
+        assert "not_shown" not in text
+        assert _SPLIT_HEADER not in text
+        endpoints = json.loads(text)["endpoints"]
+        assert {e["template"] for e in endpoints} == {"/api/a", "/api/b", "/api/{api_slug}"}
+        assert all(e["custom_headers"] == [printed] for e in endpoints)
+
+    plugin = _plugin_text(d)
+    assert _SPLIT_HEADER not in plugin
+    assert plugin.count(f'"{printed}": "GP-FILL",') >= 2
+    assert "were left out because they read as values" not in plugin
+
+
+def test_the_run_and_its_endpoints_count_a_held_back_header_name_alike(tmp_path: Path) -> None:
+    """A name held back in every spelling on two endpoints is one name for the
+    run and one on each endpoint, in the markdown and --json."""
+    d = _digest(
+        tmp_path,
+        [
+            _entry("GET", f"{_HOST}/api/a", request_headers={"X-Zq9vLmKx": "1"}),
+            _entry("GET", f"{_HOST}/api/b", request_headers={"x-zq9vlmkx": "1"}),
+        ],
+    )
+    assert header_spellings(d) == {}
+    assert d.header_names_not_shown == 1
+    rendered = json.loads(render_json(d))
+    assert rendered["header_names_not_shown"] == 1
+    assert all(e["custom_headers_not_shown"] == 1 for e in rendered["endpoints"])
+    assert render_markdown(d).count(
+        "- 1 custom header whose name reads as a value is not shown\n"
+    ) == len(d.endpoints)
+
+
+def test_token_candidates_alone_decide_their_header_names() -> None:
+    """Without the run's spellings, a header token candidate prints when a
+    spelling passes or a meta candidate prints its name, and is counted
+    otherwise."""
+    tokens = (
+        TokenCandidate(kind="header", name=_SPLIT_HEADER, seen_on=("POST /a",)),
+        TokenCandidate(kind="meta", name=_SPLIT_HEADER.lower(), seen_on=("GET /",)),
+        TokenCandidate(kind="header", name="X-Zq9vLmKx", seen_on=("POST /a",)),
+    )
+    assert [(t.kind, t.name) for t in printable_tokens(tokens)] == [
+        ("header", _SPLIT_HEADER),
+        ("meta", _SPLIT_HEADER.lower()),
+    ]
+    assert held_back_token_count(tokens) == 1

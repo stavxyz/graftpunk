@@ -777,9 +777,14 @@ left out of an endpoint's custom headers (the markdown, `--json`,
 candidates (the Tokens section, `--json`'s `tokens`, and `token_config`), and
 each place prints a count instead (`custom_headers_not_shown` on an endpoint,
 `header_names_not_shown` for the run). Header names are compared without
-regard to case, so `X-Token-Q` and `x-token-q` are one name: it prints once,
-in the first spelling recorded that passes the gate, and counts once when
-none does. The fixture safety
+regard to case, so `X-Token-Q` and `x-token-q` are one name, and whether it
+prints is decided once for the run: it prints in every output and on every
+endpoint that recorded it, in the first spelling recorded that passes the
+gate, and is counted once when none does. A name whose spellings all fail
+still prints, in its first spelling recorded, when the digest already prints
+the same name elsewhere (a meta tag's token candidate, or a cookie name that
+passes), so a generated `token_config` still pairs that header with its meta
+tag. The fixture safety
 net (`flagged_names`) still holds every name. The words are those
 of the graft skill's `har-facts.py cookies`, which also prints the `Domain` and
 each response's full URL, and says `never set in this recording`, since it

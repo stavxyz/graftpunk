@@ -12,7 +12,7 @@ import json
 import math
 import re
 import string
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -110,6 +110,7 @@ __all__ = [
     "post_account_values",
     "post_every_value",
     "header_names_not_shown",
+    "header_spellings",
     "held_back_token_count",
     "printable_custom_headers",
     "printable_login_fields",
@@ -584,14 +585,19 @@ class RunDigest:
     # ``cookies``, ``login``, and ``tokens`` keep every name for the fixture
     # safety net. A name holding an id counts here too.
     cookie_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
-    # How many distinct header names, compared without regard to case, read as a
-    # value in every spelling the run recorded (graftpunk.har.paths.printable_name)
-    # and so print nowhere: not in an endpoint's custom headers
-    # (printable_custom_headers) and not as a header token candidate
-    # (printable_tokens), in the markdown, --json, --endpoints-json, or a
-    # scaffolded plugin (#347). ``Endpoint.custom_headers`` and ``tokens`` keep
-    # every name. Each place a name is left out counts its own there.
+    # How many distinct header names, compared without regard to case, print
+    # nowhere (header_spellings: no spelling the run recorded passes
+    # graftpunk.har.paths.printable_name, and the digest prints the name nowhere
+    # else): not in an endpoint's custom headers (printable_custom_headers) and
+    # not as a header token candidate (printable_tokens), in the markdown,
+    # --json, --endpoints-json, or a scaffolded plugin (#347).
+    # ``Endpoint.custom_headers`` and ``tokens`` keep every name. Each place a
+    # name is left out counts its own there.
     header_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
+    # Every recorded spelling of a custom header name, in the order the run first
+    # recorded it: header_spellings reads it to pick the first spelling that
+    # passes the gate. A lookup, so render_json leaves it out.
+    header_spellings: tuple[str, ...] = field(default=(), repr=False, metadata={INTERNAL: True})
 
 
 def _scope_root(primary_host: str) -> str:
@@ -1553,15 +1559,79 @@ def _cookie_names_not_shown(*names: Iterable[str]) -> int:
     return len({name for group in names for name in group if not printable_name(name)})
 
 
-def printable_tokens(tokens: Iterable[TokenCandidate]) -> tuple[TokenCandidate, ...]:
-    """*tokens* as every output prints them: without a cookie or header candidate
-    whose name reads as a value (:func:`graftpunk.har.paths.printable_name`), which
-    ``RunDigest.cookie_names_not_shown`` and ``RunDigest.header_names_not_shown``
-    count. Header names differ in case only as spellings of one name, so a header
-    candidate prints once, in the first spelling recorded that passes the gate,
-    seen on every endpoint any of its spellings was. ``RunDigest.tokens`` keeps
-    them all: :func:`flagged_names_of` reads it."""
+def header_spellings(d: RunDigest) -> dict[str, str]:
+    """The spelling every output prints each header name of *d* in, keyed by the
+    lower-cased name, for the names that print; a name missing here prints
+    nowhere. Header names differ in case only as spellings of one name, so this
+    is decided once per run, never per endpoint or per output (#347). A name
+    prints in the first spelling recorded that passes the gate
+    (:func:`graftpunk.har.paths.printable_name`). When no spelling passes but the
+    digest already prints the same lower-cased name elsewhere (an ungated token
+    candidate such as a meta tag's, or a cookie name that passes), it prints in
+    its first spelling recorded, which tells a reader nothing the digest does not.
+    Spellings are taken in the order the run first recorded them
+    (``RunDigest.header_spellings``), then the header token candidates' and each
+    endpoint's custom headers'."""
+    return _resolved_spellings(
+        [
+            *d.header_spellings,
+            *(t.name for t in d.tokens if t.kind == "header"),
+            *(name for endpoint in d.endpoints for name in endpoint.custom_headers),
+        ],
+        _names_printed_elsewhere(d.tokens, d.cookies),
+    )
+
+
+def _names_printed_elsewhere(tokens: Iterable[TokenCandidate], cookies: Iterable[str]) -> set[str]:
+    """The lower-cased names the digest prints other than as a header name: an
+    ungated token candidate's, and a cookie name that passes the gate."""
+    names: set[str] = set()
+    for name in cookies:
+        if printable_name(name):
+            names.add(name.lower())
+    for t in tokens:
+        if t.kind not in _GATED_TOKEN_KINDS or (t.kind == "cookie" and printable_name(t.name)):
+            names.add(t.name.lower())
+    return names
+
+
+def _resolved_spellings(recorded: Iterable[str], elsewhere: set[str]) -> dict[str, str]:
+    """:func:`header_spellings` of the header names *recorded*, in order, given the
+    lower-cased names the digest prints *elsewhere*."""
+    first: dict[str, str] = {}
+    passing: dict[str, str] = {}
+    for name in recorded:
+        first.setdefault(name.lower(), name)
+        if printable_name(name):
+            passing.setdefault(name.lower(), name)
+    return {
+        lowered: passing.get(lowered, name)
+        for lowered, name in first.items()
+        if lowered in passing or lowered in elsewhere
+    }
+
+
+def _token_spellings(tokens: Sequence[TokenCandidate]) -> dict[str, str]:
+    """:func:`header_spellings` read from *tokens* alone."""
+    return _resolved_spellings(
+        (t.name for t in tokens if t.kind == "header"), _names_printed_elsewhere(tokens, ())
+    )
+
+
+def printable_tokens(
+    tokens: Iterable[TokenCandidate], spellings: Mapping[str, str] | None = None
+) -> tuple[TokenCandidate, ...]:
+    """*tokens* as every output prints them: without a cookie candidate whose name
+    reads as a value (:func:`graftpunk.har.paths.printable_name`), which
+    ``RunDigest.cookie_names_not_shown`` counts, and with each header name once,
+    in its spelling of *spellings* (:func:`header_spellings`), seen on every
+    endpoint any of its spellings was. A header name *spellings* lacks is left
+    out, and ``RunDigest.header_names_not_shown`` counts it. Without *spellings*
+    they are read from *tokens* alone. ``RunDigest.tokens`` keeps them all:
+    :func:`flagged_names_of` reads it."""
     tokens = list(tokens)
+    if spellings is None:
+        spellings = _token_spellings(tokens)
     seen_on: dict[str, dict[str, None]] = {}
     for t in tokens:
         if t.kind == "header":
@@ -1569,15 +1639,15 @@ def printable_tokens(tokens: Iterable[TokenCandidate]) -> tuple[TokenCandidate, 
     printed: list[TokenCandidate] = []
     headers_printed: set[str] = set()
     for t in tokens:
+        lowered = t.name.lower()
         if t.kind not in _GATED_TOKEN_KINDS:
             printed.append(t)
-        elif not printable_name(t.name):
-            continue
         elif t.kind == "cookie":
-            printed.append(t)
-        elif t.name.lower() not in headers_printed:
-            headers_printed.add(t.name.lower())
-            printed.append(replace(t, seen_on=tuple(seen_on[t.name.lower()])))
+            if printable_name(t.name):
+                printed.append(t)
+        elif lowered in spellings and lowered not in headers_printed:
+            headers_printed.add(lowered)
+            printed.append(replace(t, name=spellings[lowered], seen_on=tuple(seen_on[lowered])))
     return tuple(printed)
 
 
@@ -1585,36 +1655,42 @@ def printable_tokens(tokens: Iterable[TokenCandidate]) -> tuple[TokenCandidate, 
 _GATED_TOKEN_KINDS = frozenset({"cookie", "header"})
 
 
-def header_names_not_shown(names: Iterable[str]) -> int:
-    """How many distinct header names of *names* print in no spelling: each name
-    is gated as recorded (:func:`graftpunk.har.paths.printable_name`), and names
-    that differ only in case are one header name, so ``X-Token-Q`` and
-    ``x-token-q`` count once, and not at all when either spelling prints."""
-    names = list(names)
-    printed = {name.lower() for name in names if printable_name(name)}
-    return len({name.lower() for name in names if name.lower() not in printed})
+def header_names_not_shown(names: Iterable[str], spellings: Mapping[str, str]) -> int:
+    """How many distinct header names of *names* print nowhere: names that differ
+    only in case are one header name, and it prints when *spellings*
+    (:func:`header_spellings`) holds it, so ``X-Token-Q`` and ``x-token-q`` count
+    once, and not at all when the run prints the name."""
+    return len({name.lower() for name in names if name.lower() not in spellings})
 
 
-def printable_custom_headers(endpoint: Endpoint) -> tuple[str, ...]:
+def printable_custom_headers(endpoint: Endpoint, spellings: Mapping[str, str]) -> tuple[str, ...]:
     """*endpoint*'s ``custom_headers`` as every output prints them, sorted: each
-    header name once, in the first spelling recorded that passes the gate
-    (:func:`graftpunk.har.paths.printable_name`), and none for a name no spelling
-    of which passes, which :func:`header_names_not_shown` counts.
-    ``Endpoint.custom_headers`` keeps every spelling."""
-    first: dict[str, str] = {}
-    for name in endpoint.custom_headers:
-        if printable_name(name):
-            first.setdefault(name.lower(), name)
-    return tuple(sorted(first.values()))
+    header name once, in its spelling of *spellings* (:func:`header_spellings`),
+    the same on every endpoint of a run, and none for a name *spellings* lacks,
+    which :func:`header_names_not_shown` counts. ``Endpoint.custom_headers`` keeps
+    every spelling."""
+    return tuple(
+        sorted(
+            {
+                spellings[name.lower()]
+                for name in endpoint.custom_headers
+                if name.lower() in spellings
+            }
+        )
+    )
 
 
-def held_back_token_count(tokens: Iterable[TokenCandidate]) -> int:
+def held_back_token_count(
+    tokens: Iterable[TokenCandidate], spellings: Mapping[str, str] | None = None
+) -> int:
     """How many cookie and header token candidates of *tokens* :func:`printable_tokens`
-    leaves out, a header name counted once whatever its case
-    (:func:`header_names_not_shown`)."""
+    leaves out given *spellings* (read from *tokens* alone when not given), a
+    header name counted once whatever its case (:func:`header_names_not_shown`)."""
     tokens = list(tokens)
+    if spellings is None:
+        spellings = _token_spellings(tokens)
     cookies = {t.name for t in tokens if t.kind == "cookie" and not printable_name(t.name)}
-    headers = header_names_not_shown(t.name for t in tokens if t.kind == "header")
+    headers = header_names_not_shown((t.name for t in tokens if t.kind == "header"), spellings)
     return len(cookies) + headers
 
 
@@ -3476,6 +3552,13 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             )
         )
 
+    # Each custom header spelling at the step the run first recorded it, read
+    # before absorb merges one accumulator into another.
+    header_steps: dict[str, int] = {}
+    for acc in accumulators.values():
+        for name, at in acc.custom_headers.items():
+            header_steps[name] = min(at, header_steps.get(name, at))
+    header_order = tuple(sorted(header_steps, key=lambda name: (header_steps[name], name)))
     collapse_map = _collapse_high_cardinality([template for _method, template in accumulators])
     merged: dict[tuple[str, str], _EndpointAccumulator] = {}
     for (method, raw_template), acc in accumulators.items():
@@ -3509,7 +3592,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     )
 
     literal_endpoints = _with_login_flow(endpoints, tuple(login))
-    return RunDigest(
+    run = RunDigest(
         source=source,
         primary_host=primary_host,
         hosts=hosts,
@@ -3526,12 +3609,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             tuple(cookies_seen), cookie_settings, cookies_sent, collapse_map
         ),
         cookie_names_not_shown=_cookie_names_not_shown(cookies_seen, id_cookie_names, cookies_sent),
-        header_names_not_shown=header_names_not_shown(
-            [
-                *(name for endpoint in literal_endpoints for name in endpoint.custom_headers),
-                *(token.name for token in tokens if token.kind == "header"),
-            ]
-        ),
+        header_spellings=header_order,
         # Only for a run that recorded a login. The final page is the last of
         # after_post_pages (page-source.html when it went there); success_candidates
         # finds the leading run of login steps among them. The last credential post's
@@ -3560,6 +3638,17 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                     username_names,
                 )
             ],
+        ),
+    )
+    spellings = header_spellings(run)
+    return replace(
+        run,
+        header_names_not_shown=header_names_not_shown(
+            [
+                *(name for endpoint in run.endpoints for name in endpoint.custom_headers),
+                *(token.name for token in tokens if token.kind == "header"),
+            ],
+            spellings,
         ),
     )
 
