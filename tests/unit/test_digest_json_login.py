@@ -256,11 +256,14 @@ class TestTheNestedPasswordRule:
         assert is_credential_post(body, _JSON, _API, ())
 
 
-def _large_json_body(megabytes: int) -> str:
-    """A JSON body of about *megabytes* MB: records sharing a few names, as a batch
-    sync or a catalogue upload posts, with a login's password nowhere in it."""
+def _large_json_body(megabytes: int, *, distinct: bool = False) -> str:
+    """A JSON body of about *megabytes* MB with a login's password nowhere in it:
+    records sharing a few names, as a batch sync or a catalogue upload posts, or with
+    *distinct*, one object whose names all differ (a map keyed by name)."""
     record = {"id": "r0000000", "name": "Item number 0", "sku": "SKU-00000000", "price": 1.5}
     count = megabytes * 1_000_000 // len(json.dumps(record))
+    if distinct:
+        return json.dumps({f"item{i:07d}": f"Item number {i}" for i in range(count * 3)})
     rows = [
         {"id": f"r{i:07d}", "name": f"Item number {i}", "sku": f"SKU-{i:08d}", "price": i * 1.5}
         for i in range(count)
@@ -268,36 +271,43 @@ def _large_json_body(megabytes: int) -> str:
     return json.dumps({"items": rows, "tags": ["a", "b"]})
 
 
-def _fastest(call: Any, runs: int = 3) -> float:
-    """The fastest of *runs* calls, so one slow scheduling slice does not decide."""
-    best = float("inf")
-    for _ in range(runs):
-        started = time.perf_counter()
-        call()
-        best = min(best, time.perf_counter() - started)
-    return best
+def _cpu_seconds(work: Any) -> float:
+    """The least CPU time of three runs of *work*: CPU time, never wall clock, and
+    the least of three, so a busy machine slows neither side of a ratio."""
+    times = []
+    for _ in range(3):
+        start = time.process_time()
+        work()
+        times.append(time.process_time() - start)
+    return min(times)
 
 
 class TestTheCostOfTheNestedRule:
     """The recorder runs the rule in its CDP request handler for every POST while
-    snapshots are on, so the nested read costs a small multiple of the JSON parse it
-    needs anyway: each distinct name is judged once, not once per value."""
+    snapshots are on, so the nested read must stay linear in the body: four times
+    the body within 12 times the CPU time (three times linear, the margin of the
+    repo's other growth tests). Compared size to size, never to ``json.loads``: a
+    coverage tracer slows the Python walk and not the C parse, so a ratio to the
+    parse failed on CI's Python 3.11 job. A growth ratio cannot tell a linear walk
+    with a larger constant (one that judges each value, not each distinct name) from
+    this one; it catches a walk that grows faster than the body."""
 
-    def test_a_5_mb_body_costs_a_small_multiple_of_its_parse(self) -> None:
-        body = _large_json_body(5)
-        assert len(body) >= 4_900_000
-        parse = _fastest(lambda: json.loads(body))
-        read = _fastest(lambda: password_field_names(body, _JSON))
-        assert read < 10 * parse + 0.02, f"parse {parse:.3f}s, read {read:.3f}s"
+    def test_a_body_of_shared_names_is_read_in_linear_time(self) -> None:
+        small, large = _large_json_body(1), _large_json_body(4)
+        assert len(large) >= 4_000_000
+        ratio = _cpu_seconds(lambda: password_field_names(large, _JSON)) / max(
+            _cpu_seconds(lambda: password_field_names(small, _JSON)), 1e-4
+        )
+        assert ratio < 12, ratio
 
-    def test_a_10_mb_body_costs_a_small_multiple_of_its_parse(self) -> None:
-        # Measured against the parse on the same machine: a fixed bound in seconds
-        # failed on a loaded CI runner (0.635s against 0.6s).
-        body = _large_json_body(10)
-        assert len(body) >= 9_900_000
-        parse = _fastest(lambda: json.loads(body))
-        seconds = _fastest(lambda: is_credential_body(body, _JSON))
-        assert seconds < 10 * parse + 0.02, f"parse {parse:.3f}s, read {seconds:.3f}s"
+    def test_a_body_of_distinct_names_is_judged_in_linear_time(self) -> None:
+        small = _large_json_body(1, distinct=True)
+        large = _large_json_body(4, distinct=True)
+        assert len(large) >= 4_000_000
+        ratio = _cpu_seconds(lambda: is_credential_body(large, _JSON)) / max(
+            _cpu_seconds(lambda: is_credential_body(small, _JSON)), 1e-4
+        )
+        assert ratio < 12, ratio
 
 
 class TestTheDigestOfAGraphqlLogin:
