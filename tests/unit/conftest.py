@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import os
 import shlex
+import shutil
 import subprocess
 import threading
 from collections.abc import Iterator
@@ -62,23 +63,42 @@ def _disarm_chrome_orphan_cleanup(monkeypatch):  # noqa: ANN001, ANN201
 _BROWSER_EXECUTABLE_MARKERS = ("chrome", "chromium")
 
 
+def _first_word(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+    return parts[0] if parts else ""
+
+
 def _browser_executable(args: Any, kwargs: dict[str, Any]) -> str | None:
     """The Chrome, Chromium or chromedriver executable a Popen call would run, if any."""
     executable = kwargs.get("executable")
     if executable is None:
         if isinstance(args, (str, bytes, os.PathLike)):
             command = os.fsdecode(args)
-            if kwargs.get("shell"):
-                parts = shlex.split(command)
-                command = parts[0] if parts else ""
-            executable = command
+            executable = _first_word(command) if kwargs.get("shell") else command
         else:
             argv = list(args)
             executable = argv[0] if argv else ""
+    return _browser_name(executable)
+
+
+def _browser_name(executable: Any) -> str | None:
     name = os.path.basename(os.fsdecode(executable)).lower()
     if any(marker in name for marker in _BROWSER_EXECUTABLE_MARKERS):
         return os.fsdecode(executable)
     return None
+
+
+def _resolve_executable(executable: str, cwd: Any, path: str | None) -> str:
+    """The file the call would run: a relative path is relative to the call's own
+    ``cwd``, and a bare name is looked up on the call's PATH."""
+    if os.sep in executable or (os.altsep and os.altsep in executable):
+        if not os.path.isabs(executable) and cwd is not None:
+            return os.path.join(os.fsdecode(cwd), executable)
+        return executable
+    return shutil.which(executable, path=path) or executable
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +107,8 @@ def _no_real_browser(request, tmp_path, monkeypatch):  # noqa: ANN001, ANN201
 
     A launch with the default profile can touch the developer's real Chrome
     data and, on macOS, the Keychain. graftpunk's launch paths end at one of
-    the two points patched here: ``subprocess.Popen`` for a Chrome, Chromium
+    the two points patched here: ``subprocess.Popen`` (and ``os.posix_spawn``,
+    ``os.posix_spawnp`` and ``os.system``) for a Chrome, Chromium
     or chromedriver executable (undetected-chromedriver's Chrome, selenium's
     driver service, webdriver-manager's version probe, and nodriver through
     ``asyncio.create_subprocess_exec``), and undetected-chromedriver's
@@ -95,10 +116,10 @@ def _no_real_browser(request, tmp_path, monkeypatch):  # noqa: ANN001, ANN201
     process this patch of ``Popen`` does not reach). The library functions
     themselves are left alone because seam tests read their source. An
     executable under the test's own ``tmp_path`` is a fake the test wrote
-    and may run. An attempt raises ``pytest.fail``'s exception, which
-    ``except Exception`` does not catch, and is also recorded so the test
-    fails at teardown when the attempt was made on a thread or swallowed some
-    other way. A test that needs a real browser says so with
+    and may run, found by the call's own ``cwd`` and PATH. An attempt raises
+    ``pytest.fail``'s exception, which ``except Exception`` does not catch,
+    and is also recorded so the test fails at teardown when the attempt was
+    made on a thread or swallowed some other way. A test that needs a real browser says so with
     ``@pytest.mark.real_browser``; no unit test does today.
 
     Yields the list of recorded attempts, for the guard's own tests.
@@ -114,16 +135,47 @@ def _no_real_browser(request, tmp_path, monkeypatch):  # noqa: ANN001, ANN201
 
     own_fakes = os.path.realpath(tmp_path)
 
+    def check(executable: str | None, what: str, cwd: Any = None, env: Any = None) -> None:
+        if executable is None:
+            return
+        path = (env if env is not None else os.environ).get("PATH")
+        resolved = _resolve_executable(executable, cwd, path)
+        if not os.path.realpath(resolved).startswith(own_fakes + os.sep):
+            refuse(f"{what}({executable!r})")
+
     class _GuardedPopen(subprocess.Popen):
         def __init__(self, args: Any, *pargs: Any, **kwargs: Any) -> None:
-            executable = _browser_executable(args, kwargs)
-            if executable is not None and not os.path.realpath(executable).startswith(
-                own_fakes + os.sep
-            ):
-                refuse(f"subprocess.Popen({executable!r})")
+            check(
+                _browser_executable(args, kwargs),
+                "subprocess.Popen",
+                kwargs.get("cwd"),
+                kwargs.get("env"),
+            )
             super().__init__(args, *pargs, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", _GuardedPopen)
+
+    def guard_spawn(name: str) -> None:
+        original = getattr(os, name, None)
+        if original is None:
+            return
+
+        def guarded(path: Any, *pargs: Any, **kwargs: Any) -> Any:
+            check(_browser_name(path), f"os.{name}")
+            return original(path, *pargs, **kwargs)
+
+        monkeypatch.setattr(os, name, guarded)
+
+    guard_spawn("posix_spawn")
+    guard_spawn("posix_spawnp")
+
+    original_system = os.system
+
+    def guarded_system(command: str) -> int:
+        check(_browser_name(_first_word(os.fsdecode(command))), "os.system")
+        return original_system(command)
+
+    monkeypatch.setattr(os, "system", guarded_system)
 
     def refuse_detached(*args: Any, **kwargs: Any) -> NoReturn:
         refuse("undetected_chromedriver.start_detached")
