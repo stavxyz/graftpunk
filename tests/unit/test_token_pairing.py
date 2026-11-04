@@ -804,6 +804,73 @@ def test_a_later_page_the_post_was_not_sent_from_keeps_the_meta_pairing(
     assert "unpaired token candidate: meta" not in plugin
 
 
+_STABLE = "stableValue12345"
+_TEMPLATED_IFRAME = {"Sec-Fetch-Dest": "iframe", "Sec-Fetch-Mode": "navigate"}
+
+
+@pytest.mark.parametrize("kind", ["meta", "hidden_input"])
+@pytest.mark.parametrize(
+    ("pages", "paired_page"),
+    [
+        pytest.param([("/", _DOCUMENT), ("/orders/123", _DOCUMENT)], "/", id="templated path"),
+        pytest.param(
+            [("/", _DOCUMENT), ("/widget/9f8e7d6c5b4a", _TEMPLATED_IFRAME)],
+            "/",
+            id="iframe at a templated path",
+        ),
+        pytest.param(
+            [("/", _DOCUMENT), ("/b", _DOCUMENT), ("/orders/123", _DOCUMENT)],
+            "/b",
+            id="the latest fetchable page",
+        ),
+    ],
+)
+def test_a_value_seen_again_on_a_page_no_token_can_fetch_keeps_the_earlier_page(
+    tmp_path: Path, kind: str, pages: list[tuple[str, dict[str, str]]], paired_page: str
+) -> None:
+    """A session-stable token rendered on / and again on a page no Token can fetch
+    (a templated path, or a frame at one) pairs with the latest page carrying it
+    that a Token can fetch."""
+    body = _META_PAGE.format(_STABLE) if kind == "meta" else _shell(_STABLE)
+    name = "x-csrf-token" if kind == "meta" else "csrf"
+    entries = [
+        _entry(
+            "GET",
+            f"{_HOST}{path}",
+            content_type="text/html; charset=utf-8",
+            body=body,
+            request_headers=headers,
+            started=f"2026-11-04T10:00:{at:02d}.000Z",
+        )
+        for at, (path, headers) in enumerate(pages)
+    ]
+    entries.append(
+        _entry(
+            "POST",
+            f"{_HOST}/api/save",
+            request_headers={"x-csrf": _STABLE},
+            post_data="{}",
+            started=f"2026-11-04T10:00:{len(pages):02d}.000Z",
+        )
+    )
+    d = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+    assert [(p.kind, p.name, p.page, p.matched) for p in d.token_pairs] == [
+        (kind, name, paired_page, 1)
+    ]
+    assert [m for m in d.token_mismatches if m[2] == name] == []
+    plugin = _plugin(d)
+    constructor = "from_meta_tag" if kind == "meta" else "from_hidden_input"
+    page_url = "" if paired_page == "/" else f'                page_url="{paired_page}",\n'
+    assert (
+        f"            Token.{constructor}(\n"
+        f'                name="{name}",\n'
+        '                header="x-csrf",\n'
+        f"{page_url}"
+        "            ),\n"
+    ) in plugin
+    assert "unpaired token candidate" not in plugin
+
+
 _SCRIPT_ONLY_META = (
     "<html><head><script>document.head.insertAdjacentHTML('beforeend', "
     '\'<meta name="csrf-token" content="scriptValue1234">\');</script></head></html>'

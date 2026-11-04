@@ -54,9 +54,10 @@ class TokenPairing:
 class _HeaderTally:
     header: str
     sent: int = 0
-    # (kind, name) -> page template -> how many requests held that source's value
-    # while it was last read from that page; the template is None for a page no
-    # Token can fetch again. Insertion order is first-match order.
+    # (kind, name) -> page template -> how many requests held that source's value,
+    # counted under the latest page carrying that value that a Token can fetch
+    # again, or None when no such page carried it. Insertion order is first-match
+    # order.
     matches: dict[tuple[TokenKind, str], dict[str | None, int]] = field(default_factory=dict)
     # Every (kind, lower-cased name) compared with this header at least once: a
     # cookie the request sent, or a page value read on the latest page load.
@@ -74,6 +75,14 @@ class _PageValue:
     current: bool = True
 
 
+def _latest_fetchable(pages: dict[str | None, None]) -> str | None:
+    """The latest of *pages* a Token can fetch again, or None when there is none."""
+    for page in reversed(pages):
+        if page is not None:
+            return page
+    return None
+
+
 class TokenValueTracker:
     """Feed it the run in order: :meth:`request` for each kept request before
     :meth:`page` (or :meth:`unread_page`) for its response, then read
@@ -83,9 +92,11 @@ class TokenValueTracker:
         # (kind, name) -> its value on the latest page that carried it.
         self._page_values: dict[tuple[TokenKind, str], _PageValue] = {}
         # (kind, name) -> every value it held on a page so far -> the template of
-        # the latest page that carried that value. A header matching any of them
-        # carried that source: the page the user acted on need not be the latest.
-        self._held: dict[tuple[TokenKind, str], dict[str, str | None]] = {}
+        # each page that carried that value, latest last. A header matching any of
+        # them carried that source: the page the user acted on need not be the
+        # latest, and a value seen on a page no Token can fetch may also have been
+        # on one it can.
+        self._held: dict[tuple[TokenKind, str], dict[str, dict[str | None, None]]] = {}
         self._tallies: dict[str, _HeaderTally] = {}
 
     def request(self, headers: dict[str, str], sent_cookies: Iterable[tuple[str, str]]) -> None:
@@ -107,10 +118,11 @@ class TokenValueTracker:
             for (kind, source), held in self._page_values.items():
                 if held.current and len(held.value) >= MIN_PAIRING_VALUE_LENGTH:
                     tally.measured.add((kind, source.lower()))
-                pages = self._held[(kind, source)]
-                if value in pages:  # the header is at least eight characters
+                pages = self._held[(kind, source)].get(value)
+                if pages is not None:  # the header is at least eight characters
+                    page = _latest_fetchable(pages)
                     by_page = tally.matches.setdefault((kind, source), {})
-                    by_page[pages[value]] = by_page.get(pages[value], 0) + 1
+                    by_page[page] = by_page.get(page, 0) + 1
             for cookie, held_value in cookies:
                 tally.measured.add(("cookie", cookie.lower()))
                 if held_value == value:
@@ -122,7 +134,9 @@ class TokenValueTracker:
         path template when a Token can fetch it again, else None."""
         for (kind, name), value in page_values(html).items():
             self._page_values[(kind, name)] = _PageValue(value, template)
-            self._held.setdefault((kind, name), {})[value] = template
+            pages = self._held.setdefault((kind, name), {}).setdefault(value, {})
+            pages.pop(template, None)
+            pages[template] = None
 
     def unread_page(self) -> None:
         """A page loaded whose body the recording did not keep: every value read
