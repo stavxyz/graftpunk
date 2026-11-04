@@ -715,16 +715,24 @@ def _not_redacted(value: str) -> bool:
     return bool(value) and value != REDACTED
 
 
-# An email address: one @, a local part, and a domain with a dot after the @.
-_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
-
-
 def _is_email(value: str) -> bool:
     """Whether *value* is an email address, the only identifier the scrub takes: a
     login form's other identifier-named fields send values nobody typed (a submit
     button's ``login=Log In``, a hidden ``account=guest``), which a run-wide scrub
-    would rewrite wherever they appear."""
-    return _EMAIL_RE.fullmatch(value) is not None
+    would rewrite wherever they appear.
+
+    An address is one ``@``, no whitespace, a local part, and a domain with a dot
+    that has a character on each side. It is checked without a regex: the full
+    match ``[^@\\s]+@[^@\\s]+\\.[^@\\s]+`` retried each dot of a long domain
+    to the end, quadratic in its length (#304).
+    """
+    local, _, domain = value.partition("@")
+    return (
+        bool(local)
+        and "." in domain[1:-1]
+        and "@" not in domain
+        and not any(character.isspace() for character in value)
+    )
 
 
 def credential_post_redaction(
