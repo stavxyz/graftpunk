@@ -26,7 +26,7 @@ from graftpunk.exceptions import (
     TokenPatternMismatchError,
 )
 from graftpunk.logging import get_logger
-from graftpunk.page_values import PageValueKind, page_values
+from graftpunk.page_values import PageValueKind, page_values, skipped_region_mentioning
 from graftpunk.session_identity import GP_ACCOUNT_ATTR, GP_SESSION_NAME_ATTR
 from graftpunk.signals import register_live_browser, unregister_live_browser
 
@@ -455,6 +455,27 @@ def _element_target(token: Token) -> str:
     return f'<input type="hidden" name="{token.element_name}">'
 
 
+def _element_not_found(token: Token, html: str, url: str) -> str:
+    """The error for an element token *html* holds no such element for: when the
+    tag's text is there but inside a script, comment, or other content a browser
+    does not read as a tag (1.39.0's regex read it there), say so and how to read
+    it."""
+    message = f"{_element_target(token)} not found in {url}"
+    if token.element is None:
+        return message
+    where = skipped_region_mentioning(html, token.element, token.element_name or "")
+    if where is None:
+        return message
+    place = "a comment" if where == "comment" else f"a <{where}> element"
+    message += (
+        f": the tag appears only inside {place}, which a browser does not read as a tag; "
+        "read it with Token.from_js_variable and a pattern"
+    )
+    if where == "script":
+        message += ', or use extraction="auto" so a browser runs the script that writes it'
+    return message
+
+
 @dataclass(frozen=True)
 class TokenConfig:
     """Collection of token extraction rules for a plugin."""
@@ -593,7 +614,7 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
             if token.extraction == "auto":
                 raise _BrowserExtractionNeeded(token.name)
             if token.element is not None:
-                raise TokenPatternMismatchError(f"{_element_target(token)} not found in {url}")
+                raise TokenPatternMismatchError(_element_not_found(token, resp.text, url))
             raise TokenPatternMismatchError(f"Token pattern not found in {url}: {token.pattern}")
         return value
 

@@ -19,7 +19,14 @@ from graftpunk.har.naming import capture_slug
 from graftpunk.har.report import render_json, render_markdown
 from graftpunk.har.token_pairing import MIN_PAIRING_VALUE_LENGTH, TokenPairing
 from graftpunk.testing import FixtureSession
-from graftpunk.tokens import Token, TokenConfig, extract_token, prepare_session, read_page_token
+from graftpunk.tokens import (
+    Token,
+    TokenConfig,
+    _BrowserExtractionNeeded,
+    extract_token,
+    prepare_session,
+    read_page_token,
+)
 from tests.unit.test_har_digest import _entry, _write_har
 
 _HOST = "https://myshop.example.com"
@@ -793,4 +800,47 @@ def test_a_later_page_the_post_was_not_sent_from_keeps_the_meta_pairing(
         "            ),\n"
     ) in plugin
     assert "unpaired token candidate: meta" not in plugin
+
+
+_SCRIPT_ONLY_META = (
+    "<html><head><script>document.head.insertAdjacentHTML('beforeend', "
+    '\'<meta name="csrf-token" content="scriptValue1234">\');</script></head></html>'
+)
+
+
+def test_a_meta_tag_only_inside_a_script_names_the_cause_and_the_fix(tmp_path: Path) -> None:
+    """1.39.0's regex read a meta tag written inside a script string; a browser
+    does not see it until the script runs. Under extraction="http" the error says
+    so and names the fixes; under "auto" the token goes to the browser pass."""
+    (tmp_path / f"{capture_slug('GET', '/')}.html").write_text(_SCRIPT_ONLY_META)
+    session = FixtureSession(tmp_path)
+    http = Token.from_meta_tag(name="csrf-token", header="x-csrf-token", extraction="http")
+    with pytest.raises(TokenPatternMismatchError) as raised:
+        extract_token(session, http, _HOST)
+    assert str(raised.value) == (
+        f'<meta name="csrf-token"> not found in {_HOST}/: the tag appears only inside '
+        "a <script> element, which a browser does not read as a tag; read it with "
+        'Token.from_js_variable and a pattern, or use extraction="auto" so a browser '
+        "runs the script that writes it"
+    )
+    assert "scriptValue1234" not in str(raised.value)
+
+    js = Token.from_js_variable(
+        pattern=r'name="csrf-token" content="([^"]+)', header="x-csrf-token", extraction="http"
+    )
+    assert extract_token(session, js, _HOST) == "scriptValue1234"
+
+    auto = Token.from_meta_tag(name="csrf-token", header="x-csrf-token")
+    with pytest.raises(_BrowserExtractionNeeded):
+        extract_token(session, auto, _HOST)
+
+
+def test_a_meta_tag_inside_a_comment_names_the_comment(tmp_path: Path) -> None:
+    (tmp_path / f"{capture_slug('GET', '/')}.html").write_text(
+        '<!-- <meta name="csrf-token" content="oldValue12345"> -->'
+    )
+    token = Token.from_meta_tag(name="csrf-token", header="x-csrf-token", extraction="http")
+    with pytest.raises(TokenPatternMismatchError, match="only inside a comment, which") as raised:
+        extract_token(FixtureSession(tmp_path), token, _HOST)
+    assert "extraction=" not in str(raised.value)
 
