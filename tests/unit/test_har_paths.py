@@ -962,6 +962,45 @@ def test_a_token_name_built_of_token_words_reads_as_a_name(name: str) -> None:
     assert printable_name(name)
 
 
+# Ordinary request header names the gate held back before #347 widened its
+# vocabulary (the header abbreviations in _ACRONYMS, Ip in _SHORT_WORDS, and
+# upgrade and x-amz-content-sha256 in _FRAMEWORK_NAMES). Vendor prefixes are
+# placeholders.
+_ORDINARY_HEADER_NAMES = (
+    "Upgrade",
+    "X-Amz-Target",
+    "X-Amz-Security-Token",
+    "X-Amz-User-Agent",
+    "X-Amz-Content-Sha256",
+    "X-Amzn-Query-Mode",
+    "Grpc-Timeout",
+    "X-Grpc-Web",
+    "HX-Request",
+    "HX-Current-URL",
+    "Ocp-Apim-Subscription-Key",
+    "Sec-GPC",
+    "Sec-CH-DPR",
+    "X-DNS-Prefetch-Control",
+    "CDN-Cache-Control",
+    "X-PJAX",
+    "X-Real-Ip",
+    "X-ProxyUser-Ip",
+)
+
+
+@pytest.mark.parametrize("name", _ORDINARY_HEADER_NAMES)
+def test_an_ordinary_header_name_reads_as_a_name_in_both_gates(name: str) -> None:
+    script = _load_har_facts()
+    for spelling in (name, name.lower()):
+        assert printable_name(spelling), spelling
+        assert script.printable_name(spelling), spelling
+
+
+@pytest.mark.parametrize("name", ["X-Csrf-Qz9XvKw", "X-Zq9vLmKx", "X-Amz-Qz9XvKw", "HX-Zq9vLm2x"])
+def test_a_header_name_with_a_random_tail_is_still_held_back(name: str) -> None:
+    assert not printable_name(name)
+
+
 @pytest.mark.parametrize("name", _HELD_BACK_PROBES)
 def test_a_probe_the_reviews_held_back_is_still_held_back(name: str) -> None:
     assert not printable_name(name)
@@ -999,6 +1038,8 @@ def _name_corpus() -> list[str]:
         "a" * 48,
         "a" * 49,
         *_HELD_BACK_PROBES,
+        *_ORDINARY_HEADER_NAMES,
+        *(name.lower() for name in _ORDINARY_HEADER_NAMES),
     ]
     corpus += [
         spelling
@@ -1009,7 +1050,7 @@ def _name_corpus() -> list[str]:
 
 
 def test_the_har_readers_name_gate_is_graftpunks() -> None:
-    """The digest prints a cookie name only when har-facts.py would."""
+    """The digest prints a cookie or header name only when har-facts.py would."""
     script = _load_har_facts()
     differ = [
         name for name in _name_corpus() if script.printable_name(name) != printable_name(name)

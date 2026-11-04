@@ -263,7 +263,10 @@ _ACRONYMS = frozenset(
         "ID IDS URL URI API XML HTML JSON CSRF XSRF UUID IP UI SSO MFA OTP SMS PDF CSV UTC "
         "OS DOB SSN ZIP CVV CVC TOS GDPR HTTP HTTPS JWT SAML AJAX DOM CSS JS ISO VAT SKU "
         # the abbreviations cookie and token names use, some spelled with no vowel
-        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP"
+        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP "
+        # the abbreviations header names use (X-Amz-Target, Grpc-Timeout,
+        # HX-Request, Ocp-Apim-Trace, Sec-GPC, X-DNS-Prefetch-Control, X-PJAX)
+        "AMZ AMZN GRPC HX OCP GPC DPR DNS CDN PJAX"
     ).split()
 )
 # An acronym this long or longer reads as one in any case inside camel case
@@ -271,7 +274,7 @@ _ACRONYMS = frozenset(
 _MIN_CASELESS_ACRONYM_LEN = 3
 # A capitalised word of two letters in camel case must be one of these (userId).
 _SHORT_WORDS = frozenset(
-    "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am".split()  # noqa: SIM905
+    "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am Ip".split()  # noqa: SIM905
 )
 _MAX_PARTS = 8
 _MAX_CAPITALS = 16
@@ -353,7 +356,7 @@ _FRAMEWORK_NAMES = frozenset(
         "x-amz-date x-amz-request-id x-amzn-requestid x-amzn-trace-id x-amz-id-2 x-fb-debug "
         "x-aspnet-version x-aspnetmvc-version x-dtpc grpc-status grpc-message x-cdn "
         "x-akamai-transformed akamai-grn x-iinfo x-sucuri-id apollographql-client-name "
-        "apollographql-client-version "
+        "apollographql-client-version upgrade x-amz-content-sha256 "
         # cookie names
         ".aspxauth asp.net_sessionid .aspnetcore.session .aspnetcore.antiforgery "
         ".aspnetcore.cookies __cf_bm cf_clearance __cfruid __cflb _cfuvid _abck bm_sz bm_sv "
