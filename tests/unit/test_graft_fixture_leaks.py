@@ -1397,3 +1397,78 @@ def test_only_an_identifier_under_typename_is_a_type_name(tmp_path: Path, captur
     result = _run(tmp_path, json.dumps(capture), '{"x": "a.okonkwo@myshop.example"}')
     assert result.returncode == 1
     assert "still in the fixture: 'a.okonkwo@myshop.example'" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("capture", "fixture", "value"),
+    [
+        ({"name": "Okonkwo"}, '{"byName": {"OKONKWO": {"total": 1}}}', "Okonkwo"),
+        ({"login": "aokonkwo"}, '{"AOKONKWO": 1}', "aokonkwo"),
+    ],
+)
+def test_a_captured_value_used_as_a_key_in_capitals_is_reported(
+    tmp_path: Path, capture: dict, fixture: str, value: str
+) -> None:
+    """A whole key matches a single word as a value does: as written or in capitals."""
+    result = _run(tmp_path, json.dumps(capture), fixture)
+    assert result.returncode == 1
+    assert f"still in the fixture: {value!r} (line 1: " in result.stdout
+    assert f"»{value.upper()}«" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("fixture", "reported"),
+    [
+        ('{"pin": "482"}', True),
+        ('{"code": "x-482"}', True),
+        ('{"total": 14829}', False),
+        ('{"at": "2026-11-04T10:48:22Z"}', False),
+        ('{"id": "A4821"}', False),
+    ],
+)
+def test_a_three_character_value_matches_only_with_nothing_beside_it(
+    tmp_path: Path, fixture: str, reported: bool
+) -> None:
+    """``482`` is a value in ``"482"`` and between punctuation, and only digits
+    of another number inside ``14829``."""
+    result = _run(tmp_path, json.dumps({"pin": "482"}), fixture)
+    assert result.returncode == (1 if reported else 0), result.stdout
+    assert ("still in the fixture: '482'" in result.stdout) is reported
+
+
+@pytest.mark.parametrize(
+    ("capture", "fixture", "value"),
+    [
+        ({"login": "aokonkwo"}, 'USERS = {"aokonkwo": 1}\n', "aokonkwo"),
+        ({"kind": "Account"}, "FIXTURE = {'primaryAccount': 1}\n", "Account"),
+        ({"kind": "Account"}, '<script>var d = {"primaryAccount": 1};</script>', "Account"),
+    ],
+    ids=["value-as-key", "schema-key-only", "inline-script"],
+)
+def test_a_fixture_that_is_not_json_is_searched_as_plain_text(
+    tmp_path: Path, capture: dict, fixture: str, value: str
+) -> None:
+    """Keys are blanked only in a JSON fixture. In a Python module or a page, a
+    value inside a schema key is reported, as in 1.40.0: accepted noise."""
+    result = _run(tmp_path, json.dumps(capture), fixture)
+    assert result.returncode == 1
+    assert f"still in the fixture: {value!r} (line 1: " in result.stdout
+
+
+def test_graphql_field_and_operation_names_in_a_capture_are_not_looked_for(
+    tmp_path: Path,
+) -> None:
+    """A failed field's ``errors[*].path`` and the operation's name are the
+    schema's names, held as values; a fixture keyed by them passes."""
+
+    def response(message: str, operation: str) -> dict:
+        return {
+            "data": {"viewer": {"loyaltyAccount": None}},
+            "errors": [{"message": message, "path": ["viewer", "loyaltyAccount"]}],
+            "extensions": {"operationName": operation},
+        }
+
+    capture = json.dumps(response("Not authorised", "viewerAccount"))
+    fixture = json.dumps({"viewerAccount": response("Denied", "exampleOp")})
+    result = _run(tmp_path, capture, fixture)
+    assert result.returncode == 0, result.stdout

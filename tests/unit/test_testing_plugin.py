@@ -293,6 +293,8 @@ _COPIED_FROM = {
     "_SCHEMA_KEY": recorded,
     "_TYPENAME": recorded,
     "_QUOTED_KEY": recorded,
+    "_BEFORE": recorded,
+    "_AFTER": recorded,
     "_MOST_PLACES": recorded,
     "_MOST_FILES": recorded,
     "PAGE_SOURCE_NAME": recorded,
@@ -311,8 +313,6 @@ _SCRIPTS_OWN = {
     "_PROVENANCE",
     "_RUN_LABEL",
     "_DATE_TIME_DIGITS",
-    "_BEFORE",
-    "_AFTER",
     "_NON_ASCII",
     "_CONTEXT",
     "_LONGEST_MATCH",
@@ -462,14 +462,15 @@ _FRAGMENTS = (
     "\\u00e9", "\\n", "&quot;", "%22", "?", "case ", "== ", "orderId", "created_at",
     "NEXT_DATA", "__typename", "aokonkwo", "Okonkwo", "AliceOkonkwo", "cus_Nffr9",
     "kQ7xZpLmNbVcXwErTyUi", "s3cr\\\"et!", "512", "USD", "A1", "a12", "true", "null",
-    "José", "e\u0301",
+    "José", "e\u0301", "OKONKWO", "AOKONKWO", "482", "14829", "a1b", "xa1bx", "errors",
+    "path", "operationName", "extensions", "FIXTURE = ",
 )  # fmt: skip
 
 
 def _random_text(rng: random.Random) -> str:
     """Text of key, quote, escape and value fragments, or a JSON document of
-    random keys, values and ``__typename`` entries, sometimes stringified inside
-    another."""
+    random keys, values, ``__typename`` entries and GraphQL names, sometimes
+    stringified inside another or written into a Python module or a script."""
     if rng.random() < 0.5:
         return "".join(rng.choice(_FRAGMENTS) for _ in range(rng.randint(0, 30)))
     words = [f for f in _FRAGMENTS if f.strip("{}[],: \n\"'\\%&;?=") == f and f]
@@ -484,8 +485,23 @@ def _random_text(rng: random.Random) -> str:
             rng.choice([*words, "__typename"]): node(depth + 1) for _ in range(rng.randint(0, 4))
         }
 
-    text = json.dumps(node(0), indent=rng.choice([None, 2]), ensure_ascii=rng.random() < 0.5)
-    return json.dumps({"payload": text}) if rng.random() < 0.3 else text
+    document = node(0)
+    if rng.random() < 0.3:
+        # A GraphQL response or request: field and operation names held as values.
+        document = {
+            "data": document,
+            "errors": [{"path": [rng.choice([*words, 0]) for _ in range(rng.randint(0, 3))]}],
+            "extensions": {"operationName": rng.choice([*words, "a b", 1])},
+            "operationName": rng.choice([*words, None]),
+        }
+    text = json.dumps(document, indent=rng.choice([None, 2]), ensure_ascii=rng.random() < 0.5)
+    roll = rng.random()
+    if roll < 0.2:
+        return json.dumps({"payload": text})
+    if roll < 0.35:
+        # Not JSON as a whole: a Python module or an inline script holding it.
+        return rng.choice(["FIXTURE = ", "<script>var d = "]) + text
+    return text
 
 
 def test_the_two_copies_agree_on_random_keys_escapes_and_short_values() -> None:
@@ -503,6 +519,8 @@ def test_the_two_copies_agree_on_random_keys_escapes_and_short_values() -> None:
         values = {"sid": {rng.choice(words) for _ in range(rng.randint(1, 3))}}
         for value in values["sid"]:
             assert script._long_enough(value) == recorded._long_enough(value), value
+            assert script._contains(value, text) == recorded._contains(value, text), value
+        assert script._fixture_forms(text) == recorded._fixture_forms(text), text
         expected = recorded_leaks(text, values)
         assert script.recorded_leaks(script._Fixture(text), values) == expected, (text, values)
 
@@ -630,3 +648,60 @@ def test_a_recorded_value_is_found_as_a_value_or_a_whole_key_never_inside_a_key(
     assert package == script.recorded_leaks(script._Fixture(_GRAPHQL_FIXTURE), values)
     expected = f"the recorded value of flagged 'session' is still in the fixture ({where})"
     assert package == ([expected] if where else [])
+
+
+@pytest.mark.parametrize(
+    ("fixture", "value", "where"),
+    [
+        ('{"OKONKWO": {"total": 1}}', "Okonkwo", "line 1"),
+        ('{"byLogin": {\n  "AOKONKWO": 1}}', "aokonkwo", "line 2"),
+        ('{"pin": "482"}', "482", "line 1"),
+        ('{"total": 14829}', "482", None),
+        ('{"at": "2026-11-04T10:48:22Z"}', "482", None),
+        ('{"id": "xa1bx"}', "a1b", None),
+        ('{"id": "x-a1b-y"}', "a1b", "line 1"),
+        ("FIXTURE = {'primaryAccount': 1}\n", "Account", "line 1"),
+        ('<script>var d = {"recentOrders": 2};</script>', "Orders", "line 1"),
+        ('{"primaryAccount": 1}', "Account", None),
+    ],
+    ids=[
+        "name-as-capitals-key",
+        "username-as-capitals-key",
+        "three-digits-alone",
+        "three-digits-inside-a-number",
+        "three-digits-inside-a-timestamp",
+        "three-characters-inside-a-word",
+        "three-characters-between-hyphens",
+        "python-module-is-plain-text",
+        "inline-script-is-plain-text",
+        "json-key-is-blanked",
+    ],
+)
+def test_case_boundaries_and_non_json_fixtures_are_read_alike_in_both_copies(
+    fixture: str, value: str, where: str | None
+) -> None:
+    """A whole key matches as written or in capitals; a three-character value only
+    with no letter or digit on either side; and a fixture that does not parse as
+    JSON is searched as plain text, keys included."""
+    script = _load_script()
+    values = {"session": {value}}
+    package = recorded_leaks(fixture, values)
+    assert package == script.recorded_leaks(script._Fixture(fixture), values)
+    expected = f"the recorded value of flagged 'session' is still in the fixture ({where})"
+    assert package == ([expected] if where else [])
+
+
+def test_graphql_field_and_operation_names_are_not_body_values() -> None:
+    text = json.dumps(
+        {
+            "data": {"viewer": None},
+            "errors": [{"message": "Denied", "path": ["viewer", "loyaltyAccount", 0]}],
+            "extensions": {"operationName": "viewerAccount", "code": "x"},
+            "operationName": "ViewerAccount",
+        }
+    )
+    assert recorded._body_values(text) == ["Denied", "0", "x"]
+    assert _load_script().body_values(text) == ["Denied", "0", "x"]
+    batch = json.dumps([{"errors": [{"path": ["viewer", "not a name"]}]}])
+    assert recorded._body_values(batch) == ["not a name"]
+    assert _load_script().body_values(batch) == ["not a name"]

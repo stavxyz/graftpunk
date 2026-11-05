@@ -13,23 +13,30 @@ address, and each pair of words with one of those in it. A key shaped like a
 schema name and holding no digit, lowercase, snake_case, camelCase or
 SCREAMING_SNAKE (``orderId``, ``created_at``), and an identifier under a
 ``__typename`` key (``User``, a GraphQL type's name) are the site's schema, not
-account data, and are skipped; any other key (``Okonkwo``, ``cus_Nf3x``, a token)
-is a value. A value or piece is skipped too when it is ``true``, ``false`` or
-``null`` in any case, or shorter than four characters unless it has three and
-holds a digit (``USD`` is skipped, ``512`` is not), by the rule ``--har`` judges a
-recorded value by.
+account data, and are skipped, and so are the GraphQL field and operation names a
+JSON body holds as values (the identifiers in each ``errors[*].path``, an
+``operationName``, and ``extensions.operationName``); any other key
+(``Okonkwo``, ``cus_Nf3x``, a token) is a value. A value or piece is skipped too
+when it is ``true``, ``false`` or ``null`` in any case, or shorter than four
+characters unless it has three and holds a digit (``USD`` is skipped, ``512`` is
+not), by the rule ``--har`` judges a recorded value by. A three-character value
+matches only where no letter or digit sits on either side, so ``482`` is not
+found in ``14829``.
 
 Where it looks, in the fixture, in Unicode compatibility form: the raw text, its
 JSON or HTML values decoded, its backslash escapes decoded (``\\u00e9``, a
 surrogate pair, ``\\x26``, ``\\n``, ``\\/``), its HTML character references decoded
 (``&amp;``), and its percent-encoding decoded (``%40``), repeated up to
-three times while it keeps changing (``%2540``). A schema key quoted where an
-object key stands, after ``{`` or ``,`` (``"orderId":``, ``'orderId':``, or
-``\\"orderId\\":`` inside a JSON string), is blanked in the fixture before the
-search, so a value is not found inside a key the site named (``Account`` is not
-found in ``"primaryAccount":``). A value equal to a whole such key is still
-reported, since it is a value used as a key, and a quoted word before a colon
-anywhere else (a ternary, a ``case`` label, quoted prose) is searched as text.
+three times while it keeps changing (``%2540``). In a fixture that parses as
+JSON, a schema key quoted where an object key stands, after ``{`` or ``,``
+(``"orderId":``, or ``\\"orderId\\":`` inside a JSON string), is blanked before
+the search, so a value is not found inside a key the site named (``Account`` is
+not found in ``"primaryAccount":``). A value equal to a whole such key, as
+written or in capitals, is still reported, since it is a value used as a key,
+and a quoted word before a colon anywhere else (a ternary, a ``case`` label,
+quoted prose) is searched as text. A fixture that does not parse as JSON (a
+Python module, HTML, an inline script) is searched as plain text, keys included,
+so a captured value inside one of its keys is reported; that noise is accepted.
 ``--har`` searches the fixture the same way. A piece with a
 space, a digit, or an ``@`` matches in any case; a single word matches as written,
 in capitals, or in lower case inside an identifier or an address
@@ -160,6 +167,10 @@ _TYPENAME = "__typename"
 # comma. A quoted word before a colon anywhere else (a ternary, a case label,
 # quoted prose) is not a key.
 _QUOTED_KEY = re.compile(r"""([{,]\s*)(\\?["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:""")
+# Around a single word: no letter or digit on either side. An underscore counts as a
+# separator, so OKONKWO_ID holds the word OKONKWO.
+_BEFORE = r"(?<![^\W_])"
+_AFTER = r"(?![^\W_])"
 # A value, or a form of one, shorter than this is too common to report: it is in
 # most fixtures by chance (USD, Ann). One that holds a digit is reported from the
 # second constant's length up (a PIN, a house number, an area code). A value that
@@ -257,6 +268,20 @@ def _long_enough(value: str) -> bool:
     return len(value) >= _MIN_WITH_DIGIT_LENGTH and any(c.isdigit() for c in value)
 
 
+def _bounded(value: str) -> str:
+    """A pattern for *value* with no letter or digit on either side."""
+    return rf"{_BEFORE}{re.escape(value)}{_AFTER}"
+
+
+def _contains(value: str, text: str) -> bool:
+    """Whether *text* holds *value*: anywhere, or, for a value shorter than four
+    characters, only where no letter or digit sits on either side, so ``482`` is
+    not found in ``14829``."""
+    if len(value) >= _MIN_RECORDED_LENGTH:
+        return value in text
+    return re.search(_bounded(value), text) is not None
+
+
 def _schema_keys(text: str) -> dict[str, list[tuple[int, int, int]]]:
     """Each schema key quoted in key position in *text*, with the 0-based line,
     start and end of each place it stands, in order."""
@@ -270,6 +295,18 @@ def _schema_keys(text: str) -> dict[str, list[tuple[int, int, int]]]:
             at = start
             keys.setdefault(key, []).append((line, start, end))
     return keys
+
+
+def _key_places(
+    keys: dict[str, list[tuple[int, int, int]]], value: str
+) -> list[tuple[int, int, int]]:
+    """The places in *keys* of a key that is *value* whole, as written or in
+    capitals, the forms a single word is matched in (``Okonkwo`` is the key
+    ``"OKONKWO":``), in order."""
+    places = list(keys.get(value, ()))
+    if value.upper() != value:
+        places += keys.get(value.upper(), ())
+    return sorted(places)
 
 
 def _without_keys(text: str) -> str:
@@ -289,9 +326,38 @@ def _without_keys(text: str) -> str:
     return _QUOTED_KEY.sub(blank, text)
 
 
+def _graphql_name(value: object) -> bool:
+    """Whether *value* is a string a GraphQL name can be: an identifier."""
+    return isinstance(value, str) and _IDENTIFIER.match(value) is not None
+
+
 def _type_name(key: object, value: object) -> bool:
     """Whether *value*, under *key*, is a GraphQL type's name."""
-    return key == _TYPENAME and isinstance(value, str) and _IDENTIFIER.match(value) is not None
+    return key == _TYPENAME and _graphql_name(value)
+
+
+def _without_path_names(error: object) -> object:
+    if not isinstance(error, dict) or not isinstance(error.get("path"), list):
+        return error
+    return {**error, "path": [step for step in error["path"] if not _graphql_name(step)]}
+
+
+def _without_field_names(document: object) -> object:
+    """*document*, a JSON body or one of a batch, without the GraphQL field and
+    operation names it holds as values: its ``operationName``, its
+    ``extensions.operationName``, and the names in each ``errors[*].path``."""
+    if not isinstance(document, dict):
+        return document
+    document = dict(document)
+    if _graphql_name(document.get("operationName")):
+        document["operationName"] = None
+    extensions = document.get("extensions")
+    if isinstance(extensions, dict) and _graphql_name(extensions.get("operationName")):
+        document["extensions"] = {**extensions, "operationName": None}
+    errors = document.get("errors")
+    if isinstance(errors, list):
+        document["errors"] = [_without_path_names(error) for error in errors]
+    return document
 
 
 def _json_values(node: object) -> list[str]:
@@ -310,17 +376,41 @@ def _json_values(node: object) -> list[str]:
     return [str(node)]
 
 
+def _document_values(data: object) -> list[str]:
+    documents = data if isinstance(data, list) else [data]
+    return [leaf for document in documents for leaf in _json_values(_without_field_names(document))]
+
+
+def _text_parts(text: str) -> list[str]:
+    parser = _TextParts()
+    parser.feed(text)
+    parser.close()
+    return parser.values
+
+
 def body_values(text: str) -> list[str]:
     """The filled-in values of a body, decoded: JSON leaves other than a type name
-    under ``__typename`` and keys other than schema keys, or the text parts of
+    under ``__typename`` or a GraphQL field or operation name (``errors[*].path``,
+    ``operationName``), and keys other than schema keys; or the text parts of
     anything else."""
     try:
-        return _json_values(json.loads(text))
+        data = json.loads(text)
     except (ValueError, RecursionError):
-        parser = _TextParts()
-        parser.feed(text)
-        parser.close()
-        return parser.values
+        return _text_parts(text)
+    return _document_values(data)
+
+
+def _fixture_forms(text: str) -> tuple[str, dict[str, list[tuple[int, int, int]]], list[str]]:
+    """*text* with its schema keys blanked, those keys (:func:`_schema_keys`), and
+    its filled-in values. The values are read from *text* itself, since blanked
+    keys of one length are one key to a JSON parser. Only a fixture that parses as
+    JSON has its keys blanked; any other (a Python module, HTML, an inline script)
+    is searched as plain text, keys included."""
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError):
+        return text, {}, _text_parts(text)
+    return _without_keys(text), _schema_keys(text), _document_values(data)
 
 
 def _pieces(value: str) -> list[str]:
@@ -427,20 +517,6 @@ def _value_forms(value: str) -> frozenset[str]:
     return frozenset(forms | {_without_quotes(form) for form in forms})
 
 
-def _decodings(fixture: str, blanked: str) -> list[str]:
-    """*blanked*, *fixture* with its schema keys blanked, and the forms a copied
-    value can hide behind in it. The values are read from *fixture* itself, since
-    blanked keys of one length are one key to a JSON parser, which keeps only the
-    last of their values."""
-    return [blanked, "\n".join(body_values(fixture)), *_escape_decodings(blanked)]
-
-
-# Around a single word: no letter or digit on either side. An underscore counts as a
-# separator, so OKONKWO_ID holds the word OKONKWO.
-_BEFORE = r"(?<![^\W_])"
-_AFTER = r"(?![^\W_])"
-
-
 def _found(value: str, haystack: str, folded: str) -> bool:
     """Whether *value* is in *haystack*, *folded* being it case-folded.
 
@@ -450,6 +526,10 @@ def _found(value: str, haystack: str, folded: str) -> bool:
     ``.`` (``test_okonkwo_order``, ``okonkwo@example.com``). A lowercase word standing
     alone is not matched, so ``Total`` on a page is not found in ``total, shipping``.
     """
+    if len(value) < _MIN_RECORDED_LENGTH:
+        # Only a value holding a digit is this short (_long_enough), and a digit
+        # matches in any case.
+        return _contains(value.casefold(), folded)
     if value in haystack:
         return True
     if _any_case(value):
@@ -637,10 +717,11 @@ class _Fixture:
         assert len(self.shown) == len(fixture)
         # Blanking a key, too, replaces characters one for one. A value equal to
         # a whole blanked key is still found, through the keys.
-        self.keys = _schema_keys(fixture)
-        blanked = _without_keys(fixture)
+        blanked, self.keys, values = _fixture_forms(fixture)
+        self.blanks_keys = blanked != fixture
         self.text = blanked
-        self.haystack = _normal("\n".join(_decodings(fixture, blanked)))
+        forms = [blanked, "\n".join(values), *_escape_decodings(blanked)]
+        self.haystack = _normal("\n".join(forms))
         self.folded = self.haystack.casefold()
         self._normal = _Derived(blanked, self.haystack, _normal_chunks, _normal)
         self._fold = _Derived(self.haystack, self.folded, _fold_chunks, str.casefold)
@@ -651,7 +732,7 @@ class _Fixture:
         self._raw_folded_end = self._fold.starts[lines] - 1
 
     def holds(self, value: str) -> bool:
-        return value in self.keys or _found(value, self.haystack, self.folded)
+        return bool(_key_places(self.keys, value)) or _found(value, self.haystack, self.folded)
 
     def _spans(self, value: str, end: int, folded_end: int) -> Iterator[tuple[int, int]]:
         """Where *value* is in the haystack before *end* (*folded_end* in the folded
@@ -667,7 +748,10 @@ class _Fixture:
         def matches(pattern: str, text: str, stop: int) -> Iterator[tuple[int, int]]:
             return (m.span() for m in re.compile(pattern).finditer(text, 0, stop))
 
-        if _any_case(value):
+        if len(value) < _MIN_RECORDED_LENGTH:
+            folded = matches(_bounded(value.casefold()), self.folded, folded_end)
+            sources = []
+        elif _any_case(value):
             folded = matches(re.escape(value.casefold()), self.folded, folded_end)
             sources = [literal()]
         else:
@@ -686,7 +770,7 @@ class _Fixture:
         first: dict[int, tuple[int, int, bool]] = {}
         for start, end in self._spans(value, self._raw_end, self._raw_folded_end):
             first.setdefault(self._normal.line_of(start), (start, end, True))
-        for line, start, end in self.keys.get(value, ()):
+        for line, start, end in _key_places(self.keys, value):
             first.setdefault(line, (start, end, False))
         if first:
             places = []
@@ -924,10 +1008,12 @@ def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
     :func:`_combined_decodings` of it. A value that is empty or, in any of its
     forms, ``true``, ``false`` or ``null`` in any case is not looked for, since a
     fixture cannot invent the literal away, and neither is a form shorter than
-    four characters, unless it has three and holds a digit. A value equal to a
-    whole blanked schema key is reported on the key's line."""
+    four characters, unless it has three and holds a digit; such a form matches
+    only where no letter or digit sits on either side. A value equal to a whole
+    blanked schema key, as written or in capitals, is reported on the key's
+    line."""
     lines: list[str] = []
-    raw_lines = _without_keys(fixture.shown).split("\n")
+    raw_lines = (_without_keys(fixture.shown) if fixture.blanks_keys else fixture.shown).split("\n")
     combined: str | None = None
     for name in sorted(values):
         wanted = {
@@ -937,18 +1023,22 @@ def recorded_leaks(fixture: _Fixture, values: dict[str, set[str]]) -> list[str]:
             for form in _value_forms(value)
             if _long_enough(form)
         }
-        hits = [value for value in wanted if value in fixture.haystack or value in fixture.keys]
+        hits = [
+            value
+            for value in wanted
+            if _contains(value, fixture.haystack) or _key_places(fixture.keys, value)
+        ]
         if not hits and wanted:
             if combined is None:
                 combined = _normal("\n".join(_combined_decodings(fixture.text)))
-            hits = [value for value in wanted if value in combined]
+            hits = [value for value in wanted if _contains(value, combined)]
         if not hits:
             continue
-        keyed = {line + 1 for value in hits for line, _start, _end in fixture.keys.get(value, ())}
+        keyed = {line + 1 for value in hits for line, _s, _e in _key_places(fixture.keys, value)}
         at = [
             str(number)
             for number, line in enumerate(raw_lines, 1)
-            if number in keyed or any(value in _normal(line) for value in hits)
+            if number in keyed or any(_contains(value, _normal(line)) for value in hits)
         ]
         where = f"line {', '.join(at[:_MOST_PLACES])}" if at else "found decoded"
         if len(at) > _MOST_PLACES:
