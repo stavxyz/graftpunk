@@ -21,6 +21,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from graftpunk.har.documents import TokenKind, looks_like_token_name
+from graftpunk.har.parser import client_sets_header
 from graftpunk.page_values import page_values
 
 __all__ = ["MIN_PAIRING_VALUE_LENGTH", "TokenPairing", "TokenValueTracker"]
@@ -108,6 +109,7 @@ class TokenValueTracker:
             if isinstance(value, str)
             and len(value) >= MIN_PAIRING_VALUE_LENGTH
             and looks_like_token_name(name)
+            and not client_sets_header(name)
         ]
         if not token_headers:
             return

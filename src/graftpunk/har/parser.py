@@ -202,6 +202,25 @@ class HARParseResult:
         return bool(self.errors)
 
 
+# Request headers a recording holds that a plugin never sets: GraftpunkSession's
+# HTTP client sends Host, Connection, Accept-Encoding and Content-Length on its
+# own (read off the wire of a GET, a json= POST and a data= POST), and Priority
+# is an HTTP/2 transport signal. Pseudo-headers (":authority", ":method", ...)
+# are matched by their leading colon in client_sets_header, not listed here.
+CLIENT_SET_HEADERS: frozenset[str] = frozenset(
+    {"host", "connection", "accept-encoding", "content-length", "priority"}
+)
+
+
+def client_sets_header(name: str) -> bool:
+    """Whether request header *name* is one the HTTP client or the transport
+    supplies, never plugin source: an HTTP/2 pseudo-header (a name starting with
+    ``:``) or one of :data:`CLIENT_SET_HEADERS`, compared without regard to case.
+    Every place that lists recorded request headers for a plugin reads this."""
+    lowered = name.strip().lower()
+    return lowered.startswith(":") or lowered in CLIENT_SET_HEADERS
+
+
 def _parse_headers(headers_list: list[dict[str, str]]) -> dict[str, str]:
     """Convert HAR headers array to dict.
 

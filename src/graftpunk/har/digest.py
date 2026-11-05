@@ -56,6 +56,7 @@ from graftpunk.har.parser import (
     UNPARSED_TIMESTAMP,
     HAREntry,
     LoginInteraction,
+    client_sets_header,
     cookie_header_pairs,
     parse_har_file,
 )
@@ -247,17 +248,15 @@ _AUTH_URL_REGEX = re.compile(
 # never names the page a login opens at (LoginForm.opened_from).
 _LOGOUT_URL_REGEX = re.compile(r"/(?:log[-_]?out|sign[-_]?out|log[-_]?off)(?=/|$)", re.IGNORECASE)
 
+# Browser-set request headers a stub does not list. The ones the HTTP client
+# sets itself are graftpunk.har.parser.client_sets_header's.
 _STANDARD_REQUEST_HEADERS = frozenset(
     {
-        "host",
-        "connection",
         "accept",
-        "accept-encoding",
         "accept-language",
         "cache-control",
         "pragma",
         "content-type",
-        "content-length",
         "cookie",
         "referer",
         "origin",
@@ -1391,7 +1390,7 @@ def _custom_headers(entry: HAREntry) -> tuple[tuple[str, ...], set[str]]:
     dropped: set[str] = set()
     for name in entry.request.headers:
         lowered = name.lower()
-        if lowered in _STANDARD_REQUEST_HEADERS:
+        if lowered in _STANDARD_REQUEST_HEADERS or client_sets_header(name):
             continue
         if any(lowered.startswith(p) for p in _STANDARD_REQUEST_HEADER_PREFIXES):
             continue
@@ -3810,7 +3809,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             acc.record(entry, path, step, entry_index)
 
         for name in entry.request.headers:
-            if looks_like_token_name(name):
+            if looks_like_token_name(name) and not client_sets_header(name):
                 token_seen.setdefault(("header", name), []).append(f"{method} {raw_template}")
         for cookie in entry.request.cookies + entry.response.cookies:
             cname = cookie.get("name", "")
