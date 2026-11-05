@@ -22,7 +22,7 @@ import re
 import stat
 import tomllib
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
@@ -317,11 +317,12 @@ class RequirementStatus:
 class ProjectView:
     """A directory's plugin project: its classification, one view per readable entry
     point, one defect per entry point whose module is structurally wrong, and the
-    status of each ``PROJECT_REQUIREMENTS`` name in its files (read-only, keyed by
-    the requirement's ``key``).
+    status of each requirement name in its files (read-only, keyed by the
+    requirement's ``key``).
 
     ``requirements`` and ``requirement_set`` are both computed when the project is
-    read, from ``policy.PROJECT_REQUIREMENTS`` as it stood then; :meth:`missing_requirements`
+    read, from ``policy.PROJECT_REQUIREMENTS`` as it stood then and, in a suite,
+    each member's ``policy.member_requirements``; :meth:`missing_requirements`
     and :meth:`unreadable_files` read ``self.requirement_set``, not the module
     attribute, so both methods are pure functions of the view's own fields, not of
     whatever ``policy.PROJECT_REQUIREMENTS`` holds at call time (design note below).
@@ -358,11 +359,10 @@ class ProjectView:
     there, whether the plugin lives in a package directory or is a single
     module file.
 
-    Design note: ``requirement_set`` is snapshotted from ``policy.PROJECT_REQUIREMENTS``
-    by ``read_project`` at read time, and both methods read ``self.requirement_set``
-    instead of the module attribute, so a ``ProjectView`` is a value: two calls on
-    the same instance always agree, and equality compares the same fields the
-    methods read.
+    Design note: ``requirement_set`` is computed by ``read_project`` at read time,
+    and both methods read ``self.requirement_set`` instead of the module attribute,
+    so a ``ProjectView`` is a value: two calls on the same instance always agree,
+    and equality compares the same fields the methods read.
     """
 
     directory: DirectoryKind
@@ -389,17 +389,25 @@ class ProjectView:
         status = self.requirements.get(requirement.key)
         return "unbound" if status is None else status.state
 
-    def missing_requirements(self) -> tuple[ProjectRequirement, ...]:
+    def _serving(self, plugin: str | None) -> tuple[ProjectRequirement, ...]:
+        """The ``requirement_set`` entries that serve *plugin* (an entry-point name):
+        its own and the whole project's. Every entry when *plugin* is ``None``."""
+        if plugin is None:
+            return self.requirement_set
+        return tuple(r for r in self.requirement_set if r.plugin in (None, plugin))
+
+    def missing_requirements(self, plugin: str | None = None) -> tuple[ProjectRequirement, ...]:
         """The ``requirement_set`` entries this project's files do not bind, in
         declared order: the one answer ``gp plugin upgrade`` applies and
-        ``gp plugin check`` reports. An entry whose file does not parse is not
+        ``gp plugin check`` reports. With *plugin*, only those that serve it
+        (``ProjectRequirement.plugin``). An entry whose file does not parse is not
         here; its file is in :meth:`unreadable_files`. Empty for a directory that
         is not a plugin project, which has no requirements to lack."""
         if self.directory != "plugin":
             return ()
-        return tuple(r for r in self.requirement_set if self._state(r) == "unbound")
+        return tuple(r for r in self._serving(plugin) if self._state(r) == "unbound")
 
-    def unreadable_files(self) -> tuple[tuple[str, str], ...]:
+    def unreadable_files(self, plugin: str | None = None) -> tuple[tuple[str, str], ...]:
         """Each requirement file whose status is ``unreadable``, once, as ``(path,
         reason)``, in the order ``requirement_set`` first names it, however many
         requirements it holds (``graftpunk.devtools.plugin_check``'s module
@@ -408,11 +416,12 @@ class ProjectView:
         ``gp plugin info`` and ``gp plugin add-command``, which never read those
         files, proceed. *path* is the requirement's own file, unless an ancestor
         blocks it (``status.blocking``), in which case it is that ancestor: the
-        finding then names the same path ``gp plugin upgrade`` refuses on."""
+        finding then names the same path ``gp plugin upgrade`` refuses on. With
+        *plugin*, only the files of the requirements that serve it."""
         if self.directory != "plugin":
             return ()
         files: dict[str, str] = {}
-        for r in self.requirement_set:
+        for r in self._serving(plugin):
             status = self.requirements.get(r.key)
             if status is not None and status.state == "unreadable":
                 files.setdefault(status.blocking or r.path, status.reason or DOES_NOT_PARSE)
@@ -574,11 +583,12 @@ def read_project(root: Path) -> ProjectView:
         _read_plugin(root, key, value, project_name, len(entry_points))
         for key, value in entry_points.items()
     ]
-    requirement_set = policy.PROJECT_REQUIREMENTS
+    plugins = tuple(r for r in read if isinstance(r, PluginView))
+    requirement_set = _requirement_set(plugins)
     requirements = _requirement_statuses(root, requirement_set)
     return ProjectView(
         directory="plugin",
-        plugins=tuple(r for r in read if isinstance(r, PluginView)),
+        plugins=plugins,
         defects=tuple(r for r in read if isinstance(r, PluginDefect)),
         requirements=MappingProxyType(requirements),
         requirement_set=requirement_set,
@@ -1013,19 +1023,54 @@ def _requirement_statuses(
     file binds its name, by the one predicate, ``pysrc.binds_name``. Each distinct
     file is parsed once. A file that does not parse is ``unreadable`` for every entry
     it holds, with its one reason, rather than raised: one broken conftest must not
-    blind the consumers that never read it. The caller reads ``policy.PROJECT_REQUIREMENTS``
-    once and passes the snapshot in, so it cannot drift from the view's own
-    ``requirement_set`` within one ``read_project`` call."""
+    blind the consumers that never read it. The caller computes the set once
+    (:func:`_requirement_set`) and passes it in, so it cannot drift from the view's
+    own ``requirement_set`` within one ``read_project`` call.
+
+    A suite member's requirement its test module does not bind is ``bound`` when the
+    shared conftest binds the same name: the conftest's fixtures check walks the
+    whole tree, the member's root included (``policy.member_requirements``)."""
     paths = dict.fromkeys(r.path for r in requirement_set)
     parsed = {relative: _parse_requirement_file(root, relative) for relative in paths}
+    shared: ast.Module | RequirementStatus | None = None
     statuses: dict[str, RequirementStatus] = {}
     for r in requirement_set:
         tree = parsed[r.path]
-        if isinstance(tree, RequirementStatus):
+        if isinstance(tree, RequirementStatus) and tree.state == "unreadable":
             statuses[r.key] = tree
+            continue
+        bound = isinstance(tree, ast.Module) and binds_name(tree, r.name)
+        if not bound and r.path != policy.CONFTEST_PATH:
+            if shared is None:
+                shared = parsed.get(policy.CONFTEST_PATH) or _parse_requirement_file(
+                    root, policy.CONFTEST_PATH
+                )
+            bound = isinstance(shared, ast.Module) and binds_name(shared, r.name)
+        if bound:
+            statuses[r.key] = RequirementStatus("bound")
         else:
-            statuses[r.key] = RequirementStatus("bound" if binds_name(tree, r.name) else "unbound")
+            statuses[r.key] = (
+                tree if isinstance(tree, RequirementStatus) else RequirementStatus("unbound")
+            )
     return statuses
+
+
+def _requirement_set(plugins: tuple[PluginView, ...]) -> tuple[ProjectRequirement, ...]:
+    """What *plugins*' project must bind, each requirement attributed to the plugin it
+    serves: ``policy.PROJECT_REQUIREMENTS`` for a project with no suite member, read
+    from ``policy`` on each call. In a suite, the conftest's serve the plugin whose
+    fixtures root is the tree itself (none when no plugin's is), and each member's
+    test module holds its own ``policy.member_requirements`` (#370)."""
+    members = [p for p in plugins if p.fixtures_root != policy.FIXTURES_TREE]
+    if not members:
+        return policy.PROJECT_REQUIREMENTS
+    owner = next((p for p in plugins if p.fixtures_root == policy.FIXTURES_TREE), None)
+    shared = (
+        tuple(replace(r, plugin=owner.entry_point) for r in policy.PROJECT_REQUIREMENTS)
+        if owner is not None
+        else ()
+    )
+    return shared + tuple(r for m in members for r in policy.member_requirements(m.entry_point))
 
 
 def _parse_requirement_file(root: Path, relative: str) -> ast.Module | RequirementStatus:

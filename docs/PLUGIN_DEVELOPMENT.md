@@ -985,9 +985,11 @@ packages = ["src/graftpunk_myshop", "src/graftpunk_otherstore"]
 
 Suite mode gives each plugin its own `tests/fixtures/<name>/` directory, because
 fixture filenames are derived from endpoint paths and two plugins in one suite
-can share a path. It does not rewrite `tests/conftest.py`, which still
-scrubs only the first plugin's environment prefix; add a line for the new one
-(see [Secrets and configuration](#secrets-and-configuration)).
+can share a path. It does not touch `tests/conftest.py`, which was written for
+the first plugin. The new plugin's test module binds its own environment
+scrubber and fixtures check instead, over its own directory alone, so they serve
+its tests and no other plugin's
+(see [Keep the developer's own environment out of the tests](#keep-the-developers-own-environment-out-of-the-tests)).
 
 A directory holding a `pyproject.toml` that is not a plugin suite is refused
 with a message saying so. Nothing is overwritten, ever: if any target path
@@ -2342,12 +2344,35 @@ sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)
 environment variable starting with `prefix` for the duration of each test and
 restores them afterwards. Assigning it to a module-level name is what registers
 it. Without it, a developer who has `MYSHOP_PASSWORD` in their environment gets
-a green suite on code that fails for everybody else. Adding a plugin to an
-existing suite does not update this file: add a line for the new prefix
-yourself. The last two lines wire in the fixtures check described in
+a green suite on code that fails for everybody else. The last two lines wire
+in the fixtures check described in
 [Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture).
-`FIXTURES_TREE` is the whole fixtures directory, so a plugin added to the suite
-later is covered without editing this file.
+`FIXTURES_TREE` is the whole fixtures directory.
+
+A plugin added to an existing suite does not update this file. Its own
+`tests/test_<name>.py` binds the same three names, for its own prefix and its
+own `tests/fixtures/<name>/`:
+
+```python
+from pathlib import Path
+
+from graftpunk.testing.plugin import fixtures_are_sanitised, site_env_scrubber
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures" / "otherstore"
+scrub_site_env = site_env_scrubber("OTHERSTORE_")
+FIXTURES_TREE = FIXTURES_DIR
+sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)
+```
+
+A fixture bound in a test module serves that module's tests only and, there,
+replaces the conftest's fixture of the same name. So the new plugin's fixtures
+are checked before its tests run, and an older plugin in the suite whose
+fixtures predate sidecars is not failed by them. `gp plugin check` holds each
+suite member to these two names in its test module, unless the conftest binds
+them (a conftest check over the whole tree covers every member). The fix it
+names for a member is `gp plugin upgrade --plugin <name>`, which adds them to
+that member's test module and nothing else; for the first plugin it adds them
+to the conftest.
 
 ## Harden
 
@@ -2843,7 +2868,8 @@ or cannot be read), a `tests/conftest.py` that does not parse, is not valid
 UTF-8, cannot be read, or is not a regular file, every `GP-FILL` marker left
 in a plugin module or a test module, any plugin module that does not hold
 exactly one plugin class, and any project wiring the project lacks (`gp
-plugin upgrade` adds it). When the project cannot be read at all (for
+plugin upgrade` adds it; in a suite, `gp plugin upgrade --plugin <name>` adds
+one plugin's and nothing else). When the project cannot be read at all (for
 example, not a plugin project, or a `pyproject.toml` or plugin module that
 cannot be read or does not parse), that refusal is the one finding. A fresh
 scaffold fails it until its markers are filled in. It passes `ruff check` and

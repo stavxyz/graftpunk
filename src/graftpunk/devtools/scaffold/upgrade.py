@@ -27,6 +27,7 @@ from pathlib import Path
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.plugin_project import (
     DOES_NOT_PARSE,
+    PluginView,
     require_plugin_project,
     unreadable_file_message,
 )
@@ -77,8 +78,14 @@ class UpgradeApplied:
         return bool(self.requirements) or self.created_fixtures_tree
 
 
-def upgrade_project(root: Path) -> UpgradeApplied:
+def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
     """Apply every requirement *root*'s project lacks, and return what was applied.
+
+    With *plugin* (an entry-point name), only the requirements that serve it
+    (``ProjectRequirement.plugin``): in a suite, its own test module's for a member,
+    and the shared conftest's for the plugin whose fixtures root is the whole tree.
+    That is what ``gp plugin check`` names for a suite, so upgrading one member never
+    points a fixtures check at another member's fixtures (#370).
 
     Raises:
         UpgradeRefusedError: A requirement's file, or ``tests/fixtures``, is one
@@ -86,16 +93,22 @@ def upgrade_project(root: Path) -> UpgradeApplied:
             (``graftpunk.devtools.plugin_check``'s module docstring has the
             complete list), or an import is not in a shape
             ``pysrc.with_import`` places into.
+        UpgradeRefusedError: *plugin* names no readable plugin of the project.
         NotAPluginProjectError: *root* is not a plugin project.
         PluginProjectError: See :func:`read_project`.
         ScaffoldWriteError: A write failed; every file was restored first, or the
             error names what was left changed.
     """
     view = require_plugin_project(root)
+    if plugin is not None and not isinstance(view.plugin(plugin), PluginView):
+        names = ", ".join(p.entry_point for p in view.plugins) or "none"
+        raise UpgradeRefusedError(
+            f"no plugin named {plugin!r} in this project; its plugins: {names}."
+        )
     blocked: list[tuple[str, str]] = []
     if view.fixtures_tree_blocked is not None:
         blocked.append(view.fixtures_tree_blocked)
-    blocked.extend(view.unreadable_files())
+    blocked.extend(view.unreadable_files(plugin))
     blocked = list(dict.fromkeys(blocked))
     if blocked:
         # A single space, not "; ": each entry is already a full sentence
@@ -103,7 +116,7 @@ def upgrade_project(root: Path) -> UpgradeApplied:
         # so "; " between two entries reads as a third one.
         listing = " ".join(f"{path}: {unreadable_file_message(reason)}" for path, reason in blocked)
         raise UpgradeRefusedError(listing)
-    missing = view.missing_requirements()
+    missing = view.missing_requirements(plugin)
     by_path: dict[str, list[ProjectRequirement]] = {}
     for requirement in missing:
         by_path.setdefault(requirement.path, []).append(requirement)

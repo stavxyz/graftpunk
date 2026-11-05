@@ -103,8 +103,8 @@ the `gp` on the user's PATH. The cases to expect, in plain words:
 
 - graftpunk's requirement in the project was raised: run the gate again.
 - the requirement cannot be raised for you: raise it by hand and rerun the gate.
-- the fixtures tree or some project wiring is missing: gp says to run
-  `gp plugin upgrade`; run it, then the whole gate.
+- the fixtures tree or some project wiring is missing: run the `gp plugin upgrade`
+  command gp names (in a suite, with `--plugin <name>`), then the whole gate.
 - an endpoint for which `gp observe fixtures` writes no fixture: write the
   fixture yourself from the projection's shape, as above.
 - the project's dependencies are dynamic: gp names what has to require the

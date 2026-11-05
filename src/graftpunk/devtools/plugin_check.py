@@ -7,8 +7,9 @@ marker in a plugin module or a test module; a module without exactly one
 ``SitePlugin`` subclass (the reader's per-plugin defect, listed with the
 other findings); a requirement's file that does not parse, is not valid
 UTF-8, cannot be read, or is not a regular file (or whose directory is
-blocked); a ``PROJECT_REQUIREMENTS`` entry the project lacks, which
-``gp plugin upgrade`` fixes; a ``policy.FIXTURES_TREE`` that is missing
+blocked); a requirement the project lacks (in a suite, each member's own), which
+``gp plugin upgrade`` fixes (scoped with ``--plugin`` in a suite); a
+``policy.FIXTURES_TREE`` that is missing
 (which ``gp plugin upgrade`` creates), is not a directory (an author must
 move it aside), or cannot be read (an author must fix its permissions),
 including when ``tests/`` itself, not the tree, is the one blocked; and,
@@ -45,7 +46,7 @@ from graftpunk.devtools.plugin_project import (
     require_plugin_project,
     unreadable_file_message,
 )
-from graftpunk.devtools.scaffold.policy import FIXTURES_TREE, GP_FILL_MARKER
+from graftpunk.devtools.scaffold.policy import FIXTURES_TREE, GP_FILL_MARKER, ProjectRequirement
 
 __all__ = ["FINDING_ADVICE", "Finding", "check_project"]
 
@@ -56,7 +57,14 @@ _CREATES_IT = "creates it"
 _ADDS_IT = "adds it"
 _FIXTURES_TREE_MISSING = f"missing; gp plugin upgrade {_CREATES_IT}."
 _DOES_NOT_BIND = "does not bind"
-_MISSING_REQUIREMENT_TAIL = f"gp plugin upgrade {_ADDS_IT}."
+
+
+def _upgrade_advice(requirement: ProjectRequirement) -> str:
+    """The advice for a missing *requirement*: the upgrade that adds it and, in a
+    suite, nothing another plugin lacks (#370)."""
+    scope = f" --plugin {requirement.plugin}" if requirement.plugin is not None else ""
+    return f"gp plugin upgrade{scope} {_ADDS_IT}."
+
 
 FINDING_ADVICE: tuple[str, ...] = (
     NOT_A_DIRECTORY_PHRASE,
@@ -136,7 +144,7 @@ def check_project(root: Path) -> list[Finding]:
         Finding(
             path=requirement.path,
             line=None,
-            message=f"{_DOES_NOT_BIND} {requirement.name}; {_MISSING_REQUIREMENT_TAIL}",
+            message=f"{_DOES_NOT_BIND} {requirement.name}; {_upgrade_advice(requirement)}",
         )
         for requirement in view.missing_requirements()
     )

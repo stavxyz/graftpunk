@@ -176,10 +176,17 @@ def plugin_add_command(
 @plugin_app.command("upgrade")
 def plugin_upgrade(
     dir_: Annotated[Path, typer.Option("--dir", help="Project directory")] = Path("."),
+    plugin: Annotated[
+        str | None,
+        typer.Option(
+            "--plugin",
+            help="Entry-point name: add only what this plugin of a suite lacks",
+        ),
+    ] = None,
 ) -> None:
     """Bring a plugin project up to the current generated shape, changing nothing it has."""
     try:
-        applied = upgrade_project(dir_)
+        applied = upgrade_project(dir_, plugin=plugin)
     except DevtoolsRefusal as exc:
         LOG.debug("upgrade_refused", reason=type(exc).__name__)
         console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)

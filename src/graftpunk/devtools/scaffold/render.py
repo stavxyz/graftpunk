@@ -2505,8 +2505,7 @@ def _fixtures_dir_expression(spec: ScaffoldSpec) -> str:
     """The generated ``FIXTURES_DIR`` assignment's right-hand side: the fixtures root,
     relative to the test module, which lives in ``policy.TESTS_DIR``. Every root
     lies under that directory by the policy's own rule, which its tests pin."""
-    parts = fixtures_root_for(spec).removeprefix(policy.TESTS_DIR).strip("/").split("/")
-    return "Path(__file__).parent" + "".join(f' / "{part}"' for part in parts)
+    return policy.path_from_tests(fixtures_root_for(spec))
 
 
 def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, package: str) -> str:
@@ -2530,11 +2529,30 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
         # graftpunk.testing (third-party) sorts before the generated package
         # (first-party, "src" layout) under the generated project's own isort
         # settings.
-        lines += ["from graftpunk.testing import fixture_context", ""]
+        lines.append("from graftpunk.testing import fixture_context")
+    suite_member = spec.mode == "add_to_suite"
+    if suite_member:
+        lines += import_lines(
+            "graftpunk.testing.plugin", "fixtures_are_sanitised", "site_env_scrubber"
+        )
+    if has_endpoint_tests or suite_member:
+        lines.append("")
     lines += [
         *import_lines(f"{package}.plugin", klass),
         "",
         f"FIXTURES_DIR = {_fixtures_dir_expression(spec)}",
+    ]
+    if suite_member:
+        # FIXTURES_TREE and sanitised_fixtures: the names policy.member_requirements
+        # holds gp plugin check to (#370).
+        lines += [
+            "# This plugin's own env scrubber and fixtures check: the suite's shared",
+            "# conftest serves another plugin, and these serve this module's tests only.",
+            f'scrub_site_env = site_env_scrubber("{_env_prefix_for(spec.name)}")',
+            "FIXTURES_TREE = FIXTURES_DIR",
+            "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)",
+        ]
+    lines += [
         "",
         "",
         "def test_plugin_instantiates() -> None:",
@@ -2747,7 +2765,7 @@ def _rendered_files(
     return {
         f"src/{package}/__init__.py": f'"""{spec.name}: a graftpunk plugin."""\n',
         f"src/{package}/plugin.py": plugin_module,
-        f"{policy.TESTS_DIR}test_{policy.module_name_for(spec.name)}.py": _render_test_module(
+        policy.suite_test_module(policy.module_name_for(spec.name)): _render_test_module(
             spec, planned, package=package
         ),
         f"{fixtures_root_for(spec)}{policy.FIXTURES_PLACEHOLDER}": "",

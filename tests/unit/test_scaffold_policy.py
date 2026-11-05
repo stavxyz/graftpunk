@@ -101,6 +101,22 @@ class TestProjectRequirements:
         before it bites, not after."""
         assert all(r.path == CONFTEST_PATH for r in PROJECT_REQUIREMENTS)
 
+    def test_a_suite_member_binds_the_same_names_over_its_own_root(self) -> None:
+        tree, check = policy.member_requirements("my-shop")
+        assert (tree.path, tree.name, tree.plugin) == (
+            "tests/test_my_shop.py",
+            "FIXTURES_TREE",
+            "my-shop",
+        )
+        assert tree.statement == 'FIXTURES_TREE = Path(__file__).parent / "fixtures" / "my_shop"'
+        assert (check.path, check.statement, check.plugin) == (
+            "tests/test_my_shop.py",
+            "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)",
+            "my-shop",
+        )
+        assert [r.name for r in PROJECT_REQUIREMENTS] == [tree.name, check.name]
+        assert all(r.plugin is None for r in PROJECT_REQUIREMENTS)
+
 
 def test_the_placeholder_is_the_testing_layers() -> None:
     from graftpunk.testing import sidecar
