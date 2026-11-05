@@ -43,8 +43,10 @@ HAR_NAME = "network.har"
 PAGE_SOURCE_NAME = "page-source.html"
 
 # A recorded value's form shorter than this is too common to report: it is in
-# most fixtures by chance.
+# most fixtures by chance (USD, Ann). One that holds a digit is reported from
+# the second constant's length up (a PIN, a house number, an area code).
 _MIN_RECORDED_LENGTH = 4
+_MIN_WITH_DIGIT_LENGTH = 3
 # A recorded value that, in any of its forms, is one of these JSON literals (in
 # any case) is not looked for: a name flagged by its name alone records them
 # (logged_in=true), and a fixture cannot invent the literal away.
@@ -52,7 +54,27 @@ _LITERALS = frozenset(("true", "false", "null"))
 # Lines named per leaked name before the rest are counted.
 _MOST_PLACES = 5
 _DIGITS = re.compile(r"\d{3,}")
-_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
+# A key shaped like a name the site chose for its schema, and without a digit, is
+# not account data: lowercase or snake_case (account, created_at), camelCase
+# (accountNumber), or SCREAMING_SNAKE (NEXT_DATA), with leading or trailing
+# underscores (__typename). Any other key (a surname, Okonkwo; an id, cus_Nf3x; a
+# token) is a value. A string under __typename that is an identifier is a
+# GraphQL type's name (User, Location). Neither is a value the fixture holds, so
+# such a key in the fixture is not searched (_without_keys).
+_SCHEMA_KEY = re.compile(
+    r"_*(?:[a-z]+(?:_+[a-z]+)*|[a-z]+(?:[A-Z][a-z]+)+|[A-Z]+(?:_+[A-Z]+)*)_*\Z"
+)
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_TYPENAME = "__typename"
+# A JSON or Python key in single or double quotes, JSON-escaped or not, before
+# its colon, where an object key stands: after the object's opening brace or a
+# comma. A quoted word before a colon anywhere else (a ternary, a case label,
+# quoted prose) is not a key.
+_QUOTED_KEY = re.compile(r"""([{,]\s*)(\\?["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:""")
+# Around a single word: no letter or digit on either side. An underscore counts as a
+# separator, so OKONKWO_ID holds the word OKONKWO.
+_BEFORE = r"(?<![^\W_])"
+_AFTER = r"(?![^\W_])"
 
 
 class RunUnreadableError(Exception):
@@ -118,10 +140,120 @@ class _TextParts(HTMLParser):
         self.values.extend(value for _name, value in attrs if value)
 
 
+def _schema_key(key: str) -> bool:
+    """Whether *key* is shaped like a name the site chose for its schema."""
+    return _SCHEMA_KEY.match(key) is not None
+
+
+def _long_enough(value: str) -> bool:
+    """Whether *value* is long enough to report: four characters, or three that
+    hold a digit."""
+    if len(value) >= _MIN_RECORDED_LENGTH:
+        return True
+    return len(value) >= _MIN_WITH_DIGIT_LENGTH and any(c.isdigit() for c in value)
+
+
+def _bounded(value: str) -> str:
+    """A pattern for *value* with no letter or digit on either side."""
+    return rf"{_BEFORE}{re.escape(value)}{_AFTER}"
+
+
+def _contains(value: str, text: str) -> bool:
+    """Whether *text* holds *value*: anywhere, or, for a value shorter than four
+    characters, only where no letter or digit sits on either side, so ``482`` is
+    not found in ``14829``."""
+    if len(value) >= _MIN_RECORDED_LENGTH:
+        return value in text
+    return re.search(_bounded(value), text) is not None
+
+
+def _schema_keys(text: str) -> dict[str, list[tuple[int, int, int]]]:
+    """Each schema key quoted in key position in *text*, with the 0-based line,
+    start and end of each place it stands, in order."""
+    keys: dict[str, list[tuple[int, int, int]]] = {}
+    line, at = 0, 0
+    for match in _QUOTED_KEY.finditer(text):
+        key = match.group(3)
+        if _schema_key(key):
+            start, end = match.span(3)
+            line += text.count("\n", at, start)
+            at = start
+            keys.setdefault(key, []).append((line, start, end))
+    return keys
+
+
+def _key_places(
+    keys: dict[str, list[tuple[int, int, int]]], value: str
+) -> list[tuple[int, int, int]]:
+    """The places in *keys* of a key that is *value* whole, as written or in
+    capitals, the forms a single word is matched in (``Okonkwo`` is the key
+    ``"OKONKWO":``), in order."""
+    places = list(keys.get(value, ()))
+    if value.upper() != value:
+        places += keys.get(value.upper(), ())
+    return sorted(places)
+
+
+def _without_keys(text: str) -> str:
+    """*text* with each schema key quoted in key position blanked in place, so a
+    value is found as a value and never inside a key the site named
+    (``"recentOrders":`` does not hold ``Order``). A value equal to a whole key
+    is looked for in :func:`_schema_keys` instead."""
+
+    def blank(match: re.Match[str]) -> str:
+        if not _schema_key(match.group(3)):
+            return match.group(0)
+        start, end = match.span(3)
+        whole = match.group(0)
+        at = start - match.start()
+        return whole[:at] + " " * (end - start) + whole[at + end - start :]
+
+    return _QUOTED_KEY.sub(blank, text)
+
+
+def _graphql_name(value: object) -> bool:
+    """Whether *value* is a string a GraphQL name can be: an identifier."""
+    return isinstance(value, str) and _IDENTIFIER.match(value) is not None
+
+
+def _type_name(key: object, value: object) -> bool:
+    """Whether *value*, under *key*, is a GraphQL type's name."""
+    return key == _TYPENAME and _graphql_name(value)
+
+
+def _without_path_names(error: object) -> object:
+    if not isinstance(error, dict) or not isinstance(error.get("path"), list):
+        return error
+    return {**error, "path": [step for step in error["path"] if not _graphql_name(step)]}
+
+
+def _without_field_names(document: object) -> object:
+    """*document*, a JSON body or one of a batch, without the GraphQL field and
+    operation names it holds as values: its ``operationName``, its
+    ``extensions.operationName``, and the names in each ``errors[*].path``."""
+    if not isinstance(document, dict):
+        return document
+    document = dict(document)
+    if _graphql_name(document.get("operationName")):
+        document["operationName"] = None
+    extensions = document.get("extensions")
+    if isinstance(extensions, dict) and _graphql_name(extensions.get("operationName")):
+        document["extensions"] = {**extensions, "operationName": None}
+    errors = document.get("errors")
+    if isinstance(errors, list):
+        document["errors"] = [_without_path_names(error) for error in errors]
+    return document
+
+
 def _json_values(node: object) -> list[str]:
     if isinstance(node, dict):
-        keys = [str(k) for k in node if not _IDENTIFIER.match(str(k)) or _DIGITS.search(str(k))]
-        return keys + [leaf for value in node.values() for leaf in _json_values(value)]
+        keys = [str(k) for k in node if not _schema_key(str(k))]
+        return keys + [
+            leaf
+            for key, value in node.items()
+            if not _type_name(key, value)
+            for leaf in _json_values(value)
+        ]
     if isinstance(node, list):
         return [leaf for value in node for leaf in _json_values(value)]
     if isinstance(node, bool) or node is None:
@@ -129,16 +261,41 @@ def _json_values(node: object) -> list[str]:
     return [str(node)]
 
 
+def _document_values(data: object) -> list[str]:
+    documents = data if isinstance(data, list) else [data]
+    return [leaf for document in documents for leaf in _json_values(_without_field_names(document))]
+
+
+def _text_parts(text: str) -> list[str]:
+    parser = _TextParts()
+    parser.feed(text)
+    parser.close()
+    return parser.values
+
+
 def _body_values(text: str) -> list[str]:
-    """The filled-in values of a body, decoded: JSON leaves and non-identifier keys,
-    or the text parts of anything else."""
+    """The filled-in values of a body, decoded: JSON leaves other than a type name
+    under ``__typename`` or a GraphQL field or operation name (``errors[*].path``,
+    ``operationName``), and keys other than schema keys; or the text parts of
+    anything else."""
     try:
-        return _json_values(json.loads(text))
+        data = json.loads(text)
     except (ValueError, RecursionError):
-        parser = _TextParts()
-        parser.feed(text)
-        parser.close()
-        return parser.values
+        return _text_parts(text)
+    return _document_values(data)
+
+
+def _fixture_forms(text: str) -> tuple[str, dict[str, list[tuple[int, int, int]]], list[str]]:
+    """*text* with its schema keys blanked, those keys (:func:`_schema_keys`), and
+    its filled-in values. The values are read from *text* itself, since blanked
+    keys of one length are one key to a JSON parser. Only a fixture that parses as
+    JSON has its keys blanked; any other (a Python module, HTML, an inline script)
+    is searched as plain text, keys included."""
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError):
+        return text, {}, _text_parts(text)
+    return _without_keys(text), _schema_keys(text), _document_values(data)
 
 
 class _TokenValues(HTMLParser):
@@ -367,10 +524,22 @@ def recorded_leaks(text: str, values: Mapping[str, Iterable[str]]) -> list[str]:
     forms, ``true``, ``false`` or ``null`` in any case: a name flagged by its
     name alone records such values (``logged_in=true``), and a fixture cannot
     invent the literal away. A form shorter than four characters is not looked
-    for either, since it is in most fixtures by chance. Every other value is
-    looked for, a username, a name or a four-digit PIN included."""
-    haystack = _normal("\n".join([text, "\n".join(_body_values(text)), *decoded_forms(text)]))
-    raw_lines = text.split("\n")
+    for either, since it is in most fixtures by chance, unless it has three
+    characters and holds a digit; such a form matches only where no letter or
+    digit sits on either side (``482`` is not in ``14829``). Every other value is
+    looked for, a username, a name or a three-digit PIN included.
+
+    When *text* parses as JSON, a quoted key in key position (after ``{`` or
+    ``,``) shaped like a schema name, digit-free lowercase, snake_case, camelCase
+    or SCREAMING_SNAKE (``"orderId":``), is blanked in the text and its decoded
+    forms: a value is not reported for matching part of such a key. A value equal
+    to a whole such key, as written or in capitals, is reported, since it is a
+    value used as a key. The filled-in values are read from *text* as written.
+    Any other fixture (a Python module, HTML) is searched as plain text, keys
+    included, so a value inside a key is reported there."""
+    blanked, keys, body = _fixture_forms(text)
+    haystack = _normal("\n".join([blanked, "\n".join(body), *decoded_forms(blanked)]))
+    raw_lines = blanked.split("\n")
     combined: str | None = None
     lines: list[str] = []
     for name in sorted(values):
@@ -379,19 +548,20 @@ def recorded_leaks(text: str, values: Mapping[str, Iterable[str]]) -> list[str]:
             for value in values[name]
             if value and not _is_literal(value)
             for form in value_forms(value)
-            if len(form) >= _MIN_RECORDED_LENGTH
+            if _long_enough(form)
         }
-        hits = [value for value in wanted if value in haystack]
+        hits = [value for value in wanted if _contains(value, haystack) or _key_places(keys, value)]
         if not hits and wanted:
             if combined is None:
-                combined = _normal("\n".join(combined_forms(text)))
-            hits = [value for value in wanted if value in combined]
+                combined = _normal("\n".join(combined_forms(blanked)))
+            hits = [value for value in wanted if _contains(value, combined)]
         if not hits:
             continue
+        keyed = {line + 1 for value in hits for line, _s, _e in _key_places(keys, value)}
         at = [
             str(number)
             for number, line in enumerate(raw_lines, 1)
-            if any(value in _normal(line) for value in hits)
+            if number in keyed or any(_contains(value, _normal(line)) for value in hits)
         ]
         where = f"line {', '.join(at[:_MOST_PLACES])}" if at else "found decoded"
         if len(at) > _MOST_PLACES:

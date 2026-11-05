@@ -1620,17 +1620,32 @@ and gp writes it only when the browser gave the page at stop, so a run without
 one is read whole.
 
 A recorded value is not looked for only when it is empty, `true`, `false` or
-`null` in any case, or shorter than four characters, each after the decodings
-the check applies to a recorded value (percent-decoding and one pair of
-surrounding double quotes). A name flagged by its name alone (`session_name`,
-`http_only`) records `logged_in=true`, and a fixture holding the JSON literal
-`true` cannot invent it away; a value of three characters or fewer is in most
-fixtures by chance. Every other value is looked for, a username, a personal
-name, a four-digit PIN or a five-digit id included. The rule the name check
-judges a value by (`form_state`) was the alternative. It was not chosen
-because it reads usernames, names, short numbers and dictionary-word
-passwords as holding nothing, and a flagged session or token name can record
-exactly those.
+`null` in any case, or shorter than four characters without being three that
+hold a digit, each after the decodings the check applies to a recorded value
+(percent-decoding and one pair of surrounding double quotes). A name flagged by
+its name alone (`session_name`, `http_only`) records `logged_in=true`, and a
+fixture holding the JSON literal `true` cannot invent it away; a value of three
+letters (`USD`) is in most fixtures by chance, while three characters holding a
+digit are a PIN, a house number or an area code far more often, and match only
+where no letter or digit sits on either side (`482` is not found in `14829`).
+Every other value is looked for, a username, a personal name, a three-digit PIN
+or a five-digit id included. In a fixture that parses as JSON, a quoted key
+where an object key stands (after `{` or `,`) that is shaped like a schema name
+and holds no digit, which is lowercase, snake_case, camelCase or SCREAMING_SNAKE
+(`"orderId":`, `"created_at":`), is a name the site chose for its schema, and is
+blanked in the fixture before the search, so a recorded value inside such a key
+(`Order` in `"recentOrders":`) is not reported. A recorded value equal to a
+whole such key, as written or in capitals (`AOKONKWO` for `aokonkwo`), is
+reported, since it is a value used as a key, and so is one in any other key (a
+surname, an id, a token) or in a quoted word before a colon outside key position
+(a ternary, a `case` label, quoted prose). The fixture's JSON values are read
+from the text before blanking, since two blanked keys of one length are one key
+to a JSON parser. A fixture that does not parse as JSON (a Python module, HTML)
+is searched as plain text, keys included, as in 1.40.0: a value inside one of
+its keys is reported, and that noise is accepted. The rule the name check judges
+a value by (`form_state`) was the alternative. It was not chosen because it
+reads usernames, names, short numbers and dictionary-word passwords as holding
+nothing, and a flagged session or token name can record exactly those.
 
 `out_of_scope_only` (#316, schema 4) is a context reason like `sent_only`:
 `flagged_reasons_of` writes it beside the reasons that flag a cookie when every

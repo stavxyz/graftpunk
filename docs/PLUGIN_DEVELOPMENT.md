@@ -2457,10 +2457,18 @@ digits is left out only when a draw holds no digit: 1.1% at 8 characters, 0.09%
 at 12 and none at 16. The graft skill's `fixture-leaks.py`, which compares a
 fixture with the capture it was derived from, still reports any value from the
 captured response body left in the fixture, each run of 3 or more digits
-included. With `--har` and the run's HAR it also reports each flagged name
-whose recorded value (a cookie sent or set, a header, a meta or hidden-input
-token) is in the fixture, by line number, without printing the value. It runs
-when the skill derives a fixture, not in the suite.
+included. It skips a key shaped like a schema name without a digit (`orderId`,
+`created_at`), a GraphQL type, field or operation name held as a value (an
+identifier under `__typename`, in `errors[*].path`, or as `operationName`),
+`true`, `false` or `null`, and a value shorter than four characters unless it
+has three and holds a digit (and those match only with no letter or digit beside
+them), and in a fixture that parses as JSON it does not look inside such a key;
+a value used as a whole key, as written or in capitals, is still reported. A
+fixture that does not parse as JSON (a Python module, HTML) is searched as plain
+text, keys included. With `--har` and the run's HAR it also reports each flagged
+name whose recorded value (a cookie sent or set, a header, a meta or
+hidden-input token) is in the fixture, by line number, without printing the
+value. It runs when the skill derives a fixture, not in the suite.
 
 A form-state cookie can stay flagged the other way, when one of its values is
 not form state. A value is form state when it is ASCII punctuation and spaces
@@ -2586,10 +2594,16 @@ get_orders.json: the recorded value of flagged 'myshop_session' is still in the 
 It looks for the run id in each of the plugin's session directories (`myshop`,
 `myshop-alice`, and so on) and reads only that run's files. A recorded value
 is not looked for only when it is empty, `true`, `false` or `null` in any case,
-or shorter than four characters, since a fixture cannot invent `true` away;
-every other value is, a username, a name or a four-digit PIN included. In CI
-and on a teammate's checkout the run is not there, and the check is the name
-check alone, with no warning; the line the check prints on every run ends with
+or shorter than four characters without being three that hold a digit, since a
+fixture cannot invent `true` away; every other value is, a username, a name or a
+three-digit PIN included, which matches only with no letter or digit beside it
+(`482` is not found in `14829`). In a fixture that parses as JSON, a quoted key
+in key position shaped like a schema name without a digit (`"orderId":`) is
+blanked before the search, so a recorded value inside such a key is not
+reported; one equal to the whole key, as written or in capitals, is. Any other
+fixture is searched as plain text. In CI and on a teammate's checkout the run is
+not there, and the check is the name check alone, with no warning; the line the
+check prints on every run ends with
 `, N compared with the values their observe run recorded on this machine`, so
 you can see which check ran. When the run is there but cannot be read (a
 damaged `network.har`, a permission error, a file of the run the check needs

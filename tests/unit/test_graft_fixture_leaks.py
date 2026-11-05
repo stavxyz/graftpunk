@@ -1186,3 +1186,289 @@ def test_a_har_that_is_not_json_exits_2_naming_it(tmp_path: Path) -> None:
     result = _run_har(tmp_path, "{}", har="not json")
     assert result.returncode == 2
     assert "cannot read the HAR" in result.stderr
+
+
+def _account(email: str, token: str, order: str, name: str) -> str:
+    """A GraphQL account response on myshop.example: camelCase keys, a
+    ``__typename`` on every object, and nesting."""
+    return json.dumps(
+        {
+            "data": {
+                "viewer": {
+                    "__typename": "User",
+                    "displayName": name,
+                    "primaryEmail": email,
+                    "sessionToken": token,
+                    "preferredLocation": {
+                        "__typename": "Location",
+                        "address": {"__typename": "PostalAddress", "addressLocality": "Ames"},
+                    },
+                    "recentOrders": {
+                        "__typename": "OrderConnection",
+                        "pageInfo": {"__typename": "PageInfo", "hasNextPage": False},
+                        "nodes": [{"__typename": "Order", "orderId": order}],
+                    },
+                }
+            }
+        },
+        indent=2,
+    )
+
+
+def _survivors(stdout: str) -> set[str]:
+    return {
+        line.split("'")[1]
+        for line in stdout.splitlines()
+        if line.startswith("still in the fixture")
+    }
+
+
+def test_a_graphql_fixture_reports_its_pasted_values_and_no_key_or_type_name(
+    tmp_path: Path,
+) -> None:
+    """Every key and ``__typename`` is the site's schema and is kept on purpose;
+    the email, token and id pasted from the capture are each still reported."""
+    capture = _account("ann.okafor@myshop.example", "tok_8f2b9c41d7e6", "ORD-4471023", "Ann Okafor")
+    fixture = _account("ann.okafor@myshop.example", "tok_8f2b9c41d7e6", "ORD-4471023", "Pat Lee")
+    result = _run(tmp_path, capture, fixture)
+    assert result.returncode == 1
+    assert _survivors(result.stdout) == {
+        "ann.okafor@myshop.example",
+        "ann.okafor",
+        "myshop.example",
+        "tok_8f2b9c41d7e6",
+        "ORD-4471023",
+        "4471023",
+        "Okafor",
+        "Ames",
+    }
+
+
+def test_an_invented_graphql_fixture_reports_nothing(tmp_path: Path) -> None:
+    capture = _account("ann.okafor@myshop.example", "tok_8f2b9c41d7e6", "ORD-4471023", "Ann Okafor")
+    fixture = _account("pat@example.com", "tok_example0000", "ORD-9000001", "Pat Lee").replace(
+        "Ames", "Springfield"
+    )
+    result = _run(tmp_path, capture, fixture)
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_value_inside_a_key_of_the_fixture_is_not_reported(tmp_path: Path) -> None:
+    """``Account`` is a value in the capture, and the fixture holds it only inside
+    the key ``primaryAccount``."""
+    capture = json.dumps({"kind": "Account"})
+    result = _run(tmp_path, capture, json.dumps({"primaryAccount": {"kind": "Person"}}))
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        '{"kind": "Account"}',
+        '{"primaryAccount": "Account"}',
+        'KIND = "Account"\n',
+        '{"acct_Account_4471": 1}',
+    ],
+)
+def test_the_same_value_outside_a_schema_key_is_still_reported(
+    tmp_path: Path, fixture: str
+) -> None:
+    result = _run(tmp_path, json.dumps({"kind": "Account"}), fixture)
+    assert result.returncode == 1
+    assert "'Account'" in result.stdout
+
+
+@pytest.mark.parametrize("value", ["Ann", "USD", "A1", "55", "true", "NULL", "False"])
+def test_a_value_the_recorded_check_calls_harmless_is_not_reported(
+    tmp_path: Path, value: str
+) -> None:
+    """The captured values follow the recorded check's rule: under four
+    characters without being three that hold a digit, or ``true``, ``false`` or
+    ``null`` in any case, is not looked for. A three-letter name or currency code
+    is left to a read by eye."""
+    capture = f"<p>{value}</p>"
+    result = _run(tmp_path, capture, f"<p>{value}</p>")
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize("value", ["512", "731", "A12", "4b7"])
+def test_a_three_character_value_holding_a_digit_is_reported(tmp_path: Path, value: str) -> None:
+    """A house number, a PIN, an area code: three characters that hold a digit
+    are account data far more often than chance."""
+    result = _run(tmp_path, json.dumps({"street": f"{value} Main St"}), f"<p>{value}</p>")
+    assert result.returncode == 1
+    assert f"still in the fixture: {value!r} (line 1:" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        'var n = ok ? "aokonkwo" : "guest";\n',
+        'match login:\n    case "aokonkwo":\n        pass\n',
+        "if login == 'aokonkwo':\n    pass\n",
+        '{"msg": "hello \\"aokonkwo\\": welcome"}',
+        "<p>Customer 'aokonkwo': balance due</p>",
+        '<p>Customer "aokonkwo": 3 orders</p>',
+    ],
+    ids=["ternary", "case-label", "comparison", "escaped-in-value", "single-quoted", "html"],
+)
+def test_a_quoted_value_before_a_colon_that_is_not_a_key_is_reported(
+    tmp_path: Path, fixture: str
+) -> None:
+    """Only a quoted word after ``{`` or ``,`` stands where a key does; the same
+    word before a colon anywhere else is a value, searched as text."""
+    result = _run(tmp_path, json.dumps({"login": "aokonkwo"}), fixture)
+    assert result.returncode == 1
+    assert "still in the fixture: 'aokonkwo'" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("fixture", "line"),
+    [
+        ('{"reposByOwner": {"aokonkwo": [1]}}', 1),
+        ('{\n  "byUser": {\n    "aokonkwo": 1}}', 3),
+        ("USERS = {'plan': 'pro', 'aokonkwo': 1}\n", 1),
+        ('{"payload": "{\\"aokonkwo\\": 1}"}', 1),
+    ],
+)
+def test_a_captured_value_used_whole_as_a_key_is_reported(
+    tmp_path: Path, fixture: str, line: int
+) -> None:
+    """A schema key is blanked so a value is not found inside one, but a key equal
+    to a whole captured value is that value used as a key."""
+    result = _run(tmp_path, json.dumps({"viewer": {"login": "aokonkwo"}}), fixture)
+    assert result.returncode == 1
+    assert f"still in the fixture: 'aokonkwo' (line {line}: " in result.stdout
+    assert "»aokonkwo«" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "Okonkwo",
+        "AliceOkonkwo",
+        "A1B2C3D4",
+        "cus_NffrFeUfNV2Hib",
+        "QmFzZTYyVG9rZW5YeXo",
+        "orderId2",
+    ],
+    ids=["surname", "pascal-run", "digits", "prefixed-id", "base62", "camel-with-digit"],
+)
+def test_a_capture_key_not_shaped_like_a_schema_name_is_a_value(tmp_path: Path, key: str) -> None:
+    capture = json.dumps({"byOwner": {key: {"n": 1}}})
+    result = _run(tmp_path, capture, json.dumps({"note": key}))
+    assert result.returncode == 1
+    assert f"still in the fixture: {key!r}" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "key", ["account", "accountNumber", "created_at", "NEXT_DATA", "__typename", "_id"]
+)
+def test_a_capture_key_shaped_like_a_schema_name_is_not_looked_for(
+    tmp_path: Path, key: str
+) -> None:
+    """Lowercase, camelCase, snake_case and SCREAMING_SNAKE keys without a digit
+    are the site's schema; the fixture holds the same word as a value and passes."""
+    capture = json.dumps({key: "Pat Lee"})
+    result = _run(tmp_path, capture, json.dumps({"note": f"{key} {key.upper()}"}))
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_value_beside_a_blanked_key_of_its_length_is_still_read(tmp_path: Path) -> None:
+    """Two blanked keys of one length are one key to a JSON parser; the values are
+    read from the fixture as written, so a JSON-escaped value is not dropped."""
+    capture = json.dumps({"pw": 's3cr"etWord'})
+    result = _run(tmp_path, capture, json.dumps({"pw": 's3cr"etWord', "id": "x"}))
+    assert result.returncode == 1
+    assert _survivors(result.stdout) >= {'s3cr"etWord', "s3cr", "etWord"}
+    assert "still in the fixture: 's3cr\"etWord' (found decoded:" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "capture",
+    [
+        {"__typename": {"email": "a.okonkwo@myshop.example"}},
+        {"__typename": ["a.okonkwo@myshop.example"]},
+        {"__typename": "a.okonkwo@myshop.example"},
+    ],
+    ids=["object", "array", "not-an-identifier"],
+)
+def test_only_an_identifier_under_typename_is_a_type_name(tmp_path: Path, capture: dict) -> None:
+    result = _run(tmp_path, json.dumps(capture), '{"x": "a.okonkwo@myshop.example"}')
+    assert result.returncode == 1
+    assert "still in the fixture: 'a.okonkwo@myshop.example'" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("capture", "fixture", "value"),
+    [
+        ({"name": "Okonkwo"}, '{"byName": {"OKONKWO": {"total": 1}}}', "Okonkwo"),
+        ({"login": "aokonkwo"}, '{"AOKONKWO": 1}', "aokonkwo"),
+    ],
+)
+def test_a_captured_value_used_as_a_key_in_capitals_is_reported(
+    tmp_path: Path, capture: dict, fixture: str, value: str
+) -> None:
+    """A whole key matches a single word as a value does: as written or in capitals."""
+    result = _run(tmp_path, json.dumps(capture), fixture)
+    assert result.returncode == 1
+    assert f"still in the fixture: {value!r} (line 1: " in result.stdout
+    assert f"»{value.upper()}«" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("fixture", "reported"),
+    [
+        ('{"pin": "482"}', True),
+        ('{"code": "x-482"}', True),
+        ('{"total": 14829}', False),
+        ('{"at": "2026-11-04T10:48:22Z"}', False),
+        ('{"id": "A4821"}', False),
+    ],
+)
+def test_a_three_character_value_matches_only_with_nothing_beside_it(
+    tmp_path: Path, fixture: str, reported: bool
+) -> None:
+    """``482`` is a value in ``"482"`` and between punctuation, and only digits
+    of another number inside ``14829``."""
+    result = _run(tmp_path, json.dumps({"pin": "482"}), fixture)
+    assert result.returncode == (1 if reported else 0), result.stdout
+    assert ("still in the fixture: '482'" in result.stdout) is reported
+
+
+@pytest.mark.parametrize(
+    ("capture", "fixture", "value"),
+    [
+        ({"login": "aokonkwo"}, 'USERS = {"aokonkwo": 1}\n', "aokonkwo"),
+        ({"kind": "Account"}, "FIXTURE = {'primaryAccount': 1}\n", "Account"),
+        ({"kind": "Account"}, '<script>var d = {"primaryAccount": 1};</script>', "Account"),
+    ],
+    ids=["value-as-key", "schema-key-only", "inline-script"],
+)
+def test_a_fixture_that_is_not_json_is_searched_as_plain_text(
+    tmp_path: Path, capture: dict, fixture: str, value: str
+) -> None:
+    """Keys are blanked only in a JSON fixture. In a Python module or a page, a
+    value inside a schema key is reported, as in 1.40.0: accepted noise."""
+    result = _run(tmp_path, json.dumps(capture), fixture)
+    assert result.returncode == 1
+    assert f"still in the fixture: {value!r} (line 1: " in result.stdout
+
+
+def test_graphql_field_and_operation_names_in_a_capture_are_not_looked_for(
+    tmp_path: Path,
+) -> None:
+    """A failed field's ``errors[*].path`` and the operation's name are the
+    schema's names, held as values; a fixture keyed by them passes."""
+
+    def response(message: str, operation: str) -> dict:
+        return {
+            "data": {"viewer": {"loyaltyAccount": None}},
+            "errors": [{"message": message, "path": ["viewer", "loyaltyAccount"]}],
+            "extensions": {"operationName": operation},
+        }
+
+    capture = json.dumps(response("Not authorised", "viewerAccount"))
+    fixture = json.dumps({"viewerAccount": response("Denied", "exampleOp")})
+    result = _run(tmp_path, capture, fixture)
+    assert result.returncode == 0, result.stdout
