@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.2] - 2026-11-04
+
+This is a patch release. The digest and the stubs `gp plugin new` writes leave out the request headers a client never sends, and a plugin added to an existing suite binds its own env scrubber and fixtures check, so `gp plugin check` and `gp plugin upgrade` no longer push an older member's fixtures through a check they predate (#370). Item 1 is what `gp plugin check` and `gp plugin upgrade` do differently in a suite that already lacked the fixtures check, and item 2 is about upgrading itself.
+
+### Upgrading
+
+1. **In a suite whose `tests/conftest.py` does not bind `FIXTURES_TREE` and `sanitised_fixtures`, `gp plugin check` reports per plugin.** The conftest's two findings now name `gp plugin upgrade --plugin <name>` for the plugin whose fixtures are `tests/fixtures/` itself, and each other plugin whose `tests/test_<name>.py` binds neither name gets two findings of its own, naming `gp plugin upgrade --plugin <name>`, which adds them to that test module alone. `gp plugin upgrade` without `--plugin` adds them everywhere they are missing: to the conftest, as before, and now to each such test module too. A suite whose conftest binds both names, which is every suite `gp plugin new` wrote since the fixtures check shipped, gets no new finding: that check walks the whole tree. A standalone project is unchanged.
+2. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Fixed
+
+- **No stub header line for a header the HTTP client sets itself** (#370). A request recorded over HTTP/2 holds the pseudo-headers `:authority`, `:method`, `:path` and `:scheme`, and Chrome records a `priority` header beside them. On a synthetic HTTP/2 HAR on `myshop.example`, the digest listed all five as custom headers, the stub carried `"priority": "GP-FILL"`, and its comment counted the four pseudo-headers as header names left out because they read as values. One rule, `graftpunk.har.parser.client_sets_header` (a name starting with `:`, or `Host`, `Connection`, `Accept-Encoding`, `Content-Length` or `Priority`, in any case), now keeps them out of the digest's custom headers, the stubs, and the token-header candidates and pairings. The named headers are the ones the plugin's session sends on its own (read off the wire of a GET, a `json=` POST and a `data=` POST) plus `Priority`. A real custom header such as `x-api-key` or `X-CSRF-Token` is still stubbed.
+- **A plugin added to a suite binds what `gp plugin check` asks of it** (#370). `gp plugin new` in suite mode left `tests/conftest.py` alone, so the check asked for `FIXTURES_TREE` and `sanitised_fixtures` there, and the `gp plugin upgrade` it named pointed the fixtures check at the whole tree, where an older member's fixtures had no sidecars, failing that member's tests and the new one's. The new member's `tests/test_<name>.py` now binds `scrub_site_env` for its own prefix, `FIXTURES_TREE` for its own `tests/fixtures/<name>/`, and `sanitised_fixtures` over it. A fixture bound in a test module serves that module's tests only, so a problem in the new member's fixtures fails its own tests and no other member's. `gp plugin upgrade --plugin <name>` adds one plugin's bindings and nothing else.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.30 and still needs graftpunk 1.40.0 or later** (#370). Its harden reference says to run the `gp plugin upgrade` command gp names, which in a suite carries `--plugin <name>`; an older gp names the bare command, which the skill runs as before, so the floor stays.
+
 ## [1.40.1] - 2026-11-04
 
 This is a patch release. The graft skill's `fixture-leaks.py` no longer reports a JSON key name or a GraphQL type name as a captured value left in a fixture, and neither it nor the suite's check of a fixture against the values its observe run recorded reports a value that a JSON fixture holds only inside such a key (#368). Item 1 is what a suite or a skill run does differently after the upgrade, and item 2 is about upgrading itself.
