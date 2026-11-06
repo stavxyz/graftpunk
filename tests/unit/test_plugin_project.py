@@ -232,7 +232,7 @@ class TestTheView:
             "fixtures_tree_blocked",
             "first_party_packages",
             "member_roots",
-            "shared_whole_tree_check",
+            "suite_conftest",
         ]
         assert [f.name for f in fields(PluginDefect)] == ["entry_point", "module_path", "message"]
         assert [f.name for f in fields(PluginView)] == [
@@ -1138,7 +1138,7 @@ _GUARDED_PHRASES: dict[str, tuple[object, str]] = {
     "GP_FILL_MARKER": (policy, policy.GP_FILL_MARKER),
     "_CREATES_IT": (plugin_check_module, plugin_check_module._CREATES_IT),
     "_ADDS_IT": (plugin_check_module, plugin_check_module._ADDS_IT),
-    "_NO_WHOLE_TREE_CHECK": (plugin_check_module, plugin_check_module._NO_WHOLE_TREE_CHECK),
+    "_SCOPES_IT": (plugin_check_module, plugin_check_module._SCOPES_IT),
 }
 
 

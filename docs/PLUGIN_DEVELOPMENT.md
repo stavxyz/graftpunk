@@ -2348,9 +2348,28 @@ in the fixtures check described in
 [Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture).
 `FIXTURES_TREE` is the whole fixtures directory.
 
-A plugin added to an existing suite does not update this file. Its own
-`tests/test_<name>.py` binds the same three names, for its own prefix and its
-own `tests/fixtures/<name>/`:
+In a suite the conftest's check covers the first plugin's fixtures alone. Adding
+a plugin to a suite lists its fixtures directory in `SUITE_MEMBER_FIXTURES`, a
+tuple gp owns and edits, and the check skips every directory listed there
+(`skip=`, new in graftpunk 1.41.0):
+
+```python
+from pathlib import Path
+
+from graftpunk.testing.plugin import fixtures_are_sanitised, site_env_scrubber
+
+scrub_site_env = site_env_scrubber("MYSHOP_")
+FIXTURES_TREE = Path(__file__).parent / "fixtures"
+SUITE_MEMBER_FIXTURES = ("otherstore",)
+sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE, skip=SUITE_MEMBER_FIXTURES)
+```
+
+`gp plugin new` makes that edit when it adds the plugin: it adds the name to the
+tuple, turns the check above into this one, or writes all three lines when the
+conftest has no check, and raises the project's graftpunk requirement to
+1.41.0 when it does. A check you wrote some other way is yours and is left as it
+is. The new plugin's own `tests/test_<name>.py` binds the scrubber and the check
+for its own prefix and its own `tests/fixtures/<name>/`:
 
 ```python
 from pathlib import Path
@@ -2372,22 +2391,21 @@ two members' names both fit belongs to the longer one (`test_my_shop_x.py` is
 the member is scrubbed and runs only after its own fixtures pass the check. A
 test of the member in a file with another name gets neither.
 
-`gp plugin check` holds each member's test modules to the three names, and
-reports a member whose `tests/fixtures/<module>/` is missing. The fix it names
-is `gp plugin upgrade --plugin <name>`, which adds the names to that member's
-test modules (creating `tests/test_<module>.py` when it has none), creates its
-fixtures directory, and touches nothing of another plugin's. A bare
-`gp plugin upgrade` does that for every member.
+A file the first plugin's module name wins is the first plugin's, never a
+member's (`test_shop_eu_orders.py` is `shop_eu`'s when `shop_eu` is first and
+`shop` a member). So a bad fixture fails the tests of the plugin it belongs to,
+and no other plugin's.
 
-In a suite, `gp plugin upgrade` adds no fixtures check over the whole tree to
-`tests/conftest.py`, with or without `--plugin`: that check walks every
-member's directory, so one member's bad fixture would fail every plugin's tests,
-the first plugin's included. When the conftest lacks it, `gp plugin check`
-still reports the two names for the first plugin and says so. When the
-conftest already binds it, as the one `gp plugin new` writes for a project's first plugin does, it
-is your file and is left as it is: each member's own check still runs, the
-conftest's runs for the first plugin's tests, and a bad fixture anywhere fails
-those. `gp plugin check` prints a note saying so, which is not a finding.
+`gp plugin check` holds each member's test modules to the three names, reports
+a member whose `tests/fixtures/<module>/` is missing, reports a conftest check
+that still walks every member's directory or a `SUITE_MEMBER_FIXTURES` that does
+not list a member, and holds the conftest to the three suite lines above. The
+fix it names is `gp plugin upgrade --plugin <name>`, which adds the names to
+that member's test modules, creates its fixtures directory, and brings the
+conftest's check up to the suite form; it touches no other plugin's files. When
+the member has no test module, the one it creates holds a test that requests
+the check, since pytest runs a module's fixtures only for a test it collects
+there. A bare `gp plugin upgrade` does all of it for every plugin.
 
 ## Harden
 
@@ -2885,9 +2903,9 @@ in a plugin module or a test module, any plugin module that does not hold
 exactly one plugin class, and any project wiring the project lacks (`gp
 plugin upgrade` adds it; in a suite, `gp plugin upgrade --plugin <name>` adds
 one plugin's and nothing else, and creates a member's missing
-`tests/fixtures/<module>/`). In a suite `gp plugin upgrade` adds no fixtures
-check over the whole tree, so the first plugin's missing conftest check stays a
-finding until you decide. When the project cannot be read at all (for
+`tests/fixtures/<module>/`). In a suite it also reports a conftest check that
+still walks every member's directory (`gp plugin upgrade` scopes it to the
+first plugin's fixtures). When the project cannot be read at all (for
 example, not a plugin project, or a `pyproject.toml` or plugin module that
 cannot be read or does not parse), that refusal is the one finding. A fresh
 scaffold fails it until its markers are filled in. It passes `ruff check` and

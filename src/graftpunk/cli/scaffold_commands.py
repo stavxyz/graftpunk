@@ -27,10 +27,12 @@ from graftpunk.cli.scaffold_shared import (
     command_selections,
     console,
     plugin_app,
+    print_floor,
     print_other_host,
 )
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.errors import ScaffoldWriteError
+from graftpunk.devtools.scaffold.policy import CONFTEST_PATH
 from graftpunk.devtools.scaffold.project import (
     NotAPluginSuiteError,
     ScaffoldConflictError,
@@ -276,6 +278,10 @@ def plugin_new(
         console.print(f"  {escape(str(path))}", soft_wrap=True)
     if result.gitignore_updated:
         console.print(f"[dim]Added {escape(CAPTURES_DIR)}/ to .gitignore[/dim]")
+    for change in result.conftest_changes:
+        console.print(escape(f"{CONFTEST_PATH}: {change}"), soft_wrap=True)
+    if result.conftest_changes:
+        print_floor(result.floor)
     for other in other_host_commands(spec):
         print_other_host(other)
     _print_next_steps(dataclasses.replace(spec, mode=result.mode))

@@ -17,86 +17,24 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
-from graftpunk import _distribution
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.scaffold_shared import (
     LOG,
     command_selections,
     console,
     plugin_app,
+    print_floor,
     print_other_host,
 )
 from graftpunk.devtools.errors import DevtoolsRefusal
-from graftpunk.devtools.plugin_check import check_notes, check_project
+from graftpunk.devtools.plugin_check import check_project
 from graftpunk.devtools.plugin_info import info_payload
 from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.insert import add_command
-from graftpunk.devtools.scaffold.pyproject_edit import (
-    BothDistributions,
-    CannotRaiseFloor,
-    DynamicDependencies,
-    FloorVerdict,
-    RaisedFloor,
-)
-from graftpunk.devtools.scaffold.render import graftpunk_version_floor
 from graftpunk.devtools.scaffold.upgrade import UpgradeApplied, upgrade_project
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.parser import HARParseError
-
-
-def _print_floor(floor: FloorVerdict) -> None:
-    """One line on the project's graftpunk requirement after a write that needs
-    the running graftpunk: the raise it got, or how to make it by hand."""
-    at = graftpunk_version_floor()
-    # A plugin requires graftpunk, whichever distribution this gp came from: it is
-    # what gp plugin new writes, and a plugin requiring graftpunk-lite would put
-    # both distributions into its users' environments.
-    wanted = f"graftpunk[browser]>={at}"
-    # graftpunk-lite[browser] records and logs in as graftpunk does.
-    full_note = (
-        " Developing a plugin (recording, logging in) needs the browser stack: "
-        f"{_distribution.install_commands('browser')}, or switch to graftpunk."
-        if _distribution.name() == _distribution.LITE and not _distribution.has_browser_stack()
-        else ""
-    )
-    if isinstance(floor, RaisedFloor):
-        line = f"pyproject.toml: {floor.name}>={at} (was >={floor.previous}); reinstall the project"
-        console.print(escape(line), soft_wrap=True, highlight=False)
-    elif isinstance(floor, DynamicDependencies):
-        console.print(
-            "[bold]Next:[/bold] "
-            + escape(
-                f"this project's dependencies are dynamic; make sure whatever supplies "
-                f"them requires {wanted}, then reinstall.{full_note}"
-            ),
-            soft_wrap=True,
-        )
-    elif isinstance(floor, CannotRaiseFloor) and floor.requirement is None:
-        console.print(
-            "[bold]Next:[/bold] "
-            + escape(
-                f"add {wanted} to pyproject.toml's [project] dependencies and "
-                f"reinstall; it has no graftpunk or graftpunk-lite requirement.{full_note}"
-            ),
-            soft_wrap=True,
-        )
-    elif isinstance(floor, BothDistributions):
-        console.print(
-            "[bold]Next:[/bold] "
-            + escape(
-                f"pyproject.toml requires both graftpunk and graftpunk-lite "
-                f"({' and '.join(floor.requirements)}), which install the same files; "
-                f"keep graftpunk: replace them with {wanted} and reinstall.{full_note}"
-            ),
-            soft_wrap=True,
-        )
-    elif isinstance(floor, CannotRaiseFloor):
-        console.print(
-            "[bold]Next:[/bold] "
-            + escape(f"raise {floor.requirement} in pyproject.toml to >={at} and reinstall"),
-            soft_wrap=True,
-        )
 
 
 @plugin_app.command("info")
@@ -170,7 +108,7 @@ def plugin_add_command(
             f"[bold]Next:[/bold] write its test against {escape(added.fixture)}",
             soft_wrap=True,
         )
-    _print_floor(added.floor)
+    print_floor(added.floor)
 
 
 @plugin_app.command("upgrade")
@@ -197,7 +135,7 @@ def plugin_upgrade(
 def _print_upgrade(applied: UpgradeApplied) -> None:
     """What ``gp plugin upgrade`` did, for its scope, and what it left (#370)."""
     scope = applied.plugin
-    if not applied.changed and not applied.left_in_scope:
+    if not applied.changed:
         has = f"{scope} already has" if scope else "the project already has"
         console.print(escape(f"Nothing to upgrade: {has} every requirement."), soft_wrap=True)
     for requirement in applied.requirements:
@@ -206,27 +144,19 @@ def _print_upgrade(applied: UpgradeApplied) -> None:
         )
     if applied.created_fixtures_tree:
         console.print(f"{escape(policy.FIXTURES_TREE)}: created", soft_wrap=True)
+    for change in applied.conftest_changes:
+        console.print(escape(f"{policy.CONFTEST_PATH}: {change}"), soft_wrap=True)
     for path in applied.created_roots:
         console.print(f"{escape(path)}: created", soft_wrap=True)
-    if applied.left_in_scope:
-        console.print(
-            escape(
-                f"{applied.left_in_scope} requirement(s) left as they are: in a suite gp "
-                "plugin upgrade adds no fixtures check over the whole tree; gp plugin check "
-                "says which."
-            ),
-            soft_wrap=True,
-        )
     if applied.left_elsewhere:
         console.print(
             escape(
                 f"{applied.left_elsewhere} requirement(s) or fixtures root(s) of other "
-                "plugins are still missing; gp plugin check names the gp plugin upgrade "
-                "--plugin <name> for each."
+                "plugins are still missing; gp plugin upgrade adds them all."
             ),
             soft_wrap=True,
         )
-    _print_floor(applied.floor)
+    print_floor(applied.floor)
 
 
 @plugin_app.command("check")
@@ -235,8 +165,6 @@ def plugin_check(
 ) -> None:
     """Lint a plugin project: markers left, one plugin class per module, project wiring."""
     findings = check_project(dir_)
-    for note in check_notes(dir_):
-        console.print(escape(note), soft_wrap=True, highlight=False)
     for finding in findings:
         console.print(escape(str(finding)), soft_wrap=True, highlight=False)
     if findings:

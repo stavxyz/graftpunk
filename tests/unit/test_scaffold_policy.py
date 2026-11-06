@@ -111,7 +111,24 @@ class TestProjectRequirements:
         assert tree.statement == 'FIXTURES_TREE = Path(__file__).parent / "fixtures" / "my_shop"'
         assert check.statement == "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)"
         assert [r.name for r in PROJECT_REQUIREMENTS] == [tree.name, check.name]
-        assert all(r.plugin is None and r.upgrade_adds for r in PROJECT_REQUIREMENTS)
+        assert all(r.plugin is None for r in PROJECT_REQUIREMENTS)
+
+    def test_a_suite_conftest_checks_the_first_plugins_fixtures_alone(self) -> None:
+        tree, skip, check = policy.suite_requirements("oldshop", ["midshop", "myshop"])
+        assert {r.path for r in (tree, skip, check)} == {CONFTEST_PATH}
+        assert {r.plugin for r in (tree, skip, check)} == {"oldshop"}
+        assert tree.statement == PROJECT_REQUIREMENTS[0].statement
+        assert skip.statement == 'SUITE_MEMBER_FIXTURES = ("midshop", "myshop")'
+        assert check.statement == (
+            "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE, skip=SUITE_MEMBER_FIXTURES)"
+        )
+
+    def test_the_skip_tuple_takes_ruff_formats_shape(self) -> None:
+        assert policy.suite_skip_statement(["myshop"]) == 'SUITE_MEMBER_FIXTURES = ("myshop",)'
+        long = [f"member_{n:02d}_{'x' * 10}" for n in range(5)]
+        assert policy.suite_skip_statement(long) == (
+            "SUITE_MEMBER_FIXTURES = (\n" + "".join(f'    "{m}",\n' for m in long) + ")"
+        )
 
 
 @pytest.mark.parametrize(

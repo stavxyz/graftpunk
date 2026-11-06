@@ -31,15 +31,18 @@ from graftpunk.devtools.plugin_project import (
     unreadable_file_message,
 )
 from graftpunk.devtools.scaffold.policy import (
+    CONFTEST_PATH,
     FIXTURES_PLACEHOLDER,
     FIXTURES_TREE,
     ProjectRequirement,
+    module_name_for,
 )
 from graftpunk.devtools.scaffold.project import planned_graftpunk_floor
 from graftpunk.devtools.scaffold.pyproject_edit import (
     FloorVerdict,
 )
 from graftpunk.devtools.scaffold.pysrc import ImportPlacementError, with_bindings
+from graftpunk.devtools.scaffold.suite_conftest import with_suite_check
 from graftpunk.devtools.scaffold.write import (
     PlannedChange,
     apply_changes,
@@ -69,24 +72,36 @@ class UpgradeApplied:
     ``project.planned_graftpunk_floor``), ``None`` when nothing changed.
 
     ``created_roots`` holds each suite member's fixtures root it created, with
-    ``FIXTURES_PLACEHOLDER`` (#370). ``plugin`` is the entry point it was scoped to,
-    or ``None``. What the project still lacks that this call left alone is counted
-    in two parts: ``left_in_scope``, the requirements of its scope (``plugin``, or
-    the whole project) no upgrade adds (a suite's whole-tree conftest check), and
-    ``left_elsewhere``, another plugin's requirements and fixtures roots under
-    ``plugin``."""
+    ``FIXTURES_PLACEHOLDER``, and ``conftest_changes`` what it changed in a suite's
+    shared conftest, one line each (#370). ``plugin`` is the entry point it was
+    scoped to, or ``None``. ``left_elsewhere`` counts what other plugins still lack
+    under ``plugin``: requirements and fixtures roots, every one of which a
+    ``gp plugin upgrade`` adds."""
 
     requirements: tuple[ProjectRequirement, ...]
     created_fixtures_tree: bool = False
     floor: FloorVerdict = None
     created_roots: tuple[str, ...] = ()
+    conftest_changes: tuple[str, ...] = ()
     plugin: str | None = None
-    left_in_scope: int = 0
     left_elsewhere: int = 0
 
     @property
     def changed(self) -> bool:
-        return bool(self.requirements) or self.created_fixtures_tree or bool(self.created_roots)
+        return bool(
+            self.requirements
+            or self.created_fixtures_tree
+            or self.created_roots
+            or self.conftest_changes
+        )
+
+
+# The one test a member test module upgrade_project creates holds: it requests the
+# member's fixtures check by name, so pytest collects a test there and runs it.
+_CHECK_RUNNER = (
+    "\n\ndef test_fixtures_are_sanitised(sanitised_fixtures: None) -> None:\n"
+    '    """{plugin}\'s fixtures pass the check bound above."""\n'
+)
 
 
 def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
@@ -94,10 +109,13 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
 
     With *plugin* (an entry-point name, or its module name), only the requirements
     that serve it (``ProjectRequirement.plugin``) and, for a suite member, its
-    fixtures root when that is missing. In a suite it never adds the shared
-    conftest's check over the whole fixtures tree (``upgrade_adds``), with or
-    without *plugin*: that check fails every plugin's tests on one plugin's
-    fixture (#370).
+    fixtures root when that is missing. In a suite, with or without *plugin*, the
+    shared conftest gets the check over the first plugin's fixtures alone, every
+    member's directory in ``SUITE_MEMBER_FIXTURES`` and skipped
+    (``suite_conftest.with_suite_check``), so a member's fixtures never fail the
+    first plugin's tests (#370). A member test module it creates holds one test that
+    requests the member's fixtures check, since pytest runs a module's fixtures only
+    for a test it collects there.
 
     Raises:
         UpgradeRefusedError: A requirement's file, or ``tests/fixtures``, is one
@@ -124,7 +142,14 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
     blocked: list[tuple[str, str]] = []
     if view.fixtures_tree_blocked is not None:
         blocked.append(view.fixtures_tree_blocked)
-    blocked.extend(view.unreadable_files(plugin, upgrade_adds_only=True))
+    owner = next((r.plugin for r in view.requirement_set if r.path == CONFTEST_PATH), None)
+    suite_owner = owner if view.member_roots else None
+    blocked.extend(view.unreadable_files(plugin))
+    if suite_owner is not None:
+        # Every scope edits a suite's conftest, so it has to be readable for each.
+        blocked.extend(
+            (path, reason) for path, reason in view.unreadable_files() if path == CONFTEST_PATH
+        )
     blocked.extend(r.blocked for r in roots if r.blocked is not None)
     blocked = list(dict.fromkeys(blocked))
     if blocked:
@@ -134,17 +159,34 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
         listing = " ".join(f"{path}: {unreadable_file_message(reason)}" for path, reason in blocked)
         raise UpgradeRefusedError(listing)
     in_scope = view.missing_requirements(plugin)
-    missing = tuple(r for r in in_scope if r.upgrade_adds)
+    missing = tuple(r for r in in_scope if suite_owner is None or r.path != CONFTEST_PATH)
     created_roots = tuple(r.path for r in roots if not r.present and r.blocked is None)
-    left_elsewhere = (
-        len(view.missing_requirements())
-        - len(in_scope)
-        + sum(1 for r in view.member_roots if not r.present and r.path not in created_roots)
-    )
+    fixed = {r.key for r in missing}
+    left_elsewhere = sum(
+        1
+        for r in view.missing_requirements()
+        if r.key not in fixed and (suite_owner is None or r.path != CONFTEST_PATH)
+    ) + sum(1 for r in view.member_roots if not r.present and r.path not in created_roots)
     by_path: dict[str, list[ProjectRequirement]] = {}
     for requirement in missing:
         by_path.setdefault(requirement.path, []).append(requirement)
     changes: list[PlannedChange] = []
+    conftest_changes: tuple[str, ...] = ()
+    if suite_owner is not None:
+        conftest = root / CONFTEST_PATH
+        status = view.requirements.get(f"{CONFTEST_PATH}:FIXTURES_TREE")
+        original = read_original(conftest) if status is None or status.present else None
+        members = [module_name_for(r.entry_point) for r in view.member_roots]
+        try:
+            content, conftest_changes = with_suite_check(
+                original or "", suite_owner, members, first_party=view.first_party_packages
+            )
+        except ImportPlacementError as exc:
+            raise UpgradeRefusedError(f"{CONFTEST_PATH}: {exc}") from exc
+        if conftest_changes:
+            changes.append(
+                PlannedChange(conftest, content, original=original, validate=validate_python)
+            )
     for relative, requirements in by_path.items():
         path = root / relative
         status = view.requirements.get(requirements[0].key)
@@ -154,6 +196,8 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
             content = with_bindings(
                 original or "", requirements, first_party=view.first_party_packages
             )
+            if original is None and view.member_roots:
+                content += _CHECK_RUNNER.format(plugin=requirements[0].plugin)
         except ImportPlacementError as exc:
             raise UpgradeRefusedError(f"{relative}: {exc}") from exc
         except SyntaxError as exc:
@@ -176,7 +220,7 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
         created_fixtures_tree=created_fixtures_tree,
         floor=floor,
         created_roots=created_roots,
+        conftest_changes=conftest_changes,
         plugin=plugin,
-        left_in_scope=len(in_scope) - len(missing),
         left_elsewhere=left_elsewhere,
     )

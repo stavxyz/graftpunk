@@ -9,10 +9,11 @@ from the writer").
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
+from graftpunk.devtools.scaffold.pysrc import GENERATED_LINE_LENGTH
 from graftpunk.plugins.cli_plugin import SitePlugin
 from graftpunk.testing.sidecar import FIXTURES_PLACEHOLDER
 
@@ -25,6 +26,8 @@ __all__ = [
     "PROJECT_GATE",
     "PROJECT_REQUIREMENTS",
     "RESERVED_COMMAND_NAMES",
+    "SUITE_CHECK_STATEMENT",
+    "SUITE_SKIP_NAME",
     "TESTS_DIR",
     "ProjectRequirement",
     "env_prefix_for",
@@ -32,6 +35,8 @@ __all__ = [
     "member_requirements",
     "module_name_for",
     "path_from_tests",
+    "suite_requirements",
+    "suite_skip_statement",
     "suite_test_module",
     "test_module_owner",
 ]
@@ -88,7 +93,8 @@ def test_module_owner(filename: str, module_names: Iterable[str]) -> str | None:
     when several match (``test_my_shop_x.py`` is ``my_shop``'s, not ``my``'s), and
     ``None`` when none does. The one rule for which files a member's env scrubber
     and fixtures check must be bound in (#370): a fixture bound in a test module
-    serves that module's tests only."""
+    serves that module's tests only. The reader passes every plugin's module name,
+    the first plugin's included, and a file the first plugin wins is no member's."""
     if not filename.endswith(".py"):
         return None
     stem = filename.removesuffix(".py")
@@ -119,10 +125,7 @@ class ProjectRequirement:
 
     ``plugin`` is the entry-point name of the one plugin the requirement serves,
     so ``gp plugin upgrade --plugin`` can apply it alone; ``None`` for a
-    standalone project's, which serve the whole project. ``upgrade_adds`` is
-    false for the one kind ``gp plugin upgrade`` never applies: a suite's shared
-    conftest check over the whole fixtures tree, which would fail every plugin's
-    tests on one plugin's fixture (#370); ``gp plugin check`` still reports it.
+    standalone project's, which serve the whole project.
 
     Only a Python file and a module-level binding. A ``pyproject.toml`` key is not
     this format's business (it needs a TOML edit through ``pyproject_edit.py``),
@@ -135,7 +138,6 @@ class ProjectRequirement:
     # (module, name) pairs the statement reads, merged into the file's imports.
     imports: tuple[tuple[str, str], ...] = ()
     plugin: str | None = None
-    upgrade_adds: bool = True
 
     @property
     def key(self) -> str:
@@ -169,6 +171,55 @@ PROJECT_REQUIREMENTS: Final[tuple[ProjectRequirement, ...]] = _requirements(
 )
 """What every generated project's shared conftest must bind, in the order they are
 applied: the fixtures check over the whole tree."""
+
+
+SUITE_SKIP_NAME: Final = "SUITE_MEMBER_FIXTURES"
+"""The tuple a suite's shared conftest binds: the directory name of each member's own
+fixtures root under ``FIXTURES_TREE``, the single source of what the conftest's
+fixtures check leaves out (#370). gp owns it: ``gp plugin new`` and
+``gp plugin upgrade`` add a member's name to it."""
+
+SUITE_CHECK_STATEMENT: Final = (
+    f"sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE, skip={SUITE_SKIP_NAME})"
+)
+"""A suite's conftest fixtures check: the first plugin's fixtures, every member's
+directory skipped (``graftpunk.testing.plugin.fixtures_are_sanitised``'s ``skip``,
+new in 1.41.0)."""
+
+
+def suite_skip_statement(modules: Sequence[str]) -> str:
+    """``SUITE_MEMBER_FIXTURES`` bound to *modules*, in the shape ``ruff format`` gives
+    a tuple of strings: one line when it fits ``GENERATED_LINE_LENGTH``, otherwise one
+    name per line with a trailing comma."""
+    items = [f'"{module}"' for module in modules]
+    inner = ", ".join(items) + ("," if len(items) == 1 else "")
+    one_line = f"{SUITE_SKIP_NAME} = ({inner})"
+    if len(one_line) <= GENERATED_LINE_LENGTH:
+        return one_line
+    body = "".join(f"\n    {item}," for item in items)
+    return f"{SUITE_SKIP_NAME} = ({body}\n)"
+
+
+def suite_requirements(owner: str, member_modules: Sequence[str]) -> tuple[ProjectRequirement, ...]:
+    """What a suite's shared conftest must bind for *owner*, the plugin whose
+    fixtures are the tree's own files, with *member_modules* each member's
+    directory: ``FIXTURES_TREE``, ``SUITE_MEMBER_FIXTURES``, and the fixtures check
+    over the tree with every member's directory skipped (#370)."""
+    tree, _check = _requirements(CONFTEST_PATH, FIXTURES_TREE, owner)
+    skip = ProjectRequirement(
+        path=CONFTEST_PATH,
+        name=SUITE_SKIP_NAME,
+        statement=suite_skip_statement(member_modules),
+        plugin=owner,
+    )
+    check = ProjectRequirement(
+        path=CONFTEST_PATH,
+        name="sanitised_fixtures",
+        statement=SUITE_CHECK_STATEMENT,
+        imports=(("graftpunk.testing.plugin", "fixtures_are_sanitised"),),
+        plugin=owner,
+    )
+    return (tree, skip, check)
 
 
 def member_requirements(entry_point: str, path: str) -> tuple[ProjectRequirement, ...]:

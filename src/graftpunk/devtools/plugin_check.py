@@ -9,8 +9,10 @@ other findings); a requirement's file that does not parse, is not valid
 UTF-8, cannot be read, or is not a regular file (or whose directory is
 blocked); a requirement the project lacks, which ``gp plugin upgrade``
 fixes (in a suite, each member's own in each of its test modules, fixed by
-``gp plugin upgrade --plugin <name>``, and the shared conftest's whole-tree
-check, which no upgrade adds in a suite); a ``policy.FIXTURES_TREE``, or in a
+``gp plugin upgrade --plugin <name>``, and the shared conftest's check over the
+first plugin's fixtures); in a suite, a conftest check that still walks every
+member's directory, or a literal ``SUITE_MEMBER_FIXTURES`` that does not list a
+member, each fixed by ``gp plugin upgrade``; a ``policy.FIXTURES_TREE``, or in a
 suite a member's own fixtures root, that is missing (which
 ``gp plugin upgrade``, with ``--plugin <name>`` for a member's, creates), is
 not a directory (an author must move it aside), or cannot be read (an author
@@ -46,6 +48,7 @@ from graftpunk.devtools.plugin_project import (
     NOT_VALID_UTF8,
     NotAPluginProjectError,
     PluginProjectError,
+    ProjectView,
     require_plugin_project,
     unreadable_file_message,
 )
@@ -53,10 +56,12 @@ from graftpunk.devtools.scaffold.policy import (
     CONFTEST_PATH,
     FIXTURES_TREE,
     GP_FILL_MARKER,
+    SUITE_SKIP_NAME,
     ProjectRequirement,
+    module_name_for,
 )
 
-__all__ = ["FINDING_ADVICE", "Finding", "check_notes", "check_project"]
+__all__ = ["FINDING_ADVICE", "Finding", "check_project"]
 
 # The two messages built entirely in this module, each holding its own advice
 # phrase; unreadable_file_message's phrases live in plugin_project.py, next to
@@ -64,25 +69,54 @@ __all__ = ["FINDING_ADVICE", "Finding", "check_notes", "check_project"]
 _CREATES_IT = "creates it"
 _ADDS_IT = "adds it"
 _FIXTURES_TREE_MISSING = f"missing; gp plugin upgrade {_CREATES_IT}."
+_SCOPES_IT = "scopes it"
 _DOES_NOT_BIND = "does not bind"
-_NO_WHOLE_TREE_CHECK = "adds no fixtures check over the whole tree"
-_WHOLE_TREE_NOTE = (
-    f"note: {CONFTEST_PATH} checks the whole fixtures tree, so one plugin's bad "
-    "fixture fails every plugin's tests in this suite."
-)
 
 
 def _upgrade_advice(requirement: ProjectRequirement) -> str:
     """The advice for a missing *requirement*: the upgrade that adds it and, in a
-    suite, nothing another plugin lacks; for a suite's whole-tree conftest check,
-    which no upgrade adds, why (#370)."""
-    if not requirement.upgrade_adds:
-        return (
-            f"in a suite gp plugin upgrade {_NO_WHOLE_TREE_CHECK}, which would fail "
-            "every plugin's tests on one plugin's fixture."
-        )
+    suite, nothing another plugin lacks (#370)."""
     scope = f" --plugin {requirement.plugin}" if requirement.plugin is not None else ""
     return f"gp plugin upgrade{scope} {_ADDS_IT}."
+
+
+def _left_to_the_author(view: ProjectView, requirement: ProjectRequirement) -> bool:
+    """Whether *requirement* is a suite conftest's ``SUITE_MEMBER_FIXTURES`` that is
+    not wanted: the check is gp's standalone one (its own finding says the upgrade
+    adds both) or one the author wrote without the tuple."""
+    state = view.suite_conftest
+    return (
+        state is not None
+        and requirement.path == CONFTEST_PATH
+        and requirement.name == SUITE_SKIP_NAME
+        and (state.unscoped or not state.needs_skip)
+    )
+
+
+def _suite_conftest_findings(view: ProjectView) -> list[Finding]:
+    """A suite conftest's check that still walks every member's directory, and each
+    member its literal ``SUITE_MEMBER_FIXTURES`` does not list (#370)."""
+    state = view.suite_conftest
+    if state is None:
+        return []
+    owner = next((r.plugin for r in view.requirement_set if r.path == CONFTEST_PATH), None)
+    findings: list[Finding] = []
+    if state.unscoped:
+        message = (
+            "sanitised_fixtures also checks every member's fixtures; gp plugin upgrade "
+            f"--plugin {owner} {_SCOPES_IT} to {owner}'s with skip={SUITE_SKIP_NAME}."
+        )
+        findings.append(Finding(path=CONFTEST_PATH, line=None, message=message))
+    if state.listed is not None:
+        for member in view.member_roots:
+            module = module_name_for(member.entry_point)
+            if module not in state.listed:
+                message = (
+                    f"{SUITE_SKIP_NAME} does not list {module}; gp plugin upgrade "
+                    f"--plugin {member.entry_point} {_ADDS_IT}."
+                )
+                findings.append(Finding(path=CONFTEST_PATH, line=None, message=message))
+    return findings
 
 
 FINDING_ADVICE: tuple[str, ...] = (
@@ -95,7 +129,7 @@ FINDING_ADVICE: tuple[str, ...] = (
     GP_FILL_MARKER,
     _CREATES_IT,
     _ADDS_IT,
-    _NO_WHOLE_TREE_CHECK,
+    _SCOPES_IT,
 )
 """Every advice phrase a ``check_project`` finding can carry, for a test to
 check the guide's prose against: not a guarantee that a future reason is
@@ -174,17 +208,7 @@ def check_project(root: Path) -> list[Finding]:
             message=f"{_DOES_NOT_BIND} {requirement.name}; {_upgrade_advice(requirement)}",
         )
         for requirement in view.missing_requirements()
+        if not _left_to_the_author(view, requirement)
     )
+    findings.extend(_suite_conftest_findings(view))
     return list(dict.fromkeys(findings))
-
-
-def check_notes(root: Path) -> list[str]:
-    """What ``gp plugin check`` prints beside its findings without failing: today,
-    once, that a suite's shared conftest checks the whole fixtures tree, so one
-    plugin's bad fixture fails every plugin's tests (#370). That conftest is the
-    author's file, so it is left as it is. Empty when the reader refuses *root*."""
-    try:
-        view = require_plugin_project(root)
-    except (NotAPluginProjectError, PluginProjectError):
-        return []
-    return [_WHOLE_TREE_NOTE] if view.shared_whole_tree_check else []
