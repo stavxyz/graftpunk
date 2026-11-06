@@ -227,14 +227,13 @@ class TestBrowserIdentityGuarantee:
         session = GraftpunkSession(header_roles=roles)
         assert session.headers["User-Agent"] == "Mozilla/5.0 Lowercase"
 
-    def test_all_six_identity_headers_extracted(self):
+    def test_all_five_identity_headers_extracted(self):
         session = GraftpunkSession(header_roles=SAMPLE_ROLES)
         assert session.headers["User-Agent"] == "Mozilla/5.0 Test"
         assert session.headers["sec-ch-ua"] == '"Chromium";v="120", "Google Chrome";v="120"'
         assert session.headers["sec-ch-ua-mobile"] == "?0"
         assert session.headers["sec-ch-ua-platform"] == '"macOS"'
         assert session.headers["Accept-Language"] == "en-US,en;q=0.9"
-        assert session.headers["Accept-Encoding"] == "gzip, deflate, br"
 
     def test_no_role_has_user_agent(self):
         roles = {
@@ -258,7 +257,6 @@ class TestBrowserIdentityGuarantee:
         session = GraftpunkSession(header_roles=roles)
         assert session.headers["User-Agent"] == "Mozilla/5.0 Mixed"
         assert session.headers["Accept-Language"] == "fr-FR,fr;q=0.9"
-        assert session.headers["Accept-Encoding"] == "gzip, deflate"
         assert session.headers["sec-ch-ua"] == '"Chromium";v="121"'
 
     def test_partial_identity_headers_only_present_extracted(self):
@@ -535,6 +533,37 @@ class TestRoleHeadersFor:
         session._role_headers_for("nonexistent")
         captured = capsys.readouterr()
         assert "unknown_role_no_headers_applied" in captured.err
+
+    def test_a_captured_role_replays_no_header_the_client_sets_itself(self):
+        """A role saved before 1.40.2 can hold what Chrome sent over HTTP/2 (#370):
+        the session sends the HTTP client's own Accept-Encoding and Connection, and
+        neither Priority nor a pseudo-header."""
+        chrome = {
+            **_IDENTITY_HEADERS,
+            "accept-encoding": "gzip, deflate, br, zstd",
+            "priority": "u=1, i",
+            "Connection": "close",
+            ":authority": "myshop.example",
+            "Accept": "application/json",
+        }
+        del chrome["Accept-Encoding"]
+        defaults = requests.utils.default_headers()
+        for session in (
+            GraftpunkSession(header_roles={"xhr": chrome}),
+            _merged({"xhr": chrome}),
+        ):
+            prepared = session.prepare_request(
+                requests.Request(
+                    "GET",
+                    "https://myshop.example/api/orders",
+                    headers={"Accept": "application/json"},
+                )
+            )
+            assert prepared.headers["Accept-Encoding"] == defaults["Accept-Encoding"]
+            assert prepared.headers["Connection"] == defaults["Connection"]
+            assert "priority" not in prepared.headers
+            assert ":authority" not in prepared.headers
+            assert prepared.headers["User-Agent"] == "Mozilla/5.0 Test"
 
     def test_excludes_identity_headers(self):
         session = GraftpunkSession(header_roles=SAMPLE_ROLES)
@@ -979,3 +1008,9 @@ class TestSessionEncapsulation:
         session = GraftpunkSession(header_roles=original)
         session.clear_header_roles()
         assert original == {"xhr": {"Accept": "*/*"}}
+
+
+def _merged(roles: dict[str, dict[str, str]]) -> GraftpunkSession:
+    session = GraftpunkSession()
+    session.merge_header_roles(roles)
+    return session

@@ -69,19 +69,37 @@ def test_excluded_headers_contains_cookie():
     assert "cookie" in EXCLUDED_HEADERS
 
 
-def test_excluded_headers_contains_host():
-    assert "host" in EXCLUDED_HEADERS
-
-
-def test_excluded_headers_contains_pseudo_headers():
-    assert ":authority" in EXCLUDED_HEADERS
-    assert ":method" in EXCLUDED_HEADERS
-    assert ":path" in EXCLUDED_HEADERS
-    assert ":scheme" in EXCLUDED_HEADERS
-
-
-def test_excluded_headers_contains_content_length():
-    assert "content-length" in EXCLUDED_HEADERS
+def test_a_role_keeps_no_header_the_client_sets_itself():
+    """A role recorded from Chrome over HTTP/2 (#370): the pseudo-headers, Priority,
+    and the headers the HTTP client sends on its own never reach a role, so the
+    session never replays them; Chrome's Accept-Encoding offers zstd, which the
+    client cannot decode without zstandard."""
+    request_map = {
+        "1": {
+            "headers": {
+                ":authority": "myshop.example",
+                ":method": "GET",
+                ":path": "/api/orders",
+                ":scheme": "https",
+                ":protocol": "websocket",
+                "priority": "u=1, i",
+                "Host": "myshop.example",
+                "Connection": "keep-alive",
+                "Content-Length": "0",
+                "accept-encoding": "gzip, deflate, br, zstd",
+                "sec-fetch-mode": "cors",
+                "Accept": "application/json",
+                "x-api-key": "k-0f9e8d7c6b5a",
+            },
+        },
+    }
+    assert extract_header_roles(request_map) == {
+        "xhr": {
+            "sec-fetch-mode": "cors",
+            "Accept": "application/json",
+            "x-api-key": "k-0f9e8d7c6b5a",
+        }
+    }
 
 
 def test_excluded_headers_contains_content_type():

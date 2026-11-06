@@ -21,6 +21,7 @@ from typing import Any, Literal, get_args
 from urllib.parse import parse_qs, unquote, unquote_plus, urljoin, urlparse, urlunparse
 from urllib.parse import quote as percent_encode
 
+from graftpunk.client_headers import client_sets_header
 from graftpunk.har.documents import (
     PASSWORD_NAME_HINTS,
     LoginForm,
@@ -56,7 +57,6 @@ from graftpunk.har.parser import (
     UNPARSED_TIMESTAMP,
     HAREntry,
     LoginInteraction,
-    client_sets_header,
     cookie_header_pairs,
     parse_har_file,
 )
@@ -249,7 +249,7 @@ _AUTH_URL_REGEX = re.compile(
 _LOGOUT_URL_REGEX = re.compile(r"/(?:log[-_]?out|sign[-_]?out|log[-_]?off)(?=/|$)", re.IGNORECASE)
 
 # Browser-set request headers a stub does not list. The ones the HTTP client
-# sets itself are graftpunk.har.parser.client_sets_header's.
+# sets itself are graftpunk.client_headers.client_sets_header's.
 _STANDARD_REQUEST_HEADERS = frozenset(
     {
         "accept",
@@ -3809,7 +3809,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             acc.record(entry, path, step, entry_index)
 
         for name in entry.request.headers:
-            if looks_like_token_name(name) and not client_sets_header(name):
+            if looks_like_token_name(name):
                 token_seen.setdefault(("header", name), []).append(f"{method} {raw_template}")
         for cookie in entry.request.cookies + entry.response.cookies:
             cname = cookie.get("name", "")

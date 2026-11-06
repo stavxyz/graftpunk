@@ -16,6 +16,7 @@ from urllib.parse import quote, urlparse
 import pytest
 from structlog.testing import capture_logs
 
+from graftpunk.client_headers import client_sets_header
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
 from graftpunk.har.digest import (
     _BODY_SAMPLE_THRESHOLD,
@@ -58,7 +59,7 @@ from graftpunk.har.digest import (
     redacted_names_of,
 )
 from graftpunk.har.documents import LoginForm
-from graftpunk.har.parser import LoginInteraction, client_sets_header, parse_har_file
+from graftpunk.har.parser import LoginInteraction, parse_har_file
 from graftpunk.har.paths import normal_host, reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from tests.unit.guide_harness import REPO_ROOT

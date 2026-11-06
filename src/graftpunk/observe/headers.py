@@ -4,24 +4,28 @@ from __future__ import annotations
 
 from typing import Any
 
-# Headers excluded from roles: request-specific (cookie, host, referer, origin,
-# content-length, content-type), ephemeral security tokens (x-csrf-token),
-# or HTTP/2 pseudo-headers (managed by transport layer).
+from graftpunk.client_headers import client_sets_header
+
+# Headers excluded from roles: request-specific (cookie, referer, origin,
+# content-type) or ephemeral security tokens (x-csrf-token). The ones the HTTP
+# client or the transport supplies (host, connection, accept-encoding,
+# content-length, priority, and every HTTP/2 pseudo-header) are
+# graftpunk.client_headers.client_sets_header's, checked beside this set.
 EXCLUDED_HEADERS: frozenset[str] = frozenset(
     {
         "cookie",
-        "host",
-        "content-length",
         "content-type",
         "referer",
         "origin",
         "x-csrf-token",
-        ":authority",
-        ":method",
-        ":path",
-        ":scheme",
     }
 )
+
+
+def kept_in_role(name: str) -> bool:
+    """Whether a captured request header *name* belongs in a header role: neither
+    in :data:`EXCLUDED_HEADERS` nor one the client sets itself, any case."""
+    return name.lower() not in EXCLUDED_HEADERS and not client_sets_header(name)
 
 
 def classify_request(headers: dict[str, str]) -> str | None:
@@ -96,7 +100,7 @@ def extract_header_roles(
             continue
 
         # Store all headers except excluded ones
-        filtered = {k: v for k, v in headers.items() if k.lower() not in EXCLUDED_HEADERS}
+        filtered = {k: v for k, v in headers.items() if kept_in_role(k)}
         roles[role] = filtered
 
     return roles
