@@ -987,8 +987,7 @@ Suite mode gives each plugin its own `tests/fixtures/<name>/` directory, because
 fixture filenames are derived from endpoint paths and two plugins in one suite
 can share a path. It does not touch `tests/conftest.py`, which was written for
 the first plugin. The new plugin's test module binds its own environment
-scrubber and fixtures check instead, over its own directory alone, so they serve
-its tests and no other plugin's
+scrubber and fixtures check instead, over its own directory alone
 (see [Keep the developer's own environment out of the tests](#keep-the-developers-own-environment-out-of-the-tests)).
 
 A directory holding a `pyproject.toml` that is not a plugin suite is refused
@@ -2365,14 +2364,30 @@ sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)
 ```
 
 A fixture bound in a test module serves that module's tests only and, there,
-replaces the conftest's fixture of the same name. So the new plugin's fixtures
-are checked before its tests run, and an older plugin in the suite whose
-fixtures predate sidecars is not failed by them. `gp plugin check` holds each
-suite member to these two names in its test module, unless the conftest binds
-them (a conftest check over the whole tree covers every member). The fix it
-names for a member is `gp plugin upgrade --plugin <name>`, which adds them to
-that member's test module and nothing else; for the first plugin it adds them
-to the conftest.
+replaces the conftest's fixture of the same name. A suite member's test modules
+are `tests/test_<module>.py` and every `tests/test_<module>_<anything>.py`,
+where `<module>` is the plugin's module name (`my_shop` for `my-shop`); a file
+two members' names both fit belongs to the longer one (`test_my_shop_x.py` is
+`my_shop`'s, not `my`'s). Each of them binds the three names, so every test of
+the member is scrubbed and runs only after its own fixtures pass the check. A
+test of the member in a file with another name gets neither.
+
+`gp plugin check` holds each member's test modules to the three names, and
+reports a member whose `tests/fixtures/<module>/` is missing. The fix it names
+is `gp plugin upgrade --plugin <name>`, which adds the names to that member's
+test modules (creating `tests/test_<module>.py` when it has none), creates its
+fixtures directory, and touches nothing of another plugin's. A bare
+`gp plugin upgrade` does that for every member.
+
+In a suite, `gp plugin upgrade` adds no fixtures check over the whole tree to
+`tests/conftest.py`, with or without `--plugin`: that check walks every
+member's directory, so one member's bad fixture would fail every plugin's tests,
+the first plugin's included. When the conftest lacks it, `gp plugin check`
+still reports the two names for the first plugin and says so. When the
+conftest already binds it, as the one `gp plugin new` writes for a project's first plugin does, it
+is your file and is left as it is: each member's own check still runs, the
+conftest's runs for the first plugin's tests, and a bad fixture anywhere fails
+those. `gp plugin check` prints a note saying so, which is not a finding.
 
 ## Harden
 
@@ -2869,7 +2884,10 @@ UTF-8, cannot be read, or is not a regular file, every `GP-FILL` marker left
 in a plugin module or a test module, any plugin module that does not hold
 exactly one plugin class, and any project wiring the project lacks (`gp
 plugin upgrade` adds it; in a suite, `gp plugin upgrade --plugin <name>` adds
-one plugin's and nothing else). When the project cannot be read at all (for
+one plugin's and nothing else, and creates a member's missing
+`tests/fixtures/<module>/`). In a suite `gp plugin upgrade` adds no fixtures
+check over the whole tree, so the first plugin's missing conftest check stays a
+finding until you decide. When the project cannot be read at all (for
 example, not a plugin project, or a `pyproject.toml` or plugin module that
 cannot be read or does not parse), that refusal is the one finding. A fresh
 scaffold fails it until its markers are filled in. It passes `ruff check` and

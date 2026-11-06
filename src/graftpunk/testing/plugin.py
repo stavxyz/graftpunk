@@ -323,6 +323,15 @@ def _collect_fixtures(tree: Path, tree_stat: os.stat_result) -> tuple[list[Path]
     return sorted(fixtures), problems
 
 
+def _upgrade_for(tree: Path) -> str:
+    """The ``gp plugin upgrade`` that creates *tree*: a suite member's own
+    ``tests/fixtures/<module>/`` is created by ``--plugin <module>``, the tree itself
+    by the bare command (#370)."""
+    if tree.parent.name == "fixtures" and tree.parent.parent.name == "tests":
+        return f"gp plugin upgrade --plugin {tree.name}"
+    return "gp plugin upgrade"
+
+
 def check_fixtures_tree(tree: Path, *, observe_dir: Path | None = None) -> FixturesTreeReport:
     """Check every fixture anywhere under *tree* against its sidecar.
 
@@ -358,17 +367,17 @@ def check_fixtures_tree(tree: Path, *, observe_dir: Path | None = None) -> Fixtu
     tree_stat: list[os.stat_result] = []
     tree_kind = _stat_kind(tree, tree_detail, tree_stat)
     if tree_kind != "dir":
+        upgrade = _upgrade_for(tree)
         if tree_kind == "absent":
             message = (
-                f"{tree}: the fixtures tree does not exist. The generated conftest names "
-                f"it as FIXTURES_TREE; gp plugin new creates it with a {FIXTURES_PLACEHOLDER}, and "
-                f"gp plugin upgrade creates it for a project that lacks it. Run "
-                f"gp plugin upgrade, or recreate the directory by hand."
+                f"{tree}: the fixtures tree does not exist. FIXTURES_TREE names it; gp plugin "
+                f"new creates it with a {FIXTURES_PLACEHOLDER}, and {upgrade} creates it for "
+                f"a project that lacks it. Run {upgrade}, or recreate the directory by hand."
             )
         elif tree_detail:
             message = f"{tree}: cannot be read ({tree_detail[0]})."
         else:
-            message = f"{tree}: not a directory. Move it aside, then run gp plugin upgrade."
+            message = f"{tree}: not a directory. Move it aside, then run {upgrade}."
         return FixturesTreeReport(problems=(message,), verified=0, declared=0)
     fixtures, problems = _collect_fixtures(tree, tree_stat[0])
     verified = declared = 0

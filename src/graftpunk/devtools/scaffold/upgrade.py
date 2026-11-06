@@ -27,7 +27,6 @@ from pathlib import Path
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.plugin_project import (
     DOES_NOT_PARSE,
-    PluginView,
     require_plugin_project,
     unreadable_file_message,
 )
@@ -67,25 +66,38 @@ class UpgradeApplied:
     ``changed`` is whether either happened, for a caller that wants one
     truth test instead of reading both fields. ``floor`` is what a change did
     to the project's ``graftpunk`` requirement (see
-    ``project.planned_graftpunk_floor``), ``None`` when nothing changed."""
+    ``project.planned_graftpunk_floor``), ``None`` when nothing changed.
+
+    ``created_roots`` holds each suite member's fixtures root it created, with
+    ``FIXTURES_PLACEHOLDER`` (#370). ``plugin`` is the entry point it was scoped to,
+    or ``None``. What the project still lacks that this call left alone is counted
+    in two parts: ``left_in_scope``, the requirements of its scope (``plugin``, or
+    the whole project) no upgrade adds (a suite's whole-tree conftest check), and
+    ``left_elsewhere``, another plugin's requirements and fixtures roots under
+    ``plugin``."""
 
     requirements: tuple[ProjectRequirement, ...]
     created_fixtures_tree: bool = False
     floor: FloorVerdict = None
+    created_roots: tuple[str, ...] = ()
+    plugin: str | None = None
+    left_in_scope: int = 0
+    left_elsewhere: int = 0
 
     @property
     def changed(self) -> bool:
-        return bool(self.requirements) or self.created_fixtures_tree
+        return bool(self.requirements) or self.created_fixtures_tree or bool(self.created_roots)
 
 
 def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
     """Apply every requirement *root*'s project lacks, and return what was applied.
 
-    With *plugin* (an entry-point name), only the requirements that serve it
-    (``ProjectRequirement.plugin``): in a suite, its own test module's for a member,
-    and the shared conftest's for the plugin whose fixtures root is the whole tree.
-    That is what ``gp plugin check`` names for a suite, so upgrading one member never
-    points a fixtures check at another member's fixtures (#370).
+    With *plugin* (an entry-point name, or its module name), only the requirements
+    that serve it (``ProjectRequirement.plugin``) and, for a suite member, its
+    fixtures root when that is missing. In a suite it never adds the shared
+    conftest's check over the whole fixtures tree (``upgrade_adds``), with or
+    without *plugin*: that check fails every plugin's tests on one plugin's
+    fixture (#370).
 
     Raises:
         UpgradeRefusedError: A requirement's file, or ``tests/fixtures``, is one
@@ -100,15 +112,20 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
             error names what was left changed.
     """
     view = require_plugin_project(root)
-    if plugin is not None and not isinstance(view.plugin(plugin), PluginView):
-        names = ", ".join(p.entry_point for p in view.plugins) or "none"
-        raise UpgradeRefusedError(
-            f"no plugin named {plugin!r} in this project; its plugins: {names}."
-        )
+    if plugin is not None:
+        found = view.entry_point_for(plugin)
+        if found is None:
+            names = ", ".join(p.entry_point for p in view.plugins) or "none"
+            raise UpgradeRefusedError(
+                f"no plugin named {plugin!r} in this project; its plugins: {names}."
+            )
+        plugin = found
+    roots = [r for r in view.member_roots if plugin is None or r.entry_point == plugin]
     blocked: list[tuple[str, str]] = []
     if view.fixtures_tree_blocked is not None:
         blocked.append(view.fixtures_tree_blocked)
-    blocked.extend(view.unreadable_files(plugin))
+    blocked.extend(view.unreadable_files(plugin, upgrade_adds_only=True))
+    blocked.extend(r.blocked for r in roots if r.blocked is not None)
     blocked = list(dict.fromkeys(blocked))
     if blocked:
         # A single space, not "; ": each entry is already a full sentence
@@ -116,7 +133,14 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
         # so "; " between two entries reads as a third one.
         listing = " ".join(f"{path}: {unreadable_file_message(reason)}" for path, reason in blocked)
         raise UpgradeRefusedError(listing)
-    missing = view.missing_requirements(plugin)
+    in_scope = view.missing_requirements(plugin)
+    missing = tuple(r for r in in_scope if r.upgrade_adds)
+    created_roots = tuple(r.path for r in roots if not r.present and r.blocked is None)
+    left_elsewhere = (
+        len(view.missing_requirements())
+        - len(in_scope)
+        + sum(1 for r in view.member_roots if not r.present and r.path not in created_roots)
+    )
     by_path: dict[str, list[ProjectRequirement]] = {}
     for requirement in missing:
         by_path.setdefault(requirement.path, []).append(requirement)
@@ -141,11 +165,18 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
     created_fixtures_tree = not view.fixtures_tree_present
     if created_fixtures_tree:
         changes.append(PlannedChange(fixtures_tree / FIXTURES_PLACEHOLDER, ""))
+    changes.extend(PlannedChange(root / path / FIXTURES_PLACEHOLDER, "") for path in created_roots)
     floor = None
     if changes:
         floor, floor_changes = planned_graftpunk_floor(root)
         changes.extend(floor_changes)
     apply_changes(changes)
     return UpgradeApplied(
-        requirements=missing, created_fixtures_tree=created_fixtures_tree, floor=floor
+        requirements=missing,
+        created_fixtures_tree=created_fixtures_tree,
+        floor=floor,
+        created_roots=created_roots,
+        plugin=plugin,
+        left_in_scope=len(in_scope) - len(missing),
+        left_elsewhere=left_elsewhere,
     )

@@ -7,12 +7,15 @@ marker in a plugin module or a test module; a module without exactly one
 ``SitePlugin`` subclass (the reader's per-plugin defect, listed with the
 other findings); a requirement's file that does not parse, is not valid
 UTF-8, cannot be read, or is not a regular file (or whose directory is
-blocked); a requirement the project lacks (in a suite, each member's own), which
-``gp plugin upgrade`` fixes (scoped with ``--plugin`` in a suite); a
-``policy.FIXTURES_TREE`` that is missing
-(which ``gp plugin upgrade`` creates), is not a directory (an author must
-move it aside), or cannot be read (an author must fix its permissions),
-including when ``tests/`` itself, not the tree, is the one blocked; and,
+blocked); a requirement the project lacks, which ``gp plugin upgrade``
+fixes (in a suite, each member's own in each of its test modules, fixed by
+``gp plugin upgrade --plugin <name>``, and the shared conftest's whole-tree
+check, which no upgrade adds in a suite); a ``policy.FIXTURES_TREE``, or in a
+suite a member's own fixtures root, that is missing (which
+``gp plugin upgrade``, with ``--plugin <name>`` for a member's, creates), is
+not a directory (an author must move it aside), or cannot be read (an author
+must fix its permissions), including when ``tests/`` itself, not the tree, is
+the one blocked; and,
 when the reader refuses the project outright (for example, not a plugin
 project, or a ``pyproject.toml`` or plugin module that cannot be read or
 does not parse), that refusal as the only finding. It does not compare a
@@ -46,9 +49,14 @@ from graftpunk.devtools.plugin_project import (
     require_plugin_project,
     unreadable_file_message,
 )
-from graftpunk.devtools.scaffold.policy import FIXTURES_TREE, GP_FILL_MARKER, ProjectRequirement
+from graftpunk.devtools.scaffold.policy import (
+    CONFTEST_PATH,
+    FIXTURES_TREE,
+    GP_FILL_MARKER,
+    ProjectRequirement,
+)
 
-__all__ = ["FINDING_ADVICE", "Finding", "check_project"]
+__all__ = ["FINDING_ADVICE", "Finding", "check_notes", "check_project"]
 
 # The two messages built entirely in this module, each holding its own advice
 # phrase; unreadable_file_message's phrases live in plugin_project.py, next to
@@ -57,11 +65,22 @@ _CREATES_IT = "creates it"
 _ADDS_IT = "adds it"
 _FIXTURES_TREE_MISSING = f"missing; gp plugin upgrade {_CREATES_IT}."
 _DOES_NOT_BIND = "does not bind"
+_NO_WHOLE_TREE_CHECK = "adds no fixtures check over the whole tree"
+_WHOLE_TREE_NOTE = (
+    f"note: {CONFTEST_PATH} checks the whole fixtures tree, so one plugin's bad "
+    "fixture fails every plugin's tests in this suite."
+)
 
 
 def _upgrade_advice(requirement: ProjectRequirement) -> str:
     """The advice for a missing *requirement*: the upgrade that adds it and, in a
-    suite, nothing another plugin lacks (#370)."""
+    suite, nothing another plugin lacks; for a suite's whole-tree conftest check,
+    which no upgrade adds, why (#370)."""
+    if not requirement.upgrade_adds:
+        return (
+            f"in a suite gp plugin upgrade {_NO_WHOLE_TREE_CHECK}, which would fail "
+            "every plugin's tests on one plugin's fixture."
+        )
     scope = f" --plugin {requirement.plugin}" if requirement.plugin is not None else ""
     return f"gp plugin upgrade{scope} {_ADDS_IT}."
 
@@ -76,6 +95,7 @@ FINDING_ADVICE: tuple[str, ...] = (
     GP_FILL_MARKER,
     _CREATES_IT,
     _ADDS_IT,
+    _NO_WHOLE_TREE_CHECK,
 )
 """Every advice phrase a ``check_project`` finding can carry, for a test to
 check the guide's prose against: not a guarantee that a future reason is
@@ -119,6 +139,13 @@ def check_project(root: Path) -> list[Finding]:
         findings.append(Finding(path=path, line=None, message=unreadable_file_message(reason)))
     elif not view.fixtures_tree_present:
         findings.append(Finding(path=FIXTURES_TREE, line=None, message=_FIXTURES_TREE_MISSING))
+    for member in view.member_roots:
+        if member.blocked is not None:
+            path, reason = member.blocked
+            findings.append(Finding(path=path, line=None, message=unreadable_file_message(reason)))
+        elif not member.present:
+            message = f"missing; gp plugin upgrade --plugin {member.entry_point} {_CREATES_IT}."
+            findings.append(Finding(path=member.path, line=None, message=message))
     findings.extend(
         Finding(
             path=plugin.module_path, line=line, message=f"{GP_FILL_MARKER} marker left to fill in."
@@ -149,3 +176,15 @@ def check_project(root: Path) -> list[Finding]:
         for requirement in view.missing_requirements()
     )
     return list(dict.fromkeys(findings))
+
+
+def check_notes(root: Path) -> list[str]:
+    """What ``gp plugin check`` prints beside its findings without failing: today,
+    once, that a suite's shared conftest checks the whole fixtures tree, so one
+    plugin's bad fixture fails every plugin's tests (#370). That conftest is the
+    author's file, so it is left as it is. Empty when the reader refuses *root*."""
+    try:
+        view = require_plugin_project(root)
+    except (NotAPluginProjectError, PluginProjectError):
+        return []
+    return [_WHOLE_TREE_NOTE] if view.shared_whole_tree_check else []

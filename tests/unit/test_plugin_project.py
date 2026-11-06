@@ -231,6 +231,8 @@ class TestTheView:
             "fixtures_tree_present",
             "fixtures_tree_blocked",
             "first_party_packages",
+            "member_roots",
+            "shared_whole_tree_check",
         ]
         assert [f.name for f in fields(PluginDefect)] == ["entry_point", "module_path", "message"]
         assert [f.name for f in fields(PluginView)] == [
@@ -1136,6 +1138,7 @@ _GUARDED_PHRASES: dict[str, tuple[object, str]] = {
     "GP_FILL_MARKER": (policy, policy.GP_FILL_MARKER),
     "_CREATES_IT": (plugin_check_module, plugin_check_module._CREATES_IT),
     "_ADDS_IT": (plugin_check_module, plugin_check_module._ADDS_IT),
+    "_NO_WHOLE_TREE_CHECK": (plugin_check_module, plugin_check_module._NO_WHOLE_TREE_CHECK),
 }
 
 
@@ -1449,6 +1452,39 @@ class TestUnfollowableSymlink:
         view = read_project(tmp_path)
         assert view.fixtures_tree_present is False
         assert view.fixtures_tree_blocked == ("tests/fixtures", NOT_A_DIRECTORY)
+
+    @staticmethod
+    def _suite_without_member_root(root: Path) -> Path:
+        """A suite whose member otherstore has no fixtures root: returns where it was."""
+        _generate(root)
+        _generate(root, "otherstore")
+        member_root = root / "tests" / "fixtures" / "otherstore"
+        shutil.rmtree(member_root)
+        return member_root
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_member_roots_reads_a_locked_target_as_blocked(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        member_root = self._suite_without_member_root(tmp_path)
+        locked = _locked_target(tmp_path_factory, member_root, is_dir=True)
+        try:
+            view = read_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        (found,) = view.member_roots
+        assert (found.present, found.blocked) == (
+            False,
+            ("tests/fixtures/otherstore", NOT_A_DIRECTORY),
+        )
+
+    def test_member_roots_reads_a_self_loop_as_blocked(self, tmp_path: Path) -> None:
+        _loop(self._suite_without_member_root(tmp_path))
+        (found,) = read_project(tmp_path).member_roots
+        assert (found.present, found.blocked) == (
+            False,
+            ("tests/fixtures/otherstore", NOT_A_DIRECTORY),
+        )
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
     def test_first_party_packages_skips_a_root_level_locked_target(

@@ -27,7 +27,7 @@ from graftpunk.cli.scaffold_shared import (
     print_other_host,
 )
 from graftpunk.devtools.errors import DevtoolsRefusal
-from graftpunk.devtools.plugin_check import check_project
+from graftpunk.devtools.plugin_check import check_notes, check_project
 from graftpunk.devtools.plugin_info import info_payload
 from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold import policy
@@ -40,7 +40,7 @@ from graftpunk.devtools.scaffold.pyproject_edit import (
     RaisedFloor,
 )
 from graftpunk.devtools.scaffold.render import graftpunk_version_floor
-from graftpunk.devtools.scaffold.upgrade import upgrade_project
+from graftpunk.devtools.scaffold.upgrade import UpgradeApplied, upgrade_project
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.parser import HARParseError
 
@@ -180,7 +180,7 @@ def plugin_upgrade(
         str | None,
         typer.Option(
             "--plugin",
-            help="Entry-point name: add only what this plugin of a suite lacks",
+            help="Entry-point or module name: add only what this plugin of a suite lacks",
         ),
     ] = None,
 ) -> None:
@@ -191,15 +191,41 @@ def plugin_upgrade(
         LOG.debug("upgrade_refused", reason=type(exc).__name__)
         console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(1) from None
-    if not applied.changed:
-        console.print("Nothing to upgrade: the project already has every requirement.")
-        return
+    _print_upgrade(applied)
+
+
+def _print_upgrade(applied: UpgradeApplied) -> None:
+    """What ``gp plugin upgrade`` did, for its scope, and what it left (#370)."""
+    scope = applied.plugin
+    if not applied.changed and not applied.left_in_scope:
+        has = f"{scope} already has" if scope else "the project already has"
+        console.print(escape(f"Nothing to upgrade: {has} every requirement."), soft_wrap=True)
     for requirement in applied.requirements:
         console.print(
             f"{escape(requirement.path)}: added {escape(requirement.name)}", soft_wrap=True
         )
     if applied.created_fixtures_tree:
         console.print(f"{escape(policy.FIXTURES_TREE)}: created", soft_wrap=True)
+    for path in applied.created_roots:
+        console.print(f"{escape(path)}: created", soft_wrap=True)
+    if applied.left_in_scope:
+        console.print(
+            escape(
+                f"{applied.left_in_scope} requirement(s) left as they are: in a suite gp "
+                "plugin upgrade adds no fixtures check over the whole tree; gp plugin check "
+                "says which."
+            ),
+            soft_wrap=True,
+        )
+    if applied.left_elsewhere:
+        console.print(
+            escape(
+                f"{applied.left_elsewhere} requirement(s) or fixtures root(s) of other "
+                "plugins are still missing; gp plugin check names the gp plugin upgrade "
+                "--plugin <name> for each."
+            ),
+            soft_wrap=True,
+        )
     _print_floor(applied.floor)
 
 
@@ -209,6 +235,8 @@ def plugin_check(
 ) -> None:
     """Lint a plugin project: markers left, one plugin class per module, project wiring."""
     findings = check_project(dir_)
+    for note in check_notes(dir_):
+        console.print(escape(note), soft_wrap=True, highlight=False)
     for finding in findings:
         console.print(escape(str(finding)), soft_wrap=True, highlight=False)
     if findings:

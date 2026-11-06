@@ -9,6 +9,7 @@ from the writer").
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
 
@@ -26,11 +27,13 @@ __all__ = [
     "RESERVED_COMMAND_NAMES",
     "TESTS_DIR",
     "ProjectRequirement",
+    "env_prefix_for",
     "fixtures_root",
     "member_requirements",
     "module_name_for",
     "path_from_tests",
     "suite_test_module",
+    "test_module_owner",
 ]
 
 TESTS_DIR: Final = "tests/"
@@ -73,9 +76,31 @@ first plugin of a project; a suite member added later shares it."""
 
 
 def suite_test_module(module_name: str) -> str:
-    """A suite member's test module, project-relative: ``gp plugin new`` writes it,
-    and a suite member's ``member_requirements`` live in it."""
+    """A suite member's test module, project-relative: the one ``gp plugin new``
+    writes, and the one ``gp plugin upgrade`` creates for a member that has none."""
     return f"{TESTS_DIR}test_{module_name}.py"
+
+
+def test_module_owner(filename: str, module_names: Iterable[str]) -> str | None:
+    """Which of a suite's member *module_names* a top-level test file *filename*
+    (``test_orders.py``, no directory) belongs to: the member ``<m>`` it is named
+    ``test_<m>.py`` or ``test_<m>_<anything>.py`` for, the longest such ``<m>``
+    when several match (``test_my_shop_x.py`` is ``my_shop``'s, not ``my``'s), and
+    ``None`` when none does. The one rule for which files a member's env scrubber
+    and fixtures check must be bound in (#370): a fixture bound in a test module
+    serves that module's tests only."""
+    if not filename.endswith(".py"):
+        return None
+    stem = filename.removesuffix(".py")
+    owners = [m for m in module_names if stem == f"test_{m}" or stem.startswith(f"test_{m}_")]
+    return max(owners, key=len, default=None)
+
+
+def env_prefix_for(name: str) -> str:
+    """The environment-variable prefix a plugin named *name* reads its settings
+    from, and the one its tests' ``site_env_scrubber`` removes: ``my-shop`` reads
+    ``MY_SHOP_``."""
+    return re.sub(r"[^A-Z0-9]+", "_", name.upper()) + "_"
 
 
 @dataclass(frozen=True)
@@ -94,7 +119,10 @@ class ProjectRequirement:
 
     ``plugin`` is the entry-point name of the one plugin the requirement serves,
     so ``gp plugin upgrade --plugin`` can apply it alone; ``None`` for a
-    standalone project's, which serve the whole project.
+    standalone project's, which serve the whole project. ``upgrade_adds`` is
+    false for the one kind ``gp plugin upgrade`` never applies: a suite's shared
+    conftest check over the whole fixtures tree, which would fail every plugin's
+    tests on one plugin's fixture (#370); ``gp plugin check`` still reports it.
 
     Only a Python file and a module-level binding. A ``pyproject.toml`` key is not
     this format's business (it needs a TOML edit through ``pyproject_edit.py``),
@@ -107,6 +135,7 @@ class ProjectRequirement:
     # (module, name) pairs the statement reads, merged into the file's imports.
     imports: tuple[tuple[str, str], ...] = ()
     plugin: str | None = None
+    upgrade_adds: bool = True
 
     @property
     def key(self) -> str:
@@ -142,20 +171,23 @@ PROJECT_REQUIREMENTS: Final[tuple[ProjectRequirement, ...]] = _requirements(
 applied: the fixtures check over the whole tree."""
 
 
-def member_requirements(entry_point: str) -> tuple[ProjectRequirement, ...]:
-    """What suite member *entry_point*'s test module must bind, in the order they are
-    applied: the fixtures check over its own fixtures root alone. A session-scoped
-    autouse fixture bound in a test module serves that module's tests only, and
-    overrides the conftest's of the same name there, so neither a member's fixtures
-    nor its bindings fail another member's tests. The project reader counts one
-    bound in the shared conftest as bound for the member too: that check covers the
-    whole tree, the member's root included (#370)."""
+def member_requirements(entry_point: str, path: str) -> tuple[ProjectRequirement, ...]:
+    """What *path*, a test module of suite member *entry_point*
+    (:func:`test_module_owner`), must bind, in the order they are applied: the env
+    scrubber for the member's own prefix, and the fixtures check over its own
+    fixtures root alone. A fixture bound in a test module serves that module's tests
+    only, and overrides the conftest's of the same name there, so neither a member's
+    fixtures nor its bindings fail another member's tests (#370)."""
     module = module_name_for(entry_point)
-    return _requirements(
-        suite_test_module(module),
-        fixtures_root(suite_member=True, module_name=module),
-        entry_point,
+    scrubber = ProjectRequirement(
+        path=path,
+        name="scrub_site_env",
+        statement=f'scrub_site_env = site_env_scrubber("{env_prefix_for(entry_point)}")',
+        imports=(("graftpunk.testing.plugin", "site_env_scrubber"),),
+        plugin=entry_point,
     )
+    tree = fixtures_root(suite_member=True, module_name=module)
+    return (scrubber, *_requirements(path, tree, entry_point))
 
 
 def module_name_for(name: str) -> str:

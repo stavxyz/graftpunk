@@ -250,10 +250,6 @@ def class_name_for(name: str) -> str:
     return "".join(part.capitalize() for part in parts if part) + "Plugin"
 
 
-def _env_prefix_for(name: str) -> str:
-    return re.sub(r"[^A-Z0-9]+", "_", name.upper()) + "_"
-
-
 def _deduped(base: str, seen: set[str]) -> str:
     """*base* when it is free, else the first of ``{base}_2``, ``{base}_3``, ... that is
     not in *seen*; the result is added to *seen*. The counter starts at 2 because the
@@ -2434,7 +2430,7 @@ def _render_conftest(spec: ScaffoldSpec) -> str:
     scrubber = [
         *import_lines("graftpunk.testing.plugin", "site_env_scrubber"),
         "",
-        f'scrub_site_env = site_env_scrubber("{_env_prefix_for(spec.name)}")',
+        f'scrub_site_env = site_env_scrubber("{policy.env_prefix_for(spec.name)}")',
     ]
     requirements = [r for r in policy.PROJECT_REQUIREMENTS if r.path == policy.CONFTEST_PATH]
     return with_bindings("\n".join(scrubber) + "\n", requirements)
@@ -2543,12 +2539,12 @@ def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, pa
         f"FIXTURES_DIR = {_fixtures_dir_expression(spec)}",
     ]
     if suite_member:
-        # FIXTURES_TREE and sanitised_fixtures: the names policy.member_requirements
-        # holds gp plugin check to (#370).
+        # The three names policy.member_requirements holds every test module of a
+        # suite member to (#370).
         lines += [
             "# This plugin's own env scrubber and fixtures check: the suite's shared",
             "# conftest serves another plugin, and these serve this module's tests only.",
-            f'scrub_site_env = site_env_scrubber("{_env_prefix_for(spec.name)}")',
+            f'scrub_site_env = site_env_scrubber("{policy.env_prefix_for(spec.name)}")',
             "FIXTURES_TREE = FIXTURES_DIR",
             "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)",
         ]

@@ -6,6 +6,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 import graftpunk.devtools.scaffold.policy as policy
 from graftpunk.devtools.scaffold.policy import (
     CONFTEST_PATH,
@@ -101,21 +103,34 @@ class TestProjectRequirements:
         before it bites, not after."""
         assert all(r.path == CONFTEST_PATH for r in PROJECT_REQUIREMENTS)
 
-    def test_a_suite_member_binds_the_same_names_over_its_own_root(self) -> None:
-        tree, check = policy.member_requirements("my-shop")
-        assert (tree.path, tree.name, tree.plugin) == (
-            "tests/test_my_shop.py",
-            "FIXTURES_TREE",
-            "my-shop",
-        )
+    def test_a_suite_member_binds_its_scrubber_and_check_over_its_own_root(self) -> None:
+        scrubber, tree, check = policy.member_requirements("my-shop", "tests/test_my_shop_x.py")
+        assert {r.path for r in (scrubber, tree, check)} == {"tests/test_my_shop_x.py"}
+        assert {r.plugin for r in (scrubber, tree, check)} == {"my-shop"}
+        assert scrubber.statement == 'scrub_site_env = site_env_scrubber("MY_SHOP_")'
         assert tree.statement == 'FIXTURES_TREE = Path(__file__).parent / "fixtures" / "my_shop"'
-        assert (check.path, check.statement, check.plugin) == (
-            "tests/test_my_shop.py",
-            "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)",
-            "my-shop",
-        )
+        assert check.statement == "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)"
         assert [r.name for r in PROJECT_REQUIREMENTS] == [tree.name, check.name]
-        assert all(r.plugin is None for r in PROJECT_REQUIREMENTS)
+        assert all(r.plugin is None and r.upgrade_adds for r in PROJECT_REQUIREMENTS)
+
+
+@pytest.mark.parametrize(
+    ("filename", "owner"),
+    [
+        ("test_my.py", "my"),
+        ("test_my_orders.py", "my"),
+        ("test_my_shop.py", "my_shop"),
+        ("test_my_shop_orders.py", "my_shop"),
+        ("test_myshop.py", None),
+        ("test_plugin.py", None),
+        ("conftest.py", None),
+        ("test_my.txt", None),
+    ],
+)
+def test_a_test_file_belongs_to_the_longest_member_name_it_fits(
+    filename: str, owner: str | None
+) -> None:
+    assert policy.test_module_owner(filename, ["my", "my_shop"]) == owner
 
 
 def test_the_placeholder_is_the_testing_layers() -> None:
