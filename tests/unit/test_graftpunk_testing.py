@@ -1531,3 +1531,35 @@ def test_the_stat_kind_guard_still_allows_the_probe_itself() -> None:
         """
     )
     assert _calls_outside_stat_kind(ast.parse(source)) == []
+
+
+class TestSkip:
+    """``skip`` leaves out directories directly under the tree (#370): a suite's
+    conftest passes each member's own fixtures root."""
+
+    @staticmethod
+    def _tree(root: Path) -> Path:
+        tree = root / "fixtures"
+        (tree / "myshop").mkdir(parents=True)
+        (tree / "get_orders.json").write_text('{"orders": []}')
+        (tree / "get_orders.json.meta.json").write_text(
+            sidecar_text(Sidecar(status=200, content_type="application/json"))
+        )
+        (tree / "myshop" / "get_x.json").write_text('{"a": 1}')
+        return tree
+
+    def test_a_skipped_member_directory_is_not_walked(self, tmp_path: Path) -> None:
+        report = check_fixtures_tree(self._tree(tmp_path), skip=("myshop",))
+        assert (report.problems, report.declared) == ((), 1)
+
+    def test_without_skip_the_member_directory_is_walked(self, tmp_path: Path) -> None:
+        (problem,) = check_fixtures_tree(self._tree(tmp_path)).problems
+        assert problem.startswith("myshop/get_x.json: no sidecar")
+
+    def test_skip_names_only_a_directory_directly_under_the_tree(self, tmp_path: Path) -> None:
+        tree = self._tree(tmp_path)
+        nested = tree / "other" / "myshop"
+        nested.mkdir(parents=True)
+        (nested / "get_y.json").write_text("{}")
+        problems = check_fixtures_tree(tree, skip=("myshop",)).problems
+        assert [p.split(":")[0] for p in problems] == ["other/myshop/get_y.json"]

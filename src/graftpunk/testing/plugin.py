@@ -33,7 +33,7 @@ import hashlib
 import os
 import re
 import stat
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -233,7 +233,9 @@ def _label(tree: Path, relative: Path) -> Path:
     return tree if relative == Path(".") else relative
 
 
-def _collect_fixtures(tree: Path, tree_stat: os.stat_result) -> tuple[list[Path], list[str]]:
+def _collect_fixtures(
+    tree: Path, tree_stat: os.stat_result, skip: frozenset[str] = frozenset()
+) -> tuple[list[Path], list[str]]:
     """The committed fixtures under *tree*, sorted, and one problem line for
     each directory that cannot be listed (no read permission) or whose
     entries cannot be told apart from a subdirectory (listed, but no search
@@ -256,7 +258,8 @@ def _collect_fixtures(tree: Path, tree_stat: os.stat_result) -> tuple[list[Path]
     of every directory's ``(st_dev, st_ino)`` visited so far; a dirnames
     entry whose identity is already in that set, reached a second time
     through a different symlink or a symlink cycle, is pruned before the
-    walk would recurse into it again."""
+    walk would recurse into it again. A directory directly under *tree* whose name
+    is in *skip* is pruned the same way, with everything under it."""
     problems: list[str] = []
     fixtures: list[Path] = []
     visited = {(tree_stat.st_dev, tree_stat.st_ino)}
@@ -268,6 +271,8 @@ def _collect_fixtures(tree: Path, tree_stat: os.stat_result) -> tuple[list[Path]
     for dirpath, dirnames, filenames in os.walk(tree, onerror=onerror, followlinks=True):
         dirnames[:] = [name for name in dirnames if not name.startswith(".")]
         directory = Path(dirpath)
+        if directory == tree:
+            dirnames[:] = [name for name in dirnames if name not in skip]
         relative_dir = directory.relative_to(tree)
         kept_dirnames: list[str] = []
         blocked = False
@@ -332,7 +337,9 @@ def _upgrade_for(tree: Path) -> str:
     return "gp plugin upgrade"
 
 
-def check_fixtures_tree(tree: Path, *, observe_dir: Path | None = None) -> FixturesTreeReport:
+def check_fixtures_tree(
+    tree: Path, *, observe_dir: Path | None = None, skip: Iterable[str] = ()
+) -> FixturesTreeReport:
     """Check every fixture anywhere under *tree* against its sidecar.
 
     Catches a missing tree, a directory under it that cannot be listed or
@@ -362,6 +369,10 @@ def check_fixtures_tree(tree: Path, *, observe_dir: Path | None = None) -> Fixtu
     since a check that quietly did not run reads as one that passed; the name
     check still applies to its fixtures. Only the names of *observe_dir*'s own
     entries and the run's own files are read (:class:`_RunValues`).
+
+    *skip* names directories directly under *tree* that are not walked: in a suite,
+    each member's own fixtures root, which the member's test modules check, so the
+    shared conftest's check covers the first plugin's fixtures alone (#370).
     """
     tree_detail: list[str] = []
     tree_stat: list[os.stat_result] = []
@@ -379,7 +390,7 @@ def check_fixtures_tree(tree: Path, *, observe_dir: Path | None = None) -> Fixtu
         else:
             message = f"{tree}: not a directory. Move it aside, then run {upgrade}."
         return FixturesTreeReport(problems=(message,), verified=0, declared=0)
-    fixtures, problems = _collect_fixtures(tree, tree_stat[0])
+    fixtures, problems = _collect_fixtures(tree, tree_stat[0], frozenset(skip))
     verified = declared = 0
     runs = _RunValues(
         observe_dir if observe_dir is not None else graftpunk.observe.OBSERVE_BASE_DIR
@@ -658,7 +669,9 @@ def _flagged_name_problems(relative: Path, sidecar: Sidecar, body: bytes) -> lis
     return problems
 
 
-def fixtures_are_sanitised(tree: Path | str, *, observe_dir: Path | str | None = None) -> Any:
+def fixtures_are_sanitised(
+    tree: Path | str, *, observe_dir: Path | str | None = None, skip: Iterable[str] = ()
+) -> Any:
     """An autouse, session-scoped fixture that fails the run unless every fixture under
     *tree* passes :func:`check_fixtures_tree`.
 
@@ -667,14 +680,18 @@ def fixtures_are_sanitised(tree: Path | str, *, observe_dir: Path | str | None =
     what registers it. It prints :attr:`FixturesTreeReport.summary` once per run,
     and on a problem it fails every test with the list of problems. *observe_dir*
     is where the local value check looks for a sidecar's observe run
-    (:func:`check_fixtures_tree`); a generated conftest leaves it out.
+    (:func:`check_fixtures_tree`); a generated conftest leaves it out. *skip* names
+    directories directly under *tree* the check does not walk
+    (:func:`check_fixtures_tree`): a suite's conftest passes
+    ``SUITE_MEMBER_FIXTURES``, each member's own fixtures root. New in 1.41.0.
     """
     root = Path(tree)
+    skipped = tuple(skip)
     runs = Path(observe_dir) if observe_dir is not None else None
 
     @pytest.fixture(scope="session", autouse=True)
     def _sanitised(request: pytest.FixtureRequest) -> None:
-        report = check_fixtures_tree(root, observe_dir=runs)
+        report = check_fixtures_tree(root, observe_dir=runs, skip=skipped)
         reporter = request.config.pluginmanager.get_plugin("terminalreporter")
         if reporter is not None:
             reporter.write_line(report.summary)
