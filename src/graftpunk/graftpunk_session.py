@@ -85,11 +85,13 @@ def list_roles() -> list[str]:
     return sorted(_ROLE_REGISTRY.keys())
 
 
-def _replayable(roles: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
-    """*roles* without any header the HTTP client sets itself
-    (:func:`graftpunk.client_headers.client_sets_header`): a role captured before
-    1.40.2 can hold Chrome's Priority and Accept-Encoding, and a replayed
-    Accept-Encoding offering zstd gets a body the client cannot decode (#370)."""
+def replayable_roles(roles: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    """Captured *roles* without any header the HTTP client sets itself
+    (:func:`graftpunk.client_headers.client_sets_header`). A role ``gp observe``
+    captured before 1.41.0, restored from a cached session, can hold Chrome's
+    Priority and Accept-Encoding, and a replayed Accept-Encoding offering zstd gets
+    a body the client cannot decode (#370). A plugin's own declared roles never pass
+    through here: what a plugin declares is sent."""
     return {
         role: {k: v for k, v in headers.items() if not client_sets_header(k)}
         for role, headers in roles.items()
@@ -187,7 +189,9 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
             **kwargs: Additional arguments passed to requests.Session.
         """
         super().__init__(**kwargs)
-        self._gp_header_roles: dict[str, dict[str, str]] = _replayable(header_roles or {})
+        self._gp_header_roles: dict[str, dict[str, str]] = (
+            dict(header_roles) if header_roles else {}
+        )
         self._gp_csrf_tokens: dict[str, str] = {}
         self.gp_default_role: str | None = None
         self.gp_base_url: str = base_url
@@ -220,7 +224,7 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         Args:
             roles: Dict mapping role names to header dicts.
         """
-        self._gp_header_roles.update(_replayable(roles))
+        self._gp_header_roles.update(roles)
 
     def _resolve_referer(self, referer: str) -> str:
         """Resolve a Referer value from a path or full URL.

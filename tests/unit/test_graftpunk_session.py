@@ -14,6 +14,7 @@ from graftpunk.graftpunk_session import (
     get_role_headers,
     list_roles,
     register_role,
+    replayable_roles,
 )
 
 # Shared browser identity headers — identical across all roles,
@@ -534,24 +535,20 @@ class TestRoleHeadersFor:
         captured = capsys.readouterr()
         assert "unknown_role_no_headers_applied" in captured.err
 
-    def test_a_captured_role_replays_no_header_the_client_sets_itself(self):
-        """A role saved before 1.40.2 can hold what Chrome sent over HTTP/2 (#370):
-        the session sends the HTTP client's own Accept-Encoding and Connection, and
-        neither Priority nor a pseudo-header."""
-        chrome = {
-            **_IDENTITY_HEADERS,
-            "accept-encoding": "gzip, deflate, br, zstd",
-            "priority": "u=1, i",
-            "Connection": "close",
-            ":authority": "myshop.example",
-            "Accept": "application/json",
+    def test_a_plugins_own_role_is_sent_as_declared(self):
+        """A role a plugin declares is the author's (#370): its Accept-Encoding and
+        Host are sent, whether it is given at construction or merged in, as
+        cli/http_commands.py merges a plugin's header_roles."""
+        declared = {
+            "api": {
+                "Accept-Encoding": "identity",
+                "Host": "api.myshop.example",
+                "Accept": "application/json",
+                "X-Api": "1",
+            }
         }
-        del chrome["Accept-Encoding"]
-        defaults = requests.utils.default_headers()
-        for session in (
-            GraftpunkSession(header_roles={"xhr": chrome}),
-            _merged({"xhr": chrome}),
-        ):
+        for session in (GraftpunkSession(header_roles=declared), _merged(declared)):
+            session.gp_default_role = "api"
             prepared = session.prepare_request(
                 requests.Request(
                     "GET",
@@ -559,11 +556,21 @@ class TestRoleHeadersFor:
                     headers={"Accept": "application/json"},
                 )
             )
-            assert prepared.headers["Accept-Encoding"] == defaults["Accept-Encoding"]
-            assert prepared.headers["Connection"] == defaults["Connection"]
-            assert "priority" not in prepared.headers
-            assert ":authority" not in prepared.headers
-            assert prepared.headers["User-Agent"] == "Mozilla/5.0 Test"
+            assert prepared.headers["Accept-Encoding"] == "identity"
+            assert prepared.headers["Host"] == "api.myshop.example"
+            assert prepared.headers["X-Api"] == "1"
+
+    def test_replayable_roles_drops_what_the_client_sets_itself(self):
+        chrome = {
+            "xhr": {
+                "accept-encoding": "gzip, deflate, br, zstd",
+                "priority": "u=1, i",
+                "Connection": "close",
+                ":authority": "myshop.example",
+                "Accept": "application/json",
+            }
+        }
+        assert replayable_roles(chrome) == {"xhr": {"Accept": "application/json"}}
 
     def test_excludes_identity_headers(self):
         session = GraftpunkSession(header_roles=SAMPLE_ROLES)
@@ -571,7 +578,9 @@ class TestRoleHeadersFor:
         assert "User-Agent" not in headers
         assert "sec-ch-ua" not in headers
         assert "Accept-Language" not in headers
-        assert "Accept-Encoding" not in headers
+        # Accept-Encoding is not an identity header (#370): a role that declares it
+        # sends it.
+        assert headers["Accept-Encoding"] == "gzip, deflate, br"
 
 
 class TestXhr:
