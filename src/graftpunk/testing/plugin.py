@@ -337,6 +337,34 @@ def _upgrade_for(tree: Path) -> str:
     return "gp plugin upgrade"
 
 
+def _skip_names(skip: Iterable[str]) -> frozenset[str]:
+    """*skip* as the set of directory names it holds, refusing what can never name a
+    directory directly under a tree, so a mistake is an error rather than a check
+    that quietly covers more than intended (#370).
+
+    Raises:
+        TypeError: *skip* is a ``str`` or ``bytes`` (which would iterate as
+            characters), or holds something other than a ``str``.
+        ValueError: An entry is empty, ``.`` or ``..``, or holds a path separator.
+    """
+    if isinstance(skip, (str, bytes)):
+        raise TypeError(
+            f"skip must be a collection of directory names, not {type(skip).__name__} "
+            f"{skip!r}; write ({skip!r},) for one name."
+        )
+    names = tuple(skip)
+    separators = {"/", "\\", os.sep, os.altsep or "/"}
+    for name in names:
+        if not isinstance(name, str):
+            raise TypeError(f"skip holds {name!r}, not a directory name (str).")
+        if name in ("", ".", "..") or any(sep in name for sep in separators):
+            raise ValueError(
+                f"skip holds {name!r}; each entry names one directory directly under the "
+                "tree, with no path separator."
+            )
+    return frozenset(names)
+
+
 def check_fixtures_tree(
     tree: Path, *, observe_dir: Path | None = None, skip: Iterable[str] = ()
 ) -> FixturesTreeReport:
@@ -372,8 +400,14 @@ def check_fixtures_tree(
 
     *skip* names directories directly under *tree* that are not walked: in a suite,
     each member's own fixtures root, which the member's test modules check, so the
-    shared conftest's check covers the first plugin's fixtures alone (#370).
+    shared conftest's check covers the first plugin's fixtures alone (#370). A name
+    with no such directory is ignored (a member gp has not created one for yet).
+
+    Raises:
+        TypeError, ValueError: *skip* is not a collection of directory names
+            (:func:`_skip_names`).
     """
+    skipped = _skip_names(skip)
     tree_detail: list[str] = []
     tree_stat: list[os.stat_result] = []
     tree_kind = _stat_kind(tree, tree_detail, tree_stat)
@@ -390,7 +424,7 @@ def check_fixtures_tree(
         else:
             message = f"{tree}: not a directory. Move it aside, then run {upgrade}."
         return FixturesTreeReport(problems=(message,), verified=0, declared=0)
-    fixtures, problems = _collect_fixtures(tree, tree_stat[0], frozenset(skip))
+    fixtures, problems = _collect_fixtures(tree, tree_stat[0], skipped)
     verified = declared = 0
     runs = _RunValues(
         observe_dir if observe_dir is not None else graftpunk.observe.OBSERVE_BASE_DIR
@@ -683,10 +717,12 @@ def fixtures_are_sanitised(
     (:func:`check_fixtures_tree`); a generated conftest leaves it out. *skip* names
     directories directly under *tree* the check does not walk
     (:func:`check_fixtures_tree`): a suite's conftest passes
-    ``SUITE_MEMBER_FIXTURES``, each member's own fixtures root. New in 1.41.0.
+    ``SUITE_MEMBER_FIXTURES``, each member's own fixtures root. New in 1.41.0. A
+    *skip* that is not a collection of directory names raises here, at the
+    conftest's import, as :func:`check_fixtures_tree` documents.
     """
     root = Path(tree)
-    skipped = tuple(skip)
+    skipped = _skip_names(skip)
     runs = Path(observe_dir) if observe_dir is not None else None
 
     @pytest.fixture(scope="session", autouse=True)

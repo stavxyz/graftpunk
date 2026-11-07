@@ -1563,3 +1563,24 @@ class TestSkip:
         (nested / "get_y.json").write_text("{}")
         problems = check_fixtures_tree(tree, skip=("myshop",)).problems
         assert [p.split(":")[0] for p in problems] == ["other/myshop/get_y.json"]
+
+    @pytest.mark.parametrize("skip", ["myshop", b"myshop"])
+    def test_a_string_is_refused_rather_than_read_as_characters(
+        self, tmp_path: Path, skip: object
+    ) -> None:
+        tree = self._tree(tmp_path)
+        with pytest.raises(TypeError, match=r"write \(.+,\) for one name"):
+            check_fixtures_tree(tree, skip=skip)  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            plugin_module.fixtures_are_sanitised(tree, skip=skip)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("name", ["myshop/", "a/b", "a\\b", ".", "..", "", "../fixtures"])
+    def test_a_name_that_cannot_be_a_directory_under_the_tree_is_refused(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        with pytest.raises(ValueError, match="no path separator"):
+            check_fixtures_tree(self._tree(tmp_path), skip=(name,))
+
+    def test_a_name_with_no_directory_is_ignored(self, tmp_path: Path) -> None:
+        report = check_fixtures_tree(self._tree(tmp_path), skip=("myshop", "nosuch"))
+        assert report.problems == ()
