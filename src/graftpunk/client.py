@@ -252,7 +252,7 @@ class GraftpunkClient:
     immediately, since that is pure policy and costs no I/O.
 
     Args:
-        plugin_name: The ``site_name`` of the plugin to load.
+        plugin_name: The ``site_name`` of the plugin to load, or one of its aliases.
         session: Pin the operating session name (``base`` or ``base@label``).
             When omitted, the operating name is resolved on first session use
             from the plugin's cached sessions -- one backend listing (a

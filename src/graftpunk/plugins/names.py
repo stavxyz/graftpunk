@@ -3,18 +3,24 @@
 :func:`plugin_names` is the one resolver. The CLI's registration, the session
 resolution behind it, :class:`graftpunk.client.GraftpunkClient` (through
 :func:`graftpunk.plugins.get_plugin`), and ``gp plugin check`` all build their
-name table with it, so an alias resolves the same way everywhere (#374).
+name table with it, over every plugin discovered (the CLI included, whether or
+not it then registers each one), so an alias resolves to the same plugin, or to
+the same refusal, everywhere (#374).
 
 An alias is another name for the same plugin object. It is never a second
 plugin, never its own session slot, and never the source of a credential
 variable name: every consumer resolves the alias to the plugin and then reads the
-plugin's own ``site_name`` and ``session_name``.
+plugin's own ``site_name`` and ``session_name``. A plugin's aliases are the ones
+its own class declares; like the rest of its configuration, they are not
+inherited from a parent plugin class.
 
 Canonical names and core commands always win. An alias is dropped, with an
-:class:`AliasConflict` saying why, when it names a core command, any plugin's
-``site_name``, an alias another plugin also declares (dropped from both, so the
-outcome never depends on discovery order), or the plugin's own ``site_name``;
-when the plugin lists it twice; or when it is not a name the CLI can register.
+:class:`AliasConflict` saying why, when it names a core command, another
+plugin's ``site_name`` or ``session_name`` (the session base ``gp session`` and
+``gp http`` resolve a plugin name to), an alias another plugin also declares
+(dropped from both, so the outcome never depends on discovery order), or the
+plugin's own ``site_name``; when the plugin lists it twice; or when it is not a
+name the CLI can register. An alias may equal the plugin's own ``session_name``.
 """
 
 from __future__ import annotations
@@ -24,12 +30,15 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Final, Generic, Protocol, TypeVar
 
+from graftpunk.exceptions import PluginError
+
 __all__ = [
     "CORE_COMMAND_NAMES",
     "AliasConflict",
     "PluginNames",
     "declared_aliases",
     "plugin_names",
+    "validate_aliases",
 ]
 
 CORE_COMMAND_NAMES: Final[frozenset[str]] = frozenset(
@@ -84,19 +93,39 @@ class PluginNames(Generic[P]):
         return self.by_name.get(name)
 
 
-def declared_aliases(plugin: Any) -> tuple[str, ...]:
-    """The aliases *plugin* (an instance or a class) declares, as declared.
+def validate_aliases(value: Any, site_name: str) -> tuple[str, ...]:
+    """*value*, a plugin's declared ``aliases``, as a tuple of strings.
 
-    A plugin that declares none, including one written against
-    ``CLIPluginProtocol`` before ``aliases`` existed, has an empty tuple. A value
-    that is not a list or tuple of strings is one :func:`plugin_names` reports;
-    :func:`graftpunk.plugins.cli_plugin.build_plugin_config` refuses it before
-    that for a ``SitePlugin`` or a YAML plugin.
+    The one check of the value's type, for every kind of plugin: a ``SitePlugin``
+    and a YAML plugin through ``build_plugin_config``, and a plugin written
+    against ``CLIPluginProtocol`` through ``discover_all_plugins``, which refuses
+    each the same way, with this message. ``None`` is no aliases, and a list (YAML
+    has no tuple) becomes a tuple. A bare string is refused rather than read as
+    one alias, so a missing trailing comma (``aliases = ("shop")``) is reported.
+
+    Raises:
+        PluginError: *value* is not a list or tuple of strings.
     """
-    value = getattr(plugin, "aliases", ())
-    if isinstance(value, (list, tuple)):
-        return tuple(value)
-    return (value,) if value else ()
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)) or not all(isinstance(a, str) for a in value):
+        raise PluginError(
+            f"Plugin '{site_name}': 'aliases' must be a tuple (or a YAML list) of "
+            f"strings, got {value!r}. One alias is written ('shop',)."
+        )
+    return tuple(value)
+
+
+def declared_aliases(plugin: Any) -> tuple[str, ...]:
+    """The aliases *plugin* declares: an empty tuple when it declares none,
+    including a plugin written against ``CLIPluginProtocol`` before ``aliases``
+    existed.
+
+    Raises:
+        PluginError: The declared value is not a list or tuple of strings
+            (:func:`validate_aliases`).
+    """
+    return validate_aliases(getattr(plugin, "aliases", ()), plugin.site_name)
 
 
 def plugin_names(
@@ -106,26 +135,39 @@ def plugin_names(
 
     A ``site_name`` maps to the first plugin that has it (refusing a duplicate
     ``site_name`` is the caller's business, as before aliases existed). Each
-    alias is checked as the module docstring says.
+    alias is checked as the module docstring says. A plugin whose ``aliases``
+    cannot be read or is not a list or tuple of strings gets none, and one
+    conflict says why; the discovery that feeds the CLI and ``get_plugin`` has
+    already left such a plugin out.
     """
     ordered = list(plugins)
     by_name: dict[str, P] = {}
     for plugin in ordered:
         by_name.setdefault(plugin.site_name, plugin)
+    # Every site_name and session base, with the plugins that hold it: the names
+    # an alias may not take from another plugin.
+    holders: dict[str, list[str]] = {}
+    for plugin in ordered:
+        for name in {plugin.site_name, _session_base(plugin)} - {""}:
+            holders.setdefault(name, []).append(plugin.site_name)
 
     conflicts: list[AliasConflict] = []
     claims: dict[str, list[P]] = {}
     candidates: dict[str, list[str]] = {}
     for plugin in ordered:
         own = plugin.site_name
+        try:
+            declared = declared_aliases(plugin)
+        except Exception as exc:  # noqa: BLE001 - plugin boundary: a property may raise anything
+            conflicts.append(AliasConflict(own, "aliases", f"cannot be used: {exc}"))
+            declared = ()
         seen: set[str] = set()
         kept: list[str] = []
-        for alias in declared_aliases(plugin):
-            reason = _refusal(alias, own, seen, reserved, by_name)
-            if isinstance(alias, str):
-                seen.add(alias)
+        for alias in declared:
+            reason = _refusal(alias, plugin, seen, reserved, holders)
+            seen.add(alias)
             if reason is not None:
-                conflicts.append(AliasConflict(own, str(alias), reason))
+                conflicts.append(AliasConflict(own, alias, reason))
                 continue
             kept.append(alias)
             claims.setdefault(alias, []).append(plugin)
@@ -149,16 +191,25 @@ def plugin_names(
     return PluginNames(by_name=by_name, aliases=aliases, conflicts=tuple(conflicts))
 
 
+def _session_base(plugin: Any) -> str:
+    """*plugin*'s ``session_name``, or ``""`` when it has none or reading it raises
+    (the CLI reports that plugin when it reaches it; the table does not)."""
+    try:
+        value = getattr(plugin, "session_name", "")
+    except Exception:  # noqa: BLE001 - plugin boundary: a property may raise anything
+        return ""
+    return value if isinstance(value, str) else ""
+
+
 def _refusal(
-    alias: object,
-    own: str,
+    alias: str,
+    plugin: _Named,
     seen: set[str],
     reserved: Collection[str],
-    canonical: dict[str, Any],
+    holders: dict[str, list[str]],
 ) -> str | None:
-    """Why *alias* cannot be one of plugin *own*'s names, or ``None`` when it can."""
-    if not isinstance(alias, str):
-        return "is not a string"
+    """Why *alias* cannot be one of *plugin*'s names, or ``None`` when it can."""
+    own = plugin.site_name
     if alias == own:
         return "is the plugin's own site_name"
     if alias in seen:
@@ -170,6 +221,9 @@ def _refusal(
         )
     if alias in reserved:
         return "is a core gp command"
-    if alias in canonical:
+    others = [name for name in holders.get(alias, ()) if name != own]
+    if not others:
+        return None
+    if alias in others:
         return f"is the site_name of plugin '{alias}'"
-    return None
+    return f"is the session name of plugin '{others[0]}'"

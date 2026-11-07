@@ -114,6 +114,7 @@ class _AliasedView:
     the runtime would give it and the aliases the check has not already refused."""
 
     site_name: str
+    session_name: str
     aliases: tuple[str, ...]
     module_path: str
     line: int | None
@@ -126,8 +127,12 @@ def _alias_findings(view: ProjectView) -> list[Finding]:
     named: list[_AliasedView] = []
     for plugin in view.plugins:
         site_name = plugin.site_name or infer_site_name(plugin.base_url or "") or plugin.entry_point
+        session_name = plugin.session_name or site_name
+        where = (plugin.module_path, plugin.aliases_line)
         if plugin.aliases is None:
-            findings.append(Finding(plugin.module_path, plugin.aliases_line, _ALIASES_NOT_LITERAL))
+            findings.append(Finding(*where, _ALIASES_NOT_LITERAL))
+            # Its own names still hold against every other plugin's aliases.
+            named.append(_AliasedView(site_name, session_name, (), *where))
             continue
         kept: list[str] = []
         for alias in plugin.aliases:
@@ -138,10 +143,10 @@ def _alias_findings(view: ProjectView) -> list[Finding]:
                 findings.append(Finding(plugin.module_path, plugin.aliases_line, message))
                 continue
             kept.append(alias)
-        named.append(_AliasedView(site_name, tuple(kept), plugin.module_path, plugin.aliases_line))
-    where = {n.site_name: n for n in named}
+        named.append(_AliasedView(site_name, session_name, tuple(kept), *where))
+    owners = {n.site_name: n for n in named}
     for conflict in plugin_names(named).conflicts:
-        owner = where[conflict.site_name]
+        owner = owners[conflict.site_name]
         message = f"alias '{conflict.alias}' {conflict.reason}; {_RENAME_OR_REMOVE}."
         findings.append(Finding(owner.module_path, owner.line, message))
     return findings

@@ -61,6 +61,7 @@ from graftpunk.exceptions import PluginError
 from graftpunk.har.naming import registered_name, to_cli_name
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
+from graftpunk.plugins.names import validate_aliases
 from graftpunk.plugins.site_requests import SiteRequests
 from graftpunk.session_scope import operating_session_for, resolve_load_target
 
@@ -911,27 +912,9 @@ def build_plugin_config(**raw: Any) -> PluginConfig:
     if not filtered.get("help_text"):
         filtered["help_text"] = f"Commands for {site_name}"
 
-    filtered["aliases"] = _aliases_tuple(filtered.get("aliases", ()), site_name)
+    filtered["aliases"] = validate_aliases(filtered.get("aliases", ()), site_name)
 
     return PluginConfig(**filtered)
-
-
-def _aliases_tuple(value: Any, site_name: str) -> tuple[str, ...]:
-    """*value* as a tuple of strings: ``aliases`` may be written as a list (YAML
-    has no tuple). A bare string is refused, so a missing trailing comma
-    (``aliases = ("shop")``) is reported where it was written.
-
-    Raises:
-        PluginError: *value* is not a list or tuple of strings.
-    """
-    if value is None:
-        return ()
-    if not isinstance(value, (list, tuple)) or not all(isinstance(a, str) for a in value):
-        raise PluginError(
-            f"Plugin '{site_name}': 'aliases' must be a tuple (or a YAML list) of "
-            f"strings, got {value!r}. One alias is written ('shop',)."
-        )
-    return tuple(value)
 
 
 @runtime_checkable
@@ -1131,7 +1114,8 @@ class SitePlugin:
     username_envvar: str = ""
     password_envvar: str = ""
     # More names the CLI runs this plugin by (`gp <alias> ...`), each the same
-    # plugin, session slot and credential variables as site_name.
+    # plugin, session slot and credential variables as site_name. Read from the
+    # class's own body, as the rest of the configuration is: never inherited.
     aliases: tuple[str, ...] = ()
 
     # Declarative login configuration
@@ -1178,7 +1162,9 @@ class SitePlugin:
             cls.site_name = cls._plugin_config.site_name
             cls.session_name = cls._plugin_config.session_name
             cls.help_text = cls._plugin_config.help_text
-            if "aliases" in cls.__dict__:
+            # Not inherited: a subclass that does not declare aliases has none,
+            # as it has none of its parent's other configuration.
+            if not isinstance(cls.__dict__.get("aliases"), property):
                 cls.aliases = cls._plugin_config.aliases
         except PluginError as exc:
             cls._plugin_config_error = exc

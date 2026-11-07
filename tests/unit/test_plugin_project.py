@@ -248,6 +248,7 @@ class TestTheView:
             "class_names",
             "aliases",
             "aliases_line",
+            "session_name",
         ]
         assert [f.name for f in fields(CommandView)] == ["method", "span", "keywords", "group"]
 

@@ -278,10 +278,13 @@ class PluginView:
     fixtures_root: str  # project-relative, trailing slash
     class_names: frozenset[str]
     # The literal strings the class assigns to ``aliases``: an empty tuple when it
-    # assigns none, ``None`` when it assigns anything other than a literal tuple or
+    # assigns none (aliases are never inherited, so the class body is the whole
+    # answer), ``None`` when it assigns anything other than a literal tuple or
     # list of strings. ``aliases_line`` is the assignment's line, when there is one.
     aliases: tuple[str, ...] | None = ()
     aliases_line: int | None = None
+    # The string literal the class assigns to ``session_name``, or ``None``.
+    session_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -918,6 +921,7 @@ def _read_plugin(
         class_names=_class_body_names(klass),
         aliases=aliases,
         aliases_line=aliases_line,
+        session_name=_class_string(klass, "session_name"),
     )
 
 
@@ -967,7 +971,8 @@ def _class_aliases(klass: ast.ClassDef) -> tuple[tuple[str, ...] | None, int | N
             targets, value = [node.target.id], node.value
         else:
             continue
-        if "aliases" not in targets:
+        if "aliases" not in targets or value is None:
+            # A bare annotation (``aliases: tuple[str, ...]``) assigns nothing.
             continue
         if not isinstance(value, (ast.Tuple, ast.List)):
             return None, node.lineno

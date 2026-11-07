@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 import typer
 from typer.testing import CliRunner
 
@@ -44,8 +45,9 @@ class OtherPlugin(SitePlugin):
         return {"plugin": "other"}
 
 
-def _plugin(site_name: str, aliases: Any, *, session_name: str = "") -> SitePlugin:
-    """A login-less plugin with one command, built at test time."""
+def _plugin(site_name: str, aliases: Any, *, session_name: str = "", **extra: Any) -> SitePlugin:
+    """A login-less plugin with one command, built at test time; *extra* adds or
+    replaces class attributes."""
 
     def account(self: Any, ctx: CommandContext) -> dict[str, str]:
         return {"plugin": site_name}
@@ -56,6 +58,7 @@ def _plugin(site_name: str, aliases: Any, *, session_name: str = "") -> SitePlug
         "requires_session": False,
         "aliases": aliases,
         "account": command(help="Show the account")(account),
+        **extra,
     }
     return type(f"Plugin_{site_name}", (SitePlugin,), attrs)()
 
@@ -145,6 +148,24 @@ class TestResolver:
         names = plugin_names([Bare()])
         assert names.aliases == {"bare": ()}
 
+    def test_an_alias_naming_another_plugins_session_name_is_dropped(self) -> None:
+        storefront = _plugin("myshop-storefront", (), session_name="myshop")
+        other = _plugin("othershop", ("myshop",))
+        for order in ([storefront, other], [other, storefront]):
+            names = plugin_names(order)
+            assert names.resolve("myshop") is None
+            assert names.conflicts == (
+                AliasConflict(
+                    "othershop", "myshop", "is the session name of plugin 'myshop-storefront'"
+                ),
+            )
+
+    def test_an_alias_may_be_the_plugins_own_session_name(self) -> None:
+        plugin = _plugin("myshop-storefront", ("myshop",), session_name="myshop")
+        names = plugin_names([plugin])
+        assert names.conflicts == ()
+        assert names.resolve("myshop") is plugin
+
     def test_the_core_names_match_the_ones_the_cli_reserves(self) -> None:
         import graftpunk.cli.main  # noqa: F401 - registers the CLI and takes the snapshot
         from graftpunk.cli.scaffold_commands import reserved_cli_names
@@ -166,11 +187,86 @@ class TestConfig:
         with pytest.raises(PluginError, match="'aliases' must be a tuple"):
             build_plugin_config(site_name="myshop", aliases=value)
 
-    def test_a_subclass_keeps_its_parents_aliases(self) -> None:
-        class Child(StorefrontPlugin):
-            site_name = "myshop-storefront"
+    def test_a_subclass_does_not_inherit_aliases(self) -> None:
+        class Staging(StorefrontPlugin):
+            site_name = "myshop-staging"
+            session_name = "myshop-staging"
 
-        assert Child.aliases == ("shop",)
+        assert Staging.aliases == ()
+        assert StorefrontPlugin.aliases == ("shop",)
+        names = plugin_names([StorefrontPlugin(), Staging()])
+        assert names.conflicts == ()
+        assert names.aliases == {"myshop-storefront": ("shop",), "myshop-staging": ()}
+
+    def test_a_subclass_that_declares_aliases_has_its_own(self) -> None:
+        class Staging(StorefrontPlugin):
+            site_name = "myshop-staging"
+            aliases = ("stage",)
+
+        assert Staging.aliases == ("stage",)
+
+
+def _discovered(plugin_class: type) -> tuple[tuple[Any, ...], list[dict[str, Any]]]:
+    """What discover_all_plugins keeps of one entry-point plugin class, and its log."""
+    from structlog.testing import capture_logs
+
+    from graftpunk.plugins import PythonDiscoveryResult, discover_all_plugins
+
+    discover_all_plugins.cache_clear()
+    try:
+        with (
+            patch("graftpunk.plugins.discover_site_plugins", return_value={"x": plugin_class}),
+            patch("graftpunk.plugins.create_yaml_plugins", return_value=([], [])),
+            patch(
+                "graftpunk.plugins.discover_python_plugins", return_value=PythonDiscoveryResult()
+            ),
+            capture_logs() as logs,
+        ):
+            kept = discover_all_plugins()
+    finally:
+        discover_all_plugins.cache_clear()
+    return kept, logs
+
+
+class TestOneValidator:
+    """A bare string is refused for every kind of plugin, by one function, in one message."""
+
+    MESSAGE = (
+        "Plugin 'myshop': 'aliases' must be a tuple (or a YAML list) of strings, "
+        "got 'shop'. One alias is written ('shop',)."
+    )
+
+    def test_a_site_plugin(self) -> None:
+        plugin_class = type("Bad", (SitePlugin,), {"site_name": "myshop", "aliases": "shop"})
+        kept, logs = _discovered(plugin_class)
+        assert kept == ()
+        assert [entry["error"] for entry in logs if entry["event"] == "plugin_config_error"] == [
+            self.MESSAGE
+        ]
+
+    def test_a_protocol_plugin(self) -> None:
+        class Proto:
+            site_name = "myshop"
+            session_name = "myshop"
+            api_version = 1
+            aliases = "shop"
+
+        kept, logs = _discovered(Proto)
+        assert kept == ()
+        assert [entry["error"] for entry in logs if entry["event"] == "plugin_config_error"] == [
+            self.MESSAGE
+        ]
+
+    def test_a_yaml_plugin(self, isolated_config: Path) -> None:
+        from graftpunk.plugins.yaml_plugin import create_yaml_plugins
+
+        (isolated_config / "plugins").mkdir()
+        (isolated_config / "plugins" / "myshop.yaml").write_text(
+            "site_name: myshop\naliases: shop\ncommands:\n  account:\n    url: /api/account\n"
+        )
+        plugins, errors = create_yaml_plugins()
+        assert plugins == []
+        assert [e.error for e in errors] == [self.MESSAGE]
 
 
 @pytest.mark.usefixtures("registered")
@@ -251,6 +347,44 @@ class TestCli:
                 }
         assert registered_aliases() == {"myshop-storefront": ("shop",)}
 
+    def test_a_plugin_that_fails_setup_still_holds_its_name(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from graftpunk.cli.plugin_commands import registered_aliases
+        from graftpunk.plugins import get_plugin
+
+        def setup(self: Any) -> None:
+            raise RuntimeError("needs a config file")
+
+        broken = _plugin("othershop", (), setup=setup)
+        greedy = _plugin("myshop", ("othershop",))
+        app = _register(broken, greedy, notify_errors=True)
+        assert registered_aliases() == {"myshop": ()}
+        result = runner.invoke(app, ["othershop", "account"])
+        assert "No such command 'othershop'" in strip_ansi(result.output)
+        assert "alias 'othershop' is the site_name of plugin 'othershop'" in capsys.readouterr().err
+        with patch("graftpunk.plugins.discover_all_plugins", return_value=(broken, greedy)):
+            assert get_plugin("othershop") is broken
+
+    def test_a_subclass_with_its_own_site_name_registers_without_a_warning(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from graftpunk.cli.plugin_commands import registered_aliases
+
+        class Staging(StorefrontPlugin):
+            site_name = "myshop-staging"
+            session_name = "myshop-staging"
+
+        app = _register(StorefrontPlugin(), Staging(), notify_errors=True)
+        assert capsys.readouterr().err == ""
+        assert registered_aliases() == {"myshop-storefront": ("shop",), "myshop-staging": ()}
+        with patch(
+            "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+            side_effect=lambda name, **_kwargs: (MagicMock(), name),
+        ):
+            assert _run(app, "shop", "account")["slot"] == "myshop"
+            assert _run(app, "myshop-staging", "account")["slot"] == "myshop-staging"
+
     def test_gp_plugins_lists_the_plugin_once_with_its_aliases(self) -> None:
         from graftpunk.cli.main import app
 
@@ -269,6 +403,102 @@ class TestCli:
         output = strip_ansi(result.output)
         assert "(1 installed)" in output
         assert "myshop (alias: shop)" in output
+
+
+def _surface_app(*plugins: SitePlugin) -> typer.Typer:
+    """The core session and http commands, with *plugins* registered beside them."""
+    from graftpunk.cli.http_commands import http_app
+    from graftpunk.cli.plugin_commands import register_plugin_commands
+    from graftpunk.cli.session_commands import session_app
+
+    app = typer.Typer()
+    app.add_typer(session_app)
+    app.add_typer(http_app)
+    with patch(DISCOVER_ALL, return_value=plugins):
+        register_plugin_commands(app, notify_errors=False)
+    return app
+
+
+@pytest.mark.usefixtures("registered")
+class TestSessionSurfaces:
+    """`gp session` and `gp http` take an alias for its plugin's session base."""
+
+    SLOTS = ["myshop", "othershop"]
+
+    def _clear(self, app: typer.Typer, name: str) -> list[str]:
+        """Run `gp session clear <name> --force`; the slots it removed."""
+        cleared: list[str] = []
+
+        def clear(slot: str, **_kwargs: Any) -> bool:
+            cleared.append(slot)
+            return True
+
+        metadata = [{"name": slot, "domain": "myshop.example"} for slot in self.SLOTS]
+        with (
+            patch("graftpunk.cli.plugin_commands.list_sessions", return_value=self.SLOTS),
+            patch(
+                "graftpunk.cli.session_commands.list_sessions_with_metadata",
+                return_value=metadata,
+            ),
+            patch("graftpunk.cli.session_commands.clear_session_cache", side_effect=clear),
+        ):
+            result = runner.invoke(app, ["session", "clear", name, "--force"])
+        assert result.exit_code == 0, result.output
+        return cleared
+
+    def test_session_show_by_alias_shows_the_plugins_session(self) -> None:
+        app = _surface_app(StorefrontPlugin())
+        with (
+            patch("graftpunk.cli.plugin_commands.list_sessions", return_value=self.SLOTS),
+            patch(
+                "graftpunk.cli.session_commands.get_session_metadata",
+                side_effect=lambda name, **_kwargs: {"name": name, "status": "active"},
+            ),
+        ):
+            result = runner.invoke(app, ["session", "show", "shop", "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["name"] == "myshop"
+
+    def test_session_clear_by_alias_clears_the_plugins_session(self) -> None:
+        app = _surface_app(StorefrontPlugin())
+        assert self._clear(app, "shop") == ["myshop"]
+
+    def test_another_plugins_session_name_stays_that_plugins(self) -> None:
+        storefront = _plugin("myshop-storefront", (), session_name="myshop")
+        other = _plugin("othershop", ("myshop",))
+        app = _surface_app(storefront, other)
+        assert self._clear(app, "myshop") == ["myshop"]
+
+    def test_gp_http_by_alias_loads_the_plugins_session(self) -> None:
+        app = _surface_app(StorefrontPlugin())
+
+        def load(name: str, **_kwargs: Any) -> tuple[Any, str]:
+            response = MagicMock(spec=requests.Response)
+            response.status_code = 200
+            response.text = f"loaded {name}"
+            session = MagicMock(spec=requests.Session)
+            session.headers = {}
+            session.request.return_value = response
+            return session, name
+
+        with (
+            patch("graftpunk.cli.plugin_commands.list_sessions", return_value=self.SLOTS),
+            patch("graftpunk.cli.http_commands.load_session_for_api_resolved", side_effect=load),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "http",
+                    "get",
+                    "https://myshop.example/api/account",
+                    "--session",
+                    "shop",
+                    "--no-observe",
+                    "--body-only",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert result.stdout == "loaded myshop"
 
 
 @pytest.mark.usefixtures("registered")
@@ -400,6 +630,39 @@ class TestCheck:
     def test_aliases_that_are_not_a_literal_are_a_finding(self, tmp_path: Path) -> None:
         (finding,) = _alias_findings(_project(tmp_path, "tuple(['shop'])"))
         assert "aliases is not a literal tuple of strings" in finding
+
+    def test_a_plugin_with_non_literal_aliases_still_holds_its_names(self, tmp_path: Path) -> None:
+        findings = _alias_findings(_project(tmp_path, "tuple(['x'])", '("myshop",)'))
+        assert findings[1:] == [
+            "src/graftpunk_othershop/plugin.py:7: alias 'myshop' is the site_name of plugin "
+            "'myshop'; rename or remove the alias."
+        ]
+
+    def test_an_alias_naming_another_plugins_session_name_is_a_finding(
+        self, tmp_path: Path
+    ) -> None:
+        _project(tmp_path, "()", '("myshop-slot",)')
+        module = tmp_path / "src" / "graftpunk_myshop" / "plugin.py"
+        module.write_text(
+            module.read_text().replace(
+                'site_name = "myshop"\n', 'site_name = "myshop"\n    session_name = "myshop-slot"\n'
+            )
+        )
+        assert _alias_findings(tmp_path) == [
+            "src/graftpunk_othershop/plugin.py:7: alias 'myshop-slot' is the session name of "
+            "plugin 'myshop'; rename or remove the alias."
+        ]
+
+    def test_an_annotation_without_a_value_is_no_aliases(self, tmp_path: Path) -> None:
+        from graftpunk.devtools.plugin_info import info_payload
+        from graftpunk.devtools.plugin_project import read_project
+
+        _project(tmp_path, "()")
+        module = tmp_path / "src" / "graftpunk_myshop" / "plugin.py"
+        module.write_text(module.read_text().replace("aliases = ()", "aliases: tuple[str, ...]"))
+        assert _alias_findings(tmp_path) == []
+        (mine, _) = info_payload(read_project(tmp_path))["plugins"]
+        assert mine["aliases"] == []
 
     def test_gp_plugin_check_prints_them(self, tmp_path: Path) -> None:
         from graftpunk.cli.main import app
