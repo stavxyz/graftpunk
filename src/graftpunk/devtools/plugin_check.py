@@ -37,6 +37,7 @@ silently.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,8 +62,9 @@ from graftpunk.devtools.scaffold.policy import (
     ProjectRequirement,
     module_name_for,
 )
+from graftpunk.devtools.scaffold.suite_conftest import SuiteConftestState
 
-__all__ = ["FINDING_ADVICE", "Finding", "check_project"]
+__all__ = ["FINDING_ADVICE", "Finding", "check_project", "suite_tuple_problems"]
 
 # The two messages built entirely in this module, each holding its own advice
 # phrase; unreadable_file_message's phrases live in plugin_project.py, next to
@@ -95,6 +97,29 @@ def _left_to_the_author(view: ProjectView, requirement: ProjectRequirement) -> b
     )
 
 
+def suite_tuple_problems(state: SuiteConftestState, member_modules: Sequence[str]) -> list[str]:
+    """What keeps gp from listing *member_modules* in a suite conftest's
+    ``SUITE_MEMBER_FIXTURES``, one message each: a tuple that is not a literal (a
+    tuple built some other way can skip less than every member), and each literal
+    entry ``skip`` refuses (the conftest's import fails on it). ``gp plugin check``
+    reports them, and ``gp plugin new`` and ``gp plugin upgrade`` print them when
+    they leave such a tuple as it is (#370)."""
+    if not state.skip_bound or not state.needs_skip or state.unscoped:
+        return []
+    example = ", ".join(f'"{module}"' for module in member_modules)
+    example += "," if len(member_modules) == 1 else ""
+    fix = f"{_WRITE_IT_LITERAL}, such as ({example})."
+    if state.refused:
+        return [
+            f"{SUITE_SKIP_NAME} holds {entry}, which skip refuses, since it is not one "
+            f"directory name; {fix}"
+            for entry in state.refused
+        ]
+    if state.listed is None:
+        return [f"{SUITE_SKIP_NAME} is not a literal tuple, so gp cannot list members in it; {fix}"]
+    return []
+
+
 def _suite_conftest_findings(view: ProjectView) -> list[Finding]:
     """A suite conftest's check that still walks every member's directory, a
     ``SUITE_MEMBER_FIXTURES`` the check reads that is not a literal tuple, and each
@@ -110,16 +135,11 @@ def _suite_conftest_findings(view: ProjectView) -> list[Finding]:
             f"--plugin {owner} {_SCOPES_IT} to {owner}'s with skip={SUITE_SKIP_NAME}."
         )
         findings.append(Finding(path=CONFTEST_PATH, line=None, message=message))
-    if state.skip_bound and state.listed is None and state.needs_skip and not state.unscoped:
-        # fixtures_are_sanitised refuses a str or a path-shaped name, but a tuple
-        # built some other way can still skip less than every member (#370).
-        example = ", ".join(f'"{module_name_for(m.entry_point)}"' for m in view.member_roots)
-        example += "," if len(view.member_roots) == 1 else ""
-        message = (
-            f"{SUITE_SKIP_NAME} is not a literal tuple, so gp cannot list members in it; "
-            f"{_WRITE_IT_LITERAL}, such as ({example})."
-        )
-        findings.append(Finding(path=CONFTEST_PATH, line=None, message=message))
+    modules = [module_name_for(m.entry_point) for m in view.member_roots]
+    findings.extend(
+        Finding(path=CONFTEST_PATH, line=None, message=message)
+        for message in suite_tuple_problems(state, modules)
+    )
     if state.listed is not None:
         for member in view.member_roots:
             module = module_name_for(member.entry_point)

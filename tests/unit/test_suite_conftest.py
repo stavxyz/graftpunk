@@ -101,3 +101,10 @@ def test_without_add_check_gps_whole_tree_check_is_still_scoped() -> None:
     text, _changes = with_suite_check(_STANDALONE, "oldshop", ["myshop"], add_check=False)
     assert text == _SCOPED
     assert has_check(text)
+
+
+def test_a_tuple_holding_an_entry_skip_refuses_is_never_appended_to() -> None:
+    refused = _SCOPED.replace('("myshop",)', '("myshop/x", "", 3)')
+    assert with_suite_check(refused, "oldshop", ["myshop"]) == (refused, ())
+    state = read_suite_conftest(ast.parse(refused))
+    assert (state.listed, state.refused) == (None, ("'myshop/x'", "''", "3"))

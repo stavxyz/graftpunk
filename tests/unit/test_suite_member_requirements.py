@@ -549,3 +549,47 @@ def test_a_tuple_that_is_not_a_literal_is_reported(suite: Path) -> None:
         'members in it; write it as a literal tuple of directory names, such as ("myshop",).'
     ]
     assert "TypeError" in _pytest(suite)
+
+
+@pytest.mark.parametrize("entry", ['"myshop/x"', '""'])
+def test_a_tuple_entry_skip_refuses_is_reported_and_never_appended_to(
+    suite: Path, entry: str
+) -> None:
+    """An entry skip refuses fails the conftest's import. The check names it; an
+    upgrade leaves the tuple as it is and says why; following the fix the finding
+    names gives a suite that imports and passes."""
+    conftest = suite / "tests" / "conftest.py"
+    conftest.write_text(conftest.read_text().replace('("myshop",)', f"({entry},)"))
+    finding = (
+        f"tests/conftest.py: SUITE_MEMBER_FIXTURES holds {entry.replace(chr(34), chr(39))}, "
+        "which skip refuses, since it is not one directory name; write it as a literal "
+        'tuple of directory names, such as ("myshop",).'
+    )
+    assert _wiring(suite) == [finding]
+    assert "ValueError" in _pytest(suite)
+    before = conftest.read_text()
+
+    output = _upgrade(suite, "--plugin", "myshop")
+
+    assert conftest.read_text() == before
+    assert finding in output
+
+    conftest.write_text(before.replace(f"({entry},)", '("myshop",)'))
+    assert _wiring(suite) == []
+    assert set(_outcomes(_pytest(suite)).values()) == {"PASSED"}
+
+
+def test_gp_plugin_new_says_when_it_cannot_list_the_new_member(
+    suite: Path,
+) -> None:
+    conftest = suite / "tests" / "conftest.py"
+    conftest.write_text(conftest.read_text().replace('("myshop",)', 'tuple(["myshop"])'))
+
+    output = _gp_new(suite, "thirdshop", "--url", "https://thirdshop.example")
+
+    assert (
+        "tests/conftest.py: SUITE_MEMBER_FIXTURES is not a literal tuple, so gp cannot list "
+        "members in it; write it as a literal tuple of directory names, such as "
+        '("myshop", "thirdshop").'
+    ) in output
+    assert 'tuple(["myshop"])' in conftest.read_text()

@@ -7,6 +7,7 @@ decisions ``render.py`` has no business making (plugin tooling spec,
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import tomllib
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from pathlib import Path
 
 from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
 from graftpunk.devtools.errors import DevtoolsRefusal
+from graftpunk.devtools.plugin_check import suite_tuple_problems
 from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold.policy import (
     CONFTEST_PATH,
@@ -36,7 +38,11 @@ from graftpunk.devtools.scaffold.render import (
     graftpunk_version_floor,
     render,
 )
-from graftpunk.devtools.scaffold.suite_conftest import has_check, with_suite_check
+from graftpunk.devtools.scaffold.suite_conftest import (
+    has_check,
+    read_suite_conftest,
+    with_suite_check,
+)
 from graftpunk.devtools.scaffold.write import (
     ChangeConflictError,
     InvalidChangeError,
@@ -112,7 +118,8 @@ class ScaffoldResult:
     changed in the suite's shared conftest, one line each, ``floor`` what that did to
     the project's graftpunk requirement, and ``unchecked_first_plugin`` the first
     plugin, when the conftest checks none of its fixtures, which adding a member
-    leaves as it is (#370)."""
+    leaves as it is, and ``conftest_problems`` what kept it from listing the member
+    (``plugin_check.suite_tuple_problems``) (#370)."""
 
     mode: str
     written: tuple[Path, ...]
@@ -121,16 +128,18 @@ class ScaffoldResult:
     conftest_changes: tuple[str, ...] = ()
     floor: FloorVerdict = None
     unchecked_first_plugin: str | None = None
+    conftest_problems: tuple[str, ...] = ()
 
 
 def _suite_conftest_change(
     target_dir: Path, module: str
-) -> tuple[PlannedChange | None, tuple[str, ...], str | None] | None:
+) -> tuple[PlannedChange | None, tuple[str, ...], str | None, tuple[str, ...]] | None:
     """The edit to the suite at *target_dir*'s shared conftest that adds member
     *module* to ``SUITE_MEMBER_FIXTURES`` and scopes gp's whole-tree check
     (``suite_conftest.with_suite_check``), what it changes, and the first plugin
     when the conftest has no check at all: adding a member never adds one, since
     that would check the first plugin's fixtures and could fail its tests (#370).
+    Last, what kept it from listing *module*, which ``gp plugin check`` also reports.
     ``None`` when the suite or its conftest cannot be read, which
     ``gp plugin check`` then reports."""
     try:
@@ -159,10 +168,11 @@ def _suite_conftest_change(
     except (SyntaxError, ImportPlacementError):
         return None
     unchecked = None if has_check(text) else owner.entry_point
+    problems = tuple(suite_tuple_problems(read_suite_conftest(ast.parse(text)), [*members, module]))
     if not changes:
-        return None, (), unchecked
+        return None, (), unchecked, problems
     change = PlannedChange(conftest, text, original=original, validate=validate_python)
-    return change, changes, unchecked
+    return change, changes, unchecked, problems
 
 
 def _existing_pyproject(target_dir: Path) -> Path | None:
@@ -270,6 +280,7 @@ def write_scaffold(
     conftest_changes: tuple[str, ...] = ()
     floor: FloorVerdict = None
     unchecked_first_plugin: str | None = None
+    conftest_problems: tuple[str, ...] = ()
     if mode == "add_to_suite":
         assert existing is not None  # narrows for the type checker; mode implies it
         module = module_name_for(resolved_spec.name)
@@ -284,7 +295,7 @@ def write_scaffold(
             raise
         conftest_change = _suite_conftest_change(target_dir, module)
         if conftest_change is not None:
-            change, conftest_changes, unchecked_first_plugin = conftest_change
+            change, conftest_changes, unchecked_first_plugin, conftest_problems = conftest_change
             if change is not None:
                 changes.append(change)
                 # The conftest now passes skip=, which graftpunk 1.41.0 added.
@@ -327,4 +338,5 @@ def write_scaffold(
         conftest_changes=conftest_changes,
         floor=floor,
         unchecked_first_plugin=unchecked_first_plugin,
+        conftest_problems=conftest_problems,
     )

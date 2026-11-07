@@ -21,10 +21,12 @@ writes, the same ``apply_changes`` call raises the project's plain
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.errors import DevtoolsRefusal
+from graftpunk.devtools.plugin_check import suite_tuple_problems
 from graftpunk.devtools.plugin_project import (
     DOES_NOT_PARSE,
     require_plugin_project,
@@ -42,7 +44,11 @@ from graftpunk.devtools.scaffold.pyproject_edit import (
     FloorVerdict,
 )
 from graftpunk.devtools.scaffold.pysrc import ImportPlacementError, with_bindings
-from graftpunk.devtools.scaffold.suite_conftest import has_check, with_suite_check
+from graftpunk.devtools.scaffold.suite_conftest import (
+    has_check,
+    read_suite_conftest,
+    with_suite_check,
+)
 from graftpunk.devtools.scaffold.write import (
     PlannedChange,
     apply_changes,
@@ -76,7 +82,9 @@ class UpgradeApplied:
     shared conftest, one line each (#370). ``plugin`` is the entry point it was
     scoped to, or ``None``. ``unchecked_first_plugin`` is a suite's first plugin when
     the conftest still checks none of its fixtures, which an upgrade scoped to a
-    member leaves as it is. ``left_elsewhere`` counts what other plugins still lack
+    member leaves as it is, and ``conftest_problems`` what kept it from listing a
+    member in ``SUITE_MEMBER_FIXTURES`` (``plugin_check.suite_tuple_problems``).
+    ``left_elsewhere`` counts what other plugins still lack
     under ``plugin``: requirements and fixtures roots, every one of which a
     ``gp plugin upgrade`` adds."""
 
@@ -87,6 +95,7 @@ class UpgradeApplied:
     conftest_changes: tuple[str, ...] = ()
     plugin: str | None = None
     unchecked_first_plugin: str | None = None
+    conftest_problems: tuple[str, ...] = ()
     left_elsewhere: int = 0
 
     @property
@@ -178,6 +187,7 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
     changes: list[PlannedChange] = []
     conftest_changes: tuple[str, ...] = ()
     unchecked_first_plugin: str | None = None
+    conftest_problems: tuple[str, ...] = ()
     if suite_owner is not None:
         conftest = root / CONFTEST_PATH
         status = view.requirements.get(f"{CONFTEST_PATH}:FIXTURES_TREE")
@@ -195,6 +205,9 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
             raise UpgradeRefusedError(f"{CONFTEST_PATH}: {exc}") from exc
         if not has_check(content):
             unchecked_first_plugin = suite_owner
+        conftest_problems = tuple(
+            suite_tuple_problems(read_suite_conftest(ast.parse(content)), members)
+        )
         if conftest_changes:
             changes.append(
                 PlannedChange(conftest, content, original=original, validate=validate_python)
@@ -235,5 +248,6 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
         conftest_changes=conftest_changes,
         plugin=plugin,
         unchecked_first_plugin=unchecked_first_plugin,
+        conftest_problems=conftest_problems,
         left_elsewhere=left_elsewhere,
     )

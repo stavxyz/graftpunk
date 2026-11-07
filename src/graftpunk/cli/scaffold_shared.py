@@ -72,6 +72,14 @@ def print_other_host(other: OtherHostCommand) -> None:
     console.print(escape(line), soft_wrap=True, highlight=False)
 
 
+def print_conftest_problems(problems: tuple[str, ...]) -> None:
+    """What kept ``gp plugin new`` or ``gp plugin upgrade`` from listing a member in
+    the shared conftest's ``SUITE_MEMBER_FIXTURES``, each as ``gp plugin check``
+    reports it (#370)."""
+    for problem in problems:
+        console.print(escape(f"tests/conftest.py: {problem}"), soft_wrap=True)
+
+
 def print_unchecked_first_plugin(owner: str | None) -> None:
     """The line ``gp plugin new`` and ``gp plugin upgrade`` print when a suite's shared
     conftest checks none of the first plugin's fixtures, which they leave as it is

@@ -37,8 +37,11 @@ _UNSCOPED_VALUE = _value_of(policy.PROJECT_REQUIREMENTS[-1].statement)
 @dataclass(frozen=True)
 class SuiteConftestState:
     """What a suite's conftest holds of its fixtures check: ``listed``, the names
-    ``SUITE_MEMBER_FIXTURES`` binds when it is a literal tuple or list of strings
-    (``None`` when it is absent or anything else); ``skip_bound``, whether the name
+    ``SUITE_MEMBER_FIXTURES`` binds when it is a literal tuple or list of directory
+    names (``None`` when it is absent, anything else, or holds an entry ``skip``
+    refuses); ``refused``, each literal entry ``skip`` refuses (a non-string, an
+    empty name, ``.``, ``..``, or a name with a path separator), as its source
+    text; ``skip_bound``, whether the name
     is bound at all; ``unscoped``, whether ``sanitised_fixtures`` is the
     standalone whole-tree statement gp wrote, which a suite scopes; and
     ``needs_skip``, whether the conftest needs ``SUITE_MEMBER_FIXTURES`` bound: its
@@ -49,6 +52,7 @@ class SuiteConftestState:
     skip_bound: bool
     unscoped: bool
     needs_skip: bool = True
+    refused: tuple[str, ...] = ()
 
 
 def _assignment(tree: ast.Module, name: str) -> ast.Assign | None:
@@ -65,15 +69,34 @@ def _assignment(tree: ast.Module, name: str) -> ast.Assign | None:
     return found
 
 
-def _listed(node: ast.Assign | None) -> tuple[str, ...] | None:
+def _refused_name(value: object) -> bool:
+    """Whether ``graftpunk.testing.plugin``'s ``skip`` refuses *value*: anything but
+    a string, an empty name, ``.``, ``..``, or a name with a path separator. The
+    same rule, restated here because devtools does not import the pytest plugin."""
+    if not isinstance(value, str):
+        return True
+    return value in ("", ".", "..") or "/" in value or "\\" in value
+
+
+def _literal_entries(node: ast.Assign | None) -> list[ast.Constant] | None:
+    """*node*'s tuple or list entries when every one is a literal, else ``None``."""
     if node is None or not isinstance(node.value, (ast.Tuple, ast.List)):
         return None
-    names = []
-    for item in node.value.elts:
-        if not (isinstance(item, ast.Constant) and isinstance(item.value, str)):
-            return None
-        names.append(item.value)
-    return tuple(names)
+    if not all(isinstance(item, ast.Constant) for item in node.value.elts):
+        return None
+    return [item for item in node.value.elts if isinstance(item, ast.Constant)]
+
+
+def _listed(node: ast.Assign | None) -> tuple[str, ...] | None:
+    entries = _literal_entries(node)
+    if entries is None or any(_refused_name(e.value) for e in entries):
+        return None
+    return tuple(str(e.value) for e in entries)
+
+
+def _refused(node: ast.Assign | None) -> tuple[str, ...]:
+    entries = _literal_entries(node) or []
+    return tuple(repr(e.value) for e in entries if _refused_name(e.value))
 
 
 def _unscoped(node: ast.Assign | None) -> bool:
@@ -89,8 +112,10 @@ def _reads_skip(node: ast.Assign | None) -> bool:
 def read_suite_conftest(tree: ast.Module) -> SuiteConftestState:
     """*tree*'s :class:`SuiteConftestState`."""
     check = _assignment(tree, _CHECK_NAME)
+    skip = _assignment(tree, policy.SUITE_SKIP_NAME)
     return SuiteConftestState(
-        listed=_listed(_assignment(tree, policy.SUITE_SKIP_NAME)),
+        refused=_refused(skip),
+        listed=_listed(skip),
         skip_bound=binds_name(tree, policy.SUITE_SKIP_NAME),
         unscoped=_unscoped(check),
         needs_skip=not binds_name(tree, _CHECK_NAME) or _reads_skip(check),
@@ -118,7 +143,9 @@ def with_suite_check(
     alone, and what changed, one line each. *members* are the member directory names
     in suite order.
 
-    A literal ``SUITE_MEMBER_FIXTURES`` gains each name of *members* it lacks. A
+    A literal ``SUITE_MEMBER_FIXTURES`` gains each name of *members* it lacks; one
+    holding an entry ``skip`` refuses is left alone, since appending to it would
+    keep an import that fails (``plugin_check.suite_tuple_problems`` says why). A
     ``sanitised_fixtures`` exactly as gp writes it for a standalone project becomes
     ``policy.SUITE_CHECK_STATEMENT``, with the tuple bound just before it when the
     conftest has none, as it is before a check that reads the tuple without it. Each
