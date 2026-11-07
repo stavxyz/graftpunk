@@ -141,7 +141,12 @@ def plugin_upgrade(
 def _print_upgrade(applied: UpgradeApplied) -> None:
     """What ``gp plugin upgrade`` did, for its scope, and what it left (#370)."""
     scope = applied.plugin
-    if not applied.changed:
+    if not applied.changed and applied.conftest_problems:
+        console.print(
+            escape(f"Nothing upgraded: {policy.CONFTEST_PATH} needs the edit below first."),
+            soft_wrap=True,
+        )
+    elif not applied.changed:
         has = f"{scope} already has" if scope else "the project already has"
         console.print(escape(f"Nothing to upgrade: {has} every requirement."), soft_wrap=True)
     for requirement in applied.requirements:

@@ -573,6 +573,8 @@ def test_a_tuple_entry_skip_refuses_is_reported_and_never_appended_to(
 
     assert conftest.read_text() == before
     assert finding in output
+    assert "Nothing upgraded: tests/conftest.py needs the edit below first." in output
+    assert "every requirement" not in output
 
     conftest.write_text(before.replace(f"({entry},)", '("myshop",)'))
     assert _wiring(suite) == []
