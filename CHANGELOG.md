@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.0] - 2026-11-07
+
+This is a minor release. A site plugin can declare `aliases`, more names `gp` runs it by, so a plugin named `myshop-storefront` can also be `gp shop` without a second entry point (#374). A plugin that declares none registers, resolves and lists exactly as before. Item 1 is about upgrading itself.
+
+### Upgrading
+
+1. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Added
+
+- **`SitePlugin.aliases` and `aliases:` in a YAML plugin** (#374): a tuple (a list in YAML) of more CLI names for the same plugin object. `gp shop orders` and `gp myshop-storefront orders` run the same command on the same session slot; `gp session show shop` and `GraftpunkClient("shop")` resolve to the plugin, and credential variables are still named for `site_name` (`MYSHOP_STOREFRONT_USERNAME`). `gp --help` and `gp plugins` list the plugin once with `(alias: shop)` beside it. A bare string, or a value that is not a tuple or list of strings, is a configuration error. `graftpunk.plugins.names.plugin_names` is the one resolver the CLI, `get_plugin` and `gp plugin check` use: canonical names and core commands always win, so an alias naming a core command or another plugin's `site_name`, or declared by two plugins, is not registered (for either, in the last case), and gp prints one warning per dropped alias.
+- **`gp plugin check` reports alias problems** (#374): an `aliases` that is not a literal tuple of strings, and each alias that is not a valid plugin name, is listed twice, is the plugin's own `site_name`, names a core command, or collides with another of the project's plugins or aliases.
+- **`gp plugin info --json` reports each plugin's `aliases`** (#374): a list, empty when the class assigns none, or `null` when it assigns anything other than a literal tuple or list of strings. The `info` schema stays 1, since a field was added.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.31 and still needs graftpunk 1.40.0 or later** (#374). Only the guide it ships changed, with the new section on aliases; the skill writes no `aliases`, so the floor stays.
+
 ## [1.41.0] - 2026-11-06
 
 This is a minor release. A session no longer sends the request headers the HTTP client sets itself from a role `gp observe` captured, whether the login is new or restored from a cache, the digest and the stubs `gp plugin new` writes leave them out, and in a suite each plugin's fixtures are checked by that plugin's own tests: the shared conftest's check skips every member's directory, through the new `skip` of `fixtures_are_sanitised` (#370). Item 1 is what a plugin already written sends differently on its first run after the upgrade, item 2 is what `gp plugin check`, `gp plugin upgrade` and `gp plugin new` do differently in a suite, and item 3 is about upgrading itself.
