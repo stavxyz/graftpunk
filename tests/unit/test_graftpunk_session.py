@@ -14,6 +14,7 @@ from graftpunk.graftpunk_session import (
     get_role_headers,
     list_roles,
     register_role,
+    replayable_roles,
 )
 
 # Shared browser identity headers — identical across all roles,
@@ -227,14 +228,13 @@ class TestBrowserIdentityGuarantee:
         session = GraftpunkSession(header_roles=roles)
         assert session.headers["User-Agent"] == "Mozilla/5.0 Lowercase"
 
-    def test_all_six_identity_headers_extracted(self):
+    def test_all_five_identity_headers_extracted(self):
         session = GraftpunkSession(header_roles=SAMPLE_ROLES)
         assert session.headers["User-Agent"] == "Mozilla/5.0 Test"
         assert session.headers["sec-ch-ua"] == '"Chromium";v="120", "Google Chrome";v="120"'
         assert session.headers["sec-ch-ua-mobile"] == "?0"
         assert session.headers["sec-ch-ua-platform"] == '"macOS"'
         assert session.headers["Accept-Language"] == "en-US,en;q=0.9"
-        assert session.headers["Accept-Encoding"] == "gzip, deflate, br"
 
     def test_no_role_has_user_agent(self):
         roles = {
@@ -258,7 +258,6 @@ class TestBrowserIdentityGuarantee:
         session = GraftpunkSession(header_roles=roles)
         assert session.headers["User-Agent"] == "Mozilla/5.0 Mixed"
         assert session.headers["Accept-Language"] == "fr-FR,fr;q=0.9"
-        assert session.headers["Accept-Encoding"] == "gzip, deflate"
         assert session.headers["sec-ch-ua"] == '"Chromium";v="121"'
 
     def test_partial_identity_headers_only_present_extracted(self):
@@ -536,13 +535,52 @@ class TestRoleHeadersFor:
         captured = capsys.readouterr()
         assert "unknown_role_no_headers_applied" in captured.err
 
+    def test_a_plugins_own_role_is_sent_as_declared(self):
+        """A role a plugin declares is the author's (#370): its Accept-Encoding and
+        Host are sent, whether it is given at construction or merged in, as
+        cli/http_commands.py merges a plugin's header_roles."""
+        declared = {
+            "api": {
+                "Accept-Encoding": "identity",
+                "Host": "api.myshop.example",
+                "Accept": "application/json",
+                "X-Api": "1",
+            }
+        }
+        for session in (GraftpunkSession(header_roles=declared), _merged(declared)):
+            session.gp_default_role = "api"
+            prepared = session.prepare_request(
+                requests.Request(
+                    "GET",
+                    "https://myshop.example/api/orders",
+                    headers={"Accept": "application/json"},
+                )
+            )
+            assert prepared.headers["Accept-Encoding"] == "identity"
+            assert prepared.headers["Host"] == "api.myshop.example"
+            assert prepared.headers["X-Api"] == "1"
+
+    def test_replayable_roles_drops_what_the_client_sets_itself(self):
+        chrome = {
+            "xhr": {
+                "accept-encoding": "gzip, deflate, br, zstd",
+                "priority": "u=1, i",
+                "Connection": "close",
+                ":authority": "myshop.example",
+                "Accept": "application/json",
+            }
+        }
+        assert replayable_roles(chrome) == {"xhr": {"Accept": "application/json"}}
+
     def test_excludes_identity_headers(self):
         session = GraftpunkSession(header_roles=SAMPLE_ROLES)
         headers = session._role_headers_for("navigation")
         assert "User-Agent" not in headers
         assert "sec-ch-ua" not in headers
         assert "Accept-Language" not in headers
-        assert "Accept-Encoding" not in headers
+        # Accept-Encoding is not an identity header (#370): a role that declares it
+        # sends it.
+        assert headers["Accept-Encoding"] == "gzip, deflate, br"
 
 
 class TestXhr:
@@ -979,3 +1017,9 @@ class TestSessionEncapsulation:
         session = GraftpunkSession(header_roles=original)
         session.clear_header_roles()
         assert original == {"xhr": {"Accept": "*/*"}}
+
+
+def _merged(roles: dict[str, dict[str, str]]) -> GraftpunkSession:
+    session = GraftpunkSession()
+    session.merge_header_roles(roles)
+    return session

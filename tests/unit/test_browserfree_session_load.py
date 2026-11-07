@@ -373,3 +373,57 @@ def test_from_bytes_malformed_cookies_raises_session_expired():
     blob = Fernet(key).encrypt(dill.dumps(broken))
     with pytest.raises(SessionExpiredError):
         cache.load_session_for_api_from_bytes(blob, key=key)
+
+
+def test_a_session_saved_before_1_41_0_replays_no_header_the_client_sets_itself():
+    """A BrowserSession pickled the way 1.40.1 saves it (by reference, through
+    __getstate__'s nodriver branch, as scripts/gen_browserfree_fixture.py builds
+    one), holding the role an older capture kept and the Accept-Encoding older
+    identity extraction put on its headers (#370). The restored session sends the
+    client's own Accept-Encoding, no Priority, and keeps the rest."""
+    from cryptography.fernet import Fernet
+
+    from graftpunk.session import BrowserSession
+
+    chrome_ae = "gzip, deflate, br, zstd"
+    sess = BrowserSession.__new__(BrowserSession)
+    sess._backend_type = "nodriver"
+    sess._use_stealth = False
+    sess.current_url = "https://myshop.example"
+    sess._session_name = "fixture"
+    sess.cookies = requests.cookies.RequestsCookieJar()
+    sess.headers = {"User-Agent": "Mozilla/5.0 (dummy)", "Accept-Encoding": chrome_ae}
+    sess._gp_header_roles = {
+        "xhr": {
+            "User-Agent": "Mozilla/5.0 (dummy)",
+            "accept-encoding": chrome_ae,
+            "priority": "u=1, i",
+            "connection": "keep-alive",
+            "sec-fetch-mode": "cors",
+            "Accept": "application/json",
+            "X-Api-Key": "dummy",
+        }
+    }
+    key = Fernet.generate_key()
+    blob = Fernet(key).encrypt(dill.dumps(sess))
+
+    api = cache.load_session_for_api_from_bytes(blob, key=key)
+
+    assert api._gp_header_roles == {
+        "xhr": {
+            "User-Agent": "Mozilla/5.0 (dummy)",
+            "sec-fetch-mode": "cors",
+            "Accept": "application/json",
+            "X-Api-Key": "dummy",
+        }
+    }
+    prepared = api.prepare_request(
+        requests.Request(
+            "GET", "https://myshop.example/api/orders", headers={"Accept": "application/json"}
+        )
+    )
+    defaults = requests.utils.default_headers()
+    assert prepared.headers["Accept-Encoding"] == defaults["Accept-Encoding"]
+    assert "priority" not in prepared.headers
+    assert prepared.headers["X-Api-Key"] == "dummy"
+    assert prepared.headers["User-Agent"] == "Mozilla/5.0 (dummy)"

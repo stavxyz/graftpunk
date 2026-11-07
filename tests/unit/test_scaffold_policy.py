@@ -6,6 +6,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 import graftpunk.devtools.scaffold.policy as policy
 from graftpunk.devtools.scaffold.policy import (
     CONFTEST_PATH,
@@ -100,6 +102,52 @@ class TestProjectRequirements:
         silently not render, so this is the assertion that makes that limit visible
         before it bites, not after."""
         assert all(r.path == CONFTEST_PATH for r in PROJECT_REQUIREMENTS)
+
+    def test_a_suite_member_binds_its_scrubber_and_check_over_its_own_root(self) -> None:
+        scrubber, tree, check = policy.member_requirements("my-shop", "tests/test_my_shop_x.py")
+        assert {r.path for r in (scrubber, tree, check)} == {"tests/test_my_shop_x.py"}
+        assert {r.plugin for r in (scrubber, tree, check)} == {"my-shop"}
+        assert scrubber.statement == 'scrub_site_env = site_env_scrubber("MY_SHOP_")'
+        assert tree.statement == 'FIXTURES_TREE = Path(__file__).parent / "fixtures" / "my_shop"'
+        assert check.statement == "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)"
+        assert [r.name for r in PROJECT_REQUIREMENTS] == [tree.name, check.name]
+        assert all(r.plugin is None for r in PROJECT_REQUIREMENTS)
+
+    def test_a_suite_conftest_checks_the_first_plugins_fixtures_alone(self) -> None:
+        tree, skip, check = policy.suite_requirements("oldshop", ["midshop", "myshop"])
+        assert {r.path for r in (tree, skip, check)} == {CONFTEST_PATH}
+        assert {r.plugin for r in (tree, skip, check)} == {"oldshop"}
+        assert tree.statement == PROJECT_REQUIREMENTS[0].statement
+        assert skip.statement == 'SUITE_MEMBER_FIXTURES = ("midshop", "myshop")'
+        assert check.statement == (
+            "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE, skip=SUITE_MEMBER_FIXTURES)"
+        )
+
+    def test_the_skip_tuple_takes_ruff_formats_shape(self) -> None:
+        assert policy.suite_skip_statement(["myshop"]) == 'SUITE_MEMBER_FIXTURES = ("myshop",)'
+        long = [f"member_{n:02d}_{'x' * 10}" for n in range(5)]
+        assert policy.suite_skip_statement(long) == (
+            "SUITE_MEMBER_FIXTURES = (\n" + "".join(f'    "{m}",\n' for m in long) + ")"
+        )
+
+
+@pytest.mark.parametrize(
+    ("filename", "owner"),
+    [
+        ("test_my.py", "my"),
+        ("test_my_orders.py", "my"),
+        ("test_my_shop.py", "my_shop"),
+        ("test_my_shop_orders.py", "my_shop"),
+        ("test_myshop.py", None),
+        ("test_plugin.py", None),
+        ("conftest.py", None),
+        ("test_my.txt", None),
+    ],
+)
+def test_a_test_file_belongs_to_the_longest_member_name_it_fits(
+    filename: str, owner: str | None
+) -> None:
+    assert policy.test_module_owner(filename, ["my", "my_shop"]) == owner
 
 
 def test_the_placeholder_is_the_testing_layers() -> None:

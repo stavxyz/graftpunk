@@ -18,6 +18,7 @@ A reader: it imports neither ``graftpunk.devtools.scaffold.write`` nor
 from __future__ import annotations
 
 import ast
+import os
 import re
 import stat
 import tomllib
@@ -31,6 +32,7 @@ from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.policy import GP_FILL_MARKER, ProjectRequirement, module_name_for
 from graftpunk.devtools.scaffold.pysrc import binds_name, source_lines
+from graftpunk.devtools.scaffold.suite_conftest import SuiteConftestState, read_suite_conftest
 from graftpunk.har.naming import registered_name
 from graftpunk.plugins import PLUGINS_GROUP
 
@@ -45,6 +47,7 @@ __all__ = [
     "NOT_VALID_UTF8",
     "CommandView",
     "DirectoryKind",
+    "MemberRoot",
     "NotAPluginProjectError",
     "PluginDefect",
     "PluginProjectError",
@@ -314,14 +317,28 @@ class RequirementStatus:
 
 
 @dataclass(frozen=True)
+class MemberRoot:
+    """A suite member's own fixtures root (``PluginView.fixtures_root``), as
+    ``ProjectView.member_roots`` reads it: whether it is a directory, and, when
+    something blocks it, ``(path, reason)`` as ``fixtures_tree_blocked`` gives
+    them for the tree (#370)."""
+
+    entry_point: str
+    path: str  # project-relative, trailing slash
+    present: bool
+    blocked: tuple[str, str] | None = None
+
+
+@dataclass(frozen=True)
 class ProjectView:
     """A directory's plugin project: its classification, one view per readable entry
     point, one defect per entry point whose module is structurally wrong, and the
-    status of each ``PROJECT_REQUIREMENTS`` name in its files (read-only, keyed by
-    the requirement's ``key``).
+    status of each requirement name in its files (read-only, keyed by the
+    requirement's ``key``).
 
     ``requirements`` and ``requirement_set`` are both computed when the project is
-    read, from ``policy.PROJECT_REQUIREMENTS`` as it stood then; :meth:`missing_requirements`
+    read, from ``policy.PROJECT_REQUIREMENTS`` as it stood then and, in a suite,
+    each member's ``policy.member_requirements``; :meth:`missing_requirements`
     and :meth:`unreadable_files` read ``self.requirement_set``, not the module
     attribute, so both methods are pure functions of the view's own fields, not of
     whatever ``policy.PROJECT_REQUIREMENTS`` holds at call time (design note below).
@@ -345,7 +362,11 @@ class ProjectView:
     read (<strerror>)", the same text :func:`unreadable_file_message` turns
     into a finding or a refusal. A reader fact distinct from "missing", so
     neither consumer tells an author gp plugin upgrade will create a path it
-    is actually going to refuse.
+    is actually going to refuse. ``member_roots`` holds the same two facts for
+    each suite member's own fixtures root, and ``suite_conftest`` what a suite's
+    shared conftest holds of its fixtures check (``SUITE_MEMBER_FIXTURES``, and
+    whether its check is still the standalone whole-tree one), which
+    ``gp plugin check`` reports and ``gp plugin upgrade`` fixes (#370).
 
     ``first_party_packages`` is read once here, by the same rule ruff's own
     default (``src = [".", "src"]``) uses to decide a module is first party:
@@ -358,11 +379,10 @@ class ProjectView:
     there, whether the plugin lives in a package directory or is a single
     module file.
 
-    Design note: ``requirement_set`` is snapshotted from ``policy.PROJECT_REQUIREMENTS``
-    by ``read_project`` at read time, and both methods read ``self.requirement_set``
-    instead of the module attribute, so a ``ProjectView`` is a value: two calls on
-    the same instance always agree, and equality compares the same fields the
-    methods read.
+    Design note: ``requirement_set`` is computed by ``read_project`` at read time,
+    and both methods read ``self.requirement_set`` instead of the module attribute,
+    so a ``ProjectView`` is a value: two calls on the same instance always agree,
+    and equality compares the same fields the methods read.
     """
 
     directory: DirectoryKind
@@ -374,6 +394,8 @@ class ProjectView:
     fixtures_tree_present: bool
     fixtures_tree_blocked: tuple[str, str] | None = None
     first_party_packages: frozenset[str] = frozenset()
+    member_roots: tuple[MemberRoot, ...] = ()
+    suite_conftest: SuiteConftestState | None = None
 
     def plugin(self, entry_point: str) -> PluginView | PluginDefect | None:
         """The plugin or defect whose entry-point name is *entry_point*, or ``None``:
@@ -389,17 +411,34 @@ class ProjectView:
         status = self.requirements.get(requirement.key)
         return "unbound" if status is None else status.state
 
-    def missing_requirements(self) -> tuple[ProjectRequirement, ...]:
+    def _serving(self, plugin: str | None) -> tuple[ProjectRequirement, ...]:
+        """The ``requirement_set`` entries that serve *plugin* (an entry-point name):
+        its own and the whole project's. Every entry when *plugin* is ``None``."""
+        if plugin is None:
+            return self.requirement_set
+        return tuple(r for r in self.requirement_set if r.plugin in (None, plugin))
+
+    def missing_requirements(self, plugin: str | None = None) -> tuple[ProjectRequirement, ...]:
         """The ``requirement_set`` entries this project's files do not bind, in
         declared order: the one answer ``gp plugin upgrade`` applies and
-        ``gp plugin check`` reports. An entry whose file does not parse is not
+        ``gp plugin check`` reports. With *plugin*, only those that serve it
+        (``ProjectRequirement.plugin``). An entry whose file does not parse is not
         here; its file is in :meth:`unreadable_files`. Empty for a directory that
         is not a plugin project, which has no requirements to lack."""
         if self.directory != "plugin":
             return ()
-        return tuple(r for r in self.requirement_set if self._state(r) == "unbound")
+        return tuple(r for r in self._serving(plugin) if self._state(r) == "unbound")
 
-    def unreadable_files(self) -> tuple[tuple[str, str], ...]:
+    def entry_point_for(self, name: str) -> str | None:
+        """The entry point of the readable plugin *name* addresses, by its entry-point
+        name or its module name (``policy.module_name_for``, the name its fixtures
+        root and test module carry), or ``None``."""
+        for found in self.plugins:
+            if name in (found.entry_point, module_name_for(found.entry_point)):
+                return found.entry_point
+        return None
+
+    def unreadable_files(self, plugin: str | None = None) -> tuple[tuple[str, str], ...]:
         """Each requirement file whose status is ``unreadable``, once, as ``(path,
         reason)``, in the order ``requirement_set`` first names it, however many
         requirements it holds (``graftpunk.devtools.plugin_check``'s module
@@ -408,11 +447,12 @@ class ProjectView:
         ``gp plugin info`` and ``gp plugin add-command``, which never read those
         files, proceed. *path* is the requirement's own file, unless an ancestor
         blocks it (``status.blocking``), in which case it is that ancestor: the
-        finding then names the same path ``gp plugin upgrade`` refuses on."""
+        finding then names the same path ``gp plugin upgrade`` refuses on. With
+        *plugin*, only the files of the requirements that serve it."""
         if self.directory != "plugin":
             return ()
         files: dict[str, str] = {}
-        for r in self.requirement_set:
+        for r in self._serving(plugin):
             status = self.requirements.get(r.key)
             if status is not None and status.state == "unreadable":
                 files.setdefault(status.blocking or r.path, status.reason or DOES_NOT_PARSE)
@@ -574,11 +614,12 @@ def read_project(root: Path) -> ProjectView:
         _read_plugin(root, key, value, project_name, len(entry_points))
         for key, value in entry_points.items()
     ]
-    requirement_set = policy.PROJECT_REQUIREMENTS
+    plugins = tuple(r for r in read if isinstance(r, PluginView))
+    requirement_set = _requirement_set(plugins, _test_files(root))
     requirements = _requirement_statuses(root, requirement_set)
     return ProjectView(
         directory="plugin",
-        plugins=tuple(r for r in read if isinstance(r, PluginView)),
+        plugins=plugins,
         defects=tuple(r for r in read if isinstance(r, PluginDefect)),
         requirements=MappingProxyType(requirements),
         requirement_set=requirement_set,
@@ -586,6 +627,8 @@ def read_project(root: Path) -> ProjectView:
         fixtures_tree_present=fixtures_tree_present,
         fixtures_tree_blocked=fixtures_tree_blocked,
         first_party_packages=first_party_packages,
+        member_roots=_member_roots(root, plugins),
+        suite_conftest=_suite_conftest(root, plugins),
     )
 
 
@@ -1013,9 +1056,9 @@ def _requirement_statuses(
     file binds its name, by the one predicate, ``pysrc.binds_name``. Each distinct
     file is parsed once. A file that does not parse is ``unreadable`` for every entry
     it holds, with its one reason, rather than raised: one broken conftest must not
-    blind the consumers that never read it. The caller reads ``policy.PROJECT_REQUIREMENTS``
-    once and passes the snapshot in, so it cannot drift from the view's own
-    ``requirement_set`` within one ``read_project`` call."""
+    blind the consumers that never read it. The caller computes the set once
+    (:func:`_requirement_set`) and passes it in, so it cannot drift from the view's
+    own ``requirement_set`` within one ``read_project`` call."""
     paths = dict.fromkeys(r.path for r in requirement_set)
     parsed = {relative: _parse_requirement_file(root, relative) for relative in paths}
     statuses: dict[str, RequirementStatus] = {}
@@ -1026,6 +1069,93 @@ def _requirement_statuses(
         else:
             statuses[r.key] = RequirementStatus("bound" if binds_name(tree, r.name) else "unbound")
     return statuses
+
+
+def _test_files(root: Path) -> tuple[str, ...]:
+    """The names of the ``*.py`` entries directly under ``policy.TESTS_DIR``, sorted;
+    empty when it cannot be listed (``fixtures_tree_blocked`` reports that)."""
+    try:
+        with os.scandir(root / policy.TESTS_DIR) as entries:
+            return tuple(sorted(e.name for e in entries if e.name.endswith(".py")))
+    except OSError:
+        return ()
+
+
+def _suite_members(plugins: tuple[PluginView, ...]) -> tuple[PluginView, ...]:
+    """The plugins with a fixtures root of their own under the tree: a suite's
+    members, every plugin but the first one ``gp plugin new`` wrote."""
+    return tuple(p for p in plugins if p.fixtures_root != policy.FIXTURES_TREE)
+
+
+def _suite_owner(plugins: tuple[PluginView, ...]) -> PluginView | None:
+    """In a suite, the plugin whose fixtures are the tree's own files (the first one
+    ``gp plugin new`` wrote), or ``None``; ``None`` outside a suite."""
+    if not _suite_members(plugins):
+        return None
+    return next((p for p in plugins if p.fixtures_root == policy.FIXTURES_TREE), None)
+
+
+def _requirement_set(
+    plugins: tuple[PluginView, ...], test_files: tuple[str, ...]
+) -> tuple[ProjectRequirement, ...]:
+    """What *plugins*' project must bind, each requirement attributed to the plugin it
+    serves: ``policy.PROJECT_REQUIREMENTS`` for a project with no suite member, read
+    from ``policy`` on each call. In a suite (#370), the conftest holds
+    ``policy.suite_requirements`` for the plugin whose fixtures root is the tree
+    itself (none when no plugin's is): a check over its fixtures alone, every
+    member's directory skipped. Each member's test modules, by
+    ``policy.test_module_owner`` among *test_files* over every plugin's module name
+    (``policy.suite_test_module`` when it has none), each hold its own
+    ``policy.member_requirements``; a file the first plugin's name wins is its own."""
+    members = _suite_members(plugins)
+    if not members:
+        return policy.PROJECT_REQUIREMENTS
+    owner = _suite_owner(plugins)
+    member_modules = [module_name_for(m.entry_point) for m in members]
+    shared = (
+        policy.suite_requirements(owner.entry_point, member_modules) if owner is not None else ()
+    )
+    modules: dict[str, str | None] = {
+        module_name_for(m.entry_point): m.entry_point for m in members
+    }
+    if owner is not None:
+        modules[module_name_for(owner.entry_point)] = None
+    owned: dict[str, list[str]] = {}
+    for name in test_files:
+        module = policy.test_module_owner(name, modules)
+        entry_point = modules[module] if module is not None else None
+        if entry_point is not None:
+            owned.setdefault(entry_point, []).append(f"{policy.TESTS_DIR}{name}")
+    member_requirements = tuple(
+        r
+        for m in members
+        for path in owned.get(m.entry_point)
+        or [policy.suite_test_module(module_name_for(m.entry_point))]
+        for r in policy.member_requirements(m.entry_point, path)
+    )
+    return shared + member_requirements
+
+
+def _member_roots(root: Path, plugins: tuple[PluginView, ...]) -> tuple[MemberRoot, ...]:
+    """Each suite member's fixtures root, whether it is a directory, and what blocks
+    it, the facts ``fixtures_tree_present`` and ``fixtures_tree_blocked`` hold for the
+    tree (#370)."""
+    found: list[MemberRoot] = []
+    for member in _suite_members(plugins):
+        blocked = _blocked_path(root, member.fixtures_root, kind="directory")
+        present = blocked is None and _probe(root / member.fixtures_root) == "dir"
+        found.append(MemberRoot(member.entry_point, member.fixtures_root, present, blocked))
+    return tuple(found)
+
+
+def _suite_conftest(root: Path, plugins: tuple[PluginView, ...]) -> SuiteConftestState | None:
+    """In a suite with a first plugin, what its conftest holds of the fixtures check
+    (``suite_conftest.read_suite_conftest``); ``None`` outside one, or when the
+    conftest is missing or does not parse (the requirements report that)."""
+    if _suite_owner(plugins) is None:
+        return None
+    tree = _parse_requirement_file(root, policy.CONFTEST_PATH)
+    return read_suite_conftest(tree) if isinstance(tree, ast.Module) else None
 
 
 def _parse_requirement_file(root: Path, relative: str) -> ast.Module | RequirementStatus:

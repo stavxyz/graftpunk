@@ -13,6 +13,7 @@ from typing import Any, Final
 
 import requests
 
+from graftpunk.client_headers import client_sets_header
 from graftpunk.cookies import BrowserCookiesMixin
 from graftpunk.logging import get_logger
 from graftpunk.tokens import _CSRF_TOKENS_ATTR
@@ -29,7 +30,6 @@ _BROWSER_IDENTITY_HEADERS: Final[frozenset[str]] = frozenset(
         "sec-ch-ua-mobile",
         "sec-ch-ua-platform",
         "Accept-Language",
-        "Accept-Encoding",
     }
 )
 
@@ -83,6 +83,19 @@ def register_role(name: str, headers: dict[str, str]) -> None:
 def list_roles() -> list[str]:
     """Return sorted list of all registered role names."""
     return sorted(_ROLE_REGISTRY.keys())
+
+
+def replayable_roles(roles: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    """Captured *roles* without any header the HTTP client sets itself
+    (:func:`graftpunk.client_headers.client_sets_header`). A role ``gp observe``
+    captured before 1.41.0, restored from a cached session, can hold Chrome's
+    Priority and Accept-Encoding, and a replayed Accept-Encoding offering zstd gets
+    a body the client cannot decode (#370). A plugin's own declared roles never pass
+    through here: what a plugin declares is sent."""
+    return {
+        role: {k: v for k, v in headers.items() if not client_sets_header(k)}
+        for role, headers in roles.items()
+    }
 
 
 def get_role_headers(name: str) -> dict[str, str] | None:

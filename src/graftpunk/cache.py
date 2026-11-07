@@ -495,11 +495,14 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     Shared by load_session_for_api (from a cached BrowserSession) and
     load_session_for_api_from_bytes (from a browser-free deserialize).
     """
+    from graftpunk.client_headers import client_sets_header
     from graftpunk.cookies import use_browser_cookie_policy
-    from graftpunk.graftpunk_session import GraftpunkSession
+    from graftpunk.graftpunk_session import GraftpunkSession, replayable_roles
     from graftpunk.tokens import _HEADER_ROLES_ATTR, SESSION_RIDER_ATTRS
 
-    header_roles = getattr(source, _HEADER_ROLES_ATTR, {})
+    # Roles a capture before 1.41.0 saved can hold headers the client sets itself
+    # (#370); the rider loop below leaves this attribute to the constructor.
+    header_roles = replayable_roles(getattr(source, _HEADER_ROLES_ATTR, None) or {})
     api_session = GraftpunkSession(header_roles=header_roles)
 
     if hasattr(source, "cookies"):
@@ -525,6 +528,10 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
             if key.lower() in _EPHEMERAL_HEADERS:
                 LOG.debug("skipped_ephemeral_header", header=key)
                 continue
+            if client_sets_header(key):
+                # A session saved before 1.41.0 can carry Chrome's Accept-Encoding,
+                # which identity extraction put on its headers (#370).
+                continue
             api_session.headers[key] = value
         LOG.debug("copied_headers_from_session")
 
@@ -534,7 +541,7 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     # next cache_session (#151).
     for attr in SESSION_RIDER_ATTRS:
         value = getattr(source, attr, None)
-        if not value:
+        if not value or attr == _HEADER_ROLES_ATTR:
             continue
         setattr(api_session, attr, dict(value) if isinstance(value, dict) else value)
         LOG.debug("copied_session_rider", attr=attr)

@@ -7,6 +7,7 @@ decisions ``render.py`` has no business making (plugin tooling spec,
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import tomllib
 from dataclasses import dataclass
@@ -14,7 +15,14 @@ from pathlib import Path
 
 from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
 from graftpunk.devtools.errors import DevtoolsRefusal
-from graftpunk.devtools.scaffold.policy import FIXTURES_PLACEHOLDER, module_name_for
+from graftpunk.devtools.plugin_check import suite_tuple_problems
+from graftpunk.devtools.plugin_project import read_project
+from graftpunk.devtools.scaffold.policy import (
+    CONFTEST_PATH,
+    FIXTURES_PLACEHOLDER,
+    FIXTURES_TREE,
+    module_name_for,
+)
 from graftpunk.devtools.scaffold.pyproject_edit import (
     FloorVerdict,
     PyprojectEditError,
@@ -23,11 +31,17 @@ from graftpunk.devtools.scaffold.pyproject_edit import (
     with_graftpunk_floor,
     with_wheel_package,
 )
+from graftpunk.devtools.scaffold.pysrc import ImportPlacementError
 from graftpunk.devtools.scaffold.render import (
     ScaffoldSpec,
     class_name_for,
     graftpunk_version_floor,
     render,
+)
+from graftpunk.devtools.scaffold.suite_conftest import (
+    has_check,
+    read_suite_conftest,
+    with_suite_check,
 )
 from graftpunk.devtools.scaffold.write import (
     ChangeConflictError,
@@ -100,10 +114,65 @@ class NotAPluginSuiteError(ValueError):
 
 @dataclass(frozen=True)
 class ScaffoldResult:
+    """What ``write_scaffold`` wrote. In suite mode, ``conftest_changes`` is what it
+    changed in the suite's shared conftest, one line each, ``floor`` what that did to
+    the project's graftpunk requirement, and ``unchecked_first_plugin`` the first
+    plugin, when the conftest checks none of its fixtures, which adding a member
+    leaves as it is, and ``conftest_problems`` what kept it from listing the member
+    (``plugin_check.suite_tuple_problems``) (#370)."""
+
     mode: str
     written: tuple[Path, ...]
     gitignore_updated: bool
     pyproject_updated: bool
+    conftest_changes: tuple[str, ...] = ()
+    floor: FloorVerdict = None
+    unchecked_first_plugin: str | None = None
+    conftest_problems: tuple[str, ...] = ()
+
+
+def _suite_conftest_change(
+    target_dir: Path, module: str
+) -> tuple[PlannedChange | None, tuple[str, ...], str | None, tuple[str, ...]] | None:
+    """The edit to the suite at *target_dir*'s shared conftest that adds member
+    *module* to ``SUITE_MEMBER_FIXTURES`` and scopes gp's whole-tree check
+    (``suite_conftest.with_suite_check``), what it changes, and the first plugin
+    when the conftest has no check at all: adding a member never adds one, since
+    that would check the first plugin's fixtures and could fail its tests (#370).
+    Last, what kept it from listing *module*, which ``gp plugin check`` also reports.
+    ``None`` when the suite or its conftest cannot be read, which
+    ``gp plugin check`` then reports."""
+    try:
+        view = read_project(target_dir)
+    except DevtoolsRefusal:
+        return None
+    owner = next((p for p in view.plugins if p.fixtures_root == FIXTURES_TREE), None)
+    if owner is None:
+        return None
+    members = [
+        module_name_for(p.entry_point) for p in view.plugins if p.fixtures_root != FIXTURES_TREE
+    ]
+    conftest = target_dir / CONFTEST_PATH
+    status = view.requirements.get(f"{CONFTEST_PATH}:FIXTURES_TREE")
+    if status is not None and status.state == "unreadable":
+        return None
+    original = read_original(conftest) if status is None or status.present else None
+    try:
+        text, changes = with_suite_check(
+            original or "",
+            owner.entry_point,
+            [*members, module],
+            add_check=False,
+            first_party=view.first_party_packages,
+        )
+    except (SyntaxError, ImportPlacementError):
+        return None
+    unchecked = None if has_check(text) else owner.entry_point
+    problems = tuple(suite_tuple_problems(read_suite_conftest(ast.parse(text)), [*members, module]))
+    if not changes:
+        return None, (), unchecked, problems
+    change = PlannedChange(conftest, text, original=original, validate=validate_python)
+    return change, changes, unchecked, problems
 
 
 def _existing_pyproject(target_dir: Path) -> Path | None:
@@ -208,6 +277,10 @@ def write_scaffold(
 
     changes: list[PlannedChange] = []
     pyproject_updated = False
+    conftest_changes: tuple[str, ...] = ()
+    floor: FloorVerdict = None
+    unchecked_first_plugin: str | None = None
+    conftest_problems: tuple[str, ...] = ()
     if mode == "add_to_suite":
         assert existing is not None  # narrows for the type checker; mode implies it
         module = module_name_for(resolved_spec.name)
@@ -220,9 +293,20 @@ def write_scaffold(
         except PyprojectEditError:
             LOG.debug("scaffold_write_refused", reason="pyproject_edit_error")
             raise
+        conftest_change = _suite_conftest_change(target_dir, module)
+        if conftest_change is not None:
+            change, conftest_changes, unchecked_first_plugin, conftest_problems = conftest_change
+            if change is not None:
+                changes.append(change)
+                # The conftest now passes skip=, which graftpunk 1.41.0 added.
+                floor = with_graftpunk_floor(edited, graftpunk_version_floor())
+                if isinstance(floor, RaisedFloor):
+                    edited = floor.text
         # The pyproject.toml edit is applied first and restored with everything
         # else if any rendered file then fails to write.
-        changes.append(PlannedChange(existing, edited, original=original, validate=validate_toml))
+        changes.insert(
+            0, PlannedChange(existing, edited, original=original, validate=validate_toml)
+        )
         pyproject_updated = True
     changes.extend(rendered)
 
@@ -251,4 +335,8 @@ def write_scaffold(
         written=tuple(sorted(c.path for c in rendered)),
         gitignore_updated=gitignore_updated,
         pyproject_updated=pyproject_updated,
+        conftest_changes=conftest_changes,
+        floor=floor,
+        unchecked_first_plugin=unchecked_first_plugin,
+        conftest_problems=conftest_problems,
     )

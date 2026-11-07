@@ -17,14 +17,16 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
-from graftpunk import _distribution
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.scaffold_shared import (
     LOG,
     command_selections,
     console,
     plugin_app,
+    print_conftest_problems,
+    print_floor,
     print_other_host,
+    print_unchecked_first_plugin,
 )
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.plugin_check import check_project
@@ -32,71 +34,9 @@ from graftpunk.devtools.plugin_info import info_payload
 from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.insert import add_command
-from graftpunk.devtools.scaffold.pyproject_edit import (
-    BothDistributions,
-    CannotRaiseFloor,
-    DynamicDependencies,
-    FloorVerdict,
-    RaisedFloor,
-)
-from graftpunk.devtools.scaffold.render import graftpunk_version_floor
-from graftpunk.devtools.scaffold.upgrade import upgrade_project
+from graftpunk.devtools.scaffold.upgrade import UpgradeApplied, upgrade_project
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.parser import HARParseError
-
-
-def _print_floor(floor: FloorVerdict) -> None:
-    """One line on the project's graftpunk requirement after a write that needs
-    the running graftpunk: the raise it got, or how to make it by hand."""
-    at = graftpunk_version_floor()
-    # A plugin requires graftpunk, whichever distribution this gp came from: it is
-    # what gp plugin new writes, and a plugin requiring graftpunk-lite would put
-    # both distributions into its users' environments.
-    wanted = f"graftpunk[browser]>={at}"
-    # graftpunk-lite[browser] records and logs in as graftpunk does.
-    full_note = (
-        " Developing a plugin (recording, logging in) needs the browser stack: "
-        f"{_distribution.install_commands('browser')}, or switch to graftpunk."
-        if _distribution.name() == _distribution.LITE and not _distribution.has_browser_stack()
-        else ""
-    )
-    if isinstance(floor, RaisedFloor):
-        line = f"pyproject.toml: {floor.name}>={at} (was >={floor.previous}); reinstall the project"
-        console.print(escape(line), soft_wrap=True, highlight=False)
-    elif isinstance(floor, DynamicDependencies):
-        console.print(
-            "[bold]Next:[/bold] "
-            + escape(
-                f"this project's dependencies are dynamic; make sure whatever supplies "
-                f"them requires {wanted}, then reinstall.{full_note}"
-            ),
-            soft_wrap=True,
-        )
-    elif isinstance(floor, CannotRaiseFloor) and floor.requirement is None:
-        console.print(
-            "[bold]Next:[/bold] "
-            + escape(
-                f"add {wanted} to pyproject.toml's [project] dependencies and "
-                f"reinstall; it has no graftpunk or graftpunk-lite requirement.{full_note}"
-            ),
-            soft_wrap=True,
-        )
-    elif isinstance(floor, BothDistributions):
-        console.print(
-            "[bold]Next:[/bold] "
-            + escape(
-                f"pyproject.toml requires both graftpunk and graftpunk-lite "
-                f"({' and '.join(floor.requirements)}), which install the same files; "
-                f"keep graftpunk: replace them with {wanted} and reinstall.{full_note}"
-            ),
-            soft_wrap=True,
-        )
-    elif isinstance(floor, CannotRaiseFloor):
-        console.print(
-            "[bold]Next:[/bold] "
-            + escape(f"raise {floor.requirement} in pyproject.toml to >={at} and reinstall"),
-            soft_wrap=True,
-        )
 
 
 @plugin_app.command("info")
@@ -170,30 +110,66 @@ def plugin_add_command(
             f"[bold]Next:[/bold] write its test against {escape(added.fixture)}",
             soft_wrap=True,
         )
-    _print_floor(added.floor)
+    print_floor(added.floor)
 
 
 @plugin_app.command("upgrade")
 def plugin_upgrade(
     dir_: Annotated[Path, typer.Option("--dir", help="Project directory")] = Path("."),
+    plugin: Annotated[
+        str | None,
+        typer.Option(
+            "--plugin",
+            help=(
+                "Entry-point or module name: add what this plugin of a suite lacks; in the "
+                "shared conftest, list members in SUITE_MEMBER_FIXTURES when it has gp's check, "
+                "and for the first plugin add a missing check"
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Bring a plugin project up to the current generated shape, changing nothing it has."""
     try:
-        applied = upgrade_project(dir_)
+        applied = upgrade_project(dir_, plugin=plugin)
     except DevtoolsRefusal as exc:
         LOG.debug("upgrade_refused", reason=type(exc).__name__)
         console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(1) from None
-    if not applied.changed:
-        console.print("Nothing to upgrade: the project already has every requirement.")
-        return
+    _print_upgrade(applied)
+
+
+def _print_upgrade(applied: UpgradeApplied) -> None:
+    """What ``gp plugin upgrade`` did, for its scope, and what it left (#370)."""
+    scope = applied.plugin
+    if not applied.changed and applied.conftest_problems:
+        console.print(
+            escape(f"Nothing upgraded: {policy.CONFTEST_PATH} needs the edit below first."),
+            soft_wrap=True,
+        )
+    elif not applied.changed:
+        has = f"{scope} already has" if scope else "the project already has"
+        console.print(escape(f"Nothing to upgrade: {has} every requirement."), soft_wrap=True)
     for requirement in applied.requirements:
         console.print(
             f"{escape(requirement.path)}: added {escape(requirement.name)}", soft_wrap=True
         )
     if applied.created_fixtures_tree:
         console.print(f"{escape(policy.FIXTURES_TREE)}: created", soft_wrap=True)
-    _print_floor(applied.floor)
+    for change in applied.conftest_changes:
+        console.print(escape(f"{policy.CONFTEST_PATH}: {change}"), soft_wrap=True)
+    for path in applied.created_roots:
+        console.print(f"{escape(path)}: created", soft_wrap=True)
+    if applied.left_elsewhere:
+        console.print(
+            escape(
+                f"{applied.left_elsewhere} requirement(s) or fixtures root(s) of other "
+                "plugins are still missing; gp plugin upgrade adds them all."
+            ),
+            soft_wrap=True,
+        )
+    print_conftest_problems(applied.conftest_problems)
+    print_unchecked_first_plugin(applied.unchecked_first_plugin)
+    print_floor(applied.floor)
 
 
 @plugin_app.command("check")

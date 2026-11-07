@@ -21,6 +21,7 @@ from typing import Any, Literal, get_args
 from urllib.parse import parse_qs, unquote, unquote_plus, urljoin, urlparse, urlunparse
 from urllib.parse import quote as percent_encode
 
+from graftpunk.client_headers import client_sets_header
 from graftpunk.har.documents import (
     PASSWORD_NAME_HINTS,
     LoginForm,
@@ -247,17 +248,15 @@ _AUTH_URL_REGEX = re.compile(
 # never names the page a login opens at (LoginForm.opened_from).
 _LOGOUT_URL_REGEX = re.compile(r"/(?:log[-_]?out|sign[-_]?out|log[-_]?off)(?=/|$)", re.IGNORECASE)
 
+# Browser-set request headers a stub does not list. The ones the HTTP client
+# sets itself are graftpunk.client_headers.client_sets_header's.
 _STANDARD_REQUEST_HEADERS = frozenset(
     {
-        "host",
-        "connection",
         "accept",
-        "accept-encoding",
         "accept-language",
         "cache-control",
         "pragma",
         "content-type",
-        "content-length",
         "cookie",
         "referer",
         "origin",
@@ -1391,7 +1390,7 @@ def _custom_headers(entry: HAREntry) -> tuple[tuple[str, ...], set[str]]:
     dropped: set[str] = set()
     for name in entry.request.headers:
         lowered = name.lower()
-        if lowered in _STANDARD_REQUEST_HEADERS:
+        if lowered in _STANDARD_REQUEST_HEADERS or client_sets_header(name):
             continue
         if any(lowered.startswith(p) for p in _STANDARD_REQUEST_HEADER_PREFIXES):
             continue

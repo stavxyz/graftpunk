@@ -985,9 +985,10 @@ packages = ["src/graftpunk_myshop", "src/graftpunk_otherstore"]
 
 Suite mode gives each plugin its own `tests/fixtures/<name>/` directory, because
 fixture filenames are derived from endpoint paths and two plugins in one suite
-can share a path. It does not rewrite `tests/conftest.py`, which still
-scrubs only the first plugin's environment prefix; add a line for the new one
-(see [Secrets and configuration](#secrets-and-configuration)).
+can share a path. It does not touch `tests/conftest.py`, which was written for
+the first plugin. The new plugin's test module binds its own environment
+scrubber and fixtures check instead, over its own directory alone
+(see [Keep the developer's own environment out of the tests](#keep-the-developers-own-environment-out-of-the-tests)).
 
 A directory holding a `pyproject.toml` that is not a plugin suite is refused
 with a message saying so. Nothing is overwritten, ever: if any target path
@@ -2342,12 +2343,82 @@ sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)
 environment variable starting with `prefix` for the duration of each test and
 restores them afterwards. Assigning it to a module-level name is what registers
 it. Without it, a developer who has `MYSHOP_PASSWORD` in their environment gets
-a green suite on code that fails for everybody else. Adding a plugin to an
-existing suite does not update this file: add a line for the new prefix
-yourself. The last two lines wire in the fixtures check described in
+a green suite on code that fails for everybody else. The last two lines wire
+in the fixtures check described in
 [Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture).
-`FIXTURES_TREE` is the whole fixtures directory, so a plugin added to the suite
-later is covered without editing this file.
+`FIXTURES_TREE` is the whole fixtures directory.
+
+When a suite's conftest has gp's check, it covers the first plugin's fixtures
+alone. Adding a plugin to such a suite lists its fixtures directory in
+`SUITE_MEMBER_FIXTURES`, a tuple gp owns and edits, and the check skips every
+directory listed there (`skip=`, new in graftpunk 1.41.0):
+
+```python
+from pathlib import Path
+
+from graftpunk.testing.plugin import fixtures_are_sanitised, site_env_scrubber
+
+scrub_site_env = site_env_scrubber("MYSHOP_")
+FIXTURES_TREE = Path(__file__).parent / "fixtures"
+SUITE_MEMBER_FIXTURES = ("otherstore",)
+sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE, skip=SUITE_MEMBER_FIXTURES)
+```
+
+`gp plugin new` makes that edit when it adds the plugin: it adds the name to the
+tuple, or turns the check above into this one, and raises the project's graftpunk
+requirement to 1.41.0 when it does, printing `reinstall the project`. Until you
+reinstall the project with graftpunk 1.41.0 or later (`uv pip install -e ".[dev]"`
+or `pip install -e ".[dev]"` in its environment), every plugin's tests fail at
+`tests/conftest.py` with `TypeError: fixtures_are_sanitised() got an unexpected
+keyword argument 'skip'`. Both edits only narrow what is checked. When the
+conftest has no check at all, adding a plugin leaves it so, since a new check over
+the first plugin's fixtures could fail that plugin's tests; it prints a line
+naming `gp plugin upgrade --plugin <first plugin>`, which writes all three lines.
+`SUITE_MEMBER_FIXTURES` has to be a tuple of directory names: `skip` refuses a
+string or a path. A check you wrote some other way is yours and is left as it
+is, and it may still walk every member's directory. The new plugin's own
+`tests/test_<name>.py` binds the scrubber and the check for its own prefix and
+its own `tests/fixtures/<name>/`:
+
+```python
+from pathlib import Path
+
+from graftpunk.testing.plugin import fixtures_are_sanitised, site_env_scrubber
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures" / "otherstore"
+scrub_site_env = site_env_scrubber("OTHERSTORE_")
+FIXTURES_TREE = FIXTURES_DIR
+sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)
+```
+
+A fixture bound in a test module serves that module's tests only and, there,
+replaces the conftest's fixture of the same name. A suite member's test modules
+are `tests/test_<module>.py` and every `tests/test_<module>_<anything>.py`,
+where `<module>` is the plugin's module name (`my_shop` for `my-shop`); a file
+two members' names both fit belongs to the longer one (`test_my_shop_x.py` is
+`my_shop`'s, not `my`'s). Each of them binds the three names, so every test of
+the member is scrubbed and runs only after its own fixtures pass the check. A
+test of the member in a file with another name gets neither.
+
+A file the first plugin's module name wins is the first plugin's, never a
+member's (`test_shop_eu_orders.py` is `shop_eu`'s when `shop_eu` is first and
+`shop` a member). So a bad fixture fails the tests of the plugin it belongs to,
+and no other plugin's.
+
+`gp plugin check` holds each member's test modules to the three names, reports
+a member whose `tests/fixtures/<module>/` is missing, reports a conftest check
+that still walks every member's directory, a `SUITE_MEMBER_FIXTURES` that is not
+a literal tuple (write it as a literal tuple of directory names), or one that
+does not list a member, and holds the conftest to the three suite lines above
+for the first plugin. The fix it names is `gp plugin upgrade --plugin <name>`.
+For a member, that adds the names to its test modules and creates its fixtures
+directory; in the shared conftest it adds the member to the tuple and scopes
+gp's whole-tree check, which only narrow what is checked, and it never adds a
+check the conftest lacks. When the member has no test module, the one it creates
+holds a test that requests the check, since pytest runs a module's fixtures only
+for a test it collects there. For the first plugin, it writes the conftest's
+check over its own fixtures, which then fails its tests on any of them that
+lacks a sidecar. A bare `gp plugin upgrade` does all of it for every plugin.
 
 ## Harden
 
@@ -2843,7 +2914,16 @@ or cannot be read), a `tests/conftest.py` that does not parse, is not valid
 UTF-8, cannot be read, or is not a regular file, every `GP-FILL` marker left
 in a plugin module or a test module, any plugin module that does not hold
 exactly one plugin class, and any project wiring the project lacks (`gp
-plugin upgrade` adds it). When the project cannot be read at all (for
+plugin upgrade` adds it; in a suite, `gp plugin upgrade --plugin <name>` adds
+that plugin's, creates a member's missing `tests/fixtures/<module>/`, and, when
+the shared conftest has gp's check, lists the members in its
+`SUITE_MEMBER_FIXTURES`; only the first plugin's, or a bare upgrade, adds a
+conftest check that is missing). In a suite
+it also reports a `SUITE_MEMBER_FIXTURES` that is not a literal tuple, or holds
+an entry `skip` refuses (write it
+as a literal tuple of directory names), and a conftest check that
+still walks every member's directory (`gp plugin upgrade` scopes it to the
+first plugin's fixtures). When the project cannot be read at all (for
 example, not a plugin project, or a `pyproject.toml` or plugin module that
 cannot be read or does not parse), that refusal is the one finding. A fresh
 scaffold fails it until its markers are filled in. It passes `ruff check` and

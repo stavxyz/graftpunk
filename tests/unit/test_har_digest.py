@@ -16,6 +16,7 @@ from urllib.parse import quote, urlparse
 import pytest
 from structlog.testing import capture_logs
 
+from graftpunk.client_headers import client_sets_header
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
 from graftpunk.har.digest import (
     _BODY_SAMPLE_THRESHOLD,
@@ -34,6 +35,7 @@ from graftpunk.har.digest import (
     Endpoint,
     LoginObservation,
     ObservationKind,
+    RunDigest,
     _account_values,
     _array_expiry,
     _expiry,
@@ -981,6 +983,80 @@ class TestCustomHeaders:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert "X-Shop-Client" in result.endpoints[0].custom_headers
         assert "Accept" not in result.endpoints[0].custom_headers
+
+    # What Chrome records for an HTTP/2 request (#370): the pseudo-headers, the
+    # Priority signal, and headers the HTTP client sets itself, beside two a
+    # plugin does send.
+    _H2_HEADERS: dict[str, str] = {
+        ":authority": "myshop.example",
+        ":method": "POST",
+        ":path": "/api/orders",
+        ":scheme": "https",
+        "priority": "u=1, i",
+        "Host": "myshop.example",
+        "Connection": "keep-alive",
+        "Content-Length": "2",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "x-api-key": "k-0f9e8d7c6b5a",
+        "X-CSRF-Token": "c-1a2b3c4d5e6f",
+    }
+
+    def _h2_digest(self, tmp_path: Path) -> RunDigest:
+        entries = [
+            _entry(
+                "POST",
+                "https://myshop.example/api/orders",
+                request_headers=self._H2_HEADERS,
+                post_data="{}",
+            )
+        ]
+        return digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+
+    def test_an_http2_recording_lists_no_header_a_client_never_sends(self, tmp_path: Path) -> None:
+        result = self._h2_digest(tmp_path)
+        (endpoint,) = result.endpoints
+        assert sorted(endpoint.custom_headers, key=str.lower) == ["x-api-key", "X-CSRF-Token"]
+        assert {t.name for t in result.tokens if t.kind == "header"} <= {"X-CSRF-Token"}
+        text = render_json(result) + render_markdown(result)
+        for name in (":authority", ":method", ":path", ":scheme", "priority", "Content-Length"):
+            assert f'"{name}"' not in text
+            assert f"`{name}`" not in text
+
+    def test_an_http2_recording_stubs_only_the_headers_a_plugin_sends(self, tmp_path: Path) -> None:
+        plugin_code = render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://myshop.example",
+                digest=self._h2_digest(tmp_path),
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+        assert '"x-api-key": "GP-FILL",' in plugin_code
+        assert '"X-CSRF-Token": "GP-FILL",' in plugin_code
+        # 1.40.1 counted the pseudo-headers as names that read as values.
+        assert "header name(s) were left out" not in plugin_code
+        for name in self._H2_HEADERS:
+            if name.lower() not in {"x-api-key", "x-csrf-token"}:
+                assert f'"{name}":' not in plugin_code
+
+    @pytest.mark.parametrize(
+        ("name", "client_set"),
+        [
+            (":authority", True),
+            (":Protocol", True),
+            ("Priority", True),
+            ("HOST", True),
+            ("content-length", True),
+            ("Accept-Encoding", True),
+            ("connection", True),
+            ("x-api-key", False),
+            ("X-CSRF-Token", False),
+            ("x-priority", False),
+        ],
+    )
+    def test_client_sets_header(self, name: str, client_set: bool) -> None:
+        assert client_sets_header(name) is client_set
 
     def test_header_values_never_appear_anywhere_in_the_model(self, tmp_path: Path) -> None:
         entries = [
