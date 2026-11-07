@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.pysrc import binds_name, joined_like, source_lines, with_bindings
+from graftpunk.fixture_skip import refuses
 
 __all__ = ["SuiteConftestState", "has_check", "read_suite_conftest", "with_suite_check"]
 
@@ -69,15 +70,6 @@ def _assignment(tree: ast.Module, name: str) -> ast.Assign | None:
     return found
 
 
-def _refused_name(value: object) -> bool:
-    """Whether ``graftpunk.testing.plugin``'s ``skip`` refuses *value*: anything but
-    a string, an empty name, ``.``, ``..``, or a name with a path separator. The
-    same rule, restated here because devtools does not import the pytest plugin."""
-    if not isinstance(value, str):
-        return True
-    return value in ("", ".", "..") or "/" in value or "\\" in value
-
-
 def _literal_entries(node: ast.Assign | None) -> list[ast.Constant] | None:
     """*node*'s tuple or list entries when every one is a literal, else ``None``."""
     if node is None or not isinstance(node.value, (ast.Tuple, ast.List)):
@@ -89,14 +81,14 @@ def _literal_entries(node: ast.Assign | None) -> list[ast.Constant] | None:
 
 def _listed(node: ast.Assign | None) -> tuple[str, ...] | None:
     entries = _literal_entries(node)
-    if entries is None or any(_refused_name(e.value) for e in entries):
+    if entries is None or any(refuses(e.value) for e in entries):
         return None
     return tuple(str(e.value) for e in entries)
 
 
 def _refused(node: ast.Assign | None) -> tuple[str, ...]:
     entries = _literal_entries(node) or []
-    return tuple(repr(e.value) for e in entries if _refused_name(e.value))
+    return tuple(repr(e.value) for e in entries if refuses(e.value))
 
 
 def _unscoped(node: ast.Assign | None) -> bool:

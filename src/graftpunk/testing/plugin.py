@@ -42,6 +42,7 @@ import pytest
 
 import graftpunk.observe
 from graftpunk.contracts import SIDECAR_SCHEMA_WITHOUT_OPERATION
+from graftpunk.fixture_skip import skip_names
 from graftpunk.observe.storage import is_session_dir_of
 from graftpunk.testing.decoding import decoded_forms, whole_name_regex
 from graftpunk.testing.recorded import (
@@ -337,34 +338,6 @@ def _upgrade_for(tree: Path) -> str:
     return "gp plugin upgrade"
 
 
-def _skip_names(skip: Iterable[str]) -> frozenset[str]:
-    """*skip* as the set of directory names it holds, refusing what can never name a
-    directory directly under a tree, so a mistake is an error rather than a check
-    that quietly covers more than intended (#370).
-
-    Raises:
-        TypeError: *skip* is a ``str`` or ``bytes`` (which would iterate as
-            characters), or holds something other than a ``str``.
-        ValueError: An entry is empty, ``.`` or ``..``, or holds a path separator.
-    """
-    if isinstance(skip, (str, bytes)):
-        raise TypeError(
-            f"skip must be a collection of directory names, not {type(skip).__name__} "
-            f"{skip!r}; write ({skip!r},) for one name."
-        )
-    names = tuple(skip)
-    separators = {"/", "\\", os.sep, os.altsep or "/"}
-    for name in names:
-        if not isinstance(name, str):
-            raise TypeError(f"skip holds {name!r}, not a directory name (str).")
-        if name in ("", ".", "..") or any(sep in name for sep in separators):
-            raise ValueError(
-                f"skip holds {name!r}; each entry names one directory directly under the "
-                "tree, with no path separator."
-            )
-    return frozenset(names)
-
-
 def check_fixtures_tree(
     tree: Path, *, observe_dir: Path | None = None, skip: Iterable[str] = ()
 ) -> FixturesTreeReport:
@@ -405,9 +378,9 @@ def check_fixtures_tree(
 
     Raises:
         TypeError, ValueError: *skip* is not a collection of directory names
-            (:func:`_skip_names`).
+            (:func:`graftpunk.fixture_skip.skip_names`).
     """
-    skipped = _skip_names(skip)
+    skipped = skip_names(skip)
     tree_detail: list[str] = []
     tree_stat: list[os.stat_result] = []
     tree_kind = _stat_kind(tree, tree_detail, tree_stat)
@@ -722,7 +695,7 @@ def fixtures_are_sanitised(
     conftest's import, as :func:`check_fixtures_tree` documents.
     """
     root = Path(tree)
-    skipped = _skip_names(skip)
+    skipped = skip_names(skip)
     runs = Path(observe_dir) if observe_dir is not None else None
 
     @pytest.fixture(scope="session", autouse=True)

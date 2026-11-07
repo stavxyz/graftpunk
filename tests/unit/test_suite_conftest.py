@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import ast
 
+import pytest
+
 from graftpunk.devtools.scaffold.suite_conftest import (
     has_check,
     read_suite_conftest,
     with_suite_check,
 )
+from graftpunk.fixture_skip import refuses, skip_names
 
 _STANDALONE = """\
 from pathlib import Path
@@ -108,3 +111,16 @@ def test_a_tuple_holding_an_entry_skip_refuses_is_never_appended_to() -> None:
     assert with_suite_check(refused, "oldshop", ["myshop"]) == (refused, ())
     state = read_suite_conftest(ast.parse(refused))
     assert (state.listed, state.refused) == (None, ("'myshop/x'", "''", "3"))
+
+
+@pytest.mark.parametrize("name", ["myshop", "my_shop", "", ".", "..", "a/b", "a\\b", 3, None])
+def test_the_reader_and_skip_refuse_the_same_entries(name: object) -> None:
+    """One rule, graftpunk.fixture_skip: what the reader reports as refused is what
+    fixtures_are_sanitised raises on."""
+    try:
+        skip_names((name,))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raised = True
+    else:
+        raised = False
+    assert refuses(name) is raised
