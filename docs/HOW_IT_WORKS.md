@@ -479,7 +479,7 @@ Discovery errors are accumulated as `PluginDiscoveryError` / `YAMLDiscoveryError
 
 - `site_name` — Required. Can be auto-inferred from `base_url` (e.g., `https://news.ycombinator.com` → `"ycombinator"`) or from the YAML plugin filename (e.g., `httpbin.yaml` → `"httpbin"`)
 - `session_name` — Defaults to `site_name`
-- `aliases`: more CLI names for the same plugin (default `()`; a list in YAML). An alias resolves through `graftpunk.plugins.names.plugin_names` in the CLI, in `get_plugin()` and in `gp plugin check`, to the plugin itself, so it shares the plugin's session slot and credential variables. An alias naming a core command, another plugin's `site_name`, or another plugin's alias is ignored with a warning.
+- `aliases`: more CLI names for the same plugin (default `()`; a list in YAML). An alias resolves through `graftpunk.plugins.names.plugin_names` in the CLI, in `get_plugin()` and in `gp plugin check`, to the plugin itself, so it shares the plugin's session slot and credential variables. Aliases are read from the plugin class's own body and are not inherited. An alias naming a core command, another discovered plugin's `site_name` or `session_name` (a plugin the CLI skips still holds its names), or another plugin's alias is ignored with a warning.
 - `help_text` — Defaults to `"Commands for {site_name}"`
 - `backend` — `"selenium"` (default) or `"nodriver"`
 - `requires_session` — Whether commands need a cached session (default `True`)

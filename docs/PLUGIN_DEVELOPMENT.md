@@ -79,13 +79,26 @@ and `gp plugins` list the plugin once, with its aliases beside its name, and
 `gp plugin info --json` reports them as `aliases`.
 
 Canonical names and core commands always win. When an alias names a core `gp`
-command (`http`, `session`, ...), another installed plugin's `site_name`, or an
-alias another installed plugin also declares, gp does not register it (for
-either plugin, in the last case), prints one warning saying why, and runs every
-plugin under its `site_name` as before. `gp plugin check` reports the same
-collisions among the plugins in the project, and an alias `gp plugin new` would
-refuse as a plugin name. One alias is written with a trailing comma,
-`("shop",)`; a bare string is refused.
+command (`http`, `session`, ...), another installed plugin's `site_name` or
+`session_name`, or an alias another installed plugin also declares, gp does not
+register it (for either plugin, in the last case), prints one warning saying
+why, and runs every plugin under its `site_name` as before. A `session_name` is
+reserved because `gp session` and `gp http` take a plugin's session base as a
+name: an alias equal to another plugin's would send `gp session clear` to the
+wrong session. An alias may equal its own plugin's `session_name`. Every
+installed plugin holds its names, including one gp skips because its `setup()`
+or a contract check failed, so neither `gp` nor `GraftpunkClient` resolves a
+name to a different plugin because one failed to load. `gp plugin check` reports
+the same collisions among the plugins in the project, and an alias `gp plugin
+new` would refuse as a plugin name.
+
+A plugin's aliases are the ones its own class declares. Like the rest of its
+configuration, they are not inherited: a subclass with its own `site_name` (a
+`myshop-staging` variant of `myshop-storefront`) has no aliases unless it
+declares them. An annotation with no value (`aliases: tuple[str, ...]`) is no
+aliases. One alias is written with a trailing comma, `("shop",)`; a bare string
+is refused, for a `SitePlugin`, a YAML plugin and a plugin written against
+`CLIPluginProtocol` alike, with the same message.
 
 Registration happens in the plugin's own `pyproject.toml`:
 
