@@ -29,6 +29,7 @@ from graftpunk.cli.scaffold_shared import (
     plugin_app,
     print_floor,
     print_other_host,
+    print_unchecked_first_plugin,
 )
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.errors import ScaffoldWriteError
@@ -282,6 +283,7 @@ def plugin_new(
         console.print(escape(f"{CONFTEST_PATH}: {change}"), soft_wrap=True)
     if result.conftest_changes:
         print_floor(result.floor)
+    print_unchecked_first_plugin(result.unchecked_first_plugin)
     for other in other_host_commands(spec):
         print_other_host(other)
     _print_next_steps(dataclasses.replace(spec, mode=result.mode))

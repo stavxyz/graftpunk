@@ -25,6 +25,7 @@ from graftpunk.cli.scaffold_shared import (
     plugin_app,
     print_floor,
     print_other_host,
+    print_unchecked_first_plugin,
 )
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.plugin_check import check_project
@@ -118,7 +119,10 @@ def plugin_upgrade(
         str | None,
         typer.Option(
             "--plugin",
-            help="Entry-point or module name: add only what this plugin of a suite lacks",
+            help=(
+                "Entry-point or module name: add what this plugin of a suite lacks, and list "
+                "every member in the shared conftest's SUITE_MEMBER_FIXTURES"
+            ),
         ),
     ] = None,
 ) -> None:
@@ -156,6 +160,7 @@ def _print_upgrade(applied: UpgradeApplied) -> None:
             ),
             soft_wrap=True,
         )
+    print_unchecked_first_plugin(applied.unchecked_first_plugin)
     print_floor(applied.floor)
 
 

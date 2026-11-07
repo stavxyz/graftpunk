@@ -1139,6 +1139,7 @@ _GUARDED_PHRASES: dict[str, tuple[object, str]] = {
     "_CREATES_IT": (plugin_check_module, plugin_check_module._CREATES_IT),
     "_ADDS_IT": (plugin_check_module, plugin_check_module._ADDS_IT),
     "_SCOPES_IT": (plugin_check_module, plugin_check_module._SCOPES_IT),
+    "_WRITE_IT_LITERAL": (plugin_check_module, plugin_check_module._WRITE_IT_LITERAL),
 }
 
 

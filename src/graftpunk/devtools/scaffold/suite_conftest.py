@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.pysrc import binds_name, joined_like, source_lines, with_bindings
 
-__all__ = ["SuiteConftestState", "read_suite_conftest", "with_suite_check"]
+__all__ = ["SuiteConftestState", "has_check", "read_suite_conftest", "with_suite_check"]
 
 _CHECK_NAME = "sanitised_fixtures"
 
@@ -97,8 +97,22 @@ def read_suite_conftest(tree: ast.Module) -> SuiteConftestState:
     )
 
 
+def has_check(text: str) -> bool:
+    """Whether *text*, a conftest, binds ``sanitised_fixtures``: whether it checks any
+    fixtures at all. False for text that does not parse."""
+    try:
+        return binds_name(ast.parse(text), _CHECK_NAME)
+    except SyntaxError:
+        return False
+
+
 def with_suite_check(
-    text: str, owner: str, members: Sequence[str], *, first_party: frozenset[str] = frozenset()
+    text: str,
+    owner: str,
+    members: Sequence[str],
+    *,
+    add_check: bool = True,
+    first_party: frozenset[str] = frozenset(),
 ) -> tuple[str, tuple[str, ...]]:
     """*text*, a suite's conftest, with the fixtures check over *owner*'s fixtures
     alone, and what changed, one line each. *members* are the member directory names
@@ -107,9 +121,12 @@ def with_suite_check(
     A literal ``SUITE_MEMBER_FIXTURES`` gains each name of *members* it lacks. A
     ``sanitised_fixtures`` exactly as gp writes it for a standalone project becomes
     ``policy.SUITE_CHECK_STATEMENT``, with the tuple bound just before it when the
-    conftest has none, as it is before a check that reads the tuple without it. With
-    no ``sanitised_fixtures`` at all, the bindings of ``policy.suite_requirements``
-    it lacks are appended. Anything else is left as it is.
+    conftest has none, as it is before a check that reads the tuple without it. Each
+    of these only narrows what is checked. With no ``sanitised_fixtures`` at all, the
+    bindings of ``policy.suite_requirements`` it lacks are appended, but only with
+    *add_check*: that turns on a check over the first plugin's fixtures, which can
+    fail its tests, so only an upgrade of the whole project or of *owner* asks for it
+    (#370). Anything else is left as it is.
 
     Raises:
         SyntaxError: *text* does not parse.
@@ -145,7 +162,7 @@ def with_suite_check(
         own = lines[span[0] : span[1] + 1]
         edits[span] = [*policy.suite_skip_statement(members).split("\n"), *own]
         changes.append(f"added {policy.SUITE_SKIP_NAME}")
-    elif not binds_name(tree, _CHECK_NAME):
+    elif add_check and not binds_name(tree, _CHECK_NAME):
         appended = [
             r for r in policy.suite_requirements(owner, members) if not binds_name(tree, r.name)
         ]

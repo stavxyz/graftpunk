@@ -100,10 +100,19 @@ def _add_myshop(root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.fixture
 def suite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """oldshop with its fixture declared, myshop added, and the conftest check over
+    oldshop's fixtures added by the upgrade gp names for it."""
     root = tmp_path / "suite"
     _older_suite(root)
     _add_myshop(root, tmp_path, monkeypatch)
+    _upgrade(root, "--plugin", "oldshop")
     return root
+
+
+_UNCHECKED = (
+    "tests/conftest.py: oldshop's fixtures are unchecked; gp plugin upgrade --plugin oldshop "
+    "adds the check, which fails oldshop's tests on any of its fixtures that lacks a sidecar."
+)
 
 
 def _pytest(root: Path, *paths: str, **env: str) -> str:
@@ -172,11 +181,13 @@ def test_gp_plugin_new_adds_the_member_to_the_conftest_check(suite: Path) -> Non
     assert _wiring(suite) == []
 
 
-def test_gp_plugin_new_raises_the_floor_when_it_writes_skip(
+def test_gp_plugin_new_raises_the_floor_when_it_scopes_the_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A first plugin gp wrote has the standalone check: adding a member scopes it,
+    which needs skip=, so the floor goes up."""
     root = tmp_path / "suite"
-    _older_suite(root)
+    _new(root, "oldshop")
     pyproject = root / "pyproject.toml"
     pyproject.write_text(
         re.sub(
@@ -185,22 +196,62 @@ def test_gp_plugin_new_raises_the_floor_when_it_writes_skip(
     )
     output = _add_myshop(root, tmp_path, monkeypatch)
     assert "tests/conftest.py: added SUITE_MEMBER_FIXTURES" in output
-    assert "tests/conftest.py: added sanitised_fixtures" in output
+    assert "tests/conftest.py: sanitised_fixtures: skips SUITE_MEMBER_FIXTURES" in output
     floor = graftpunk_version_floor()
     assert f"graftpunk[browser]>={floor}" in pyproject.read_text()
     assert f"pyproject.toml: graftpunk>={floor} (was >=1.30.0)" in output
+    assert "unchecked" not in output
+
+
+def test_adding_or_upgrading_a_member_never_turns_on_the_first_plugins_check(
+    tmp_path: Path,
+) -> None:
+    """The reviewer's oldshop suite (#370's): a scrubber-only conftest and a fixture
+    with no sidecar. gp plugin new myshop and upgrade --plugin myshop leave oldshop's
+    tests passing and say its fixtures are unchecked; upgrade --plugin oldshop adds
+    the check, and the failure names the sidecar fix."""
+    root = tmp_path / "suite"
+    _older_suite(root, declared=False)
+    conftest = root / "tests" / "conftest.py"
+
+    output = _gp_new(root, "myshop", "--url", "https://myshop.example")
+
+    assert _UNCHECKED in output
+    assert conftest.read_text() == _OLDER_CONFTEST
+    assert set(_outcomes(_pytest(root)).values()) == {"PASSED"}
+    assert _unbound(root) == [
+        f"tests/conftest.py: does not bind {name}; gp plugin upgrade --plugin oldshop adds it."
+        for name in ("FIXTURES_TREE", "SUITE_MEMBER_FIXTURES", "sanitised_fixtures")
+    ]
+    (root / "tests" / "test_myshop.py").write_text(_PLACEHOLDER_MODULE)
+
+    output = _upgrade(root, "--plugin", "myshop")
+
+    assert "tests/test_myshop.py: added sanitised_fixtures" in output
+    assert _UNCHECKED in output
+    assert conftest.read_text() == _OLDER_CONFTEST
+    assert set(_outcomes(_pytest(root)).values()) == {"PASSED"}
+
+    output = _upgrade(root, "--plugin", "oldshop")
+
+    assert "tests/conftest.py: added sanitised_fixtures" in output
+    assert "unchecked" not in output
+    assert 'SUITE_MEMBER_FIXTURES = ("myshop",)' in conftest.read_text()
+    run = _pytest(root)
+    assert _outcomes(run)["tests/test_plugin.py::test_plugin_instantiates"] == "ERROR", run
+    assert "write get_orders.json.meta.json" in " ".join(run.split())
 
 
 def test_the_issues_suite_passes_after_gps_advice_and_checks_every_plugin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
-    """#370's suite: oldshop's fixture has no sidecar, then myshop joins. The
-    conftest now checks oldshop's fixtures, and only oldshop's: oldshop's tests fail
-    on its own fixture, with the fix in the message, and myshop's pass. After that
-    fix, gp plugin check has nothing on the wiring and pytest passes."""
+    """#370's suite, following each piece of gp's advice: the upgrade the check names
+    for oldshop, then the sidecar its fixtures check names. gp plugin check then has
+    nothing on the wiring, pytest passes, and oldshop's fixtures are checked."""
     root = tmp_path / "suite"
     _older_suite(root, declared=False)
     _gp_new(root, "myshop", "--url", "https://myshop.example")
+    _upgrade(root, "--plugin", "oldshop")
 
     first = _pytest(root)
     assert _outcomes(first) == {
@@ -250,17 +301,28 @@ def test_the_reviewers_suite_passes_after_every_piece_of_advice(
     midshop_fixture = root / "tests" / "fixtures" / "midshop" / "get_x.json"
     midshop_fixture.write_text('{"a": 1}\n')
     _add_myshop(root, tmp_path, monkeypatch)
+    assert sorted(_unbound(root)) == sorted(
+        [
+            *(
+                f"tests/conftest.py: does not bind {name}; gp plugin upgrade --plugin oldshop "
+                "adds it."
+                for name in ("FIXTURES_TREE", "SUITE_MEMBER_FIXTURES", "sanitised_fixtures")
+            ),
+            *(
+                f"tests/test_midshop.py: does not bind {name}; gp plugin upgrade --plugin "
+                "midshop adds it."
+                for name in ("FIXTURES_TREE", "sanitised_fixtures", "scrub_site_env")
+            ),
+        ]
+    )
+
+    output = _upgrade(root, "--plugin", "midshop")
+    assert "tests/test_midshop.py: added scrub_site_env" in output
+    _upgrade(root, "--plugin", "oldshop")
     assert (
         'SUITE_MEMBER_FIXTURES = ("midshop", "myshop")'
         in (root / "tests" / "conftest.py").read_text()
     )
-    assert sorted(_unbound(root)) == [
-        f"tests/test_midshop.py: does not bind {name}; gp plugin upgrade --plugin midshop adds it."
-        for name in ("FIXTURES_TREE", "sanitised_fixtures", "scrub_site_env")
-    ]
-
-    output = _upgrade(root, "--plugin", "midshop")
-    assert "tests/test_midshop.py: added scrub_site_env" in output
     assert _wiring(root) == []
     run = _pytest(root)
     assert _outcomes(run) == {
@@ -475,3 +537,15 @@ def test_a_single_plugin_project_keeps_the_whole_tree_check(tmp_path: Path) -> N
     _upgrade(root)
     assert "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)\n" in conftest.read_text()
     assert "SUITE_MEMBER_FIXTURES" not in conftest.read_text()
+
+
+def test_a_tuple_that_is_not_a_literal_is_reported(suite: Path) -> None:
+    """A SUITE_MEMBER_FIXTURES gp cannot read could skip less than every member; the
+    check says so, and skip itself refuses a string."""
+    conftest = suite / "tests" / "conftest.py"
+    conftest.write_text(conftest.read_text().replace('("myshop",)', '"myshop"'))
+    assert _wiring(suite) == [
+        "tests/conftest.py: SUITE_MEMBER_FIXTURES is not a literal tuple, so gp cannot list "
+        'members in it; write it as a literal tuple of directory names, such as ("myshop",).'
+    ]
+    assert "TypeError" in _pytest(suite)

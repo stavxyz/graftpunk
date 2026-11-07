@@ -72,6 +72,22 @@ def print_other_host(other: OtherHostCommand) -> None:
     console.print(escape(line), soft_wrap=True, highlight=False)
 
 
+def print_unchecked_first_plugin(owner: str | None) -> None:
+    """The line ``gp plugin new`` and ``gp plugin upgrade`` print when a suite's shared
+    conftest checks none of the first plugin's fixtures, which they leave as it is
+    unless asked: the upgrade that adds the check (#370)."""
+    if owner is None:
+        return
+    console.print(
+        escape(
+            f"tests/conftest.py: {owner}'s fixtures are unchecked; gp plugin upgrade "
+            f"--plugin {owner} adds the check, which fails {owner}'s tests on any of its "
+            "fixtures that lacks a sidecar."
+        ),
+        soft_wrap=True,
+    )
+
+
 def print_floor(floor: FloorVerdict) -> None:
     """One line on the project's graftpunk requirement after a write that needs
     the running graftpunk: the raise it got, or how to make it by hand."""

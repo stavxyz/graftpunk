@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import ast
 
-from graftpunk.devtools.scaffold.suite_conftest import read_suite_conftest, with_suite_check
+from graftpunk.devtools.scaffold.suite_conftest import (
+    has_check,
+    read_suite_conftest,
+    with_suite_check,
+)
 
 _STANDALONE = """\
 from pathlib import Path
@@ -84,3 +88,16 @@ def test_a_tuple_the_author_computes_is_left_alone() -> None:
 def test_crlf_line_endings_are_kept() -> None:
     text, _changes = with_suite_check(_STANDALONE.replace("\n", "\r\n"), "oldshop", ["myshop"])
     assert text == _SCOPED.replace("\n", "\r\n")
+
+
+def test_without_add_check_a_conftest_with_no_check_is_left_alone() -> None:
+    """Adding or upgrading a member never turns on the first plugin's check (#370)."""
+    older = "from graftpunk.testing.plugin import site_env_scrubber\n"
+    assert with_suite_check(older, "oldshop", ["myshop"], add_check=False) == (older, ())
+    assert not has_check(older)
+
+
+def test_without_add_check_gps_whole_tree_check_is_still_scoped() -> None:
+    text, _changes = with_suite_check(_STANDALONE, "oldshop", ["myshop"], add_check=False)
+    assert text == _SCOPED
+    assert has_check(text)

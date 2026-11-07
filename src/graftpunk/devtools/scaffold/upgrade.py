@@ -42,7 +42,7 @@ from graftpunk.devtools.scaffold.pyproject_edit import (
     FloorVerdict,
 )
 from graftpunk.devtools.scaffold.pysrc import ImportPlacementError, with_bindings
-from graftpunk.devtools.scaffold.suite_conftest import with_suite_check
+from graftpunk.devtools.scaffold.suite_conftest import has_check, with_suite_check
 from graftpunk.devtools.scaffold.write import (
     PlannedChange,
     apply_changes,
@@ -74,7 +74,9 @@ class UpgradeApplied:
     ``created_roots`` holds each suite member's fixtures root it created, with
     ``FIXTURES_PLACEHOLDER``, and ``conftest_changes`` what it changed in a suite's
     shared conftest, one line each (#370). ``plugin`` is the entry point it was
-    scoped to, or ``None``. ``left_elsewhere`` counts what other plugins still lack
+    scoped to, or ``None``. ``unchecked_first_plugin`` is a suite's first plugin when
+    the conftest still checks none of its fixtures, which an upgrade scoped to a
+    member leaves as it is. ``left_elsewhere`` counts what other plugins still lack
     under ``plugin``: requirements and fixtures roots, every one of which a
     ``gp plugin upgrade`` adds."""
 
@@ -84,6 +86,7 @@ class UpgradeApplied:
     created_roots: tuple[str, ...] = ()
     conftest_changes: tuple[str, ...] = ()
     plugin: str | None = None
+    unchecked_first_plugin: str | None = None
     left_elsewhere: int = 0
 
     @property
@@ -109,13 +112,15 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
 
     With *plugin* (an entry-point name, or its module name), only the requirements
     that serve it (``ProjectRequirement.plugin``) and, for a suite member, its
-    fixtures root when that is missing. In a suite, with or without *plugin*, the
-    shared conftest gets the check over the first plugin's fixtures alone, every
-    member's directory in ``SUITE_MEMBER_FIXTURES`` and skipped
-    (``suite_conftest.with_suite_check``), so a member's fixtures never fail the
-    first plugin's tests (#370). A member test module it creates holds one test that
-    requests the member's fixtures check, since pytest runs a module's fixtures only
-    for a test it collects there.
+    fixtures root when that is missing. In a suite, every member is listed in the
+    shared conftest's ``SUITE_MEMBER_FIXTURES`` and gp's whole-tree check is scoped
+    to skip them (``suite_conftest.with_suite_check``), so a member's fixtures never
+    fail the first plugin's tests; both only narrow what is checked. A conftest with
+    no check gets one, over the first plugin's fixtures alone, only from an upgrade
+    of the whole project or of the first plugin: it can fail that plugin's tests,
+    which an upgrade scoped to a member never does (#370). A member test module it
+    creates holds one test that requests the member's fixtures check, since pytest
+    runs a module's fixtures only for a test it collects there.
 
     Raises:
         UpgradeRefusedError: A requirement's file, or ``tests/fixtures``, is one
@@ -172,6 +177,7 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
         by_path.setdefault(requirement.path, []).append(requirement)
     changes: list[PlannedChange] = []
     conftest_changes: tuple[str, ...] = ()
+    unchecked_first_plugin: str | None = None
     if suite_owner is not None:
         conftest = root / CONFTEST_PATH
         status = view.requirements.get(f"{CONFTEST_PATH}:FIXTURES_TREE")
@@ -179,10 +185,16 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
         members = [module_name_for(r.entry_point) for r in view.member_roots]
         try:
             content, conftest_changes = with_suite_check(
-                original or "", suite_owner, members, first_party=view.first_party_packages
+                original or "",
+                suite_owner,
+                members,
+                add_check=plugin is None or plugin == suite_owner,
+                first_party=view.first_party_packages,
             )
         except ImportPlacementError as exc:
             raise UpgradeRefusedError(f"{CONFTEST_PATH}: {exc}") from exc
+        if not has_check(content):
+            unchecked_first_plugin = suite_owner
         if conftest_changes:
             changes.append(
                 PlannedChange(conftest, content, original=original, validate=validate_python)
@@ -222,5 +234,6 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
         created_roots=created_roots,
         conftest_changes=conftest_changes,
         plugin=plugin,
+        unchecked_first_plugin=unchecked_first_plugin,
         left_elsewhere=left_elsewhere,
     )

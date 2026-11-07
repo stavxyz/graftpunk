@@ -36,7 +36,7 @@ from graftpunk.devtools.scaffold.render import (
     graftpunk_version_floor,
     render,
 )
-from graftpunk.devtools.scaffold.suite_conftest import with_suite_check
+from graftpunk.devtools.scaffold.suite_conftest import has_check, with_suite_check
 from graftpunk.devtools.scaffold.write import (
     ChangeConflictError,
     InvalidChangeError,
@@ -109,8 +109,10 @@ class NotAPluginSuiteError(ValueError):
 @dataclass(frozen=True)
 class ScaffoldResult:
     """What ``write_scaffold`` wrote. In suite mode, ``conftest_changes`` is what it
-    changed in the suite's shared conftest, one line each, and ``floor`` what that
-    did to the project's graftpunk requirement (#370)."""
+    changed in the suite's shared conftest, one line each, ``floor`` what that did to
+    the project's graftpunk requirement, and ``unchecked_first_plugin`` the first
+    plugin, when the conftest checks none of its fixtures, which adding a member
+    leaves as it is (#370)."""
 
     mode: str
     written: tuple[Path, ...]
@@ -118,16 +120,19 @@ class ScaffoldResult:
     pyproject_updated: bool
     conftest_changes: tuple[str, ...] = ()
     floor: FloorVerdict = None
+    unchecked_first_plugin: str | None = None
 
 
 def _suite_conftest_change(
     target_dir: Path, module: str
-) -> tuple[PlannedChange, tuple[str, ...]] | None:
+) -> tuple[PlannedChange | None, tuple[str, ...], str | None] | None:
     """The edit to the suite at *target_dir*'s shared conftest that adds member
-    *module* to ``SUITE_MEMBER_FIXTURES``, writing the check over the first plugin's
-    fixtures alone when the conftest lacks it (``suite_conftest.with_suite_check``),
-    and what it changes; ``None`` when nothing changes, or when the suite or its
-    conftest cannot be read, which ``gp plugin check`` then reports (#370)."""
+    *module* to ``SUITE_MEMBER_FIXTURES`` and scopes gp's whole-tree check
+    (``suite_conftest.with_suite_check``), what it changes, and the first plugin
+    when the conftest has no check at all: adding a member never adds one, since
+    that would check the first plugin's fixtures and could fail its tests (#370).
+    ``None`` when the suite or its conftest cannot be read, which
+    ``gp plugin check`` then reports."""
     try:
         view = read_project(target_dir)
     except DevtoolsRefusal:
@@ -148,13 +153,16 @@ def _suite_conftest_change(
             original or "",
             owner.entry_point,
             [*members, module],
+            add_check=False,
             first_party=view.first_party_packages,
         )
     except (SyntaxError, ImportPlacementError):
         return None
+    unchecked = None if has_check(text) else owner.entry_point
     if not changes:
-        return None
-    return PlannedChange(conftest, text, original=original, validate=validate_python), changes
+        return None, (), unchecked
+    change = PlannedChange(conftest, text, original=original, validate=validate_python)
+    return change, changes, unchecked
 
 
 def _existing_pyproject(target_dir: Path) -> Path | None:
@@ -261,6 +269,7 @@ def write_scaffold(
     pyproject_updated = False
     conftest_changes: tuple[str, ...] = ()
     floor: FloorVerdict = None
+    unchecked_first_plugin: str | None = None
     if mode == "add_to_suite":
         assert existing is not None  # narrows for the type checker; mode implies it
         module = module_name_for(resolved_spec.name)
@@ -275,12 +284,13 @@ def write_scaffold(
             raise
         conftest_change = _suite_conftest_change(target_dir, module)
         if conftest_change is not None:
-            change, conftest_changes = conftest_change
-            changes.append(change)
-            # The conftest now passes skip=, which graftpunk 1.41.0 added.
-            floor = with_graftpunk_floor(edited, graftpunk_version_floor())
-            if isinstance(floor, RaisedFloor):
-                edited = floor.text
+            change, conftest_changes, unchecked_first_plugin = conftest_change
+            if change is not None:
+                changes.append(change)
+                # The conftest now passes skip=, which graftpunk 1.41.0 added.
+                floor = with_graftpunk_floor(edited, graftpunk_version_floor())
+                if isinstance(floor, RaisedFloor):
+                    edited = floor.text
         # The pyproject.toml edit is applied first and restored with everything
         # else if any rendered file then fails to write.
         changes.insert(
@@ -316,4 +326,5 @@ def write_scaffold(
         pyproject_updated=pyproject_updated,
         conftest_changes=conftest_changes,
         floor=floor,
+        unchecked_first_plugin=unchecked_first_plugin,
     )

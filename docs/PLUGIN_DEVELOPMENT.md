@@ -2365,11 +2365,16 @@ sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE, skip=SUITE_MEMBER_FIX
 ```
 
 `gp plugin new` makes that edit when it adds the plugin: it adds the name to the
-tuple, turns the check above into this one, or writes all three lines when the
-conftest has no check, and raises the project's graftpunk requirement to
-1.41.0 when it does. A check you wrote some other way is yours and is left as it
-is. The new plugin's own `tests/test_<name>.py` binds the scrubber and the check
-for its own prefix and its own `tests/fixtures/<name>/`:
+tuple, or turns the check above into this one, and raises the project's graftpunk
+requirement to 1.41.0 when it does. Both only narrow what is checked. When the
+conftest has no check at all, adding a plugin leaves it so, since a new check over
+the first plugin's fixtures could fail that plugin's tests; it prints a line
+naming `gp plugin upgrade --plugin <first plugin>`, which writes all three lines.
+`SUITE_MEMBER_FIXTURES` has to be a tuple of directory names: `skip` refuses a
+string or a path. A check you wrote some other way is yours and is left as it
+is, and it may still walk every member's directory. The new plugin's own
+`tests/test_<name>.py` binds the scrubber and the check for its own prefix and
+its own `tests/fixtures/<name>/`:
 
 ```python
 from pathlib import Path
@@ -2398,14 +2403,18 @@ and no other plugin's.
 
 `gp plugin check` holds each member's test modules to the three names, reports
 a member whose `tests/fixtures/<module>/` is missing, reports a conftest check
-that still walks every member's directory or a `SUITE_MEMBER_FIXTURES` that does
-not list a member, and holds the conftest to the three suite lines above. The
-fix it names is `gp plugin upgrade --plugin <name>`, which adds the names to
-that member's test modules, creates its fixtures directory, and brings the
-conftest's check up to the suite form; it touches no other plugin's files. When
-the member has no test module, the one it creates holds a test that requests
-the check, since pytest runs a module's fixtures only for a test it collects
-there. A bare `gp plugin upgrade` does all of it for every plugin.
+that still walks every member's directory, a `SUITE_MEMBER_FIXTURES` that is not
+a literal tuple (write it as a literal tuple of directory names), or one that
+does not list a member, and holds the conftest to the three suite lines above
+for the first plugin. The fix it names is `gp plugin upgrade --plugin <name>`.
+For a member, that adds the names to its test modules and creates its fixtures
+directory; in the shared conftest it adds the member to the tuple and scopes
+gp's whole-tree check, which only narrow what is checked, and it never adds a
+check the conftest lacks. When the member has no test module, the one it creates
+holds a test that requests the check, since pytest runs a module's fixtures only
+for a test it collects there. For the first plugin, it writes the conftest's
+check over its own fixtures, which then fails its tests on any of them that
+lacks a sidecar. A bare `gp plugin upgrade` does all of it for every plugin.
 
 ## Harden
 
@@ -2902,8 +2911,11 @@ UTF-8, cannot be read, or is not a regular file, every `GP-FILL` marker left
 in a plugin module or a test module, any plugin module that does not hold
 exactly one plugin class, and any project wiring the project lacks (`gp
 plugin upgrade` adds it; in a suite, `gp plugin upgrade --plugin <name>` adds
-one plugin's and nothing else, and creates a member's missing
-`tests/fixtures/<module>/`). In a suite it also reports a conftest check that
+that plugin's, creates a member's missing `tests/fixtures/<module>/`, and lists
+the members in the shared conftest's `SUITE_MEMBER_FIXTURES`; only the first
+plugin's, or a bare upgrade, adds a conftest check that is missing). In a suite
+it also reports a `SUITE_MEMBER_FIXTURES` that is not a literal tuple (write it
+as a literal tuple of directory names), and a conftest check that
 still walks every member's directory (`gp plugin upgrade` scopes it to the
 first plugin's fixtures). When the project cannot be read at all (for
 example, not a plugin project, or a `pyproject.toml` or plugin module that

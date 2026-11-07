@@ -12,7 +12,8 @@ fixes (in a suite, each member's own in each of its test modules, fixed by
 ``gp plugin upgrade --plugin <name>``, and the shared conftest's check over the
 first plugin's fixtures); in a suite, a conftest check that still walks every
 member's directory, or a literal ``SUITE_MEMBER_FIXTURES`` that does not list a
-member, each fixed by ``gp plugin upgrade``; a ``policy.FIXTURES_TREE``, or in a
+member, each fixed by ``gp plugin upgrade``, or a ``SUITE_MEMBER_FIXTURES`` that
+is not a literal tuple, which an author rewrites as one; a ``policy.FIXTURES_TREE``, or in a
 suite a member's own fixtures root, that is missing (which
 ``gp plugin upgrade``, with ``--plugin <name>`` for a member's, creates), is
 not a directory (an author must move it aside), or cannot be read (an author
@@ -70,6 +71,7 @@ _CREATES_IT = "creates it"
 _ADDS_IT = "adds it"
 _FIXTURES_TREE_MISSING = f"missing; gp plugin upgrade {_CREATES_IT}."
 _SCOPES_IT = "scopes it"
+_WRITE_IT_LITERAL = "write it as a literal tuple of directory names"
 _DOES_NOT_BIND = "does not bind"
 
 
@@ -94,8 +96,9 @@ def _left_to_the_author(view: ProjectView, requirement: ProjectRequirement) -> b
 
 
 def _suite_conftest_findings(view: ProjectView) -> list[Finding]:
-    """A suite conftest's check that still walks every member's directory, and each
-    member its literal ``SUITE_MEMBER_FIXTURES`` does not list (#370)."""
+    """A suite conftest's check that still walks every member's directory, a
+    ``SUITE_MEMBER_FIXTURES`` the check reads that is not a literal tuple, and each
+    member a literal one does not list (#370)."""
     state = view.suite_conftest
     if state is None:
         return []
@@ -105,6 +108,16 @@ def _suite_conftest_findings(view: ProjectView) -> list[Finding]:
         message = (
             "sanitised_fixtures also checks every member's fixtures; gp plugin upgrade "
             f"--plugin {owner} {_SCOPES_IT} to {owner}'s with skip={SUITE_SKIP_NAME}."
+        )
+        findings.append(Finding(path=CONFTEST_PATH, line=None, message=message))
+    if state.skip_bound and state.listed is None and state.needs_skip and not state.unscoped:
+        # fixtures_are_sanitised refuses a str or a path-shaped name, but a tuple
+        # built some other way can still skip less than every member (#370).
+        example = ", ".join(f'"{module_name_for(m.entry_point)}"' for m in view.member_roots)
+        example += "," if len(view.member_roots) == 1 else ""
+        message = (
+            f"{SUITE_SKIP_NAME} is not a literal tuple, so gp cannot list members in it; "
+            f"{_WRITE_IT_LITERAL}, such as ({example})."
         )
         findings.append(Finding(path=CONFTEST_PATH, line=None, message=message))
     if state.listed is not None:
@@ -130,6 +143,7 @@ FINDING_ADVICE: tuple[str, ...] = (
     _CREATES_IT,
     _ADDS_IT,
     _SCOPES_IT,
+    _WRITE_IT_LITERAL,
 )
 """Every advice phrase a ``check_project`` finding can carry, for a test to
 check the guide's prose against: not a guarantee that a future reason is
