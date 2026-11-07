@@ -845,6 +845,7 @@ class PluginConfig:
     plugin_version: str = ""
     plugin_author: str = ""
     plugin_url: str = ""
+    aliases: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.site_name:
@@ -910,7 +911,27 @@ def build_plugin_config(**raw: Any) -> PluginConfig:
     if not filtered.get("help_text"):
         filtered["help_text"] = f"Commands for {site_name}"
 
+    filtered["aliases"] = _aliases_tuple(filtered.get("aliases", ()), site_name)
+
     return PluginConfig(**filtered)
+
+
+def _aliases_tuple(value: Any, site_name: str) -> tuple[str, ...]:
+    """*value* as a tuple of strings: ``aliases`` may be written as a list (YAML
+    has no tuple). A bare string is refused, so a missing trailing comma
+    (``aliases = ("shop")``) is reported where it was written.
+
+    Raises:
+        PluginError: *value* is not a list or tuple of strings.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)) or not all(isinstance(a, str) for a in value):
+        raise PluginError(
+            f"Plugin '{site_name}': 'aliases' must be a tuple (or a YAML list) of "
+            f"strings, got {value!r}. One alias is written ('shop',)."
+        )
+    return tuple(value)
 
 
 @runtime_checkable
@@ -1109,6 +1130,9 @@ class SitePlugin:
     api_version: int = 1
     username_envvar: str = ""
     password_envvar: str = ""
+    # More names the CLI runs this plugin by (`gp <alias> ...`), each the same
+    # plugin, session slot and credential variables as site_name.
+    aliases: tuple[str, ...] = ()
 
     # Declarative login configuration
     base_url: str = ""
@@ -1154,6 +1178,8 @@ class SitePlugin:
             cls.site_name = cls._plugin_config.site_name
             cls.session_name = cls._plugin_config.session_name
             cls.help_text = cls._plugin_config.help_text
+            if "aliases" in cls.__dict__:
+                cls.aliases = cls._plugin_config.aliases
         except PluginError as exc:
             cls._plugin_config_error = exc
             LOG.warning("plugin_config_deferred", class_name=cls.__name__, error=str(exc))

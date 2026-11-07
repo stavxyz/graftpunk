@@ -546,6 +546,7 @@ def parse_yaml_plugin(
         username_envvar=data.get("username_envvar", ""),
         password_envvar=data.get("password_envvar", ""),
         api_version=data.get("api_version", 1),
+        aliases=data.get("aliases", ()),
         login_config=login_config,
         token_config=token_config,
         source_filepath=filepath,

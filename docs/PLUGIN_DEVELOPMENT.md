@@ -45,6 +45,47 @@ The attributes that matter:
   need no cached session.
 - `login_config` and `token_config` are optional, and are covered in
   [Login](#login) and in [How graftpunk Works](HOW_IT_WORKS.md#token-and-csrf-support).
+- `aliases` is optional: more names `gp` runs the plugin by (see
+  [Give the plugin a shorter name](#give-the-plugin-a-shorter-name)).
+
+### Give the plugin a shorter name
+
+A plugin named `myshop-storefront` can also answer to `gp shop`:
+
+```python
+from graftpunk.plugins import SitePlugin
+
+
+class MyshopStorefrontPlugin(SitePlugin):
+    site_name = "myshop-storefront"
+    session_name = "myshop"
+    aliases = ("shop",)
+```
+
+In a YAML plugin, `aliases` is a list:
+
+```yaml
+site_name: myshop-storefront
+session_name: myshop
+aliases: [shop]
+```
+
+An alias is another name for the same plugin, not a second plugin. `gp shop
+orders` and `gp myshop-storefront orders` run the same command on the same
+session slot, and `gp session show shop` shows the plugin's session. Credential
+variables are still named for `site_name` (`MYSHOP_STOREFRONT_USERNAME`), never
+for an alias. `GraftpunkClient("shop")` resolves to the same plugin. `gp --help`
+and `gp plugins` list the plugin once, with its aliases beside its name, and
+`gp plugin info --json` reports them as `aliases`.
+
+Canonical names and core commands always win. When an alias names a core `gp`
+command (`http`, `session`, ...), another installed plugin's `site_name`, or an
+alias another installed plugin also declares, gp does not register it (for
+either plugin, in the last case), prints one warning saying why, and runs every
+plugin under its `site_name` as before. `gp plugin check` reports the same
+collisions among the plugins in the project, and an alias `gp plugin new` would
+refuse as a plugin name. One alias is written with a trailing comma,
+`("shop",)`; a bare string is refused.
 
 Registration happens in the plugin's own `pyproject.toml`:
 
@@ -1436,6 +1477,7 @@ gp plugin info --json
   "directory": "plugin",
   "plugins": [
     {
+      "aliases": [],
       "base_url": "https://myshop.example",
       "commands": [
         {
@@ -1474,7 +1516,9 @@ declares the `graftpunk.plugins` entry-point group, `foreign` when it has a
 Each plugin carries its `entry_point` (the name `gp plugin add-command` takes),
 its `module` (the path of the module, relative to the project), its
 `site_name` and `base_url` (the string the class assigns, or `null` when it
-assigns anything other than a string literal), and its `commands`. A command's
+assigns anything other than a string literal), its `aliases` (the list the
+class assigns, empty when it assigns none, or `null` when it assigns anything
+other than a literal tuple or list of strings), and its `commands`. A command's
 `name` is the one the CLI registers, and its `endpoint` is its `endpoint=`
 declaration, or `null` for a command that declares none (a hand-written one,
 or a command group). Everything is read from the source: nothing is imported
@@ -2923,7 +2967,10 @@ it also reports a `SUITE_MEMBER_FIXTURES` that is not a literal tuple, or holds
 an entry `skip` refuses (write it
 as a literal tuple of directory names), and a conftest check that
 still walks every member's directory (`gp plugin upgrade` scopes it to the
-first plugin's fixtures). When the project cannot be read at all (for
+first plugin's fixtures). It reports each alias that is not a literal tuple of
+strings, is not a valid plugin name, or collides with a core command, another
+of the project's plugins or aliases, or the plugin's own name (rename or remove
+the alias). When the project cannot be read at all (for
 example, not a plugin project, or a `pyproject.toml` or plugin module that
 cannot be read or does not parse), that refusal is the one finding. A fresh
 scaffold fails it until its markers are filled in. It passes `ruff check` and

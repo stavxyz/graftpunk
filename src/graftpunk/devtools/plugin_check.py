@@ -18,7 +18,10 @@ suite a member's own fixtures root, that is missing (which
 ``gp plugin upgrade``, with ``--plugin <name>`` for a member's, creates), is
 not a directory (an author must move it aside), or cannot be read (an author
 must fix its permissions), including when ``tests/`` itself, not the tree, is
-the one blocked; and,
+the one blocked; a plugin's ``aliases`` that is not a literal tuple of strings,
+and each alias that is not a valid plugin name, is listed twice, is the plugin's
+own ``site_name``, names a core ``gp`` command or another of the project's
+plugins, or is also another of its plugins' alias (#374); and,
 when the reader refuses the project outright (for example, not a plugin
 project, or a ``pyproject.toml`` or plugin module that cannot be read or
 does not parse), that refusal as the only finding. It does not compare a
@@ -62,7 +65,10 @@ from graftpunk.devtools.scaffold.policy import (
     ProjectRequirement,
     module_name_for,
 )
+from graftpunk.devtools.scaffold.render import validate_plugin_name
 from graftpunk.devtools.scaffold.suite_conftest import SuiteConftestState
+from graftpunk.plugins import infer_site_name
+from graftpunk.plugins.names import plugin_names
 
 __all__ = ["FINDING_ADVICE", "Finding", "check_project", "suite_tuple_problems"]
 
@@ -75,6 +81,11 @@ _FIXTURES_TREE_MISSING = f"missing; gp plugin upgrade {_CREATES_IT}."
 _SCOPES_IT = "scopes it"
 _WRITE_IT_LITERAL = "write it as a literal tuple of directory names"
 _DOES_NOT_BIND = "does not bind"
+_RENAME_OR_REMOVE = "rename or remove the alias"
+_ALIASES_NOT_LITERAL = (
+    "aliases is not a literal tuple of strings, so gp plugin check cannot check it; "
+    "write it as one, such as ('shop',)."
+)
 
 
 def _upgrade_advice(requirement: ProjectRequirement) -> str:
@@ -95,6 +106,45 @@ def _left_to_the_author(view: ProjectView, requirement: ProjectRequirement) -> b
         and requirement.name == SUITE_SKIP_NAME
         and (state.unscoped or not state.needs_skip)
     )
+
+
+@dataclass(frozen=True)
+class _AliasedView:
+    """A plugin as :func:`graftpunk.plugins.names.plugin_names` reads it: the name
+    the runtime would give it and the aliases the check has not already refused."""
+
+    site_name: str
+    aliases: tuple[str, ...]
+    module_path: str
+    line: int | None
+
+
+def _alias_findings(view: ProjectView) -> list[Finding]:
+    """Each alias the CLI would ignore, through the resolver the CLI registers
+    with, and each one ``gp plugin new`` would refuse as a plugin name."""
+    findings: list[Finding] = []
+    named: list[_AliasedView] = []
+    for plugin in view.plugins:
+        site_name = plugin.site_name or infer_site_name(plugin.base_url or "") or plugin.entry_point
+        if plugin.aliases is None:
+            findings.append(Finding(plugin.module_path, plugin.aliases_line, _ALIASES_NOT_LITERAL))
+            continue
+        kept: list[str] = []
+        for alias in plugin.aliases:
+            try:
+                validate_plugin_name(alias)
+            except ValueError as exc:
+                message = f"alias '{alias}': {exc}; {_RENAME_OR_REMOVE}."
+                findings.append(Finding(plugin.module_path, plugin.aliases_line, message))
+                continue
+            kept.append(alias)
+        named.append(_AliasedView(site_name, tuple(kept), plugin.module_path, plugin.aliases_line))
+    where = {n.site_name: n for n in named}
+    for conflict in plugin_names(named).conflicts:
+        owner = where[conflict.site_name]
+        message = f"alias '{conflict.alias}' {conflict.reason}; {_RENAME_OR_REMOVE}."
+        findings.append(Finding(owner.module_path, owner.line, message))
+    return findings
 
 
 def suite_tuple_problems(state: SuiteConftestState, member_modules: Sequence[str]) -> list[str]:
@@ -164,6 +214,7 @@ FINDING_ADVICE: tuple[str, ...] = (
     _ADDS_IT,
     _SCOPES_IT,
     _WRITE_IT_LITERAL,
+    _RENAME_OR_REMOVE,
 )
 """Every advice phrase a ``check_project`` finding can carry, for a test to
 check the guide's prose against: not a guarantee that a future reason is
@@ -245,4 +296,5 @@ def check_project(root: Path) -> list[Finding]:
         if not _left_to_the_author(view, requirement)
     )
     findings.extend(_suite_conftest_findings(view))
+    findings.extend(_alias_findings(view))
     return list(dict.fromkeys(findings))

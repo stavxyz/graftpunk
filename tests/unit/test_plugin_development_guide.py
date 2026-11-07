@@ -57,7 +57,7 @@ _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 # installed in the test environment, so `gp myshop ...` has nothing to walk to.
 # `my-shop` is the guide's hyphenated-name example and appears only in prose,
 # which is why it has to be here even though no fenced block names it.
-_PLUGIN_COMMAND_PREFIXES = ("myshop", "my-shop")
+_PLUGIN_COMMAND_PREFIXES = ("myshop", "my-shop", "myshop-storefront", "shop")
 
 
 GP_INVOCATIONS = gp_invocations(GUIDE_TEXT)

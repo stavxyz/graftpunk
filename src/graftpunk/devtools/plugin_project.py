@@ -277,6 +277,11 @@ class PluginView:
     markers: tuple[int, ...]  # the line of every GP-FILL marker in the module
     fixtures_root: str  # project-relative, trailing slash
     class_names: frozenset[str]
+    # The literal strings the class assigns to ``aliases``: an empty tuple when it
+    # assigns none, ``None`` when it assigns anything other than a literal tuple or
+    # list of strings. ``aliases_line`` is the assignment's line, when there is one.
+    aliases: tuple[str, ...] | None = ()
+    aliases_line: int | None = None
 
 
 @dataclass(frozen=True)
@@ -891,6 +896,7 @@ def _read_plugin(
         )
     (klass,) = classes
     package = module.split(".")[0]
+    aliases, aliases_line = _class_aliases(klass)
     start = min([klass.lineno, *(d.lineno for d in klass.decorator_list)])
     return PluginView(
         entry_point=key,
@@ -910,6 +916,8 @@ def _read_plugin(
             module_name=module_name_for(key),
         ),
         class_names=_class_body_names(klass),
+        aliases=aliases,
+        aliases_line=aliases_line,
     )
 
 
@@ -945,6 +953,29 @@ def _class_string(klass: ast.ClassDef, name: str) -> str | None:
         if name in targets and isinstance(value, ast.Constant) and isinstance(value.value, str):
             return value.value
     return None
+
+
+def _class_aliases(klass: ast.ClassDef) -> tuple[tuple[str, ...] | None, int | None]:
+    """The literal strings *klass*'s body assigns to ``aliases`` and the line it
+    does so on: ``((), None)`` when it assigns none, and ``None`` for the strings
+    when the value is not a literal tuple or list of strings."""
+    for node in klass.body:
+        if isinstance(node, ast.Assign):
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets, value = [node.target.id], node.value
+        else:
+            continue
+        if "aliases" not in targets:
+            continue
+        if not isinstance(value, (ast.Tuple, ast.List)):
+            return None, node.lineno
+        strings = [
+            e.value for e in value.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)
+        ]
+        return (tuple(strings) if len(strings) == len(value.elts) else None), node.lineno
+    return (), None
 
 
 def _commands(klass: ast.ClassDef) -> Iterator[CommandView]:

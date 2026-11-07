@@ -50,6 +50,7 @@ def info_payload(view: ProjectView) -> dict[str, object]:
                 "module": plugin.module_path,
                 "site_name": plugin.site_name,
                 "base_url": plugin.base_url,
+                "aliases": None if plugin.aliases is None else list(plugin.aliases),
                 "commands": [
                     {
                         "name": command.cli_name,

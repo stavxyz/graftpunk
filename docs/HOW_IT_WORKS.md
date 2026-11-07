@@ -479,6 +479,7 @@ Discovery errors are accumulated as `PluginDiscoveryError` / `YAMLDiscoveryError
 
 - `site_name` — Required. Can be auto-inferred from `base_url` (e.g., `https://news.ycombinator.com` → `"ycombinator"`) or from the YAML plugin filename (e.g., `httpbin.yaml` → `"httpbin"`)
 - `session_name` — Defaults to `site_name`
+- `aliases`: more CLI names for the same plugin (default `()`; a list in YAML). An alias resolves through `graftpunk.plugins.names.plugin_names` in the CLI, in `get_plugin()` and in `gp plugin check`, to the plugin itself, so it shares the plugin's session slot and credential variables. An alias naming a core command, another plugin's `site_name`, or another plugin's alias is ignored with a warning.
 - `help_text` — Defaults to `"Commands for {site_name}"`
 - `backend` — `"selenium"` (default) or `"nodriver"`
 - `requires_session` — Whether commands need a cached session (default `True`)
@@ -2606,7 +2607,7 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 | `CommandGroupMeta` | `plugins.cli_plugin` | Yes | Metadata stored by `@command` decorator on classes (command groups) |
 | `LoginConfig` | `plugins.cli_plugin` | Yes | Declarative browser login configuration: `steps`, `url`, `wait_for`, `failure`, `success`, `success_url`, `headless`, `timeout`, `settle` |
 | `LoginStep` | `plugins.cli_plugin` | Yes | Single step in a login flow: `fields`, `submit`, `wait_for`, `delay` |
-| `PluginConfig` | `plugins.cli_plugin` | Yes | Canonical config: `site_name`, `session_name`, `help_text`, `base_url`, `requires_session`, `backend`, `api_version`, `username_envvar`, `password_envvar`, `login_config`, `plugin_version`, `plugin_author`, `plugin_url` |
+| `PluginConfig` | `plugins.cli_plugin` | Yes | Canonical config: `site_name`, `session_name`, `help_text`, `base_url`, `requires_session`, `backend`, `api_version`, `username_envvar`, `password_envvar`, `login_config`, `plugin_version`, `plugin_author`, `plugin_url`, `aliases` |
 | `PluginParamSpec` | `plugins.cli_plugin` | Yes | CLI parameter specification |
 | `CLIPluginProtocol` | `plugins.cli_plugin` | N/A (Protocol) | Structural typing contract for all plugins |
 | `OutputConfig` | `plugins.output_config` | Yes | Multi-view output configuration: `views`, `default_view`. Provides `filter_views()` and `get_default_view()` |
