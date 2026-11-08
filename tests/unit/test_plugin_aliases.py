@@ -225,6 +225,31 @@ class TestConfig:
         assert names.aliases == {"myshop": ()}
         assert len(names.conflicts) == 1
 
+    def test_a_subclass_keeps_its_parents_dict_named_aliases(self) -> None:
+        class Catalog(SitePlugin):
+            site_name = "myshop"
+            requires_session = False
+            aliases = {"sku": "item_id"}
+
+        class StagingCatalog(Catalog):
+            site_name = "myshop-staging"
+            requires_session = False
+
+        assert StagingCatalog.aliases == {"sku": "item_id"}
+        assert "aliases" not in StagingCatalog.__dict__
+        assert plugin_names([StagingCatalog()]).aliases == {"myshop-staging": ()}
+
+    def test_a_subclass_does_not_inherit_its_parents_aliases(self) -> None:
+        class Shop(SitePlugin):
+            site_name = "myshop"
+            aliases = ("shop",)
+
+        class StagingShop(Shop):
+            site_name = "myshop-staging"
+
+        assert Shop.aliases == ("shop",)
+        assert StagingShop.aliases == ()
+
     def test_a_cached_property_named_aliases_is_left_as_it_was(self) -> None:
         import functools
 

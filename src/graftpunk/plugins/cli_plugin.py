@@ -1177,9 +1177,18 @@ class SitePlugin:
             # value is never written over: not when it was refused (a plugin from
             # before 1.42.0 may read its own dict or other value under this name),
             # and not when the name holds a method (a command named aliases),
-            # property, cached_property or other descriptor, own or inherited.
+            # property, cached_property or other descriptor, own or inherited, nor
+            # when it is inherited and not a sequence of names (a parent's dict the
+            # subclass's code may read).
             current = inspect.getattr_static(cls, "aliases", None)
-            if not cls._plugin_config.aliases_error and not hasattr(current, "__get__"):
+            names = isinstance(current, (tuple, list)) and all(
+                isinstance(name, str) for name in current
+            )
+            if (
+                not cls._plugin_config.aliases_error
+                and not hasattr(current, "__get__")
+                and ("aliases" in cls.__dict__ or names)
+            ):
                 cls.aliases = cls._plugin_config.aliases
             cls._aliases_error = cls._plugin_config.aliases_error
         except PluginError as exc:
