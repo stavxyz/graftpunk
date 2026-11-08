@@ -96,9 +96,13 @@ A plugin's aliases are the ones its own class declares. Like the rest of its
 configuration, they are not inherited: a subclass with its own `site_name` (a
 `myshop-staging` variant of `myshop-storefront`) has no aliases unless it
 declares them. An annotation with no value (`aliases: tuple[str, ...]`) is no
-aliases. One alias is written with a trailing comma, `("shop",)`; a bare string
-is refused, for a `SitePlugin`, a YAML plugin and a plugin written against
-`CLIPluginProtocol` alike, with the same message.
+aliases. A method named `aliases` (a command of that name) is a command, not
+aliases. One alias is written with a trailing comma, `("shop",)`. A value that
+is not a list or tuple of names (a bare string, a mapping, a number) never
+costs the plugin its load: the plugin loads with no aliases, its own
+`site_name` and `session_name` still held, and gp prints one warning naming
+the plugin and the fix, in the same words for a `SitePlugin`, a YAML plugin
+and a plugin written against `CLIPluginProtocol`. `gp plugin check` reports it.
 
 Registration happens in the plugin's own `pyproject.toml`:
 
