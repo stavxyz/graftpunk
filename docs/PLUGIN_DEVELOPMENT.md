@@ -99,9 +99,10 @@ declares them. An annotation with no value (`aliases: tuple[str, ...]`) is no
 aliases. A method named `aliases` (a command of that name) is a command, not
 aliases. One alias is written with a trailing comma, `("shop",)`. A value that
 is not a list or tuple of names (a bare string, a mapping, a number) never
-costs the plugin its load: the plugin loads with no aliases, its own
-`site_name` and `session_name` still held, and gp prints one warning naming
-the plugin and the fix, in the same words for a `SitePlugin`, a YAML plugin
+costs the plugin its load: gp leaves the attribute as it is, so the plugin's
+own code reads it as before, registers no aliases, still holds the plugin's
+`site_name` and `session_name`, and prints one warning naming the plugin and
+the fix, in the same words for a `SitePlugin`, a YAML plugin
 and a plugin written against `CLIPluginProtocol`. `gp plugin check` reports it.
 
 Registration happens in the plugin's own `pyproject.toml`:
