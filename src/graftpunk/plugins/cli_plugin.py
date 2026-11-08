@@ -847,6 +847,9 @@ class PluginConfig:
     plugin_author: str = ""
     plugin_url: str = ""
     aliases: tuple[str, ...] = ()
+    # The validator's message when the declared aliases were refused: the plugin
+    # still loads, with none, and the name table reports this once (#374).
+    aliases_error: str = ""
 
     def __post_init__(self) -> None:
         if not self.site_name:
@@ -912,7 +915,14 @@ def build_plugin_config(**raw: Any) -> PluginConfig:
     if not filtered.get("help_text"):
         filtered["help_text"] = f"Commands for {site_name}"
 
-    filtered["aliases"] = validate_aliases(filtered.get("aliases", ()), site_name)
+    # A refused value never costs the plugin its load: a plugin may have had an
+    # unrelated attribute named aliases before 1.42.0. It loads with none, and the
+    # message is kept for the name table to report.
+    try:
+        filtered["aliases"] = validate_aliases(filtered.get("aliases", ()), site_name)
+    except PluginError as exc:
+        filtered["aliases"] = ()
+        filtered["aliases_error"] = str(exc)
 
     return PluginConfig(**filtered)
 
@@ -1163,9 +1173,15 @@ class SitePlugin:
             cls.session_name = cls._plugin_config.session_name
             cls.help_text = cls._plugin_config.help_text
             # Not inherited: a subclass that does not declare aliases has none,
-            # as it has none of its parent's other configuration.
-            if not isinstance(cls.__dict__.get("aliases"), property):
+            # as it has none of its parent's other configuration. A method (a
+            # command named aliases), property or descriptor under that name, the
+            # class's own or inherited, is left alone: it is not configuration.
+            current = inspect.getattr_static(cls, "aliases", None)
+            if not (
+                callable(current) or isinstance(current, (property, classmethod, staticmethod))
+            ):
                 cls.aliases = cls._plugin_config.aliases
+            cls._aliases_error = cls._plugin_config.aliases_error
         except PluginError as exc:
             cls._plugin_config_error = exc
             LOG.warning("plugin_config_deferred", class_name=cls.__name__, error=str(exc))

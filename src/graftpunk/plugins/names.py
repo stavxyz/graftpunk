@@ -73,6 +73,10 @@ class AliasConflict:
     reason: str
 
     def __str__(self) -> str:
+        if not self.alias:
+            # The whole declared value was refused; reason is the validator's
+            # message, which names the plugin and the fix.
+            return f"{self.reason} The plugin loads without aliases."
         return f"plugin '{self.site_name}': alias '{self.alias}' {self.reason}; it is ignored."
 
 
@@ -119,13 +123,20 @@ def validate_aliases(value: Any, site_name: str) -> tuple[str, ...]:
 def declared_aliases(plugin: Any) -> tuple[str, ...]:
     """The aliases *plugin* declares: an empty tuple when it declares none,
     including a plugin written against ``CLIPluginProtocol`` before ``aliases``
-    existed.
+    existed, and one whose ``aliases`` is a method (a command of that name).
 
     Raises:
         PluginError: The declared value is not a list or tuple of strings
-            (:func:`validate_aliases`).
+            (:func:`validate_aliases`), or a ``SitePlugin`` or YAML plugin whose
+            configuration already refused it.
     """
-    return validate_aliases(getattr(plugin, "aliases", ()), plugin.site_name)
+    refused = getattr(plugin, "_aliases_error", "")
+    if isinstance(refused, str) and refused:
+        raise PluginError(refused)
+    value = getattr(plugin, "aliases", ())
+    if callable(value):
+        return ()
+    return validate_aliases(value, plugin.site_name)
 
 
 def plugin_names(
@@ -137,8 +148,8 @@ def plugin_names(
     ``site_name`` is the caller's business, as before aliases existed). Each
     alias is checked as the module docstring says. A plugin whose ``aliases``
     cannot be read or is not a list or tuple of strings gets none, and one
-    conflict says why; the discovery that feeds the CLI and ``get_plugin`` has
-    already left such a plugin out.
+    conflict (with an empty ``alias``) says why; the plugin itself, and its
+    ``site_name`` and ``session_name``, stay in the table.
     """
     ordered = list(plugins)
     by_name: dict[str, P] = {}
@@ -158,8 +169,12 @@ def plugin_names(
         own = plugin.site_name
         try:
             declared = declared_aliases(plugin)
+        except PluginError as exc:
+            conflicts.append(AliasConflict(own, "", str(exc)))
+            declared = ()
         except Exception as exc:  # noqa: BLE001 - plugin boundary: a property may raise anything
-            conflicts.append(AliasConflict(own, "aliases", f"cannot be used: {exc}"))
+            reason = f"Plugin '{own}': reading 'aliases' raised {exc!r}."
+            conflicts.append(AliasConflict(own, "", reason))
             declared = ()
         seen: set[str] = set()
         kept: list[str] = []

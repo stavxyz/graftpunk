@@ -14,7 +14,13 @@ import typer
 from typer.testing import CliRunner
 
 from graftpunk.exceptions import PluginError
-from graftpunk.plugins.cli_plugin import CommandContext, SitePlugin, build_plugin_config, command
+from graftpunk.plugins.cli_plugin import (
+    CommandContext,
+    CommandSpec,
+    SitePlugin,
+    build_plugin_config,
+    command,
+)
 from graftpunk.plugins.names import CORE_COMMAND_NAMES, AliasConflict, plugin_names
 from tests.unit.cli_harness import strip_ansi
 
@@ -182,10 +188,40 @@ class TestConfig:
         assert build_plugin_config(site_name="myshop").aliases == ()
         assert SitePlugin.aliases == ()
 
-    @pytest.mark.parametrize("value", ["shop", ("shop", 3), {"shop": 1}])
-    def test_anything_but_a_tuple_or_list_of_strings_is_refused(self, value: Any) -> None:
-        with pytest.raises(PluginError, match="'aliases' must be a tuple"):
-            build_plugin_config(site_name="myshop", aliases=value)
+    @pytest.mark.parametrize("value", ["shop", ("shop", 3), {"shop": 1}, 3])
+    def test_a_refused_value_leaves_no_aliases_and_keeps_the_message(self, value: Any) -> None:
+        config = build_plugin_config(site_name="myshop", aliases=value)
+        assert config.aliases == ()
+        assert config.aliases_error.startswith("Plugin 'myshop': 'aliases' must be a tuple")
+
+    def test_a_command_named_aliases_stays_a_command(self) -> None:
+        class Mailbox(SitePlugin):
+            site_name = "mailbox"
+            requires_session = False
+
+            @command(help="List mail aliases")
+            def aliases(self, ctx: CommandContext) -> dict[str, list[str]]:
+                return {"aliases": ["info@myshop.example"]}
+
+        assert callable(Mailbox.__dict__["aliases"])
+        assert plugin_names([Mailbox()]).aliases == {"mailbox": ()}
+        assert plugin_names([Mailbox()]).conflicts == ()
+        assert [c.name for c in Mailbox().get_commands()] == ["aliases"]
+
+    def test_an_inherited_command_named_aliases_stays_a_command(self) -> None:
+        class Mailbox(SitePlugin):
+            site_name = "mailbox"
+            requires_session = False
+
+            @command(help="List mail aliases")
+            def aliases(self, ctx: CommandContext) -> dict[str, list[str]]:
+                return {"aliases": []}
+
+        class Staging(Mailbox):
+            site_name = "mailbox-staging"
+
+        assert callable(Staging.aliases)
+        assert plugin_names([Staging()]).aliases == {"mailbox-staging": ()}
 
     def test_a_subclass_does_not_inherit_aliases(self) -> None:
         class Staging(StorefrontPlugin):
@@ -228,45 +264,129 @@ def _discovered(plugin_class: type) -> tuple[tuple[Any, ...], list[dict[str, Any
     return kept, logs
 
 
-class TestOneValidator:
-    """A bare string is refused for every kind of plugin, by one function, in one message."""
+REFUSED_VALUES = [{"sku": "item_id"}, "shop", 3]
+REFUSED_YAML = ["{sku: item_id}", "shop", "3"]
 
-    MESSAGE = (
-        "Plugin 'myshop': 'aliases' must be a tuple (or a YAML list) of strings, "
-        "got 'shop'. One alias is written ('shop',)."
+
+def _message(value: Any) -> str:
+    return (
+        f"Plugin 'myshop': 'aliases' must be a tuple (or a YAML list) of strings, "
+        f"got {value!r}. One alias is written ('shop',). The plugin loads without aliases."
     )
 
-    def test_a_site_plugin(self) -> None:
-        plugin_class = type("Bad", (SitePlugin,), {"site_name": "myshop", "aliases": "shop"})
-        kept, logs = _discovered(plugin_class)
-        assert kept == ()
-        assert [entry["error"] for entry in logs if entry["event"] == "plugin_config_error"] == [
-            self.MESSAGE
-        ]
 
-    def test_a_protocol_plugin(self) -> None:
-        class Proto:
-            site_name = "myshop"
-            session_name = "myshop"
-            api_version = 1
-            aliases = "shop"
+class _Proto:
+    """A plugin written against CLIPluginProtocol, not a SitePlugin."""
 
-        kept, logs = _discovered(Proto)
-        assert kept == ()
-        assert [entry["error"] for entry in logs if entry["event"] == "plugin_config_error"] == [
-            self.MESSAGE
-        ]
+    site_name = "myshop"
+    session_name = "myshop"
+    help_text = "Commands for myshop"
+    api_version = 1
+    requires_session = False
+    backend = "selenium"
+    base_url = ""
+    login_config = None
+    token_config = None
+    username_envvar = ""
+    password_envvar = ""
 
-    def test_a_yaml_plugin(self, isolated_config: Path) -> None:
-        from graftpunk.plugins.yaml_plugin import create_yaml_plugins
+    def get_commands(self) -> list[CommandSpec]:
+        return [CommandSpec(name="account", handler=lambda ctx: {"plugin": "myshop"})]
 
-        (isolated_config / "plugins").mkdir()
-        (isolated_config / "plugins" / "myshop.yaml").write_text(
-            "site_name: myshop\naliases: shop\ncommands:\n  account:\n    url: /api/account\n"
-        )
-        plugins, errors = create_yaml_plugins()
-        assert plugins == []
-        assert [e.error for e in errors] == [self.MESSAGE]
+    def get_session(self, session_name: str | None = None) -> Any:
+        raise AssertionError("not reached: requires_session is False")
+
+    def setup(self) -> None:
+        pass
+
+    def teardown(self) -> None:
+        pass
+
+
+def _refused_plugin(kind: str, index: int, config_dir: Path) -> Any:
+    """A plugin named myshop of *kind* whose aliases is REFUSED_VALUES[index]."""
+    if kind == "site":
+        return _plugin("myshop", REFUSED_VALUES[index])
+    if kind == "protocol":
+        return type("Proto", (_Proto,), {"aliases": REFUSED_VALUES[index]})()
+    from graftpunk.plugins.yaml_plugin import create_yaml_plugins
+
+    (config_dir / "plugins").mkdir()
+    (config_dir / "plugins" / "myshop.yaml").write_text(
+        f"site_name: myshop\nrequires_session: false\naliases: {REFUSED_YAML[index]}\n"
+        "commands:\n  account:\n    url: https://myshop.example/api/account\n"
+    )
+    (plugin,), errors = create_yaml_plugins()
+    assert errors == []
+    return plugin
+
+
+@pytest.mark.usefixtures("registered")
+@pytest.mark.parametrize("kind", ["site", "protocol", "yaml"])
+@pytest.mark.parametrize("index", range(len(REFUSED_VALUES)))
+class TestARefusedValueKeepsThePlugin:
+    """An aliases value that is not a list of names never costs a plugin its load:
+    it loads as on 1.41.0, with no aliases and its own names held, and one warning
+    names the plugin and the fix, in the same words for every kind of plugin."""
+
+    def test_it_registers_and_runs_with_one_warning(
+        self, kind: str, index: int, isolated_config: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from graftpunk.cli.plugin_commands import registered_aliases
+
+        plugin = _refused_plugin(kind, index, isolated_config)
+        response = MagicMock()
+        response.json.return_value = {"plugin": "myshop"}
+        app = _register(plugin, notify_errors=True)
+        assert registered_aliases() == {"myshop": ()}
+        with patch("requests.Session.request", return_value=response):
+            assert _run(app, "myshop", "account") == {"plugin": "myshop"}
+        err = " ".join(capsys.readouterr().err.split())
+        assert err.count(_message(REFUSED_VALUES[index])) == 1
+
+    def test_discovery_and_the_client_keep_it(
+        self, kind: str, index: int, isolated_config: Path
+    ) -> None:
+        from graftpunk.client import GraftpunkClient
+        from graftpunk.plugins import get_plugin
+
+        plugin = _refused_plugin(kind, index, isolated_config)
+        if kind != "yaml":
+            kept, _logs = _discovered(type(plugin))
+            assert [p.site_name for p in kept] == ["myshop"]
+        with patch("graftpunk.plugins.discover_all_plugins", return_value=(plugin,)):
+            assert get_plugin("myshop") is plugin
+            assert GraftpunkClient("myshop")._plugin is plugin
+
+    def test_its_names_still_hold_against_another_plugins_alias(
+        self, kind: str, index: int, isolated_config: Path
+    ) -> None:
+        plugin = _refused_plugin(kind, index, isolated_config)
+        greedy = _plugin("othershop", ("myshop",))
+        names = plugin_names([plugin, greedy])
+        assert names.resolve("myshop") is plugin
+        assert names.aliases["othershop"] == ()
+
+    def test_gp_plugins_lists_it(self, kind: str, index: int, isolated_config: Path) -> None:
+        from graftpunk.cli.main import app
+
+        plugin = _refused_plugin(kind, index, isolated_config)
+        _register(plugin)
+        site = {} if kind == "yaml" else {"myshop": type(plugin)}
+        with (
+            patch("graftpunk.cli.main.discover_storage_backends", return_value={}),
+            patch("graftpunk.cli.main.discover_keepalive_handlers", return_value={}),
+            patch("graftpunk.cli.main.discover_site_plugins", return_value=site),
+            patch(
+                "graftpunk.cli.main.create_yaml_plugins",
+                return_value=([plugin] if kind == "yaml" else [], []),
+            ),
+        ):
+            result = runner.invoke(app, ["plugins"], env={"COLUMNS": "200"})
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        assert "(1 installed)" in output
+        assert "✓ myshop\n" in output or "✓ myshop " in output
 
 
 @pytest.mark.usefixtures("registered")
@@ -346,6 +466,25 @@ class TestCli:
                     "myshop-storefront": "Commands for myshop"
                 }
         assert registered_aliases() == {"myshop-storefront": ("shop",)}
+
+    def test_a_command_named_aliases_is_listed_and_runs(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        class Mailbox(SitePlugin):
+            site_name = "mailbox"
+            requires_session = False
+
+            @command(help="List mail aliases")
+            def aliases(self, ctx: CommandContext) -> dict[str, list[str]]:
+                return {"aliases": ["info@myshop.example"]}
+
+        app = _register(Mailbox(), notify_errors=True)
+        assert capsys.readouterr().err == ""
+        help_text = strip_ansi(
+            runner.invoke(app, ["mailbox", "--help"], env={"COLUMNS": "200"}).output
+        )
+        assert "List mail aliases" in help_text
+        assert _run(app, "mailbox", "aliases") == {"aliases": ["info@myshop.example"]}
 
     def test_a_plugin_that_fails_setup_still_holds_its_name(
         self, capsys: pytest.CaptureFixture[str]
@@ -531,16 +670,6 @@ commands:
             assert _run(app, "ms", "account") == {"id": 1}
         help_text = strip_ansi(runner.invoke(app, ["--help"], env={"COLUMNS": "200"}).output)
         assert "(aliases: shop, ms)" in help_text
-
-    def test_a_yaml_string_is_refused(self, isolated_config: Path) -> None:
-        from graftpunk.plugins.yaml_plugin import create_yaml_plugins
-
-        (isolated_config / "plugins").mkdir()
-        text = self.YAML.replace("aliases: [shop, ms]", "aliases: shop")
-        (isolated_config / "plugins" / "myshop.yaml").write_text(text)
-        plugins, errors = create_yaml_plugins()
-        assert plugins == []
-        assert "'aliases' must be a tuple" in errors[0].error
 
 
 class TestClient:

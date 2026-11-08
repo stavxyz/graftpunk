@@ -52,7 +52,7 @@ from graftpunk.plugins.formatters import (
     discover_formatters,
     write_rendered_to_file,
 )
-from graftpunk.plugins.names import declared_aliases, plugin_names
+from graftpunk.plugins.names import plugin_names
 from graftpunk.plugins.output_config import (
     ColumnDisplayConfig,
     ColumnFilter,
@@ -414,19 +414,6 @@ def discover_all_plugins() -> tuple[CLIPluginProtocol, ...]:
             )
             continue
 
-        # A SitePlugin's or YAML plugin's aliases were checked by
-        # build_plugin_config (a config error above); this is the same check, and
-        # the same message, for a plugin written against CLIPluginProtocol.
-        try:
-            declared_aliases(plugin)
-        except Exception as exc:  # noqa: BLE001 - plugin boundary: a property may raise anything
-            LOG.warning(
-                "plugin_config_error",
-                plugin=type(plugin).__name__,
-                error=str(exc),
-            )
-            continue
-
         if plugin.api_version not in SUPPORTED_API_VERSIONS:
             LOG.warning(
                 "plugin_unsupported_api_version",
@@ -462,6 +449,15 @@ def get_plugin(name: str) -> CLIPluginProtocol:
     names = plugin_names(plugins)
     plugin = names.resolve(name)
     if plugin is not None:
+        # The CLI prints these on stderr; a library caller gets them logged.
+        for conflict in names.conflicts:
+            if conflict.site_name == plugin.site_name:
+                LOG.warning(
+                    "plugin_alias_ignored",
+                    plugin=conflict.site_name,
+                    alias=conflict.alias,
+                    reason=conflict.reason,
+                )
         return plugin
 
     available = sorted(p.site_name for p in plugins)
