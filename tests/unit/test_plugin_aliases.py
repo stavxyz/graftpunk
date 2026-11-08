@@ -208,6 +208,52 @@ class TestConfig:
         assert plugin_names([Mailbox()]).conflicts == ()
         assert [c.name for c in Mailbox().get_commands()] == ["aliases"]
 
+    def test_a_plugins_own_dict_named_aliases_is_left_as_it_was(self) -> None:
+        class Catalog(SitePlugin):
+            site_name = "myshop"
+            requires_session = False
+            aliases = {"sku": "item_id"}
+
+            @command(help="Map a column")
+            def column(self, ctx: CommandContext, name: str) -> dict[str, str]:
+                return {"column": self.aliases.get(name, name)}
+
+        assert Catalog.aliases == {"sku": "item_id"}
+        handler = Catalog().get_commands()[0].handler
+        assert handler(MagicMock(), name="sku") == {"column": "item_id"}
+        names = plugin_names([Catalog()])
+        assert names.aliases == {"myshop": ()}
+        assert len(names.conflicts) == 1
+
+    def test_a_cached_property_named_aliases_is_left_as_it_was(self) -> None:
+        import functools
+
+        class Catalog(SitePlugin):
+            site_name = "myshop"
+
+            @functools.cached_property
+            def aliases(self) -> dict[str, str]:
+                return {"sku": "item_id"}
+
+        assert isinstance(Catalog.__dict__["aliases"], functools.cached_property)
+        assert Catalog().aliases == {"sku": "item_id"}
+        assert plugin_names([Catalog()]).aliases == {"myshop": ()}
+
+    def test_a_custom_descriptor_named_aliases_is_left_as_it_was(self) -> None:
+        class Mapping:
+            def __get__(self, instance: Any, owner: Any = None) -> dict[str, str]:
+                return {"sku": "item_id"}
+
+        descriptor = Mapping()
+
+        class Catalog(SitePlugin):
+            site_name = "myshop"
+            aliases = descriptor
+
+        assert Catalog.__dict__["aliases"] is descriptor
+        assert Catalog().aliases == {"sku": "item_id"}
+        assert plugin_names([Catalog()]).aliases == {"myshop": ()}
+
     def test_an_inherited_command_named_aliases_stays_a_command(self) -> None:
         class Mailbox(SitePlugin):
             site_name = "mailbox"
@@ -467,6 +513,30 @@ class TestCli:
                 }
         assert registered_aliases() == {"myshop-storefront": ("shop",)}
 
+    def test_each_conflict_is_one_line_on_stderr(
+        self, captured_logs: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _register(
+            _plugin("myshop", {"sku": "item_id"}),
+            _plugin("othershop", ("http",)),
+            notify_errors=True,
+        )
+        err = capsys.readouterr().err
+        assert err.count("Plugin 'myshop'") == 1
+        assert err.count("alias 'http'") == 1
+        # The printed warning is the one report: the log line is debug, which the
+        # CLI's WARNING level keeps off stderr.
+        logged = [e for e in captured_logs if e["event"] == "plugin_alias_ignored"]
+        assert [e["log_level"] for e in logged] == ["debug", "debug"]
+        captured_logs.clear()
+        # Without the printed warning (an embedding host), the log line is the one
+        # report, and a refused value carries no empty alias field.
+        _register(_plugin("myshop", {"sku": "item_id"}), notify_errors=False)
+        assert capsys.readouterr().err == ""
+        (logged,) = [e for e in captured_logs if e["event"] == "plugin_alias_ignored"]
+        assert logged["log_level"] == "warning"
+        assert "alias" not in logged
+
     def test_a_command_named_aliases_is_listed_and_runs(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -673,6 +743,27 @@ commands:
 
 
 class TestClient:
+    def test_a_conflict_is_logged_once_per_process(self) -> None:
+        from structlog.testing import capture_logs
+
+        import graftpunk.plugins as plugins_module
+        from graftpunk.plugins import get_plugin
+
+        plugin = _plugin("myshop", {"sku": "item_id"})
+        plugins_module._reported_conflicts.clear()
+        try:
+            with (
+                patch("graftpunk.plugins.discover_all_plugins", return_value=(plugin,)),
+                capture_logs() as logs,
+            ):
+                for _ in range(3):
+                    assert get_plugin("myshop") is plugin
+        finally:
+            plugins_module._reported_conflicts.clear()
+        warned = [e for e in logs if e["event"] == "plugin_alias_ignored"]
+        assert len(warned) == 1
+        assert "alias" not in warned[0]
+
     def test_the_client_resolves_an_alias_to_the_same_plugin(self) -> None:
         from graftpunk.client import GraftpunkClient
 

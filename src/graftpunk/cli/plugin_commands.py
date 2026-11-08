@@ -26,7 +26,7 @@ from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
     CommandSpec,
 )
-from graftpunk.plugins.names import CORE_COMMAND_NAMES, plugin_names
+from graftpunk.plugins.names import CORE_COMMAND_NAMES, conflict_log_fields, plugin_names
 from graftpunk.session_identity import (
     compute_operating_session_name,
     split_session_name,
@@ -390,14 +390,13 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
     # switches plugins because one failed to load this time.
     names = plugin_names(all_plugins, reserved | CORE_COMMAND_NAMES)
     for conflict in names.conflicts:
-        LOG.warning(
-            "plugin_alias_ignored",
-            plugin=conflict.site_name,
-            alias=conflict.alias,
-            reason=conflict.reason,
-        )
+        # One line per conflict on stderr: the user-facing warning when this run
+        # prints them, the log line only when it does not.
         if notify_errors:
+            LOG.debug("plugin_alias_ignored", **conflict_log_fields(conflict))
             gp_console.warn(str(conflict))
+        else:
+            LOG.warning("plugin_alias_ignored", **conflict_log_fields(conflict))
 
     # Register each plugin (already filtered for config errors,
     # missing site_name, and unsupported api_version)

@@ -52,7 +52,7 @@ from graftpunk.plugins.formatters import (
     discover_formatters,
     write_rendered_to_file,
 )
-from graftpunk.plugins.names import plugin_names
+from graftpunk.plugins.names import AliasConflict, conflict_log_fields, plugin_names
 from graftpunk.plugins.output_config import (
     ColumnDisplayConfig,
     ColumnFilter,
@@ -429,6 +429,10 @@ def discover_all_plugins() -> tuple[CLIPluginProtocol, ...]:
     return tuple(valid)
 
 
+# The alias conflicts get_plugin has logged in this process (each is logged once).
+_reported_conflicts: set[AliasConflict] = set()
+
+
 def get_plugin(name: str) -> CLIPluginProtocol:
     """Look up a plugin by its site_name or one of its aliases.
 
@@ -449,15 +453,12 @@ def get_plugin(name: str) -> CLIPluginProtocol:
     names = plugin_names(plugins)
     plugin = names.resolve(name)
     if plugin is not None:
-        # The CLI prints these on stderr; a library caller gets them logged.
+        # The CLI prints these on stderr; a library caller gets each logged
+        # once per process, however many clients it builds.
         for conflict in names.conflicts:
-            if conflict.site_name == plugin.site_name:
-                LOG.warning(
-                    "plugin_alias_ignored",
-                    plugin=conflict.site_name,
-                    alias=conflict.alias,
-                    reason=conflict.reason,
-                )
+            if conflict.site_name == plugin.site_name and conflict not in _reported_conflicts:
+                _reported_conflicts.add(conflict)
+                LOG.warning("plugin_alias_ignored", **conflict_log_fields(conflict))
         return plugin
 
     available = sorted(p.site_name for p in plugins)

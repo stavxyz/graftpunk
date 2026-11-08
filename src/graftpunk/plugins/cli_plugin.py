@@ -1173,13 +1173,13 @@ class SitePlugin:
             cls.session_name = cls._plugin_config.session_name
             cls.help_text = cls._plugin_config.help_text
             # Not inherited: a subclass that does not declare aliases has none,
-            # as it has none of its parent's other configuration. A method (a
-            # command named aliases), property or descriptor under that name, the
-            # class's own or inherited, is left alone: it is not configuration.
+            # as it has none of its parent's other configuration. The plugin's own
+            # value is never written over: not when it was refused (a plugin from
+            # before 1.42.0 may read its own dict or other value under this name),
+            # and not when the name holds a method (a command named aliases),
+            # property, cached_property or other descriptor, own or inherited.
             current = inspect.getattr_static(cls, "aliases", None)
-            if not (
-                callable(current) or isinstance(current, (property, classmethod, staticmethod))
-            ):
+            if not cls._plugin_config.aliases_error and not hasattr(current, "__get__"):
                 cls.aliases = cls._plugin_config.aliases
             cls._aliases_error = cls._plugin_config.aliases_error
         except PluginError as exc:

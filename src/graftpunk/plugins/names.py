@@ -36,6 +36,7 @@ __all__ = [
     "CORE_COMMAND_NAMES",
     "AliasConflict",
     "PluginNames",
+    "conflict_log_fields",
     "declared_aliases",
     "plugin_names",
     "validate_aliases",
@@ -95,6 +96,15 @@ class PluginNames(Generic[P]):
     def resolve(self, name: str) -> P | None:
         """The plugin *name* (a ``site_name`` or an accepted alias) names, or ``None``."""
         return self.by_name.get(name)
+
+
+def conflict_log_fields(conflict: AliasConflict) -> dict[str, str]:
+    """The fields a ``plugin_alias_ignored`` log line carries for *conflict*: no
+    ``alias`` field when the whole declared value was refused."""
+    fields = {"plugin": conflict.site_name, "reason": conflict.reason}
+    if conflict.alias:
+        fields["alias"] = conflict.alias
+    return fields
 
 
 def validate_aliases(value: Any, site_name: str) -> tuple[str, ...]:
