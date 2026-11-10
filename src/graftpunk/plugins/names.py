@@ -143,6 +143,11 @@ def declared_aliases(plugin: Any) -> tuple[str, ...]:
     refused = getattr(plugin, "_aliases_error", "")
     if isinstance(refused, str) and refused:
         raise PluginError(refused)
+    # A SitePlugin or YAML plugin's config holds what its own class declared,
+    # validated; the attribute may be a value gp leaves alone (an inherited dict).
+    config = getattr(type(plugin), "_plugin_config", None)
+    if config is not None and isinstance(getattr(config, "aliases", None), tuple):
+        return config.aliases
     value = getattr(plugin, "aliases", ())
     if callable(value):
         return ()

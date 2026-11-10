@@ -5,9 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.42.0] - 2026-11-08
+## [1.42.0] - 2026-11-10
 
-This is a minor release. A site plugin can declare `aliases`, more names `gp` runs it by, so a plugin named `myshop-storefront` can also be `gp shop` without a second entry point (#374). A plugin that declares none registers, resolves and lists exactly as before; that includes a plugin with a command method named `aliases`, which stays a command, and a plugin that already had an `aliases` attribute that is not a list of names (a mapping, a string, a `cached_property` or another descriptor), which is left untouched, so the plugin's own code reads it as before, and is ignored as aliases with one warning. Item 1 is about upgrading itself.
+This is a minor release. A site plugin can declare `aliases`, more names `gp` runs it by, so a plugin named `myshop-storefront` can also be `gp shop` without a second entry point (#374). A plugin that declares none registers, resolves and lists exactly as before; that includes a plugin with a command method named `aliases`, which stays a command, and a plugin that already had an `aliases` attribute that is not a list of names (a mapping, a string, a `cached_property` or another descriptor), which is left untouched, so the plugin's own code reads it as before, and is ignored as aliases with one warning. gp never writes over a plugin's own `aliases` value. The one exception to "as before" is a plugin that already kept a list or tuple of strings under `aliases` for its own use: those strings are now its CLI names (`gp <string>` runs it); rename the attribute if it meant something else. Item 1 is about upgrading itself.
 
 ### Upgrading
 

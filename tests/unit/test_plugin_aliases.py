@@ -237,7 +237,19 @@ class TestConfig:
 
         assert StagingCatalog.aliases == {"sku": "item_id"}
         assert "aliases" not in StagingCatalog.__dict__
-        assert plugin_names([StagingCatalog()]).aliases == {"myshop-staging": ()}
+        names = plugin_names([StagingCatalog()])
+        assert names.aliases == {"myshop-staging": ()}
+        assert names.conflicts == (), "the subclass declares no aliases"
+
+    @pytest.mark.parametrize("value", [None, [], ["shop"]])
+    def test_a_plugins_own_none_or_list_is_left_as_it_was(self, value: object) -> None:
+        class Shop(SitePlugin):
+            site_name = "myshop"
+            aliases = value
+
+        assert Shop.__dict__["aliases"] is value
+        expected = tuple(value) if value else ()
+        assert plugin_names([Shop()]).aliases == {"myshop": expected}
 
     def test_a_subclass_does_not_inherit_its_parents_aliases(self) -> None:
         class Shop(SitePlugin):

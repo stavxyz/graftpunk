@@ -1172,24 +1172,20 @@ class SitePlugin:
             cls.site_name = cls._plugin_config.site_name
             cls.session_name = cls._plugin_config.session_name
             cls.help_text = cls._plugin_config.help_text
-            # Not inherited: a subclass that does not declare aliases has none,
-            # as it has none of its parent's other configuration. The plugin's own
-            # value is never written over: not when it was refused (a plugin from
-            # before 1.42.0 may read its own dict or other value under this name),
-            # and not when the name holds a method (a command named aliases),
-            # property, cached_property or other descriptor, own or inherited, nor
-            # when it is inherited and not a sequence of names (a parent's dict the
-            # subclass's code may read).
-            current = inspect.getattr_static(cls, "aliases", None)
-            names = isinstance(current, (tuple, list)) and all(
-                isinstance(name, str) for name in current
-            )
+            # Not inherited: a subclass that does not declare aliases has none, as
+            # it has none of its parent's other configuration, so an inherited
+            # sequence of names is shadowed with (). Nothing else is ever written:
+            # a class's own value (a plugin from before 1.42.0 may read its own
+            # list, dict or None under this name) and an inherited value that is
+            # not a sequence of names (a method, descriptor or a parent's dict)
+            # stay as they are; the config holds the aliases gp uses.
+            inherited = inspect.getattr_static(cls, "aliases", None)
             if (
-                not cls._plugin_config.aliases_error
-                and not hasattr(current, "__get__")
-                and ("aliases" in cls.__dict__ or names)
+                "aliases" not in cls.__dict__
+                and isinstance(inherited, (tuple, list))
+                and all(isinstance(name, str) for name in inherited)
             ):
-                cls.aliases = cls._plugin_config.aliases
+                cls.aliases = ()
             cls._aliases_error = cls._plugin_config.aliases_error
         except PluginError as exc:
             cls._plugin_config_error = exc
