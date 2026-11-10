@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -573,3 +574,56 @@ class TestPluginFormattersThreading:
         client = GraftpunkClient("test")
         result = client.execute("test")
         assert result._plugin_formatters == {"custom": fake_fmt}
+
+
+def _pdf_code_points(pdf: bytes) -> set[int]:
+    """The Unicode code points the PDF's ToUnicode maps name: what a reader
+    extracts from the text drawn in an embedded TTF (fpdf2 writes these
+    maps uncompressed)."""
+    return {int(m, 16) for m in re.findall(rb"<[0-9A-F]{4}> <([0-9A-F]{4,8})>", pdf)}
+
+
+class TestPdfUnicode:
+    """#290: the core Helvetica font encodes Latin-1 only, and a curly quote,
+    an en dash or a letter past Latin-1 raised FPDFUnicodeEncodingException."""
+
+    _TEXT = "O’BRIEN – café … Москва Ω"
+
+    def test_text_past_latin_1_renders_as_written(self, tmp_path: Path) -> None:
+        path, pages = json_to_pdf(
+            [{"name": self._TEXT, "№": "x"}],
+            tmp_path / "out.pdf",
+            title="Résumé – Q1",
+            vendor="Café ’",
+            vendor_info="№ 1",
+            metadata={"№": "€ 5"},
+        )
+        assert pages == 1
+        points = _pdf_code_points(Path(path).read_bytes())
+        wanted = {ord(c) for c in self._TEXT + "№€" if not c.isspace()}
+        assert wanted <= points, sorted(map(hex, wanted - points))
+
+    def test_the_bold_heading_row_renders_past_latin_1(self, tmp_path: Path) -> None:
+        path, _ = json_to_pdf([{"Łódź": 1}], tmp_path / "out.pdf")
+        assert {0x141, 0x17A} <= _pdf_code_points(Path(path).read_bytes())
+
+    def test_a_character_the_font_lacks_does_not_raise(self, tmp_path: Path) -> None:
+        path, pages = json_to_pdf([{"name": "中文 "}], tmp_path / "out.pdf")
+        assert pages == 1
+        assert Path(path).read_bytes().startswith(b"%PDF-")
+
+    def test_command_result_export_writes_the_row(self) -> None:
+        content = CommandResult(data=[{"name": "O’BRIEN"}]).export("pdf")
+        assert isinstance(content, bytes)
+        assert 0x2019 in _pdf_code_points(content)
+
+    def test_the_font_and_its_licence_ship_inside_the_package(self) -> None:
+        import graftpunk.plugins
+
+        fonts = Path(graftpunk.plugins.__file__).parent / "fonts"
+        assert {p.name for p in fonts.iterdir()} >= {
+            "DejaVuSans.ttf",
+            "DejaVuSans-Bold.ttf",
+            "LICENSE-DejaVu.txt",
+        }
+        assert "Bitstream Vera Fonts Copyright" in (fonts / "LICENSE-DejaVu.txt").read_text()

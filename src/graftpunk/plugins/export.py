@@ -14,9 +14,12 @@ import json
 import numbers
 import os
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from graftpunk.logging import get_logger
+
+if TYPE_CHECKING:
+    from fpdf import FPDF
 
 LOG = get_logger(__name__)
 
@@ -42,6 +45,23 @@ def _csv_cell(value: object) -> object:
     if value is None or isinstance(value, numbers.Number):
         return value
     return _neutralize_formula(value if isinstance(value, str) else str(value))
+
+
+# fpdf2's core fonts (Helvetica) encode Latin-1 only, and raised on a curly
+# quote, an en dash or any letter past it (#290). fpdf2 ships no TTF, so
+# graftpunk bundles DejaVu Sans (licence in fonts/LICENSE-DejaVu.txt).
+_PDF_FONT = "DejaVuSans"
+_FONTS_DIR = Path(__file__).parent / "fonts"
+
+
+def _add_unicode_font(pdf: FPDF) -> None:
+    """Register DejaVu Sans, regular and bold, as ``_PDF_FONT`` on *pdf*.
+
+    A character DejaVu Sans has no glyph for (CJK, emoji) is drawn as the
+    font's missing-glyph box and logged by fpdf2; it does not raise.
+    """
+    pdf.add_font(_PDF_FONT, fname=_FONTS_DIR / "DejaVuSans.ttf")
+    pdf.add_font(_PDF_FONT, style="B", fname=_FONTS_DIR / "DejaVuSans-Bold.ttf")
 
 
 def get_downloads_dir() -> Path:
@@ -171,6 +191,7 @@ def json_to_pdf(
 
     output = Path(output_path).resolve()
     pdf = FPDF()
+    _add_unicode_font(pdf)
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
@@ -190,11 +211,11 @@ def json_to_pdf(
         pdf.set_x(x_after_logo)
 
         if vendor:
-            pdf.set_font("Helvetica", style="B", size=18)
+            pdf.set_font(_PDF_FONT, style="B", size=18)
             pdf.cell(text=vendor, new_x="LMARGIN", new_y="NEXT")
         if vendor_info:
             pdf.set_x(x_after_logo)
-            pdf.set_font("Helvetica", size=8)
+            pdf.set_font(_PDF_FONT, size=8)
             pdf.cell(text=vendor_info, new_x="LMARGIN", new_y="NEXT")
 
         if logo_w:
@@ -206,22 +227,22 @@ def json_to_pdf(
         pdf.ln(4)
 
     # Title
-    pdf.set_font("Helvetica", style="B", size=14)
+    pdf.set_font(_PDF_FONT, style="B", size=14)
     pdf.cell(text=title, new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
 
     # Metadata section
     if metadata:
-        pdf.set_font("Helvetica", size=9)
+        pdf.set_font(_PDF_FONT, size=9)
         for key, value in metadata.items():
-            pdf.set_font("Helvetica", style="B", size=9)
+            pdf.set_font(_PDF_FONT, style="B", size=9)
             pdf.cell(text=f"{key}: ", new_x="END")
-            pdf.set_font("Helvetica", size=9)
+            pdf.set_font(_PDF_FONT, size=9)
             pdf.cell(text=str(value), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(4)
 
     if not data:
-        pdf.set_font("Helvetica", size=10)
+        pdf.set_font(_PDF_FONT, size=10)
         pdf.cell(text="No data.")
         pdf.output(str(output))
         return str(output), pdf.pages_count
@@ -236,7 +257,7 @@ def json_to_pdf(
         table_data.append([str(row.get(col, "")) for col in columns])
 
     # Render table
-    pdf.set_font("Helvetica", size=7)
+    pdf.set_font(_PDF_FONT, size=7)
     headings_style = FontFace(emphasis="BOLD", fill_color=(220, 220, 220))
 
     col_width = (pdf.w - pdf.l_margin - pdf.r_margin) / max(len(columns), 1)
