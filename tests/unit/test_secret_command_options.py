@@ -2521,3 +2521,201 @@ class TestRecorderLogs:
 
         (warning,) = [e for e in logs if e["event"] == "post_data_unavailable"]
         assert warning["url"].endswith(f"/api/search?key={REDACTED}")
+
+
+class _StructlogKey:
+    """A hashable dict key with a ``__structlog__`` method (#371)."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def __structlog__(self) -> str:
+        return f"key:{self.text}"
+
+    def __repr__(self) -> str:
+        return f"Key({self.text})"
+
+    def __hash__(self) -> int:
+        return hash(self.text)
+
+
+def _log_in(fmt: str, scoped: bool, **values: Any) -> None:
+    """One line logged under gp's *fmt* format, inside a secret scope or not.
+    Configured in the call: configure_logging binds the
+    stderr of that moment."""
+    from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+    configure_logging(level="DEBUG", json_output=fmt == "json")
+    log = get_logger("t")
+    if scoped:
+        with log_secrets([SCOPE_KEY]):
+            log.warning("line", **values)
+    else:
+        log.warning("line", **values)
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+@pytest.mark.parametrize("scoped", [False, True], ids=["outside-scope", "inside-scope"])
+class TestNonStringKeys:
+    """#371: a key JSON cannot write made JSONRenderer raise out of the log call."""
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param(_StructlogKey("clean"), id="structlog-clean"),
+            pytest.param(_StructlogKey(SCOPE_KEY), id="structlog-secret"),
+            pytest.param((1, SCOPE_KEY), id="tuple-secret"),
+            pytest.param(frozenset({"clean"}), id="frozenset"),
+        ],
+    )
+    def test_the_line_renders_and_a_secret_in_the_key_is_redacted(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool, key: Any
+    ) -> None:
+        _log_in(fmt, scoped, data={key: 1, "other": 2})
+        text = strip_ansi(capsys.readouterr().err)
+        assert "line" in text
+        assert "other" in text
+        if scoped:
+            assert SCOPE_KEY not in text
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert len(line["data"]) == 2
+            (written,) = [k for k in line["data"] if k != "other"]
+            assert written == (str(key) if not scoped else str(key).replace(SCOPE_KEY, REDACTED))
+
+    def test_a_container_that_holds_itself_renders(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool
+    ) -> None:
+        loop: list[Any] = [1]
+        loop.append(loop)
+        _log_in(fmt, scoped, value=loop)
+        text = strip_ansi(capsys.readouterr().err)
+        assert "[1, [...]]" in text
+
+    def test_int_and_string_keys_are_written_as_before(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool
+    ) -> None:
+        _log_in(fmt, scoped, data={1: "a", "b": 2, None: 3})
+        text = strip_ansi(capsys.readouterr().err)
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["data"] == {"1": "a", "b": 2, "null": 3}
+        else:
+            assert "{1: 'a', 'b': 2, None: 3}" in text
+
+
+class _StatefulInt(int):
+    """An int whose str and repr read state a later ``__structlog__`` changes (#372)."""
+
+    state = ["clean"]
+
+    def __repr__(self) -> str:
+        return f"StatefulInt({self.state[0]})"
+
+    __str__ = __repr__
+
+
+class _PlainTextInt(int):
+    """An int subclass whose str is the plain number's and whose repr reads state."""
+
+    state = ["clean"]
+
+    def __str__(self) -> str:
+        return int.__repr__(self)
+
+    def __repr__(self) -> str:
+        return f"PlainTextInt({self.state[0]})"
+
+
+class _SetsState:
+    def __structlog__(self) -> str:
+        _StatefulInt.state[0] = SCOPE_KEY
+        _PlainTextInt.state[0] = SCOPE_KEY
+        return "set"
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+class TestNumberSubclassText:
+    """#372: inside a secret scope an int or float subclass was kept live, so
+    a later member's ``__structlog__`` could change the text it printed."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self) -> Iterator[None]:
+        _StatefulInt.state[0] = "clean"
+        _PlainTextInt.state[0] = "clean"
+        yield
+        _StatefulInt.state[0] = "clean"
+        _PlainTextInt.state[0] = "clean"
+
+    def test_a_subclass_whose_text_differs_logs_the_text_read(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        _log_in(fmt, True, n=_StatefulInt(5), m=_SetsState())
+        text = strip_ansi(capsys.readouterr().err)
+        assert SCOPE_KEY not in text
+        if fmt == "json":
+            # JSON writes the number, never the subclass's text.
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["n"] == 5
+        else:
+            assert "n=StatefulInt(clean)" in text
+
+    def test_percent_d_takes_a_subclass_whose_text_differs(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("count %d of %s", _StatefulInt(7), _StatefulInt(8))
+        assert "count 7 of StatefulInt(clean)" in strip_ansi(capsys.readouterr().err)
+
+    def test_a_subclass_whose_text_is_the_numbers_logs_the_plain_number(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        _log_in(fmt, True, n=_PlainTextInt(5), m=_SetsState())
+        text = strip_ansi(capsys.readouterr().err)
+        assert SCOPE_KEY not in text
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["n"] == 5
+        else:
+            assert "n=5" in text
+
+    def test_percent_d_formatting_still_takes_the_number(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("count %d", _PlainTextInt(7))
+        assert "count 7" in strip_ansi(capsys.readouterr().err)
+
+    def test_a_float_subclass_whose_text_is_the_numbers_stays_a_number(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        class Price(float):
+            pass
+
+        _log_in(fmt, True, p=Price(2.5))
+        text = strip_ansi(capsys.readouterr().err)
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["p"] == 2.5
+        else:
+            assert "p=2.5" in text
+
+    def test_an_int_enum_member_is_kept(self, capsys: pytest.CaptureFixture[str], fmt: str) -> None:
+        import enum
+
+        class Color(enum.IntEnum):
+            RED = 1
+
+        _log_in(fmt, True, c=Color.RED)
+        text = strip_ansi(capsys.readouterr().err)
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["c"] == 1
+        else:
+            assert "c=<Color.RED: 1>" in text

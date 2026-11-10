@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import decimal
+import enum
 import fractions
 import logging as stdlib_logging
 import os
@@ -189,6 +190,46 @@ class _ReadText:
         return self._representation
 
 
+class _FrozenInt(int):
+    """An int subclass's number with the texts the scrub read (#372): ``%d``
+    and JSON take the number, ``str`` and ``repr`` the texts, and neither can
+    change before the renderer reads it."""
+
+    _text: str
+    _representation: str
+
+    def __new__(cls, number: int, text: str, representation: str) -> _FrozenInt:
+        made = super().__new__(cls, number)
+        made._text = text
+        made._representation = representation
+        return made
+
+    def __str__(self) -> str:
+        return self._text
+
+    def __repr__(self) -> str:
+        return self._representation
+
+
+class _FrozenFloat(float):
+    """:class:`_FrozenInt` for a float subclass."""
+
+    _text: str
+    _representation: str
+
+    def __new__(cls, number: float, text: str, representation: str) -> _FrozenFloat:
+        made = super().__new__(cls, number)
+        made._text = text
+        made._representation = representation
+        return made
+
+    def __str__(self) -> str:
+        return self._text
+
+    def __repr__(self) -> str:
+        return self._representation
+
+
 class _StructlogValue(_ReadText):
     """What a value with a ``__structlog__`` method and clean ``str`` and
     ``repr`` is logged as: the method's return, scrubbed, for a renderer that
@@ -237,6 +278,17 @@ def _key(key: Any) -> Any:
         except Exception:  # noqa: BLE001 - inside the logger: logging it would recurse
             return _unprintable(key)
     return key
+
+
+def _json_key(key: Any) -> Any:
+    """A scrubbed dict key as JSON can write it: a string, number, bool or None
+    as it is, and any other key (a tuple, an object with ``__structlog__``) as
+    its text. structlog's JSONRenderer raises on such a key out of the log
+    call, and calls no ``__structlog__`` or default for a key (#371)."""
+    if key is None or isinstance(key, str | int | float | bool):
+        return key
+    texts = _texts(key)
+    return texts[0] if texts else _unprintable(key)
 
 
 # How many values one log line's scrub (or redacted_values rewrite) visits
@@ -394,9 +446,11 @@ class _LineScrub(_LineWalk):
     text.
     """
 
-    def __init__(self, redact: Callable[[str], str]) -> None:
+    def __init__(self, redact: Callable[[str], str], *, plain_numbers: bool = False) -> None:
         super().__init__()
         self._redact = redact
+        # Every int or float subclass as its plain number, as JSON writes it.
+        self._plain_numbers = plain_numbers
         self._reprs: dict[int, tuple[Any, str]] = {}
 
     def text(self, text: str) -> str:
@@ -433,7 +487,7 @@ class _LineScrub(_LineWalk):
         if isinstance(value, dict):
             result: dict[Any, Any] = {}
             for key, item in value.items():
-                scrubbed_key = _key(self(key, depth))
+                scrubbed_key = _json_key(self(key, depth))
                 # Two keys that scrub to the same text both stay, the later one numbered.
                 candidate, number = scrubbed_key, 1
                 while candidate in result:
@@ -462,8 +516,21 @@ class _LineScrub(_LineWalk):
             scrubbed = self.text(text)
             if scrubbed != text:
                 return scrubbed
-        if isinstance(value, int | float) or type(value) in _FIXED_TYPES:
+        if type(value) in (int, float) or type(value) in _FIXED_TYPES:
             return value
+        if isinstance(value, enum.Enum):
+            # A member's texts read its fixed name and value.
+            return value
+        if isinstance(value, int | float):
+            # A subclass's str or repr may read state a later __structlog__ in
+            # this line changes (#372). The plain number keeps %d and a native
+            # JSON number; one whose str is not the plain number's keeps them
+            # too, printing the texts the scrub read.
+            plain = int.__int__(value) if isinstance(value, int) else float.__float__(value)
+            if self._plain_numbers or texts[0] == str(plain):
+                return plain
+            frozen = _FrozenInt if isinstance(value, int) else _FrozenFloat
+            return frozen(plain, texts[0], texts[1])
         if self._closes_loop(value, depth):
             # Its own __structlog__ return led back to it: its repr ends the loop.
             return texts[1]
@@ -538,12 +605,42 @@ def _scrubbing_call(logger: GraftpunkLogger, name: str, secrets: tuple[str, ...]
     return call
 
 
+def _unchanged(text: str) -> str:
+    return text
+
+
+class _SafeJSONRenderer:
+    """structlog's JSONRenderer for gp's JSON log format, which never raises out
+    of the log call. A line it cannot write (a key that is not a string,
+    number, bool or None (#371), a container that holds itself) is written
+    again after the scrub's walk with nothing to redact, which makes such a
+    key its text and such a container its repr; every line it can write is
+    written as before."""
+
+    def __init__(self) -> None:
+        self._render = structlog.processors.JSONRenderer()
+
+    def __call__(self, logger: WrappedLogger, method_name: str, event_dict: EventDict) -> str:
+        try:
+            return self._render(logger, method_name, event_dict)
+        except Exception:  # noqa: BLE001, S110 - a log call must not raise
+            pass
+        try:
+            walked = _LineScrub(_unchanged, plain_numbers=True)(event_dict)
+            return self._render(logger, method_name, walked)
+        except Exception:  # noqa: BLE001 - a log call must not raise
+            return self._render(logger, method_name, {"event": "<unrenderable log line>"})
+
+
 def _processors(json_output: bool, colors: bool) -> list[Any]:
     # ConsoleRenderer formats exc_info itself and warns when format_exc_info
     # ran before it (structlog 21.2.0 and later), so only JSON output gets it.
     # plain_traceback keeps the console traceback as format_exc_info wrote it.
     tail: list[Any] = (
-        [structlog.processors.format_exc_info, structlog.processors.JSONRenderer()]
+        [
+            structlog.processors.format_exc_info,
+            _SafeJSONRenderer(),
+        ]
         if json_output
         else [
             structlog.dev.ConsoleRenderer(
