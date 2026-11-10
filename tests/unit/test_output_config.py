@@ -448,6 +448,26 @@ class TestRepeatedViewArgs:
         assert out.views[0].columns == ColumnFilter("include", ("a",))
         assert capsys.readouterr().err == ""
 
+    def test_a_column_an_exclude_view_hides_is_shown_when_asked_for(self) -> None:
+        """``--view ex:x --view ex`` on a view excluding x and y: the union of
+        x and the view's own columns shows x, and still hides y."""
+        cfg = OutputConfig(
+            views=[ViewConfig(name="ex", columns=ColumnFilter("exclude", ("x", "y")))]
+        )
+        for args in (["ex:x", "ex"], ["ex", "ex:x"]):
+            out = select_views(cfg, args)
+            assert out.views[0].columns == ColumnFilter("exclude", ("y",)), args
+
+    def test_an_exclude_view_with_only_column_lists_shows_just_those(self) -> None:
+        cfg = OutputConfig(views=[ViewConfig(name="ex", columns=ColumnFilter("exclude", ("x",)))])
+        out = select_views(cfg, ["ex:x", "ex:a"])
+        assert out.views[0].columns == ColumnFilter("include", ("x", "a"))
+
+    def test_an_exclude_view_named_only_bare_keeps_its_filter(self) -> None:
+        cfg = OutputConfig(views=[ViewConfig(name="ex", columns=ColumnFilter("exclude", ("x",)))])
+        out = select_views(cfg, ["ex", "ex"])
+        assert out.views[0].columns == ColumnFilter("exclude", ("x",))
+
     def test_a_bare_repeat_of_an_unfiltered_view_shows_every_column(self) -> None:
         out = select_views(self._cfg(), ["items", "items:a"])
         assert [v.name for v in out.views] == ["items"]

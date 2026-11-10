@@ -102,14 +102,15 @@ class OutputConfig:
     def filter_views(
         self,
         names: list[str],
-        column_overrides: dict[str, list[str]] | None = None,
+        column_overrides: dict[str, list[str] | ColumnFilter] | None = None,
     ) -> "OutputConfig":
         """Return a new OutputConfig with only the requested views.
 
         Args:
             names: View names to include, in the requested order.
-            column_overrides: Optional mapping of view name to column list.
-                Replaces the view's ColumnFilter with an include filter.
+            column_overrides: Optional mapping of view name to a column list,
+                which replaces the view's ColumnFilter with an include filter,
+                or to a ColumnFilter, which replaces it as given.
 
         Returns:
             New OutputConfig with filtered views. Preserves ``default_view``
@@ -126,7 +127,10 @@ class OutputConfig:
                 LOG.warning("filter_views_unknown", name=name, available=list(views_by_name))
                 continue
             if name in overrides:
-                view = replace(view, columns=ColumnFilter("include", tuple(overrides[name])))
+                override = overrides[name]
+                if not isinstance(override, ColumnFilter):
+                    override = ColumnFilter("include", tuple(override))
+                view = replace(view, columns=override)
             filtered.append(view)
         filtered_names = {v.name for v in filtered}
         default = self.default_view if self.default_view in filtered_names else ""
@@ -137,16 +141,24 @@ def select_views(config: OutputConfig, view_args: Sequence[str]) -> OutputConfig
     """*config* narrowed to the views ``--view`` arguments name, in the order given.
 
     A view named more than once is shown once with the union of the columns
-    its arguments ask for, in first-seen order, and one warning names every
-    repeated view (#292). An argument with no column list asks for the view's
-    own columns: an include filter's columns join the union, and a view with
-    no filter or an exclude filter shows every column, so no override applies.
+    its arguments ask for, and one warning names every repeated view (#292).
+    An argument with a column list asks for those columns, and one without
+    asks for the view's own columns, so the union is:
+
+    - no column list at all: the view's own filter, unchanged;
+    - only column lists: those columns, in first-seen order;
+    - a bare argument and a column list, for a view with an include filter:
+      its columns and the listed ones, in first-seen order;
+    - the same, for a view with no filter: every column;
+    - the same, for a view with an exclude filter: every column the filter
+      shows plus the listed ones, so a listed column the filter excludes is
+      shown (the exclude filter less the listed columns).
     """
     names: list[str] = []
     repeated: list[str] = []
     merged: dict[str, list[str]] = {}
-    explicit: set[str] = set()
-    shows_all: set[str] = set()
+    listed: dict[str, list[str]] = {}
+    bare: set[str] = set()
     for arg in view_args:
         name, cols = parse_view_arg(arg)
         if name not in names:
@@ -154,12 +166,13 @@ def select_views(config: OutputConfig, view_args: Sequence[str]) -> OutputConfig
         elif name not in repeated:
             repeated.append(name)
         if cols:
-            explicit.add(name)
+            asked = listed.setdefault(name, [])
+            asked.extend(c for c in cols if c not in asked)
         else:
+            bare.add(name)
             view = config.get_view(name)
             own = view.columns if view is not None else None
             if own is None or own.mode == "exclude":
-                shows_all.add(name)
                 continue
             cols = list(own.columns)
         columns = merged.setdefault(name, [])
@@ -169,9 +182,20 @@ def select_views(config: OutputConfig, view_args: Sequence[str]) -> OutputConfig
             f"--view given more than once for {', '.join(repeated)}: "
             "showing each view once, with the union of the columns asked for."
         )
-    overrides = {
-        name: cols for name, cols in merged.items() if name in explicit and name not in shows_all
-    }
+    overrides: dict[str, list[str] | ColumnFilter] = {}
+    for name, asked in listed.items():
+        if name not in bare:
+            overrides[name] = merged[name]
+            continue
+        view = config.get_view(name)
+        own = view.columns if view is not None else None
+        if own is None:
+            continue  # every column
+        if own.mode == "include":
+            overrides[name] = merged[name]
+        else:
+            kept = tuple(c for c in own.columns if c not in asked)
+            overrides[name] = ColumnFilter("exclude", kept)
     return config.filter_views(names, overrides)
 
 
