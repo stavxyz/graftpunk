@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import zlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -627,3 +628,54 @@ class TestPdfUnicode:
             "LICENSE-DejaVu.txt",
         }
         assert "Bitstream Vera Fonts Copyright" in (fonts / "LICENSE-DejaVu.txt").read_text()
+
+
+def _heading_fills(pdf: bytes) -> int:
+    """How often the pdf sets the table heading's grey fill, in its
+    Flate-compressed page content streams: a fixed number of times per heading
+    cell, which a one-cell table measures."""
+    count = 0
+    for match in re.finditer(rb"stream\r?\n", pdf):
+        try:
+            content = zlib.decompressobj().decompress(pdf[match.end() :])
+        except zlib.error:
+            continue
+        count += content.count(b"0.8627 0.8627 0.8627 rg")
+    return count
+
+
+class TestPdfWideTables:
+    """At about 45 columns a column was narrower than one character and fpdf2
+    raised "Not enough horizontal space to render a single character"."""
+
+    @pytest.mark.parametrize("count", [45, 60, 150, 400])
+    def test_a_wide_table_renders_in_parts(self, tmp_path: Path, count: int) -> None:
+        data = [{f"column_{i}": "W" * 5 for i in range(count)}] * 3
+        path, pages = json_to_pdf(data, tmp_path / "out.pdf")
+        assert pages >= 1
+        one = json_to_pdf([{"c0": "W"}], tmp_path / "one.pdf")[0]
+        per_cell = _heading_fills(Path(one).read_bytes())
+        assert _heading_fills(Path(path).read_bytes()) // per_cell > count
+
+    def test_a_table_that_fits_is_one_table_as_before(self, tmp_path: Path) -> None:
+        one = json_to_pdf([{"c0": "W"}], tmp_path / "one.pdf")[0]
+        per_cell = _heading_fills(Path(one).read_bytes())
+        data = [{f"column_{i}": "W" * 5 for i in range(20)}]
+        path, _ = json_to_pdf(data, tmp_path / "out.pdf")
+        assert _heading_fills(Path(path).read_bytes()) == 20 * per_cell
+
+    def test_each_part_repeats_the_first_column(self, tmp_path: Path) -> None:
+        """Split in parts, every part after the first adds its own copy of the
+        first column's heading: more heading cells than columns."""
+        one = json_to_pdf([{"c0": "W"}], tmp_path / "one.pdf")[0]
+        per_cell = _heading_fills(Path(one).read_bytes())
+        path, _ = json_to_pdf([{f"c{i}": "W" * 5 for i in range(150)}], tmp_path / "out.pdf")
+        cells = _heading_fills(Path(path).read_bytes()) // per_cell
+        assert cells > 150
+        parts = cells - 150 + 1
+        assert parts >= 2
+
+    def test_a_wide_glyph_never_raises(self, tmp_path: Path) -> None:
+        data = [{f"c{i}": "\ufdfd\u2014W" for i in range(80)}]
+        _, pages = json_to_pdf(data, tmp_path / "out.pdf")
+        assert pages >= 1

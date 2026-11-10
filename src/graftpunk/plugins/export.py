@@ -281,17 +281,51 @@ def json_to_pdf(
     pdf.set_font(_PDF_FONT, size=7)
     headings_style = FontFace(emphasis="BOLD", fill_color=(220, 220, 220))
 
-    col_width = (pdf.w - pdf.l_margin - pdf.r_margin) / max(len(columns), 1)
-
-    with pdf.table(
-        headings_style=headings_style,
-        col_widths=(col_width,) * len(columns),
-        first_row_as_headings=True,
-    ) as table:
-        for row_data in table_data:
-            row_obj = table.row()
-            for cell_value in row_data:
-                row_obj.cell(cell_value)
+    for part_index, part in enumerate(_column_parts(pdf, table_data, page_width)):
+        if part_index:
+            pdf.ln(4)
+        col_width = page_width / max(len(part), 1)
+        with pdf.table(
+            headings_style=headings_style,
+            col_widths=(col_width,) * len(part),
+            first_row_as_headings=True,
+        ) as table:
+            for row_data in table_data:
+                row_obj = table.row()
+                for col in part:
+                    row_obj.cell(row_data[col])
 
     pdf.output(str(output))
     return str(output), pdf.pages_count
+
+
+def _column_parts(pdf: FPDF, table_data: list[list[str]], page_width: float) -> list[list[int]]:
+    """The column indexes of each table the pdf draws, left to right.
+
+    A table whose columns all fit the page at a width that holds the widest
+    character any cell or heading uses (heading in bold) is one table, as
+    before. A wider one is split into consecutive tables of as many columns as
+    fit, each repeating the first column so a row can be matched across parts:
+    the rows stay in order and nothing is shrunk below a readable size.
+    """
+    count = len(table_data[0]) if table_data else 0
+    if count <= 1:
+        return [list(range(count))]
+    pdf.set_font(_PDF_FONT, style="B", size=7)
+    widest = max((pdf.get_string_width(c) for c in set("".join(table_data[0]))), default=0.0)
+    pdf.set_font(_PDF_FONT, size=7)
+    body = set().union(*(set(cell) for row in table_data[1:] for cell in row))
+    widest = max(widest, max((pdf.get_string_width(c) for c in body), default=0.0))
+    # fpdf2 takes the cell margin on both sides and the border line out of a
+    # column's width, and raises "Not enough horizontal space to render a
+    # single character" when what is left is narrower than one character. This
+    # bound is a little wider than fpdf2's own test (a page of W fits 40
+    # columns by it, 42 by fpdf2), so a column it allows always renders.
+    needed = widest + 2 * pdf.c_margin + pdf.line_width
+    fits = max(int(page_width // needed), 1)
+    if count <= fits:
+        return [list(range(count))]
+    if fits == 1:
+        return [[col] for col in range(count)]
+    step = fits - 1
+    return [[0, *range(start, min(start + step, count))] for start in range(1, count, step)]
