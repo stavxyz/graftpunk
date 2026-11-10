@@ -65,6 +65,16 @@ def _assert_no_form(text: str, secret: str = API_KEY) -> None:
         assert form not in text, f"the {form_name} form of the secret is in {text[:300]!r}"
 
 
+def _echoes_bad_int(output: str) -> bool:
+    """Whether the parser's message for a bad ``--count`` quotes the value it got.
+
+    Click and typer up to 0.28 say ``'<value>' is not a valid int``; typer 0.29
+    says ``Input should be a valid integer`` and quotes nothing, so there is no
+    value to scrub.
+    """
+    return "is not a valid int" in output
+
+
 def _plugin(site: str, spec: PluginParamSpec) -> SitePlugin:
     """A plugin whose commands send ``--api-key`` everywhere a value can go."""
     count = PluginParamSpec.option("count", type=int, default=0)
@@ -413,16 +423,21 @@ class TestNoEcho:
         output = strip_ansi(result.output)
         assert result.exit_code == 2
         assert message in output
-        assert REDACTED in output
+        if message != "Invalid value for '--count'" or _echoes_bad_int(output):
+            assert REDACTED in output
         _assert_no_form(output)
 
     def test_a_usage_error_without_a_secret_option_is_unchanged(self, site: str) -> None:
         spec = PluginParamSpec.option("api_key")
         result = _invoke(_plugin(site, spec), ["tally", "--count", "--api-key=plain-value"])
 
+        output = strip_ansi(result.output)
         assert result.exit_code == 2
-        # "integer" on Click, "int" on typer>=0.26's vendored Click.
-        assert "'--api-key=plain-value' is not a valid int" in strip_ansi(result.output)
+        assert "Invalid value for '--count'" in output
+        assert REDACTED not in output
+        if _echoes_bad_int(output):
+            # "integer" on Click, "int" on typer>=0.26's vendored Click.
+            assert "'--api-key=plain-value' is not a valid int" in output
 
     def test_a_token_403_retry_logs_the_url_scrubbed(
         self, site: str, gp_json_logs: JsonLogs
@@ -2421,7 +2436,8 @@ class TestShortFlag:
         output = strip_ansi(result.output)
         assert result.exit_code == 2
         assert "Invalid value for '--count'" in output
-        assert REDACTED in output
+        if _echoes_bad_int(output):
+            assert REDACTED in output
         _assert_no_form(output)
 
 
