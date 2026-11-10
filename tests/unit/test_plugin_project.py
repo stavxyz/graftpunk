@@ -246,6 +246,9 @@ class TestTheView:
             "markers",
             "fixtures_root",
             "class_names",
+            "aliases",
+            "aliases_line",
+            "session_name",
         ]
         assert [f.name for f in fields(CommandView)] == ["method", "span", "keywords", "group"]
 
@@ -1140,6 +1143,7 @@ _GUARDED_PHRASES: dict[str, tuple[object, str]] = {
     "_ADDS_IT": (plugin_check_module, plugin_check_module._ADDS_IT),
     "_SCOPES_IT": (plugin_check_module, plugin_check_module._SCOPES_IT),
     "_WRITE_IT_LITERAL": (plugin_check_module, plugin_check_module._WRITE_IT_LITERAL),
+    "_RENAME_OR_REMOVE": (plugin_check_module, plugin_check_module._RENAME_OR_REMOVE),
 }
 
 

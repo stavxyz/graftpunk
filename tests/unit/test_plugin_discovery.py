@@ -25,6 +25,9 @@ def _make_plugin(
     plugin = MagicMock()
     plugin.site_name = site_name
     plugin.api_version = api_version
+    # A MagicMock answers every attribute, aliases included, with another mock,
+    # which discovery refuses as it would any aliases that are not strings.
+    plugin.aliases = ()
     if config_error is not None:
         plugin._plugin_config_error = config_error
     else:

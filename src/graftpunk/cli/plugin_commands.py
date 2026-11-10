@@ -26,6 +26,7 @@ from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
     CommandSpec,
 )
+from graftpunk.plugins.names import CORE_COMMAND_NAMES, conflict_log_fields, plugin_names
 from graftpunk.session_identity import (
     compute_operating_session_name,
     split_session_name,
@@ -58,6 +59,16 @@ _plugin_session_map: dict[str, str] = {}
 
 # Track registered plugin sources for collision detection
 _registered_plugin_sources: dict[str, str] = {}  # site_name → source description
+
+# site_name → the aliases mounted for it (an empty tuple when it has none)
+_registered_aliases: dict[str, tuple[str, ...]] = {}
+
+
+def registered_aliases() -> dict[str, tuple[str, ...]]:
+    """Each registered plugin's ``site_name`` and the aliases the CLI mounted for
+    it: the declared ones less those :func:`graftpunk.plugins.names.plugin_names`
+    dropped."""
+    return dict(_registered_aliases)
 
 
 @dataclass(frozen=True)
@@ -360,8 +371,9 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
     # process makes against some other (often disposable) Typer app. See
     # graftpunk.cli.scaffold_commands.register()'s docstring, where the CLI's
     # own snapshot of these names is taken and explained.
-    previous_plugin_names = set(_registered_plugin_sources)
+    previous_plugin_names = set(_registered_plugin_sources).union(*_registered_aliases.values())
     _registered_plugin_sources.clear()
+    _registered_aliases.clear()
     _plugin_session_map.clear()
     _registered_plugins_for_teardown.clear()
     reserved = derive_reserved_cli_names(app) - previous_plugin_names
@@ -370,6 +382,21 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
     # Use shared discovery (clear cache so CLI always gets fresh results)
     discover_all_plugins.cache_clear()
     all_plugins = discover_all_plugins()
+
+    # The name table is built over every discovered plugin, not only those this
+    # loop goes on to register: a plugin skipped below (a failed setup(), a
+    # contract violation) still holds its site_name and session_name against
+    # another plugin's alias, as it does in get_plugin, so `gp <name>` never
+    # switches plugins because one failed to load this time.
+    names = plugin_names(all_plugins, reserved | CORE_COMMAND_NAMES)
+    for conflict in names.conflicts:
+        # One line per conflict on stderr: the user-facing warning when this run
+        # prints them, the log line only when it does not.
+        if notify_errors:
+            LOG.debug("plugin_alias_ignored", **conflict_log_fields(conflict))
+            gp_console.warn(str(conflict))
+        else:
+            LOG.warning("plugin_alias_ignored", **conflict_log_fields(conflict))
 
     # Register each plugin (already filtered for config errors,
     # missing site_name, and unsupported api_version)
@@ -422,10 +449,7 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
                 continue  # Skip this plugin
 
             _registered_plugin_sources[site_name] = source
-            app.add_typer(site_app, name=site_name)
-            _plugin_session_map[site_name] = plugin.session_name
-            _registered_plugins_for_teardown.append(plugin)
-            result.registered[site_name] = plugin.help_text
+            _mount(app, plugin, site_app, names.aliases.get(site_name, ()), result)
             LOG.info("plugin_registered", site_name=site_name, source=source)
 
         except PluginError:
@@ -439,6 +463,41 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
         _notify_plugin_errors(result)
 
     return result.registered
+
+
+def alias_note(aliases: tuple[str, ...]) -> str:
+    """``(alias: shop)`` or ``(aliases: shop, ms)``: how ``gp --help`` and ``gp plugins``
+    show a plugin's aliases beside its name."""
+    label = "alias" if len(aliases) == 1 else "aliases"
+    return f"({label}: {', '.join(aliases)})"
+
+
+def _mount(
+    app: typer.Typer,
+    plugin: CLIPluginProtocol,
+    site_app: typer.Typer,
+    aliases: tuple[str, ...],
+    result: PluginDiscoveryResult,
+) -> None:
+    """Mount *plugin* under its ``site_name`` and each of its accepted *aliases*.
+
+    An alias is the same sub-app under a second, hidden name, so ``gp --help``
+    lists the plugin once, with its aliases in its help line. It maps to the
+    plugin's own ``session_name``, so it is never a session slot of its own.
+    """
+    site_name = plugin.site_name
+    if aliases:
+        help_text = plugin.help_text or f"Commands for {site_name}"
+        app.add_typer(site_app, name=site_name, help=f"{help_text} {alias_note(aliases)}")
+    else:
+        app.add_typer(site_app, name=site_name)
+    _plugin_session_map[site_name] = plugin.session_name
+    for alias in aliases:
+        app.add_typer(site_app, name=alias, hidden=True)
+        _plugin_session_map[alias] = plugin.session_name
+    _registered_aliases[site_name] = aliases
+    _registered_plugins_for_teardown.append(plugin)
+    result.registered[site_name] = plugin.help_text
 
 
 def _session_base_matches(session_name: str, base: str) -> bool:

@@ -52,6 +52,7 @@ from graftpunk.plugins.formatters import (
     discover_formatters,
     write_rendered_to_file,
 )
+from graftpunk.plugins.names import AliasConflict, conflict_log_fields, plugin_names
 from graftpunk.plugins.output_config import (
     ColumnDisplayConfig,
     ColumnFilter,
@@ -428,22 +429,37 @@ def discover_all_plugins() -> tuple[CLIPluginProtocol, ...]:
     return tuple(valid)
 
 
+# The alias conflicts get_plugin has logged in this process (each is logged once).
+_reported_conflicts: set[AliasConflict] = set()
+
+
 def get_plugin(name: str) -> CLIPluginProtocol:
-    """Look up a plugin by site_name.
+    """Look up a plugin by its site_name or one of its aliases.
+
+    Resolves through :func:`graftpunk.plugins.names.plugin_names`, the resolver
+    the CLI registers with, so an alias the CLI ignores (one naming a core
+    command or another plugin's site_name) does not resolve here either.
 
     Args:
-        name: The site_name to look up.
+        name: The site_name or alias to look up.
 
     Returns:
         The matching CLIPluginProtocol instance.
 
     Raises:
-        PluginError: If no plugin with the given name is found.
+        PluginError: If no plugin has that site_name or alias.
     """
     plugins = discover_all_plugins()
-    for plugin in plugins:
-        if plugin.site_name == name:
-            return plugin
+    names = plugin_names(plugins)
+    plugin = names.resolve(name)
+    if plugin is not None:
+        # The CLI prints these on stderr; a library caller gets each logged
+        # once per process, however many clients it builds.
+        for conflict in names.conflicts:
+            if conflict.site_name == plugin.site_name and conflict not in _reported_conflicts:
+                _reported_conflicts.add(conflict)
+                LOG.warning("plugin_alias_ignored", **conflict_log_fields(conflict))
+        return plugin
 
     available = sorted(p.site_name for p in plugins)
     raise PluginError(f"Plugin '{name}' is unknown. Available plugins: {available}")

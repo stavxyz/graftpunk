@@ -25,7 +25,7 @@ runner = CliRunner()
 
 # The info payload's field sets at schema 1, frozen here so a rename fails the suite.
 _INFO_V1 = {"schema", "directory", "plugins"}
-_INFO_PLUGIN_V1 = {"entry_point", "module", "site_name", "base_url", "commands"}
+_INFO_PLUGIN_V1 = {"entry_point", "module", "site_name", "base_url", "aliases", "commands"}
 _INFO_COMMAND_V1 = {"name", "endpoint"}
 
 

@@ -61,6 +61,7 @@ from graftpunk.exceptions import PluginError
 from graftpunk.har.naming import registered_name, to_cli_name
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
+from graftpunk.plugins.names import validate_aliases
 from graftpunk.plugins.site_requests import SiteRequests
 from graftpunk.session_scope import operating_session_for, resolve_load_target
 
@@ -845,6 +846,10 @@ class PluginConfig:
     plugin_version: str = ""
     plugin_author: str = ""
     plugin_url: str = ""
+    aliases: tuple[str, ...] = ()
+    # The validator's message when the declared aliases were refused: the plugin
+    # still loads, with none, and the name table reports this once (#374).
+    aliases_error: str = ""
 
     def __post_init__(self) -> None:
         if not self.site_name:
@@ -909,6 +914,15 @@ def build_plugin_config(**raw: Any) -> PluginConfig:
     # Default help_text
     if not filtered.get("help_text"):
         filtered["help_text"] = f"Commands for {site_name}"
+
+    # A refused value never costs the plugin its load: a plugin may have had an
+    # unrelated attribute named aliases before 1.42.0. It loads with none, and the
+    # message is kept for the name table to report.
+    try:
+        filtered["aliases"] = validate_aliases(filtered.get("aliases", ()), site_name)
+    except PluginError as exc:
+        filtered["aliases"] = ()
+        filtered["aliases_error"] = str(exc)
 
     return PluginConfig(**filtered)
 
@@ -1109,6 +1123,10 @@ class SitePlugin:
     api_version: int = 1
     username_envvar: str = ""
     password_envvar: str = ""
+    # More names the CLI runs this plugin by (`gp <alias> ...`), each the same
+    # plugin, session slot and credential variables as site_name. Read from the
+    # class's own body, as the rest of the configuration is: never inherited.
+    aliases: tuple[str, ...] = ()
 
     # Declarative login configuration
     base_url: str = ""
@@ -1154,6 +1172,21 @@ class SitePlugin:
             cls.site_name = cls._plugin_config.site_name
             cls.session_name = cls._plugin_config.session_name
             cls.help_text = cls._plugin_config.help_text
+            # Not inherited: a subclass that does not declare aliases has none, as
+            # it has none of its parent's other configuration, so an inherited
+            # sequence of names is shadowed with (). Nothing else is ever written:
+            # a class's own value (a plugin from before 1.42.0 may read its own
+            # list, dict or None under this name) and an inherited value that is
+            # not a sequence of names (a method, descriptor or a parent's dict)
+            # stay as they are; the config holds the aliases gp uses.
+            inherited = inspect.getattr_static(cls, "aliases", None)
+            if (
+                "aliases" not in cls.__dict__
+                and isinstance(inherited, (tuple, list))
+                and all(isinstance(name, str) for name in inherited)
+            ):
+                cls.aliases = ()
+            cls._aliases_error = cls._plugin_config.aliases_error
         except PluginError as exc:
             cls._plugin_config_error = exc
             LOG.warning("plugin_config_deferred", class_name=cls.__name__, error=str(exc))

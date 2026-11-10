@@ -293,14 +293,28 @@ def plugins() -> None:
 
     python_file_plugins = discover_python_plugins()
 
-    # Combine all plugin names from all sources
-    all_plugin_names = set(site_plugins.keys())
+    # Combine all plugin names from all sources. An entry-point plugin is listed
+    # by its entry-point name; its aliases are looked up by its class's site_name.
+    from graftpunk.cli.plugin_commands import alias_note, registered_aliases
+
+    site_name_of: dict[str, str] = {}
+    for name, plugin_class in site_plugins.items():
+        declared = getattr(plugin_class, "site_name", None)
+        site_name_of[name] = declared if isinstance(declared, str) and declared else name
     for plugin in yaml_plugins:
-        all_plugin_names.add(plugin.site_name)
+        site_name_of[plugin.site_name] = plugin.site_name
     for plugin in python_file_plugins.plugins:
-        all_plugin_names.add(plugin.site_name)
+        site_name_of[plugin.site_name] = plugin.site_name
+    all_plugin_names = set(site_name_of)
 
     total = len(storage) + len(handlers) + len(all_plugin_names)
+
+    # Each plugin once, with the aliases the CLI mounted for it beside its name.
+    aliases = registered_aliases()
+    site_labels: set[str] = set()
+    for name, site_name in site_name_of.items():
+        mounted = aliases.get(site_name, ())
+        site_labels.add(f"{name} {alias_note(mounted)}" if mounted else name)
 
     def _fmt_section(title: str, names: set[str] | Mapping[str, object]) -> str:
         if names:
@@ -311,7 +325,7 @@ def plugins() -> None:
     sections = [
         _fmt_section("Storage Backends", storage),
         _fmt_section("Keepalive Handlers", handlers),
-        _fmt_section("Site Plugins", all_plugin_names),
+        _fmt_section("Site Plugins", site_labels),
     ]
 
     content = "\n\n".join(sections)
