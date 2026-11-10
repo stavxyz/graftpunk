@@ -2,8 +2,9 @@
 
 import csv
 import io
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from graftpunk.plugins.export import json_to_pdf
 from graftpunk.plugins.formatters import (
     CsvFormatter,
     OutputFormatter,
+    PdfFormatter,
     TableFormatter,
     XlsxFormatter,
     format_output,
@@ -602,3 +604,126 @@ def test_pdf_renders_a_list_of_dicts_keyed_by_number_none_and_tuple(tmp_path: Pa
     path, pages = json_to_pdf([{1: "a", None: "b", (1, 2): "c"}], out)  # type: ignore[dict-item]
     assert pages == 1
     assert Path(path).read_bytes().startswith(b"%PDF")
+
+
+def _table_text(data: object, output_config: Any = None) -> str:
+    buf = io.StringIO()
+    TableFormatter().format(data, Console(file=buf, width=200), output_config=output_config)
+    return buf.getvalue()
+
+
+def _xlsx_rows(tmp_path: Path, data: object, output_config: Any = None) -> list[list[object]]:
+    import openpyxl
+
+    out = tmp_path / "out.xlsx"
+    with patch("graftpunk.plugins.formatters.gp_console"):
+        XlsxFormatter().format(
+            data, MagicMock(spec=Console), output_config=output_config, output_path=str(out)
+        )
+    ws = openpyxl.load_workbook(out).active
+    return [[cell.value for cell in row] for row in ws.iter_rows()]
+
+
+def _csv_rows(data: object) -> list[list[str]]:
+    console = MagicMock(spec=Console)
+    CsvFormatter().format(data, console)
+    return _parse_csv_output(console)
+
+
+class TestEveryRowsColumns:
+    """The table and xlsx formatters took their columns from the first row only,
+    so a key that first appears in a later row was dropped; csv and pdf took
+    every row's, in first-seen order. All four now agree."""
+
+    _DATA: ClassVar[list[dict[str, int]]] = [{"a": 1}, {"a": 2, "b": 3}, {"c": 4}]
+
+    def test_table(self) -> None:
+        header = _table_text(self._DATA).splitlines()[1]
+        assert [cell.strip() for cell in header.strip("┃").split("┃")] == ["a", "b", "c"]
+
+    def test_xlsx(self, tmp_path: Path) -> None:
+        assert _xlsx_rows(tmp_path, self._DATA) == [
+            ["a", "b", "c"],
+            [1, None, None],
+            [2, 3, None],
+            [None, None, 4],
+        ]
+
+    def test_csv(self) -> None:
+        assert _csv_rows(self._DATA)[0] == ["a", "b", "c"]
+
+    def test_pdf(self, tmp_path: Path) -> None:
+        from graftpunk.plugins.export import ordered_keys, table_rows
+
+        assert ordered_keys(table_rows(self._DATA)) == ["a", "b", "c"]
+        _, pages = json_to_pdf(self._DATA, tmp_path / "out.pdf")
+        assert pages == 1
+
+
+class TestNonDictRows:
+    """A list mixing dicts and other values raised from the table, xlsx and pdf
+    formatters (and from a view's column filter), the pdf formatter raised on
+    a list of strings, and the xlsx formatter wrote an empty sheet for one.
+    One rule now: a non-dict row is the one-column row ``{"value": item}``."""
+
+    _MIXED: ClassVar[list[object]] = [{"a": 1}, "loose", 7]
+
+    def test_table_writes_the_value_column(self) -> None:
+        text = _table_text(self._MIXED)
+        assert "value" in text
+        assert "loose" in text
+        assert "│ 7 " in text
+
+    def test_xlsx_writes_the_value_column(self, tmp_path: Path) -> None:
+        assert _xlsx_rows(tmp_path, self._MIXED) == [
+            ["a", "value"],
+            [1, None],
+            [None, "loose"],
+            [None, 7],
+        ]
+
+    def test_xlsx_writes_a_list_of_strings(self, tmp_path: Path) -> None:
+        assert _xlsx_rows(tmp_path, ["x", "y"]) == [["value"], ["x"], ["y"]]
+
+    def test_csv_writes_the_value_column(self) -> None:
+        assert _csv_rows(self._MIXED) == [["a", "value"], ["1", ""], ["", "loose"], ["", "7"]]
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param([{"a": 1}, "loose", 7], id="mixed"),
+            pytest.param(["x", "y"], id="strings"),
+            pytest.param([1, [2, 3], None], id="scalars-and-a-list"),
+        ],
+    )
+    def test_pdf_renders(self, tmp_path: Path, data: list[object]) -> None:
+        out = tmp_path / "out.pdf"
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            PdfFormatter().format(data, MagicMock(spec=Console), output_path=str(out))
+        assert out.read_bytes().startswith(b"%PDF-")
+
+    def test_a_view_filter_keeps_or_drops_the_value_column(self, tmp_path: Path) -> None:
+        from graftpunk.plugins import ColumnFilter, OutputConfig, ViewConfig
+
+        keep = OutputConfig(
+            views=[ViewConfig(name="v", columns=ColumnFilter("include", ("value",)))]
+        )
+        assert _xlsx_rows(tmp_path, self._MIXED, keep) == [["value"], [None], ["loose"], [7]]
+        drop = OutputConfig(views=[ViewConfig(name="v", columns=ColumnFilter("include", ("a",)))])
+        assert "loose" not in _table_text(self._MIXED, drop)
+
+    def test_a_list_with_no_dict_still_prints_as_json_in_the_table_format(self) -> None:
+        assert json.loads(_table_text(["x", "y"])) == ["x", "y"]
+
+
+def test_a_nested_list_of_dicts_holding_a_date_exports(tmp_path: Path) -> None:
+    """flatten_dict wrote such a list with json.dumps and no default, which
+    raised TypeError from json_to_csv and the pdf export."""
+    import datetime
+
+    from graftpunk.plugins.export import json_to_csv
+
+    data = [{"a": [{"t": datetime.date(2026, 1, 1)}]}]
+    path, _ = json_to_csv(data, tmp_path / "out.csv")
+    assert "2026-01-01" in Path(path).read_text()
+    json_to_pdf(data, tmp_path / "out.pdf")

@@ -13,6 +13,7 @@ import csv
 import json
 import numbers
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -103,7 +104,7 @@ def flatten_dict(
             if not v:
                 items.append((new_key, ""))
             elif isinstance(v[0], dict):
-                items.append((new_key, json.dumps(v)))
+                items.append((new_key, json.dumps(v, default=str)))
             else:
                 items.append((new_key, ", ".join(str(i) for i in v)))
         else:
@@ -121,6 +122,26 @@ def ordered_keys(rows: list[dict[str, object]]) -> list[str]:
                 columns.append(key)
                 seen.add(key)
     return columns
+
+
+VALUE_COLUMN = "value"
+"""The column a non-dict row's value is written in when a formatter writes a
+list as a table (:func:`table_rows`)."""
+
+
+def table_rows(items: Iterable[object]) -> list[dict[str, object]]:
+    """*items* as table rows: a dict as it is, and any other item (a string, a
+    number, a list) as the one-column row ``{"value": item}``.
+
+    The one rule every formatter that writes a list as a table follows (table,
+    csv, xlsx, pdf, :func:`json_to_csv` and :func:`json_to_pdf`), so a list
+    that mixes dicts and other values, or holds no dict, renders instead of
+    raising. A dict row with its own ``value`` key shares that column.
+    """
+    return [
+        cast("dict[str, object]", item) if isinstance(item, dict) else {VALUE_COLUMN: item}
+        for item in items
+    ]
 
 
 def json_to_csv(
@@ -148,7 +169,7 @@ def json_to_csv(
         output.write_text("")
         return str(output), 0
 
-    rows = [flatten_dict(row) for row in data] if flatten else data
+    rows = [flatten_dict(row) for row in table_rows(data)] if flatten else table_rows(data)
     columns = ordered_keys(rows)
 
     with open(output, "w", newline="") as f:
@@ -247,7 +268,7 @@ def json_to_pdf(
         pdf.output(str(output))
         return str(output), pdf.pages_count
 
-    rows = [flatten_dict(row) for row in data] if flatten else data
+    rows = [flatten_dict(row) for row in table_rows(data)] if flatten else table_rows(data)
     columns = ordered_keys(rows)
 
     # Build table data: header row + data rows. A key need not be a string (1,

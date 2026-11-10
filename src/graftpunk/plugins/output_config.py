@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from graftpunk import console as gp_console
 from graftpunk.logging import get_logger
+from graftpunk.plugins.export import table_rows
 
 LOG = get_logger(__name__)
 
@@ -249,12 +250,17 @@ def apply_column_filter(
     data: list[dict],
     column_filter: ColumnFilter | None,
 ) -> list[dict]:
-    """Apply column filter to list of dictionaries."""
+    """Apply column filter to list of dictionaries.
+
+    A row that is not a dict is first the one-column row ``{"value": row}``
+    (:func:`graftpunk.plugins.export.table_rows`), so the filter keeps or drops
+    it like any other column, where ``row[k]`` raised.
+    """
     if column_filter is None:
         return data
 
     result = []
-    for row in data:
+    for row in table_rows(data):
         if column_filter.mode == "include":
             filtered = {k: row[k] for k in column_filter.columns if k in row}
         else:

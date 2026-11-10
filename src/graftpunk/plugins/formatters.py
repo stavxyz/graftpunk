@@ -26,7 +26,12 @@ from graftpunk import console as gp_console
 from graftpunk.console import stream_is_tty, write_raw
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
-from graftpunk.plugins.export import _neutralize_formula, get_downloads_dir, ordered_keys
+from graftpunk.plugins.export import (
+    _neutralize_formula,
+    get_downloads_dir,
+    ordered_keys,
+    table_rows,
+)
 from graftpunk.plugins.output_config import (
     OutputConfig,
     ViewConfig,
@@ -94,7 +99,7 @@ def _resolve_view_data(data: Any, view: ViewConfig) -> Any | None:
     view_data = extract_view_data(data, view.path) if view.path else data
     if view_data is None:
         return None
-    if isinstance(view_data, list) and view_data and isinstance(view_data[0], dict):
+    if isinstance(view_data, list) and any(isinstance(item, dict) for item in view_data):
         view_data = apply_column_filter(view_data, view.columns)
     elif isinstance(view_data, dict) and view.columns:
         view_data = apply_column_filter([view_data], view.columns)[0]
@@ -265,13 +270,16 @@ class TableFormatter:
             data: Data to render (list of dicts, dict, or other).
             console: Rich console for output.
         """
-        if isinstance(data, list) and data and isinstance(data[0], dict):
-            headers = list(data[0].keys())
+        if isinstance(data, list) and any(isinstance(item, dict) for item in data):
+            # Every row's keys, in first-seen order, and a non-dict row in the
+            # value column, as the other formatters write a list.
+            rows = table_rows(data)
+            headers = ordered_keys(rows)
             table = Table(header_style="bold cyan", border_style="dim")
             # Cells are data: wrap in Text so Rich never markup-parses "[/LB]" (#145).
             for header in headers:
                 table.add_column(Text(str(header)))
-            for row in data:
+            for row in rows:
                 table.add_row(*[Text(str(row.get(h, ""))) for h in headers])
             console.print(table)
         elif isinstance(data, dict):
@@ -370,15 +378,17 @@ class CsvFormatter:
             LOG.debug("csv_format_empty_list")
             _write_empty_csv(output_config, console, output_path)
             return
-        if not all(isinstance(item, dict) for item in data):
+        if not any(isinstance(item, dict) for item in data):
+            # A list with no dict at all (strings, numbers) is not a table.
             LOG.warning(
                 "csv_format_unsupported_type",
-                data_type="list[mixed]",
+                data_type="list[non-dict]",
                 fallback="raw",
             )
             _warn_fallback(output_path, "CSV", "raw text")
             RawFormatter().format(data, console, output_path=output_path)
             return
+        data = table_rows(data)
 
         # Apply column filter from output config
         if output_config:
@@ -474,23 +484,25 @@ class XlsxFormatter:
         """
         worksheet = workbook.add_worksheet(sheet_name)
 
-        if isinstance(data, list) and data and isinstance(data[0], dict):
-            # A key need not be a string (1, None, a tuple): the header shows
-            # its str(), as the CSV formatter's does, and values are looked up
-            # by the key itself (#310).
-            headers = list(data[0].keys())
+        if isinstance(data, list) and data:
+            # Every row's keys in first-seen order, and a non-dict row (a list
+            # of strings too) in the value column, as the other formatters
+            # write a list. A key need not be a string (1, None, a tuple): the
+            # header shows its str(), and values are looked up by the key
+            # itself (#310).
+            rows = table_rows(data)
+            headers = ordered_keys(rows)
             for col, header in enumerate(headers):
                 _write_xlsx_cell(worksheet, 0, col, str(header), bold)
-            for row_idx, row in enumerate(data, start=1):
+            for row_idx, row in enumerate(rows, start=1):
                 for col_idx, header in enumerate(headers):
-                    value = row.get(header, "")  # type: ignore[union-attr]
-                    _write_xlsx_cell(worksheet, row_idx, col_idx, value)
+                    _write_xlsx_cell(worksheet, row_idx, col_idx, row.get(header, ""))
             # Auto-size columns: sample first 100 rows for performance,
             # cap cell width at 50 chars to prevent very wide columns.
             for col_idx, header in enumerate(headers):
                 max_len = len(str(header))
-                for row in data[:100]:
-                    val = str(row.get(header, ""))  # type: ignore[union-attr]
+                for row in rows[:100]:
+                    val = str(row.get(header, ""))
                     max_len = max(max_len, min(len(val), 50))
                 worksheet.set_column(col_idx, col_idx, max_len + 2)
         elif isinstance(data, dict):
