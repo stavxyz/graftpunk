@@ -564,7 +564,7 @@ class CommandResult:
         from rich.console import Console
 
         from graftpunk.plugins.formatters import discover_formatters
-        from graftpunk.plugins.output_config import parse_view_arg
+        from graftpunk.plugins.output_config import select_views
 
         # Resolve formatters using the 3-level hierarchy
         formatters = discover_formatters()
@@ -581,14 +581,7 @@ class CommandResult:
         # Apply view filtering
         output_config = self.output_config
         if views and output_config is not None:
-            names: list[str] = []
-            column_overrides: dict[str, list[str]] = {}
-            for arg in views:
-                name, cols = parse_view_arg(arg)
-                names.append(name)
-                if cols:
-                    column_overrides[name] = cols
-            output_config = output_config.filter_views(names, column_overrides)
+            output_config = select_views(output_config, views)
 
         output_path = str(output) if output else ""
 

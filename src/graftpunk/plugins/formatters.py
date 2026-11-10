@@ -32,7 +32,7 @@ from graftpunk.plugins.output_config import (
     ViewConfig,
     apply_column_filter,
     extract_view_data,
-    parse_view_arg,
+    select_views,
 )
 
 LOG = get_logger(__name__)
@@ -773,13 +773,6 @@ def format_output(
         if output_config is None:
             gp_console.warn("--view has no effect: this command does not define views.")
         else:
-            names: list[str] = []
-            column_overrides: dict[str, list[str]] = {}
-            for arg in view_args:
-                name, cols = parse_view_arg(arg)
-                names.append(name)
-                if cols:
-                    column_overrides[name] = cols
-            output_config = output_config.filter_views(names, column_overrides)
+            output_config = select_views(output_config, view_args)
 
     formatter.format(data, console, output_config=output_config, output_path=output_path)

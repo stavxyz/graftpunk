@@ -4,9 +4,11 @@ Provides dataclasses for configuring how command output is filtered,
 formatted, and displayed across table, CSV, and other formats.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from graftpunk import console as gp_console
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -115,7 +117,9 @@ class OutputConfig:
         overrides = column_overrides or {}
         views_by_name = {v.name: v for v in self.views}
         filtered: list[ViewConfig] = []
-        for name in names:
+        # A name given twice keeps its first place: two copies of one view
+        # would fail the unique-name check (#292).
+        for name in dict.fromkeys(names):
             view = views_by_name.get(name)
             if view is None:
                 LOG.warning("filter_views_unknown", name=name, available=list(views_by_name))
@@ -126,6 +130,48 @@ class OutputConfig:
         filtered_names = {v.name for v in filtered}
         default = self.default_view if self.default_view in filtered_names else ""
         return OutputConfig(views=tuple(filtered), default_view=default)
+
+
+def select_views(config: OutputConfig, view_args: Sequence[str]) -> OutputConfig:
+    """*config* narrowed to the views ``--view`` arguments name, in the order given.
+
+    A view named more than once is shown once with the union of the columns
+    its arguments ask for, in first-seen order, and one warning names every
+    repeated view (#292). An argument with no column list asks for the view's
+    own columns: an include filter's columns join the union, and a view with
+    no filter or an exclude filter shows every column, so no override applies.
+    """
+    names: list[str] = []
+    repeated: list[str] = []
+    merged: dict[str, list[str]] = {}
+    explicit: set[str] = set()
+    shows_all: set[str] = set()
+    for arg in view_args:
+        name, cols = parse_view_arg(arg)
+        if name not in names:
+            names.append(name)
+        elif name not in repeated:
+            repeated.append(name)
+        if cols:
+            explicit.add(name)
+        else:
+            view = config.get_view(name)
+            own = view.columns if view is not None else None
+            if own is None or own.mode == "exclude":
+                shows_all.add(name)
+                continue
+            cols = list(own.columns)
+        columns = merged.setdefault(name, [])
+        columns.extend(c for c in cols if c not in columns)
+    if repeated:
+        gp_console.warn(
+            f"--view given more than once for {', '.join(repeated)}: "
+            "showing each view once, with the union of the columns asked for."
+        )
+    overrides = {
+        name: cols for name, cols in merged.items() if name in explicit and name not in shows_all
+    }
+    return config.filter_views(names, overrides)
 
 
 def parse_view_arg(arg: str) -> tuple[str, list[str]]:
