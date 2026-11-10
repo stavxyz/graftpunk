@@ -2065,7 +2065,7 @@ gp mysite list --view invoices:id,amount
 gp mysite list --view invoices --view summary
 ```
 
-The `--view` option is repeatable. When used with a single view, section headers are suppressed for cleaner output.
+The `--view` option is repeatable. When used with a single view, section headers are suppressed for cleaner output. Naming one view more than once (`--view invoices:id --view invoices:amount`) shows it once with the union of the columns asked for, in the order first given, and prints one warning; a bare `--view invoices` among them asks for the view's own columns.
 
 #### OutputConfig Types
 
