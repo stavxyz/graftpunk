@@ -7,7 +7,8 @@ name = "graftpunk"
 version = "1.42.1"
 description = "Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage."
 readme = "README.md"
-license = "MIT"
+license = "MIT AND Bitstream-Vera"
+license-files = ["LICENSE", "src/graftpunk/plugins/fonts/LICENSE-DejaVu.txt"]
 requires-python = ">=3.11"
 authors = [
     { name = "stavxyz", email = "stavxyz@users.noreply.github.com" }
