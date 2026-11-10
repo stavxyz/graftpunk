@@ -76,11 +76,15 @@ def summarize_shape(shape: ShapeNode | None, *, depth: int = _DEFAULT_SUMMARY_DE
     if shape.kind in ("string", "number", "boolean", "null"):
         return shape.kind
     if shape.kind == "array":
-        if depth <= 0:
+        # An item of None is an empty array, or a non-empty one cut at the
+        # digest's depth cap (truncated); neither is a non-JSON element.
+        if depth <= 0 or (shape.item is None and shape.truncated):
             return "array<...>"
+        if shape.item is None:
+            return "array<empty>"
         return f"array<{summarize_shape(shape.item, depth=depth - 1)}>"
     if not shape.children:
-        return "object{}"
+        return "object{...}" if shape.truncated else "object{}"
     if depth <= 0:
         return "object{...}"
     keys = ", ".join(sorted(shape.children))

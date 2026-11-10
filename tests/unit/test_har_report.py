@@ -9,7 +9,14 @@ from typing import Any
 
 import pytest
 
-from graftpunk.har.digest import SHAPE_TOO_DEEP, SHAPE_UNAVAILABLE, DigestSource, Endpoint, digest
+from graftpunk.har.digest import (
+    SHAPE_TOO_DEEP,
+    SHAPE_UNAVAILABLE,
+    DigestSource,
+    Endpoint,
+    ShapeNode,
+    digest,
+)
 from graftpunk.har.documents import LoginForm
 from graftpunk.har.report import (
     SHAPE_TOO_DEEP_SUMMARY,
@@ -1042,3 +1049,38 @@ class TestBodyNotCaptured:
             if line.strip().startswith("#")
         )
         assert "GP-FILL: the request body was not captured in 11 of 12 recording(s)" in stub
+
+
+class TestEmptyAndCutContainers:
+    """#215: an empty array read ``array<non-JSON>``; a container cut at the
+    digest's depth cap read as empty."""
+
+    def test_an_empty_array_reads_array_empty(self) -> None:
+        assert summarize_shape(ShapeNode(kind="array")) == "array<empty>"
+
+    def test_an_array_of_objects_names_the_first_objects_keys(self) -> None:
+        item = ShapeNode(kind="object", children={"id": ShapeNode(kind="number")})
+        assert summarize_shape(ShapeNode(kind="array", item=item)) == "array<object{id}>"
+
+    def test_a_digested_empty_array_body_reads_array_empty(self, tmp_path: Path) -> None:
+        entries = [_entry("GET", "https://api.myshop.example.com/orders", body="[]")]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert summarize_shape(endpoint.shape) == "array<empty>"
+        assert "- shape: array<empty>" in render_markdown(result)
+
+    def test_containers_cut_at_the_depth_cap_read_as_cut_not_empty(self) -> None:
+        assert summarize_shape(ShapeNode(kind="array", truncated=True)) == "array<...>"
+        assert summarize_shape(ShapeNode(kind="object", truncated=True)) == "object{...}"
+        assert summarize_shape(ShapeNode(kind="object")) == "object{}"
+
+    def test_a_digested_body_deeper_than_the_cap_never_reads_non_json(self, tmp_path: Path) -> None:
+        body = json.dumps({"a": {"b": {"o": {"x": 1}, "l": [1]}}})
+        entries = [_entry("GET", "https://api.myshop.example.com/deep", body=body)]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.shape is not None
+        assert summarize_shape(endpoint.shape, depth=9) == "object{a}"
+        cut = endpoint.shape.children["a"].children["b"].children
+        assert summarize_shape(cut["l"], depth=9) == "array<...>"
+        assert summarize_shape(cut["o"], depth=9) == "object{...}"
