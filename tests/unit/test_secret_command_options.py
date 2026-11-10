@@ -16,6 +16,7 @@ import collections
 import dataclasses
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -2719,3 +2720,132 @@ class TestNumberSubclassText:
             assert line["c"] == 1
         else:
             assert "c=<Color.RED: 1>" in text
+
+
+class _NoText:
+    """A value whose ``str`` and ``repr`` both raise."""
+
+    def __repr__(self) -> str:
+        raise RuntimeError("no repr")
+
+    __str__ = __repr__
+
+    def __hash__(self) -> int:
+        return 1
+
+
+class _SecretInt(int):
+    def __repr__(self) -> str:
+        return f"SecretInt({SCOPE_KEY})"
+
+    __str__ = __repr__
+
+
+class _Price(float):
+    """A float subclass whose text is not the number's."""
+
+    def __repr__(self) -> str:
+        return f"Price({float.__repr__(self)})"
+
+    __str__ = __repr__
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+class TestLoggingNeverRaises:
+    """A log call raised out of the caller: ``%d`` on a number whose text held a
+    scoped secret, and, in the console format, a value or key whose ``repr``
+    raises or an int past Python's 4300-digit limit."""
+
+    def _text(self, capsys: pytest.CaptureFixture[str]) -> str:
+        return strip_ansi(capsys.readouterr().err)
+
+    def test_percent_d_on_a_number_whose_digits_hold_the_secret(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets(["482"]):
+            get_logger("t").warning("fetched %d rows of %s", 14821, "x482y")
+        text = self._text(capsys)
+        assert "fetched" in text
+        assert "482" not in text
+        assert f"fetched 1{REDACTED}1 rows of x{REDACTED}y" in text
+
+    def test_percent_d_on_a_subclass_whose_text_holds_the_secret(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("n %d is %s", _SecretInt(5), _SecretInt(6))
+        text = self._text(capsys)
+        assert f"n 5 is SecretInt({REDACTED})" in text
+        assert SCOPE_KEY not in text
+
+    def test_a_mapping_argument_formats_by_name(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("got %(n)d for %(who)s", {"n": 3, "who": SCOPE_KEY})
+        text = self._text(capsys)
+        assert f"got 3 for {REDACTED}" in text
+
+    @pytest.mark.parametrize("scoped", [False, True], ids=["outside-scope", "inside-scope"])
+    @pytest.mark.parametrize(
+        "values",
+        [
+            pytest.param({"v": _NoText()}, id="repr-raises"),
+            pytest.param({"data": {_NoText(): 1}}, id="key-repr-raises"),
+            pytest.param({"v": 10**5000}, id="int-past-4300-digits"),
+        ],
+    )
+    def test_an_unprintable_value_renders(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool, values: dict[str, Any]
+    ) -> None:
+        _log_in(fmt, scoped, **values)
+        text = self._text(capsys)
+        assert "line" in text
+        assert "<unprintable" in text
+
+    def test_a_float_subclass_whose_text_differs(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("p %.1f", _Price(2.5), p=_Price(2.5))
+        text = self._text(capsys)
+        assert "p 2.5" in text
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["p"] == 2.5
+        else:
+            assert "p=Price(2.5)" in text
+
+    def test_the_last_resort_line_keeps_level_and_timestamp(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the walk fails too, the line is a fixed event with the level
+        and timestamp."""
+        import graftpunk.logging as gp_logging
+
+        def walk_fails(self: Any, value: Any, depth: int = 0) -> Any:
+            raise RuntimeError("walk")
+
+        monkeypatch.setattr(gp_logging._LineScrub, "__call__", walk_fails)
+        _log_in(fmt, False, v=_NoText())
+        text = self._text(capsys)
+        assert "<unrenderable log line>" in text
+        assert "warning" in text
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["level"] == "warning"
+            assert line["timestamp"].startswith("20")
+        else:
+            assert re.search(r"^\d{4}-\d\d-\d\dT", text)

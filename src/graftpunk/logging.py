@@ -20,7 +20,7 @@ import threading
 import traceback
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, TextIO
@@ -604,38 +604,80 @@ def _scrubbing_call(logger: GraftpunkLogger, name: str, secrets: tuple[str, ...]
                 kwargs["exception"] = "".join(traceback.format_exception(*exc_info)).rstrip("\n")
             if base == "exception":
                 target = "aerror" if is_async else "error"
-        return getattr(bound, target)(*scrub(args), **scrub(kwargs))
+        return getattr(bound, target)(*scrub(_interpolated(args)), **scrub(kwargs))
 
     return call
+
+
+def _interpolated(args: tuple[Any, ...]) -> tuple[Any, ...]:
+    """``(event, *positional)`` as the one formatted message, as structlog's
+    bound loggers interpolate it (a single non-empty mapping by name), so the
+    scrub reads the message as it will print.
+
+    Scrubbing the arguments one by one turned a number whose digits hold a
+    secret into a string, and ``%d`` then raised ``TypeError`` out of the log
+    call. A format that fails here is left to the logger, as before.
+    """
+    if len(args) < 2 or not isinstance(args[0], str):
+        return args
+    event, positional = args[0], args[1:]
+    try:
+        if len(positional) == 1 and isinstance(positional[0], Mapping) and positional[0]:
+            return (event % positional[0],)
+        return (event % positional,)
+    except Exception:  # noqa: BLE001 - the logger reports or raises as it did
+        return args
 
 
 def _unchanged(text: str) -> str:
     return text
 
 
-class _SafeJSONRenderer:
-    """structlog's JSONRenderer for gp's JSON log format, which never raises out
-    of the log call. A line it cannot write (a key that is not a string,
-    number, bool or None (#371), a container that holds itself) is written
-    again after the scrub's walk with nothing to redact, which makes such a
-    key its text and such a container its repr; every line it can write is
-    written as before."""
+class _SafeRenderer:
+    """A structlog renderer that never raises out of the log call: gp's JSON
+    and console formats each wrap theirs in one.
 
-    def __init__(self) -> None:
-        self._render = structlog.processors.JSONRenderer()
+    A line the renderer cannot write is written again after the scrub's walk
+    with nothing to redact. The walk makes a key that is not a string, number,
+    bool or None its text (#371), a container that holds itself its repr, and
+    a value whose ``str`` and ``repr`` both raise (one whose ``__repr__``
+    raises, an int past Python's 4300-digit limit) a fixed placeholder. If that
+    fails too, the line is a fixed event carrying the level and timestamp. A
+    line the renderer can write is written as before.
+    """
 
-    def __call__(
-        self, logger: WrappedLogger, method_name: str, event_dict: EventDict
-    ) -> str | bytes:
+    def __init__(
+        self, render: Callable[[WrappedLogger, str, EventDict], Any], *, json: bool
+    ) -> None:
+        self._render = render
+        # JSON writes an int or float subclass as its number; the walk does too.
+        self._plain_numbers = json
+
+    def __call__(self, logger: WrappedLogger, method_name: str, event_dict: EventDict) -> Any:
         try:
-            return self._render(logger, method_name, event_dict)
+            return self._render(logger, method_name, dict(event_dict))
         except Exception:  # noqa: BLE001, S110 - a log call must not raise
             pass
         try:
-            walked = _LineScrub(_unchanged, plain_numbers=True)(event_dict)
+            walked = _LineScrub(_unchanged, plain_numbers=self._plain_numbers)(event_dict)
             return self._render(logger, method_name, walked)
         except Exception:  # noqa: BLE001 - a log call must not raise
-            return self._render(logger, method_name, {"event": "<unrenderable log line>"})
+            return self._render(logger, method_name, _last_resort(event_dict))
+
+
+_UNRENDERABLE = "<unrenderable log line>"
+
+
+def _last_resort(event_dict: EventDict) -> EventDict:
+    """The line when nothing else renders: a fixed event, and the level and
+    timestamp when they are strings (add_log_level and TimeStamper write
+    them so)."""
+    line: dict[str, Any] = {"event": _UNRENDERABLE}
+    for key in ("level", "timestamp"):
+        value = event_dict.get(key)
+        if type(value) is str:
+            line[key] = value
+    return line
 
 
 def _processors(json_output: bool, colors: bool) -> list[Any]:
@@ -645,12 +687,15 @@ def _processors(json_output: bool, colors: bool) -> list[Any]:
     tail: list[Any] = (
         [
             structlog.processors.format_exc_info,
-            _SafeJSONRenderer(),
+            _SafeRenderer(structlog.processors.JSONRenderer(), json=True),
         ]
         if json_output
         else [
-            structlog.dev.ConsoleRenderer(
-                colors=colors, exception_formatter=structlog.dev.plain_traceback
+            _SafeRenderer(
+                structlog.dev.ConsoleRenderer(
+                    colors=colors, exception_formatter=structlog.dev.plain_traceback
+                ),
+                json=False,
             )
         ]
     )
