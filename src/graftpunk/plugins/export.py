@@ -56,13 +56,33 @@ _FONTS_DIR = Path(__file__).parent / "fonts"
 
 
 def _add_unicode_font(pdf: FPDF) -> None:
-    """Register DejaVu Sans, regular and bold, as ``_PDF_FONT`` on *pdf*.
-
-    A character DejaVu Sans has no glyph for (CJK, for one) does not raise:
-    fpdf2 logs a warning naming it, and the pdf cannot show it as written.
-    """
+    """Register DejaVu Sans, regular and bold, as ``_PDF_FONT`` on *pdf*."""
     pdf.add_font(_PDF_FONT, fname=_FONTS_DIR / "DejaVuSans.ttf")
     pdf.add_font(_PDF_FONT, style="B", fname=_FONTS_DIR / "DejaVuSans-Bold.ttf")
+
+
+# What a character DejaVu Sans has no glyph for (CJK, for one) is drawn as.
+# fpdf2 left such a character out of the drawn text without a mark, so
+# "A中B" read "AB" on the page and in a copy of its text.
+_NO_GLYPH = "�"
+# Line breaks and tabs have no glyph and are fpdf2's to lay out.
+_LAYOUT_CHARACTERS = frozenset("\n\r\t")
+
+
+def _drawable(pdf: FPDF, text: str, missing: set[str], *, bold: bool = False) -> str:
+    """*text* with each character the font has no glyph for as ``_NO_GLYPH``,
+    each such character added to *missing*."""
+    cmap = pdf.fonts[_PDF_FONT.lower() + ("B" if bold else "")].cmap
+    if all(ord(c) in cmap or c in _LAYOUT_CHARACTERS for c in text):
+        return text
+    kept = []
+    for c in text:
+        if ord(c) in cmap or c in _LAYOUT_CHARACTERS:
+            kept.append(c)
+        else:
+            missing.add(c)
+            kept.append(_NO_GLYPH)
+    return "".join(kept)
 
 
 def get_downloads_dir() -> Path:
@@ -217,6 +237,7 @@ def json_to_pdf(
     pdf.add_page()
 
     page_width = pdf.w - pdf.l_margin - pdf.r_margin
+    missing: set[str] = set()
 
     # Vendor header with optional logo
     if vendor or logo:
@@ -233,11 +254,11 @@ def json_to_pdf(
 
         if vendor:
             pdf.set_font(_PDF_FONT, style="B", size=18)
-            pdf.cell(text=vendor, new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(text=_drawable(pdf, vendor, missing, bold=True), new_x="LMARGIN", new_y="NEXT")
         if vendor_info:
             pdf.set_x(x_after_logo)
             pdf.set_font(_PDF_FONT, size=8)
-            pdf.cell(text=vendor_info, new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(text=_drawable(pdf, vendor_info, missing), new_x="LMARGIN", new_y="NEXT")
 
         if logo_w:
             pdf.set_y(pdf.get_y() + 2)
@@ -249,7 +270,7 @@ def json_to_pdf(
 
     # Title
     pdf.set_font(_PDF_FONT, style="B", size=14)
-    pdf.cell(text=title, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(text=_drawable(pdf, title, missing, bold=True), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
 
     # Metadata section
@@ -257,25 +278,26 @@ def json_to_pdf(
         pdf.set_font(_PDF_FONT, size=9)
         for key, value in metadata.items():
             pdf.set_font(_PDF_FONT, style="B", size=9)
-            pdf.cell(text=f"{key}: ", new_x="END")
+            pdf.cell(text=_drawable(pdf, f"{key}: ", missing, bold=True), new_x="END")
             pdf.set_font(_PDF_FONT, size=9)
-            pdf.cell(text=str(value), new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(text=_drawable(pdf, str(value), missing), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(4)
 
     if not data:
         pdf.set_font(_PDF_FONT, size=10)
         pdf.cell(text="No data.")
-        pdf.output(str(output))
-        return str(output), pdf.pages_count
+        return _write_pdf(pdf, output, missing)
 
     rows = [flatten_dict(row) for row in table_rows(data)] if flatten else table_rows(data)
     columns = ordered_keys(rows)
 
     # Build table data: header row + data rows. A key need not be a string (1,
     # None, a tuple); fpdf2 takes only text, so the header shows its str() (#310).
-    table_data: list[list[str]] = [[str(col) for col in columns]]
+    table_data: list[list[str]] = [
+        [_drawable(pdf, str(col), missing, bold=True) for col in columns]
+    ]
     for row in rows:
-        table_data.append([str(row.get(col, "")) for col in columns])
+        table_data.append([_drawable(pdf, str(row.get(col, "")), missing) for col in columns])
 
     # Render table
     pdf.set_font(_PDF_FONT, size=7)
@@ -295,6 +317,19 @@ def json_to_pdf(
                 for col in part:
                     row_obj.cell(row_data[col])
 
+    return _write_pdf(pdf, output, missing)
+
+
+def _write_pdf(pdf: FPDF, output: Path, missing: set[str]) -> tuple[str, int]:
+    """Write *pdf* to *output*, after one warning naming the characters drawn as
+    ``_NO_GLYPH`` (the first ten, as code points)."""
+    if missing:
+        LOG.warning(
+            "pdf_characters_not_in_font",
+            count=len(missing),
+            characters=[f"U+{ord(c):04X}" for c in sorted(missing)[:10]],
+            drawn_as="U+FFFD",
+        )
     pdf.output(str(output))
     return str(output), pdf.pages_count
 

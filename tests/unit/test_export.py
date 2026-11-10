@@ -608,10 +608,30 @@ class TestPdfUnicode:
         path, _ = json_to_pdf([{"Łódź": 1}], tmp_path / "out.pdf")
         assert {0x141, 0x17A} <= _pdf_code_points(Path(path).read_bytes())
 
-    def test_a_character_the_font_lacks_does_not_raise(self, tmp_path: Path) -> None:
-        path, pages = json_to_pdf([{"name": "中文 "}], tmp_path / "out.pdf")
+    def test_a_character_the_font_lacks_is_drawn_as_the_replacement_mark(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """fpdf2 left such a character out without a mark: "A\u4e2d\u6587B"
+        drew "AB". It is now drawn as U+FFFD, in cells, headings and the title,
+        and one warning names it."""
+        from graftpunk.logging import configure_logging
+
+        configure_logging(level="WARNING")
+        path, pages = json_to_pdf(
+            [{"name": "A\u4e2d\u6587B", "\u4e2d": 1}], tmp_path / "out.pdf", title="T\u4e2d"
+        )
         assert pages == 1
-        assert Path(path).read_bytes().startswith(b"%PDF-")
+        points = _pdf_code_points(Path(path).read_bytes())
+        assert 0xFFFD in points
+        assert {0x41, 0x42} <= points
+        err = capsys.readouterr().err
+        assert err.count("pdf_characters_not_in_font") == 1
+        assert "U+4E2D" in err
+        assert "U+6587" in err
+
+    def test_line_breaks_and_tabs_are_not_replaced(self, tmp_path: Path) -> None:
+        path, _ = json_to_pdf([{"note": "a\nb\tc"}], tmp_path / "out.pdf")
+        assert 0xFFFD not in _pdf_code_points(Path(path).read_bytes())
 
     def test_command_result_export_writes_the_row(self) -> None:
         content = CommandResult(data=[{"name": "O\u2019BRIEN"}]).export("pdf")
