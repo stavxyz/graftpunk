@@ -241,6 +241,29 @@ class TestConfig:
         assert names.aliases == {"myshop-staging": ()}
         assert names.conflicts == (), "the subclass declares no aliases"
 
+    def test_aliases_from_a_property_or_init_are_reported_not_silently_dropped(
+        self,
+    ) -> None:
+        class PropShop(SitePlugin):
+            site_name = "propshop"
+
+            @property
+            def aliases(self) -> tuple[str, ...]:
+                return ("ps",)
+
+        class InitShop(SitePlugin):
+            site_name = "initshop"
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.aliases = ("is",)
+
+        names = plugin_names([PropShop(), InitShop()])
+        assert names.aliases == {"propshop": (), "initshop": ()}
+        reasons = [conflict.reason for conflict in names.conflicts]
+        assert len(reasons) == 2
+        assert all("class body" in reason for reason in reasons)
+
     @pytest.mark.parametrize("value", [None, [], ["shop"]])
     def test_a_plugins_own_none_or_list_is_left_as_it_was(self, value: object) -> None:
         class Shop(SitePlugin):

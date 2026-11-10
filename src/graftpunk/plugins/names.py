@@ -146,9 +146,21 @@ def declared_aliases(plugin: Any) -> tuple[str, ...]:
     # A SitePlugin or YAML plugin's config holds what its own class declared,
     # validated; the attribute may be a value gp leaves alone (an inherited dict).
     config = getattr(type(plugin), "_plugin_config", None)
-    if config is not None and isinstance(getattr(config, "aliases", None), tuple):
-        return config.aliases
     value = getattr(plugin, "aliases", ())
+    if config is not None and isinstance(getattr(config, "aliases", None), tuple):
+        computed = (
+            not callable(value)
+            and isinstance(value, (tuple, list))
+            and all(isinstance(name, str) for name in value)
+            and tuple(value) != config.aliases
+        )
+        if computed:
+            raise PluginError(
+                f"Plugin '{plugin.site_name}': 'aliases' is read only from an "
+                'assignment in the class body (aliases = ("shop",)), not from a '
+                "property or an attribute set in __init__."
+            )
+        return config.aliases
     if callable(value):
         return ()
     return validate_aliases(value, plugin.site_name)

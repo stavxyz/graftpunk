@@ -92,6 +92,10 @@ name to a different plugin because one failed to load. `gp plugin check` reports
 the same collisions among the plugins in the project, and an alias `gp plugin
 new` would refuse as a plugin name.
 
+Declare aliases by assignment in the class body. A `SitePlugin` whose aliases
+come from a property or an attribute set in `__init__` gets none, and gp warns
+once naming the plugin.
+
 A plugin's aliases are the ones its own class declares. Like the rest of its
 configuration, they are not inherited: a subclass with its own `site_name` (a
 `myshop-staging` variant of `myshop-storefront`) has no aliases unless it
