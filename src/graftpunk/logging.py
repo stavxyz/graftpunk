@@ -526,11 +526,15 @@ class _LineScrub(_LineWalk):
             # this line changes (#372). The plain number keeps %d and a native
             # JSON number; one whose str is not the plain number's keeps them
             # too, printing the texts the scrub read.
-            plain = int.__int__(value) if isinstance(value, int) else float.__float__(value)
-            if self._plain_numbers or texts[0] == str(plain):
-                return plain
-            frozen = _FrozenInt if isinstance(value, int) else _FrozenFloat
-            return frozen(plain, texts[0], texts[1])
+            if isinstance(value, int):
+                whole = int.__int__(value)
+                if self._plain_numbers or texts[0] == str(whole):
+                    return whole
+                return _FrozenInt(whole, texts[0], texts[1])
+            real = float.__float__(value)
+            if self._plain_numbers or texts[0] == str(real):
+                return real
+            return _FrozenFloat(real, texts[0], texts[1])
         if self._closes_loop(value, depth):
             # Its own __structlog__ return led back to it: its repr ends the loop.
             return texts[1]
@@ -620,7 +624,9 @@ class _SafeJSONRenderer:
     def __init__(self) -> None:
         self._render = structlog.processors.JSONRenderer()
 
-    def __call__(self, logger: WrappedLogger, method_name: str, event_dict: EventDict) -> str:
+    def __call__(
+        self, logger: WrappedLogger, method_name: str, event_dict: EventDict
+    ) -> str | bytes:
         try:
             return self._render(logger, method_name, event_dict)
         except Exception:  # noqa: BLE001, S110 - a log call must not raise
