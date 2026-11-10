@@ -312,19 +312,21 @@ def json_to_pdf(
         pdf.line(pdf.l_margin, y, pdf.l_margin + page_width, y)
         pdf.ln(4)
 
-    # Title
-    pdf.set_font(_PDF_FONT, style="B", size=14)
-    pdf.cell(text=_drawable(pdf, title, missing, bold=True), new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(3)
+    # Title. fpdf2's cell() raises on empty text, so an empty title draws none.
+    if title:
+        pdf.set_font(_PDF_FONT, style="B", size=14)
+        pdf.cell(text=_drawable(pdf, title, missing, bold=True), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(3)
 
-    # Metadata section
-    if metadata:
-        pdf.set_font(_PDF_FONT, size=9)
-        for key, value in metadata.items():
+    # Metadata section: a pair whose value is empty is left out, as cell()
+    # raises on empty text.
+    shown = [(key, str(value)) for key, value in (metadata or {}).items() if str(value)]
+    if shown:
+        for key, value in shown:
             pdf.set_font(_PDF_FONT, style="B", size=9)
             pdf.cell(text=_drawable(pdf, f"{key}: ", missing, bold=True), new_x="END")
             pdf.set_font(_PDF_FONT, size=9)
-            pdf.cell(text=_drawable(pdf, str(value), missing), new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(text=_drawable(pdf, value, missing), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(4)
 
     if not data:
@@ -347,26 +349,33 @@ def json_to_pdf(
     pdf.set_font(_PDF_FONT, size=7)
     headings_style = FontFace(emphasis="BOLD", fill_color=(220, 220, 220))
 
+    cut = 0
     for part_index, part in enumerate(_column_parts(pdf, table_data, page_width)):
         if part_index:
             pdf.ln(4)
         col_width = page_width / max(len(part), 1)
+        part_rows, part_cut = _fit_part(
+            pdf, [[row[col] for col in part] for row in table_data], col_width
+        )
+        cut += part_cut
+        pdf.set_font(_PDF_FONT, size=7)
         with pdf.table(
             headings_style=headings_style,
             col_widths=(col_width,) * len(part),
             first_row_as_headings=True,
         ) as table:
-            for row_data in table_data:
+            for row_data in part_rows:
                 row_obj = table.row()
-                for col in part:
-                    row_obj.cell(row_data[col])
+                for cell_text in row_data:
+                    row_obj.cell(cell_text)
 
-    return _write_pdf(pdf, output, missing)
+    return _write_pdf(pdf, output, missing, cut)
 
 
-def _write_pdf(pdf: FPDF, output: Path, missing: set[str]) -> tuple[str, int]:
+def _write_pdf(pdf: FPDF, output: Path, missing: set[str], cut: int = 0) -> tuple[str, int]:
     """Write *pdf* to *output*, after one warning naming the characters drawn as
-    ``_NO_GLYPH`` (the first ten, as code points)."""
+    ``_NO_GLYPH`` (the first ten, as code points) and one counting the cells
+    cut to fit a page."""
     if missing:
         LOG.warning(
             "pdf_characters_not_in_font",
@@ -374,8 +383,93 @@ def _write_pdf(pdf: FPDF, output: Path, missing: set[str]) -> tuple[str, int]:
             characters=[f"U+{ord(c):04X}" for c in sorted(missing)[:10]],
             drawn_as="U+FFFD",
         )
+    if cut:
+        LOG.warning("pdf_cells_truncated", count=cut, marked_with="U+2026")
     pdf.output(str(output))
     return str(output), pdf.pages_count
+
+
+# What ends a cell cut to fit one page.
+_CUT_MARK = "…"
+
+
+def _fit_part(pdf: FPDF, rows: list[list[str]], col_width: float) -> tuple[list[list[str]], int]:
+    """*rows* (headings first) with each cell cut to the lines one page holds,
+    and how many cells were cut.
+
+    fpdf2 cannot split a table row across pages: a row taller than a page
+    raised ``The row with index N is too high``, and DejaVu Sans, wider than
+    Helvetica, reaches that with shorter text. A row is as tall as its tallest
+    cell, and every page repeats the heading row, so a heading keeps at most a
+    quarter of a page's lines and a body cell what the page has left, less one
+    line of slack. A cut cell ends in ``_CUT_MARK``.
+    """
+    pdf.set_font(_PDF_FONT, size=7)
+    line_height = 2 * pdf.font_size  # fpdf2's table default
+    total = int((pdf.page_break_trigger - pdf.t_margin) // line_height)
+    width = col_width - pdf.line_width
+    cut = 0
+
+    pdf.set_font(_PDF_FONT, style="B", size=7)
+    heading_cap = max(1, total // 4)
+    headings = []
+    heading_lines = 1
+    for text in rows[0]:
+        fitted, lines, was_cut = _fit_cell(pdf, text, width, heading_cap)
+        headings.append(fitted)
+        heading_lines = max(heading_lines, lines)
+        cut += was_cut
+
+    pdf.set_font(_PDF_FONT, size=7)
+    body_cap = max(1, total - heading_lines - 1)
+    body = []
+    for row in rows[1:]:
+        fitted_row = []
+        for text in row:
+            fitted, _lines, was_cut = _fit_cell(pdf, text, width, body_cap)
+            fitted_row.append(fitted)
+            cut += was_cut
+        body.append(fitted_row)
+    return [headings, *body], cut
+
+
+def _fit_cell(pdf: FPDF, text: str, width: float, cap: int) -> tuple[str, int, bool]:
+    """*text* cut to *cap* lines at *width* in the current font, how many lines
+    it takes, and whether it was cut."""
+    if not text:
+        return text, 1, False
+    usable = max(width - 2 * pdf.c_margin, 0.01)
+    # Word wrapping leaves at most about a line's width unused per line, so
+    # three times the text's width in lines, plus its line breaks, is more
+    # than the count: a text under it fits without being measured.
+    breaks = text.count("\n") + text.count("\r")
+    bound = breaks + 1 + 3 * int(pdf.get_string_width(text) // usable + 1)
+    if bound <= cap:
+        return text, min(bound, cap), False
+    # cap lines hold at most cap * (chars per line + a line break) characters,
+    # a line holding at most usable / (narrowest visible character) of them.
+    # Measuring that much of a long text decides the first cap lines; the
+    # rest is never wrapped (a 9000-character cell took seconds).
+    narrowest = min((w for c in set(text) if (w := pdf.get_string_width(c)) > 0), default=usable)
+    prefix = text[: cap * (int(usable / narrowest) + 2) + 1]
+    lines = pdf.multi_cell(w=width, text=prefix, dry_run=True, output="LINES")
+    if len(lines) <= cap and len(prefix) < len(text):
+        # Characters of no width (combining marks) defeat the limit: measure it all.
+        lines = pdf.multi_cell(w=width, text=text, dry_run=True, output="LINES")
+    if len(lines) <= cap:
+        return text, len(lines), False
+    kept = list(lines[:cap])
+    while True:
+        last = kept[-1]
+        while last and pdf.get_string_width(last + _CUT_MARK) > usable:
+            last = last[:-1]
+        kept[-1] = last + _CUT_MARK
+        fitted = "\n".join(kept)
+        if len(pdf.multi_cell(w=width, text=fitted, dry_run=True, output="LINES")) <= cap:
+            return fitted, cap, True
+        if len(kept) == 1:
+            return _CUT_MARK, 1, True
+        kept = kept[:-1]
 
 
 def _column_parts(pdf: FPDF, table_data: list[list[str]], page_width: float) -> list[list[int]]:
@@ -391,9 +485,11 @@ def _column_parts(pdf: FPDF, table_data: list[list[str]], page_width: float) -> 
     if count <= 1:
         return [list(range(count))]
     pdf.set_font(_PDF_FONT, style="B", size=7)
-    widest = max((pdf.get_string_width(c) for c in set("".join(table_data[0]))), default=0.0)
+    headings = set("".join(table_data[0])) | {_CUT_MARK}
+    widest = max(pdf.get_string_width(c) for c in headings)
     pdf.set_font(_PDF_FONT, size=7)
-    body = set().union(*(set(cell) for row in table_data[1:] for cell in row))
+    # The cut mark too: a cell cut to fit a page ends in it (_fit_part).
+    body = set().union(*(set(cell) for row in table_data[1:] for cell in row), {_CUT_MARK})
     widest = max(widest, max((pdf.get_string_width(c) for c in body), default=0.0))
     # fpdf2 takes the cell margin on both sides and the border line out of a
     # column's width, and raises "Not enough horizontal space to render a

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import csv
+import datetime
+import decimal
 import json
+import random
 import re
 import zlib
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -699,3 +703,161 @@ class TestPdfWideTables:
         data = [{f"c{i}": "\ufdfd\u2014W" for i in range(80)}]
         _, pages = json_to_pdf(data, tmp_path / "out.pdf")
         assert pages >= 1
+
+
+def _pdf_text_bytes(pdf: bytes) -> bytes:
+    """The pdf's Flate-compressed content streams, inflated."""
+    out = b""
+    for match in re.finditer(rb"stream\r?\n", pdf):
+        try:
+            out += zlib.decompressobj().decompress(pdf[match.end() :])
+        except zlib.error:
+            continue
+    return out
+
+
+class TestPdfCellsTooTallForAPage:
+    """fpdf2 cannot split a table row across pages, and raised ``The row with
+    index N is too high`` for a cell taller than a page; DejaVu Sans, wider
+    than Helvetica, reached that with shorter text than 1.42.0 did."""
+
+    @pytest.mark.parametrize(
+        ("columns", "length"),
+        [(1, 12000), (5, 1500), (12, 600), (20, 300), (40, 150), (200, 400)],
+    )
+    def test_a_long_cell_is_cut_with_one_warning(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], columns: int, length: int
+    ) -> None:
+        from graftpunk.logging import configure_logging
+
+        configure_logging(level="WARNING")
+        row = {f"c{i}": "x" for i in range(columns)}
+        row["c0"] = ("abc de " * length)[:length]
+        path, pages = json_to_pdf([row, row], tmp_path / "out.pdf")
+        assert pages >= 1
+        # Cut cells end in U+2026, named in the ToUnicode map.
+        assert 0x2026 in _pdf_code_points(Path(path).read_bytes())
+        err = capsys.readouterr().err
+        assert err.count("pdf_cells_truncated") == 1
+        # Two rows; a table split into parts repeats the first column, cut in each.
+        (count,) = re.findall(r"count=(\d+)", err)
+        assert int(count) == 2 if columns < 40 else int(count) % 2 == 0
+
+    def test_a_cell_of_line_breaks_is_cut(self, tmp_path: Path) -> None:
+        _, pages = json_to_pdf([{"a": "\n" * 3000, "b": 1}], tmp_path / "out.pdf")
+        assert pages >= 1
+
+    def test_a_row_of_many_tall_cells_and_a_long_heading(self, tmp_path: Path) -> None:
+        heading = "h" * 4000
+        row = {heading: "word " * 2000, **{f"c{i}": "word " * 800 for i in range(11)}}
+        _, pages = json_to_pdf([row] * 3, tmp_path / "out.pdf")
+        assert pages >= 3
+
+    def test_a_flattened_list_of_dicts_in_a_wide_row(self, tmp_path: Path) -> None:
+        row = {f"c{i}": "v" for i in range(11)}
+        row["items"] = [{"sku": f"SKU-{n:05d}", "qty": n} for n in range(25)]
+        _, pages = json_to_pdf([row], tmp_path / "out.pdf")
+        assert pages >= 1
+
+    def test_a_cell_that_fits_is_not_cut(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from graftpunk.logging import configure_logging
+
+        configure_logging(level="WARNING")
+        path, _ = json_to_pdf([{"a": "abc de " * 40, "b": 1}], tmp_path / "out.pdf")
+        assert 0x2026 not in _pdf_code_points(Path(path).read_bytes())
+        assert "pdf_cells_truncated" not in capsys.readouterr().err
+
+
+class TestPdfEmptyTexts:
+    """fpdf2's ``cell`` raises on empty text, so an empty title or metadata
+    value raised ``'text_line' must have fragments``."""
+
+    def test_an_empty_title_draws_no_title(self, tmp_path: Path) -> None:
+        path, pages = json_to_pdf([{"a": 1}], tmp_path / "out.pdf", title="")
+        assert pages == 1
+        assert 0x52 not in _pdf_code_points(Path(path).read_bytes())  # no "Report"
+
+    def test_an_empty_metadata_value_is_left_out(self, tmp_path: Path) -> None:
+        path, pages = json_to_pdf(
+            [{"a": 1}], tmp_path / "out.pdf", metadata={"Customer": "", "Zone": "5"}
+        )
+        assert pages == 1
+        points = _pdf_code_points(Path(path).read_bytes())
+        assert 0x5A in points  # Zone
+        assert 0x43 not in points  # Customer
+
+    def test_empty_vendor_texts(self, tmp_path: Path) -> None:
+        _, pages = json_to_pdf([{"a": 1}], tmp_path / "out.pdf", vendor="", vendor_info="")
+        assert pages == 1
+
+
+_FUZZ_CHARS = [
+    "W",
+    "a",
+    " ",
+    "\n",
+    "\t",
+    "\r",
+    "中",
+    "\U0001f600",
+    "\ud800",
+    "\x00",
+    "‏",
+    "́",
+    "Ж",
+    "\u2014",
+    "﷽",
+    "\x0b",
+    "­",
+    "﻿",
+    "…",
+    "abc de ",
+]
+
+
+def _fuzz_value(rnd: random.Random, depth: int = 0) -> Any:
+    kind = rnd.randint(0, 10 if depth < 2 else 5)
+    if kind in (0, 1):
+        n = rnd.choice([0, 1, 4, 40, 300, 1500])
+        return "".join(rnd.choice(_FUZZ_CHARS) for _ in range(n))
+    if kind == 2:
+        return rnd.choice([rnd.randint(-(10**30), 10**30), float("nan"), float("inf"), -0.0])
+    if kind == 3:
+        return rnd.choice([None, True, datetime.date(2026, 1, 1), decimal.Decimal("NaN")])
+    if kind == 4:
+        return rnd.choice([(1, "x"), {1, 2}, object(), b"\xff"])
+    if kind == 5:
+        return rnd.choice(["word " * 900, "\n" * 400])
+    if kind in (6, 7):
+        return [_fuzz_value(rnd, depth + 1) for _ in range(rnd.randint(0, 8))]
+    return {
+        rnd.choice(["a", "中", (1, 2), 3, None, ""]): _fuzz_value(rnd, depth + 1)
+        for _ in range(rnd.randint(0, 3))
+    }
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_the_pdf_export_never_raises_on_fuzzed_input(tmp_path: Path, seed: int) -> None:
+    """Mixed types, unicode, nested values, long cells, 1 to 120 columns, and
+    odd titles and metadata: a seeded sample of the fuzz run on this branch."""
+    rnd = random.Random(seed)  # noqa: S311 - a fixed sample, not a secret
+    for case in range(6):
+        columns = rnd.choice([1, 2, 5, 12, 30, 45, 80, 120])
+        keys = [
+            rnd.choice([f"c{j}", f"c{j}", 1, None, (1, 2), "", "W" * 40]) for j in range(columns)
+        ]
+        rows: list[Any] = [
+            {key: _fuzz_value(rnd) for key in keys} if rnd.random() < 0.8 else _fuzz_value(rnd)
+            for _ in range(rnd.randint(0, 4))
+        ]
+        json_to_pdf(
+            rows,
+            tmp_path / f"out{case}.pdf",
+            title=rnd.choice(["", "T", "\n", " ", "\ud800"]),
+            vendor=rnd.choice([None, "", "V\u2014\ud800"]),
+            vendor_info=rnd.choice([None, "", "\U0001f600"]),
+            metadata={rnd.choice(["k", "", "中"]): rnd.choice(["", "v", "5"]) for _ in range(2)},
+            flatten=rnd.random() < 0.8,
+        )
