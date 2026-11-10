@@ -264,6 +264,18 @@ class TestConfig:
         assert len(reasons) == 2
         assert all("class body" in reason for reason in reasons)
 
+    def test_a_class_list_changed_later_by_plugin_code_keeps_its_aliases(self) -> None:
+        class Shop(SitePlugin):
+            site_name = "myshop"
+            aliases = ["shop"]
+
+        plugin = Shop()
+        plugin.aliases.append("extra")
+
+        names = plugin_names([plugin])
+        assert names.aliases == {"myshop": ("shop",)}
+        assert names.conflicts == ()
+
     @pytest.mark.parametrize("value", [None, [], ["shop"]])
     def test_a_plugins_own_none_or_list_is_left_as_it_was(self, value: object) -> None:
         class Shop(SitePlugin):

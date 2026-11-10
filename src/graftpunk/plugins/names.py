@@ -25,6 +25,7 @@ name the CLI can register. An alias may equal the plugin's own ``session_name``.
 
 from __future__ import annotations
 
+import inspect
 import re
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
@@ -148,8 +149,13 @@ def declared_aliases(plugin: Any) -> tuple[str, ...]:
     config = getattr(type(plugin), "_plugin_config", None)
     value = getattr(plugin, "aliases", ())
     if config is not None and isinstance(getattr(config, "aliases", None), tuple):
+        # Only a value from the instance or a descriptor is computed; a class's
+        # own list is read once into the config, whatever its code does later.
+        declared = inspect.getattr_static(type(plugin), "aliases", None)
+        own = "aliases" in getattr(plugin, "__dict__", {})
         computed = (
-            not callable(value)
+            (own or hasattr(declared, "__get__"))
+            and not callable(value)
             and isinstance(value, (tuple, list))
             and all(isinstance(name, str) for name in value)
             and tuple(value) != config.aliases
