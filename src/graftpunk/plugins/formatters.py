@@ -10,7 +10,7 @@ import datetime
 import decimal
 import importlib.metadata
 import io
-import json
+import math
 import numbers
 from collections.abc import Callable
 from pathlib import Path
@@ -23,12 +23,13 @@ from rich.table import Table
 from rich.text import Text
 
 from graftpunk import console as gp_console
-from graftpunk.console import stream_is_tty, write_raw
+from graftpunk.console import stream_is_tty, visible_text, write_raw
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
 from graftpunk.plugins.export import (
     _neutralize_formula,
     get_downloads_dir,
+    json_text,
     ordered_keys,
     table_rows,
 )
@@ -99,7 +100,9 @@ def _resolve_view_data(data: Any, view: ViewConfig) -> Any | None:
     view_data = extract_view_data(data, view.path) if view.path else data
     if view_data is None:
         return None
-    if isinstance(view_data, list) and any(isinstance(item, dict) for item in view_data):
+    if isinstance(view_data, list) and view_data:
+        # A list with no dict too: its items are the value column, which the
+        # filter keeps or drops like any other (apply_column_filter).
         view_data = apply_column_filter(view_data, view.columns)
     elif isinstance(view_data, dict) and view.columns:
         view_data = apply_column_filter([view_data], view.columns)[0]
@@ -193,7 +196,7 @@ class JsonFormatter:
         output_config: OutputConfig | None = None,
         output_path: str = "",
     ) -> None:
-        json_str = json.dumps(data, indent=2, default=str)
+        json_str = json_text(data, indent=2)
         if output_path or not stream_is_tty(console):
             # A file or a pipe wants parseable JSON, not a wrapped, highlighted render.
             write_raw(json_str + "\n", console, output_path)
@@ -288,7 +291,7 @@ class TableFormatter:
             table.add_column("Value")
             for key, value in data.items():
                 if isinstance(value, (dict, list)):
-                    value = json.dumps(value, default=str)
+                    value = json_text(value)
                 table.add_row(Text(str(key)), Text(str(value)))
             console.print(table)
         else:
@@ -308,7 +311,7 @@ class RawFormatter:
         output_config: OutputConfig | None = None,
         output_path: str = "",
     ) -> None:
-        text = data if isinstance(data, str) else json.dumps(data, default=str)
+        text = data if isinstance(data, str) else json_text(data)
         if not output_path and not text.endswith("\n"):
             text += "\n"  # a file gets the exact payload; a terminal gets a line
         write_raw(text, console, output_path)
@@ -319,7 +322,7 @@ def _csv_text(value: Any) -> str:
     if isinstance(value, numbers.Number):
         return str(value)
     if isinstance(value, (dict, list)):
-        return _neutralize_formula(json.dumps(value, default=str))
+        return _neutralize_formula(json_text(value))
     return _neutralize_formula(str(value))
 
 
@@ -378,6 +381,11 @@ class CsvFormatter:
             LOG.debug("csv_format_empty_list")
             _write_empty_csv(output_config, console, output_path)
             return
+        # The default view's column filter, before the table check: it keeps
+        # or drops the value column of a list with no dict like any other.
+        view = output_config.get_default_view() if output_config else None
+        if view and view.columns:
+            data = apply_column_filter(data, view.columns)
         if not any(isinstance(item, dict) for item in data):
             # A list with no dict at all (strings, numbers) is not a table.
             LOG.warning(
@@ -389,12 +397,6 @@ class CsvFormatter:
             RawFormatter().format(data, console, output_path=output_path)
             return
         data = table_rows(data)
-
-        # Apply column filter from output config
-        if output_config:
-            view = output_config.get_default_view()
-            if view and view.columns:
-                data = apply_column_filter(data, view.columns)
 
         if not data:
             LOG.debug("csv_format_empty_after_config")
@@ -453,13 +455,13 @@ class XlsxFormatter:
             bold = workbook.add_format({"bold": True})
 
             if output_config and output_config.views:
+                used: set[str] = set()
                 for view in output_config.views:
                     view_data = _resolve_view_data(data, view)
                     if view_data is None:
                         LOG.debug("xlsx_view_empty", view=view.name, path=view.path)
                         continue
-                    # Excel worksheet names are limited to 31 characters
-                    sheet_name = (view.title or view.name)[:31]
+                    sheet_name = _sheet_name(view.title or view.name, used)
                     self._write_sheet(workbook, sheet_name, view_data, bold)
             else:
                 self._write_sheet(workbook, "Sheet1", data, bold)
@@ -538,18 +540,67 @@ def _write_xlsx_cell(worksheet: Any, row: int, col: int, value: Any, fmt: Any = 
     ``strings_to_formulas=False`` alone still lets ``write()`` store
     ``{=...}`` as an array formula, so strings take ``write_string``. An empty
     string goes to ``write()``, which leaves the cell blank, where
-    ``write_string`` would store an empty text cell. A dict, list or tuple is
-    written as its JSON, and any other value xlsxwriter cannot store as its
-    ``str()``, as the CSV formatter writes it (#310).
+    ``write_string`` would store an empty text cell.
+
+    Every value is written; none raises (#310). A dict, list or tuple is
+    written as its JSON (:func:`json_text`). A number Excel cannot hold (NaN,
+    an infinity, ``Decimal("NaN")``, an int or Decimal too large for a float)
+    is written as its ``str()`` (``nan``, ``inf``, ``NaN``, the digits). A
+    datetime or time with a UTC offset is written as its ``isoformat()``, as
+    Excel has no time zones. A string has each lone surrogate as U+FFFD. Any
+    other value xlsxwriter cannot store is written as its ``str()``, as the CSV
+    formatter writes it.
     """
     if isinstance(value, (dict, list, tuple)):
-        value = json.dumps(value, default=str)
+        value = json_text(value)
+    elif isinstance(value, bool):
+        pass
+    elif isinstance(value, numbers.Real | decimal.Decimal):
+        if not _fits_a_float(value):
+            value = str(value)
+    elif isinstance(value, datetime.datetime | datetime.time):
+        if value.utcoffset() is not None:
+            value = value.isoformat()
     elif value is not None and not isinstance(value, _XLSX_NATIVE):
         value = str(value)
-    if isinstance(value, str) and value:
-        worksheet.write_string(row, col, value, fmt)
-    else:
-        worksheet.write(row, col, value, fmt)
+    if isinstance(value, str):
+        value = visible_text(value)
+    try:
+        if isinstance(value, str) and value:
+            worksheet.write_string(row, col, value, fmt)
+        else:
+            worksheet.write(row, col, value, fmt)
+    except (TypeError, ValueError, OverflowError):
+        # A value of a native type xlsxwriter still refuses: its text.
+        worksheet.write_string(row, col, visible_text(str(value)), fmt)
+
+
+# Characters Excel refuses in a worksheet name; xlsxwriter raised on each, and
+# on a name used twice (two view titles alike in their first 31 characters).
+_SHEET_NAME_REFUSED = str.maketrans(dict.fromkeys("[]:*?/\\", "_"))
+
+
+def _sheet_name(title: str, used: set[str]) -> str:
+    """*title* as a worksheet name Excel takes: refused characters as ``_``,
+    no leading or trailing ``'``, at most 31 characters, never empty, and
+    numbered when an earlier sheet has it (compared without case, as Excel
+    does). Adds the name to *used*."""
+    base = visible_text(title).translate(_SHEET_NAME_REFUSED).strip("'")[:31] or "Sheet"
+    name, number = base, 1
+    while name.lower() in used:
+        number += 1
+        suffix = f" ({number})"
+        name = base[: 31 - len(suffix)] + suffix
+    used.add(name.lower())
+    return name
+
+
+def _fits_a_float(value: numbers.Real | decimal.Decimal) -> bool:
+    """Whether Excel can hold *value*: a finite float, once converted."""
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError, TypeError):
+        return False
 
 
 class PdfFormatter:

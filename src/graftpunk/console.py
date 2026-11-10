@@ -48,6 +48,20 @@ def stream_is_tty(console: Console) -> bool:
 _stream_is_tty = stream_is_tty
 
 
+def visible_text(text: str) -> str:
+    """*text* with each lone surrogate as U+FFFD, and unchanged otherwise.
+
+    ``json.loads('"\\\\ud800"')`` makes such a string. No UTF-8 file or stream
+    can hold a lone surrogate, so writing one raised ``UnicodeEncodeError``. A
+    high and low surrogate in order become the character they encode.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return text
+
+
 def write_raw(text: str, console: Console, output_path: str = "") -> None:
     """Emit *text* exactly as given: to *output_path* if set, else to the console's stream.
 
@@ -60,7 +74,11 @@ def write_raw(text: str, console: Console, output_path: str = "") -> None:
 
     Because it bypasses ``Console.print``, the text is invisible to
     ``Console.capture()`` and ``record=True``; do not pass a capturing console.
+
+    The one change made to the text: a lone surrogate is written as U+FFFD
+    (:func:`visible_text`), as no UTF-8 file or stream can hold one.
     """
+    text = visible_text(text)
     if output_path:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)

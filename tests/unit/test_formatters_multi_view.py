@@ -1,6 +1,8 @@
 """Tests for multi-view rendering in output formatters."""
 
 import csv
+import datetime
+import decimal
 import io
 import json
 from pathlib import Path
@@ -15,8 +17,10 @@ from graftpunk.plugins.cli_plugin import CommandResult
 from graftpunk.plugins.export import json_to_pdf
 from graftpunk.plugins.formatters import (
     CsvFormatter,
+    JsonFormatter,
     OutputFormatter,
     PdfFormatter,
+    RawFormatter,
     TableFormatter,
     XlsxFormatter,
     format_output,
@@ -727,3 +731,197 @@ def test_a_nested_list_of_dicts_holding_a_date_exports(tmp_path: Path) -> None:
     path, _ = json_to_csv(data, tmp_path / "out.csv")
     assert "2026-01-01" in Path(path).read_text()
     json_to_pdf(data, tmp_path / "out.pdf")
+
+
+_NESTED_KEYS: list[Any] = [
+    [{"a": {(1, 2): 1}}],
+    [{"a": [{(1, 2): 1}]}],
+    {"a": {(1, 2): 1}},
+    {"a": [{frozenset({"x"}): {(3,): 2}}]},
+]
+
+
+class TestNestedNonStringKeys:
+    """A dict key JSON cannot write (a tuple, a frozenset) nested in a value
+    raised ``TypeError: keys must be str...`` wherever a value was written as
+    JSON text: ``default=`` is never asked about a key."""
+
+    @pytest.mark.parametrize("data", _NESTED_KEYS)
+    def test_json(self, data: Any) -> None:
+        buf = io.StringIO()
+        JsonFormatter().format(data, Console(file=buf))
+        text = buf.getvalue()
+        assert json.loads(text)
+        assert "(1, 2)" in text or "frozenset" in text
+
+    @pytest.mark.parametrize("data", _NESTED_KEYS)
+    def test_raw(self, data: Any) -> None:
+        console = MagicMock(spec=Console)
+        RawFormatter().format(data, console)
+        assert json.loads(console.file.write.call_args[0][0])
+
+    @pytest.mark.parametrize("data", _NESTED_KEYS)
+    def test_csv(self, data: Any) -> None:
+        text = "\n".join(",".join(row) for row in _csv_rows(data))
+        assert "(1, 2)" in text or "frozenset" in text
+
+    @pytest.mark.parametrize("data", _NESTED_KEYS)
+    def test_table(self, data: Any) -> None:
+        assert "(1, 2)" in _table_text(data) or "frozenset" in _table_text(data)
+
+    @pytest.mark.parametrize("data", _NESTED_KEYS)
+    def test_xlsx(self, tmp_path: Path, data: Any) -> None:
+        cells = [str(c) for row in _xlsx_rows(tmp_path, data) for c in row]
+        assert any("(1, 2)" in c or "frozenset" in c for c in cells)
+
+    @pytest.mark.parametrize("data", _NESTED_KEYS)
+    def test_pdf_and_json_to_csv(self, tmp_path: Path, data: Any) -> None:
+        from graftpunk.plugins.export import json_to_csv
+
+        rows = data if isinstance(data, list) else [data]
+        json_to_pdf(rows, tmp_path / "out.pdf")
+        path, _ = json_to_csv(rows, tmp_path / "out.csv")
+        assert "(1, 2)" in Path(path).read_text() or "frozenset" in Path(path).read_text()
+
+    def test_two_keys_that_read_alike_are_both_kept(self) -> None:
+        from graftpunk.plugins.export import json_text
+
+        assert json.loads(json_text({(1, 2): "a", "(1, 2)": "b"})) == {
+            "(1, 2)": "a",
+            "(1, 2) (2)": "b",
+        }
+
+
+class TestXlsxValuesExcelCannotHold:
+    """xlsxwriter raised on NaN, an infinity, ``Decimal("NaN")``, a datetime or
+    time with a UTC offset, and an int too large for a float, and a lone
+    surrogate raised ``UnicodeEncodeError``. Each is written as text now."""
+
+    _CASES: ClassVar[list[tuple[Any, Any]]] = [
+        (float("nan"), "nan"),
+        (float("inf"), "inf"),
+        (float("-inf"), "-inf"),
+        (decimal.Decimal("NaN"), "NaN"),
+        (decimal.Decimal("1e400"), "1E+400"),
+        (10**400, str(10**400)),
+        (
+            datetime.datetime(2026, 1, 2, 3, 4, tzinfo=datetime.UTC),
+            "2026-01-02T03:04:00+00:00",
+        ),
+        (datetime.time(3, 4, tzinfo=datetime.UTC), "03:04:00+00:00"),
+        ("a\ud800b", "a�b"),
+    ]
+
+    @pytest.mark.parametrize(("value", "written"), _CASES)
+    def test_the_list_path(self, tmp_path: Path, value: Any, written: Any) -> None:
+        assert _xlsx_rows(tmp_path, [{"v": value}]) == [["v"], [written]]
+
+    @pytest.mark.parametrize(("value", "written"), _CASES)
+    def test_the_single_dict_path(self, tmp_path: Path, value: Any, written: Any) -> None:
+        assert _xlsx_rows(tmp_path, {"v": value})[1] == ["v", written]
+
+    def test_a_finite_number_and_a_naive_datetime_stay_native(self, tmp_path: Path) -> None:
+        rows = _xlsx_rows(
+            tmp_path,
+            [{"n": 2.5, "d": decimal.Decimal("1.25"), "t": datetime.datetime(2026, 1, 2)}],
+        )
+        # A naive datetime stays an Excel date serial number, not text.
+        assert rows[1][:2] == [2.5, 1.25]
+        assert not isinstance(rows[1][2], str)
+
+
+class TestXlsxSheetNames:
+    """A view title Excel refuses as a sheet name, or two titles alike in their
+    first 31 characters, made xlsxwriter raise."""
+
+    def test_refused_characters_and_repeats(self, tmp_path: Path) -> None:
+        import openpyxl
+
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="a", path="a", title="Orders [2026/01]: *?"),
+                ViewConfig(name="b", path="b", title="x" * 40),
+                ViewConfig(name="c", path="c", title="X" * 35),
+                ViewConfig(name="d", path="d", title="'"),
+            ]
+        )
+        out = tmp_path / "out.xlsx"
+        data = {"a": [{"k": 1}], "b": [{"k": 2}], "c": [{"k": 3}], "d": [{"k": 4}]}
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, MagicMock(spec=Console), cfg, str(out))
+        assert openpyxl.load_workbook(out).sheetnames == [
+            "Orders _2026_01__ __",
+            "x" * 31,
+            "X" * 27 + " (2)",
+            "Sheet",
+        ]
+
+
+class TestLoneSurrogatesInCsvAndRaw:
+    """``json.loads('"\\\\ud800"')`` makes a lone surrogate, which no UTF-8 file
+    or stream can hold: csv and raw output raised ``UnicodeEncodeError``."""
+
+    def test_csv_formatter_to_a_file(self, tmp_path: Path) -> None:
+        out = tmp_path / "out.csv"
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            CsvFormatter().format(
+                [{"k\ud800": "a\ud800b"}], MagicMock(spec=Console), None, str(out)
+            )
+        assert out.read_text(encoding="utf-8") == "k�\na�b\n"
+
+    def test_raw_formatter_to_a_stream(self) -> None:
+        buf = io.BytesIO()
+        stream = io.TextIOWrapper(buf, encoding="utf-8")
+        RawFormatter().format("a\ud800b", Console(file=stream))
+        stream.flush()
+        assert buf.getvalue() == "a�b\n".encode()
+
+    def test_json_to_csv(self, tmp_path: Path) -> None:
+        from graftpunk.plugins.export import json_to_csv
+
+        path, _ = json_to_csv([{"k\ud800": "a\ud800b"}], tmp_path / "out.csv")
+        assert Path(path).read_text(encoding="utf-8").splitlines() == ["k�", "a�b"]
+
+    def test_a_surrogate_pair_becomes_its_character(self) -> None:
+        from graftpunk.console import visible_text
+
+        assert visible_text("😀") == "\U0001f600"
+        assert visible_text("plain") == "plain"
+
+
+class TestViewFilterOnAListWithNoDict:
+    """A view's column filter was skipped for a list with no dict, so xlsx and
+    pdf wrote the value column a filter excluded; it now applies everywhere."""
+
+    def _cfg(self, mode: str, cols: tuple[str, ...]) -> Any:
+        from graftpunk.plugins import ColumnFilter, OutputConfig, ViewConfig
+
+        return OutputConfig(views=[ViewConfig(name="v", columns=ColumnFilter(mode, cols))])
+
+    def test_xlsx_drops_the_value_column_an_include_filter_does_not_name(
+        self, tmp_path: Path
+    ) -> None:
+        assert _xlsx_rows(tmp_path, ["x", "y"], self._cfg("include", ("a",))) == []
+
+    def test_xlsx_keeps_it_when_named(self, tmp_path: Path) -> None:
+        rows = _xlsx_rows(tmp_path, ["x", "y"], self._cfg("include", ("value",)))
+        assert rows == [["value"], ["x"], ["y"]]
+
+    def test_csv_and_table_apply_it_too(self) -> None:
+        console = MagicMock(spec=Console)
+        CsvFormatter().format(["x", "y"], console, self._cfg("include", ("value",)))
+        assert _parse_csv_output(console) == [["value"], ["x"], ["y"]]
+        text = _table_text(["x", "y"], self._cfg("exclude", ("value",)))
+        assert "value" not in text
+        assert "y" not in text
+
+    def test_pdf_applies_it(self, tmp_path: Path) -> None:
+        out = tmp_path / "out.pdf"
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            PdfFormatter().format(
+                ["xЖ"], MagicMock(spec=Console), self._cfg("exclude", ("value",)), str(out)
+            )
+        # U+0416 would be named in the pdf's ToUnicode map had the cell been drawn.
+        assert b"<0416>" not in out.read_bytes()

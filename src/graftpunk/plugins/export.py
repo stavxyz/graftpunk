@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from graftpunk.console import visible_text
 from graftpunk.logging import get_logger
 
 if TYPE_CHECKING:
@@ -45,7 +46,50 @@ def _csv_cell(value: object) -> object:
     """
     if value is None or isinstance(value, numbers.Number):
         return value
-    return _neutralize_formula(value if isinstance(value, str) else str(value))
+    return _neutralize_formula(visible_text(value if isinstance(value, str) else str(value)))
+
+
+def _json_key(key: object) -> object:
+    """*key* as JSON can write it: a string, number, bool or None as it is,
+    and any other key (a tuple, a frozenset) as its ``str()``."""
+    if key is None or isinstance(key, str | int | float | bool):
+        return key
+    try:
+        return str(key)
+    except Exception:  # noqa: BLE001 - a key whose __str__ raises
+        return f"<unprintable {type(key).__name__}>"
+
+
+def _json_ready(value: object, active: set[int]) -> object:
+    """*value* with every dict key at any depth that JSON cannot write as its
+    ``str()``; a later key that reads the same as an earlier one is numbered."""
+    if isinstance(value, dict | list | tuple):
+        if id(value) in active:
+            return value  # a loop: json.dumps reports it, as before
+        active.add(id(value))
+        try:
+            if isinstance(value, dict):
+                ready: dict[object, object] = {}
+                for key, item in value.items():
+                    name = _json_key(key)
+                    candidate, number = name, 1
+                    while candidate in ready:
+                        number += 1
+                        candidate = f"{name} ({number})"
+                    ready[candidate] = _json_ready(item, active)
+                return ready
+            return [_json_ready(item, active) for item in value]
+        finally:
+            active.discard(id(value))
+    return value
+
+
+def json_text(value: object, *, indent: int | None = None) -> str:
+    """``json.dumps(value, default=str)`` that also writes a dict key JSON
+    cannot (a tuple, a frozenset) at any depth as its ``str()``: ``default`` is
+    never asked about a key, so such a key raised ``TypeError``. Every
+    formatter and export that writes a value as JSON text uses this."""
+    return json.dumps(_json_ready(value, set()), indent=indent, default=str)
 
 
 # fpdf2's core fonts (Helvetica) encode Latin-1 only, and raised on a curly
@@ -124,7 +168,7 @@ def flatten_dict(
             if not v:
                 items.append((new_key, ""))
             elif isinstance(v[0], dict):
-                items.append((new_key, json.dumps(v, default=str)))
+                items.append((new_key, json_text(v)))
             else:
                 items.append((new_key, ", ".join(str(i) for i in v)))
         else:
@@ -194,7 +238,7 @@ def json_to_csv(
 
     with open(output, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([_neutralize_formula(str(c)) for c in columns])
+        writer.writerow([_neutralize_formula(visible_text(str(c))) for c in columns])
         for row in rows:
             writer.writerow([_csv_cell(row.get(c)) for c in columns])
 
