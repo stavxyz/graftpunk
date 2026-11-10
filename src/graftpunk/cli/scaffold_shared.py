@@ -29,7 +29,7 @@ from graftpunk.har.naming import EndpointSpecError, parse_command_key
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
-console = Console()
+console = Console(emoji=False)
 
 plugin_app = typer.Typer(
     name="plugin", help="Scaffold, extend, inspect, upgrade, and check a graftpunk plugin project."

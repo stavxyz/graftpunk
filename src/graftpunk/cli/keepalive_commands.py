@@ -7,7 +7,7 @@ from rich.panel import Panel
 
 from graftpunk.keepalive.state import read_keepalive_pid, read_keepalive_state
 
-console = Console()
+console = Console(emoji=False)
 
 keepalive_app = typer.Typer(
     name="keepalive",

@@ -114,7 +114,9 @@ def write_rendered_to_file(
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     buf = io.StringIO()
-    file_console = Console(file=buf, width=200, color_system=None, force_terminal=False)
+    file_console = Console(
+        file=buf, width=200, emoji=False, color_system=None, force_terminal=False
+    )
     render_fn(file_console)
     Path(output_path).write_text(buf.getvalue(), encoding="utf-8")
 

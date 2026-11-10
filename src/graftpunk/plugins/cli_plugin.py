@@ -594,7 +594,7 @@ class CommandResult:
 
         # --- Output path given: write to file, return Path ---
         if output_path:
-            buf_console = Console(file=io.StringIO(), width=200)
+            buf_console = Console(file=io.StringIO(), width=200, emoji=False)
             formatter.format(
                 self.data,
                 buf_console,
@@ -611,7 +611,7 @@ class CommandResult:
             ) as tmp:
                 tmp_path = tmp.name
             try:
-                buf_console = Console(file=io.StringIO(), width=200)
+                buf_console = Console(file=io.StringIO(), width=200, emoji=False)
                 formatter.format(
                     self.data,
                     buf_console,
@@ -624,7 +624,9 @@ class CommandResult:
 
         # --- Text format, no output path: return str ---
         buf = io.StringIO()
-        buf_console = Console(file=buf, width=200, color_system=None, force_terminal=False)
+        buf_console = Console(
+            file=buf, width=200, emoji=False, color_system=None, force_terminal=False
+        )
         formatter.format(
             self.data,
             buf_console,

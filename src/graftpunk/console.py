@@ -13,11 +13,15 @@ from pathlib import Path
 
 from rich.console import Console
 
+# emoji=False on every graftpunk Console and on each helper's print: a message
+# relays a site's text or a user's term, and Rich would draw a ``:word:`` token
+# in it as an emoji (#291).
+
 # stderr console for status messages (spinners, success/error)
-err_console = Console(stderr=True)
+err_console = Console(stderr=True, emoji=False)
 
 # stdout console for data output (JSON, tables)
-out_console = Console()
+out_console = Console(emoji=False)
 
 
 def stream_is_tty(console: Console) -> bool:
@@ -73,25 +77,25 @@ def success(message: str, *, console: Console | None = None) -> None:
     user paths, exception text and response fragments.
     """
     c = console or err_console
-    c.print(f"  \u2713 {message}", style="green", markup=False, highlight=False)
+    c.print(f"  \u2713 {message}", style="green", markup=False, highlight=False, emoji=False)
 
 
 def error(message: str, *, console: Console | None = None) -> None:
     """Print an error message (red X) to stderr."""
     c = console or err_console
-    c.print(f"  \u2717 {message}", style="red", markup=False, highlight=False)
+    c.print(f"  \u2717 {message}", style="red", markup=False, highlight=False, emoji=False)
 
 
 def warn(message: str, *, console: Console | None = None) -> None:
     """Print a warning message (yellow) to stderr."""
     c = console or err_console
-    c.print(f"  \u26a0 {message}", style="yellow", markup=False, highlight=False)
+    c.print(f"  \u26a0 {message}", style="yellow", markup=False, highlight=False, emoji=False)
 
 
 def info(message: str, *, console: Console | None = None) -> None:
     """Print an info message (dim) to stderr."""
     c = console or err_console
-    c.print(f"  {message}", style="dim", markup=False, highlight=False)
+    c.print(f"  {message}", style="dim", markup=False, highlight=False, emoji=False)
 
 
 def render_ambiguous_session(
@@ -114,7 +118,7 @@ def render_ambiguous_session(
     error(f"Several sessions cached for '{base_name}':", console=c)
     for name, identifier in candidates:
         line = f"  - {name} — {identifier}" if identifier else f"  - {name}"
-        c.print(line, markup=False, highlight=False)
+        c.print(line, markup=False, highlight=False, emoji=False)
     for note in notes:
         info(note, console=c)
     info(

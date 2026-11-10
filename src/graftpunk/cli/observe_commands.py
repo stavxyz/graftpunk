@@ -69,7 +69,7 @@ from graftpunk.session_context import resolve_session
 from graftpunk.session_identity import split_session_name
 from graftpunk.testing.sidecar import ObserveRun, SidecarError
 
-console = Console()
+console = Console(emoji=False)
 LOG = get_logger(__name__)
 
 _DEFAULT_FIXTURE_LIMIT = 5
@@ -201,7 +201,7 @@ def digest_cmd(
         # (found running TestDigestCommand.test_digest_json_flag: the printed
         # text failed json.loads because a path was hard-wrapped inside a
         # string value; deviation from the brief, which omitted soft_wrap).
-        console.print(text, markup=False, highlight=False, soft_wrap=True)
+        console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
 Pattern = tuple[str, str, str]
