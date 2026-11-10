@@ -57,8 +57,8 @@ _FONTS_DIR = Path(__file__).parent / "fonts"
 def _add_unicode_font(pdf: FPDF) -> None:
     """Register DejaVu Sans, regular and bold, as ``_PDF_FONT`` on *pdf*.
 
-    A character DejaVu Sans has no glyph for (CJK, emoji) is drawn as the
-    font's missing-glyph box and logged by fpdf2; it does not raise.
+    A character DejaVu Sans has no glyph for (CJK, for one) does not raise:
+    fpdf2 logs a warning naming it, and the pdf cannot show it as written.
     """
     pdf.add_font(_PDF_FONT, fname=_FONTS_DIR / "DejaVuSans.ttf")
     pdf.add_font(_PDF_FONT, style="B", fname=_FONTS_DIR / "DejaVuSans-Bold.ttf")
