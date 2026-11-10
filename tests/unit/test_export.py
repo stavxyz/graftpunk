@@ -587,14 +587,14 @@ class TestPdfUnicode:
     """#290: the core Helvetica font encodes Latin-1 only, and a curly quote,
     an en dash or a letter past Latin-1 raised FPDFUnicodeEncodingException."""
 
-    _TEXT = "O’BRIEN – café … Москва Ω"
+    _TEXT = "O\u2019BRIEN \u2013 caf\u00e9 \u2026 \u041c\u043e\u0441\u043a\u0432\u0430 \u03a9"
 
     def test_text_past_latin_1_renders_as_written(self, tmp_path: Path) -> None:
         path, pages = json_to_pdf(
             [{"name": self._TEXT, "№": "x"}],
             tmp_path / "out.pdf",
-            title="Résumé – Q1",
-            vendor="Café ’",
+            title="R\u00e9sum\u00e9 \u2013 Q1",
+            vendor="Caf\u00e9 \u2019",
             vendor_info="№ 1",
             metadata={"№": "€ 5"},
         )
@@ -613,7 +613,7 @@ class TestPdfUnicode:
         assert Path(path).read_bytes().startswith(b"%PDF-")
 
     def test_command_result_export_writes_the_row(self) -> None:
-        content = CommandResult(data=[{"name": "O’BRIEN"}]).export("pdf")
+        content = CommandResult(data=[{"name": "O\u2019BRIEN"}]).export("pdf")
         assert isinstance(content, bytes)
         assert 0x2019 in _pdf_code_points(content)
 
