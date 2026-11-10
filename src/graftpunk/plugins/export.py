@@ -229,8 +229,9 @@ def json_to_pdf(
     rows = [flatten_dict(row) for row in data] if flatten else data
     columns = ordered_keys(rows)
 
-    # Build table data: header row + data rows
-    table_data: list[list[str]] = [columns]
+    # Build table data: header row + data rows. A key need not be a string (1,
+    # None, a tuple); fpdf2 takes only text, so the header shows its str() (#310).
+    table_data: list[list[str]] = [[str(col) for col in columns]]
     for row in rows:
         table_data.append([str(row.get(col, "")) for col in columns])
 

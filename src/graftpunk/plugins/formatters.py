@@ -7,6 +7,7 @@ the ``graftpunk.formatters`` entry-point group.
 
 import csv
 import datetime
+import decimal
 import importlib.metadata
 import io
 import json
@@ -474,19 +475,20 @@ class XlsxFormatter:
         worksheet = workbook.add_worksheet(sheet_name)
 
         if isinstance(data, list) and data and isinstance(data[0], dict):
+            # A key need not be a string (1, None, a tuple): the header shows
+            # its str(), as the CSV formatter's does, and values are looked up
+            # by the key itself (#310).
             headers = list(data[0].keys())
             for col, header in enumerate(headers):
-                _write_xlsx_cell(worksheet, 0, col, header, bold)
+                _write_xlsx_cell(worksheet, 0, col, str(header), bold)
             for row_idx, row in enumerate(data, start=1):
                 for col_idx, header in enumerate(headers):
                     value = row.get(header, "")  # type: ignore[union-attr]
-                    if isinstance(value, (dict, list)):
-                        value = json.dumps(value, default=str)
                     _write_xlsx_cell(worksheet, row_idx, col_idx, value)
             # Auto-size columns: sample first 100 rows for performance,
             # cap cell width at 50 chars to prevent very wide columns.
             for col_idx, header in enumerate(headers):
-                max_len = len(header)  # type: ignore[arg-type]
+                max_len = len(str(header))
                 for row in data[:100]:
                     val = str(row.get(header, ""))  # type: ignore[union-attr]
                     max_len = max(max_len, min(len(val), 50))
@@ -496,8 +498,6 @@ class XlsxFormatter:
             worksheet.write(0, 1, "Value", bold)
             for row_idx, (key, value) in enumerate(data.items(), start=1):
                 _write_xlsx_cell(worksheet, row_idx, 0, str(key))
-                if isinstance(value, (dict, list)):
-                    value = json.dumps(value, default=str)
                 _write_xlsx_cell(worksheet, row_idx, 1, value)
             worksheet.set_column(0, 0, 20)
             worksheet.set_column(1, 1, 40)
@@ -507,14 +507,33 @@ class XlsxFormatter:
             _write_xlsx_cell(worksheet, 0, 0, str(data))
 
 
+# The cell types xlsxwriter's write() stores natively; it raises TypeError on
+# any other (a tuple, a set, an arbitrary object).
+_XLSX_NATIVE = (
+    str,
+    bool,
+    numbers.Real,
+    decimal.Decimal,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+)
+
+
 def _write_xlsx_cell(worksheet: Any, row: int, col: int, value: Any, fmt: Any = None) -> None:
     """Write *value*, a non-empty string always as a string cell (#288).
 
     ``strings_to_formulas=False`` alone still lets ``write()`` store
     ``{=...}`` as an array formula, so strings take ``write_string``. An empty
     string goes to ``write()``, which leaves the cell blank, where
-    ``write_string`` would store an empty text cell.
+    ``write_string`` would store an empty text cell. A dict, list or tuple is
+    written as its JSON, and any other value xlsxwriter cannot store as its
+    ``str()``, as the CSV formatter writes it (#310).
     """
+    if isinstance(value, (dict, list, tuple)):
+        value = json.dumps(value, default=str)
+    elif value is not None and not isinstance(value, _XLSX_NATIVE):
+        value = str(value)
     if isinstance(value, str) and value:
         worksheet.write_string(row, col, value, fmt)
     else:

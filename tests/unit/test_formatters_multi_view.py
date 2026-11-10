@@ -3,6 +3,7 @@
 import csv
 import io
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from graftpunk.plugins.cli_plugin import CommandResult
+from graftpunk.plugins.export import json_to_pdf
 from graftpunk.plugins.formatters import (
     CsvFormatter,
     OutputFormatter,
@@ -560,3 +562,43 @@ class TestFormatOutputViewArgs:
         result = CommandResult(data={"key": "value"})
         format_output(result, "json", console)
         console.print.assert_called_once()
+
+
+class TestXlsxNonStringKeysAndValues:
+    """#310: a key that is not a string, or a value xlsxwriter cannot store,
+    raised TypeError and wrote nothing."""
+
+    def _write(self, tmp_path: Path, data: object) -> Any:
+        import openpyxl
+
+        out = tmp_path / "out.xlsx"
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, MagicMock(spec=Console), output_path=str(out))
+        return openpyxl.load_workbook(out).active
+
+    def test_a_list_of_dicts_keyed_by_number_none_and_tuple(self, tmp_path: Path) -> None:
+        ws = self._write(tmp_path, [{1: "a", None: "b", (1, 2): "c"}, {1: "d", None: "e"}])
+        assert [ws.cell(1, col).value for col in (1, 2, 3)] == ["1", "None", "(1, 2)"]
+        assert [ws.cell(2, col).value for col in (1, 2, 3)] == ["a", "b", "c"]
+        assert [ws.cell(3, col).value for col in (1, 2)] == ["d", "e"]
+
+    def test_a_tuple_set_or_object_value_writes_as_text(self, tmp_path: Path) -> None:
+        class Opaque:
+            def __str__(self) -> str:
+                return "opaque"
+
+        ws = self._write(tmp_path, [{"t": (1, 2), "s": {3}, "o": Opaque(), "n": 2.5}])
+        assert [ws.cell(2, col).value for col in (1, 2, 3, 4)] == ["[1, 2]", "{3}", "opaque", 2.5]
+
+    def test_the_single_dict_path_writes_the_same_values(self, tmp_path: Path) -> None:
+        ws = self._write(tmp_path, {1: (1, 2), "s": {3}})
+        assert [ws.cell(2, col).value for col in (1, 2)] == ["1", "[1, 2]"]
+        assert [ws.cell(3, col).value for col in (1, 2)] == ["s", "{3}"]
+
+
+def test_pdf_renders_a_list_of_dicts_keyed_by_number_none_and_tuple(tmp_path: Path) -> None:
+    """#310's sibling: fpdf2 takes only text, and a non-string key raised."""
+    out = tmp_path / "out.pdf"
+    path, pages = json_to_pdf([{1: "a", None: "b", (1, 2): "c"}], out)  # type: ignore[dict-item]
+    assert pages == 1
+    assert Path(path).read_bytes().startswith(b"%PDF")
