@@ -173,7 +173,7 @@ def test_expired_session_on_the_exact_key_propagates_without_listing(
     """A non-not-found failure is the answer, not a reason to go looking."""
     calls = _count_listings(monkeypatch)
 
-    def _expired(name: str):  # noqa: ANN202
+    def _expired(name: str, **_kwargs):  # noqa: ANN003, ANN202
         raise SessionExpiredError(f"Session '{name}' failed integrity check.")
 
     monkeypatch.setattr(cache_mod, "load_session", _expired)
@@ -287,6 +287,48 @@ class TestBareSlotShadowsLabelledWarning:
             assert loaded == "myshop"
 
         assert calls["count"] == 1
+
+    def test_a_failed_listing_is_tried_again_on_the_next_load(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+        real_list_sessions = cache_mod.list_sessions
+        calls = {"count": 0}
+
+        def _fails_once(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("listing unavailable")
+            return real_list_sessions(*args, **kwargs)
+
+        monkeypatch.setattr(cache_mod, "list_sessions", _fails_once)
+
+        load_session_for_api_resolved("myshop")
+        assert _shadow_warnings(captured_logs) == []
+        load_session_for_api_resolved("myshop")
+        load_session_for_api_resolved("myshop")
+
+        assert calls["count"] == 2
+        assert len(_shadow_warnings(captured_logs)) == 1
+
+    def test_a_labelled_slot_cached_in_this_process_is_seen_by_the_next_load(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        load_session_for_api_resolved("myshop")
+        assert _shadow_warnings(captured_logs) == []
+
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+        load_session_for_api_resolved("myshop")
+
+        [warning] = _shadow_warnings(captured_logs)
+        assert warning["labelled"] == ["myshop@alice"]
 
     def test_no_warning_without_labelled_siblings(
         self,

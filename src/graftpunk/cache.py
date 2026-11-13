@@ -361,6 +361,10 @@ def cache_session(
         # after the pickle above on purpose: the name describes this copy, not
         # the bytes, and the blob must stay free of it.
         _stamp_session_slot(session, session_name)
+        base, label = split_session_name(session_name)
+        if label is not None:
+            # A new sibling of a bare slot: let the next bare load look again (#197).
+            _bare_slot_sibling_checked.discard(base)
         LOG.info("wrote_session_to_backend", name=session_name, location=location)
         return location
 
@@ -677,9 +681,11 @@ def no_account_cached_message(name: str) -> str:
     )
 
 
-# Bare names _warn_if_bare_slot_shadows_labelled has already checked, with or
-# without siblings, so a bare name costs at most one listing per process and a
-# long-running process warns once per name rather than on every load (#197).
+# Bare names _warn_if_bare_slot_shadows_labelled has listed for, with or
+# without siblings, so a bare name costs one successful listing per process
+# and a long-running process does not warn on every load (#197). cache_session
+# drops a name when it writes a labelled slot under it, so a sibling this
+# process creates is seen by the next load.
 _bare_slot_sibling_checked: set[str] = set()
 
 
@@ -694,18 +700,20 @@ def _warn_if_bare_slot_shadows_labelled(name: str) -> None:
     has no sibling ``myshopextra@bob``. A listing failure costs only the
     warning, never the load that already succeeded.
 
-    Each bare name is checked once per process whatever the result, so a
-    name lists at most once: a sibling created later in the same process, or
-    one a failed listing could not see, goes unwarned.
+    A name is marked checked once a listing succeeds, siblings or not, so
+    it lists once per process; a failed listing is tried again on the next
+    load. A labelled slot this process caches under the name clears the
+    mark (:func:`cache_session`). A sibling another process creates later
+    goes unwarned until this process restarts.
     """
     if name in _bare_slot_sibling_checked:
         return
-    _bare_slot_sibling_checked.add(name)
     try:
         cached = list_sessions()
     except Exception as exc:  # noqa: BLE001 (an advisory check never fails the load)
         LOG.debug("session_bare_slot_sibling_check_skipped", name=name, error=str(exc))
         return
+    _bare_slot_sibling_checked.add(name)
     siblings = sorted(
         other
         for other in cached
