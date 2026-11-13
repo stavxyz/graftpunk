@@ -28,6 +28,7 @@ from graftpunk.har.digest import (
     header_names_not_shown,
     header_spellings,
     held_back_token_count,
+    meta_names_not_shown,
     printable_custom_headers,
     printable_login_fields,
     printable_token_pairs,
@@ -407,8 +408,11 @@ def render_json(d: RunDigest) -> str:
     ``tokens`` and of each endpoint's ``custom_headers``
     (:func:`graftpunk.har.digest.printable_custom_headers`), which then carries
     ``custom_headers_not_shown``; ``header_names_not_shown`` counts them for the
-    run, computed here from the digest's tokens and endpoints. ``token_pairs`` holds
-    only the pairings :func:`graftpunk.har.digest.printable_token_pairs` prints."""
+    run, computed here from the digest's tokens and endpoints. A meta tag token
+    candidate whose name reads as a value is left out of ``tokens``, and
+    ``meta_names_not_shown``, computed here from the digest's tokens, counts
+    them. ``token_pairs`` holds only the pairings
+    :func:`graftpunk.har.digest.printable_token_pairs` prints."""
     rendered = _jsonable(d)
     rendered["cookies"] = [name for name in d.cookies if printable_name(name)]
     spellings = header_spellings(d)
@@ -416,6 +420,9 @@ def render_json(d: RunDigest) -> str:
     if hidden := run_header_names_not_shown(d):
         rendered["header_names_not_shown"] = hidden
     rendered["tokens"] = _jsonable(printable_tokens(d.tokens, spellings))
+    rendered.pop("meta_names_not_shown", None)
+    if meta_hidden := meta_names_not_shown(d.tokens):
+        rendered["meta_names_not_shown"] = meta_hidden
     rendered.pop("token_pairs", None)
     if pairs := printable_token_pairs(d, spellings):
         rendered["token_pairs"] = _jsonable(pairs)

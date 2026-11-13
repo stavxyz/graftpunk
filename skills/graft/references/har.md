@@ -17,12 +17,12 @@ response shapes, and in `cookie_facts` each cookie's attributes and the
 endpoints that set it (no `Domain`). A cookie name that reads as a value is
 left out of `cookies`, `cookie_facts`, a `set_cookie` step's `fields` in
 `login`, and the cookie candidates in `tokens`, and counted in
-`cookie_names_not_shown`. Header names the gate holds back are missing from
-the header candidates in `tokens` and from an endpoint's `custom_headers`
-(that endpoint then carries `custom_headers_not_shown`), and are counted in
-`header_names_not_shown`. It holds no header, cookie, or query value, and only
-one kind of body value: for an endpoint whose recorded JSON body is `{}`, `[]`,
-`""`, `0`, `false`, or `null`, that value. It does print paths as recorded,
+`cookie_names_not_shown`. Header and meta tag names the gate holds back are
+missing from `tokens` and `token_pairs` (a header's from an endpoint's
+`custom_headers` too, which then carries `custom_headers_not_shown`), counted
+in `header_names_not_shown` and `meta_names_not_shown`. It holds no header,
+cookie, or query value, and only one kind of body value: for an endpoint whose
+recorded JSON body is `{}`, `[]`, `""`, `0`, `false`, or `null`, that value. It does print paths as recorded,
 though: up to three example paths per endpoint (the query string stripped and a
 segment holding an email address replaced, but an account or order id kept),
 each login step's URL and redirect target, each login form's action and the

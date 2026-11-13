@@ -807,14 +807,20 @@ left out of an endpoint's custom headers (the markdown, `--json`,
 `--endpoints-json`, and a generated stub's `headers=`) and of the header token
 candidates (the Tokens section, `--json`'s `tokens`, and `token_config`), and
 each place prints a count instead (`custom_headers_not_shown` on an endpoint,
-`header_names_not_shown` for the run). Header names are compared without
+`header_names_not_shown` for the run). Since 1.42.2 a meta tag token
+candidate's name goes through the gate too (#359): one that reads as a value is
+left out of the Tokens section, `--json`'s `tokens` and `token_pairs`, and
+`token_config`, counted in the Tokens section's count and in `--json`'s
+`meta_names_not_shown`. A hidden input token candidate's name is not gated,
+since `--json`'s `login_forms` prints the inputs of the form it sits in. Header names are compared without
 regard to case, so `X-Token-Q` and `x-token-q` are one name, and whether it
 prints is decided once for the run: it prints in every output and on every
 endpoint that recorded it, in the first spelling recorded that passes the
 gate, and is counted once when none does. A name whose spellings all fail
 still prints, in its first spelling recorded, when the digest already prints
-the same name elsewhere (a meta tag's or hidden input's token candidate, or a cookie name
-the Cookies section prints, set or only sent), so a generated `token_config` still pairs that header with its meta
+the same name elsewhere (a hidden input's token candidate, a meta tag's whose
+name passes the gate, or a cookie name the Cookies section prints, set or only
+sent), so a generated `token_config` still pairs that header with its meta
 tag. The fixture safety
 net (`flagged_names`) still holds every name. The words are those
 of the graft skill's `har-facts.py cookies`, which also prints the `Domain` and

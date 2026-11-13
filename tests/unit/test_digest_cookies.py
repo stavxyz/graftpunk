@@ -469,19 +469,26 @@ def test_a_cookie_a_dropped_response_set_is_only_sent_by_a_kept_one(lines_of) ->
 # and sent back, a token-shaped cookie only sent, and a nameless cookie's value
 # recorded as its name.
 _HELD_BACK = ("sessionZq9vLm2x", "xsrfQz9XvKw", "authTokenQx7vK", _VALUE_AS_NAME)
+# A meta tag token candidate whose name printable_name holds back and
+# holds_an_id does not (#359); a request's X-CSRF-Token header carries its
+# value, so it is a pairing's source too.
+_HELD_BACK_META = "csrf-Qz9vKwLx"
+_META_VALUE = "Kq8mZt3vWx7pLr2n"
 
 
 def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
-    """Login steps, token candidates, the Cookies section, and endpoints' custom
-    headers, in the markdown, --json, --endpoints-json, and a scaffolded plugin,
-    print no held-back name; the digest's own model keeps each one for the
-    fixture safety net."""
+    """Login steps, token candidates (cookie, header and meta tag), token
+    pairings, the Cookies section, and endpoints' custom headers, in the
+    markdown, --json, --endpoints-json, and a scaffolded plugin, print no
+    held-back name; the digest's own model keeps each one for the fixture safety
+    net."""
     session, xsrf, auth, nameless = _HELD_BACK
     page = _entry(
         "GET",
         f"{_HOST}/login",
         content_type="text/html",
-        body="<form method=post action=/login><input name=username>"
+        body=f'<meta name="{_HELD_BACK_META}" content="{_META_VALUE}">'
+        "<form method=post action=/login><input name=username>"
         "<input type=password name=password></form>",
     )
     login = _entry(
@@ -510,13 +517,20 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     headers = _entry(
         "GET", f"{_HOST}/api/d", request_headers=dict.fromkeys(_HELD_BACK_HEADERS, _VALUE)
     )
-    d = _digest(tmp_path, [page, login, account, sets_xsrf, echoes_xsrf, sends, headers])
+    carries_meta = _entry("POST", f"{_HOST}/api/e", request_headers={"X-CSRF-Token": _META_VALUE})
+    d = _digest(
+        tmp_path, [page, login, account, sets_xsrf, echoes_xsrf, sends, headers, carries_meta]
+    )
 
     assert (session,) in [obs.fields for obs in d.login if obs.kind == "set_cookie"]
     assert {xsrf, auth} <= {token.name for token in d.tokens if token.kind == "cookie"}
     assert set(_HELD_BACK_HEADERS) <= {name for e in d.endpoints for name in e.custom_headers}
     assert {"X-Csrf-Qz9XvKw", "x-csrf-qz9xvkw"} <= {t.name for t in d.tokens if t.kind == "header"}
     assert d.cookie_names_not_shown == len(_HELD_BACK)
+    assert ("meta", _HELD_BACK_META) in {(token.kind, token.name) for token in d.tokens}
+    assert ("meta", _HELD_BACK_META) in {(pair.kind, pair.name) for pair in d.token_pairs}
+    assert d.meta_names_not_shown == 1
+    assert json.loads(render_json(d))["meta_names_not_shown"] == 1
     plugin = render(
         ScaffoldSpec(
             name="myshop", mode="new_project", backend="nodriver", base_url=_HOST, digest=d
@@ -524,9 +538,15 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     )
     for text in (render_markdown(d), render_json(d), render_endpoints_json(d), *plugin.values()):
         assert _VALUE not in text
-        for name in (*_HELD_BACK, *_HELD_BACK_HEADERS):
+        for name in (*_HELD_BACK, *_HELD_BACK_HEADERS, _HELD_BACK_META):
             assert name.lower() not in text.lower()
     assert "- 4 cookies whose names read as values are not shown" in _cookie_lines(d)
+    # The xsrf and auth cookies, the header in two cases counted once, and the
+    # meta tag.
+    assert "- 4 token candidates whose names read as values are not shown" in render_markdown(d)
+    assert "4 token candidate(s) were left out because their names read as values" in (
+        _plugin_text(d)
+    )
 
 
 # Header names printable_name holds back and holds_an_id does not: a token-shaped
@@ -799,11 +819,18 @@ def test_the_run_count_is_decided_when_rendering_not_when_digesting(tmp_path: Pa
     stale = dataclasses.replace(d, header_names_not_shown=0)
     assert json.loads(render_json(stale))["header_names_not_shown"] == 1
 
-    meta = TokenCandidate(kind="meta", name="x-csrf-qz9xvkw", seen_on=("GET /",))
-    printed = dataclasses.replace(d, tokens=(*d.tokens, meta))
+    hidden = TokenCandidate(kind="hidden_input", name="x-csrf-qz9xvkw", seen_on=("GET /",))
+    printed = dataclasses.replace(d, tokens=(*d.tokens, hidden))
     rendered = json.loads(render_json(printed))
     assert "header_names_not_shown" not in rendered
     assert all("custom_headers_not_shown" not in e for e in rendered["endpoints"])
+
+    # A meta tag's name goes through the gate itself (#359), so a held-back one
+    # makes no header of its name print, and is counted.
+    meta = TokenCandidate(kind="meta", name="x-csrf-qz9xvkw", seen_on=("GET /",))
+    held = json.loads(render_json(dataclasses.replace(d, tokens=(*d.tokens, meta))))
+    assert held["header_names_not_shown"] == 1
+    assert held["meta_names_not_shown"] == 1
 
 
 def test_one_header_name_a_run_decides_prints_alike_on_every_endpoint(tmp_path: Path) -> None:

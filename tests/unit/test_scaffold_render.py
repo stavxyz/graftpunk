@@ -3218,11 +3218,14 @@ class TestRenderedTreeIsRuffClean:
         observation = LoginObservation(
             order=1, method="GET", url=long_url, status=200, kind="form_page", fields=()
         )
-        # A meta tag's name: a header name this long reads as a value and is
-        # left out (#347), and a meta candidate's name is not gated.
+        # A hidden input's name: a header or meta tag name this long reads as a
+        # value and is left out (#347, #359), and a hidden input candidate's
+        # name is not gated.
         long_token_name = "X-" + "B" * 88
         assert len(long_token_name) == 90
-        lone = TokenCandidate(kind="meta", name=long_token_name, seen_on=("GET /dashboard",))
+        lone = TokenCandidate(
+            kind="hidden_input", name=long_token_name, seen_on=("GET /dashboard",)
+        )
         digest = _digest(login=(observation,), tokens=(lone,))
         long_base_url = "https://" + "x" * 100 + ".example.com"
         assert 110 <= len(long_base_url) <= 130
