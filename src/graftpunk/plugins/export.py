@@ -625,7 +625,24 @@ def _choose_layout(
             raise _NeedsFitting
         return fitted, 0, size, factor
     last = len(_LAYOUTS) - 1
+    # The line estimate picks where to start, so fpdf2's own wrapping (two to
+    # three times the cost of drawing) runs at one or two layouts, not five: at
+    # the layout before the first one the estimate fits, in case it overstates,
+    # or at the last when it fits none.
+    start = last
     for index, (size, factor) in enumerate(_LAYOUTS):
+        try:
+            _, estimated_cut = _fit_part(
+                pdf, rows, col_width, exact=False, size=size, factor=factor
+            )
+        except _MarkTooWide:
+            continue
+        if not estimated_cut:
+            start = max(index - 1, 0)
+            break
+    for index, (size, factor) in enumerate(_LAYOUTS):
+        if index < start:
+            continue
         try:
             fitted, cut = _fit_part(pdf, rows, col_width, exact=True, size=size, factor=factor)
         except _MarkTooWide:
