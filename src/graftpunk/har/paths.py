@@ -928,8 +928,8 @@ _ACRONYMS = frozenset(
         # the abbreviations cookie and token names use, some spelled with no vowel
         "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP NBF "
         # the vowel-less abbreviations API and form field names and routes use
-        # (invoiceNbr, txn_id, txtQty, msrp, /svc/), and QL as in GraphQL
-        "NBR TXN QTY MSRP SVC QL "
+        # (invoiceNbr, txn_id, txtQty, msrp, /svc/)
+        "NBR TXN QTY MSRP SVC "
         # the abbreviations header names use (X-Amz-Target, Grpc-Timeout,
         # HX-Request, Ocp-Apim-Trace, Sec-GPC, X-DNS-Prefetch-Control, X-PJAX), cloud
         # SDKs' among them (X-Amz-Sdk-Checksum-Algorithm, X-Amz-Sns-Message-Type,
@@ -945,6 +945,7 @@ _SHORT_WORDS = frozenset(
     "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am Ip Ms".split()  # noqa: SIM905
 )
 _MAX_PARTS = 8
+_GRAPHQL_WORD_RE = re.compile(r"GraphQL")
 _MAX_CAPITALS = 16
 _LONG_LOWER = 9
 
@@ -1294,7 +1295,9 @@ def printable_name(text: str) -> bool:
     parts = [part for part in _NAME_SPLIT_RE.split(text) if part]
     if not parts or len(parts) > _MAX_PARTS or not any(_has_letter(part) for part in parts):
         return False
-    if not _parts_read_as_words(text):
+    # GraphQL is one word, not Graph and an acronym QL: a bare QL acronym let
+    # random letters before it through (ostQL).
+    if not _parts_read_as_words(_GRAPHQL_WORD_RE.sub("Graph", text)):
         return False
     # Capitals beside lower case (uid_SAMCOOKIE, addr[ADDRKEY]) read as a value
     # dropped into a name; a name all in capitals (PHPSESSID, XSRF-TOKEN) does not.

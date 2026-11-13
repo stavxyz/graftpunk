@@ -1335,6 +1335,7 @@ _NAMES_SINCE_279 = (
     "ctl00_ContentPlaceHolder1_Login1_UserName",
     "ctl00_ContentPlaceHolder1_ctl01_ctl02_txtName",
     "GraphQLController",
+    "useGraphQLQuery",
 )
 # Probes the #279 rules must not let through: random text beside a new word or
 # token, a prefix before an id, and values the rules first tried let in.
@@ -1363,6 +1364,12 @@ _HELD_BACK_SINCE_279 = (
     "txtQName",
     "fxZq9vKx",
     "msrpQz9XvKw",
+    # GraphQL is a word, not Graph and an acronym QL: letters before a bare QL
+    # are not vouched for (a QL acronym passed these).
+    "ostQL",
+    "EyrkyQL4",
+    "QLOwd",
+    "UeyQL",
     "kqQLzvXw",
     "QLzqvx",
 )

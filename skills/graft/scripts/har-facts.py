@@ -320,8 +320,8 @@ _ACRONYMS = frozenset(
         # the abbreviations cookie and token names use, some spelled with no vowel
         "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP NBF "
         # the vowel-less abbreviations API and form field names and routes use
-        # (invoiceNbr, txn_id, txtQty, msrp, /svc/), and QL as in GraphQL
-        "NBR TXN QTY MSRP SVC QL "
+        # (invoiceNbr, txn_id, txtQty, msrp, /svc/)
+        "NBR TXN QTY MSRP SVC "
         # the abbreviations header names use (X-Amz-Target, Grpc-Timeout,
         # HX-Request, Ocp-Apim-Trace, Sec-GPC, X-DNS-Prefetch-Control, X-PJAX), cloud
         # SDKs' among them (X-Amz-Sdk-Checksum-Algorithm, X-Amz-Sns-Message-Type,
@@ -337,6 +337,7 @@ _SHORT_WORDS = frozenset(
     "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am Ip Ms".split()  # noqa: SIM905
 )
 _MAX_PARTS = 8
+_GRAPHQL_WORD_RE = re.compile(r"GraphQL")
 _MAX_CAPITALS = 16
 _LONG_LOWER = 9
 
@@ -710,7 +711,9 @@ def printable_name(text: str) -> bool:
     parts = [part for part in _NAME_SPLIT_RE.split(text) if part]
     if not parts or len(parts) > _MAX_PARTS or not any(_has_letter(part) for part in parts):
         return False
-    if not _parts_read_as_words(text):
+    # GraphQL is one word, not Graph and an acronym QL: a bare QL acronym let
+    # random letters before it through (ostQL).
+    if not _parts_read_as_words(_GRAPHQL_WORD_RE.sub("Graph", text)):
         return False
     # Capitals beside lower case (uid_SAMCOOKIE, addr[ADDRKEY]) read as a value
     # dropped into a name; a name all in capitals (PHPSESSID, XSRF-TOKEN) does not.
@@ -2335,8 +2338,9 @@ def entry_operations(entry: dict[str, Any], har_path: Path) -> list[dict[str, An
 
 # graftpunk.har.paths.template_path, copied (a test holds the two equal): the
 # digest's key for a path keeps a segment as it is unless it reads as an id
-# (/GraphQLController stays), so an operation's line names the key the digest,
-# --command and --match take.
+# (/GraphQLController stays). An operation's line starts from that key and
+# writes a segment the gate holds back as {}, so it matches the digest's key
+# only where every kept segment also passes the gate.
 _JOIN_SPLIT_RE = re.compile(r"[_\-]")
 _WORD_WITH_DIGITS_RE = re.compile(r"([A-Za-z]+)\d{1,2}")
 _VERSION_RE = re.compile(r"v\d{1,2}(?:alpha|beta|rc)?\d{0,2}")
@@ -2807,7 +2811,7 @@ def _run(args: argparse.Namespace, entries: list[dict[str, Any]]) -> int:
             lines = describe_response(entry, har_path)
         names = list(dict.fromkeys(op["name"] for op in entry_operations(entry, har_path)))
         if names:
-            # The operation's key, as the digest prints it and --command takes it.
+            # The digest's key, with any segment the gate holds back written as {}.
             url = str(_part(entry, "request").get("url", ""))
             lines[0] = lines[0].replace(templated_url(url), _operation_url(url), 1)
             lines[0] += " " + " ".join(_operation_label(name) for name in names)
