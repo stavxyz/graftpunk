@@ -212,3 +212,25 @@ class TestEverySiteLeavesTheConnectionWorking:
 
         assert answerer.failed == 1
         assert await connection.still_answers()
+
+
+class TestShieldCall:
+    async def test_cancelling_the_awaiting_task_abandons_the_call(
+        self, connection: Connection048, loop_errors: list[dict[str, Any]]
+    ) -> None:
+        from graftpunk.cdp_wait import shield_call
+
+        task = asyncio.ensure_future(shield_call(connection.send("late", after=_LATE)))
+        await asyncio.sleep(_BOUND)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await _after_the_late_answer()
+
+        assert await connection.still_answers()
+        assert loop_errors == []
+
+    async def test_an_answer_is_returned(self, connection: Connection048) -> None:
+        from graftpunk.cdp_wait import shield_call
+
+        assert await shield_call(connection.send("now")) == "now"

@@ -10,7 +10,8 @@ graftpunk still supports 0.48 below Python 3.14.
 
 So a wait here gives up on a command without cancelling it: the command keeps
 running, and its late answer or error is collected and dropped when it comes.
-Use these for any bounded wait on a nodriver call whose connection is used again.
+Use these for any bounded wait on a nodriver call whose connection is used again,
+and :func:`shield_call` for a call made inside a task that may be cancelled.
 """
 
 from __future__ import annotations
@@ -36,11 +37,11 @@ async def answer_by(awaitable: Awaitable[T], *, end: float) -> T:
     try:
         done, _pending = await asyncio.wait({task}, timeout=max(0.0, end - loop.time()))
     except BaseException:
-        task.add_done_callback(_drop_late_answer)
+        task.add_done_callback(drop_late_answer)
         raise
     if task in done:
         return task.result()
-    task.add_done_callback(_drop_late_answer)
+    task.add_done_callback(drop_late_answer)
     raise TimeoutError
 
 
@@ -49,7 +50,26 @@ async def answer_within(awaitable: Awaitable[T], seconds: float) -> T:
     return await answer_by(awaitable, end=asyncio.get_running_loop().time() + seconds)
 
 
-def _drop_late_answer(task: asyncio.Future[Any]) -> None:
-    """Collect an abandoned call's outcome, so asyncio does not log it as never retrieved."""
-    if not task.cancelled():
-        task.exception()
+async def shield_call(awaitable: Awaitable[T]) -> T:
+    """Await a DevTools call so that cancelling the awaiting task abandons the call
+    instead of cancelling it.
+
+    For a call made inside a task that something may cancel (a stop that cancels
+    the reads still running, a step that closes): the task still ends at once with
+    ``CancelledError``, and its own cleanup runs, while the call goes on to its
+    answer, which is collected and dropped.
+    """
+    task = asyncio.ensure_future(awaitable)
+    try:
+        return await asyncio.shield(task)
+    except BaseException:
+        if not task.done():
+            task.add_done_callback(drop_late_answer)
+        raise
+
+
+def drop_late_answer(future: Any) -> None:
+    """Collect an abandoned call's outcome (an asyncio or a ``concurrent.futures``
+    future), so asyncio does not log it as never retrieved."""
+    if not future.cancelled():
+        future.exception()

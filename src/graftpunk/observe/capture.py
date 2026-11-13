@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
-from graftpunk.cdp_wait import answer_within
+from graftpunk.cdp_wait import answer_within, shield_call
 from graftpunk.dialogs import DialogAnswerer, answer_dialogs, new_tab_dialog_counts
 from graftpunk.har.parser import cookie_header_pairs
 from graftpunk.har.paths import bare_path, holds_an_id
@@ -1912,15 +1912,17 @@ class NodriverCaptureBackend:
         import nodriver.cdp.network as network
         import nodriver.cdp.runtime as cdp_runtime
 
-        await tab.send(
-            network.enable(
-                max_total_buffer_size=100 * 1024 * 1024,  # 100 MB total buffer
-                max_resource_buffer_size=10 * 1024 * 1024,  # 10 MB per resource
-                # Keeps bodies fetchable longer. Load-bearing on nodriver >= 0.50
-                # (flattened sessions): measured on 0.50.3, getResponseBody
-                # returns -32000 for every request without it and succeeds for
-                # nearly all with it. See issue #146.
-                enable_durable_messages=True,
+        await shield_call(
+            tab.send(
+                network.enable(
+                    max_total_buffer_size=100 * 1024 * 1024,  # 100 MB total buffer
+                    max_resource_buffer_size=10 * 1024 * 1024,  # 10 MB per resource
+                    # Keeps bodies fetchable longer. Load-bearing on nodriver >= 0.50
+                    # (flattened sessions): measured on 0.50.3, getResponseBody
+                    # returns -32000 for every request without it and succeeds for
+                    # nearly all with it. See issue #146.
+                    enable_durable_messages=True,
+                )
             )
         )
         self._capture_session_id = getattr(tab, "session_id", None)
@@ -1958,7 +1960,7 @@ class NodriverCaptureBackend:
                 tab.add_handler(loading_failed, self._on_loading_failed)
 
         # Console log capture
-        await tab.send(cdp_runtime.enable())
+        await shield_call(tab.send(cdp_runtime.enable()))
         tab.add_handler(cdp_runtime.ConsoleAPICalled, self._on_console)
 
         LOG.debug("nodriver_capture_async_started")
@@ -2025,6 +2027,8 @@ class NodriverCaptureBackend:
             # running one is cancelled, and one not yet started sees the flag.
             self._post_data_closed = True
             for task in self._post_data_tasks:
+                # Safe to cancel: the task's DevTools calls go through shield_call, so the
+                # cancel ends the task and leaves the command to its answer (graftpunk.cdp_wait).
                 task.cancel()
             if self._record_request_bodies:
                 _flag_uncaptured_post_data(self._request_map)
@@ -2055,6 +2059,8 @@ class NodriverCaptureBackend:
         if not still_running:
             return
         for task in still_running:
+            # Safe to cancel: the task's DevTools calls go through shield_call, so the
+            # cancel ends the task and leaves the command to its answer (graftpunk.cdp_wait).
             task.cancel()
         # Each cancelled task runs its own cleanup (a snapshot counts itself) first,
         # for at most _STOP_WAIT_S: one stuck on a DevTools reply is left behind.
@@ -2102,9 +2108,11 @@ class NodriverCaptureBackend:
                 # Retry a request body the request-time fetch did not get.
                 if self._record_request_bodies and _post_data_missing(data):
                     try:
-                        result = await tab.send(
-                            cdp_net.get_request_post_data(cdp_net.RequestId(request_id)),
-                            **_capture_session_kwargs(tab, self._capture_session_id),
+                        result = await shield_call(
+                            tab.send(
+                                cdp_net.get_request_post_data(cdp_net.RequestId(request_id)),
+                                **_capture_session_kwargs(tab, self._capture_session_id),
+                            )
                         )
                         _keep_post_data(
                             data,
@@ -2136,9 +2144,11 @@ class NodriverCaptureBackend:
                 mime = response.get("mimeType", "")
                 if _body_expected(data, response):
                     try:
-                        body, base64_encoded = await tab.send(
-                            cdp_net.get_response_body(cdp_net.RequestId(request_id)),
-                            **_capture_session_kwargs(tab, self._capture_session_id),
+                        body, base64_encoded = await shield_call(
+                            tab.send(
+                                cdp_net.get_response_body(cdp_net.RequestId(request_id)),
+                                **_capture_session_kwargs(tab, self._capture_session_id),
+                            )
                         )
                         _process_response_body(
                             response=response,
@@ -2273,10 +2283,12 @@ class NodriverCaptureBackend:
         try:
             import nodriver.cdp.network as cdp_net
 
-            result = await tab.send(
-                cdp_net.get_request_post_data(cdp_net.RequestId(rid)),
-                **_eager_send_kwargs(tab),
-                **_capture_session_kwargs(tab, self._capture_session_id),
+            result = await shield_call(
+                tab.send(
+                    cdp_net.get_request_post_data(cdp_net.RequestId(rid)),
+                    **_eager_send_kwargs(tab),
+                    **_capture_session_kwargs(tab, self._capture_session_id),
+                )
             )
             body = _post_body(result)
             _keep_post_data(
@@ -2410,16 +2422,20 @@ class NodriverCaptureBackend:
 
         tab.add_handler(cdp_runtime.BindingCalled, self._on_binding_called)
         try:
-            await tab.send(
-                cdp_runtime.add_binding(name=BINDING_NAME, execution_context_name=WORLD_NAME)
+            await shield_call(
+                tab.send(
+                    cdp_runtime.add_binding(name=BINDING_NAME, execution_context_name=WORLD_NAME)
+                )
             )
             # Without the Page domain enabled, Chrome runs the script in no document
             # created after this (measured on 2026-10-24 with nodriver 0.50.6: it
             # ran only in the document open at the time and on about:blank).
-            await tab.send(cdp_page.enable())
-            await tab.send(
-                cdp_page.add_script_to_evaluate_on_new_document(
-                    source=LISTENER_SCRIPT, world_name=WORLD_NAME, run_immediately=True
+            await shield_call(tab.send(cdp_page.enable()))
+            await shield_call(
+                tab.send(
+                    cdp_page.add_script_to_evaluate_on_new_document(
+                        source=LISTENER_SCRIPT, world_name=WORLD_NAME, run_immediately=True
+                    )
                 )
             )
         except Exception as exc:  # noqa: BLE001 - the recording goes on without it
@@ -2571,9 +2587,11 @@ class NodriverCaptureBackend:
         else:
             await self._dom_read_turn_within(turn_wait, after_read=after_read)
         try:
-            document = await tab.send(cdp_dom.get_document(depth=0), **session)
-            html = await tab.send(
-                cdp_dom.get_outer_html(backend_node_id=document.backend_node_id), **session
+            document = await shield_call(tab.send(cdp_dom.get_document(depth=0), **session))
+            html = await shield_call(
+                tab.send(
+                    cdp_dom.get_outer_html(backend_node_id=document.backend_node_id), **session
+                )
             )
         finally:
             try:
@@ -2944,6 +2962,8 @@ class NodriverCaptureBackend:
         self._step_before.clear()
         self._step_reads.clear()
         for task in self._step_read_tasks.values():
+            # Safe to cancel: the task's DevTools calls go through shield_call, so the
+            # cancel ends the task and leaves the command to its answer (graftpunk.cdp_wait).
             task.cancel()
         self._step_read_tasks.clear()
 
@@ -3183,6 +3203,8 @@ class NodriverCaptureBackend:
             self._failed.drop_pages()
         running = [task for task in self._after_read_tasks if not task.done()]
         for task in running:
+            # Safe to cancel: the task's DevTools calls go through shield_call, so the
+            # cancel ends the task and leaves the command to its answer (graftpunk.cdp_wait).
             task.cancel()
         return running
 
@@ -3276,10 +3298,12 @@ class NodriverCaptureBackend:
                 return
 
             self._eager_fetch_attempts += 1
-            body, base64_encoded = await tab.send(
-                cdp_net.get_response_body(cdp_net.RequestId(rid)),
-                **_eager_send_kwargs(tab),
-                **_capture_session_kwargs(tab, self._capture_session_id),
+            body, base64_encoded = await shield_call(
+                tab.send(
+                    cdp_net.get_response_body(cdp_net.RequestId(rid)),
+                    **_eager_send_kwargs(tab),
+                    **_capture_session_kwargs(tab, self._capture_session_id),
+                )
             )
             _process_response_body(
                 response=response,
