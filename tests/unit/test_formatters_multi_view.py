@@ -925,3 +925,125 @@ class TestViewFilterOnAListWithNoDict:
             )
         # U+0416 would be named in the pdf's ToUnicode map had the cell been drawn.
         assert b"<0416>" not in out.read_bytes()
+
+
+class _StrRaises:
+    """A value whose ``str`` raises and whose ``repr`` works."""
+
+    def __str__(self) -> str:
+        raise RuntimeError("no str")
+
+    def __repr__(self) -> str:
+        return "StrRaises()"
+
+
+class _NoText:
+    """A value whose ``str`` and ``repr`` both raise."""
+
+    def __repr__(self) -> str:
+        raise RuntimeError("no repr")
+
+    __str__ = __repr__
+
+
+_BIG = 10**5000
+_HARD_VALUES: list[Any] = [
+    pytest.param(_BIG, "<unprintable int>", id="int-past-4300-digits"),
+    pytest.param(_StrRaises(), "StrRaises()", id="str-raises"),
+    pytest.param(_NoText(), "<unprintable _NoText>", id="no-text"),
+    pytest.param("a\ud800b", "a�b", id="lone-surrogate"),
+]
+
+
+def _strict_utf8_console() -> tuple[Console, io.BytesIO]:
+    """A console writing to a strict UTF-8 stream, as Python's stdout is."""
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="utf-8", errors="strict")
+    return Console(file=stream, width=200), raw
+
+
+class TestEverySiteWritesAnyValue:
+    """``str()`` raised for an int past Python's 4300-digit limit and for a
+    value whose ``__str__`` raises, and a lone surrogate raised writing to a
+    UTF-8 file or stream, at each formatter's cell, heading and value sites.
+    One helper, ``safe_text``, gives each its text now."""
+
+    @pytest.mark.parametrize(("value", "shown"), _HARD_VALUES)
+    def test_table_cells_headings_and_the_single_dict_path_to_a_pipe(
+        self, value: Any, shown: str
+    ) -> None:
+        for data in ([{"k": value}], {"k": value}, [{_StrKey(value): 1}]):
+            console, raw = _strict_utf8_console()
+            TableFormatter().format(data, console)
+            console.file.flush()
+            text = raw.getvalue().decode("utf-8")
+            # A key whose own str and repr fail is its stand-in, named for its type.
+            assert shown in text or "<unprintable _StrKey>" in text
+
+    @pytest.mark.parametrize(("value", "shown"), _HARD_VALUES)
+    def test_table_to_a_file(self, tmp_path: Path, value: Any, shown: str) -> None:
+        out = tmp_path / "out.txt"
+        TableFormatter().format([{"k": value}], MagicMock(spec=Console), output_path=str(out))
+        assert shown in out.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(("value", "shown"), _HARD_VALUES)
+    def test_csv_formatter(self, value: Any, shown: str) -> None:
+        assert _csv_rows([{"k": value}])[1] == [shown]
+
+    @pytest.mark.parametrize(("value", "shown"), _HARD_VALUES)
+    def test_json_to_csv(self, tmp_path: Path, value: Any, shown: str) -> None:
+        from graftpunk.plugins.export import json_to_csv
+
+        path, _ = json_to_csv([{"k": value}], tmp_path / "out.csv")
+        assert Path(path).read_text(encoding="utf-8").splitlines()[1] == shown
+
+    @pytest.mark.parametrize(("value", "shown"), _HARD_VALUES)
+    def test_xlsx(self, tmp_path: Path, value: Any, shown: str) -> None:
+        assert _xlsx_rows(tmp_path, [{"k": value}])[1] == [shown]
+        assert _xlsx_rows(tmp_path, {"k": value})[1] == ["k", shown]
+
+    @pytest.mark.parametrize(("value", "shown"), _HARD_VALUES)
+    def test_pdf_cells_headings_and_metadata(self, tmp_path: Path, value: Any, shown: str) -> None:
+        path, pages = json_to_pdf(
+            [{"k": value, _StrKey(value): 1}], tmp_path / "out.pdf", metadata={"m": value}
+        )
+        assert pages == 1
+
+    @pytest.mark.parametrize(("value", "shown"), _HARD_VALUES)
+    def test_json_and_raw(self, value: Any, shown: str) -> None:
+        from graftpunk.plugins.export import json_text
+
+        # JSON escapes a lone surrogate (\\ud800), which reads back as written.
+        expected = value if isinstance(value, str) else shown
+        assert json.loads(json_text({"k": [value]})) == {"k": [expected]}
+        buf = io.StringIO()
+        RawFormatter().format({"k": value}, Console(file=buf))
+        assert json.loads(buf.getvalue()) == {"k": expected}
+
+    def test_a_container_that_holds_itself_is_written_as_its_loop_mark(self) -> None:
+        from graftpunk.plugins.export import json_text
+
+        loop: list[Any] = [1]
+        loop.append(loop)
+        node: dict[str, Any] = {}
+        node["self"] = node
+        assert json.loads(json_text({"l": loop, "d": node})) == {
+            "l": [1, "[...]"],
+            "d": {"self": "{...}"},
+        }
+
+
+class _StrKey:
+    """A hashable key whose text is the given value's."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def __hash__(self) -> int:
+        return 7
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+    def __repr__(self) -> str:
+        return repr(self.value)

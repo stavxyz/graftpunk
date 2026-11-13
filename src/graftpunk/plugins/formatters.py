@@ -23,6 +23,7 @@ from rich.table import Table
 from rich.text import Text
 
 from graftpunk import console as gp_console
+from graftpunk._safe_text import safe_text
 from graftpunk.console import stream_is_tty, visible_text, write_raw
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
@@ -156,7 +157,7 @@ def _write_empty_csv(
     if view and view.columns and view.columns.mode == "include":
         buf = io.StringIO()
         csv.writer(buf, lineterminator="\n").writerow(
-            [_neutralize_formula(str(c)) for c in view.columns.columns]
+            [_neutralize_formula(safe_text(c)) for c in view.columns.columns]
         )
         text = buf.getvalue()
     write_raw(text, console, output_path)
@@ -281,9 +282,9 @@ class TableFormatter:
             table = Table(header_style="bold cyan", border_style="dim")
             # Cells are data: wrap in Text so Rich never markup-parses "[/LB]" (#145).
             for header in headers:
-                table.add_column(Text(str(header)))
+                table.add_column(Text(_table_text(header)))
             for row in rows:
-                table.add_row(*[Text(str(row.get(h, ""))) for h in headers])
+                table.add_row(*[Text(_table_text(row.get(h, ""))) for h in headers])
             console.print(table)
         elif isinstance(data, dict):
             table = Table(show_header=False, border_style="dim")
@@ -292,10 +293,16 @@ class TableFormatter:
             for key, value in data.items():
                 if isinstance(value, (dict, list)):
                     value = json_text(value)
-                table.add_row(Text(str(key)), Text(str(value)))
+                table.add_row(Text(_table_text(key)), Text(_table_text(value)))
             console.print(table)
         else:
             JsonFormatter().format(data, console)
+
+
+def _table_text(value: Any) -> str:
+    """A table cell's or heading's text: :func:`safe_text`, so a value whose
+    ``str`` raises, an int past the digit limit and a lone surrogate render."""
+    return safe_text(value)
 
 
 class RawFormatter:
@@ -320,10 +327,10 @@ class RawFormatter:
 def _csv_text(value: Any) -> str:
     """One CSV cell: a number as written, anything else neutralised (#288)."""
     if isinstance(value, numbers.Number):
-        return str(value)
+        return safe_text(value)
     if isinstance(value, (dict, list)):
         return _neutralize_formula(json_text(value))
-    return _neutralize_formula(str(value))
+    return _neutralize_formula(safe_text(value))
 
 
 class CsvFormatter:
@@ -405,7 +412,7 @@ class CsvFormatter:
         headers = ordered_keys(data)
         buf = io.StringIO()
         writer = csv.writer(buf, lineterminator="\n")
-        writer.writerow([_neutralize_formula(str(h)) for h in headers])
+        writer.writerow([_neutralize_formula(safe_text(h)) for h in headers])
         for row in data:
             writer.writerow([_csv_text(row.get(h, "")) for h in headers])
         if output_path:
@@ -495,30 +502,30 @@ class XlsxFormatter:
             rows = table_rows(data)
             headers = ordered_keys(rows)
             for col, header in enumerate(headers):
-                _write_xlsx_cell(worksheet, 0, col, str(header), bold)
+                _write_xlsx_cell(worksheet, 0, col, safe_text(header), bold)
             for row_idx, row in enumerate(rows, start=1):
                 for col_idx, header in enumerate(headers):
                     _write_xlsx_cell(worksheet, row_idx, col_idx, row.get(header, ""))
             # Auto-size columns: sample first 100 rows for performance,
             # cap cell width at 50 chars to prevent very wide columns.
             for col_idx, header in enumerate(headers):
-                max_len = len(str(header))
+                max_len = len(safe_text(header))
                 for row in rows[:100]:
-                    val = str(row.get(header, ""))
+                    val = safe_text(row.get(header, ""))
                     max_len = max(max_len, min(len(val), 50))
                 worksheet.set_column(col_idx, col_idx, max_len + 2)
         elif isinstance(data, dict):
             worksheet.write(0, 0, "Key", bold)
             worksheet.write(0, 1, "Value", bold)
             for row_idx, (key, value) in enumerate(data.items(), start=1):
-                _write_xlsx_cell(worksheet, row_idx, 0, str(key))
+                _write_xlsx_cell(worksheet, row_idx, 0, safe_text(key))
                 _write_xlsx_cell(worksheet, row_idx, 1, value)
             worksheet.set_column(0, 0, 20)
             worksheet.set_column(1, 1, 40)
         elif isinstance(data, list):
             pass  # Empty list — just create the sheet
         else:
-            _write_xlsx_cell(worksheet, 0, 0, str(data))
+            _write_xlsx_cell(worksheet, 0, 0, safe_text(data))
 
 
 # The cell types xlsxwriter's write() stores natively; it raises TypeError on
@@ -557,12 +564,12 @@ def _write_xlsx_cell(worksheet: Any, row: int, col: int, value: Any, fmt: Any = 
         pass
     elif isinstance(value, numbers.Real | decimal.Decimal):
         if not _fits_a_float(value):
-            value = str(value)
+            value = safe_text(value)
     elif isinstance(value, datetime.datetime | datetime.time):
         if value.utcoffset() is not None:
             value = value.isoformat()
     elif value is not None and not isinstance(value, _XLSX_NATIVE):
-        value = str(value)
+        value = safe_text(value)
     if isinstance(value, str):
         value = visible_text(value)
     try:
@@ -572,7 +579,7 @@ def _write_xlsx_cell(worksheet: Any, row: int, col: int, value: Any, fmt: Any = 
             worksheet.write(row, col, value, fmt)
     except (TypeError, ValueError, OverflowError):
         # A value of a native type xlsxwriter still refuses: its text.
-        worksheet.write_string(row, col, visible_text(str(value)), fmt)
+        worksheet.write_string(row, col, safe_text(value), fmt)
 
 
 # Characters Excel refuses in a worksheet name; xlsxwriter raised on each, and

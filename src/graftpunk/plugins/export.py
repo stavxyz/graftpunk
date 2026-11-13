@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from graftpunk.console import visible_text
+from graftpunk._safe_text import safe_text
 from graftpunk.logging import get_logger
 
 if TYPE_CHECKING:
@@ -45,19 +45,17 @@ def _csv_cell(value: object) -> object:
     same characters held as a string are site text and get the prefix.
     """
     if value is None or isinstance(value, numbers.Number):
-        return value
-    return _neutralize_formula(visible_text(value if isinstance(value, str) else str(value)))
+        # csv.writer calls str(), which raises past Python's 4300-digit limit.
+        return _json_value(value) if isinstance(value, int) else value
+    return _neutralize_formula(safe_text(value))
 
 
 def _json_key(key: object) -> object:
     """*key* as JSON can write it: a string, number, bool or None as it is,
     and any other key (a tuple, a frozenset) as its ``str()``."""
     if key is None or isinstance(key, str | int | float | bool):
-        return key
-    try:
-        return str(key)
-    except Exception:  # noqa: BLE001 - a key whose __str__ raises
-        return f"<unprintable {type(key).__name__}>"
+        return _json_value(key)
+    return safe_text(key)
 
 
 def _json_ready(value: object, active: set[int]) -> object:
@@ -65,7 +63,9 @@ def _json_ready(value: object, active: set[int]) -> object:
     ``str()``; a later key that reads the same as an earlier one is numbered."""
     if isinstance(value, dict | list | tuple):
         if id(value) in active:
-            return value  # a loop: json.dumps reports it, as before
+            # A container that holds itself, written where the loop closes as
+            # Python's repr writes it; json.dumps raised on it.
+            return "{...}" if isinstance(value, dict) else "[...]"
         active.add(id(value))
         try:
             if isinstance(value, dict):
@@ -81,15 +81,37 @@ def _json_ready(value: object, active: set[int]) -> object:
             return [_json_ready(item, active) for item in value]
         finally:
             active.discard(id(value))
-    return value
+    return _json_value(value)
 
 
 def json_text(value: object, *, indent: int | None = None) -> str:
-    """``json.dumps(value, default=str)`` that also writes a dict key JSON
-    cannot (a tuple, a frozenset) at any depth as its ``str()``: ``default`` is
-    never asked about a key, so such a key raised ``TypeError``. Every
-    formatter and export that writes a value as JSON text uses this."""
-    return json.dumps(_json_ready(value, set()), indent=indent, default=str)
+    """``json.dumps(value, default=safe_text)`` that also writes a dict key
+    JSON cannot (a tuple, a frozenset) at any depth as its text: ``default`` is
+    never asked about a key, so such a key raised ``TypeError``. An int past
+    Python's 4300-digit limit, which ``json.dumps`` cannot write, is its
+    :func:`safe_text`. Every formatter and export that writes a value as JSON
+    text uses this."""
+    return json.dumps(_json_ready(value, set()), indent=indent, default=safe_text)
+
+
+# An int this many bits long may pass Python's 4300-digit str() limit; only
+# such an int is tried (4300 decimal digits are about 14284 bits).
+_LONG_INT_BITS = 14000
+
+
+def _json_value(value: object) -> object:
+    """*value*, or its :func:`safe_text` when it is an int ``str()`` refuses
+    (past Python's 4300-digit limit)."""
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value.bit_length() > _LONG_INT_BITS
+    ):
+        try:
+            str(value)
+        except ValueError:
+            return safe_text(value)
+    return value
 
 
 # fpdf2's core fonts (Helvetica) encode Latin-1 only, and raised on a curly
@@ -161,7 +183,7 @@ def flatten_dict(
     """
     items: list[tuple[str, object]] = []
     for k, v in d.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        new_key = f"{parent_key}{sep}{safe_text(k)}" if parent_key else k
         if isinstance(v, dict):
             items.extend(flatten_dict(cast("dict[str, object]", v), new_key, sep=sep).items())
         elif isinstance(v, list):
@@ -170,7 +192,7 @@ def flatten_dict(
             elif isinstance(v[0], dict):
                 items.append((new_key, json_text(v)))
             else:
-                items.append((new_key, ", ".join(str(i) for i in v)))
+                items.append((new_key, ", ".join(safe_text(i) for i in v)))
         else:
             items.append((new_key, v))
     return dict(items)
@@ -238,7 +260,7 @@ def json_to_csv(
 
     with open(output, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([_neutralize_formula(visible_text(str(c))) for c in columns])
+        writer.writerow([_neutralize_formula(safe_text(c)) for c in columns])
         for row in rows:
             writer.writerow([_csv_cell(row.get(c)) for c in columns])
 
@@ -320,7 +342,8 @@ def json_to_pdf(
 
     # Metadata section: a pair whose value is empty is left out, as cell()
     # raises on empty text.
-    shown = [(key, str(value)) for key, value in (metadata or {}).items() if str(value)]
+    shown = [(safe_text(key), safe_text(value)) for key, value in (metadata or {}).items()]
+    shown = [(key, value) for key, value in shown if value]
     if shown:
         for key, value in shown:
             pdf.set_font(_PDF_FONT, style="B", size=9)
@@ -340,10 +363,10 @@ def json_to_pdf(
     # Build table data: header row + data rows. A key need not be a string (1,
     # None, a tuple); fpdf2 takes only text, so the header shows its str() (#310).
     table_data: list[list[str]] = [
-        [_drawable(pdf, str(col), missing, bold=True) for col in columns]
+        [_drawable(pdf, safe_text(col), missing, bold=True) for col in columns]
     ]
     for row in rows:
-        table_data.append([_drawable(pdf, str(row.get(col, "")), missing) for col in columns])
+        table_data.append([_drawable(pdf, safe_text(row.get(col, "")), missing) for col in columns])
 
     # Render table
     pdf.set_font(_PDF_FONT, size=7)
