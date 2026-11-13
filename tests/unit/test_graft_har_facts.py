@@ -11,6 +11,7 @@ import random
 import shutil
 import string
 import subprocess
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -560,8 +561,7 @@ def test_an_html_response_gives_title_length_and_forms_never_text(tmp_path: Path
         "    form POST /account/{}/update",
         "      ship: select",
         "      note: textarea",
-        "      (name not shown) text, control 1 of the form",
-        "      (name not shown) text, control 3 of the form",
+        "      (name not shown) text (3 controls, the first control 1 of the form)",
         "    form GET http://shop.test/x",
     ):
         assert expected in lines, "\n".join(lines)
@@ -1323,3 +1323,90 @@ def test_a_webforms_element_id_prints_as_its_posted_name_does(tmp_path: Path) ->
     assert "      ctl00$ContentPlaceHolder1$Login1$UserName: text" in lines
     element_id = "ctl00_ContentPlaceHolder1_ctl01_ctl02_txtName"
     assert f"      (no name) text, control 2 of the form, id {element_id}" in lines
+
+
+# #280: repeated unnamed controls, and a whole HAR nested too deep to parse.
+
+
+def test_repeated_controls_whose_names_fail_are_one_line_per_type() -> None:
+    hidden = [(f"h{n}_Zq9XkLmPwR4t7Bv2Hn8Ks3Jd", "hidden", "") for n in range(30)]
+    controls = [*hidden, ("", "submit button", ""), ("username", "text", ""), ("", "hidden", "")]
+    assert _load_script()._controls(controls, "") == [
+        "username: text",
+        "(name not shown) hidden (30 controls, the first control 1 of the form)",
+        "(no name) submit button, control 31 of the form",
+        "(no name) hidden, control 33 of the form",
+    ]
+
+
+def test_past_twelve_lines_the_rest_of_the_controls_are_counted() -> None:
+    kinds = sorted(_load_script()._INPUT_TYPES)[:14]
+    controls = [("", kind, "") for kind in kinds for _ in range(2)]
+    lines = _load_script()._controls(controls, "")
+    assert len(lines) == 13
+    assert lines[-1] == "(4 more controls with no name or a name not shown)"
+
+
+def _nested_har(tmp_path: Path, depth: int) -> Path:
+    """A HAR whose deepest value sits *depth* levels down, counting the top object."""
+    path = tmp_path / "network.har"
+    inner = "[" * (depth - 2) + "]" * (depth - 2)
+    path.write_text(f'{{"log": {{"entries": [], "deep": {inner}}}}}')
+    return path
+
+
+def test_a_har_nested_past_the_bound_exits_2_before_it_is_parsed(tmp_path: Path) -> None:
+    """A HAR 20,000 deep exited 2 on Python 3.12 (RecursionError) and was read on
+    3.14; the bound is the script's own, so every Python answers alike."""
+    for depth, code in ((512, 1), (513, 2), (20_000, 2)):
+        path = _nested_har(tmp_path, depth)
+        result = _run("cookies", str(path))
+        assert result.returncode == code, (depth, result.stderr)
+        if code == 2:
+            assert result.stderr == (
+                f"har-facts: {path} nests JSON deeper than 512 levels, so it is not read.\n"
+            )
+        assert "[[[" not in result.stdout + result.stderr
+
+
+def _cpu_seconds(work: Callable[[], object]) -> float:
+    """The least CPU time of three runs of *work*."""
+    times = []
+    for _ in range(3):
+        start = time.process_time()
+        work()
+        times.append(time.process_time() - start)
+    return min(times)
+
+
+@pytest.mark.parametrize("shape", ["deep", "flat", "strings"])
+def test_nesting_is_judged_in_linear_time(shape: str) -> None:
+    """Eight times the text within 24 times the CPU time, however it nests."""
+    nesting = _load_script()._nesting
+
+    def text(size: int) -> str:
+        if shape == "deep":
+            return "[" * size + "]" * size
+        if shape == "flat":
+            return "[" + ",".join(["{}"] * size) + "]"
+        return json.dumps(['a\\"b' * 8] * size)
+
+    small, large = text(20_000), text(160_000)
+    ratio = _cpu_seconds(lambda: nesting(large)) / max(_cpu_seconds(lambda: nesting(small)), 1e-4)
+    assert ratio < 24, ratio
+
+
+@pytest.mark.parametrize(
+    ("text", "depth"),
+    [
+        ("", 0),
+        ("]]", 0),
+        ("[[]]", 2),
+        ('["[[[", {"a": "]]"}]', 2),
+        ('["\\"[[["]', 1),
+        ('["unclosed [[[', 1),
+        ('{"a": "\\\\"}', 1),
+    ],
+)
+def test_nesting_skips_brackets_inside_strings(text: str, depth: int) -> None:
+    assert _load_script()._nesting(text) == depth

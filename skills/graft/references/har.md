@@ -82,15 +82,15 @@ Names, path segments, subdomains, and content subtypes print only when they pass
 a heuristic gate for field names, which also lets fixed framework names through
 (CDN and bot-manager headers and cookies, ASP.NET WebForms controls, Django
 formset fields, routes such as `graphql`). What fails is a placeholder (`{id}`,
-`{token}`, `{}`, a scheme alone or `a URL of another scheme`, `(method not
-shown)`, an unnamed blob of N bytes, a title's length class) or a count ("N
-names that read as values, not shown"). The gate stops random tokens with digits
-or mixed case, but a plain word (a username, a person's or place's name, a
-label, a handle like `alice84`) and a letter-only token that spells like a word
-(10.84% of 9-letter random tokens, 5.20% at 12) can still be the account's own:
-never copy one into code without the user's word. A field whose name reads as a
-secret is listed by name alone. Exit 1 means nothing matched; exit 2 means the
-HAR is missing, is not a HAR, or holds an entry the script could not read.
+`{token}`, `{}`, a scheme alone, `(method not shown)`, an unnamed blob of N
+bytes, a title's length class) or a count ("N names that read as values, not
+shown"). The gate stops random tokens with digits or mixed case; a plain word (a
+username, a person's or place's name, a label, a handle like `alice84`) and a
+letter-only token that spells like a word (10.84% of 9-letter random tokens,
+5.20% at 12) can still be the account's own: never copy one into code without
+the user's word. A field whose name reads as a secret is listed by name alone.
+Exit 1 means nothing matched; exit 2 means the HAR is missing, is not a HAR,
+nests deeper than 512 levels, or holds an entry the script could not read.
 
 When a name a step needs is counted as reading like a value, use `--name` for a
 cookie whose name you hold, and ask the user for any other name (a login field,

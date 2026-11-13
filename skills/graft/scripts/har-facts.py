@@ -124,10 +124,10 @@ names, the names of the cookies it sets, and the body's shape: JSON keys and
 types (JSON nested deeper than 64 levels is not parsed), or an HTML page's title
 length and its forms, each with its method, templated action, and controls by
 name and type (repeats collapsed with a count, a control with no name or a name
-that fails by type and position). A field whose name reads as a password, a
-secret, a token, a card, or a key is listed by name alone. A response body
-streamed to ``bodies/`` is read only from the HAR's own ``bodies/`` directory,
-never through a link.
+that fails by type and position, and repeats of those by type with a count). A
+field whose name reads as a password, a secret, a token, a card, or a key is
+listed by name alone. A response body streamed to ``bodies/`` is read only from
+the HAR's own ``bodies/`` directory, never through a link.
 
 ``operations`` lists each GraphQL operation the recording's request bodies
 carry (graftpunk's own rule, copied and held equal by a test: a JSON object with a
@@ -153,8 +153,9 @@ names the anonymous one), and ``request`` and
 
 At most 20 matching entries are described; past that, a count prints. Exit 0 when
 something was described, 1 when nothing matched, 2 on a usage error, a HAR that
-is missing or is not a HAR, or an entry that could not be read; no error message
-quotes the HAR. Standard library only, so it runs under any Python 3.9 or later.
+is missing, is not a HAR, or nests JSON deeper than 512 levels (checked before
+it is parsed), or an entry that could not be read; no error message quotes the
+HAR. Standard library only, so it runs under any Python 3.9 or later.
 """
 
 from __future__ import annotations
@@ -162,7 +163,9 @@ from __future__ import annotations
 import argparse
 import base64
 import ipaddress
+import itertools
 import json
+import operator
 import re
 import sys
 from collections import Counter
@@ -935,6 +938,12 @@ def looks_secret(name: str) -> bool:
 # Loading
 
 
+# How deep a whole HAR may nest: past any HAR a browser or gp writes, and under the
+# depth at which json.loads raises RecursionError on every Python the script runs
+# on, which differs by version (a HAR 20,000 deep failed on 3.12 and read on 3.14).
+_MAX_HAR_NESTING = 512
+
+
 class HarError(Exception):
     """The HAR cannot be read; the message says why without quoting it."""
 
@@ -946,6 +955,10 @@ def _load(path: str) -> list[dict[str, Any]]:
         raise HarError(f"{path} is not UTF-8 text") from exc
     except OSError as exc:
         raise HarError(f"cannot read {path}") from exc
+    if _nesting(text) > _MAX_HAR_NESTING:
+        raise HarError(
+            f"{path} nests JSON deeper than {_MAX_HAR_NESTING} levels, so it is not read"
+        )
     try:
         har = json.loads(text)
     except (ValueError, RecursionError) as exc:
@@ -1548,33 +1561,23 @@ def _shape(value: Any, indent: str, depth: int, max_depth: int = _MAX_DEPTH) -> 
 
 
 _MAX_JSON_NESTING = 64
+# A JSON string, escapes and all; one left open runs to the end of the text.
+_JSON_STRING_RE = re.compile(r'"[^"\\]*(?:\\[\s\S][^"\\]*)*"?')
+_NOT_A_BRACKET_RE = re.compile(r"[^\[\]{}]+")
+_BRACKET_STEPS = str.maketrans({"[": "\x02", "{": "\x02", "]": "\x00", "}": "\x00"})
 
 
 def _nesting(text: str) -> int:
     """How deep JSON *text* nests objects and arrays, strings skipped; the script
     bounds this itself, since how deep json.loads goes before RecursionError
-    changed across Python versions."""
-    depth = deepest = 0
-    in_string = escaped = False
-    for ch in text:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-        elif ch == '"':
-            in_string = True
-        elif ch in "[{":
-            depth += 1
-            if depth > deepest:
-                deepest = depth
-                if deepest > _MAX_JSON_NESTING:
-                    return deepest
-        elif ch in "]}":
-            depth -= 1
-    return deepest
+    changed across Python versions. It runs in C, not a loop over characters,
+    since it reads the whole HAR before json.loads does."""
+    brackets = _NOT_A_BRACKET_RE.sub("", _JSON_STRING_RE.sub("", text))
+    # 2 for an opening bracket and 0 for a closing one: after k brackets the sum is
+    # twice the openings, and the sum less k is the depth there.
+    steps = brackets.translate(_BRACKET_STEPS).encode("ascii")
+    depths = map(operator.sub, itertools.accumulate(steps), itertools.count(1))
+    return max(itertools.chain((0,), depths))
 
 
 def _json_shape(text: str, indent: str) -> list[str] | None:
@@ -1702,16 +1705,26 @@ def _controls(controls: list[tuple[str, str, str]], indent: str) -> list[str]:
     for name, kind in dict.fromkeys(named):
         repeat = f" ({counts[(name, kind)]} controls)" if counts[(name, kind)] > 1 else ""
         lines.append(f"{indent}{name}: {kind}{repeat}")
-    listed = 0
-    unlisted = 0
+    # The controls with no name or a name that fails, by label and type, so a run
+    # of hidden inputs is one line with a count, as a named repeat is.
+    groups: dict[tuple[str, str], list[tuple[int, str]]] = {}
     for position, (name, kind, ident) in enumerate(controls, start=1):
         if name and printable_name(name):
             continue
-        if listed == _MAX_UNNAMED:
-            unlisted += 1
-            continue
-        listed += 1
         label = "(name not shown)" if name else "(no name)"
+        groups.setdefault((label, kind), []).append((position, ident))
+    unlisted = 0
+    for listed, ((label, kind), members) in enumerate(groups.items()):
+        if listed >= _MAX_UNNAMED:
+            unlisted += len(members)
+            continue
+        position, ident = members[0]
+        if len(members) > 1:
+            lines.append(
+                f"{indent}{label} {kind} ({len(members)} controls, the first control "
+                f"{position} of the form)"
+            )
+            continue
         shown = f", id {ident}" if ident and printable_name(ident) else ""
         hidden_id = ", an id that reads as a value" if ident and not shown else ""
         lines.append(f"{indent}{label} {kind}, control {position} of the form{shown}{hidden_id}")
