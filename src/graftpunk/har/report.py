@@ -33,6 +33,7 @@ from graftpunk.har.digest import (
     hidden_names_not_shown,
     login_fields_not_shown,
     meta_names_not_shown,
+    names_not_shown,
     printable_body_params,
     printable_custom_headers,
     printable_hidden,
@@ -296,6 +297,12 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     families = sum(1 for e in d.endpoints if e.family_members)
     family_note = f", families: {families}" if families else ""
     lines.append(f"- hosts: {len(d.hosts)}, endpoints: {len(d.endpoints) - families}{family_note}")
+    if unshown_names := names_not_shown(d):
+        lines.append(
+            "- 1 recorded name that reads as a value is not shown"
+            if unshown_names == 1
+            else f"- {unshown_names} recorded names that read as values are not shown"
+        )
     lines.append(
         f"- dropped: static={d.dropped.get('static', 0)}, "
         f"third_party={d.dropped.get('third_party', 0)}, "
@@ -443,7 +450,9 @@ def render_json(d: RunDigest) -> str:
     ``query_params`` or ``body_params`` (which then carries
     ``query_params_not_shown`` or ``body_params_not_shown``,
     :func:`graftpunk.har.digest.printable_body_params`), and
-    ``field_names_not_shown`` counts them for the run. ``token_pairs`` holds only the pairings
+    ``field_names_not_shown`` counts them for the run. Each per-kind count counts
+    its own names, a name held back in two kinds in each; ``names_not_shown``,
+    computed here, counts every held-back name once. ``token_pairs`` holds only the pairings
     :func:`graftpunk.har.digest.printable_token_pairs` prints."""
     rendered = _jsonable(d)
     rendered["cookies"] = [name for name in d.cookies if printable_name(name)]
@@ -463,6 +472,9 @@ def render_json(d: RunDigest) -> str:
     rendered.pop("field_names_not_shown", None)
     if unshown_body := field_names_not_shown(d):
         rendered["field_names_not_shown"] = unshown_body
+    rendered.pop("names_not_shown", None)
+    if unshown_names := names_not_shown(d):
+        rendered["names_not_shown"] = unshown_names
     rendered.pop("token_pairs", None)
     if pairs := printable_token_pairs(d, spellings):
         rendered["token_pairs"] = _jsonable(pairs)

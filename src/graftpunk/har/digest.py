@@ -129,6 +129,7 @@ __all__ = [
     "meta_names_not_shown",
     "hidden_names_not_shown",
     "field_names_not_shown",
+    "names_not_shown",
     "body_params_not_shown",
     "login_fields_not_shown",
     "printable_body_params",
@@ -691,21 +692,31 @@ class RunDigest:
     # (graftpunk.har.paths.printable_name) and so print nowhere: not as a token
     # candidate or a pairing's source, not as a Token in a scaffolded plugin, not
     # in a login form's ``hidden`` in --json, and, when a request posted the
-    # input, not as a posted field either (field_names_not_shown leaves such a
-    # name to this count) (#359). ``tokens``, ``token_pairs`` and ``login_forms``
-    # keep every name.
+    # input, not as a posted field either, where field_names_not_shown counts it
+    # too (#359). ``tokens``, ``token_pairs`` and ``login_forms`` keep every name.
     hidden_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
     # How many distinct query parameter and posted body field names read as a
     # value and so print nowhere: not in a login step's ``fields``
     # (printable_login_fields), not in an endpoint's ``query_params`` or
     # ``body_params`` (printable_query_params, printable_body_params) in the
-    # markdown, --json or --endpoints-json, and not sent by a generated stub. A
-    # name another of this run's counts already counts (a hidden input, a meta
-    # tag, or a cookie name) is not counted again, so a name counts once across
-    # kinds. A GraphQL operation's variables have their own gate
-    # (graftpunk.har.graphql) and are not counted. ``LoginObservation.fields``,
-    # ``Endpoint.query_params`` and ``Endpoint.body_params`` keep every name.
+    # markdown, --json or --endpoints-json, and not sent by a generated stub. Like
+    # every per-kind count, it counts its own names: a name also held back as a
+    # hidden input, a meta tag, a cookie or a header is counted there too. A
+    # GraphQL operation's variables have their own gate (graftpunk.har.graphql)
+    # and are not counted. ``LoginObservation.fields``, ``Endpoint.query_params``
+    # and ``Endpoint.body_params`` keep every name.
     field_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
+    # How many distinct recorded names print nowhere because they read as a value,
+    # each counted once across every kind (cookie, header, meta tag, hidden input,
+    # query parameter and posted field) and compared without regard to case, as
+    # header names are: the run's one total beside the per-kind counts above
+    # (names_not_shown).
+    names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
+    # The cookie names cookie_names_not_shown counts (set, sent, or held back as an
+    # id), for names_not_shown. Never printed: render_json leaves it out.
+    cookie_names_held_back: tuple[str, ...] = field(
+        default=(), repr=False, metadata={INTERNAL: True}
+    )
     # Every recorded spelling of a custom header name, in the order the run first
     # recorded it: header_spellings reads it to pick the first spelling that
     # passes the gate. A lookup, so render_json leaves it out.
@@ -1948,9 +1959,13 @@ def login_fields_not_shown(observation: LoginObservation) -> int:
 def field_names_not_shown(d: RunDigest) -> int:
     """How many distinct query parameter and posted body field names of *d* print
     nowhere (``RunDigest.field_names_not_shown``): held back from a login step's
-    ``fields`` or an endpoint's ``query_params`` or ``body_params``, less the
-    held-back names another count of *d* counts (a hidden input, a meta tag, a
-    cookie), so a name counts once across kinds."""
+    ``fields`` or an endpoint's ``query_params`` or ``body_params``. A name also
+    held back in another kind is counted there too; :func:`names_not_shown`
+    counts each name once."""
+    return len(_held_back_field_names(d))
+
+
+def _held_back_field_names(d: RunDigest) -> set[str]:
     names = {
         name
         for observation in d.login
@@ -1971,14 +1986,39 @@ def field_names_not_shown(d: RunDigest) -> int:
         for name in endpoint.query_params
         if not printable_name(name)
     )
-    counted = _held_back_hidden_names(d.tokens, d.login_forms)
-    counted.update(
-        t.name for t in d.tokens if t.kind in ("meta", "cookie") and not printable_name(t.name)
+    return names
+
+
+def names_not_shown(d: RunDigest) -> int:
+    """How many distinct recorded names of *d* print nowhere because they read as
+    a value (``RunDigest.names_not_shown``): the names every per-kind count
+    counts (cookie, header, meta tag, hidden input, query parameter and posted
+    field), each once, compared without regard to case."""
+    names = {name.lower() for name in d.cookie_names_held_back}
+    names.update(
+        t.name.lower()
+        for t in d.tokens
+        if t.kind in ("cookie", "meta") and not printable_name(t.name)
     )
-    counted.update(
-        name for name in (*d.cookies, *(f.name for f in d.cookie_facts)) if not printable_name(name)
+    names.update(
+        name.lower()
+        for observation in d.login
+        if observation.kind == "set_cookie"
+        for name in observation.fields
+        if not printable_name(name)
     )
-    return len(names - counted)
+    spellings = header_spellings(d)
+    names.update(
+        lowered
+        for lowered in (
+            *(t.name.lower() for t in d.tokens if t.kind == "header"),
+            *(name.lower() for endpoint in d.endpoints for name in endpoint.custom_headers),
+        )
+        if lowered not in spellings
+    )
+    names.update(name.lower() for name in _held_back_hidden_names(d.tokens, d.login_forms))
+    names.update(name.lower() for name in _held_back_field_names(d))
+    return len(names)
 
 
 def printable_login_fields(observation: LoginObservation) -> tuple[str, ...]:
@@ -4450,6 +4490,16 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             tuple(cookies_seen), cookie_settings, cookies_sent, collapse_map
         ),
         cookie_names_not_shown=_cookie_names_not_shown(cookies_seen, id_cookie_names, cookies_sent),
+        cookie_names_held_back=tuple(
+            sorted(
+                {
+                    name
+                    for group in (cookies_seen, id_cookie_names, cookies_sent)
+                    for name in group
+                    if not printable_name(name)
+                }
+            )
+        ),
         meta_names_not_shown=meta_names_not_shown(tokens),
         hidden_names_not_shown=hidden_names_not_shown(tokens, ranked_forms),
         header_spellings=header_order,
@@ -4490,6 +4540,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         run,
         header_names_not_shown=run_header_names_not_shown(run),
         field_names_not_shown=field_names_not_shown(run),
+        names_not_shown=names_not_shown(run),
     )
 
 

@@ -568,13 +568,16 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     assert any(_HELD_BACK_FIELD in e.body_params for e in d.endpoints)
     assert any(_HELD_BACK_HIDDEN in e.body_params for e in d.endpoints)
     assert any(_HELD_BACK_QUERY in e.query_params for e in d.endpoints)
-    # The posted hidden input is counted once, as a hidden input; the posted
-    # field and the query parameter are counted here.
-    assert d.field_names_not_shown == 2
+    # Each kind counts its own names: the posted hidden input is a field too.
+    assert d.field_names_not_shown == 3
+    # Four cookies, two header names (one in two cases), the meta tag, the hidden
+    # input, the posted field and the query parameter, each once.
+    assert d.names_not_shown == 10
     rendered = json.loads(render_json(d))
     assert rendered["meta_names_not_shown"] == 1
     assert rendered["hidden_names_not_shown"] == 1
-    assert rendered["field_names_not_shown"] == 2
+    assert rendered["field_names_not_shown"] == 3
+    assert rendered["names_not_shown"] == 10
     assert any(e.get("query_params_not_shown") == 1 for e in rendered["endpoints"])
     login_post = next(obs for obs in rendered["login"] if obs["kind"] == "credential_post")
     assert login_post["fields_not_shown"] == 1
@@ -989,3 +992,30 @@ def test_token_candidates_alone_decide_their_header_names() -> None:
         ("meta", _SPLIT_HEADER.lower()),
     ]
     assert held_back_token_count(tokens) == 1
+
+
+def test_one_name_in_four_kinds_is_counted_in_each_kind_and_once_in_the_total(
+    tmp_path: Path,
+) -> None:
+    """Each section says how many of its own names it held back; the run's total
+    counts the name once (#359)."""
+    name = "csrfZq7Lm9Kv"
+    page = _entry(
+        "GET",
+        f"{_HOST}/",
+        content_type="text/html",
+        body=f'<meta name="{name}" content="Kq8mZt3vWx7pLr2n">'
+        f'<form method="post" action="/x"><input type="hidden" name="{name}" value="v"></form>',
+    )
+    post = _entry("POST", f"{_HOST}/x?{name}=1", request_headers={name: "Kq8mZt3vWx7pLr2n"})
+    d = _digest(tmp_path, [page, post])
+    rendered = json.loads(render_json(d))
+    assert rendered["meta_names_not_shown"] == 1
+    assert rendered["hidden_names_not_shown"] == 1
+    assert rendered["header_names_not_shown"] == 1
+    assert rendered["field_names_not_shown"] == 1
+    assert rendered["names_not_shown"] == 1
+    assert d.names_not_shown == 1
+    assert "- 1 recorded name that reads as a value is not shown" in render_markdown(d)
+    for text in (render_markdown(d), json.dumps(rendered), render_endpoints_json(d)):
+        assert name.lower() not in text.lower()

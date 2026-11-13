@@ -826,9 +826,14 @@ gate passes a digit run inside a name when it sits between words (`line2Address`
 `x509`, `k8s`), and the word `object` or `subject` (`objectId`). A part that is a
 year (`kevin-1979`, `wp-settings-2015`) is held back, as a username's birth year
 or a per-user id can be one.
-`--json`'s `field_names_not_shown` counts them for the run, leaving out a
-name another count already counts (a posted hidden input is counted as a hidden
-input), so a name counts once across kinds. A GraphQL operation's variables keep
+`--json`'s `field_names_not_shown` counts them for the run. Each per-kind count
+(`cookie_names_not_shown`, `header_names_not_shown`, `meta_names_not_shown`,
+`hidden_names_not_shown`, `field_names_not_shown`, and the per-endpoint and
+per-step ones) counts its own names, so a name held back in two kinds (a hidden
+input the form posted) is counted in each. The run's one total,
+`names_not_shown` in `--json` and a line in the markdown Summary, counts each
+distinct held-back name once across every kind, compared without regard to case.
+A GraphQL operation's variables keep
 their own gate (`graftpunk.har.graphql`), since the operation document a stub
 sends names them. Header names are compared without
 regard to case, so `X-Token-Q` and `x-token-q` are one name, and whether it
