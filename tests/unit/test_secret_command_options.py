@@ -3011,3 +3011,31 @@ class TestABadFormatNeverRaises:
         err = strip_ansi(capsys.readouterr().err)
         assert "n 3 of " in err
         assert SCOPE_KEY not in err
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+@pytest.mark.parametrize("scoped", [False, True], ids=["outside-scope", "inside-scope"])
+def test_a_lone_surrogate_logs_to_a_strict_utf8_stderr(
+    monkeypatch: pytest.MonkeyPatch, fmt: str, scoped: bool
+) -> None:
+    """The console format wrote a lone surrogate as is, and a UTF-8 stderr (as
+    Python's is) raised ``UnicodeEncodeError`` out of the log call."""
+    import io as stdlib_io
+
+    raw = stdlib_io.BytesIO()
+    monkeypatch.setattr(
+        sys, "stderr", stdlib_io.TextIOWrapper(raw, encoding="utf-8", errors="strict")
+    )
+    from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+    configure_logging(level="DEBUG", json_output=fmt == "json")
+    log = get_logger("t")
+    if scoped:
+        with log_secrets([SCOPE_KEY]):
+            log.warning("line", v="a\ud800b")
+    else:
+        log.warning("line", v="a\ud800b")
+    sys.stderr.flush()
+    text = raw.getvalue().decode("utf-8")
+    assert "line" in text
+    assert "a�b" in text or "a\\ud800b" in text

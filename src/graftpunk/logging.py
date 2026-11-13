@@ -29,7 +29,7 @@ import structlog
 import structlog._native as _structlog_native
 from structlog.typing import EventDict, WrappedLogger
 
-from graftpunk._safe_text import safe_repr, safe_text
+from graftpunk._safe_text import safe_repr, safe_text, visible_text
 
 
 def add_log_level(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
@@ -730,6 +730,9 @@ class _SafeRenderer:
         self._plain_numbers = json
 
     def __call__(self, logger: WrappedLogger, method_name: str, event_dict: EventDict) -> Any:
+        return _writable(self._line(logger, method_name, event_dict))
+
+    def _line(self, logger: WrappedLogger, method_name: str, event_dict: EventDict) -> Any:
         try:
             return self._render(logger, method_name, dict(event_dict))
         except Exception:  # noqa: BLE001, S110 - a log call must not raise
@@ -739,6 +742,13 @@ class _SafeRenderer:
             return self._render(logger, method_name, walked)
         except Exception:  # noqa: BLE001 - a log call must not raise
             return self._render(logger, method_name, _last_resort(event_dict))
+
+
+def _writable(line: Any) -> Any:
+    """A rendered line with each lone surrogate as U+FFFD: the console format
+    writes one as is, and a UTF-8 stderr raised ``UnicodeEncodeError`` out of
+    the log call (JSON escapes it)."""
+    return visible_text(line) if isinstance(line, str) else line
 
 
 _UNRENDERABLE = "<unrenderable log line>"
