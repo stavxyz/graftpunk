@@ -18,6 +18,7 @@ A reader: it imports neither ``graftpunk.devtools.scaffold.write`` nor
 from __future__ import annotations
 
 import ast
+import glob
 import os
 import re
 import stat
@@ -376,11 +377,12 @@ class ProjectView:
     whether its check is still the standalone whole-tree one), which
     ``gp plugin check`` reports and ``gp plugin upgrade`` fixes (#370).
 
-    ``first_party_packages`` is read once here, by the same rule ruff's own
-    default (``src = [".", "src"]``) uses to decide a module is first party:
-    every top-level directory and ``*.py`` stem directly under the project
-    root and under ``src/``, plus any name the project's own
-    ``[tool.ruff.lint.isort] known-first-party`` (or the legacy
+    ``first_party_packages`` is read once here, by the same rule ruff uses to
+    decide a module is first party: every top-level directory and ``*.py`` or
+    ``*.pyi`` stem directly under each directory of the project's ``[tool.ruff]
+    src`` (ruff's default ``[".", "src"]`` when unset; a root ``.ruff.toml`` or
+    ``ruff.toml`` wins over ``pyproject.toml``, as in ruff), plus any name the
+    project's own ``[tool.ruff.lint.isort] known-first-party`` (or the legacy
     ``[tool.ruff.isort]``) declares. ``pysrc.with_import``'s ``first_party=``
     argument, so ``add_command`` and ``gp plugin upgrade`` place a new import
     into isort's first-party section exactly when ruff itself would sort it
@@ -665,18 +667,19 @@ _SKIPPED_ROOT_DIR_NAMES = frozenset({"__pycache__", "venv", "node_modules"})
 
 
 def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[str]:
-    """Every name ruff's own default (``src = [".", "src"]``) treats as first party
-    for *root*: each top-level directory (skipping a dotdir, ``__pycache__``,
-    ``venv``, ``node_modules``, or a name that is not a valid Python identifier)
-    and each top-level ``*.py`` stem, directly under the project root and under
-    ``src/``, plus any name *data*'s ``[tool.ruff.lint.isort] known-first-party``
-    (or the legacy ``[tool.ruff.isort]``) declares. Scanning the filesystem,
-    rather than deriving this from ``PluginView.module_path``, is what makes a
+    """Every name ruff treats as first party for *root*: each top-level
+    directory (skipping a dotdir, ``__pycache__``, ``venv``, ``node_modules``,
+    or a name that is not a valid Python identifier) and each top-level
+    ``*.py`` or ``*.pyi`` stem directly under each of ruff's ``src`` roots
+    (:func:`_ruff_src_roots`), plus any name the ruff settings'
+    ``known-first-party`` declares. Scanning the filesystem, rather than
+    deriving this from ``PluginView.module_path``, is what makes a
     single-module plugin (a ``*.py`` file with no package directory) first
     party too: its module path keeps its ``.py`` suffix, which the old
     per-plugin derivation left in the set, so ruff never matched it."""
+    settings = _ruff_settings(root, data)
     names: set[str] = set()
-    for base in (root, root / "src"):
+    for base in _ruff_src_roots(root, settings):
         if _probe(base) != "dir":
             continue
         try:
@@ -697,31 +700,73 @@ def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[
             if kind == "dir":
                 if entry.name not in _SKIPPED_ROOT_DIR_NAMES and entry.name.isidentifier():
                     names.add(entry.name)
-            elif entry.suffix == ".py":
+            elif entry.suffix in (".py", ".pyi"):
+                # ruff's isort match_sources accepts either extension.
                 names.add(entry.stem)
-    names.update(_known_first_party(data))
+    names.update(_known_first_party(settings))
     return frozenset(names)
 
 
-def _known_first_party(data: dict[str, Any] | None) -> frozenset[str]:
-    """The project's own declared first-party names: ``[tool.ruff.lint.isort]
-    known-first-party``, or the legacy ``[tool.ruff.isort] known-first-party``
-    when the project has not migrated. Either table being the wrong shape is
-    not this function's business to refuse; it reads what it can and ignores
-    the rest, the same way an unreadable ``pyproject.toml`` table would already
-    have raised earlier in ``read_project``."""
-    if data is None:
-        return frozenset()
-    tool = data.get("tool")
-    if not isinstance(tool, dict):
-        return frozenset()
-    ruff = tool.get("ruff")
-    if not isinstance(ruff, dict):
-        return frozenset()
-    lint = ruff.get("lint")
+# The settings files ruff looks for in a directory, in the order it takes the
+# first one present (ruff_workspace::pyproject::settings_toml, ruff 0.17.5):
+# a pyproject.toml counts only when it has a [tool.ruff] table.
+_RUFF_SETTINGS_FILES = (".ruff.toml", "ruff.toml")
+
+
+def _ruff_settings(root: Path, data: dict[str, Any] | None) -> dict[str, Any]:
+    """The ruff settings table ruff itself would read for *root*: a
+    ``.ruff.toml`` or ``ruff.toml`` at the root (whose keys sit at the top
+    level), else *data*'s ``[tool.ruff]``. A settings file that cannot be read
+    or parsed yields no settings: ruff refuses to run on it, so no placement
+    could agree with ruff anyway, and the defaults are the closest guess. A
+    settings file named by ``extend`` is not followed."""
+    for name in _RUFF_SETTINGS_FILES:
+        path = root / name
+        if _probe(path) != "file":
+            continue
+        try:
+            parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return {}
+        return parsed
+    tool = data.get("tool") if data is not None else None
+    ruff = tool.get("ruff") if isinstance(tool, dict) else None
+    return ruff if isinstance(ruff, dict) else {}
+
+
+def _ruff_src_roots(root: Path, settings: dict[str, Any]) -> list[Path]:
+    """The directories ruff searches for first-party modules: the settings'
+    top-level ``src`` (ruff has no ``src`` under ``lint``; it refuses the
+    key there), resolved the way ruff resolves it (``resolve_src`` in
+    ruff_workspace::configuration, ruff 0.17.5): ``~`` and environment
+    variables expanded, a relative entry taken from the project root, and each
+    entry expanded as a glob, so an entry matching nothing contributes
+    nothing. Without a usable ``src``, ruff's default ``[".", "src"]``."""
+    src = settings.get("src")
+    if not isinstance(src, list) or not all(isinstance(entry, str) for entry in src):
+        return [root, root / "src"]
+    roots: list[Path] = []
+    for entry in src:
+        expanded = os.path.expandvars(os.path.expanduser(entry))
+        pattern = os.path.normpath(root / expanded)
+        # The Rust glob crate ruff uses lets "*" match a leading dot and "**"
+        # cross directories, so both flags are on to match it.
+        roots.extend(
+            Path(match) for match in sorted(glob.glob(pattern, recursive=True, include_hidden=True))
+        )
+    return roots
+
+
+def _known_first_party(settings: dict[str, Any]) -> frozenset[str]:
+    """The project's own declared first-party names: the ruff settings'
+    ``[lint.isort] known-first-party``, or the legacy ``[isort]
+    known-first-party`` when the project has not migrated. Either table being
+    the wrong shape is not this function's business to refuse; it reads what
+    it can and ignores the rest."""
+    lint = settings.get("lint")
     isort = lint.get("isort") if isinstance(lint, dict) else None
     if not isinstance(isort, dict):
-        isort = ruff.get("isort")
+        isort = settings.get("isort")
     if not isinstance(isort, dict):
         return frozenset()
     known = isort.get("known-first-party")

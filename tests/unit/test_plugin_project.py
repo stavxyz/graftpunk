@@ -969,8 +969,20 @@ def test_the_reader_imports_neither_the_writer_nor_the_renderer() -> None:
 
 
 _PROBE_ONLY_NAMES = frozenset({"exists", "lexists", "stat", "lstat", "samefile", "access"})
+# String operations that never ask the filesystem what is at a path.
 _OS_PATH_ALLOWED_CALLS = frozenset(
-    {"join", "basename", "dirname", "splitext", "split", "normpath", "relpath", "sep"}
+    {
+        "join",
+        "basename",
+        "dirname",
+        "splitext",
+        "split",
+        "normpath",
+        "relpath",
+        "sep",
+        "expanduser",
+        "expandvars",
+    }
 )
 
 
@@ -1510,6 +1522,37 @@ class TestUnfollowableSymlink:
         _loop(shared)
         view = read_project(tmp_path)
         assert "shared" not in view.first_party_packages
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_ruff_settings_skips_a_locked_ruff_toml(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """ruff's own settings lookup asks is_file(), which reads a symlink it
+        cannot follow as absent, so it moves on to pyproject.toml; so must we."""
+        _generate(tmp_path)
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            pyproject.read_text().replace("[tool.ruff]\n", '[tool.ruff]\nsrc = ["lib"]\n', 1)
+        )
+        (tmp_path / "lib" / "myshop_shared").mkdir(parents=True)
+        locked = _locked_target(
+            tmp_path_factory, tmp_path / "ruff.toml", is_dir=False, text='src = ["src"]\n'
+        )
+        try:
+            view = read_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        assert view.first_party_packages == frozenset({"myshop_shared"})
+
+    def test_ruff_settings_skips_a_self_loop_ruff_toml(self, tmp_path: Path) -> None:
+        _generate(tmp_path)
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            pyproject.read_text().replace("[tool.ruff]\n", '[tool.ruff]\nsrc = ["lib"]\n', 1)
+        )
+        (tmp_path / "lib" / "myshop_shared").mkdir(parents=True)
+        _loop(tmp_path / "ruff.toml")
+        assert read_project(tmp_path).first_party_packages == frozenset({"myshop_shared"})
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
     def test_test_markers_skips_a_locked_module(

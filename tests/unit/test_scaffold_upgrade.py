@@ -314,3 +314,91 @@ class TestFirstPartyPackages:
         upgrade_project(tmp_path)
         _ruff_check(tmp_path)
         assert conftest.read_text().splitlines()[0] == "from pathlib import Path"
+
+
+_LIB_SRC_RUFF = '\n[tool.ruff]\nsrc = ["lib"]\n'
+
+
+def _lib_project(tmp_path: Path, ruff: str = _LIB_SRC_RUFF) -> Path:
+    """A single-module plugin at the root whose conftest imports a package that
+    lives under lib/, a directory only a ruff ``src`` setting makes first party."""
+    conftest = _single_module_project(tmp_path, under_src=False)
+    (tmp_path / "pyproject.toml").write_text(_SINGLE_MODULE_PYPROJECT + ruff)
+    (tmp_path / "lib" / "myshop_shared").mkdir(parents=True)
+    (tmp_path / "lib" / "myshop_shared" / "__init__.py").write_text("THING = 1\n")
+    conftest.write_text("from myshop_shared import THING\n\nX = THING\n")
+    return conftest
+
+
+class TestRuffSrc:
+    """A project's own ruff ``src`` replaces the default roots (#219), the way
+    ruff applies it, so an import lands in the section ``ruff check`` expects."""
+
+    def test_a_package_under_a_configured_src_root_is_placed_first_party(
+        self, tmp_path: Path
+    ) -> None:
+        conftest = _lib_project(tmp_path)
+        view = read_project(tmp_path)
+        assert "myshop_shared" in view.first_party_packages
+        upgrade_project(tmp_path)
+        lines = conftest.read_text().splitlines()
+        assert lines[:5] == [
+            "from pathlib import Path",
+            "",
+            "from graftpunk.testing.plugin import fixtures_are_sanitised",
+            "",
+            "from myshop_shared import THING",
+        ]
+        _ruff_check_conftest(tmp_path)
+
+    def test_a_configured_src_drops_the_default_roots(self, tmp_path: Path) -> None:
+        """With src = ["lib"], ruff no longer counts the project root: neither
+        the root-level plugin module nor tests/ nor lib itself is first party."""
+        _lib_project(tmp_path)
+        view = read_project(tmp_path)
+        assert view.first_party_packages == frozenset({"myshop_shared"})
+
+    def test_a_ruff_toml_wins_over_pyproject(self, tmp_path: Path) -> None:
+        conftest = _lib_project(tmp_path, ruff="")
+        (tmp_path / "ruff.toml").write_text('src = ["lib"]\n\n[lint]\nselect = ["I"]\n')
+        assert read_project(tmp_path).first_party_packages == frozenset({"myshop_shared"})
+        upgrade_project(tmp_path)
+        assert "\n\nfrom myshop_shared import THING" in conftest.read_text()
+        _ruff_check_conftest(tmp_path)
+
+    def test_a_dot_ruff_toml_wins_over_ruff_toml(self, tmp_path: Path) -> None:
+        _lib_project(tmp_path, ruff="")
+        (tmp_path / "ruff.toml").write_text('src = ["elsewhere"]\n')
+        (tmp_path / ".ruff.toml").write_text('src = ["lib"]\n')
+        assert read_project(tmp_path).first_party_packages == frozenset({"myshop_shared"})
+
+    def test_an_unparseable_ruff_toml_falls_back_to_the_defaults(self, tmp_path: Path) -> None:
+        _lib_project(tmp_path)
+        (tmp_path / "ruff.toml").write_text("src = [\n")
+        names = read_project(tmp_path).first_party_packages
+        assert {"aaa_plugin", "lib", "tests"} <= names
+        assert "myshop_shared" not in names
+
+    def test_a_glob_src_entry_expands_to_each_matching_directory(self, tmp_path: Path) -> None:
+        _lib_project(tmp_path, ruff='\n[tool.ruff]\nsrc = ["packages/*"]\n')
+        for package in ("alpha", "beta"):
+            (tmp_path / "packages" / package / f"{package}_core").mkdir(parents=True)
+        (tmp_path / "packages" / "beta" / "beta_util.pyi").write_text("X: int\n")
+        assert read_project(tmp_path).first_party_packages == frozenset(
+            {"alpha_core", "beta_core", "beta_util"}
+        )
+
+    def test_an_empty_src_makes_nothing_first_party_from_disk(self, tmp_path: Path) -> None:
+        _lib_project(
+            tmp_path,
+            ruff=(
+                "\n[tool.ruff]\nsrc = []\n"
+                '\n[tool.ruff.lint.isort]\nknown-first-party = ["declared"]\n'
+            ),
+        )
+        assert read_project(tmp_path).first_party_packages == frozenset({"declared"})
+
+    def test_a_pyi_stub_at_a_default_root_is_first_party(self, tmp_path: Path) -> None:
+        _single_module_project(tmp_path, under_src=False)
+        (tmp_path / "typed_helpers.pyi").write_text("X: int\n")
+        assert "typed_helpers" in read_project(tmp_path).first_party_packages
