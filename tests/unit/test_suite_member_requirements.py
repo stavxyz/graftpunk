@@ -128,7 +128,7 @@ def _pytest(root: Path, *paths: str, **env: str) -> str:
             **env,
         },
     )
-    return result.stdout + result.stderr
+    return strip_ansi(result.stdout + result.stderr)
 
 
 def _outcomes(output: str) -> dict[str, str]:

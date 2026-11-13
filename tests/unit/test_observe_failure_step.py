@@ -1041,7 +1041,7 @@ class _Interactive:
 
     @property
     def text(self) -> str:
-        return " ".join(self.out.getvalue().split())
+        return " ".join(strip_ansi(self.out.getvalue()).split())
 
     def patches(self) -> contextlib.ExitStack:
         stack = contextlib.ExitStack()

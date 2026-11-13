@@ -10,6 +10,7 @@ from rich.console import Console
 
 from graftpunk import console as gp_console
 from graftpunk.plugins.cli_plugin import CommandResult
+from tests.unit.cli_harness import strip_ansi
 
 
 @pytest.mark.parametrize(
@@ -74,7 +75,7 @@ def test_graftpunk_consoles_print_emoji_shortcodes_verbatim(module: str) -> None
     for c in consoles:
         with c.capture() as captured:
             c.print("Digest written: /tmp/:smile:/x")
-        assert captured.get().strip() == "Digest written: /tmp/:smile:/x"
+        assert strip_ansi(captured.get()).strip() == "Digest written: /tmp/:smile:/x"
 
 
 def test_export_table_keeps_emoji_shortcodes_in_headers_and_cells() -> None:

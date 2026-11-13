@@ -36,6 +36,7 @@ from graftpunk.plugins.formatters import (
     XlsxFormatter,
 )
 from graftpunk.plugins.output_config import OutputConfig, ViewConfig
+from tests.unit.cli_harness import strip_ansi
 
 
 class TestFlattenDict:
@@ -756,7 +757,7 @@ class TestPdfCellsTooTallForAPage:
         assert pages >= 1
         # Cut cells end in U+2026, named in the ToUnicode map.
         assert 0x2026 in _pdf_code_points(Path(path).read_bytes())
-        err = capsys.readouterr().err
+        err = strip_ansi(capsys.readouterr().err)
         assert err.count("pdf_cells_truncated") == 1
         # Two rows; a table split into parts repeats the first column, cut in each.
         (count,) = re.findall(r"count=(\d+)", err)

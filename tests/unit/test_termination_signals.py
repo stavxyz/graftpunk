@@ -153,7 +153,10 @@ def test_importing_graftpunk_leaves_sigterm_at_the_default() -> None:
         [
             sys.executable,
             "-c",
-            "import graftpunk, signal; assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL",
+            # Reset first: a disposition this process ignores is inherited (see
+            # _CHILD_PREAMBLE below), and the test is about what the import does.
+            "import signal; signal.signal(signal.SIGTERM, signal.SIG_DFL); import graftpunk; "
+            "assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL",
         ],
         capture_output=True,
         text=True,
@@ -161,6 +164,58 @@ def test_importing_graftpunk_leaves_sigterm_at_the_default() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+# Every child below starts from this. An ignored disposition survives exec (POSIX
+# execve), and install_termination_cleanup leaves a slot that is not at the
+# default alone, so a child that inherited SIG_IGN from the process running the
+# test would ignore the signal and sleep out its 30 seconds. Whatever the child
+# inherited is printed to its log, which a failure shows.
+_CHILD_PREAMBLE = """
+import signal
+
+for _name in ("SIGTERM", "SIGHUP"):
+    _signum = getattr(signal, _name)
+    print(f"inherited {_name}: {signal.getsignal(_signum)!r}", flush=True)
+    signal.signal(_signum, signal.SIG_DFL)
+"""
+
+
+def _signal_child(tmp_path: Path, script_text: str, args: list[str], signum: int) -> int:
+    """Run *script_text* as a child in a session of its own, wait until it writes
+    the ``ready`` file named by its last argument, send it *signum*, and return its
+    exit status. Its output goes to a log that every failure here quotes."""
+    script = tmp_path / "child.py"
+    script.write_text(_CHILD_PREAMBLE + script_text)
+    ready = Path(args[-1])
+    log_path = tmp_path / "child.log"
+    with log_path.open("w") as log:
+        child = subprocess.Popen(  # noqa: S603
+            [sys.executable, str(script), *args],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            # A signal sent to the test's process group cannot reach the child.
+            start_new_session=True,
+        )
+    try:
+        deadline = time.monotonic() + 30.0
+        while not ready.exists() and time.monotonic() < deadline:
+            if child.poll() is not None:
+                pytest.fail(
+                    f"the child exited early with {child.returncode}:\n{log_path.read_text()}"
+                )
+            time.sleep(0.05)
+        assert ready.exists(), f"the child never installed its handler:\n{log_path.read_text()}"
+
+        os.kill(child.pid, signum)
+        returncode = child.wait(timeout=30)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=30)
+    # Popen reports a signal death as -signum; a shell would report 128 + signum.
+    assert returncode == -signum, f"exit status {returncode}:\n{log_path.read_text()}"
+    return returncode
 
 
 CHILD_SCRIPT = '''
@@ -201,31 +256,11 @@ def test_a_termination_signal_ends_the_browsers_then_kills_the_process(
     closing terminal sends the second one.
     """
     signum = getattr(signal, signal_name)
-    script = tmp_path / "child.py"
-    script.write_text(CHILD_SCRIPT)
     marker = tmp_path / "terminated"
     ready = tmp_path / "ready"
 
-    child = subprocess.Popen(  # noqa: S603
-        [sys.executable, str(script), str(marker), str(ready)]
-    )
-    try:
-        deadline = time.monotonic() + 30.0
-        while not ready.exists() and time.monotonic() < deadline:
-            if child.poll() is not None:
-                pytest.fail(f"the child exited early with {child.returncode}")
-            time.sleep(0.05)
-        assert ready.exists(), "the child never installed its handler"
+    _signal_child(tmp_path, CHILD_SCRIPT, [str(marker), str(ready)], signum)
 
-        os.kill(child.pid, signum)
-        returncode = child.wait(timeout=30)
-    finally:
-        if child.poll() is None:
-            child.kill()
-            child.wait(timeout=30)
-
-    # Popen reports a signal death as -signum; a shell would report 128 + signum.
-    assert returncode == -signum
     assert marker.read_text() == "terminated"
 
 
@@ -273,30 +308,16 @@ time.sleep(30)
 def test_a_handle_that_raises_does_not_stop_the_others(tmp_path: Path) -> None:
     """One handle raising SystemExit must not stop the process from dying of the signal,
     and must not stop the other handle from being asked."""
-    script = tmp_path / "child.py"
-    script.write_text(CHILD_SCRIPT_ONE_HANDLE_RAISES)
     raising_marker = tmp_path / "raising_terminated"
     well_behaved_marker = tmp_path / "well_behaved_terminated"
     ready = tmp_path / "ready"
 
-    child = subprocess.Popen(  # noqa: S603
-        [sys.executable, str(script), str(raising_marker), str(well_behaved_marker), str(ready)]
+    _signal_child(
+        tmp_path,
+        CHILD_SCRIPT_ONE_HANDLE_RAISES,
+        [str(raising_marker), str(well_behaved_marker), str(ready)],
+        signal.SIGTERM,
     )
-    try:
-        deadline = time.monotonic() + 30.0
-        while not ready.exists() and time.monotonic() < deadline:
-            if child.poll() is not None:
-                pytest.fail(f"the child exited early with {child.returncode}")
-            time.sleep(0.05)
-        assert ready.exists(), "the child never installed its handler"
 
-        os.kill(child.pid, signal.SIGTERM)
-        returncode = child.wait(timeout=30)
-    finally:
-        if child.poll() is None:
-            child.kill()
-            child.wait(timeout=30)
-
-    assert returncode == -signal.SIGTERM
     assert raising_marker.read_text() == "terminated"
     assert well_behaved_marker.read_text() == "terminated"

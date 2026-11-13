@@ -13,6 +13,7 @@ import graftpunk
 from graftpunk import _distribution, contracts
 from graftpunk.cli.main import app
 from graftpunk.contracts import cli_contracts, installation_facts
+from tests.unit.cli_harness import strip_ansi
 from tests.unit.guide_harness import REPO_ROOT
 
 runner = CliRunner()
@@ -223,7 +224,7 @@ def test_the_panel_says_when_the_browser_stack_is_missing(
     monkeypatch.setattr(_distribution, "has_browser_stack", lambda: has_stack)
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0, result.output
-    panel = " ".join(result.stdout.replace("│", " ").split())
+    panel = " ".join(strip_ansi(result.stdout).replace("│", " ").split())
     if has_stack:
         assert "Browser:" not in panel
     else:

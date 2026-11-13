@@ -19,6 +19,7 @@ from graftpunk.devtools.scaffold.policy import ProjectRequirement
 from graftpunk.devtools.scaffold.project import write_scaffold
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
 from graftpunk.devtools.scaffold.upgrade import UpgradeRefusedError, upgrade_project
+from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
 _SPEC = ScaffoldSpec(
@@ -353,9 +354,9 @@ class TestFindings:
             src.chmod(0o755)
         expected = f"src: cannot be read ({os.strerror(errno.EACCES)})."
         assert info_result.exit_code == 1, info_result.output
-        assert expected in info_result.output
+        assert expected in strip_ansi(info_result.output)
         assert check_result.exit_code == 1, check_result.output
-        assert expected in check_result.output
+        assert expected in strip_ansi(check_result.output)
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000/600-mode directory")
     @pytest.mark.parametrize("mode", [0o000, 0o600])
@@ -386,10 +387,10 @@ class TestFindings:
             tests_dir.chmod(0o755)
         expected = f"tests: cannot be read ({os.strerror(errno.EACCES)})"
         assert check_result.exit_code == 1, check_result.output
-        assert expected in check_result.output
+        assert expected in strip_ansi(check_result.output)
         assert info_result.exit_code == 0, info_result.output
         assert upgrade_result.exit_code == 1, upgrade_result.output
-        assert expected in upgrade_result.output
+        assert expected in strip_ansi(upgrade_result.output)
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 600-mode directory")
     def test_a_project_dir_with_no_execute_bit_refuses_naming_pyproject(
@@ -412,7 +413,7 @@ class TestFindings:
             project.chmod(0o755)
         assert result.exit_code == 1, result.output
         assert f"{project / 'pyproject.toml'}: cannot be read ({os.strerror(errno.EACCES)})." in (
-            result.output
+            strip_ansi(result.output)
         )
 
 

@@ -9,12 +9,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import structlog
 from structlog.testing import capture_logs
 
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
 from graftpunk.storage.base import SessionMetadata, dict_to_metadata, metadata_to_dict
 from graftpunk.storage.local import LocalSessionStorage
+from tests.unit.cli_harness import strip_ansi
 
 # os.replace as imported, for tests that put it back after patching it.
 REAL_REPLACE = os.replace
@@ -117,27 +117,21 @@ class TestLocalSessionStorage:
         mock_fchmod.assert_not_called()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
-    def test_load_swallows_a_chmod_permission_error(self, storage, sample_metadata, tmp_path):
+    def test_load_swallows_a_chmod_permission_error(
+        self, storage, sample_metadata, tmp_path, captured_logs
+    ):
         """A chmod failure is best-effort: it is logged, never raised (#178, PR #189 review)."""
         storage.save_session("test-session", b"encrypted session data", sample_metadata)
         metadata_path = tmp_path / "test-session" / "metadata.json"
         os.chmod(metadata_path, 0o644)
 
-        # capture_logs() keeps a configured WARNING filter (configure_logging(),
-        # as the CLI installs it), which would drop this DEBUG event before it
-        # is captured; reset_defaults() lifts any such filter (the autouse
-        # _reset_structlog fixture resets again after the test).
-        structlog.reset_defaults()
-        with (
-            patch("os.fchmod", side_effect=PermissionError("no permission")),
-            capture_logs() as logs,
-        ):
+        with patch("os.fchmod", side_effect=PermissionError("no permission")):
             encrypted_data, metadata = storage.load_session("test-session")
 
         assert encrypted_data == b"encrypted session data"
         assert metadata.name == sample_metadata.name
-        failures = [e for e in logs if e["event"] == "session_file_chmod_failed"]
-        assert failures, f"expected session_file_chmod_failed, got: {logs}"
+        failures = [e for e in captured_logs if e["event"] == "session_file_chmod_failed"]
+        assert failures, f"expected session_file_chmod_failed, got: {captured_logs}"
 
     def test_list_sessions(self, storage, sample_metadata):
         """Test listing sessions."""
@@ -602,8 +596,9 @@ class TestIncompleteSlots:
             )
 
             assert result.exit_code == 0, result.output
-            assert "Removed 1 session(s):" in result.output
-            assert "myshop/metadata.json.pre-test2" in result.output
+            output = strip_ansi(result.output)
+            assert "Removed 1 session(s):" in output
+            assert "myshop/metadata.json.pre-test2" in output
             assert "myshop/session.pickle.pre-test2" in result.output
             assert not slot.exists()
         finally:
@@ -689,8 +684,9 @@ class TestIncompleteSlots:
             )
 
             assert result.exit_code == 0, result.output
-            assert "This will remove 1 session(s):" in result.output
-            assert "half-provider (incomplete, not a full session)" in result.output
+            output = strip_ansi(result.output)
+            assert "This will remove 1 session(s):" in output
+            assert "half-provider (incomplete, not a full session)" in output
             assert "Cancelled" in result.output
             assert half.exists()
         finally:

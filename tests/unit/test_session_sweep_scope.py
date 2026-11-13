@@ -19,6 +19,7 @@ from typer.testing import CliRunner
 from graftpunk import cache as cache_mod
 from graftpunk.cli.session_commands import session_app
 from graftpunk.storage.base import SessionMetadata, is_slot_file, metadata_to_dict
+from tests.unit.cli_harness import strip_ansi
 
 
 def _metadata(name: str) -> SessionMetadata:
@@ -279,8 +280,9 @@ class TestSupabase:
         result = _clear("myshop", "--force")
 
         assert result.exit_code == 1
-        assert "myshop kept 1 file(s): myshop/session.pickle" in result.output
-        assert "myshop/metadata.json" in result.output
+        output = strip_ansi(result.output)
+        assert "myshop kept 1 file(s): myshop/session.pickle" in output
+        assert "myshop/metadata.json" in output
         assert bucket.files == {"myshop/session.pickle"}
 
     def test_the_sweep_skips_a_slot_that_kept_files(self, monkeypatch) -> None:
@@ -349,7 +351,9 @@ class TestALocalDeleteThatKeepsFiles:
         result = _clear("myshop", "--force")
 
         assert result.exit_code == 1
-        assert "myshop kept 1 file(s): myshop/locked/metadata.json.pre-test2" in result.output
+        assert "myshop kept 1 file(s): myshop/locked/metadata.json.pre-test2" in strip_ansi(
+            result.output
+        )
 
     def test_the_sweep_reports_it_in_skipped(self, locked_slot) -> None:
         locked_slot.save_session("zshop", b"data", _metadata("zshop"))
