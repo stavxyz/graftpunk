@@ -3614,6 +3614,48 @@ class TestTokenRefreshOn403:
             # Should exit with error (caught by generic exception handler)
             assert result.exit_code == 1
 
+    def test_a_403_that_survives_the_retry_prints_the_login_hint(
+        self, isolated_config: Path
+    ) -> None:
+        """The token retry runs first; only the second 403 reaches the CLI's
+        error display, which reports it as request_json would (#203)."""
+        mock_session = MagicMock()
+        mock_session.driver = MagicMock()
+        mock_plugin = MockPlugin()
+        mock_plugin.token_config = MagicMock()  # type: ignore[attr-defined]
+        mock_plugin.base_url = "https://example.com"  # type: ignore[attr-defined]
+        calls = 0
+
+        def handler(ctx: Any, **kwargs: Any) -> dict[str, str]:
+            nonlocal calls
+            calls += 1
+            response = requests.Response()
+            response.status_code = 403
+            response.url = "https://example.com/api/orders"
+            response.request = requests.Request("POST", response.url).prepare()
+            raise requests.exceptions.HTTPError(response=response)
+
+        cmd_spec = CommandSpec(
+            name="test", handler=handler, click_kwargs={"help": "Test"}, params=()
+        )
+        app = build_command_app(mock_plugin, cmd_spec)
+
+        with (
+            patch("graftpunk.tokens.prepare_session"),
+            patch("graftpunk.tokens.clear_cached_tokens"),
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
+            ),
+        ):
+            result = TyperCliRunner().invoke(app, [])
+
+        output = " ".join(strip_ansi(result.output).split())
+        assert result.exit_code == 1
+        assert calls == 2
+        assert "(403 on POST /api/orders). Run: gp mocksite login" in output
+        assert "Command failed" not in output
+
     def test_403_retry_marks_session_dirty(self, isolated_config: Path) -> None:
         """403 retry sets ctx._session_dirty, triggering update_session_cookies."""
 

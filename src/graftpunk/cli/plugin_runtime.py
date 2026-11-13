@@ -36,6 +36,7 @@ from graftpunk.observe import ObservabilityContext, build_observe_context
 from graftpunk.observe.run import redact_text
 from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandContext, CommandSpec
 from graftpunk.plugins.formatters import format_output
+from graftpunk.plugins.site_requests import error_for_status
 from graftpunk.session_context import get_active_session
 from graftpunk.session_identity import compute_operating_session_name, split_session_name
 
@@ -383,6 +384,21 @@ def _inject_tokens_and_run(
         gp_console.error(redact_text(f"Plugin error: {exc}", option_secrets))
         raise SystemExit(1) from exc
     except Exception as exc:  # noqa: BLE001 — CLI boundary
+        status_error = _status_error(plugin.site_name, exc)
+        if status_error is not None:
+            # A status the site answered (a YAML command's raise_for_status, or
+            # a handler's own response.raise_for_status()) is an expected
+            # failure: the advice request_json gives, and no traceback. It
+            # reaches here only after the token 403 retry above has run.
+            LOG.debug(
+                "plugin_command_http_error",
+                plugin=plugin.site_name,
+                command=cmd_spec.name,
+                status=getattr(status_error, "status", None),
+                error=redact_text(str(exc), option_secrets),
+            )
+            gp_console.error(redact_text(status_error.user_message, option_secrets))
+            raise SystemExit(1) from exc
         error = redact_text(str(exc), option_secrets)
         # The traceback is kept: under log_secrets the logger formats it into
         # ``exception`` and scrubs it (graftpunk.logging.log_secrets).
@@ -395,3 +411,12 @@ def _inject_tokens_and_run(
         )
         gp_console.error(f"Command failed: {error}")
         raise SystemExit(1) from exc
+
+
+def _status_error(plugin_name: str, exc: Exception) -> CommandError | None:
+    """The status error a ``requests.HTTPError`` carrying a 4xx or 5xx
+    response means (``site_requests.error_for_status``), or ``None`` for any
+    other exception, which stays a crash with its traceback logged."""
+    if not isinstance(exc, requests.exceptions.HTTPError) or exc.response is None:
+        return None
+    return error_for_status(plugin_name, exc.response)

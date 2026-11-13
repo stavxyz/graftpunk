@@ -1643,8 +1643,12 @@ def invoice(self, ctx: CommandContext, invoice_id: str) -> dict:
 `SessionRejectedError`, `UnexpectedResponseError` and `HTTPStatusError` are
 `CommandError` subclasses, and the CLI prints a `CommandError`'s message as one error line and
 exits 1, with no traceback. A `PluginError` prints
-as `Plugin error: <message>` and exits 1. Anything else is a crash: the CLI logs
-a full traceback and prints `Command failed: <message>`.
+as `Plugin error: <message>` and exits 1. A `requests.HTTPError` carrying a
+response (a handler's own `response.raise_for_status()`, or a YAML command's
+`raise_for_status`) prints the same line `request_json` would raise for that
+status, also with no traceback, from graftpunk 1.42.5; a token 403 retry runs
+before it. Anything else is a crash: the CLI logs a full traceback and prints
+`Command failed: <message>`.
 
 So raise `CommandError` for a failure the user can act on, and `PluginError` for
 a broken plugin or configuration. Never raise a bare `ValueError` from a

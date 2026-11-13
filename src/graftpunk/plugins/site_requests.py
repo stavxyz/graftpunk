@@ -19,6 +19,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from graftpunk.exceptions import (
+    CommandError,
     HTTPStatusError,
     RateLimitedError,
     SessionRejectedError,
@@ -43,7 +44,7 @@ _NORMALISED_ARGUMENTS = ("params", "data")
 # does not recognise either.
 _BOOLEAN_TEXT = {True: "true", False: "false"}
 
-__all__ = ["SiteRequests"]
+__all__ = ["SiteRequests", "error_for_status"]
 
 
 def _path_of(url: str | None) -> str:
@@ -97,6 +98,35 @@ def _normalised_arguments(mapping: Any) -> Any:
     return {key: _normalised_value(value) for key, value in mapping.items() if value is not None}
 
 
+def error_for_status(plugin_name: str, response: requests.Response) -> CommandError | None:
+    """The error a 4xx or 5xx *response* means, or ``None`` below 400: the one
+    status policy ``request_json``/``request_text`` raise and the CLI applies
+    to a ``requests.HTTPError`` a command let escape.
+
+    401/403 are :class:`SessionRejectedError` with the login hint, 429
+    :class:`RateLimitedError` with the ``Retry-After`` wait, 500/502/503/504
+    :class:`SiteServerError`, and any other status :class:`HTTPStatusError`.
+    Each message names the method and path only, never the query.
+    """
+    method = (response.request.method if response.request is not None else None) or "GET"
+    path = _path_of(response.url)
+    # requests types status_code as int | None; a response object that
+    # reached this point always has one set, so 0 here is unreachable in
+    # practice and only satisfies the type checker.
+    status = response.status_code or 0
+    if status in _REJECTED_STATUSES:
+        return SessionRejectedError(plugin_name, method, path, status)
+    if status == 429:
+        return RateLimitedError(
+            method, path, _retry_after_seconds(response.headers.get("Retry-After"))
+        )
+    if status in _SERVER_TROUBLE_STATUSES:
+        return SiteServerError(method, path, status)
+    if status >= 400:
+        return HTTPStatusError(method, path, status)
+    return None
+
+
 class SiteRequests:
     """Applies the role, rejection, and body-shape policy for one plugin's requests."""
 
@@ -126,21 +156,9 @@ class SiteRequests:
         return self._session.request(method, full_url, **kwargs)
 
     def _raise_for_rejection(self, response: requests.Response) -> None:
-        method = (response.request.method if response.request is not None else None) or "GET"
-        path = _path_of(response.url)
-        # requests types status_code as int | None; a response object that
-        # reached this point always has one set, so 0 here is unreachable in
-        # practice and only satisfies the type checker.
-        status = response.status_code or 0
-        if status in _REJECTED_STATUSES:
-            raise SessionRejectedError(self._plugin_name, method, path, status)
-        if status == 429:
-            retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
-            raise RateLimitedError(method, path, retry_after)
-        if status in _SERVER_TROUBLE_STATUSES:
-            raise SiteServerError(method, path, status)
-        if status >= 400:
-            raise HTTPStatusError(method, path, status)
+        error = error_for_status(self._plugin_name, response)
+        if error is not None:
+            raise error
 
     def json(self, method: str, url: str, *, role: str = "xhr", **kwargs: Any) -> Any:
         """Send *method* *url* with role headers; return the parsed JSON body.
