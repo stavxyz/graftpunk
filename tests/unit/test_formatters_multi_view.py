@@ -1113,11 +1113,11 @@ _RICH_HANG_ROWS: list[Any] = [
 
 
 class TestTheTableNeverHangsInRich:
-    """``Text("\\u200f\\u4e2d").truncate(1)`` never returns in Rich 14.3.1: a
-    character of no width starting a line, then a double-width one, in a column
-    one cell wide. A ``-f table`` command on such text never returned. The table
-    formatter drops format characters and combining marks with no base, and
-    draws control characters as U+FFFD."""
+    """``Text("\\u200f\\u4e2d").truncate(1)`` does not return in Rich 14.3.1:
+    a character of no width starting a line, then a double-width one, in a
+    column one cell wide. A ``-f table`` command on such text never returned.
+    The table formatter drops a character of no width at the start of a cell or
+    after whitespace, and draws control characters as U+FFFD."""
 
     @pytest.mark.parametrize("row", _RICH_HANG_ROWS)
     def test_renders_within_a_timeout(self, tmp_path: Path, row: dict[str, str]) -> None:
@@ -1155,6 +1155,103 @@ class TestTheTableNeverHangsInRich:
         assert "Café 中文 résumé" in buf.getvalue()
 
     def test_neutralised_characters(self) -> None:
+        """A control character is drawn as U+FFFD, and a character of no width
+        is dropped only after whitespace or at the start; inside a word it is
+        kept (the RLM and the soft hyphen here)."""
         buf = io.StringIO()
-        TableFormatter().format([{"k": "a‏b­c\x00d é ́f"}], Console(file=buf, width=80))
-        assert "abc�d é f" in buf.getvalue()
+        TableFormatter().format(
+            [{"k": "a\u200fb\u00adc\x00d e\u0301 \u0301f"}], Console(file=buf, width=80)
+        )
+        assert "a\u200fb\u00adc\ufffdd e\u0301 f" in buf.getvalue()
+
+
+_ORDINARY_TEXTS: list[Any] = [
+    pytest.param("\U0001f468\u200d\U0001f469\u200d\U0001f467", id="zwj-family-emoji"),
+    pytest.param("\U0001f469\u200d\U0001f4bb", id="zwj-technologist"),
+    pytest.param("\U0001f3f3\ufe0f\u200d\U0001f308", id="rainbow-flag"),
+    pytest.param(
+        "\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f", id="england-flag"
+    ),
+    pytest.param("\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", id="persian-zwnj-word"),
+    pytest.param("\u0915\u094d\u200d\u0937 \u0915\u094d\u200c\u0937", id="devanagari-zwj-zwnj"),
+    pytest.param("co\u00adoperate", id="soft-hyphen-in-a-word"),
+    pytest.param("\u05de\u05d7\u05d9\u05e8\u200f: 10, abc\u200edef", id="rtl-marks-inside-words"),
+    pytest.param("café café \u4e2d\u6587 résumé", id="accents-and-cjk"),
+]
+
+
+class TestOrdinaryTextInATable:
+    """Round 3 dropped every format character wherever it sat, splitting emoji
+    ZWJ sequences, tag flags, Persian ZWNJ words and Devanagari conjuncts. A
+    character of no width is now dropped only at the start of a cell or after
+    whitespace, the one place it can hang Rich."""
+
+    @pytest.mark.parametrize("text", _ORDINARY_TEXTS)
+    def test_renders_unchanged(self, text: str) -> None:
+        buf = io.StringIO()
+        TableFormatter().format([{"k": text}], Console(file=buf, width=200))
+        assert text in buf.getvalue()
+
+    @pytest.mark.parametrize("text", _ORDINARY_TEXTS)
+    def test_renders_in_narrow_columns_within_a_timeout(self, tmp_path: Path, text: str) -> None:
+        _render_in_a_subprocess(tmp_path, [{f"c{i}": text for i in range(12)}], width=24)
+
+    def test_a_mark_after_whitespace_is_dropped(self) -> None:
+        """Measured against plain Rich: a bidi mark or isolate after a space
+        hangs it in a narrow column, so there it goes; the one after the word
+        stays."""
+        buf = io.StringIO()
+        TableFormatter().format(
+            [{"k": "price \u200f\u05de\u05d7\u05d9\u05e8\u200f 10"}], Console(file=buf, width=200)
+        )
+        assert "price \u05de\u05d7\u05d9\u05e8\u200f 10" in buf.getvalue()
+
+
+_RICH_HANG_TEXTS: list[Any] = [
+    pytest.param("\u200f\u4e2d", id="rlm-then-wide"),
+    pytest.param("a \u200c\u4e2d", id="zwnj-after-space"),
+    pytest.param("\U000e0067\u4e2d", id="tag-at-start"),
+    pytest.param("\u061c\u4e2d", id="alm-at-start"),
+    pytest.param("price \u200f\u05de\u05d7\u05d9\u05e8\u200f 10", id="rlm-after-space"),
+    pytest.param("user \u2067\u05e9\u05dc\u05d5\u05dd\u2069 joined", id="isolate-after-space"),
+    pytest.param("\u200fa\u4e2d", id="rlm-at-start-then-letter"),
+]
+
+
+@pytest.mark.parametrize("text", _RICH_HANG_TEXTS)
+@pytest.mark.parametrize("width", [12, 40, 80])
+def test_the_reviewers_hang_cases_render_within_a_timeout(
+    tmp_path: Path, text: str, width: int
+) -> None:
+    """Each hangs plain Rich 14.3.1 at width 1 to 3 (measured in a subprocess
+    with a 10 s timeout); a table of them renders."""
+    _render_in_a_subprocess(tmp_path, [{f"c{i}": text for i in range(10)}], width=width)
+
+
+def _render_in_a_subprocess(tmp_path: Path, rows: list[dict[str, str]], width: int) -> None:
+    import os
+
+    import graftpunk
+
+    script = tmp_path / "render.py"
+    script.write_text(
+        "import io, json, sys\n"
+        "from rich.console import Console\n"
+        "from graftpunk.plugins.formatters import TableFormatter\n"
+        "rows = json.loads(sys.argv[1])\n"
+        "TableFormatter().format(rows, Console(file=io.StringIO(), width=int(sys.argv[2])))\n"
+        "print('rendered')\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(Path(graftpunk.__file__).parents[1])}
+    try:
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, str(script), json.dumps(rows), str(width)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("the table formatter did not return within 60 s")
+    assert result.stdout.strip() == "rendered", result.stderr

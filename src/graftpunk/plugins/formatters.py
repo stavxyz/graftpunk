@@ -313,15 +313,21 @@ _KEPT_CONTROLS = frozenset("\t\n")
 
 def _rich_safe(text: str) -> str:
     """*text* without what makes Rich 14.3.1 loop forever while it wraps a
-    table cell: a character Rich gives no width that starts a line, followed
-    by a double-width one, cut to one cell (``Text("\\u200f\\u4e2d").truncate(1)``
-    never returns). Each such character starts a grapheme of its own, so:
+    table cell: a character Rich gives no width, at the start of the text or
+    after whitespace, followed by a double-width one, cut to one cell
+    (``Text("\\u200f\\u4e2d").truncate(1)`` had not returned after 20 s).
 
-    - a format character (category Cf: U+200B, U+200F, U+FEFF, the soft
-      hyphen) is dropped; a terminal draws none of them;
-    - a control character other than tab and newline (Cc) is drawn as U+FFFD;
-    - any other character of no width (a combining mark) is dropped where it
-      has nothing to combine with: at the start, or after whitespace.
+    Measured against plain Rich, in a subprocess with a timeout, for each
+    format character (ZWSP, ZWNJ, LRM, RLM, the bidi embeddings, overrides
+    and isolates, WJ, BOM, tags) and for combining marks: each hangs at the
+    start of the text or after a space, and none hangs after a letter or
+    inside a word, where it joins or follows a grapheme Rich can draw. So:
+
+    - a character of no width is dropped only at the start of the text or
+      after whitespace, where it has nothing to attach to; inside a word or
+      an emoji sequence it is kept (ZWJ and ZWNJ, emoji tag characters, bidi
+      marks, combining marks);
+    - a control character other than tab and newline (Cc) is drawn as U+FFFD.
 
     Text without such characters is returned as it is.
     """
@@ -329,10 +335,7 @@ def _rich_safe(text: str) -> str:
         return text
     out: list[str] = []
     for c in text:
-        category = unicodedata.category(c)
-        if category == "Cf":
-            continue
-        if category == "Cc" and c not in _KEPT_CONTROLS:
+        if unicodedata.category(c) == "Cc" and c not in _KEPT_CONTROLS:
             out.append("\ufffd")
             continue
         if (not out or out[-1].isspace()) and _no_width(c):
