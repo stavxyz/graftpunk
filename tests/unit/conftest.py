@@ -1,6 +1,7 @@
 """Shared test helpers for unit tests."""
 
 import asyncio
+import functools
 import importlib
 import os
 import shlex
@@ -61,8 +62,38 @@ def _disarm_chrome_orphan_cleanup(monkeypatch):  # noqa: ANN001, ANN201
     remove_stale_temp_profiles then do nothing, whoever calls them, so a new
     caller is covered the day it is written. The reaper's own tests re-arm it
     and inject a fake process table.
+
+    Re-arming is per test, but the process table is the machine's. A test that
+    arms and then lets a sweep read the real table ends every marked process
+    whose owner is gone, including the stand-in orphan another xdist worker's
+    real-process test is about to reap: that is how
+    ``test_a_real_orphan_is_ended_and_a_live_owners_browser_is_not`` found no
+    orphan on CI (#258). So an armed sweep without an injected ``ops`` fails
+    the test that started it instead of running.
     """
-    monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", False)
+    from graftpunk import chrome_orphans
+
+    monkeypatch.setattr(chrome_orphans, "_ARMED", False)
+
+    def guarded(sweep: Any) -> Any:
+        @functools.wraps(sweep)
+        def guarded_sweep(*args: Any, ops: Any = None, **kwargs: Any) -> Any:
+            if ops is None and chrome_orphans._ARMED:
+                pytest.fail(
+                    f"an armed unit test ran {sweep.__name__} on the real process table; "
+                    "stub the sweep or pass ops= with a table of its own (#258)",
+                    pytrace=True,
+                )
+            return sweep(*args, ops=ops, **kwargs)
+
+        return guarded_sweep
+
+    monkeypatch.setattr(chrome_orphans, "reap_orphans", guarded(chrome_orphans.reap_orphans))
+    monkeypatch.setattr(
+        chrome_orphans,
+        "remove_stale_temp_profiles",
+        guarded(chrome_orphans.remove_stale_temp_profiles),
+    )
 
 
 _BROWSER_EXECUTABLE_MARKERS = ("chrome", "chromium")

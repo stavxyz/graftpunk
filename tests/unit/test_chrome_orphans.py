@@ -271,11 +271,23 @@ class TestListChromeProcesses:
 
         assert [p.pid for p in list_chrome_processes(_ops(table))] == [820]
 
-    def test_the_uc_data_dir_is_undetected_chromedrivers(self) -> None:
-        """Version pin: computed here, so the sweep runs without that library."""
-        patcher = pytest.importorskip("undetected_chromedriver.patcher")
+    def test_the_uc_data_dir_is_undetected_chromedrivers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Version pin: computed here, so the sweep runs without that library.
 
-        assert patcher.Patcher.data_path == chrome_orphans._UC_DATA_DIR
+        ``Patcher.data_path`` is fixed under whatever HOME was set when some
+        test first imported the library, and every test has its own HOME, so
+        both paths are compared under the HOME the library used; comparing
+        with the module constant passed or failed with test order.
+        """
+        patcher = pytest.importorskip("undetected_chromedriver.patcher")
+        tail = os.path.relpath(chrome_orphans._uc_data_dir(), os.path.expanduser("~"))
+        library_path = patcher.Patcher.data_path
+
+        assert library_path.endswith(os.sep + tail)
+        monkeypatch.setenv("HOME", library_path[: -len(os.sep + tail)])
+        assert chrome_orphans._uc_data_dir() == library_path
         for platform, tail in [
             ("win32", "appdata/roaming/undetected_chromedriver"),
             ("linux", ".local/share/undetected_chromedriver"),
@@ -869,7 +881,32 @@ class TestRemoveBrowserTempProfile:
         assert not profile.exists()
 
 
-def _ps_limited_to(pids: set[int]) -> ProcessOps:
+def _ps_rows(pids: set[int]) -> str:
+    """One ``ps`` table, cut down to *pids*.
+
+    A ``ps`` that exits non-zero fails the test with its exit status and
+    stderr. The table is the reaper's only evidence, so a failed read must not
+    pass for a table that lists nothing.
+    """
+    result = subprocess.run(  # noqa: S603 - PATH lookup of ps is intentional
+        chrome_orphans._PS_ARGV,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.fail(f"ps failed: exit {result.returncode}, {result.stderr.strip()!r}")
+    wanted = {str(pid) for pid in pids}
+    rows = []
+    for line in result.stdout.splitlines():
+        fields = line.strip().split(maxsplit=1)
+        if fields and fields[0] in wanted:
+            rows.append(line)
+    return "\n".join(rows)
+
+
+def _ps_limited_to(pids: set[int], reads: list[str] | None = None) -> ProcessOps:
     """Real ops, but a table cut down to the pids this test spawned.
 
     Real ps and real os.kill, and nothing else on this machine can match: a
@@ -878,23 +915,16 @@ def _ps_limited_to(pids: set[int]) -> ProcessOps:
     The argv is the module's own, so this table is the table the code reads: a
     switch added there (``-ww``, which stops ps truncating the args column)
     reaches this test rather than being silently dropped from it.
+
+    Each table read is appended to *reads* when given, so a failing assertion
+    can show what the reaper saw.
     """
 
     def table() -> str:
-        out = subprocess.run(  # noqa: S603 - PATH lookup of ps is intentional
-            chrome_orphans._PS_ARGV,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        ).stdout
-        wanted = {str(pid) for pid in pids}
-        rows = []
-        for line in out.splitlines():
-            fields = line.strip().split(maxsplit=1)
-            if fields and fields[0] in wanted:
-                rows.append(line)
-        return "\n".join(rows)
+        rows = _ps_rows(pids)
+        if reads is not None:
+            reads.append(rows)
+        return rows
 
     return ProcessOps(read_table=table)
 
@@ -910,6 +940,24 @@ def _a_pid_that_is_gone() -> int:
     pytest.skip("the pid was reused before the test could use it")
 
 
+def _wait_until_listed(owners: dict[int, int]) -> None:
+    """Return once one ``ps`` table lists every pid in *owners* with its owner marker.
+
+    Until a child has exec'd, ``ps`` shows the parent's argv, which carries no
+    switches. Waiting for the marker the reaper reads, with the owner pid it
+    will judge, is waiting for the observable condition the reaper needs.
+    Bounded at 10 seconds; the caller ends the children if this fails.
+    """
+    deadline = time.monotonic() + 10.0
+    seen: dict[int, int | None] = {}
+    while time.monotonic() < deadline:
+        seen = {p.pid: p.owner_pid for p in list_chrome_processes(_ps_limited_to(set(owners)))}
+        if all(seen.get(pid) == owner for pid, owner in owners.items()):
+            return
+        time.sleep(0.05)
+    pytest.fail(f"the sleepers never appeared in ps with their markers: want {owners}, saw {seen}")
+
+
 def _spawn_sleeper(owner_pid: int) -> subprocess.Popen:
     """A harmless stand-in for a Chrome: a sleeping python wearing Chrome's switches.
 
@@ -917,7 +965,7 @@ def _spawn_sleeper(owner_pid: int) -> subprocess.Popen:
     sleeper carrying --remote-debugging-port and the owner marker is
     indistinguishable to it from a real orphan.
     """
-    proc = subprocess.Popen(  # noqa: S603
+    return subprocess.Popen(  # noqa: S603
         [
             sys.executable,
             "-c",
@@ -926,14 +974,6 @@ def _spawn_sleeper(owner_pid: int) -> subprocess.Popen:
             f"{OWNER_SWITCH}={owner_pid}",
         ]
     )
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        if any(p.pid == proc.pid for p in list_chrome_processes(_ps_limited_to({proc.pid}))):
-            return proc
-        time.sleep(0.05)
-    proc.kill()
-    proc.wait(timeout=10)
-    pytest.fail("the sleeper never appeared in ps")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: no ps, no SIGTERM semantics")
@@ -954,14 +994,20 @@ class TestRealProcesses:
     def test_a_real_orphan_is_ended_and_a_live_owners_browser_is_not(self, armed: None) -> None:
         procs: list[subprocess.Popen] = []
         try:
-            orphan = _spawn_sleeper(_a_pid_that_is_gone())
+            gone = _a_pid_that_is_gone()
+            orphan = _spawn_sleeper(gone)
             procs.append(orphan)
             mine = _spawn_sleeper(os.getpid())
             procs.append(mine)
+            _wait_until_listed({orphan.pid: gone, mine.pid: os.getpid()})
+            reads: list[str] = []
 
-            reaped = reap_orphans(ops=_ps_limited_to({orphan.pid, mine.pid}))
+            reaped = reap_orphans(ops=_ps_limited_to({orphan.pid, mine.pid}, reads))
 
-            assert [p.pid for p in reaped] == [orphan.pid]
+            assert [p.pid for p in reaped] == [orphan.pid], (
+                f"tables read: {reads!r}; owner {gone} alive: {_pid_alive(gone)}; "
+                f"orphan exit status: {orphan.poll()}"
+            )
             assert orphan.wait(timeout=10) == -signal.SIGTERM
             assert mine.poll() is None
         finally:
