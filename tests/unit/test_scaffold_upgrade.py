@@ -403,6 +403,34 @@ class TestRuffSrc:
         (tmp_path / "typed_helpers.pyi").write_text("X: int\n")
         assert "typed_helpers" in read_project(tmp_path).first_party_packages
 
+    def test_a_present_lint_isort_table_hides_the_legacy_isort_table(self, tmp_path: Path) -> None:
+        """ruff 0.17.5 takes a file's [lint.isort] table whole when it exists,
+        so a legacy [isort] known-first-party beside it is ignored, and the
+        name it declares is third party to ruff."""
+        conftest = _single_module_project(tmp_path, under_src=False)
+        (tmp_path / "pyproject.toml").write_text(
+            _SINGLE_MODULE_PYPROJECT
+            + "\n[tool.ruff.lint.isort]\ncombine-as-imports = true\n"
+            + '\n[tool.ruff.isort]\nknown-first-party = ["declared"]\n'
+        )
+        conftest.write_text("from declared import THING\n\nX = THING\n")
+        assert "declared" not in read_project(tmp_path).first_party_packages
+        upgrade_project(tmp_path)
+        assert conftest.read_text().splitlines()[:4] == [
+            "from pathlib import Path",
+            "",
+            "from declared import THING",
+            "from graftpunk.testing.plugin import fixtures_are_sanitised",
+        ]
+        _ruff_check_conftest(tmp_path)
+
+    def test_a_legacy_isort_table_counts_when_lint_isort_is_absent(self, tmp_path: Path) -> None:
+        _single_module_project(tmp_path, under_src=False)
+        (tmp_path / "pyproject.toml").write_text(
+            _SINGLE_MODULE_PYPROJECT + '\n[tool.ruff.isort]\nknown-first-party = ["declared"]\n'
+        )
+        assert "declared" in read_project(tmp_path).first_party_packages
+
 
 class TestRuffExtend:
     """``extend`` is followed as ruff follows it: each path from the directory
@@ -456,6 +484,19 @@ class TestRuffExtend:
             pyproject.read_text() + '\n[tool.ruff.lint.isort]\nknown-first-party = ["own"]\n'
         )
         assert read_project(tmp_path).first_party_packages == frozenset({"own"})
+
+    def test_an_extending_lint_isort_without_the_key_inherits_it(self, tmp_path: Path) -> None:
+        """Across extend, the isort keys combine one by one, so an extending
+        [lint.isort] that does not set known-first-party keeps the base's."""
+        _lib_project(
+            tmp_path,
+            ruff=(
+                '\n[tool.ruff]\nsrc = []\nextend = "base.toml"\n'
+                "\n[tool.ruff.lint.isort]\ncombine-as-imports = true\n"
+            ),
+        )
+        (tmp_path / "base.toml").write_text('[lint.isort]\nknown-first-party = ["inherited"]\n')
+        assert read_project(tmp_path).first_party_packages == frozenset({"inherited"})
 
     def test_an_environment_variable_in_extend_is_expanded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -756,9 +756,15 @@ def _ruff_settings(root: Path, data: dict[str, Any] | None) -> _RuffSettings:
     - Each file's ``src`` is resolved against that file's own directory, and
       the first file in the chain that sets ``src`` wins
       (``Configuration::combine``: ``self.src.or(config.src)``).
-    - ``known-first-party`` likewise comes from the first file that sets it,
-      and within one file ``[lint.isort]`` wins over the legacy ``[isort]``
-      (``lint.common.combine(lint_top_level)``, field by field).
+    - ``known-first-party`` likewise comes from the first file that sets it:
+      across ``extend`` the isort keys combine one by one
+      (``impl CombinePluginOptions for Option<T>``, configuration.rs:1445).
+      Within one file, a present ``[lint.isort]`` table replaces the legacy
+      ``[isort]`` table whole: ``lint.common.combine(lint_top_level)``
+      (configuration.rs:536) is the ``CombineOptions`` derive, which joins
+      each field as ``self.field.or(other.field)``
+      (ruff_macros/src/combine_options.rs:53), and the field is the whole
+      ``isort`` table.
 
     A file in the chain that cannot be read or parsed, an ``extend`` naming a
     missing file, or a cycle makes ruff refuse to run, so no placement could
@@ -829,15 +835,19 @@ def _ruff_src_roots(base: Path, src: Any) -> tuple[Path, ...] | None:
 
 
 def _known_first_party(table: dict[str, Any]) -> frozenset[str] | None:
-    """One settings table's ``known-first-party``: ``[lint.isort]``'s when it
-    sets the key, else the legacy ``[isort]``'s; ``None`` when neither does.
-    A wrong shape is not this function's business to refuse; it reads what
-    it can and ignores the rest."""
-    for isort in (_subtable(_subtable(table, "lint"), "isort"), _subtable(table, "isort")):
-        known = isort.get("known-first-party")
-        if isinstance(known, list):
-            return frozenset(name for name in known if isinstance(name, str))
-    return None
+    """One settings table's ``known-first-party``: ``[lint.isort]``'s when
+    that table exists, else the legacy ``[isort]``'s (see
+    :func:`_ruff_settings` for ruff's rule); ``None`` when the table that
+    counts does not set it. A wrong shape is not this function's business to
+    refuse; it reads what it can and ignores the rest."""
+    lint = _subtable(table, "lint")
+    isort = _subtable(lint, "isort") if isinstance(lint.get("isort"), dict) else None
+    if isort is None:
+        isort = _subtable(table, "isort")
+    known = isort.get("known-first-party")
+    if not isinstance(known, list):
+        return None
+    return frozenset(name for name in known if isinstance(name, str))
 
 
 def _subtable(table: dict[str, Any], key: str) -> dict[str, Any]:
