@@ -10,23 +10,23 @@ here falls under the Secrets rule in `SKILL.md`.
 
 ## The `--json` digest
 
-Run the `--json` line of the Understand block of `references/commands.md` on
-the chosen session and run first. It is the whole digest model: header, cookie,
-token-candidate, form field, and query parameter names, observed types,
-response shapes, and in `cookie_facts` each cookie's attributes and the
-endpoints that set it (no `Domain`). A cookie name that reads as a value is
-left out of `cookies`, `cookie_facts`, a `set_cookie` step's `fields` in
-`login`, and the cookie candidates in `tokens`, and counted in
-`cookie_names_not_shown`. Header and meta tag names the gate holds back are
-missing from `tokens` and `token_pairs` (a header's from an endpoint's
-`custom_headers` too, which then carries `custom_headers_not_shown`), counted
-in `header_names_not_shown` and `meta_names_not_shown`. It holds no header,
-cookie, or query value, and only one kind of body value: for an endpoint whose
-recorded JSON body is `{}`, `[]`, `""`, `0`, `false`, or `null`, that value. It does print paths as recorded,
-though: up to three example paths per endpoint (the query string stripped and a
-segment holding an email address replaced, but an account or order id kept),
-each login step's URL and redirect target, each login form's action and the
-page it was on, and the page each token was seen on.
+Run the `--json` line of the Understand block of `references/commands.md` on the
+chosen session and run first. It is the whole digest model: header, cookie,
+token-candidate, form field, and query parameter names, observed types, response
+shapes, and in `cookie_facts` each cookie's attributes and the endpoints that
+set it (no `Domain`). A cookie name that reads as a value is left out of
+`cookies`, `cookie_facts`, a `set_cookie` step's `fields` in `login`, and the
+cookie candidates in `tokens`, and counted in `cookie_names_not_shown`. Header,
+meta tag and hidden input names the gate holds back are missing from `tokens`
+and `token_pairs` (a header's from `custom_headers` too, which then carries
+`custom_headers_not_shown`; a hidden input's from a form's `hidden`), counted in
+`header_names_not_shown`, `meta_names_not_shown` and `hidden_names_not_shown`.
+It holds no header, cookie, or query value, and only one kind of body value: for
+an endpoint whose recorded JSON body is `{}`, `[]`, `""`, `0`, `false`, or
+`null`, that value. It does print paths as recorded, though: up to three example
+paths per endpoint (the query string stripped and a segment holding an email
+address replaced, but an account or order id kept), each login step's URL and
+redirect target, each login form's action and page, and each token's page.
 
 ## Where the HAR is
 

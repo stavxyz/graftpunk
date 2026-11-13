@@ -127,6 +127,8 @@ __all__ = [
     "header_spellings",
     "held_back_token_count",
     "meta_names_not_shown",
+    "hidden_names_not_shown",
+    "printable_hidden",
     "printable_custom_headers",
     "printable_login_fields",
     "printable_token_pairs",
@@ -679,6 +681,12 @@ class RunDigest:
     # markdown, --json, --endpoints-json, or the scaffold (#359). ``tokens`` and
     # ``token_pairs`` keep every name.
     meta_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
+    # How many distinct hidden input names read as a value
+    # (graftpunk.har.paths.printable_name) and so print nowhere: not as a token
+    # candidate or a pairing's source, not as a Token in a scaffolded plugin, and
+    # not in a login form's ``hidden`` in --json (#359). ``tokens``,
+    # ``token_pairs`` and ``login_forms`` keep every name.
+    hidden_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
     # Every recorded spelling of a custom header name, in the order the run first
     # recorded it: header_spellings reads it to pick the first spelling that
     # passes the gate. A lookup, so render_json leaves it out.
@@ -1671,9 +1679,9 @@ def header_spellings(d: RunDigest) -> dict[str, str]:
     is decided once per run, never per endpoint or per output (#347). A name
     prints in the first spelling recorded that passes the gate
     (:func:`graftpunk.har.paths.printable_name`). When no spelling passes but the
-    digest already prints the same lower-cased name elsewhere (a hidden input
-    token candidate, a meta tag or cookie candidate whose name passes the gate, or
-    a cookie name the Cookies section prints, set or only sent), it prints in
+    digest already prints the same lower-cased name elsewhere (a meta tag, hidden
+    input or cookie token candidate whose name passes the gate, or a cookie name
+    the Cookies section prints, set or only sent), it prints in
     its first spelling recorded, which tells a reader nothing the digest does not.
     Spellings are taken in the order the run first recorded them
     (``RunDigest.header_spellings``), then the header token candidates' and each
@@ -1705,14 +1713,14 @@ def run_header_names_not_shown(d: RunDigest) -> int:
 
 def _names_printed_elsewhere(tokens: Iterable[TokenCandidate], cookies: Iterable[str]) -> set[str]:
     """The lower-cased names the digest prints other than as a header name: a
-    hidden input token candidate's, and a cookie or meta tag candidate's and a
-    cookie name when it passes the gate."""
+    cookie, meta tag or hidden input candidate's, and a cookie name, each when it
+    passes the gate."""
     names: set[str] = set()
     for name in cookies:
         if printable_name(name):
             names.add(name.lower())
     for t in tokens:
-        if t.kind == "hidden_input" or (t.kind in _NAME_GATED_KINDS and printable_name(t.name)):
+        if t.kind in _NAME_GATED_KINDS and printable_name(t.name):
             names.add(t.name.lower())
     return names
 
@@ -1743,11 +1751,11 @@ def _token_spellings(tokens: Sequence[TokenCandidate]) -> dict[str, str]:
 def printable_tokens(
     tokens: Iterable[TokenCandidate], spellings: Mapping[str, str] | None = None
 ) -> tuple[TokenCandidate, ...]:
-    """*tokens* as every output prints them: without a cookie or meta tag
-    candidate whose name reads as a value
+    """*tokens* as every output prints them: without a cookie, meta tag or
+    hidden input candidate whose name reads as a value
     (:func:`graftpunk.har.paths.printable_name`), which
-    ``RunDigest.cookie_names_not_shown`` and ``RunDigest.meta_names_not_shown``
-    count, and with each header name once,
+    ``RunDigest.cookie_names_not_shown``, ``RunDigest.meta_names_not_shown`` and
+    ``RunDigest.hidden_names_not_shown`` count, and with each header name once,
     in its spelling of *spellings* (:func:`header_spellings`), seen on every
     endpoint any of its spellings was. A header name *spellings* lacks is left
     out, and ``RunDigest.header_names_not_shown`` counts it. Without *spellings*
@@ -1764,9 +1772,7 @@ def printable_tokens(
     headers_printed: set[str] = set()
     for t in tokens:
         lowered = t.name.lower()
-        if t.kind == "hidden_input":
-            printed.append(t)
-        elif t.kind in _NAME_GATED_KINDS:
+        if t.kind in _NAME_GATED_KINDS:
             if printable_name(t.name):
                 printed.append(t)
         elif lowered in spellings and lowered not in headers_printed:
@@ -1780,8 +1786,8 @@ def printable_token_pairs(
 ) -> tuple[TokenPairing, ...]:
     """*d*'s ``token_pairs`` as every output prints them: the header in its spelling
     of *spellings* (:func:`header_spellings`, computed from *d* when not given), and
-    none whose header name prints nowhere or whose cookie or meta tag name reads
-    as a value
+    none whose header name prints nowhere or whose cookie, meta tag or hidden
+    input name reads as a value
     (:func:`graftpunk.har.paths.printable_name`), the rules :func:`printable_tokens`
     applies to the candidates themselves."""
     if spellings is None:
@@ -1795,9 +1801,8 @@ def printable_token_pairs(
 
 
 # The token kinds whose own recorded name every output gates through
-# printable_name. A header name is gated through header_spellings. A hidden
-# input's name is not gated: the login form it sits in prints it in --json.
-_NAME_GATED_KINDS = frozenset({"cookie", "meta"})
+# printable_name. A header name is gated through header_spellings.
+_NAME_GATED_KINDS = frozenset({"cookie", "meta", "hidden_input"})
 
 
 def header_names_not_shown(names: Iterable[str], spellings: Mapping[str, str]) -> int:
@@ -1829,9 +1834,9 @@ def held_back_token_count(
     tokens: Iterable[TokenCandidate], spellings: Mapping[str, str] | None = None
 ) -> int:
     """How many token candidates of *tokens* :func:`printable_tokens` leaves out
-    given *spellings* (read from *tokens* alone when not given): each cookie and
-    meta tag name once per kind, and a header name once whatever its case
-    (:func:`header_names_not_shown`)."""
+    given *spellings* (read from *tokens* alone when not given): each cookie,
+    meta tag and hidden input name once per kind, and a header name once
+    whatever its case (:func:`header_names_not_shown`)."""
     tokens = list(tokens)
     if spellings is None:
         spellings = _token_spellings(tokens)
@@ -1849,6 +1854,26 @@ def meta_names_not_shown(tokens: Iterable[TokenCandidate]) -> int:
     value (:func:`graftpunk.har.paths.printable_name`), and so print in no output
     (``RunDigest.meta_names_not_shown``)."""
     return len({t.name for t in tokens if t.kind == "meta" and not printable_name(t.name)})
+
+
+def printable_hidden(form: LoginForm) -> tuple[str, ...]:
+    """*form*'s ``hidden`` names as every output prints them: without one that
+    reads as a value (:func:`graftpunk.har.paths.printable_name`), which
+    ``RunDigest.hidden_names_not_shown`` counts. ``LoginForm.hidden`` keeps them
+    all."""
+    return tuple(name for name in form.hidden if printable_name(name))
+
+
+def hidden_names_not_shown(
+    tokens: Iterable[TokenCandidate], forms: Iterable[LoginForm] = ()
+) -> int:
+    """How many distinct hidden input names of *tokens*' hidden input candidates
+    and *forms*' ``hidden`` read as a value
+    (:func:`graftpunk.har.paths.printable_name`), and so print in no output
+    (``RunDigest.hidden_names_not_shown``)."""
+    names = {t.name for t in tokens if t.kind == "hidden_input"}
+    names.update(name for form in forms for name in form.hidden)
+    return len({name for name in names if not printable_name(name)})
 
 
 def printable_login_fields(observation: LoginObservation) -> tuple[str, ...]:
@@ -4322,6 +4347,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         ),
         cookie_names_not_shown=_cookie_names_not_shown(cookies_seen, id_cookie_names, cookies_sent),
         meta_names_not_shown=meta_names_not_shown(tokens),
+        hidden_names_not_shown=hidden_names_not_shown(tokens, ranked_forms),
         header_spellings=header_order,
         shared_values=_shared_values(graphql_entries),
         token_pairs=token_pairs,

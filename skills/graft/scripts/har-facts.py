@@ -451,6 +451,9 @@ _FRAMEWORK_NAMES = frozenset(
         "sec-ch-ua-wow64 x-guploader-uploadid x-envoy-expected-rq-timeout-ms "
         "x-amz-object-lock-mode x-amz-mp-parts-count "
         "x-amz-server-side-encryption-aws-kms-key-id "
+        # hidden input names a login form carries from a bot check: Cloudflare
+        # Turnstile's response field, whose vendor word the spelling rule rejects
+        "cf-turnstile-response "
         # cookie names
         ".aspxauth asp.net_sessionid .aspnetcore.session .aspnetcore.antiforgery "
         ".aspnetcore.cookies __cf_bm cf_clearance __cfruid __cflb _cfuvid _abck bm_sz bm_sv "

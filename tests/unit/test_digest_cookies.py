@@ -473,15 +473,34 @@ _HELD_BACK = ("sessionZq9vLm2x", "xsrfQz9XvKw", "authTokenQx7vK", _VALUE_AS_NAME
 # holds_an_id does not (#359); a request's X-CSRF-Token header carries its
 # value, so it is a pairing's source too.
 _HELD_BACK_META = "csrf-Qz9vKwLx"
+# A hidden input in the login form whose name printable_name holds back: a token
+# candidate and one of the form's ``hidden`` names.
+_HELD_BACK_HIDDEN = "csrfZq7Lm9Kv"
+# Hidden input names login forms commonly carry, each of which still prints in
+# --json's login_forms after #359.
+_COMMON_HIDDEN = (
+    "authenticity_token",
+    "__RequestVerificationToken",
+    "csrfmiddlewaretoken",
+    "_token",
+    "form_key",
+    "__VIEWSTATE",
+    "_wpnonce",
+    "SAMLRequest",
+    "RelayState",
+    "execution",
+    "g-recaptcha-response",
+    "cf-turnstile-response",
+)
 _META_VALUE = "Kq8mZt3vWx7pLr2n"
 
 
 def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
-    """Login steps, token candidates (cookie, header and meta tag), token
-    pairings, the Cookies section, and endpoints' custom headers, in the
-    markdown, --json, --endpoints-json, and a scaffolded plugin, print no
-    held-back name; the digest's own model keeps each one for the fixture safety
-    net."""
+    """Login steps, login forms' hidden inputs, token candidates (cookie,
+    header, meta tag and hidden input), token pairings, the Cookies section, and
+    endpoints' custom headers, in the markdown, --json, --endpoints-json, and a
+    scaffolded plugin, print no held-back name; the digest's own model keeps each
+    one for the fixture safety net."""
     session, xsrf, auth, nameless = _HELD_BACK
     page = _entry(
         "GET",
@@ -489,6 +508,7 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
         content_type="text/html",
         body=f'<meta name="{_HELD_BACK_META}" content="{_META_VALUE}">'
         "<form method=post action=/login><input name=username>"
+        f'<input type=hidden name="{_HELD_BACK_HIDDEN}" value="v">'
         "<input type=password name=password></form>",
     )
     login = _entry(
@@ -530,7 +550,12 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     assert ("meta", _HELD_BACK_META) in {(token.kind, token.name) for token in d.tokens}
     assert ("meta", _HELD_BACK_META) in {(pair.kind, pair.name) for pair in d.token_pairs}
     assert d.meta_names_not_shown == 1
-    assert json.loads(render_json(d))["meta_names_not_shown"] == 1
+    assert ("hidden_input", _HELD_BACK_HIDDEN) in {(t.kind, t.name) for t in d.tokens}
+    assert any(_HELD_BACK_HIDDEN in form.hidden for form in d.login_forms)
+    assert d.hidden_names_not_shown == 1
+    rendered = json.loads(render_json(d))
+    assert rendered["meta_names_not_shown"] == 1
+    assert rendered["hidden_names_not_shown"] == 1
     plugin = render(
         ScaffoldSpec(
             name="myshop", mode="new_project", backend="nodriver", base_url=_HOST, digest=d
@@ -538,13 +563,13 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     )
     for text in (render_markdown(d), render_json(d), render_endpoints_json(d), *plugin.values()):
         assert _VALUE not in text
-        for name in (*_HELD_BACK, *_HELD_BACK_HEADERS, _HELD_BACK_META):
+        for name in (*_HELD_BACK, *_HELD_BACK_HEADERS, _HELD_BACK_META, _HELD_BACK_HIDDEN):
             assert name.lower() not in text.lower()
     assert "- 4 cookies whose names read as values are not shown" in _cookie_lines(d)
-    # The xsrf and auth cookies, the header in two cases counted once, and the
-    # meta tag.
-    assert "- 4 token candidates whose names read as values are not shown" in render_markdown(d)
-    assert "4 token candidate(s) were left out because their names read as values" in (
+    # The xsrf and auth cookies, the header in two cases counted once, the meta
+    # tag and the hidden input.
+    assert "- 5 token candidates whose names read as values are not shown" in render_markdown(d)
+    assert "5 token candidate(s) were left out because their names read as values" in (
         _plugin_text(d)
     )
 
@@ -792,21 +817,44 @@ def test_a_cookie_only_sent_makes_a_header_of_its_name_print(tmp_path: Path) -> 
     assert '"X-SHOPPER-Id": "GP-FILL"' in _plugin_text(d)
 
 
+def test_common_hidden_input_names_still_print_in_login_forms(tmp_path: Path) -> None:
+    hidden = "".join(f'<input type=hidden name="{name}" value="v">' for name in _COMMON_HIDDEN)
+    page = _entry(
+        "GET",
+        f"{_HOST}/login",
+        content_type="text/html",
+        body="<form method=post action=/login><input name=username>"
+        f"{hidden}<input type=password name=password></form>",
+    )
+    d = _digest(tmp_path, [page])
+    rendered = json.loads(render_json(d))
+    assert set(_COMMON_HIDDEN) <= set(rendered["login_forms"][0]["hidden"])
+    assert "hidden_names_not_shown" not in rendered
+
+
 def test_a_hidden_input_candidate_makes_a_held_back_header_name_print(tmp_path: Path) -> None:
-    """A hidden input's token candidate prints ungated, so a header of the same
-    lower-cased name prints in its recorded spelling."""
+    """A hidden input's token candidate whose name passes the gate makes a header
+    of the same lower-cased name print in its recorded spelling; a held-back one
+    does not (#359)."""
     page = _entry(
         "GET",
         f"{_HOST}/",
         content_type="text/html",
-        body='<form method="post" action="/x"><input type="hidden" name="x-csrf-qz9xvkw"></form>',
+        body='<form method="post" action="/x"><input type="hidden" name="x-csrf-tokenx"></form>',
     )
-    post = _entry("POST", f"{_HOST}/x", request_headers={"X-Csrf-Qz9XvKw": "1"})
+    post = _entry("POST", f"{_HOST}/x", request_headers={"X-CSRF-TOKENx": "1"})
     d = _digest(tmp_path, [page, post])
-    assert any(t.kind == "hidden_input" and t.name == "x-csrf-qz9xvkw" for t in d.tokens)
-    assert header_spellings(d) == {"x-csrf-qz9xvkw": "X-Csrf-Qz9XvKw"}
+    assert any(t.kind == "hidden_input" and t.name == "x-csrf-tokenx" for t in d.tokens)
+    assert header_spellings(d) == {"x-csrf-tokenx": "X-CSRF-TOKENx"}
     assert d.header_names_not_shown == 0
-    assert "- custom headers: X-Csrf-Qz9XvKw" in render_markdown(d)
+    assert "- custom headers: X-CSRF-TOKENx" in render_markdown(d)
+
+    held = TokenCandidate(kind="hidden_input", name="x-csrf-qz9xvkw", seen_on=("GET /",))
+    other = _digest(
+        tmp_path, [_entry("POST", f"{_HOST}/x", request_headers={"X-Csrf-Qz9XvKw": "1"})]
+    )
+    other = dataclasses.replace(other, tokens=(*other.tokens, held))
+    assert header_spellings(other) == {}
 
 
 def test_the_run_count_is_decided_when_rendering_not_when_digesting(tmp_path: Path) -> None:
@@ -819,18 +867,17 @@ def test_the_run_count_is_decided_when_rendering_not_when_digesting(tmp_path: Pa
     stale = dataclasses.replace(d, header_names_not_shown=0)
     assert json.loads(render_json(stale))["header_names_not_shown"] == 1
 
-    hidden = TokenCandidate(kind="hidden_input", name="x-csrf-qz9xvkw", seen_on=("GET /",))
-    printed = dataclasses.replace(d, tokens=(*d.tokens, hidden))
-    rendered = json.loads(render_json(printed))
-    assert "header_names_not_shown" not in rendered
-    assert all("custom_headers_not_shown" not in e for e in rendered["endpoints"])
+    cookie = dataclasses.replace(d, cookies=(*d.cookies, "x-csrf-qz9xvkw"))
+    assert json.loads(render_json(cookie))["header_names_not_shown"] == 1
 
-    # A meta tag's name goes through the gate itself (#359), so a held-back one
-    # makes no header of its name print, and is counted.
+    # A meta tag's or hidden input's name goes through the gate itself (#359), so
+    # a held-back one makes no header of its name print, and is counted.
     meta = TokenCandidate(kind="meta", name="x-csrf-qz9xvkw", seen_on=("GET /",))
-    held = json.loads(render_json(dataclasses.replace(d, tokens=(*d.tokens, meta))))
+    hidden = TokenCandidate(kind="hidden_input", name="x-csrf-qz9xvkw", seen_on=("GET /",))
+    held = json.loads(render_json(dataclasses.replace(d, tokens=(*d.tokens, meta, hidden))))
     assert held["header_names_not_shown"] == 1
     assert held["meta_names_not_shown"] == 1
+    assert held["hidden_names_not_shown"] == 1
 
 
 def test_one_header_name_a_run_decides_prints_alike_on_every_endpoint(tmp_path: Path) -> None:
