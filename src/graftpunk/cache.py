@@ -28,10 +28,9 @@ import requests
 
 from graftpunk._distribution import install_command
 from graftpunk.config import get_settings
-from graftpunk.encryption import decrypt_data, encrypt_data
+from graftpunk.encryption import decrypt_data, encrypt_data, resolve_key
 from graftpunk.exceptions import (
     EncryptionError,
-    MissingEncryptionKeyError,
     SessionExpiredError,
     SessionNotFoundError,
     StorageError,
@@ -441,8 +440,10 @@ def _load_session_with_metadata(
         SessionExpiredError: The session is expired, cannot be decrypted, or
             fails its checksum/deserialization.
         MissingEncryptionKeyError: No key was given and there is none to read.
-            Passed through, not reported as an expired session, because the fix
-            is to provide the key, not to clear the session.
+        EncryptionError: The key cannot be obtained (Vault unreachable, the
+            supabase package or settings missing) or is malformed. Both are
+            passed through, not reported as an expired session, because the
+            fix is to provide a good key, not to clear the session.
     """
     backend = _get_session_storage_backend(backend_override=backend_override)
     settings = get_settings()
@@ -451,13 +452,14 @@ def _load_session_with_metadata(
         # Load encrypted data from backend
         encrypted_data, metadata = backend.load_session(name)
 
-        # Decrypt
+        # Obtain and check the key outside the conversion below: a key that is
+        # missing, unreachable or malformed is fixed by providing a good one,
+        # never by clearing the session (on a shared bucket, every host's).
+        # Only a key that fails to decrypt these bytes means the session is
+        # unreadable.
+        fernet_key = resolve_key(key)
         try:
-            decrypted_data = decrypt_data(encrypted_data, key=key)
-        except MissingEncryptionKeyError:
-            # No key at all is fixed by providing one, never by clearing the
-            # session (which on a shared bucket is every host's session).
-            raise
+            decrypted_data = decrypt_data(encrypted_data, key=fernet_key)
         except EncryptionError as exc:
             LOG.error("session_decryption_failed", name=name, backend=settings.storage_backend)
             raise SessionExpiredError(
@@ -513,7 +515,7 @@ def _load_session_with_metadata(
         LOG.info("successfully_loaded_session", name=name, backend=settings.storage_backend)
         return session, metadata
 
-    except (SessionNotFoundError, SessionExpiredError, MissingEncryptionKeyError):
+    except (SessionNotFoundError, SessionExpiredError, EncryptionError):
         raise
     except ModuleNotFoundError as exc:
         # A cached BrowserSession pickle names graftpunk.session, which imports
@@ -733,7 +735,7 @@ def _warn_if_bare_slot_shadows_labelled(name: str) -> None:
 
 
 def load_session_for_api_resolved(
-    name: str, *, resolve: bool = True
+    name: str, *, resolve: bool = True, key: bytes | None = None
 ) -> tuple[requests.Session, str]:
     """Load a cached session for API use AND report the name it came from.
 
@@ -781,6 +783,8 @@ def load_session_for_api_resolved(
             :func:`graftpunk.session_identity.compute_operating_session_name`'s
             resolution tier: it resolved against the same listing, so a second
             one would be a wasted round-trip and a miss is genuinely a miss.
+        key: Optional raw Fernet key to decrypt with, for a host without
+            graftpunk's key file or vault; None uses the configured key.
 
     Returns:
         ``(session, loaded_name)`` — the API session, and the cache key it was
@@ -804,7 +808,7 @@ def load_session_for_api_resolved(
     miss: SessionNotFoundError | None = None
     loaded_name = name
     try:
-        browser_session = load_session(name)
+        browser_session = load_session(name, key=key)
     except SessionNotFoundError as exc:
         if not resolve:
             # INFO, not WARNING: this is invisible under the library's
@@ -825,7 +829,7 @@ def load_session_for_api_resolved(
             LOG.info("session_not_found_for_api", name=name, resolve=True)
             raise SessionNotFoundError(no_account_cached_message(name)) from miss
         LOG.info("api_session_resolved_account", requested=name, resolved=resolved)
-        browser_session = load_session(resolved)
+        browser_session = load_session(resolved, key=key)
         loaded_name = resolved
     elif resolve and split_session_name(name)[1] is None:
         _warn_if_bare_slot_shadows_labelled(name)
@@ -846,7 +850,9 @@ def load_session_for_api_resolved(
     return api_session, loaded_name
 
 
-def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session:
+def load_session_for_api(
+    name: str, *, resolve: bool = True, key: bytes | None = None
+) -> requests.Session:
     """Load cached session for API use (no browser launched).
 
     This extracts cookies and headers from a cached BrowserSession
@@ -885,6 +891,7 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
             base name (``"mysite"``) or a full ``base@label`` name.
         resolve: Whether the bare-base fallback applies; ``False`` means exact
             only (see :func:`load_session_for_api_resolved`).
+        key: Optional raw Fernet key; None uses the configured key.
 
     Returns:
         GraftpunkSession with cookies, headers, and header roles
@@ -901,7 +908,7 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
         ImportError: If the browser stack needed to reconstruct the cached
             object is not installed (see note above).
     """
-    api_session, _loaded_name = load_session_for_api_resolved(name, resolve=resolve)
+    api_session, _loaded_name = load_session_for_api_resolved(name, resolve=resolve, key=key)
     return api_session
 
 

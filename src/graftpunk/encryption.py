@@ -128,7 +128,7 @@ def _get_key_from_file() -> bytes:
             "Copy the key the other hosts use to that file (mode 0600), create a new one with "
             "python -c 'from cryptography.fernet import Fernet; "
             "print(Fernet.generate_key().decode())', "
-            "or pass the key as key= to encrypt_data, decrypt_data or cache_session."
+            "or pass the key as key= to the call that loads or saves the session."
         )
 
     # Generate new key and save it with secure permissions from creation
@@ -152,7 +152,9 @@ def _get_key_from_supabase_vault() -> bytes:
         Fernet-compatible key bytes.
 
     Raises:
-        EncryptionError: If Vault fetch fails or key is invalid.
+        MissingEncryptionKeyError: The secret is missing or empty.
+        EncryptionError: The supabase package or settings are missing, the
+            fetch failed, or the stored key is invalid.
     """
     try:
         # Import here to avoid circular imports and allow local-only usage
@@ -190,10 +192,10 @@ def _get_key_from_supabase_vault() -> bytes:
         ).execute()
 
         if not result.data:
-            raise EncryptionError(
+            raise MissingEncryptionKeyError(
                 f"Encryption key '{vault_name}' not found in Supabase Vault. "
                 "Please create it with: "
-                "SELECT vault.create_secret('base64-key', 'session-encryption-key');"
+                f"SELECT vault.create_secret('base64-key', '{vault_name}');"
             )
 
         # The RPC returns the decrypted secret value.  Supabase-py types
@@ -213,7 +215,10 @@ def _get_key_from_supabase_vault() -> bytes:
             secret_value = row_d.get("decrypted_secret", "")
 
         if not secret_value:
-            raise EncryptionError(f"Empty encryption key returned from Vault for '{vault_name}'")
+            raise MissingEncryptionKeyError(
+                f"Empty encryption key returned from Vault for '{vault_name}'. "
+                "Store the Fernet key the other hosts use under that secret name."
+            )
 
         # Validate it's a valid Fernet key (base64-encoded 32 bytes)
         key: bytes
@@ -253,6 +258,23 @@ def reset_encryption_key_cache() -> None:
     """
     global _encryption_key_cache
     _encryption_key_cache = None
+
+
+def resolve_key(key: bytes | None = None) -> bytes:
+    """The key a session would be decrypted or encrypted with, checked for format.
+
+    *key* when given, else the configured key (:func:`get_encryption_key`).
+    The session loaders call this before the step that turns a failed
+    decryption into an expired session, so a key that cannot be obtained or is
+    malformed is reported as what it is, never as a session to clear.
+
+    Raises:
+        MissingEncryptionKeyError: No key was given and the source has none.
+        EncryptionError: The key cannot be obtained, or is malformed.
+    """
+    fernet_key = key if key is not None else get_encryption_key()
+    _fernet(fernet_key)
+    return fernet_key
 
 
 def _fernet(key: bytes | None) -> Fernet:

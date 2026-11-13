@@ -279,6 +279,9 @@ class GraftpunkClient:
             raise ``AmbiguousSessionError`` rather than quietly taking a slot
             cached under the bare base. Pin the client to keep a legacy bare
             slot once a labelled account exists alongside it.
+        key: Optional raw Fernet key, for a host without graftpunk's key file
+            or vault: the session is loaded and every write-back is saved with
+            it. None uses the configured key.
 
     Raises:
         PluginError: If no plugin with the given name exists (or defines a
@@ -290,7 +293,9 @@ class GraftpunkClient:
             needs a session -- see :meth:`_execute_command`.
     """
 
-    def __init__(self, plugin_name: str, session: str | None = None) -> None:
+    def __init__(
+        self, plugin_name: str, session: str | None = None, *, key: bytes | None = None
+    ) -> None:
         self._plugin: CLIPluginProtocol = get_plugin(plugin_name)
         # Nothing is resolved here: construction performs no session-storage
         # I/O and never raises for session STATE reasons (#181). _session_name
@@ -307,6 +312,8 @@ class GraftpunkClient:
         if session:
             validate_session_name(session)
         self._pinned: bool = bool(session)
+        # A caller-held Fernet key, used for the load and every write-back.
+        self._key = key
         self._session_name = session or self._plugin.session_name
         self._session: requests.Session | None = None
         # Guards the lazy resolve-and-load: one listing and one load per
@@ -483,7 +490,7 @@ class GraftpunkClient:
                     # only list uselessly.
                     resolve = self._pinned and split_session_name(self._session_name)[1] is None
                     self._session, self._session_name = load_session_for_api_resolved(
-                        self._session_name, resolve=resolve
+                        self._session_name, resolve=resolve, key=self._key
                     )
                     if base_url and hasattr(self._session, "gp_base_url"):
                         setattr(self._session, "gp_base_url", base_url)  # noqa: B010
@@ -547,7 +554,7 @@ class GraftpunkClient:
         # 5. Persist session if dirty
         if needs_session and (spec.saves_session or ctx._session_dirty or self._session_dirty):
             self._session_dirty = True
-            update_session_cookies(session, operating_name)
+            update_session_cookies(session, operating_name, key=self._key)
             self._session_dirty = False
 
         # 6. Normalize to CommandResult
@@ -576,7 +583,7 @@ class GraftpunkClient:
         """
         if self._session is not None and self._session_dirty:
             try:
-                update_session_cookies(self._session, self._session_name)
+                update_session_cookies(self._session, self._session_name, key=self._key)
                 self._session_dirty = False
             except Exception:  # noqa: BLE001
                 LOG.error(

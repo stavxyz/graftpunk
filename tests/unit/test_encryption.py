@@ -1,5 +1,6 @@
 """Tests for encryption module."""
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -836,3 +837,240 @@ class TestCallerKeyOnEveryWritePath:
         api = load_session_for_api_from_bytes(self._blob(used), key=key)
         assert api.cookies.get("sid", domain="myshop.example") == "abc"
         assert not key_file.exists()
+
+
+def _fake_supabase(data: object = None, *, fetch_error: Exception | None = None):  # noqa: ANN202
+    """A stand-in ``supabase`` module whose Vault RPC answers *data*, or raises *fetch_error*."""
+    import types
+
+    def create_client(_url: str, _key: str):  # noqa: ANN202
+        if fetch_error is not None:
+            raise fetch_error
+        result = types.SimpleNamespace(data=data)
+        call = types.SimpleNamespace(execute=lambda: result)
+        return types.SimpleNamespace(rpc=lambda _name, _params: call)
+
+    module = types.ModuleType("supabase")
+    module.create_client = create_client  # type: ignore[attr-defined]
+    return module
+
+
+# (cause id, supabase module, None for "not installed" or "caller" for a caller key,
+#  Supabase settings present, expected text, whether it is a MissingEncryptionKeyError)
+_KEY_FAILURES = [
+    ("vault-secret-missing", _fake_supabase([]), True, "not found in Supabase Vault", True),
+    (
+        "vault-secret-empty",
+        _fake_supabase([{"decrypted_secret": ""}]),
+        True,
+        "Empty encryption key",
+        True,
+    ),
+    ("supabase-not-installed", None, True, "supabase package is required", False),
+    ("supabase-settings-missing", _fake_supabase([]), False, "GRAFTPUNK_SUPABASE_URL", False),
+    (
+        "vault-unreachable",
+        _fake_supabase(fetch_error=ConnectionError("network down")),
+        True,
+        "network down",
+        False,
+    ),
+    (
+        "vault-key-malformed",
+        _fake_supabase([{"decrypted_secret": "not-a-fernet-key"}]),
+        True,
+        "Invalid encryption key in Vault",
+        False,
+    ),
+    (
+        "vault-key-wrong-type",
+        _fake_supabase({"decrypted_secret": 12345}),
+        True,
+        "Unexpected type for encryption key",
+        False,
+    ),
+    ("caller-key-malformed", "caller", True, "Invalid encryption key", False),
+]
+
+
+class TestOnlyAFailedDecryptionIsAnExpiredSession:
+    """Any failure to obtain or validate the key is an EncryptionError naming it,
+    never SessionExpiredError and never advice to clear (#196)."""
+
+    def setup_method(self) -> None:
+        reset_encryption_key_cache()
+
+    def teardown_method(self) -> None:
+        reset_encryption_key_cache()
+
+    @staticmethod
+    def _stored_slot(tmp_path, monkeypatch):  # noqa: ANN205
+        """'myshop' cached with a caller key, in a local store every setting below keeps."""
+        import requests
+
+        from graftpunk import cache
+        from graftpunk.config import reset_settings
+        from graftpunk.storage.local import LocalSessionStorage
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
+        reset_settings()
+        store = LocalSessionStorage(base_dir=tmp_path / "sessions")
+        monkeypatch.setattr(cache, "_get_session_storage_backend", lambda **_kw: store)
+        session = requests.Session()
+        session.cookies.set("sid", "abc", domain="myshop.example")
+        cache.cache_session(session, "myshop", key=Fernet.generate_key())
+        return store
+
+    @staticmethod
+    def _break_the_key(monkeypatch, supabase, settings_present: bool) -> bytes | None:  # noqa: ANN001
+        """Configure the failure; returns the caller key to pass, if any."""
+        from graftpunk.config import reset_settings
+
+        if isinstance(supabase, str):
+            return b"not-a-fernet-key"
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "supabase")
+        if settings_present:
+            monkeypatch.setenv("GRAFTPUNK_SUPABASE_URL", "https://project.supabase.example")
+            monkeypatch.setenv("GRAFTPUNK_SUPABASE_SERVICE_KEY", "service-key")
+        else:
+            monkeypatch.delenv("GRAFTPUNK_SUPABASE_URL", raising=False)
+            monkeypatch.delenv("GRAFTPUNK_SUPABASE_SERVICE_KEY", raising=False)
+        monkeypatch.setitem(sys.modules, "supabase", supabase)
+        reset_settings()
+        reset_encryption_key_cache()
+        return None
+
+    @pytest.mark.parametrize("path", ["load_session", "copy_session"])
+    @pytest.mark.parametrize(
+        ("supabase", "settings_present", "expected", "missing"),
+        [case[1:] for case in _KEY_FAILURES],
+        ids=[case[0] for case in _KEY_FAILURES],
+    )
+    def test_a_load_reports_the_key_failure(
+        self, tmp_path, monkeypatch, path, supabase, settings_present, expected, missing
+    ):
+        from graftpunk import cache
+        from graftpunk.exceptions import MissingEncryptionKeyError, SessionExpiredError
+
+        store = self._stored_slot(tmp_path, monkeypatch)
+        key = self._break_the_key(monkeypatch, supabase, settings_present)
+
+        with pytest.raises(EncryptionError) as raised:
+            if path == "load_session":
+                cache.load_session("myshop", key=key)
+            else:
+                cache.copy_session("myshop", "myshop@alice", account_identifier=None, key=key)
+
+        assert not isinstance(raised.value, SessionExpiredError)
+        assert isinstance(raised.value, MissingEncryptionKeyError) is missing
+        assert expected in str(raised.value)
+        assert "clear" not in str(raised.value)
+        assert store.get_session_metadata("myshop@alice") is None
+
+    @pytest.mark.parametrize(
+        ("supabase", "settings_present", "expected", "missing"),
+        [case[1:] for case in _KEY_FAILURES],
+        ids=[case[0] for case in _KEY_FAILURES],
+    )
+    def test_a_write_back_logs_the_key_failure_and_keeps_the_slot(
+        self, tmp_path, monkeypatch, captured_logs, supabase, settings_present, expected, missing
+    ):
+        import requests
+
+        from graftpunk import cache
+
+        store = self._stored_slot(tmp_path, monkeypatch)
+        before = store.load_session("myshop")[0]
+        key = self._break_the_key(monkeypatch, supabase, settings_present)
+
+        cache.update_session_cookies(requests.Session(), "myshop", key=key)
+
+        [skipped] = [e for e in captured_logs if e["event"] == "session_save_skipped_load_failed"]
+        assert expected in skipped["error"]
+        assert "clear" not in skipped["error"]
+        assert "cannot be decrypted" not in skipped["error"]
+        assert store.load_session("myshop")[0] == before
+
+    def test_a_wrong_but_valid_key_is_still_an_unreadable_session(self, tmp_path, monkeypatch):
+        from graftpunk import cache
+        from graftpunk.exceptions import SessionExpiredError
+
+        self._stored_slot(tmp_path, monkeypatch)
+
+        with pytest.raises(SessionExpiredError, match="cannot be decrypted"):
+            cache.load_session("myshop", key=Fernet.generate_key())
+
+
+class TestReadPathsTakeTheCallerKey:
+    """load_session_for_api(_resolved) and GraftpunkClient take key= (#196)."""
+
+    def setup_method(self) -> None:
+        reset_encryption_key_cache()
+
+    def teardown_method(self) -> None:
+        reset_encryption_key_cache()
+
+    @staticmethod
+    def _cached(tmp_path, monkeypatch, key: bytes) -> None:  # noqa: ANN001
+        import requests
+
+        from graftpunk import cache
+        from graftpunk.config import reset_settings
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
+        reset_settings()
+        cache._reset_session_storage_backend()
+        session = requests.Session()
+        session.cookies.set("sid", "abc", domain="myshop.example")
+        cache.cache_session(session, "myshop", key=key)
+
+    def test_load_session_for_api_and_resolved(self, tmp_path, monkeypatch):
+        from graftpunk.cache import load_session_for_api, load_session_for_api_resolved
+
+        key = Fernet.generate_key()
+        self._cached(tmp_path, monkeypatch, key)
+
+        api = load_session_for_api("myshop", key=key)
+        api2, loaded = load_session_for_api_resolved("myshop", key=key)
+
+        assert api.cookies.get("sid", domain="myshop.example") == "abc"
+        assert (loaded, api2.cookies.get("sid", domain="myshop.example")) == ("myshop", "abc")
+        assert not (tmp_path / ".session_key").exists()
+
+    def test_graftpunk_client_loads_and_writes_back_with_the_caller_key(
+        self, tmp_path, monkeypatch
+    ):
+        from graftpunk.cache import _get_session_storage_backend, load_session_for_api_from_bytes
+        from graftpunk.client import GraftpunkClient
+        from graftpunk.plugins.cli_plugin import CommandSpec
+
+        key = Fernet.generate_key()
+        self._cached(tmp_path, monkeypatch, key)
+
+        def refresh(ctx, **_kw):  # noqa: ANN001, ANN202
+            ctx.session.cookies.set("sid", "new", domain="myshop.example")
+            return "ok"
+
+        plugin = MagicMock()
+        plugin.site_name = plugin.session_name = "myshop"
+        plugin.requires_session = True
+        plugin.token_config = None
+        plugin.base_url = ""
+        plugin.backend = "selenium"
+        plugin.api_version = 1
+        plugin._plugin_config = None
+        plugin.format_overrides = None
+        plugin.get_commands.return_value = [
+            CommandSpec(name="refresh", handler=refresh, saves_session=True)
+        ]
+        with patch("graftpunk.client.get_plugin", return_value=plugin):
+            client = GraftpunkClient("myshop", session="myshop", key=key)
+            client.execute("refresh")
+            client.close()
+
+        blob = _get_session_storage_backend().load_session("myshop")[0]
+        stored = load_session_for_api_from_bytes(blob, key=key)
+        assert stored.cookies.get("sid", domain="myshop.example") == "new"
+        assert not (tmp_path / ".session_key").exists()
