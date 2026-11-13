@@ -292,6 +292,9 @@ _COPIED_FROM = {
     "_IDENTIFIER": recorded,
     "_SCHEMA_KEY": recorded,
     "_TYPENAME": recorded,
+    "_CAMEL_CASE": recorded,
+    "_GRAPHQL_META": recorded,
+    "_NAME_WORD": recorded,
     "_QUOTED_KEY": recorded,
     "_BEFORE": recorded,
     "_AFTER": recorded,
@@ -457,13 +460,37 @@ def test_the_skill_script_reads_keys_and_values_as_gp_observe_fixtures_does(text
     assert script.body_values(text) == recorded._body_values(text)
 
 
+def test_both_copies_skip_graphql_names_in_tracing_errors_and_a_sort_order() -> None:
+    text = json.dumps(
+        {
+            "data": {"viewer": {"__typename": "User", "login": "aokonkwo", "sortBy": "createdAt"}},
+            "errors": [
+                {
+                    "message": "No sortBy on User for ann@myshop.example",
+                    "extensions": {"requestedFields": ["login", "viewer"], "t": "User"},
+                }
+            ],
+            "extensions": {"tracing": [{"fieldName": "sortBy", "id": "ORD-4471023"}]},
+            "createdAt": 1,
+        }
+    )
+    assert recorded._body_values(text) == [
+        "aokonkwo",
+        "No        on      for ann@myshop.example",
+        "ORD-4471023",
+        "1",
+    ]
+    assert _load_script().body_values(text) == recorded._body_values(text)
+
+
 _FRAGMENTS = (
     "{", "}", "[", "]", ",", ", ", ":", ": ", " ", "\n", '"', "'", '\\"', "\\", "\\\\",
     "\\u00e9", "\\n", "&quot;", "%22", "?", "case ", "== ", "orderId", "created_at",
     "NEXT_DATA", "__typename", "aokonkwo", "Okonkwo", "AliceOkonkwo", "cus_Nffr9",
     "kQ7xZpLmNbVcXwErTyUi", "s3cr\\\"et!", "512", "USD", "A1", "a12", "true", "null",
     "José", "e\u0301", "OKONKWO", "AOKONKWO", "482", "14829", "a1b", "xa1bx", "errors",
-    "path", "operationName", "extensions", "FIXTURE = ",
+    "path", "operationName", "extensions", "FIXTURE = ", "createdAt", "sortBy", "fieldName",
+    "requestedFields", "tracing", "User",
 )  # fmt: skip
 
 
@@ -490,8 +517,16 @@ def _random_text(rng: random.Random) -> str:
         # A GraphQL response or request: field and operation names held as values.
         document = {
             "data": document,
-            "errors": [{"path": [rng.choice([*words, 0]) for _ in range(rng.randint(0, 3))]}],
-            "extensions": {"operationName": rng.choice([*words, "a b", 1])},
+            "errors": [
+                {
+                    "path": [rng.choice([*words, 0]) for _ in range(rng.randint(0, 3))],
+                    "extensions": {"requestedFields": [rng.choice(words) for _ in range(2)]},
+                }
+            ],
+            "extensions": {
+                "operationName": rng.choice([*words, "a b", 1]),
+                "tracing": [{"fieldName": rng.choice(words), "path": [rng.choice(words), 0]}],
+            },
             "operationName": rng.choice([*words, None]),
         }
     text = json.dumps(document, indent=rng.choice([None, 2]), ensure_ascii=rng.random() < 0.5)

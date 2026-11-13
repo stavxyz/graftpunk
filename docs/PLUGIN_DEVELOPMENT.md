@@ -2596,7 +2596,10 @@ fixture with the capture it was derived from, still reports any value from the
 captured response body left in the fixture, each run of 3 or more digits
 included. It skips a key shaped like a schema name without a digit (`orderId`,
 `created_at`), a GraphQL type, field or operation name held as a value (an
-identifier under `__typename`, in `errors[*].path`, or as `operationName`),
+identifier under `__typename`, in `errors[*].path`, or as `operationName`; one
+under `errors` or `extensions`, such as a tracing resolver's `fieldName`, that
+names a key or a type of the same body; a camelCase one, such as
+`"sortBy": "createdAt"`, that names a key of the same body),
 `true`, `false` or `null`, and a value shorter than four characters unless it
 has three and holds a digit (and those match only with no letter or digit beside
 them), and in a fixture that parses as JSON it does not look inside such a key;

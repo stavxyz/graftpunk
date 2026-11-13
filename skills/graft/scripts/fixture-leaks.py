@@ -15,13 +15,17 @@ SCREAMING_SNAKE (``orderId``, ``created_at``), and an identifier under a
 ``__typename`` key (``User``, a GraphQL type's name) are the site's schema, not
 account data, and are skipped, and so are the GraphQL field and operation names a
 JSON body holds as values (the identifiers in each ``errors[*].path``, an
-``operationName``, and ``extensions.operationName``); any other key
-(``Okonkwo``, ``cus_Nf3x``, a token) is a value. A value or piece is skipped too
-when it is ``true``, ``false`` or ``null`` in any case, or shorter than four
-characters unless it has three and holds a digit (``USD`` is skipped, ``512`` is
-not), by the rule ``--har`` judges a recorded value by. A three-character value
-matches only where no letter or digit sits on either side, so ``482`` is not
-found in ``14829``.
+``operationName``, and ``extensions.operationName``), an identifier under its
+``errors`` or ``extensions`` equal to a schema key or a type name of the same
+body (a tracing resolver's ``fieldName``, ``parentType`` and ``path``, an error's
+``requestedFields``, and such a name as a word of an error's message), and a
+camelCase identifier anywhere equal to a schema key of the same body (``"sortBy":
+"createdAt"``); any other key (``Okonkwo``, ``cus_Nf3x``, a token) is a value.
+A value or piece is skipped too when it is ``true``, ``false`` or ``null`` in
+any case, or shorter than four characters unless it has three and holds a
+digit (``USD`` is skipped, ``512`` is not), by the rule ``--har`` judges a
+recorded value by. A three-character value matches only where no letter or
+digit sits on either side, so ``482`` is not found in ``14829``.
 
 Where it looks, in the fixture, in Unicode compatibility form: the raw text, its
 JSON or HTML values decoded, its backslash escapes decoded (``\\u00e9``, a
@@ -51,7 +55,9 @@ What it cannot see, which needs a read by eye: a captured lowercase word alone, 
 capitalised word copied in lower case on its own, a value of three characters
 without a digit or shorter, a captured value written into part of a schema key
 (``"okonkwoTotal":``), a number reformatted (``12345`` as
-``12,345``), digits split across fields, and a copy re-encoded another way (base64).
+``12,345``), digits split across fields, a copy re-encoded another way (base64),
+a camelCase value its body also uses as a key, and a value under ``errors`` or
+``extensions`` that its body uses as a key or a type name.
 It searches each form of the fixture once per captured value, so a capture of a
 megabyte or more takes tens of seconds.
 
@@ -162,6 +168,21 @@ _SCHEMA_KEY = re.compile(
 )
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _TYPENAME = "__typename"
+# A camelCase identifier: a lowercase word, then capitalised words (createdAt).
+# One equal to a schema key of its own body is that field's name, held as a value
+# (a sort order, "sortBy": "createdAt"). A username is lowercase, so a capture's
+# "aokonkwo" stays a value even where the same body uses it as a key.
+_CAMEL_CASE = re.compile(r"[a-z]+(?:[A-Z][a-z]+)+\Z")
+# The parts of a GraphQL response that describe the request rather than answer it:
+# an identifier under either that names a schema key or a type of the same body
+# (a tracing resolver's fieldName and parentType, an error's requestedFields) is
+# the schema's, not account data, and so is such a name standing as a word of a
+# longer string there ("Cannot query field displayName on type User").
+_GRAPHQL_META = ("errors", "extensions")
+# A word of a longer string that can be a name: an identifier with nothing that
+# continues a word, an address or a path on either side, so neither part of
+# "ann.okafor@myshop.example" nor of "ORD-4471023" is one.
+_NAME_WORD = re.compile(r"(?<![\w.@/-])[A-Za-z_][A-Za-z0-9_]*(?![\w.@/-])")
 # A JSON or Python key in single or double quotes, JSON-escaped or not, before
 # its colon, where an object key stands: after the object's opening brace or a
 # comma. A quoted word before a colon anywhere else (a ternary, a case label,
@@ -342,10 +363,54 @@ def _without_path_names(error: object) -> object:
     return {**error, "path": [step for step in error["path"] if not _graphql_name(step)]}
 
 
+def _schema_names(node: object, keys: set[str], types: set[str]) -> None:
+    """Add each schema key in *node*, at any depth, to *keys*, and each type name
+    under ``__typename`` to *types*."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if _schema_key(str(key)):
+                keys.add(str(key))
+            if _type_name(key, value):
+                types.add(value)
+            else:
+                _schema_names(value, keys, types)
+    elif isinstance(node, list):
+        for value in node:
+            _schema_names(value, keys, types)
+
+
+def _without_names(
+    node: object, drop: Callable[[str], bool], words: frozenset[str] = frozenset()
+) -> object:
+    """*node* without each string value, at any depth, that *drop* holds a name,
+    and with each word of another string that is in *words* blanked; keys are
+    left as they are."""
+    if isinstance(node, dict):
+        return {key: _without_names(value, drop, words) for key, value in node.items()}
+    if isinstance(node, list):
+        return [
+            _without_names(value, drop, words)
+            for value in node
+            if not (isinstance(value, str) and drop(value))
+        ]
+    if isinstance(node, str):
+        if drop(node):
+            return None
+        if words:
+            return _NAME_WORD.sub(
+                lambda m: " " * len(m.group(0)) if m.group(0) in words else m.group(0), node
+            )
+    return node
+
+
 def _without_field_names(document: object) -> object:
     """*document*, a JSON body or one of a batch, without the GraphQL field and
     operation names it holds as values: its ``operationName``, its
-    ``extensions.operationName``, and the names in each ``errors[*].path``."""
+    ``extensions.operationName``, the names in each ``errors[*].path``, an
+    identifier under ``errors`` or ``extensions`` equal to a schema key or a type
+    name of the same body (blanked where it is a word of a longer string there,
+    such as an error's message), and a camelCase identifier anywhere equal to a
+    schema key of the same body."""
     if not isinstance(document, dict):
         return document
     document = dict(document)
@@ -357,7 +422,21 @@ def _without_field_names(document: object) -> object:
     errors = document.get("errors")
     if isinstance(errors, list):
         document["errors"] = [_without_path_names(error) for error in errors]
-    return document
+    keys: set[str] = set()
+    types: set[str] = set()
+    _schema_names(document, keys, types)
+    names = frozenset(keys | types)
+
+    def meta(value: str) -> bool:
+        return value in names and _graphql_name(value)
+
+    def field(value: str) -> bool:
+        return value in keys and _CAMEL_CASE.match(value) is not None
+
+    for part in _GRAPHQL_META:
+        if part in document:
+            document[part] = _without_names(document[part], meta, names)
+    return _without_names(document, field)
 
 
 def _json_values(node: object) -> list[str]:
