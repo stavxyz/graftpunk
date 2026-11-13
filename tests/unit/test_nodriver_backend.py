@@ -4477,7 +4477,9 @@ class TestNoDriverBackendCallTimeout:
         assert result == fallback
         assert self.TIMEOUT <= elapsed < self.TIMEOUT + self.SLACK
         assert tab.hung_calls == 1
-        assert tab.cancelled_calls == 1
+        # Abandoned, not cancelled: a cancelled DevTools command whose answer then
+        # arrives ends nodriver 0.48.1's listener (graftpunk.cdp_wait).
+        assert tab.cancelled_calls == 0
         [warning] = _warnings(captured_logs)
         assert warning["event"] == event
         assert warning["error"] == f"NoDriverBackend.{method} did not finish within 0.2 s"
@@ -4724,77 +4726,70 @@ class TestNoDriverBackendCallTimeout:
 
         assert backend._run_async(work(), timeout=1, method="x") == "done"
 
-    @pytest.mark.parametrize(
-        ("ending", "expected"), [("return", "done"), ("raise", ValueError("own error"))]
-    )
-    def test_a_call_that_finishes_before_the_cancel_reaches_it_keeps_its_outcome(
-        self, monkeypatch: pytest.MonkeyPatch, ending: str, expected: Any
+    @pytest.mark.parametrize("ending", ["return", "raise"])
+    def test_a_call_still_running_when_the_wait_expires_is_abandoned_not_cancelled(
+        self, monkeypatch: pytest.MonkeyPatch, ending: str
     ) -> None:
-        """The cancel loses the race: the coroutine runs to the end after cancel().
-
-        The coroutine blocks the loop thread, so the cancel cannot reach its
-        task, and it is released by the cancel itself (the future's done
-        callback runs in the cancelling thread).
-        """
-        import concurrent.futures
-
-        backend = with_private_loop(NoDriverBackend())
-        entered = threading.Event()
-        release = threading.Event()
-
-        async def work() -> str:
-            entered.set()
-            release.wait(5)  # blocks the loop, so the cancel cannot land
-            if ending == "raise":
-                raise ValueError("own error")
-            return "done"
-
-        def wait_that_expires(fs: Any, timeout: Any = None) -> Any:
-            assert entered.wait(5)
-            for future in fs:
-                future.add_done_callback(lambda _f: release.set())
-            return SimpleNamespace(done=set(), not_done=set(fs))
-
-        monkeypatch.setattr(concurrent.futures, "wait", wait_that_expires)
-
-        if isinstance(expected, Exception):
-            with pytest.raises(ValueError, match="own error"):
-                backend._run_async(work(), timeout=1, method="x")
-        else:
-            assert backend._run_async(work(), timeout=1, method="x") == expected
-        assert release.is_set()
-
-    def test_a_call_still_running_after_the_cancel_times_out(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        """It runs on to its end on the loop, and its late outcome is dropped."""
         import concurrent.futures
 
         backend = with_private_loop(NoDriverBackend())
         entered = threading.Event()
         cancelled = threading.Event()
+        finished = threading.Event()
+        release: dict[str, asyncio.Event] = {}
 
         async def work() -> str:
+            release["event"] = asyncio.Event()
             entered.set()
             try:
-                await asyncio.Event().wait()
+                await release["event"].wait()
             except asyncio.CancelledError:
                 cancelled.set()
                 raise
-            return "unreachable"
+            finished.set()
+            if ending == "raise":
+                raise ValueError("late error")
+            return "late"
+
+        real_wait = concurrent.futures.wait
 
         def wait_that_expires(fs: Any, timeout: Any = None) -> Any:
-            # Expire only once the call is running, so the cancel reaches a
-            # started coroutine rather than one the loop never began.
-            entered.wait(timeout=5)
+            assert entered.wait(timeout=5)
             return SimpleNamespace(done=set(), not_done=set(fs))
 
         monkeypatch.setattr(concurrent.futures, "wait", wait_that_expires)
-
         with pytest.raises(TimeoutError, match=r"NoDriverBackend\.x did not finish within 1 s"):
             backend._run_async(work(), timeout=1, method="x")
-        # The patched wait also stands in for the wait on the cancellation, so
-        # the cancel may land on the loop thread after the raise; it must land.
-        assert cancelled.wait(timeout=5)
+        monkeypatch.setattr(concurrent.futures, "wait", real_wait)
+
+        loop = backend._loop
+        assert loop is not None
+        loop.call_soon_threadsafe(release["event"].set)
+        assert finished.wait(timeout=5)
+        assert not cancelled.is_set()
+
+    def test_a_timed_out_call_leaves_the_connection_answering(self) -> None:
+        """Review 3, I1: over a connection that behaves as nodriver 0.48.1's does, a
+        call given up on at its timeout leaves the next command answered."""
+        from tests.unit.cdp048 import Connection048
+
+        backend = with_private_loop(NoDriverBackend())
+
+        async def open_connection() -> Connection048:
+            return Connection048()
+
+        connection = backend._run_async(open_connection(), timeout=5, method="open")
+        with pytest.raises(TimeoutError, match="did not finish within 0.2 s"):
+            backend._run_async(connection.send("late", after=0.5), timeout=0.2, method="probe")
+        time.sleep(0.7)
+
+        async def check() -> bool:
+            answers = await connection.still_answers()
+            connection.close()
+            return answers
+
+        assert backend._run_async(check(), timeout=5, method="check") is True
 
     def test_the_timeouts_survive_get_state_and_stay_out_of_the_start_options(self) -> None:
         original = NoDriverBackend(call_timeout=7.5, navigate_timeout=None, lang="en-US")
