@@ -1072,7 +1072,10 @@ async def _wait_for_login_signal_nodriver(
         if decision.note_marker:
             _debug_rate_limit_marker(site_name=site_name, url=reading.url, backend="nodriver")
             marker_noted = True
-        if last_tick:
+        # A read abandoned at the end was the last one the wait had time for; one
+        # started now could not answer and would only add a second command in
+        # flight on the tab.
+        if last_tick or loop.time() >= end:
             break
 
     if not last.answered:

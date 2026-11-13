@@ -342,6 +342,57 @@ class TestNodriverDeadline:
         assert elapsed <= timeout + _LOGIN_POLL_INTERVAL + _EPSILON, elapsed
 
     @pytest.mark.parametrize("timeout", _TIMEOUTS)
+    @pytest.mark.parametrize("read_seconds", [0.3, 0.45, 0.8, 3.0, _FOREVER])
+    def test_no_read_starts_while_an_abandoned_one_is_in_flight(
+        self, timeout: float, read_seconds: float
+    ) -> None:
+        """A read abandoned at the end was the poll's last; another started then
+        could not answer and only put a second command on the tab (review 2, N1)."""
+
+        class _CountingTab(_TimedTab):
+            in_flight = 0
+            most_in_flight = 0
+            started = 0
+
+            async def _read(self) -> None:
+                type(self).started += 1
+                type(self).in_flight += 1
+                type(self).most_in_flight = max(type(self).most_in_flight, type(self).in_flight)
+                try:
+                    await asyncio.sleep(self.read_seconds)
+                finally:
+                    type(self).in_flight -= 1
+
+            async def get_content(self) -> str:
+                await self._read()
+                return self.page
+
+            async def query_selector(self, selector: str) -> None:
+                await self._read()
+                return None
+
+        tab = _CountingTab(read_seconds=read_seconds)
+
+        async def wait() -> bool:
+            loop = asyncio.get_running_loop()
+            return await _wait_for_login_signal_nodriver(
+                tab=tab,
+                login_config=_config(timeout, failure=None),
+                failure_text="",
+                site_name="ndlong",
+                deadline=loop.time() + timeout,
+                pre_submit_url="https://app.example.com/login",
+            )
+
+        with patch("graftpunk.plugins.login_settle.LOG"):
+            result, elapsed = _run_virtual(wait)
+
+        assert result is False
+        assert _CountingTab.started >= 1
+        assert _CountingTab.most_in_flight == 1
+        assert elapsed <= timeout + _LOGIN_POLL_INTERVAL + _EPSILON, elapsed
+
+    @pytest.mark.parametrize("timeout", _TIMEOUTS)
     def test_a_signal_found_at_the_deadline_gets_no_readiness_wait(self, timeout: float) -> None:
         """The reviewers' case: a slow read finds the success element on the deadline
         tick, and the readiness read never answers. The readiness wait used to add a
