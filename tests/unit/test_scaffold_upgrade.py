@@ -522,3 +522,156 @@ class TestRuffExtend:
         names = read_project(tmp_path).first_party_packages
         assert {"aaa_plugin", "lib", "tests"} <= names
         assert "myshop_shared" not in names
+
+
+class TestShellExpand:
+    """``src`` and ``extend`` are expanded as ruff's ``shellexpand::full`` does."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("lib", "lib"),
+            ("${GPX_SET}/x", "set-value/x"),
+            ("$GPX_SET/x", "set-value/x"),
+            ("${GPX_UNSET:-lib}", "lib"),
+            ("${GPX_SET:-lib}", "set-value"),
+            ("${GPX_EMPTY:-lib}", ""),
+            ("${GPX_UNSET:-$GPX_SET}", "$GPX_SET"),
+            ("a$$b", "a$b"),
+            ("cost$", "cost$"),
+            ("a$-b", "a$-b"),
+            ("${unclosed", "${unclosed"),
+            ("~/lib", "/home/myshop/lib"),
+            ("~", "/home/myshop"),
+            ("~other/lib", "~other/lib"),
+            ("${GPX_TILDE}/lib", "~/lib"),
+        ],
+    )
+    def test_expands_like_shellexpand(
+        self, monkeypatch: pytest.MonkeyPatch, value: str, expected: str
+    ) -> None:
+        from graftpunk.devtools.plugin_project import _shell_expand
+
+        monkeypatch.setenv("HOME", "/home/myshop")
+        monkeypatch.setenv("GPX_SET", "set-value")
+        monkeypatch.setenv("GPX_EMPTY", "")
+        monkeypatch.setenv("GPX_TILDE", "~")
+        monkeypatch.delenv("GPX_UNSET", raising=False)
+        assert _shell_expand(value) == expected
+
+    @pytest.mark.parametrize("value", ["${GPX_UNSET}", "$GPX_UNSET/lib", "${:-lib}"])
+    def test_an_unset_variable_without_a_default_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        from graftpunk.devtools.plugin_project import _shell_expand, _ShellExpandError
+
+        monkeypatch.delenv("GPX_UNSET", raising=False)
+        with pytest.raises(_ShellExpandError):
+            _shell_expand(value)
+
+    def test_a_src_default_is_used_when_the_variable_is_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("GPX_UNSET", raising=False)
+        conftest = _lib_project(tmp_path, ruff='\n[tool.ruff]\nsrc = ["${GPX_UNSET:-lib}"]\n')
+        assert read_project(tmp_path).first_party_packages == frozenset({"myshop_shared"})
+        upgrade_project(tmp_path)
+        assert "\n\nfrom myshop_shared import THING" in conftest.read_text()
+        _ruff_check_conftest(tmp_path)
+
+    def test_an_extend_default_is_used_when_the_variable_is_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("GPX_UNSET", raising=False)
+        conftest = _lib_project(
+            tmp_path, ruff='\n[tool.ruff]\nextend = "${GPX_UNSET:-config}/base.toml"\n'
+        )
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "base.toml").write_text('src = ["../lib"]\n')
+        assert read_project(tmp_path).first_party_packages == frozenset({"myshop_shared"})
+        upgrade_project(tmp_path)
+        _ruff_check_conftest(tmp_path)
+        assert "\n\nfrom myshop_shared import THING" in conftest.read_text()
+
+    @pytest.mark.parametrize(
+        "ruff",
+        [
+            '\n[tool.ruff]\nsrc = ["${GPX_UNSET}"]\n',
+            '\n[tool.ruff]\nextend = "$GPX_UNSET/base.toml"\n',
+            '\n[tool.ruff]\nsrc = ["lib"]\nextend = "base.toml"\n',
+        ],
+        ids=["src", "extend", "overridden-src"],
+    )
+    def test_an_unset_variable_without_a_default_leaves_the_defaults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ruff: str
+    ) -> None:
+        """ruff refuses to run, even when the bad src is one an extending file
+        overrides, since every file's src is resolved."""
+        monkeypatch.delenv("GPX_UNSET", raising=False)
+        _lib_project(tmp_path, ruff=ruff)
+        (tmp_path / "base.toml").write_text('src = ["${GPX_UNSET}"]\n')
+        names = read_project(tmp_path).first_party_packages
+        assert {"aaa_plugin", "lib", "tests"} <= names
+        assert "myshop_shared" not in names
+
+
+def _nested_project(tmp_path: Path, repo_ruff: str) -> tuple[Path, Path]:
+    """A repo whose pyproject.toml has [tool.ruff], and under plugins/myshop a
+    plugin project whose own pyproject.toml has none, with a package beside
+    it the conftest imports."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text('[project]\nname = "repo"\n' + repo_ruff)
+    project = repo / "plugins" / "myshop"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "aaa"\n\n[project.entry-points."graftpunk.plugins"]\n'
+        'aaa = "aaa_plugin:AaaPlugin"\n'
+    )
+    (project / "aaa_plugin.py").write_text(_SINGLE_MODULE_PLUGIN)
+    (project / "myshop_pkg").mkdir()
+    (project / "myshop_pkg" / "__init__.py").write_text("THING = 1\n")
+    conftest = project / "tests" / "conftest.py"
+    conftest.parent.mkdir()
+    conftest.write_text("from myshop_pkg import THING\n\nX = THING\n")
+    return project, conftest
+
+
+class TestAncestorRuffSettings:
+    """With no settings file of its own, ruff uses the nearest ancestor's, and
+    its default src is that file's directory and its src/."""
+
+    def test_an_ancestor_config_moves_the_default_roots_to_its_directory(
+        self, tmp_path: Path
+    ) -> None:
+        project, conftest = _nested_project(tmp_path, '\n[tool.ruff.lint]\nselect = ["I"]\n')
+        assert read_project(project).first_party_packages == frozenset({"plugins"})
+        upgrade_project(project)
+        assert conftest.read_text().splitlines()[:4] == [
+            "from pathlib import Path",
+            "",
+            "from graftpunk.testing.plugin import fixtures_are_sanitised",
+            "from myshop_pkg import THING",
+        ]
+        _ruff_check_conftest(project)
+
+    def test_an_ancestor_src_is_taken_from_the_ancestors_directory(self, tmp_path: Path) -> None:
+        project, conftest = _nested_project(
+            tmp_path,
+            '\n[tool.ruff]\nsrc = ["plugins/myshop"]\n\n[tool.ruff.lint]\nselect = ["I"]\n',
+        )
+        assert "myshop_pkg" in read_project(project).first_party_packages
+        upgrade_project(project)
+        assert "\n\nfrom myshop_pkg import THING" in conftest.read_text()
+        _ruff_check_conftest(project)
+
+    def test_an_ancestor_ruff_toml_counts_too(self, tmp_path: Path) -> None:
+        project, _conftest = _nested_project(tmp_path, "")
+        (tmp_path / "repo" / "ruff.toml").write_text('src = ["plugins/myshop"]\n')
+        assert "myshop_pkg" in read_project(project).first_party_packages
+
+    def test_the_projects_own_tool_ruff_stops_the_search(self, tmp_path: Path) -> None:
+        project, _conftest = _nested_project(tmp_path, '\n[tool.ruff]\nsrc = ["elsewhere"]\n')
+        pyproject = project / "pyproject.toml"
+        pyproject.write_text(pyproject.read_text() + '\n[tool.ruff.lint]\nselect = ["I"]\n')
+        assert {"aaa_plugin", "myshop_pkg", "tests"} <= read_project(project).first_party_packages

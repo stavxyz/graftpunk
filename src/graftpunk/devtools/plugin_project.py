@@ -381,9 +381,10 @@ class ProjectView:
     decide a module is first party: every top-level directory and ``*.py`` or
     ``*.pyi`` stem directly under each directory of the project's ``[tool.ruff]
     src`` (ruff's default ``[".", "src"]`` when unset; a root ``.ruff.toml`` or
-    ``ruff.toml`` wins over ``pyproject.toml``, and ``extend`` is followed, as
-    in ruff), plus any name the project's own ``[tool.ruff.lint.isort]
-    known-first-party`` (or the legacy ``[tool.ruff.isort]``) declares. It is
+    ``ruff.toml`` wins over ``pyproject.toml``, the nearest ancestor's settings
+    file counts when the project has none, and ``extend`` is followed, as in
+    ruff), plus any name the ``[lint.isort] known-first-party`` (or, when that
+    table is absent, the legacy ``[isort]``) of those settings declares. It is
     what ``add_command`` and ``gp plugin upgrade`` pass as
     ``pysrc.with_import``'s ``first_party=`` argument, so a new import lands in
     isort's first-party section exactly when ruff itself would sort it there,
@@ -679,7 +680,7 @@ def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[
     per-plugin derivation left in the set, so ruff never matched it."""
     settings = _ruff_settings(root, data)
     names: set[str] = set()
-    for base in settings.src if settings.src is not None else (root, root / "src"):
+    for base in settings.roots:
         if _probe(base) != "dir":
             continue
         try:
@@ -716,21 +717,34 @@ _RUFF_SETTINGS_FILES = (".ruff.toml", "ruff.toml")
 @dataclass(frozen=True)
 class _RuffSettings:
     """What ruff resolves for first-party detection: the ``src`` roots, or
-    ``None`` for ruff's default, and ``known-first-party``."""
+    ``None`` for ruff's default (``project_root`` and its ``src/``), and
+    ``known-first-party``. ``project_root`` is the directory of the settings
+    file ruff found (``resolve_scoped_settings`` in ruff_workspace::resolver),
+    or the plugin project root when it found none."""
 
     src: tuple[Path, ...] | None
     known_first_party: frozenset[str]
+    project_root: Path
+
+    @property
+    def roots(self) -> tuple[Path, ...]:
+        """The directories first-party modules are looked for in."""
+        if self.src is not None:
+            return self.src
+        return (self.project_root, self.project_root / "src")
 
 
 _NO_RUFF_FILE = object()
 
 
-def _read_ruff_file(path: Path) -> dict[str, Any] | object | None:
+def _read_ruff_file(path: Path, *, discovering: bool = False) -> dict[str, Any] | object | None:
     """*path*'s ruff settings table (the top level of a ``ruff.toml``, the
     ``[tool.ruff]`` of a ``pyproject.toml``, empty when it has none);
-    ``_NO_RUFF_FILE`` when nothing ruff reads is there (absent, or a symlink
-    ruff's own ``is_file()`` cannot follow); ``None`` when it is there but
-    cannot be read or parsed, where ruff itself refuses to run."""
+    ``_NO_RUFF_FILE`` when nothing ruff reads is there (absent, a symlink
+    ruff's own ``is_file()`` cannot follow, or, while *discovering* a settings
+    file, a ``pyproject.toml`` without ``[tool.ruff]``, which ruff's
+    ``settings_toml`` passes over); ``None`` when it is there but cannot be
+    read or parsed, where ruff itself refuses to run."""
     if _probe(path) != "file":
         return _NO_RUFF_FILE
     try:
@@ -741,21 +755,107 @@ def _read_ruff_file(path: Path) -> dict[str, Any] | object | None:
         return parsed
     tool = parsed.get("tool")
     ruff = tool.get("ruff") if isinstance(tool, dict) else None
-    return ruff if isinstance(ruff, dict) else {}
+    if isinstance(ruff, dict):
+        return ruff
+    return _NO_RUFF_FILE if discovering else {}
+
+
+class _ShellExpandError(Exception):
+    """A value ruff's ``shellexpand::full`` refuses: an unset variable with no
+    default. ruff then refuses to run."""
+
+
+# A ${...} reference up to the first "}", a bare $NAME (shellexpand's
+# is_valid_var_name_char: Unicode alphanumeric or "_"), "$$", or a lone "$".
+_SHELL_REFERENCE = re.compile(r"\$(?:\{(?P<braced>[^}]*)\}|(?P<bare>[^\W]+)|(?P<dollar>\$)?)")
+
+
+def _shell_expand(value: str) -> str:
+    """*value* expanded the way ruff expands ``src`` entries and ``extend``
+    (``shellexpand::full``, shellexpand 3.1.2 ``src/funcs.rs``, the version
+    ruff 0.17.5 locks):
+
+    - ``${NAME}`` and ``$NAME`` take the variable's value, an empty value
+      included; unset, they raise :class:`_ShellExpandError`.
+    - ``${NAME:-default}`` takes the default only when ``NAME`` is unset
+      (``env_with_context``: a set value, even empty, wins); the default is
+      not expanded again. ``${:-x}`` names the variable ``:-x``.
+    - ``$$`` is one ``$``; a ``$`` before anything else, and an unclosed
+      ``${``, stay as they are.
+    - A leading ``~`` followed by ``/`` or nothing becomes the home directory,
+      unless the ``~`` came from a variable (``full_with_context``).
+
+    Raises:
+        _ShellExpandError: A reference names an unset variable with no default.
+    """
+
+    def substitute(match: re.Match[str]) -> str:
+        braced, bare = match.group("braced"), match.group("bare")
+        if braced is None and bare is None:
+            return "$"
+        if bare is not None:
+            name, default = bare, None
+        else:
+            split = braced.find(":-")
+            if split > 0:
+                name, default = braced[:split], braced[split + 2 :]
+            else:
+                name, default = braced, None
+        found = os.environ.get(name)
+        if found is not None:
+            return found
+        if default is not None:
+            return default
+        raise _ShellExpandError(name)
+
+    expanded = _SHELL_REFERENCE.sub(substitute, value)
+    if value.startswith("~") and (expanded == "~" or expanded.startswith("~/")):
+        expanded = os.path.expanduser("~") + expanded[1:]
+    return expanded
+
+
+def _discover_ruff_file(root: Path, data: dict[str, Any] | None) -> tuple[Any, Path]:
+    """The settings file ruff uses for a file under *root*, with its table,
+    found the way ruff finds it: ``settings_toml`` (ruff_workspace::pyproject:
+    a ``.ruff.toml``, then a ``ruff.toml``, then a ``pyproject.toml`` with
+    ``[tool.ruff]``) in *root*, then in each ancestor in turn
+    (``find_settings_toml``, pyproject.rs:109). *data* is *root*'s own
+    ``pyproject.toml``, already read. The table is ``None`` when the file
+    found cannot be read or parsed, and ``{}`` at *root*'s ``pyproject.toml``
+    when no directory has a settings file. ruff's next fallback, a user-level
+    settings file, is not read."""
+    for directory in (root, *root.parents):
+        for name in _RUFF_SETTINGS_FILES:
+            table = _read_ruff_file(directory / name)
+            if table is not _NO_RUFF_FILE:
+                return table, directory / name
+        if directory == root:
+            tool = data.get("tool") if data is not None else None
+            ruff = tool.get("ruff") if isinstance(tool, dict) else None
+            if isinstance(ruff, dict):
+                return ruff, root / "pyproject.toml"
+            continue
+        table = _read_ruff_file(directory / "pyproject.toml", discovering=True)
+        if table is not _NO_RUFF_FILE:
+            return table, directory / "pyproject.toml"
+    return {}, root / "pyproject.toml"
 
 
 def _ruff_settings(root: Path, data: dict[str, Any] | None) -> _RuffSettings:
     """The settings ruff itself resolves for *root*, by ruff 0.17.5's rules:
 
-    - The settings file is a root ``.ruff.toml`` or ``ruff.toml`` (whose keys
-      sit at the top level), else *data*'s ``[tool.ruff]``.
+    - The settings file is the one :func:`_discover_ruff_file` finds: in
+      *root*, or in the nearest ancestor that has one.
     - ``extend`` is followed the way ``resolve_configuration_with_cache``
-      (ruff_workspace::resolver) follows it: ``~`` and environment variables
-      expanded (``Configuration::from_options``), a relative path taken from
-      the directory of the file that names it, and so on down the chain.
+      (ruff_workspace::resolver) follows it: expanded by
+      :func:`_shell_expand` (``Configuration::from_options``), a relative
+      path taken from the directory of the file that names it, and so on
+      down the chain.
     - Each file's ``src`` is resolved against that file's own directory, and
       the first file in the chain that sets ``src`` wins
-      (``Configuration::combine``: ``self.src.or(config.src)``).
+      (``Configuration::combine``: ``self.src.or(config.src)``). With none,
+      ruff's default is the found settings file's directory and its
+      ``src/`` (configuration.rs:395).
     - ``known-first-party`` likewise comes from the first file that sets it:
       across ``extend`` the isort keys combine one by one
       (``impl CombinePluginOptions for Option<T>``, configuration.rs:1445).
@@ -767,66 +867,62 @@ def _ruff_settings(root: Path, data: dict[str, Any] | None) -> _RuffSettings:
       ``isort`` table.
 
     A file in the chain that cannot be read or parsed, an ``extend`` naming a
-    missing file, or a cycle makes ruff refuse to run, so no placement could
-    agree with it; the defaults are the closest guess then."""
-    defaults = _RuffSettings(src=None, known_first_party=frozenset())
-    first: tuple[dict[str, Any], Path] | None = None
-    for name in _RUFF_SETTINGS_FILES:
-        table = _read_ruff_file(root / name)
-        if table is None:
-            return defaults
-        if isinstance(table, dict):
-            first = (table, root / name)
-            break
-    if first is None:
-        tool = data.get("tool") if data is not None else None
-        ruff = tool.get("ruff") if isinstance(tool, dict) else None
-        first = (ruff if isinstance(ruff, dict) else {}, root / "pyproject.toml")
-    chain = [first]
-    seen = {os.path.normpath(first[1])}
-    while True:
-        table, path = chain[-1]
-        extend = table.get("extend")
-        if not isinstance(extend, str):
-            break
-        expanded = os.path.expandvars(os.path.expanduser(extend))
-        target = Path(os.path.normpath(path.parent / expanded))
-        if str(target) in seen:
-            return defaults
-        seen.add(str(target))
-        extended = _read_ruff_file(target)
-        if not isinstance(extended, dict):
-            return defaults
-        chain.append((extended, target))
-    src: tuple[Path, ...] | None = None
-    for table, path in chain:
-        roots = _ruff_src_roots(path.parent, table.get("src"))
-        if roots is not None:
-            src = roots
-            break
+    missing file, a cycle, or an unset variable with no default in any
+    file's ``extend`` or ``src`` makes ruff refuse to run, so no placement
+    could agree with it; the defaults at *root* are the closest guess then."""
+    defaults = _RuffSettings(src=None, known_first_party=frozenset(), project_root=root)
+    table, path = _discover_ruff_file(root, data)
+    if not isinstance(table, dict):
+        return defaults
+    chain: list[tuple[dict[str, Any], Path]] = [(table, path)]
+    seen = {os.path.normpath(path)}
+    try:
+        while True:
+            table, path = chain[-1]
+            extend = table.get("extend")
+            if not isinstance(extend, str):
+                break
+            target = Path(os.path.normpath(path.parent / _shell_expand(extend)))
+            if str(target) in seen:
+                return defaults
+            seen.add(str(target))
+            extended = _read_ruff_file(target)
+            if not isinstance(extended, dict):
+                return defaults
+            chain.append((extended, target))
+        # Every file's src is resolved, as each from_options call does, so an
+        # unset variable in a src an extending file overrides still refuses.
+        resolved = [_ruff_src_roots(path.parent, table.get("src")) for table, path in chain]
+    except _ShellExpandError:
+        return defaults
+    src = next((roots for roots in resolved if roots is not None), None)
     known: frozenset[str] = frozenset()
     for table, _path in chain:
         declared = _known_first_party(table)
         if declared is not None:
             known = declared
             break
-    return _RuffSettings(src=src, known_first_party=known)
+    return _RuffSettings(src=src, known_first_party=known, project_root=chain[0][1].parent)
 
 
 def _ruff_src_roots(base: Path, src: Any) -> tuple[Path, ...] | None:
     """One settings file's ``src`` resolved the way ruff resolves it
-    (``resolve_src`` in ruff_workspace::configuration, ruff 0.17.5): ``~`` and
-    environment variables expanded, a relative entry taken from *base* (the
-    settings file's directory), and each entry expanded as a glob, so an
-    entry matching nothing contributes nothing. ``None`` when *src* is not a
-    list of strings, which leaves the choice to the next file in the chain.
-    ruff has no ``src`` under ``lint``; it refuses the key there."""
+    (``resolve_src`` in ruff_workspace::configuration, ruff 0.17.5): each
+    entry expanded by :func:`_shell_expand`, a relative entry taken from
+    *base* (the settings file's directory), and each entry expanded as a
+    glob, so an entry matching nothing contributes nothing. ``None`` when
+    *src* is not a list of strings, which leaves the choice to the next file
+    in the chain. ruff has no ``src`` under ``lint``; it refuses the key
+    there.
+
+    Raises:
+        _ShellExpandError: An entry names an unset variable with no default.
+    """
     if not isinstance(src, list) or not all(isinstance(entry, str) for entry in src):
         return None
     roots: list[Path] = []
     for entry in src:
-        expanded = os.path.expandvars(os.path.expanduser(entry))
-        pattern = os.path.normpath(base / expanded)
+        pattern = os.path.normpath(base / _shell_expand(entry))
         # The Rust glob crate ruff uses lets "*" match a leading dot and "**"
         # cross directories, so both flags are on to match it.
         matches = glob.glob(pattern, recursive=True, include_hidden=True)
