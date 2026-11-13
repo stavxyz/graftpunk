@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.6] - 2026-11-13
+
+This is a patch release of two login fixes, a correction to the 1.15.0 Upgrading note, documentation, and test-suite fixes. On the nodriver backend a `success` selector the browser cannot parse ends the login on the first poll with a `PluginError` naming it, as it already did on selenium, and the post-submit wait ends at most one poll interval (0.5 seconds) past `timeout` however slowly the browser answers. On selenium a read that fails with an error other than a WebDriver one (urllib3's `MaxRetryError` once chromedriver is gone) fails the login with a `login_page_unreadable` warning instead of escaping `login()`.
+
+### Upgrading
+
+1. **Correction to the 1.15.0 Upgrading note, item 5, which prescribes `gp session clear base` once after the first labelled login.** Two caveats it did not carry, in the order to act on them. First, anything that reads the bare slot by its exact name, outside graftpunk's resolution (a worker that builds `sessions/<name>/session.pickle` from a fixed key, for example), stops working once the slot is cleared, and a reader that answers a missing session with an empty cookie header rather than an error fails without a sign; move such readers to the labelled name, or to `load_session_for_api`, which resolves, before clearing. Second, `gp session clear <name>` asks for confirmation unless `--force` is given, so where it runs unattended (cron, a container) write `gp session clear base --force`. The `session_bare_slot_shadows_labelled` warning's hint and [How it works](docs/HOW_IT_WORKS.md#multi-account-sessions) now say both.
+2. **A nodriver plugin whose `success` selector the browser cannot parse now raises `PluginError` from `login()` on the first poll.** In 1.42.5 that login waited out `timeout` and ended in a `login_signal_timeout` warning. The message names the selector: `LoginConfig.success is not a valid CSS selector: '<selector>'`.
+3. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Changed
+
+- **The README's examples use `mybank.example`** (#211), so the recording walk-through's `--no-session` run is filed under `mybank`, the name graftpunk infers from the host, and every later command names it. The `gp config` example shows a generic `your-secret-tool read` command and says any command that prints the value works, as the plugin developer guide does.
+- **`resolve_run` in `graftpunk.cli.observe_commands` takes no `base_dir` keyword** (#207). It always reads the module's `OBSERVE_BASE_DIR`; the keyword existed only for tests. `setup_observe_session` imports its graftpunk names at module level; `nodriver` and `graftpunk.session` stay deferred because both need the browser extra.
+
+### Fixed
+
+- **A malformed `success` selector on nodriver fails the login at once** (#205). nodriver 0.48.1 reports it with the same generic CDP error as a node that went away mid-navigation, so when the element query raises, the poll asks the page whether `document.querySelector` throws a `SyntaxError` for the selector, and only a yes ends the login. See Upgrading item 2.
+- **A selenium read that fails with a non-WebDriver error no longer escapes `login()`** (#205). The poll and the grace window treat it as an unreadable tick, as the nodriver backend already did.
+- **The nodriver post-submit wait keeps its deadline** (#205). A read still running at the deadline is abandoned, and the deadline tick gets one poll interval of its own, so a browser that answers slowly or not at all ends the wait at most 0.5 seconds past `timeout`. The grace window and the document-readiness wait are bounded the same way. A selenium read is a blocking WebDriver call and still runs to completion.
+- **The clear the bare-slot warning advises says what it breaks and how to run it unattended** (#198). See Upgrading item 1.
+- **The test suite passes with `FORCE_COLOR=1`** (#200). Assertions on CLI output, a nested pytest's report, and rendered log lines compare ANSI-stripped text; log assertions read the `captured_logs` fixture instead of stderr or a hand-made `structlog.reset_defaults()`; and the termination-signal tests' children reset SIGTERM and SIGHUP to the default first, since a test process that ignored either signal made those tests fail.
+
 ## [1.42.5] - 2026-11-13
 
 This is a patch release of two fixes. `CommandContext.request_json` and `request_text` raise `RateLimitedError` on a 429, with the wait from a `Retry-After` header when the response carries one, and `SiteServerError` on a 500, 502, 503 or 504, each with its own advice, and `HTTPStatusError` (carrying `status`) on any other 4xx or 5xx except 401 and 403; a `requests.HTTPError` a command lets escape, and a token page that fails, are reported with the same advice (#203). `gp plugin add-command` and `gp plugin upgrade` decide which imports are first party from the project's own ruff `src` setting, from a root `.ruff.toml` or `ruff.toml` when there is one, from the nearest ancestor's settings when the project has none, and through `extend`, the way ruff does (#219). Items 1 to 3 below are output or behaviour a working caller sees change after the upgrade, and item 4 is about upgrading itself. Each compares against 1.42.4.
