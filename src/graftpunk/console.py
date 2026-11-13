@@ -13,6 +13,8 @@ from pathlib import Path
 
 from rich.console import Console
 
+from graftpunk._safe_text import visible_text
+
 # emoji=False on every graftpunk Console and on each helper's print: a message
 # relays a site's text or a user's term, and Rich would draw a ``:word:`` token
 # in it as an emoji (#291).
@@ -46,20 +48,6 @@ def stream_is_tty(console: Console) -> bool:
 
 # Plugins imported the private name before stream_is_tty was public (#284).
 _stream_is_tty = stream_is_tty
-
-
-def visible_text(text: str) -> str:
-    """*text* with each lone surrogate as U+FFFD, and unchanged otherwise.
-
-    ``json.loads('"\\\\ud800"')`` makes such a string. No UTF-8 file or stream
-    can hold a lone surrogate, so writing one raised ``UnicodeEncodeError``. A
-    high and low surrogate in order become the character they encode.
-    """
-    try:
-        text.encode("utf-8")
-    except UnicodeEncodeError:
-        return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
-    return text
 
 
 def write_raw(text: str, console: Console, output_path: str = "") -> None:

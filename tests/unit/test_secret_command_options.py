@@ -2849,3 +2849,165 @@ class TestLoggingNeverRaises:
             assert line["timestamp"].startswith("20")
         else:
             assert re.search(r"^\d{4}-\d\d-\d\dT", text)
+
+
+_NON_ASCII_SECRET = "p\u00e4ssw\u00f6rd"  # noqa: S105 - a test secret
+
+
+class _StrRaises:
+    def __str__(self) -> str:
+        raise RuntimeError("no str")
+
+    def __repr__(self) -> str:
+        return "StrRaises()"
+
+
+def _escaped_forms(secret: str) -> list[str]:
+    """The forms ``%r`` of bytes and ``%a`` write a non-ASCII secret in."""
+    return [
+        repr(secret.encode())[2:-1],
+        ascii(secret)[1:-1],
+        secret,
+    ]
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+class TestNoSecretInAFormattedMessage:
+    """Round 2 formatted a ``%`` message from the raw arguments and scrubbed
+    the text, so ``%r`` of bytes and ``%a`` wrote a non-ASCII secret as escape
+    sequences the text scrub did not match. The message is formatted from the
+    scrubbed arguments now."""
+
+    def _log(self, fmt: str, event: str, *args: Any) -> str:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([_NON_ASCII_SECRET, "482", SCOPE_KEY]):
+            get_logger("t").warning(event, *args)
+        return ""
+
+    @pytest.mark.parametrize(
+        ("event", "args"),
+        [
+            pytest.param("raw %r", (_NON_ASCII_SECRET.encode(),), id="percent-r-bytes"),
+            pytest.param("pw %a", (_NON_ASCII_SECRET,), id="percent-a"),
+            pytest.param("pw %s", (_NON_ASCII_SECRET,), id="percent-s"),
+            pytest.param(
+                "pw %r",
+                ([_NON_ASCII_SECRET.encode(), " " + _NON_ASCII_SECRET],),
+                id="percent-r-list",
+            ),
+            pytest.param("n %d of %r", (14821, _NON_ASCII_SECRET.encode()), id="percent-d-and-r"),
+            pytest.param(
+                "%(who)s and %(pw)r",
+                ({"who": SCOPE_KEY, "pw": _NON_ASCII_SECRET.encode()},),
+                id="mapping",
+            ),
+            pytest.param(
+                "%s%s", (_NON_ASCII_SECRET[:4], _NON_ASCII_SECRET[4:]), id="split-across-two"
+            ),
+        ],
+    )
+    def test_redacted(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, event: str, args: tuple[Any, ...]
+    ) -> None:
+        self._log(fmt, event, *args)
+        err = capsys.readouterr().err
+        raw = (
+            err.encode("utf-8").decode("unicode_escape", errors="replace") if fmt == "json" else err
+        )
+        for form in _escaped_forms(_NON_ASCII_SECRET):
+            assert form not in err, form
+            assert form not in raw, form
+        assert "482" not in err
+        assert SCOPE_KEY not in err
+        assert REDACTED in err
+
+    def test_percent_d_of_a_number_whose_text_holds_the_secret(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        self._log(fmt, "fetched %d rows, %s", 14821, 14821)
+        err = capsys.readouterr().err
+        assert f"fetched 1{REDACTED}1 rows, 1{REDACTED}1" in err
+
+
+_BAD_FORMATS: list[Any] = [
+    pytest.param("%d %d", (1,), "TypeError", id="too-few-arguments"),
+    pytest.param("n %d", (1, 2), "TypeError", id="too-many-arguments"),
+    pytest.param("n", ("x",), "TypeError", id="no-conversion"),
+    pytest.param("n %d", ("x",), "TypeError", id="percent-d-of-a-string"),
+    pytest.param("n %y", (1,), "ValueError", id="unknown-conversion"),
+    pytest.param("%(k)s", ({"z": 1},), "KeyError", id="missing-mapping-key"),
+    pytest.param("n %d", (10**5000,), "ValueError", id="int-past-4300-digits"),
+    pytest.param("v %s", (_StrRaises(),), "RuntimeError", id="str-raises"),
+]
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+@pytest.mark.parametrize("scoped", [False, True], ids=["outside-scope", "inside-scope"])
+class TestABadFormatNeverRaises:
+    """structlog's bound logger interpolated ``%`` arguments itself and raised
+    out of the log call on a bad format, inside a secret scope or not. The
+    line now carries the format string, a note, and the arguments' reprs."""
+
+    @pytest.mark.parametrize(("event", "args", "error"), _BAD_FORMATS)
+    def test_the_line_renders(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        fmt: str,
+        scoped: bool,
+        event: str,
+        args: tuple[Any, ...],
+        error: str,
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        log = get_logger("t")
+        if scoped:
+            with log_secrets([SCOPE_KEY]):
+                log.warning(event, *args)
+        else:
+            log.warning(event, *args)
+        err = strip_ansi(capsys.readouterr().err)
+        if scoped and error == "RuntimeError":
+            # The scope's scrub reads the value's repr when its str raises,
+            # so the format succeeds with that text.
+            assert "v StrRaises()" in err
+            return
+        assert event in err
+        assert "formatting failed" in err
+        assert error in err
+
+    def test_a_secret_in_a_failed_format_is_redacted(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        if not scoped:
+            pytest.skip("redaction applies inside a scope")
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([_NON_ASCII_SECRET]):
+            get_logger("t").warning("%d %d", _NON_ASCII_SECRET.encode())
+        err = capsys.readouterr().err
+        for form in _escaped_forms(_NON_ASCII_SECRET):
+            assert form not in err
+        assert "formatting failed" in err
+
+    def test_the_log_method_takes_its_level_first(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool
+    ) -> None:
+        import logging as stdlib_logging
+
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        log = get_logger("t")
+        if scoped:
+            with log_secrets([SCOPE_KEY]):
+                log.log(stdlib_logging.WARNING, "n %d of %s", 3, SCOPE_KEY)
+        else:
+            log.log(stdlib_logging.WARNING, "n %d of %s", 3, "x")
+        err = strip_ansi(capsys.readouterr().err)
+        assert "n 3 of " in err
+        assert SCOPE_KEY not in err

@@ -29,6 +29,8 @@ import structlog
 import structlog._native as _structlog_native
 from structlog.typing import EventDict, WrappedLogger
 
+from graftpunk._safe_text import safe_repr, safe_text
+
 
 def add_log_level(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
     """Add the log level to the event dict."""
@@ -604,29 +606,103 @@ def _scrubbing_call(logger: GraftpunkLogger, name: str, secrets: tuple[str, ...]
                 kwargs["exception"] = "".join(traceback.format_exception(*exc_info)).rstrip("\n")
             if base == "exception":
                 target = "aerror" if is_async else "error"
-        return getattr(bound, target)(*scrub(_interpolated(args)), **scrub(kwargs))
+        line = _formatted(args, _event_index(name), scrub)
+        return getattr(bound, target)(*scrub(line), **scrub(kwargs))
 
     return call
 
 
-def _interpolated(args: tuple[Any, ...]) -> tuple[Any, ...]:
-    """``(event, *positional)`` as the one formatted message, as structlog's
-    bound loggers interpolate it (a single non-empty mapping by name), so the
-    scrub reads the message as it will print.
+def _event_index(name: str) -> int:
+    """Where the event sits in a log method's positional arguments: after the
+    level for ``log`` and ``alog``, first for every other method."""
+    return 1 if name in ("log", "alog") else 0
 
-    Scrubbing the arguments one by one turned a number whose digits hold a
-    secret into a string, and ``%d`` then raised ``TypeError`` out of the log
-    call. A format that fails here is left to the logger, as before.
+
+def _percent(event: Any, positional: tuple[Any, ...]) -> str:
+    """``event % positional`` as structlog's bound loggers interpolate it: a
+    single non-empty mapping formats by name."""
+    if not isinstance(event, str):
+        raise TypeError(f"the event is a {type(event).__name__}, not a format string")
+    if len(positional) == 1 and isinstance(positional[0], Mapping) and positional[0]:
+        return event % positional[0]
+    return event % positional
+
+
+def _unformatted(event: Any, positional: tuple[Any, ...], error: BaseException) -> str:
+    """The line for a ``%`` format that fails: the format string as written,
+    a note naming the failure, and each argument's repr."""
+    shown = ", ".join(safe_repr(value) for value in positional)
+    return (
+        f"{safe_text(event)} [formatting failed: {type(error).__name__}: "
+        f"{safe_text(error)}; arguments: {shown}]"
+    )
+
+
+def _plain_number(raw: Any, scrubbed: Any) -> Any:
+    """*raw* as a number carrying the scrubbed text, when the scrub turned it
+    into text (its digits held a secret), else *scrubbed*: ``%d`` and ``%f``
+    then take the plain number, which writes only ASCII digits, so the text
+    scrub of the formatted message finds the secret in it; ``%s`` and ``%r``
+    take the scrubbed text."""
+    if not isinstance(scrubbed, str) or isinstance(raw, bool):
+        return scrubbed
+    if isinstance(raw, int):
+        return _FrozenInt(int.__int__(raw), scrubbed, scrubbed)
+    if isinstance(raw, float):
+        return _FrozenFloat(float.__float__(raw), scrubbed, scrubbed)
+    if type(raw) in (decimal.Decimal, fractions.Fraction):
+        return raw
+    return scrubbed
+
+
+def _formatted(
+    args: tuple[Any, ...], index: int, scrub: Callable[[Any], Any] | None = None
+) -> tuple[Any, ...]:
+    """A log method's arguments with the event and its ``%`` arguments as the
+    one formatted message, so structlog's logger has nothing left to
+    interpolate and never raises on a bad format.
+
+    With *scrub* (inside a secret scope) the message is formatted from the
+    scrubbed arguments, so an escaped form of a secret (``%r`` of bytes, ``%a``)
+    is never written. If that fails, which a number whose digits held a secret
+    makes it do under ``%d``, such numbers are put back as plain numbers and the
+    message is formatted again. A format that still fails, or fails without a
+    scope, is written by :func:`_unformatted`. The message is scrubbed last in
+    every case.
     """
-    if len(args) < 2 or not isinstance(args[0], str):
+    if len(args) <= index + 1:
         return args
-    event, positional = args[0], args[1:]
+    head, event, positional = args[:index], args[index], args[index + 1 :]
+    if scrub is None:
+        try:
+            message = _percent(event, positional)
+        except Exception as error:  # noqa: BLE001 - a log call must not raise
+            message = _unformatted(event, positional, error)
+        return (*head, message)
+    scrubbed = scrub(positional)
+    if not isinstance(scrubbed, tuple):
+        scrubbed = tuple(scrub(value) for value in positional)
     try:
-        if len(positional) == 1 and isinstance(positional[0], Mapping) and positional[0]:
-            return (event % positional[0],)
-        return (event % positional,)
-    except Exception:  # noqa: BLE001 - the logger reports or raises as it did
-        return args
+        message = _percent(event, scrubbed)
+    except Exception:  # noqa: BLE001 - try again with plain numbers
+        numbers = tuple(map(_plain_number, positional, scrubbed))
+        try:
+            message = _percent(event, numbers)
+        except Exception as error:  # noqa: BLE001 - a log call must not raise
+            message = _unformatted(event, scrubbed, error)
+    return (*head, scrub(message))
+
+
+def _formatting_call(method: Any, index: int) -> Any:
+    """*method* with its ``%`` arguments formatted by :func:`_formatted`, unless
+    structlog's level filter drops the line."""
+    if getattr(method, "__func__", method) in _DROPPED_LINE_METHODS:
+        return method
+
+    def call(*args: Any, **kwargs: Any) -> Any:
+        return method(*_formatted(args, index), **kwargs)
+
+    return call
 
 
 def _unchanged(text: str) -> str:
@@ -876,6 +952,8 @@ class GraftpunkLogger:
         secrets = _current_secrets()
         if secrets and is_log_method:
             method = _scrubbing_call(self, name, secrets)
+        elif is_log_method:
+            method = _formatting_call(getattr(self._resolve(), name), _event_index(name))
         else:
             method = getattr(self._resolve(), name)
         # redacted_values() rewrites its pairs first; log_secrets() then
