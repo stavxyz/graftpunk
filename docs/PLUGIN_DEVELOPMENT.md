@@ -1620,9 +1620,11 @@ Both normalise a `params` or `data` mapping before sending it:
 - `HTTPStatusError` on any other 4xx or 5xx, with the message
   `GET /api/orders/42 returned 404`.
 
-`RateLimitedError` and `SiteServerError` are `HTTPStatusError` subclasses, and
-all three carry `status`, `method` and `path`, so a command can treat one status
-differently without reading the message:
+These three are graftpunk 1.42.5 and later; 1.42.4 and earlier raise a plain
+`CommandError` for every one of those statuses. `RateLimitedError` and
+`SiteServerError` are `HTTPStatusError` subclasses, and all three carry
+`status`, `method` and `path`, so a command can treat one status differently
+without reading the message:
 
 ```python
 from graftpunk.exceptions import CommandError, HTTPStatusError

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.5] - 2026-11-13
+
+This is a patch release of two fixes. `CommandContext.request_json` and `request_text` raise `RateLimitedError` on a 429, with the wait from a `Retry-After` header when the response carries one, and `SiteServerError` on a 500, 502, 503 or 504, each with its own advice, and `HTTPStatusError` (carrying `status`) on any other 4xx or 5xx except 401 and 403 (#203). `gp plugin add-command` and `gp plugin upgrade` decide which imports are first party from the project's own ruff `src` setting, and from a root `.ruff.toml` or `ruff.toml` when there is one, the way ruff does (#219). Items 1 and 2 below are output or behaviour a working caller sees change after the upgrade, and item 3 is about upgrading itself. Each compares against 1.42.4.
+
+### Upgrading
+
+1. **A 429, 500, 502, 503 or 504 from `request_json` or `request_text` raises a `CommandError` subclass with a longer message.** A caller that catches `CommandError` catches all three new classes unchanged, and `gp <site> <command>` still prints one error line and exits 1. The message keeps its `GET /api/orders returned 503` start and adds advice: `: the site is having trouble. Try again later.` for the four 5xx statuses, and `: the site is rate limiting requests.` followed by `Try again in 30 seconds.` (or `Wait a while and try again.` without a usable `Retry-After`) for a 429. Code that read the status back out of the message with a pattern anchored at its end (` returned (\d+)$`) no longer matches those five statuses; read `error.status` instead. Every other 4xx or 5xx keeps the 1.42.4 message, and 401 and 403 still raise `SessionRejectedError`. Neither method retries.
+2. **`gp plugin add-command` and `gp plugin upgrade` can place an import in a different section in a project that sets ruff's `src`, or has a `.ruff.toml` or `ruff.toml` at its root.** With `[tool.ruff] src = ["lib"]`, a package under `lib/` is now first party and a directory at the project root no longer is, as in ruff; 1.42.4 always scanned the project root and `src/`, so `ruff check` then reported I001. A root `.ruff.toml` or `ruff.toml` is read in place of `[tool.ruff]`, as ruff reads it. A project with neither sees no change, except that a `*.pyi` stub at the project root or under `src/` is first party, as it is to ruff.
+3. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite` (`uv tool upgrade graftpunk-lite`, `pipx upgrade graftpunk-lite`, `pip install -U graftpunk-lite`); `pip install -U graftpunk` there would install the full distribution over the same files.
+
+### Added
+
+- **`HTTPStatusError`, `RateLimitedError` and `SiteServerError`** in `graftpunk.exceptions` (#203). `HTTPStatusError` is a `CommandError` carrying `status`, `method` and `path`; the other two subclass it. `RateLimitedError.retry_after` is the wait in whole seconds, read from a `Retry-After` header given as seconds or as an HTTP date, or `None`. A `Retry-After` value that is neither, every other header and the response body are never put in the message.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.35 and still needs graftpunk 1.42.2 or later** (#203). Only the guide it ships changed: it lists the three new exceptions, shows a command handling one status through `error.status`, and says they need graftpunk 1.42.5. The skill runs nothing that depends on them, so the floor stays.
+
+### Fixed
+
+- **A rate limit or a site outage no longer reads like a wrong path** (#203). See Upgrading item 1.
+- **Imports placed by `add-command` and `upgrade` follow the project's own ruff `src`** (#219). See Upgrading item 2. ruff accepts `src` only at the top level of its settings (`[tool.ruff]`, or the top of a `ruff.toml`) and refuses it under `lint`; each entry has `~` and environment variables expanded, is taken from the project root, and is expanded as a glob, so `src = ["packages/*"]` names every package directory. A settings file named by `extend` is not followed.
+
 ## [1.42.4] - 2026-11-13
 
 This is a patch release of three fixes and a test fix. A save or load on a storage backend other than `local` no longer generates a session key it cannot share when the key file is missing: it raises `MissingEncryptionKeyError`, which names the file. A load reports any key it cannot obtain or that is malformed as the key problem it is, and only a key that fails to decrypt the session as an unreadable session, so a key problem never tells you to clear sessions. The library's session load and save functions and `GraftpunkClient` take the caller's key as `key=`; the browser login commands and a plugin's own `get_session` use the key file or Vault (#196). A bare-name load that lands on a bare slot with labelled siblings logs one warning, for one successful listing per name per process (#197). The config directory has one resolver: the settings, the session store, the session key and the workstation env file follow `GRAFTPUNK_CONFIG_DIR` as it is now, and plugin discovery keeps the directory it first read (#282). The real-process orphan test no longer loses its stand-in orphan to another test's sweep (#258). Items 1 to 4 below are output or behaviour a working caller sees change after the upgrade, and item 5 is about upgrading itself. Each compares against 1.42.3.
