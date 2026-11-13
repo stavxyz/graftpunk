@@ -564,8 +564,9 @@ name (`google`, `apple`, `facebook`, `microsoft`, `github`, `twitter`, `linkedin
 in", "Log on"; "design", "Blog" and `login-help` do not); else the only button
 in that range when it says `submit`; else the group's one button-like control
 when it is the first after the password. Otherwise the submit is a `GP-FILL`,
-as a missing username is. A button's text is read only to judge it and is never
-written into the plugin. Its username lookup and its extra fields end at the
+as a missing username is. A button's text is its content up to its own end tag,
+through any `div`, `p`, `span` or `label` inside it, and is read only to judge
+it, never written into the plugin. Its username lookup and its extra fields end at the
 first button-like control after the password (any `<button>`, or a submit,
 image, button, or reset input): that control is the submit when it is an
 explicit one, and otherwise the rule above decides; a username found nowhere

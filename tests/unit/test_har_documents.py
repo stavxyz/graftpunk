@@ -2634,3 +2634,62 @@ class TestTheScriptSubmitStaysInTheLoginFields:
         )
         assert form.fields == {"username": "#u", "password": "#p", "otp": "#otp"}
         assert form.submit is None
+
+
+class TestAButtonsTextInsideItsChildren:
+    """#375 round 3: a button's text runs to its own end tag, through block children."""
+
+    @pytest.mark.parametrize(
+        "button",
+        [
+            '<button id="go"><div class="label">Log in</div></button>',
+            '<button id="go"><p>Sign in</p></button>',
+            '<button id="go"><span><span>Log in</span></span></button>',
+            '<button id="go"><label>Sign in</label></button>',
+            '<button id="go"><div><svg></svg></div><div>Log in</div></button>',
+        ],
+        ids=["div", "p", "nested-span", "label", "icon-then-div"],
+    )
+    def test_a_sign_in_in_a_child_is_taken(self, button: str) -> None:
+        (form,) = extract_login_forms(
+            f'<div class="login">{_U}{_EYE}{button}</div>',
+            source=_SNAPSHOT_SOURCE,
+            snapshot=True,
+        )
+        assert form.submit == "#go"
+
+    def test_a_lone_button_whose_text_sits_in_a_div_is_taken(self) -> None:
+        (form,) = extract_login_forms(
+            f'<div class="login">{_U}<button id="go"><div>Continue</div></button></div>',
+            source=_SNAPSHOT_SOURCE,
+            snapshot=True,
+        )
+        assert form.submit == "#go"
+
+    def test_an_unclosed_button_stops_at_an_end_tag_outside_it(self) -> None:
+        """The wrapper's end tag closes the button a browser would close there, so
+        the Forgot password text after it is not the button's."""
+        (form,) = extract_login_forms(
+            f'<div class="login"><div>{_U}<button id="go">Sign in</div>'
+            "<span>Forgot password?</span></div>",
+            source=_SNAPSHOT_SOURCE,
+            snapshot=True,
+        )
+        assert form.submit == "#go"
+
+    def test_an_unclosed_button_stops_at_a_link(self) -> None:
+        (form,) = extract_login_forms(
+            f'<div class="login">{_U}<button id="go">Sign in<a href="/f">Forgot password?</a>'
+            "</div>",
+            source=_SNAPSHOT_SOURCE,
+            snapshot=True,
+        )
+        assert form.submit == "#go"
+
+    def test_a_childs_toggle_word_still_refuses_the_button(self) -> None:
+        (form,) = extract_login_forms(
+            f'<div class="login">{_U}<button id="eye"><div>Show password</div></button></div>',
+            source=_SNAPSHOT_SOURCE,
+            snapshot=True,
+        )
+        assert form.submit is None

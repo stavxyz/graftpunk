@@ -83,11 +83,10 @@ _ASCII_WHITESPACE_RE = re.compile(r"[\t\n\f\r ]+")
 _SNAPSHOT_REDACTION_MARK = "***redacted***"
 # The most of a button's text kept: enough for "Sign in to your account".
 _MAX_BUTTON_TEXT = 80
-# Start tags that never sit inside a button's text, so they end a button left
-# unclosed: interactive content and block containers.
-_ENDS_BUTTON_TEXT = frozenset(
-    {"a", "button", "input", "select", "textarea", "label", "form", "div", "p", "li", "section"}
-)
+# Start tags of interactive content, which never sits inside a button, so one
+# ends a button left unclosed. A div, p, span or label inside a button is part of
+# its text ("<button><div>Log in</div></button>", common in script-drawn pages).
+_ENDS_BUTTON_TEXT = frozenset({"a", "button", "input", "select", "textarea", "form"})
 
 
 def autofill_field_name(value: str) -> str:
@@ -364,8 +363,11 @@ class _DocumentParser(HTMLParser):
         # Inside <svg> or <math>, where "/>" closes an element; elsewhere a browser
         # ignores it on an element that is not void.
         self._foreign = 0
-        # The <button> whose content is being read, for its text.
+        # The <button> whose content is being read, for its text, and how many
+        # elements are open inside it: an end tag with none open closes an
+        # element the button sat in, so the button was left unclosed.
         self._button: _RawInput | None = None
+        self._button_depth = 0
 
     def _innermost_dialog(self) -> int | None:
         while self._dialogs and self._dialogs[-1] in self._closed:
@@ -385,9 +387,12 @@ class _DocumentParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {k: (v or "") for k, v in attrs}
-        if self._button is not None and tag in _ENDS_BUTTON_TEXT:
-            # A button left unclosed in recorded HTML: what follows is not its text.
-            self._button = None
+        if self._button is not None:
+            if tag in _ENDS_BUTTON_TEXT:
+                # A button left unclosed in recorded HTML: what follows is not its text.
+                self._button = None
+            elif tag not in _VOID_TAGS:
+                self._button_depth += 1
         if tag in ("svg", "math"):
             self._foreign += 1
         if tag not in _VOID_TAGS:
@@ -442,6 +447,7 @@ class _DocumentParser(HTMLParser):
             )
             if tag == "button":
                 self._button = raw_input
+                self._button_depth = 0
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
             raw_input.dialog = self._innermost_dialog()
@@ -479,8 +485,11 @@ class _DocumentParser(HTMLParser):
             button.text = (button.text + data)[:_MAX_BUTTON_TEXT]
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "button":
-            self._button = None
+        if self._button is not None:
+            if tag == "button" or self._button_depth == 0:
+                self._button = None
+            else:
+                self._button_depth -= 1
         if self._track_blocks:
             self._close_blocks(tag)
         if self._open_count.get(tag, 0) > 0:
