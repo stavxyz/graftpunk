@@ -576,6 +576,89 @@ class TestIncompleteSlots:
         finally:
             cache_mod._reset_session_storage_backend()
 
+    def test_gp_session_clear_by_name_removes_leftovers_and_prints_them(
+        self, tmp_path, monkeypatch
+    ):
+        """A slot holding only leftovers is cleared by name, each file printed (#382)."""
+        import typer
+        from typer.testing import CliRunner
+
+        from graftpunk import cache as cache_mod
+        from graftpunk.cli.session_commands import session_app
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        cache_mod._reset_session_storage_backend()
+        try:
+            backend = cache_mod._get_session_storage_backend()
+            slot = backend.base_dir / "myshop"
+            slot.mkdir(parents=True)
+            (slot / "metadata.json.pre-test2").write_text("{}")
+            (slot / "session.pickle.pre-test2").write_bytes(b"data")
+            app = typer.Typer()
+            app.add_typer(session_app, name="session")
+
+            result = CliRunner().invoke(
+                app, ["session", "clear", "myshop", "--force"], env={"COLUMNS": "200"}
+            )
+
+            assert result.exit_code == 0, result.output
+            assert "Removed 1 session(s):" in result.output
+            assert "myshop/metadata.json.pre-test2" in result.output
+            assert "myshop/session.pickle.pre-test2" in result.output
+            assert not slot.exists()
+        finally:
+            cache_mod._reset_session_storage_backend()
+
+    def test_leftovers_without_the_pair_are_not_a_session(self, storage, tmp_path):
+        """Hand-made copies in a slot directory never make a session (#382)."""
+        slot = tmp_path / "myshop"
+        slot.mkdir()
+        (slot / "metadata.json.pre-test2").write_text("{}")
+        (slot / "session.pickle.pre-test2").write_bytes(b"data")
+
+        assert storage.list_sessions() == []
+        assert storage.incomplete_sessions() == ["myshop"]
+
+    def test_a_metadata_only_slot_is_incomplete(self, storage, tmp_path):
+        slot = tmp_path / "myshop"
+        slot.mkdir()
+        (slot / "metadata.json").write_text("{}")
+
+        assert storage.list_sessions() == []
+        assert storage.incomplete_sessions() == ["myshop"]
+
+    def test_remove_session_deletes_and_reports_every_file(self, storage, tmp_path):
+        slot = tmp_path / "myshop"
+        (slot / "old").mkdir(parents=True)
+        for name in ("metadata.json", "session.pickle", "metadata.json.pre-test2"):
+            (slot / name).write_text("x")
+        (slot / "old" / "x.bak").write_text("x")
+
+        removed = storage.remove_session("myshop")
+
+        assert removed == [
+            "myshop/metadata.json",
+            "myshop/metadata.json.pre-test2",
+            "myshop/old/x.bak",
+            "myshop/session.pickle",
+        ]
+        assert not slot.exists()
+
+    def test_remove_session_of_an_empty_directory_reports_it(self, storage, tmp_path):
+        (tmp_path / "myshop").mkdir()
+
+        assert storage.remove_session("myshop") == ["myshop/"]
+        assert not (tmp_path / "myshop").exists()
+
+    def test_remove_session_of_a_legacy_file_reports_it(self, storage, tmp_path):
+        (tmp_path / "myshop.session.pickle").write_bytes(b"data")
+
+        assert storage.remove_session("myshop") == ["myshop.session.pickle"]
+
+    def test_remove_session_of_nothing_is_empty(self, storage):
+        assert storage.remove_session("myshop") == []
+        assert storage.delete_session("myshop") is False
+
     def test_a_directory_with_only_a_pickle_is_not_listed(self, storage, tmp_path):
         """What a save interrupted before its metadata landed leaves is not a session (#293)."""
         half = tmp_path / "half-provider"

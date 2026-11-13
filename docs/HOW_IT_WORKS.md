@@ -375,13 +375,16 @@ graftpunk leaves `http.cookiejar.DefaultCookiePolicy` as it found it. HTTPie rep
 Controlled by `GRAFTPUNK_STORAGE_BACKEND`:
 - `"local"` (default) — Filesystem storage
 - `"supabase"` — Cloud storage via Supabase
+- `"s3"`: S3-compatible storage (AWS S3, Cloudflare R2, MinIO)
+
+Each backend keeps a session in a slot named after it (`<name>/` locally and on Supabase, `sessions/<name>/` on S3) holding `session.pickle` and `metadata.json`. A slot is a session only while its `metadata.json` exists (locally, its `session.pickle` too). Anything else stored under the name, such as a hand-made backup copy, never makes it a session, so it is never listed, never a candidate when resolving accounts, and never the cause of an `AmbiguousSessionError` ([#382](https://github.com/stavxyz/graftpunk/issues/382)). Clearing a session deletes everything under its slot and prints each key or path it deleted. A slot holding objects but no complete session appears in `gp session clear --all` as "incomplete, no metadata", and `gp session clear <name>` removes it too.
 
 ### CLI Commands
 
 ```bash
 gp session list              # List cached sessions
 gp session show <session>    # Session metadata (domain, cookies, expiry)
-gp session clear [session]   # Remove one or all sessions (--all for all)
+gp session clear [session]   # Remove one or all sessions (--all for all), and all their files
 gp session export <session>  # Export cookies to HTTPie session format
 gp session use <session>     # Set active session for subsequent commands
 gp session unset             # Clear active session

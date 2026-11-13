@@ -12,12 +12,11 @@ from rich.table import Table
 from rich.text import Text
 
 from graftpunk import (
-    clear_session_cache,
     get_session_metadata,
     list_sessions_with_metadata,
     load_session,
 )
-from graftpunk.cache import list_incomplete_sessions
+from graftpunk.cache import list_incomplete_sessions, remove_session_objects
 from graftpunk.cli.errors import needs_browser_stack
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.exceptions import (
@@ -320,7 +319,7 @@ def session_clear(
         typer.Option("--force", "-f", help="Skip confirmation prompt"),
     ] = False,
 ) -> None:
-    """Remove cached session(s).
+    """Remove cached session(s), with every object stored under each one.
 
     Clear by session name, domain, or all:
 
@@ -364,16 +363,7 @@ def session_clear(
                 console.print("[dim]Cancelled[/dim]")
                 return
 
-        removed = []
-        for s in [*all_metadata, *incomplete]:
-            result = clear_session_cache(
-                s["name"],
-                backend_override=backend_override,
-            )
-            if result:
-                removed.append(s)
-
-        _print_removed(removed)
+        _print_removed(_remove_each([*all_metadata, *incomplete], backend_override))
         return
 
     assert target is not None
@@ -395,19 +385,14 @@ def session_clear(
                 console.print("[dim]Cancelled[/dim]")
                 return
 
-        removed = []
-        for s in matches:
-            result = clear_session_cache(
-                s["name"],
-                backend_override=backend_override,
-            )
-            if result:
-                removed.append(s)
-
-        _print_removed(removed)
+        _print_removed(_remove_each(matches, backend_override))
     else:
         target = resolve_session_name_or_exit(target, backend_override=backend_override)
         match = next((s for s in all_metadata if s["name"] == target), None)
+        if not match and target in list_incomplete_sessions(backend_override=backend_override):
+            # Objects under the name with no metadata: not a session, but
+            # clearing it by name is how they go away (#382).
+            match = {"name": target, "domain": "incomplete, no metadata"}
 
         if not match:
             console.print(f"[red]Session '{escape(str(target))}' not found[/red]")
@@ -421,8 +406,7 @@ def session_clear(
                 console.print("[dim]Cancelled[/dim]")
                 return
 
-        clear_session_cache(target, backend_override=backend_override)
-        _print_removed([match])
+        _print_removed(_remove_each([match], backend_override))
 
 
 @session_app.command("use")
@@ -457,13 +441,25 @@ def session_unset() -> None:
     console.print("[green]Active session cleared[/green]")
 
 
-def _print_removed(removed: list[dict]) -> None:
-    """Print the list of removed sessions."""
+def _remove_each(slots: list[dict], backend_override: str | None) -> list[tuple[dict, list[str]]]:
+    """Delete everything stored under each slot; pair each removed slot with what went."""
+    removed = []
+    for slot in slots:
+        objects = remove_session_objects(slot["name"], backend_override=backend_override)
+        if objects:
+            removed.append((slot, list(objects)))
+    return removed
+
+
+def _print_removed(removed: list[tuple[dict, list[str]]]) -> None:
+    """Print each removed session and every object deleted with it."""
     if not removed:
         console.print("[dim]No sessions removed[/dim]")
         return
 
     console.print(f"\n[green]Removed {len(removed)} session(s):[/green]")
-    for s in removed:
+    for s, objects in removed:
         domain = escape(str(s.get("domain") or "no domain"))
         console.print(f"  - {escape(str(s.get('name', '?')))} ({domain})")
+        for key in objects:
+            console.print(f"      [dim]{escape(str(key))}[/dim]")

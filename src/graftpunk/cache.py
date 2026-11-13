@@ -1003,14 +1003,23 @@ def list_sessions_with_metadata(
 
 
 def list_incomplete_sessions(backend_override: str | None = None) -> list[str]:
-    """Slots holding a session pickle but no metadata, which no listing shows.
+    """Slots holding objects but no complete session, which no listing shows.
 
-    A crash during a save, or an older release, can leave one on the local
-    backend; other backends report none. Clearing every session removes them.
+    A crash during a save, an older release, or a hand-made copy beside a
+    slot's files can leave one. Clearing every session removes them.
     """
     backend = _get_session_storage_backend(backend_override=backend_override)
-    incomplete = getattr(backend, "incomplete_sessions", None)
-    return list(incomplete()) if callable(incomplete) else []
+    return backend.incomplete_sessions()
+
+
+def remove_session_objects(name: str, backend_override: str | None = None) -> list[str]:
+    """Delete everything stored under the slot *name*; return the keys or paths deleted.
+
+    Unlike :func:`clear_session_cache`, which returns session names, this
+    reports each object, so a caller can show that nothing was left behind.
+    """
+    backend = _get_session_storage_backend(backend_override=backend_override)
+    return backend.remove_session(name)
 
 
 def clear_session_cache(

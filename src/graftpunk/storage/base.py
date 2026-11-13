@@ -205,13 +205,32 @@ class SessionStorageBackend(Protocol):
     def list_sessions(self) -> list[str]:
         """List all session names.
 
+        A slot is a session only while its metadata exists; other objects
+        stored under the slot's name never make it one.
+
         Returns:
             Sorted list of session names
         """
         ...
 
+    def incomplete_sessions(self) -> list[str]:
+        """Slots holding objects but no complete session, sorted.
+
+        :meth:`list_sessions` leaves them out; clearing every session removes
+        them.
+        """
+        ...
+
+    def remove_session(self, name: str) -> list[str]:
+        """Delete everything stored under the slot *name*.
+
+        Returns:
+            The keys or paths deleted; empty when there was nothing
+        """
+        ...
+
     def delete_session(self, name: str) -> bool:
-        """Delete a session.
+        """Delete everything stored under the slot *name*.
 
         Args:
             name: Session identifier

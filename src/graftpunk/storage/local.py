@@ -425,11 +425,12 @@ class LocalSessionStorage:
             return []
 
     def incomplete_sessions(self) -> list[str]:
-        """Slot directories holding a pickle but no metadata.
+        """Slot directories missing their pickle or their metadata.
 
-        A crash during a save, or an older release, can leave one. They are
-        not sessions (:meth:`list_sessions` leaves them out, and loading one
-        fails), but clearing every session removes them too.
+        A crash during a save, an older release, or a hand-made copy can
+        leave one. They are not sessions (:meth:`list_sessions` leaves them
+        out, and loading one fails), but clearing every session removes them
+        too.
         """
         if not self.base_dir.exists():
             return []
@@ -438,15 +439,52 @@ class LocalSessionStorage:
                 item.name
                 for item in self.base_dir.iterdir()
                 if item.is_dir()
-                and (item / "session.pickle").exists()
-                and not (item / "metadata.json").exists()
+                and not item.name.startswith(".")
+                and not ((item / "session.pickle").exists() and (item / "metadata.json").exists())
             )
         except OSError as exc:
             LOG.error("failed_to_list_incomplete_sessions", error=str(exc))
             return []
 
+    def remove_session(self, name: str) -> list[str]:
+        """Delete the slot directory and everything in it; return the paths deleted.
+
+        Paths are relative to the sessions directory. A legacy flat-file
+        session is deleted when there is no directory. Empty when nothing was
+        there or the delete failed (logged).
+        """
+        session_dir = self.base_dir / name
+
+        if session_dir.is_dir():
+            try:
+                files = sorted(
+                    str(path.relative_to(self.base_dir))
+                    for path in session_dir.rglob("*")
+                    if not path.is_dir()
+                )
+                shutil.rmtree(session_dir)
+            except OSError as exc:
+                LOG.error("failed_to_delete_session", name=name, error=str(exc))
+                return []
+            LOG.info("session_delete_completed", name=name, structure="directory", paths=files)
+            # An empty directory is still a slot the caller asked to remove.
+            return files or [f"{name}/"]
+
+        # Try legacy flat file structure
+        old_path = self.base_dir / f"{name}.session.pickle"
+        if old_path.exists():
+            try:
+                old_path.unlink()
+            except OSError as exc:
+                LOG.error("failed_to_delete_session", name=name, error=str(exc))
+                return []
+            LOG.info("session_delete_completed", name=name, structure="flat_file")
+            return [old_path.name]
+
+        return []
+
     def delete_session(self, name: str) -> bool:
-        """Delete a session.
+        """Delete a session, with every file in its slot directory.
 
         Args:
             name: Session identifier
@@ -454,29 +492,7 @@ class LocalSessionStorage:
         Returns:
             True if deleted, False if not found
         """
-        session_dir = self.base_dir / name
-
-        if session_dir.is_dir():
-            try:
-                shutil.rmtree(session_dir)
-                LOG.info("session_delete_completed", name=name, structure="directory")
-                return True
-            except OSError as exc:
-                LOG.error("failed_to_delete_session", name=name, error=str(exc))
-                return False
-
-        # Try legacy flat file structure
-        old_path = self.base_dir / f"{name}.session.pickle"
-        if old_path.exists():
-            try:
-                old_path.unlink()
-                LOG.info("session_delete_completed", name=name, structure="flat_file")
-                return True
-            except OSError as exc:
-                LOG.error("failed_to_delete_session", name=name, error=str(exc))
-                return False
-
-        return False
+        return bool(self.remove_session(name))
 
     def get_session_metadata(self, name: str) -> SessionMetadata | None:
         """Get session metadata without loading the full session.

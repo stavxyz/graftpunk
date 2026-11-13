@@ -86,19 +86,6 @@ class TestSupabaseSessionStorage:
         assert sessions == []
 
     @patch("supabase.create_client")
-    def test_list_sessions_with_results(self, mock_create_client):
-        """Test listing sessions with results."""
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_client.storage.from_.return_value.list.return_value = [
-            {"name": "session-b"},
-            {"name": "session-a"},
-        ]
-
-        sessions = storage.list_sessions()
-        assert sessions == ["session-a", "session-b"]
-
-    @patch("supabase.create_client")
     def test_list_sessions_none_result(self, mock_create_client):
         """Test listing sessions when result is None."""
         storage, mock_client = _make_storage(mock_create_client)
@@ -123,20 +110,6 @@ class TestSupabaseSessionStorage:
 
         with pytest.raises(StorageError, match="Failed to list sessions"):
             storage.list_sessions()
-
-    @patch("supabase.create_client")
-    def test_list_sessions_filters_hidden_files(self, mock_create_client):
-        """Test that hidden files/folders are filtered out."""
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_client.storage.from_.return_value.list.return_value = [
-            {"name": "session-a"},
-            {"name": ".emptyFolderPlaceholder"},
-            {"name": "session-b"},
-        ]
-
-        sessions = storage.list_sessions()
-        assert sessions == ["session-a", "session-b"]
 
     @patch("supabase.create_client")
     def test_get_session_metadata_not_found(self, mock_create_client):
@@ -199,75 +172,6 @@ class TestSupabaseSessionStorage:
 
         with pytest.raises(StorageError, match="Failed to get metadata"):
             storage.get_session_metadata("test")
-
-    @patch("supabase.create_client")
-    def test_delete_session(self, mock_create_client):
-        """Test deleting a session."""
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_storage_bucket = MagicMock()
-        mock_client.storage.from_.return_value = mock_storage_bucket
-        mock_storage_bucket.remove.return_value = None
-
-        result = storage.delete_session("test-session")
-        assert result is True
-
-        # Should have called remove for both session.pickle and metadata.json
-        assert mock_storage_bucket.remove.call_count == 2
-
-    @patch("supabase.create_client")
-    def test_delete_session_one_file_fails(self, mock_create_client):
-        """Test delete when one file removal fails but other succeeds."""
-        from storage3.exceptions import StorageApiError
-
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_storage_bucket = MagicMock()
-        mock_client.storage.from_.return_value = mock_storage_bucket
-        # First call succeeds, second fails
-        mock_storage_bucket.remove.side_effect = [
-            None,
-            StorageApiError("Not found", code="404", status=404),
-        ]
-
-        result = storage.delete_session("test-session")
-        # Still returns True because at least one file was deleted
-        assert result is True
-
-    @patch("supabase.create_client")
-    def test_delete_session_not_found_still_succeeds(self, mock_create_client):
-        """Test delete returns True even when files don't exist (404s are ignored)."""
-        from storage3.exceptions import StorageApiError
-
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_storage_bucket = MagicMock()
-        mock_client.storage.from_.return_value = mock_storage_bucket
-        mock_storage_bucket.remove.side_effect = StorageApiError(
-            "Not found", code="404", status=404
-        )
-
-        result = storage.delete_session("test-session")
-        # Returns True because 404 means the files don't exist (desired end state)
-        assert result is True
-
-    @patch("supabase.create_client")
-    def test_delete_session_server_error_raises(self, mock_create_client):
-        """Test delete raises StorageError on non-404 errors."""
-        from storage3.exceptions import StorageApiError
-
-        from graftpunk.exceptions import StorageError
-
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_storage_bucket = MagicMock()
-        mock_client.storage.from_.return_value = mock_storage_bucket
-        mock_storage_bucket.remove.side_effect = StorageApiError(
-            "Server error", code="500", status=500
-        )
-
-        with pytest.raises(StorageError, match="Failed to delete"):
-            storage.delete_session("test-session")
 
     @patch("supabase.create_client")
     def test_update_session_metadata_invalid_status(self, mock_create_client):
@@ -377,6 +281,176 @@ class TestSupabaseSessionStorage:
         result = storage.update_session_metadata("test", status="logged_out")
         assert result is True
         mock_storage_bucket.update.assert_called_once()
+
+
+class FakeBucket:
+    """An in-memory Supabase Storage bucket answering ``list`` and ``remove``.
+
+    ``list`` returns the entries directly under a path, a folder as an entry
+    with no id, sorted by name and cut to ``limit`` from ``offset``, as
+    storage3 asks the server to.
+    """
+
+    def __init__(self, paths):
+        self.files = set(paths)
+        self.list_calls = 0
+        self.remove_calls: list[list[str]] = []
+
+    def list(self, path=None, options=None):
+        self.list_calls += 1
+        options = options or {}
+        prefix = f"{path}/" if path else ""
+        entries: dict[str, dict] = {}
+        for file in self.files:
+            if not file.startswith(prefix):
+                continue
+            head, sep, _rest = file[len(prefix) :].partition("/")
+            entries[head] = {"name": head, "id": None if sep else f"id-{file}"}
+        ordered = [entries[k] for k in sorted(entries)]
+        offset = options.get("offset", 0)
+        return ordered[offset : offset + options.get("limit", 100)]
+
+    def remove(self, paths):
+        self.remove_calls.append(list(paths))
+        self.files -= set(paths)
+        return [{"name": p} for p in paths]
+
+
+PHANTOM_FILES = [
+    "myshop/metadata.json.pre-test2",
+    "myshop/session.pickle.pre-test2",
+    "myshop@jane/metadata.json",
+    "myshop@jane/session.pickle",
+]
+
+
+def _with_bucket(mock_create_client, paths):
+    storage, mock_client = _make_storage(mock_create_client)
+    bucket = FakeBucket(paths)
+    mock_client.storage.from_.return_value = bucket
+    return storage, bucket
+
+
+class TestSupabaseSlots:
+    """A slot folder is a session only with its metadata.json (#382)."""
+
+    @patch("supabase.create_client")
+    def test_list_sessions_with_results(self, mock_create_client):
+        storage, _bucket = _with_bucket(
+            mock_create_client,
+            [
+                f"{n}/{f}"
+                for n in ("session-b", "session-a")
+                for f in ("metadata.json", "session.pickle")
+            ],
+        )
+
+        assert storage.list_sessions() == ["session-a", "session-b"]
+
+    @patch("supabase.create_client")
+    def test_list_sessions_filters_hidden_entries(self, mock_create_client):
+        storage, _bucket = _with_bucket(
+            mock_create_client,
+            [".emptyFolderPlaceholder", ".hidden/metadata.json", "session-a/metadata.json"],
+        )
+
+        assert storage.list_sessions() == ["session-a"]
+
+    @patch("supabase.create_client")
+    def test_leftovers_do_not_make_a_session(self, mock_create_client):
+        storage, _bucket = _with_bucket(mock_create_client, PHANTOM_FILES)
+
+        assert storage.list_sessions() == ["myshop@jane"]
+        assert storage.incomplete_sessions() == ["myshop"]
+
+    @patch("supabase.create_client")
+    def test_leftovers_are_never_a_resolver_candidate(self, mock_create_client):
+        from graftpunk.session_identity import resolve_account_session
+
+        storage, _bucket = _with_bucket(mock_create_client, PHANTOM_FILES)
+
+        assert resolve_account_session("myshop", storage.list_sessions()) == "myshop@jane"
+
+    @patch("supabase.create_client")
+    def test_a_metadata_folder_is_not_metadata(self, mock_create_client):
+        storage, _bucket = _with_bucket(mock_create_client, ["myshop/metadata.json/old"])
+
+        assert storage.list_sessions() == []
+
+    @patch("supabase.create_client")
+    def test_listing_spans_pages(self, mock_create_client):
+        names = [f"site-{i:03}" for i in range(150)]
+        storage, _bucket = _with_bucket(mock_create_client, [f"{n}/metadata.json" for n in names])
+
+        assert storage.list_sessions() == names
+
+
+class TestSupabaseDeleteSession:
+    """delete_session removes every file in the slot folder (#382)."""
+
+    @patch("supabase.create_client")
+    def test_delete_session_removes_the_pair(self, mock_create_client):
+        storage, bucket = _with_bucket(
+            mock_create_client, ["myshop/session.pickle", "myshop/metadata.json"]
+        )
+
+        assert storage.delete_session("myshop") is True
+        assert bucket.files == set()
+
+    @patch("supabase.create_client")
+    def test_delete_session_removes_leftovers_and_reports_them(self, mock_create_client):
+        storage, bucket = _with_bucket(mock_create_client, [*PHANTOM_FILES, "myshop/old/x.bak"])
+
+        removed = storage.remove_session("myshop")
+
+        assert removed == [
+            "myshop/metadata.json.pre-test2",
+            "myshop/old/x.bak",
+            "myshop/session.pickle.pre-test2",
+        ]
+        assert bucket.files == {"myshop@jane/metadata.json", "myshop@jane/session.pickle"}
+
+    @patch("supabase.create_client")
+    def test_delete_session_pages_through_a_large_slot(self, mock_create_client):
+        files = [f"myshop/backup-{i:03}" for i in range(230)]
+        storage, bucket = _with_bucket(mock_create_client, files)
+
+        removed = storage.remove_session("myshop")
+
+        assert sorted(removed) == files
+        assert bucket.files == set()
+        assert [len(batch) for batch in bucket.remove_calls] == [100, 100, 30]
+
+    @patch("supabase.create_client")
+    def test_delete_session_of_nothing_is_false(self, mock_create_client):
+        storage, bucket = _with_bucket(mock_create_client, ["other/metadata.json"])
+
+        assert storage.delete_session("myshop") is False
+        assert bucket.remove_calls == []
+
+    @patch("supabase.create_client")
+    def test_delete_session_server_error_raises(self, mock_create_client):
+        from storage3.exceptions import StorageApiError
+
+        storage, bucket = _with_bucket(mock_create_client, ["myshop/metadata.json"])
+        bucket.remove = MagicMock(
+            side_effect=StorageApiError("Server error", code="500", status=500)
+        )
+
+        with pytest.raises(StorageError, match="Failed to delete"):
+            storage.delete_session("myshop")
+
+    @patch("supabase.create_client")
+    def test_delete_session_listing_error_raises(self, mock_create_client):
+        from storage3.exceptions import StorageApiError
+
+        storage, mock_client = _make_storage(mock_create_client)
+        mock_client.storage.from_.return_value.list.side_effect = StorageApiError(
+            "error", code="500", status=500
+        )
+
+        with pytest.raises(StorageError, match="Failed to list files"):
+            storage.delete_session("myshop")
 
 
 class TestDoSave:

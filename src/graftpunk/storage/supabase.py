@@ -5,6 +5,9 @@ Follows the same file-pair pattern as local and S3 backends:
 - {session_name}/session.pickle - Encrypted session data
 - {session_name}/metadata.json - Session metadata (JSON)
 
+A slot folder is a session only while its metadata.json exists; deleting a
+session removes every file in the folder.
+
 This is a BREAKING CHANGE from the previous implementation that used
 Supabase database table for metadata. Users with existing sessions
 will need to re-login.
@@ -31,6 +34,8 @@ LOG = get_logger(__name__)
 
 # Storage configuration
 CACHE_CONTROL_SECONDS = 3600  # 1 hour
+# Entries per list call, and paths per remove call.
+_LIST_PAGE = 100
 
 
 class SupabaseSessionStorage:
@@ -315,11 +320,38 @@ class SupabaseSessionStorage:
         LOG.info("session_load_completed", name=name, backend="supabase")
         return encrypted_data, metadata
 
-    def list_sessions(self) -> list[str]:
-        """List all session names.
+    def _list_all(self, storage: Any, path: str) -> list[dict[str, Any]]:
+        """Every entry directly under *path*, across as many pages as it takes.
 
-        Returns:
-            Sorted list of session names
+        ``list`` returns at most ``limit`` entries per call (storage3's default
+        is 100), so a single call drops the rest.
+        """
+        entries: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = storage.list(path, {"limit": _LIST_PAGE, "offset": offset}) or []
+            entries.extend(page)
+            if len(page) < _LIST_PAGE:
+                return entries
+            offset += _LIST_PAGE
+
+    def _slot_files(self, storage: Any, folder: str) -> list[str]:
+        """Paths of every file under *folder*, descending into subfolders."""
+        files: list[str] = []
+        for entry in self._list_all(storage, folder):
+            name = entry.get("name", "")
+            if not name:
+                continue
+            path = f"{folder}/{name}"
+            # Storage lists a folder as an entry without an object id.
+            if entry.get("id") is None:
+                files.extend(self._slot_files(storage, path))
+            else:
+                files.append(path)
+        return files
+
+    def _slots(self) -> dict[str, bool]:
+        """Each slot folder at the bucket root, mapped to whether it holds ``metadata.json``.
 
         Raises:
             StorageError: If listing fails due to Supabase errors
@@ -329,65 +361,87 @@ class SupabaseSessionStorage:
 
         try:
             storage = self.client.storage.from_(self.bucket_name)
-            # List top-level folders in the bucket
-            result = storage.list()
-
-            if not result:
-                return []
-
-            # Each session is a folder containing session.pickle and metadata.json
-            # The list() call returns folder/file entries at root level
-            sessions: set[str] = set()
-            for item in result:
-                # Supabase Storage returns objects with 'name' field
-                # Folders appear as entries; we extract session names from paths
-                name = item.get("name", "")
-                if name and not name.startswith("."):
-                    # This could be a folder name directly, or we may need to
-                    # parse paths if list returns full paths
-                    sessions.add(name)
-
-            LOG.debug("session_list_completed", count=len(sessions), backend="supabase")
-            return sorted(sessions)
+            slots: dict[str, bool] = {}
+            for entry in self._list_all(storage, ""):
+                name = entry.get("name", "")
+                if not name or name.startswith(".") or entry.get("id") is not None:
+                    continue
+                slots[name] = any(
+                    item.get("name") == "metadata.json" and item.get("id") is not None
+                    for item in self._list_all(storage, name)
+                )
         except (HTTPStatusError, StorageApiError) as e:
             LOG.error("failed_to_list_sessions", error=str(e), backend="supabase")
             raise StorageError(f"Failed to list sessions: {e}") from e
+        return slots
+
+    def list_sessions(self) -> list[str]:
+        """List the session slots in the bucket.
+
+        A slot folder is a session only when its ``metadata.json`` exists. Any
+        other file in it does not make it a session, so it can never become a
+        candidate for account resolution (#382).
+
+        Returns:
+            Sorted list of session names
+
+        Raises:
+            StorageError: If listing fails due to Supabase errors
+        """
+        sessions = sorted(name for name, complete in self._slots().items() if complete)
+        LOG.debug("session_list_completed", count=len(sessions), backend="supabase")
+        return sessions
+
+    def incomplete_sessions(self) -> list[str]:
+        """Slot folders holding files but no ``metadata.json``.
+
+        They are not sessions (:meth:`list_sessions` leaves them out), but
+        clearing every session removes them too.
+        """
+        return sorted(name for name, complete in self._slots().items() if not complete)
+
+    def remove_session(self, name: str) -> list[str]:
+        """Delete every file under the slot folder ``<name>/``; return the paths deleted.
+
+        Raises:
+            StorageError: If listing or a delete fails due to Supabase errors
+        """
+        from httpx import HTTPStatusError
+        from storage3.exceptions import StorageApiError
+
+        storage = self.client.storage.from_(self.bucket_name)
+        try:
+            paths = self._slot_files(storage, name)
+        except (HTTPStatusError, StorageApiError) as e:
+            LOG.error("session_files_list_failed", name=name, error=str(e))
+            raise StorageError(f"Failed to list files for '{name}': {e}") from e
+
+        removed: list[str] = []
+        for start in range(0, len(paths), _LIST_PAGE):
+            batch = paths[start : start + _LIST_PAGE]
+            try:
+                storage.remove(batch)
+            except (HTTPStatusError, StorageApiError) as e:
+                LOG.error("session_file_delete_failed", name=name, paths=batch, error=str(e))
+                raise StorageError(f"Failed to delete '{batch[0]}': {e}") from e
+            removed.extend(batch)
+
+        LOG.info("session_delete_completed", name=name, paths=removed, backend="supabase")
+        return removed
 
     def delete_session(self, name: str) -> bool:
-        """Delete a session.
+        """Delete every file in the session's slot folder.
 
         Args:
             name: Session identifier
 
         Returns:
-            True if deleted successfully
+            True if any file was deleted, False if there was none
 
         Raises:
-            StorageError: If delete fails due to Supabase errors (except NotFound)
+            StorageError: If delete fails due to Supabase errors
         """
-        from httpx import HTTPStatusError
-        from storage3.exceptions import StorageApiError
-
-        session_path = self._session_path(name)
-        metadata_path = self._metadata_path(name)
-
-        storage = self.client.storage.from_(self.bucket_name)
-
-        # Delete both files from storage
-        for path in (session_path, metadata_path):
-            try:
-                storage.remove([path])
-                LOG.debug("session_file_deleted", name=name, path=path)
-            except (HTTPStatusError, StorageApiError) as e:
-                # 404/NotFound is acceptable - file didn't exist
-                response = getattr(e, "response", None)
-                status = getattr(e, "status", None) or getattr(response, "status_code", None)
-                if status not in (404, "404"):
-                    LOG.error("session_file_delete_failed", name=name, path=path, error=str(e))
-                    raise StorageError(f"Failed to delete '{path}': {e}") from e
-
-        LOG.info("session_delete_completed", name=name, backend="supabase")
-        return True
+        return bool(self.remove_session(name))
 
     def get_session_metadata(self, name: str) -> SessionMetadata | None:
         """Get session metadata without loading the full session.
