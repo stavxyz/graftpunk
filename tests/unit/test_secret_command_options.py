@@ -2769,7 +2769,7 @@ class TestLoggingNeverRaises:
             get_logger("t").warning("fetched %d rows of %s", 14821, "x482y")
         text = self._text(capsys)
         assert "fetched" in text
-        assert "482" not in text
+        assert "482" not in _without_timestamps(text)
         assert f"fetched 1{REDACTED}1 rows of x{REDACTED}y" in text
 
     def test_percent_d_on_a_subclass_whose_text_holds_the_secret(
@@ -2862,6 +2862,15 @@ class _StrRaises:
         return "StrRaises()"
 
 
+_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?|\b\d{2}:\d{2}:\d{2}(?:\.\d+)?\b")
+
+
+def _without_timestamps(text: str) -> str:
+    """*text* without its log timestamps, which hold any short digit secret
+    (``482`` in ``01:32:57.448281Z``) by chance."""
+    return _TIMESTAMP.sub("<time>", text)
+
+
 def _escaped_forms(secret: str) -> list[str]:
     """The forms ``%r`` of bytes and ``%a`` write a non-ASCII secret in."""
     return [
@@ -2919,7 +2928,7 @@ class TestNoSecretInAFormattedMessage:
         for form in _escaped_forms(_NON_ASCII_SECRET):
             assert form not in err, form
             assert form not in raw, form
-        assert "482" not in err
+        assert "482" not in _without_timestamps(err)
         assert SCOPE_KEY not in err
         assert REDACTED in err
 
