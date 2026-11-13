@@ -5,6 +5,8 @@ import datetime
 import decimal
 import io
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
@@ -1081,3 +1083,78 @@ class _StrKey:
 
     def __repr__(self) -> str:
         return repr(self.value)
+
+
+# The fuzz row that hung (seed 1, case 26), reduced to what still hangs Rich
+# 14.3.1. Its narrow cells give the last column one cell of width, and the last
+# cell then starts with a character of no width before a double-width one.
+_FUZZ_ROW = {
+    "h0": "e+299",
+    "(1, 2)": "",
+    "h2": "1, 2}]",
+    "h3": "\ufffd\u4e2d\ufdfd\ufffd",
+    "h4": ", 'x')",
+    "h5": "-01-01",
+    "h6": "0f\u4e2d'}",
+    "h7": "{}",
+    "h8": "{}",
+    "h9": "\u200f\U000f0000\u0416\U0001f600\u4e2d",
+}
+_RICH_HANG_ROWS: list[Any] = [
+    pytest.param(_FUZZ_ROW, id="fuzz-row"),
+    pytest.param(
+        {**_FUZZ_ROW, "h9": "\u200b\U000f0000\u0416\U0001f600\u4e2d"}, id="zero-width-space"
+    ),
+    pytest.param(
+        {**_FUZZ_ROW, "h9": "\u0301\U000f0000\u0416\U0001f600\u4e2d"}, id="combining-mark"
+    ),
+    pytest.param({**_FUZZ_ROW, "h9": "\x00\U000f0000\u0416\U0001f600\u4e2d"}, id="control"),
+]
+
+
+class TestTheTableNeverHangsInRich:
+    """``Text("\\u200f\\u4e2d").truncate(1)`` never returns in Rich 14.3.1: a
+    character of no width starting a line, then a double-width one, in a column
+    one cell wide. A ``-f table`` command on such text never returned. The table
+    formatter drops format characters and combining marks with no base, and
+    draws control characters as U+FFFD."""
+
+    @pytest.mark.parametrize("row", _RICH_HANG_ROWS)
+    def test_renders_within_a_timeout(self, tmp_path: Path, row: dict[str, str]) -> None:
+        script = tmp_path / "render.py"
+        script.write_text(
+            "import io, json, sys\n"
+            "from rich.console import Console\n"
+            "from graftpunk.plugins.formatters import TableFormatter\n"
+            "row = json.loads(sys.argv[1])\n"
+            "TableFormatter().format([row], Console(file=io.StringIO(), width=79))\n"
+            "print('rendered')\n"
+        )
+        import os
+
+        import graftpunk
+
+        # The graftpunk this test imported, in the child too.
+        env = {**os.environ, "PYTHONPATH": str(Path(graftpunk.__file__).parents[1])}
+        try:
+            result = subprocess.run(  # noqa: S603
+                [sys.executable, str(script), json.dumps(row)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail("the table formatter did not return within 60 s")
+        assert result.stdout.strip() == "rendered", result.stderr
+
+    def test_ordinary_text_is_unchanged(self) -> None:
+        buf = io.StringIO()
+        TableFormatter().format([{"name": "Café 中文 résumé", "n": 1}], Console(file=buf, width=80))
+        assert "Café 中文 résumé" in buf.getvalue()
+
+    def test_neutralised_characters(self) -> None:
+        buf = io.StringIO()
+        TableFormatter().format([{"k": "a‏b­c\x00d é ́f"}], Console(file=buf, width=80))
+        assert "abc�d é f" in buf.getvalue()

@@ -12,10 +12,12 @@ import importlib.metadata
 import io
 import math
 import numbers
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from rich.cells import cell_len
 from rich.console import Console
 from rich.json import JSON
 from rich.rule import Rule
@@ -301,8 +303,50 @@ class TableFormatter:
 
 def _table_text(value: Any) -> str:
     """A table cell's or heading's text: :func:`safe_text`, so a value whose
-    ``str`` raises, an int past the digit limit and a lone surrogate render."""
-    return safe_text(value)
+    ``str`` raises, an int past the digit limit and a lone surrogate render,
+    with the characters that hang Rich neutralised (:func:`_rich_safe`)."""
+    return _rich_safe(safe_text(value))
+
+
+_KEPT_CONTROLS = frozenset("\t\n")
+
+
+def _rich_safe(text: str) -> str:
+    """*text* without what makes Rich 14.3.1 loop forever while it wraps a
+    table cell: a character Rich gives no width that starts a line, followed
+    by a double-width one, cut to one cell (``Text("\\u200f\\u4e2d").truncate(1)``
+    never returns). Each such character starts a grapheme of its own, so:
+
+    - a format character (category Cf: U+200B, U+200F, U+FEFF, the soft
+      hyphen) is dropped; a terminal draws none of them;
+    - a control character other than tab and newline (Cc) is drawn as U+FFFD;
+    - any other character of no width (a combining mark) is dropped where it
+      has nothing to combine with: at the start, or after whitespace.
+
+    Text without such characters is returned as it is.
+    """
+    if text.isascii() and text.isprintable():
+        return text
+    out: list[str] = []
+    for c in text:
+        category = unicodedata.category(c)
+        if category == "Cf":
+            continue
+        if category == "Cc" and c not in _KEPT_CONTROLS:
+            out.append("\ufffd")
+            continue
+        if (not out or out[-1].isspace()) and _no_width(c):
+            continue
+        out.append(c)
+    return "".join(out)
+
+
+def _no_width(c: str) -> bool:
+    """Whether Rich gives *c* no cell width (its own measure, as Rich lays it out)."""
+    try:
+        return cell_len(c) == 0
+    except Exception:  # noqa: BLE001 - a character Rich cannot measure: treated as having none
+        return True
 
 
 class RawFormatter:
