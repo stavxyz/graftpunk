@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
+from graftpunk.cdp_wait import answer_by
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 
@@ -523,35 +524,6 @@ def _hard_end(deadline: float) -> float:
     return deadline + _LOGIN_POLL_INTERVAL
 
 
-async def _answer_by(awaitable: Any, *, end: float) -> Any:
-    """Await *awaitable* until the loop's clock reaches *end*, and raise
-    ``TimeoutError`` if it has not answered by then, without cancelling it.
-
-    nodriver 0.48.1's ``Connection`` sets the result of a command's future with no
-    check that the future is still pending, outside any ``try``, so cancelling a
-    command whose answer later arrives raises ``InvalidStateError`` in the tab's
-    listener task, which then ends, and every later command on that tab waits
-    forever. An abandoned read therefore keeps running, and its late answer or
-    error is collected and dropped when it comes.
-    """
-    loop = asyncio.get_running_loop()
-    task = asyncio.ensure_future(awaitable)
-    # Even with no time left the read gets the loop pass it was scheduled for, ahead
-    # of the timeout: an answer already at hand (a closed tab's error) is taken, and
-    # a busy loop that woke the tick late does not turn it into an abandoned read.
-    done, _pending = await asyncio.wait({task}, timeout=max(0.0, end - loop.time()))
-    if task in done:
-        return task.result()
-    task.add_done_callback(_drop_late_answer)
-    raise TimeoutError
-
-
-def _drop_late_answer(task: asyncio.Future[Any]) -> None:
-    """Collect an abandoned read's outcome, so asyncio does not log it as never retrieved."""
-    if not task.cancelled():
-        task.exception()
-
-
 def tab_url(tab: Any) -> str:
     """The nodriver tab's current URL, or an empty string when it cannot be read."""
     try:
@@ -898,11 +870,11 @@ async def _read_login_tick_nodriver_by(
     want_page_text: bool,
     site_name: str,
 ) -> _TickReading:
-    """:func:`_read_login_tick_nodriver`, abandoned at *end* (see ``_hard_end``
-    and ``_answer_by``). A read that is abandoned, or that there is no time left
-    to start, is an unreadable tick."""
+    """:func:`_read_login_tick_nodriver`, abandoned without being cancelled at
+    *end* (see ``_hard_end`` and :func:`graftpunk.cdp_wait.answer_by`). A read that
+    is abandoned is an unreadable tick."""
     try:
-        return await _answer_by(
+        return await answer_by(
             _read_login_tick_nodriver(
                 tab,
                 url=url,
@@ -1292,7 +1264,7 @@ async def _await_document_ready_nodriver(tab: Any, *, deadline: float, site_name
     end = _hard_end(deadline)
     while True:
         try:
-            state = await _answer_by(tab.evaluate("document.readyState"), end=end)
+            state = await answer_by(tab.evaluate("document.readyState"), end=end)
         except Exception as exc:  # broad by design: readiness is best-effort, see the docstring
             LOG.debug(
                 "login_document_ready_unavailable",

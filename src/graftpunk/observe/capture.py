@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 from graftpunk._distribution import install_command
+from graftpunk.cdp_wait import answer_within
 from graftpunk.dialogs import DialogAnswerer, answer_dialogs, new_tab_dialog_counts
 from graftpunk.har.parser import cookie_header_pairs
 from graftpunk.har.paths import bare_path, holds_an_id
@@ -2576,11 +2577,11 @@ class NodriverCaptureBackend:
             )
         finally:
             try:
-                # Bounded: this also runs when stop cancels a read the page never answered.
+                # Bounded: this also runs when stop cancels a read the page never
+                # answered. Not cancelled on expiry: the tab is read again (the page
+                # source), and graftpunk.cdp_wait says why a cancelled call hangs it.
                 with contextlib.suppress(Exception):
-                    await asyncio.wait_for(
-                        tab.send(cdp_dom.disable(), **session), _DOM_DISABLE_WAIT_S
-                    )
+                    await answer_within(tab.send(cdp_dom.disable(), **session), _DOM_DISABLE_WAIT_S)
             finally:
                 self._dom_read_lock.release()
         return getattr(document, "document_url", None) or "", html

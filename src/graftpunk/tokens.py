@@ -18,6 +18,7 @@ from graftpunk.browser_launch import (
     browser_connect_failure_message,
     prepare_browser_launch,
 )
+from graftpunk.cdp_wait import answer_by
 from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
 from graftpunk.dialogs import answer_dialogs, answer_dialogs_in_new_tabs, close_dialogs_in_new_tabs
 from graftpunk.exceptions import (
@@ -99,6 +100,8 @@ async def _poll_for_tokens(
     tokens: list[Token],
     url: str,
     log_prefix: str,
+    *,
+    end: float,
 ) -> dict[str, str]:
     """Poll tab content for token patterns with retry logic.
 
@@ -107,6 +110,9 @@ async def _poll_for_tokens(
         tokens: List of tokens to extract from this page.
         url: Full URL (for logging).
         log_prefix: Log event prefix ("browser_token" or "login_token").
+        end: The loop time by which the page must have been read; each read and
+            each pause is abandoned there without being cancelled
+            (:func:`graftpunk.cdp_wait.answer_by`), and ``TimeoutError`` raised.
 
     Returns:
         Mapping of successfully extracted token names to values.
@@ -115,7 +121,7 @@ async def _poll_for_tokens(
     unmatched = list(tokens)
 
     for _attempt in range(_TOKEN_POLL_ATTEMPTS):
-        content = await tab.get_content()
+        content = await answer_by(tab.get_content(), end=end)
         still_unmatched = []
 
         for token in unmatched:
@@ -129,7 +135,7 @@ async def _poll_for_tokens(
         unmatched = still_unmatched
         if not unmatched:
             break
-        await tab.sleep(_TOKEN_POLL_INTERVAL)
+        await answer_by(tab.sleep(_TOKEN_POLL_INTERVAL), end=end)
 
     for token in unmatched:
         LOG.warning(f"{log_prefix}_pattern_not_found", name=token.name, url=url)
@@ -196,10 +202,12 @@ async def _extract_tokens_browser(
         for page_url, token_group in by_url.items():
             url = f"{base_url.rstrip('/')}{page_url}"
             try:
-                async with asyncio.timeout(_TOKEN_NAV_TIMEOUT):
-                    tab = await browser.get(url)
-                    extracted = await _poll_for_tokens(tab, token_group, url, "browser_token")
-                    results.update(extracted)
+                # Not asyncio.timeout: the browser is used again for the next page
+                # (graftpunk.cdp_wait says why a cancelled call would hang it).
+                end = asyncio.get_running_loop().time() + _TOKEN_NAV_TIMEOUT
+                tab = await answer_by(browser.get(url), end=end)
+                extracted = await _poll_for_tokens(tab, token_group, url, "browser_token", end=end)
+                results.update(extracted)
             except TimeoutError:
                 LOG.warning(
                     "browser_token_navigation_timeout",
@@ -265,10 +273,12 @@ async def extract_tokens_from_tab(
     for page_url, token_group in by_url.items():
         url = f"{base_url.rstrip('/')}{page_url}"
         try:
-            async with asyncio.timeout(_TOKEN_NAV_TIMEOUT):
-                tab = await tab.browser.get(url)
-                extracted = await _poll_for_tokens(tab, token_group, url, "login_token")
-                results.update(extracted)
+            # Not asyncio.timeout: the login goes on to read cookies from this
+            # browser (graftpunk.cdp_wait says why a cancelled call would hang it).
+            end = asyncio.get_running_loop().time() + _TOKEN_NAV_TIMEOUT
+            tab = await answer_by(tab.browser.get(url), end=end)
+            extracted = await _poll_for_tokens(tab, token_group, url, "login_token", end=end)
+            results.update(extracted)
         except TimeoutError:
             LOG.warning(
                 "login_token_extraction_timeout",

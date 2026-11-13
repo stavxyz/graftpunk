@@ -2623,6 +2623,34 @@ class TestSnapshotFromTheIsolatedWorldListener:
         assert 'id="login-modal"' in (tmp_path / "snapshots" / "42.1.html").read_text()
 
     @pytest.mark.asyncio
+    async def test_a_disable_answered_late_leaves_the_tab_s_connection_working(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The DOM.disable wait gives up without cancelling the command: on nodriver
+        0.48.1 an answer to a cancelled command ends the tab's listener, and the
+        tab is read again afterwards (the page source)."""
+        from tests.unit.cdp048 import Connection048
+
+        monkeypatch.setattr(capture, "_DOM_DISABLE_WAIT_S", 0.05)
+        connection = Connection048()
+
+        class LateDisable(FakeTab):
+            async def send(self, cmd: Any, **kwargs: Any) -> Any:
+                if getattr(cmd, "__name__", "") == "disable":
+                    return await connection.send(None, after=0.2)
+                return await super().send(cmd, **kwargs)
+
+        tab = LateDisable({}, _never)
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        try:
+            await tab.dispatch(_will_be_sent("43.3", inline=_LOGIN_BODY, url=LOGIN))
+            await asyncio.sleep(0.3)
+            assert await connection.still_answers()
+        finally:
+            connection.close()
+            await _stop(backend, tab)
+
+    @pytest.mark.asyncio
     async def test_a_disable_the_page_never_answers_does_not_hold_the_snapshot(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
