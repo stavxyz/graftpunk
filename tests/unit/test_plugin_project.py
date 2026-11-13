@@ -1637,3 +1637,45 @@ def test_requirement_status_present_is_false_when_an_ancestor_blocks_it(tmp_path
     assert status == RequirementStatus(
         "unreadable", NOT_A_DIRECTORY, blocking="tests", present=False
     )
+
+
+class TestShellExpand:
+    """``_shell_expand`` follows ruff's ``shellexpand::full`` (shellexpand 3.1.2)."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("lib", "lib"),
+            ("${GPX_SET}/x", "set-value/x"),
+            ("$GPX_SET/x", "set-value/x"),
+            ("${GPX_UNSET:-lib}", "lib"),
+            ("${GPX_SET:-lib}", "set-value"),
+            ("${GPX_EMPTY:-lib}", ""),
+            ("${GPX_UNSET:-$GPX_SET}", "$GPX_SET"),
+            ("a$$b", "a$b"),
+            ("cost$", "cost$"),
+            ("a$-b", "a$-b"),
+            ("${unclosed", "${unclosed"),
+            ("~/lib", "/home/myshop/lib"),
+            ("~", "/home/myshop"),
+            ("~other/lib", "~other/lib"),
+            ("${GPX_TILDE}/lib", "~/lib"),
+        ],
+    )
+    def test_expands_like_shellexpand(
+        self, monkeypatch: pytest.MonkeyPatch, value: str, expected: str
+    ) -> None:
+        monkeypatch.setenv("HOME", "/home/myshop")
+        monkeypatch.setenv("GPX_SET", "set-value")
+        monkeypatch.setenv("GPX_EMPTY", "")
+        monkeypatch.setenv("GPX_TILDE", "~")
+        monkeypatch.delenv("GPX_UNSET", raising=False)
+        assert plugin_project_module._shell_expand(value) == expected
+
+    @pytest.mark.parametrize("value", ["${GPX_UNSET}", "$GPX_UNSET/lib", "${:-lib}"])
+    def test_an_unset_variable_without_a_default_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.delenv("GPX_UNSET", raising=False)
+        with pytest.raises(plugin_project_module._ShellExpandError):
+            plugin_project_module._shell_expand(value)

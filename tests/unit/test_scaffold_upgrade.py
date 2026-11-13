@@ -527,48 +527,6 @@ class TestRuffExtend:
 class TestShellExpand:
     """``src`` and ``extend`` are expanded as ruff's ``shellexpand::full`` does."""
 
-    @pytest.mark.parametrize(
-        ("value", "expected"),
-        [
-            ("lib", "lib"),
-            ("${GPX_SET}/x", "set-value/x"),
-            ("$GPX_SET/x", "set-value/x"),
-            ("${GPX_UNSET:-lib}", "lib"),
-            ("${GPX_SET:-lib}", "set-value"),
-            ("${GPX_EMPTY:-lib}", ""),
-            ("${GPX_UNSET:-$GPX_SET}", "$GPX_SET"),
-            ("a$$b", "a$b"),
-            ("cost$", "cost$"),
-            ("a$-b", "a$-b"),
-            ("${unclosed", "${unclosed"),
-            ("~/lib", "/home/myshop/lib"),
-            ("~", "/home/myshop"),
-            ("~other/lib", "~other/lib"),
-            ("${GPX_TILDE}/lib", "~/lib"),
-        ],
-    )
-    def test_expands_like_shellexpand(
-        self, monkeypatch: pytest.MonkeyPatch, value: str, expected: str
-    ) -> None:
-        from graftpunk.devtools.plugin_project import _shell_expand
-
-        monkeypatch.setenv("HOME", "/home/myshop")
-        monkeypatch.setenv("GPX_SET", "set-value")
-        monkeypatch.setenv("GPX_EMPTY", "")
-        monkeypatch.setenv("GPX_TILDE", "~")
-        monkeypatch.delenv("GPX_UNSET", raising=False)
-        assert _shell_expand(value) == expected
-
-    @pytest.mark.parametrize("value", ["${GPX_UNSET}", "$GPX_UNSET/lib", "${:-lib}"])
-    def test_an_unset_variable_without_a_default_is_refused(
-        self, monkeypatch: pytest.MonkeyPatch, value: str
-    ) -> None:
-        from graftpunk.devtools.plugin_project import _shell_expand, _ShellExpandError
-
-        monkeypatch.delenv("GPX_UNSET", raising=False)
-        with pytest.raises(_ShellExpandError):
-            _shell_expand(value)
-
     def test_a_src_default_is_used_when_the_variable_is_unset(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
