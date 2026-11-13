@@ -1186,6 +1186,11 @@ _COPIED_GATE = [
     "_MIN_CASELESS_ACRONYM_LEN",
     "_HASH_SIZES",
     "_HASH_OUTPUT_WORDS",
+    "_DIGIT_TOKENS",
+    "_MAX_INNER_DIGITS",
+    "_MIN_WORD_BESIDE_DIGITS",
+    "_DIGITS_READ_AS_WORDS",
+    "_SCALE_DIGITS",
 ]
 _COPIED_GATE_PATTERNS = [
     "_NAME_CHARS_RE",
@@ -1211,3 +1216,70 @@ def test_the_har_readers_name_gate_constants_are_graftpunks(name: str) -> None:
 def test_the_har_readers_name_gate_patterns_are_graftpunks(name: str) -> None:
     ours, theirs = getattr(_load_har_facts(), name), getattr(paths_module, name)
     assert (ours.pattern, ours.flags) == (theirs.pattern, theirs.flags)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "line2Address",
+        "covid19Status",
+        "added2cart",
+        "retina2x",
+        "oauth2Token",
+        "sha256Hash",
+        "base64Data",
+        "utf8String",
+        "ipv4Address",
+        "x509Certificate",
+        "k8sNamespace",
+        "v2Endpoint",
+        "objectId",
+        "subject",
+    ],
+)
+def test_a_digit_run_between_words_or_in_a_token_reads_as_a_name_in_both_gates(
+    name: str,
+) -> None:
+    """#359: a stub keeps sending such a field or query parameter."""
+    assert printable_name(name)
+    assert _load_har_facts().printable_name(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "line7address",
+        "lin2Address",
+        "line234Address",
+        "QXZW2Address",
+        "line2Zq",
+        "retina5x",
+        "qeweo2Sha256",
+        "post-1824",
+        "post-2024x",
+        "jV29",
+        "kevin-1979",
+        "linda_1990",
+        "wp-settings-2015",
+        "my-post-2024",
+    ],
+    ids=[
+        "lowercase-after-a-digit-other-than-2",
+        "short-word-before",
+        "three-digits",
+        "capitals-run",
+        "short-word-after",
+        "not-a-scale",
+        "hash-after-digits",
+        "not-a-year",
+        "year-glued",
+        "version-inside",
+        "username-with-a-birth-year",
+        "username-with-a-year-underscored",
+        "per-user-id-in-the-year-range",
+        "slug-with-a-year",
+    ],
+)
+def test_a_digit_run_not_between_words_is_still_held_back(name: str) -> None:
+    assert not printable_name(name)
+    assert not _load_har_facts().printable_name(name)

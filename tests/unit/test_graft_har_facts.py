@@ -756,7 +756,9 @@ _MAX_PASSES = {
     "capitals 9": 1084,
     "capitals 12": 520,
     "capitals 16": 197,
-    "base36 12": 25,
+    # 25 until #359's digit rule (a lone 2 read as a word between lowercase words,
+    # for added2cart) passed hryflod2rdat and qyeus2baehby.
+    "base36 12": 27,
     "base36 32": 0,
 }
 

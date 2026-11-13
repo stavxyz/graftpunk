@@ -193,7 +193,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill needs graftpunk 1.40.0 or later and `uv` on your PATH.
+The skill needs graftpunk 1.42.2 or later and `uv` on your PATH.
 
 ## Frame
 
@@ -907,7 +907,11 @@ cached session never sees the session set, and the digest leaves static and
 third-party responses out). A name that reads as a value is counted here and
 printed in no section, Login and Tokens included. A header name that reads as a
 value is held back the same way: an endpoint's block and the Tokens section
-each say how many they leave out. See
+each say how many they leave out. So is a meta tag's or hidden input's
+token candidate name, counted in the Tokens section, and a query parameter's or
+posted body field's name, counted in the endpoint's block and the login step; a
+generated stub does not send such a parameter and says how many it left out, so
+add it by hand. See
 [How graftpunk Works](HOW_IT_WORKS.md#building-a-plugin-from-a-recording) for
 each word.
 
@@ -2596,7 +2600,10 @@ fixture with the capture it was derived from, still reports any value from the
 captured response body left in the fixture, each run of 3 or more digits
 included. It skips a key shaped like a schema name without a digit (`orderId`,
 `created_at`), a GraphQL type, field or operation name held as a value (an
-identifier under `__typename`, in `errors[*].path`, or as `operationName`),
+identifier under `__typename`, in `errors[*].path`, or as `operationName`; one
+under `errors` or `extensions`, such as a tracing resolver's `fieldName`, that
+names a key or a type of the same body; a camelCase one, such as
+`"sortBy": "createdAt"`, that names a key of the same body),
 `true`, `false` or `null`, and a value shorter than four characters unless it
 has three and holds a digit (and those match only with no letter or digit beside
 them), and in a fixture that parses as JSON it does not look inside such a key;
@@ -3129,7 +3136,7 @@ gp version --contract info=1 --contract endpoints=1
 `gp version --json` prints one line:
 
 ```json
-{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "1.40.0"}
+{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "1.42.2"}
 ```
 
 `graftpunk` is the installed version, and `contracts` maps each machine-read

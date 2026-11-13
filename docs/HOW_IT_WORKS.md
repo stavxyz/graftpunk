@@ -807,14 +807,43 @@ left out of an endpoint's custom headers (the markdown, `--json`,
 `--endpoints-json`, and a generated stub's `headers=`) and of the header token
 candidates (the Tokens section, `--json`'s `tokens`, and `token_config`), and
 each place prints a count instead (`custom_headers_not_shown` on an endpoint,
-`header_names_not_shown` for the run). Header names are compared without
+`header_names_not_shown` for the run). Since 1.42.2 a meta tag's and a hidden
+input's name go through the gate too (#359): one that reads as a value is left
+out of the Tokens section, `--json`'s `tokens` and `token_pairs`, `token_config`,
+and, for a hidden input, a login form's `hidden` in `--json`, and is counted in
+the Tokens section's count (as a token candidate) and in `--json`'s
+`meta_names_not_shown` or `hidden_names_not_shown`. A query parameter or posted
+body field name goes through the gate too: one that reads as a value is left out
+of a login step's fields (the Login section and `--json`'s `login[].fields`,
+which then says `N not shown` and carries `fields_not_shown`), of an endpoint's
+query or body params (the markdown, which adds a count line, and `query_params`
+or `body_params` in `--json` and `--endpoints-json`, beside
+`query_params_not_shown` or `body_params_not_shown`), and of the parameters a
+generated stub sends, which says in a `GP-FILL` note how many it left out. The
+gate passes a digit run inside a name when it sits between words (`line2Address`,
+`covid19Status`, after a lone `2` read as a word `added2cart`, a scale such as
+`retina2x`) or in a known token (`oauth2`, `sha256`, `base64`, `utf8`, `ipv4`,
+`x509`, `k8s`), and the word `object` or `subject` (`objectId`). A part that is a
+year (`kevin-1979`, `wp-settings-2015`) is held back, as a username's birth year
+or a per-user id can be one.
+`--json`'s `field_names_not_shown` counts them for the run. Each per-kind count
+(`cookie_names_not_shown`, `header_names_not_shown`, `meta_names_not_shown`,
+`hidden_names_not_shown`, `field_names_not_shown`, and the per-endpoint and
+per-step ones) counts its own names, so a name held back in two kinds (a hidden
+input the form posted) is counted in each. The run's one total,
+`names_not_shown` in `--json` and a line in the markdown Summary, counts each
+distinct held-back name once across every kind, compared without regard to case.
+A GraphQL operation's variables keep
+their own gate (`graftpunk.har.graphql`), since the operation document a stub
+sends names them. Header names are compared without
 regard to case, so `X-Token-Q` and `x-token-q` are one name, and whether it
 prints is decided once for the run: it prints in every output and on every
 endpoint that recorded it, in the first spelling recorded that passes the
 gate, and is counted once when none does. A name whose spellings all fail
 still prints, in its first spelling recorded, when the digest already prints
-the same name elsewhere (a meta tag's or hidden input's token candidate, or a cookie name
-the Cookies section prints, set or only sent), so a generated `token_config` still pairs that header with its meta
+the same name elsewhere (a meta tag's or hidden input's token candidate whose
+name passes the gate, or a cookie name the Cookies section prints, set or only
+sent), so a generated `token_config` still pairs that header with its meta
 tag. The fixture safety
 net (`flagged_names`) still holds every name. The words are those
 of the graft skill's `har-facts.py cookies`, which also prints the `Domain` and

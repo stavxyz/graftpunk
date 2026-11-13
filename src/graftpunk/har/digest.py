@@ -126,6 +126,16 @@ __all__ = [
     "header_names_not_shown",
     "header_spellings",
     "held_back_token_count",
+    "meta_names_not_shown",
+    "hidden_names_not_shown",
+    "field_names_not_shown",
+    "names_not_shown",
+    "body_params_not_shown",
+    "login_fields_not_shown",
+    "printable_body_params",
+    "printable_query_params",
+    "query_params_not_shown",
+    "printable_hidden",
     "printable_custom_headers",
     "printable_login_fields",
     "printable_token_pairs",
@@ -671,6 +681,42 @@ class RunDigest:
     # ``Endpoint.custom_headers`` and ``tokens`` keep every name. Each place a
     # name is left out counts its own there.
     header_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
+    # How many distinct meta tag token candidate names read as a value
+    # (graftpunk.har.paths.printable_name) and so print nowhere: not as a token
+    # candidate (printable_tokens), not as a pairing's source
+    # (printable_token_pairs), and not as a Token in a scaffolded plugin, in the
+    # markdown, --json, --endpoints-json, or the scaffold (#359). ``tokens`` and
+    # ``token_pairs`` keep every name.
+    meta_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
+    # How many distinct hidden input names read as a value
+    # (graftpunk.har.paths.printable_name) and so print nowhere: not as a token
+    # candidate or a pairing's source, not as a Token in a scaffolded plugin, not
+    # in a login form's ``hidden`` in --json, and, when a request posted the
+    # input, not as a posted field either, where field_names_not_shown counts it
+    # too (#359). ``tokens``, ``token_pairs`` and ``login_forms`` keep every name.
+    hidden_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
+    # How many distinct query parameter and posted body field names read as a
+    # value and so print nowhere: not in a login step's ``fields``
+    # (printable_login_fields), not in an endpoint's ``query_params`` or
+    # ``body_params`` (printable_query_params, printable_body_params) in the
+    # markdown, --json or --endpoints-json, and not sent by a generated stub. Like
+    # every per-kind count, it counts its own names: a name also held back as a
+    # hidden input, a meta tag, a cookie or a header is counted there too. A
+    # GraphQL operation's variables have their own gate (graftpunk.har.graphql)
+    # and are not counted. ``LoginObservation.fields``, ``Endpoint.query_params``
+    # and ``Endpoint.body_params`` keep every name.
+    field_names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
+    # How many distinct recorded names print nowhere because they read as a value,
+    # each counted once across every kind (cookie, header, meta tag, hidden input,
+    # query parameter and posted field) and compared without regard to case, as
+    # header names are: the run's one total beside the per-kind counts above
+    # (names_not_shown).
+    names_not_shown: int = field(default=0, metadata={OMIT_EMPTY: True})
+    # The cookie names cookie_names_not_shown counts (set, sent, or held back as an
+    # id), for names_not_shown. Never printed: render_json leaves it out.
+    cookie_names_held_back: tuple[str, ...] = field(
+        default=(), repr=False, metadata={INTERNAL: True}
+    )
     # Every recorded spelling of a custom header name, in the order the run first
     # recorded it: header_spellings reads it to pick the first spelling that
     # passes the gate. A lookup, so render_json leaves it out.
@@ -1663,9 +1709,9 @@ def header_spellings(d: RunDigest) -> dict[str, str]:
     is decided once per run, never per endpoint or per output (#347). A name
     prints in the first spelling recorded that passes the gate
     (:func:`graftpunk.har.paths.printable_name`). When no spelling passes but the
-    digest already prints the same lower-cased name elsewhere (an ungated token
-    candidate such as a meta tag's or a hidden input's, or a cookie name the
-    Cookies section prints, set or only sent), it prints in
+    digest already prints the same lower-cased name elsewhere (a meta tag, hidden
+    input or cookie token candidate whose name passes the gate, or a cookie name
+    the Cookies section prints, set or only sent), it prints in
     its first spelling recorded, which tells a reader nothing the digest does not.
     Spellings are taken in the order the run first recorded them
     (``RunDigest.header_spellings``), then the header token candidates' and each
@@ -1696,14 +1742,15 @@ def run_header_names_not_shown(d: RunDigest) -> int:
 
 
 def _names_printed_elsewhere(tokens: Iterable[TokenCandidate], cookies: Iterable[str]) -> set[str]:
-    """The lower-cased names the digest prints other than as a header name: an
-    ungated token candidate's, and a cookie name that passes the gate."""
+    """The lower-cased names the digest prints other than as a header name: a
+    cookie, meta tag or hidden input candidate's, and a cookie name, each when it
+    passes the gate."""
     names: set[str] = set()
     for name in cookies:
         if printable_name(name):
             names.add(name.lower())
     for t in tokens:
-        if t.kind not in _GATED_TOKEN_KINDS or (t.kind == "cookie" and printable_name(t.name)):
+        if t.kind in _NAME_GATED_KINDS and printable_name(t.name):
             names.add(t.name.lower())
     return names
 
@@ -1734,9 +1781,11 @@ def _token_spellings(tokens: Sequence[TokenCandidate]) -> dict[str, str]:
 def printable_tokens(
     tokens: Iterable[TokenCandidate], spellings: Mapping[str, str] | None = None
 ) -> tuple[TokenCandidate, ...]:
-    """*tokens* as every output prints them: without a cookie candidate whose name
-    reads as a value (:func:`graftpunk.har.paths.printable_name`), which
-    ``RunDigest.cookie_names_not_shown`` counts, and with each header name once,
+    """*tokens* as every output prints them: without a cookie, meta tag or
+    hidden input candidate whose name reads as a value
+    (:func:`graftpunk.har.paths.printable_name`), which
+    ``RunDigest.cookie_names_not_shown``, ``RunDigest.meta_names_not_shown`` and
+    ``RunDigest.hidden_names_not_shown`` count, and with each header name once,
     in its spelling of *spellings* (:func:`header_spellings`), seen on every
     endpoint any of its spellings was. A header name *spellings* lacks is left
     out, and ``RunDigest.header_names_not_shown`` counts it. Without *spellings*
@@ -1753,9 +1802,7 @@ def printable_tokens(
     headers_printed: set[str] = set()
     for t in tokens:
         lowered = t.name.lower()
-        if t.kind not in _GATED_TOKEN_KINDS:
-            printed.append(t)
-        elif t.kind == "cookie":
+        if t.kind in _NAME_GATED_KINDS:
             if printable_name(t.name):
                 printed.append(t)
         elif lowered in spellings and lowered not in headers_printed:
@@ -1769,7 +1816,8 @@ def printable_token_pairs(
 ) -> tuple[TokenPairing, ...]:
     """*d*'s ``token_pairs`` as every output prints them: the header in its spelling
     of *spellings* (:func:`header_spellings`, computed from *d* when not given), and
-    none whose header name prints nowhere or whose cookie name reads as a value
+    none whose header name prints nowhere or whose cookie, meta tag or hidden
+    input name reads as a value
     (:func:`graftpunk.har.paths.printable_name`), the rules :func:`printable_tokens`
     applies to the candidates themselves."""
     if spellings is None:
@@ -1778,12 +1826,13 @@ def printable_token_pairs(
         replace(pairing, header=spellings[pairing.header.lower()])
         for pairing in d.token_pairs
         if pairing.header.lower() in spellings
-        and (pairing.kind != "cookie" or printable_name(pairing.name))
+        and (pairing.kind not in _NAME_GATED_KINDS or printable_name(pairing.name))
     )
 
 
-# The token kinds whose name is a recorded cookie or header name.
-_GATED_TOKEN_KINDS = frozenset({"cookie", "header"})
+# The token kinds whose own recorded name every output gates through
+# printable_name. A header name is gated through header_spellings.
+_NAME_GATED_KINDS = frozenset({"cookie", "meta", "hidden_input"})
 
 
 def header_names_not_shown(names: Iterable[str], spellings: Mapping[str, str]) -> int:
@@ -1814,25 +1863,171 @@ def printable_custom_headers(endpoint: Endpoint, spellings: Mapping[str, str]) -
 def held_back_token_count(
     tokens: Iterable[TokenCandidate], spellings: Mapping[str, str] | None = None
 ) -> int:
-    """How many cookie and header token candidates of *tokens* :func:`printable_tokens`
-    leaves out given *spellings* (read from *tokens* alone when not given), a
-    header name counted once whatever its case (:func:`header_names_not_shown`)."""
+    """How many token candidates of *tokens* :func:`printable_tokens` leaves out
+    given *spellings* (read from *tokens* alone when not given): each cookie,
+    meta tag and hidden input name once per kind, and a header name once
+    whatever its case (:func:`header_names_not_shown`)."""
     tokens = list(tokens)
     if spellings is None:
         spellings = _token_spellings(tokens)
-    cookies = {t.name for t in tokens if t.kind == "cookie" and not printable_name(t.name)}
+    named = {
+        (t.kind, t.name)
+        for t in tokens
+        if t.kind in _NAME_GATED_KINDS and not printable_name(t.name)
+    }
     headers = header_names_not_shown((t.name for t in tokens if t.kind == "header"), spellings)
-    return len(cookies) + headers
+    return len(named) + headers
+
+
+def meta_names_not_shown(tokens: Iterable[TokenCandidate]) -> int:
+    """How many distinct meta tag token candidate names of *tokens* read as a
+    value (:func:`graftpunk.har.paths.printable_name`), and so print in no output
+    (``RunDigest.meta_names_not_shown``)."""
+    return len({t.name for t in tokens if t.kind == "meta" and not printable_name(t.name)})
+
+
+def printable_hidden(form: LoginForm) -> tuple[str, ...]:
+    """*form*'s ``hidden`` names as every output prints them: without one that
+    reads as a value (:func:`graftpunk.har.paths.printable_name`), which
+    ``RunDigest.hidden_names_not_shown`` counts. ``LoginForm.hidden`` keeps them
+    all."""
+    return tuple(name for name in form.hidden if printable_name(name))
+
+
+def hidden_names_not_shown(
+    tokens: Iterable[TokenCandidate], forms: Iterable[LoginForm] = ()
+) -> int:
+    """How many distinct hidden input names of *tokens*' hidden input candidates
+    and *forms*' ``hidden`` read as a value
+    (:func:`graftpunk.har.paths.printable_name`), and so print in no output
+    (``RunDigest.hidden_names_not_shown``), a body field included where a
+    request posted the input."""
+    return len(_held_back_hidden_names(tokens, forms))
+
+
+def _held_back_hidden_names(
+    tokens: Iterable[TokenCandidate], forms: Iterable[LoginForm]
+) -> set[str]:
+    names = {t.name for t in tokens if t.kind == "hidden_input"}
+    names.update(name for form in forms for name in form.hidden)
+    return {name for name in names if not printable_name(name)}
+
+
+def printable_body_params(endpoint: Endpoint) -> dict[str, str]:
+    """*endpoint*'s ``body_params`` as every output prints them and a generated
+    stub sends them: without a field whose name reads as a value
+    (:func:`graftpunk.har.paths.printable_name`), which
+    :func:`body_params_not_shown` counts. A GraphQL operation's variables are
+    returned whole: their names have their own gate (:mod:`graftpunk.har.graphql`)
+    and the operation document a stub sends holds them. ``Endpoint.body_params``
+    keeps every name."""
+    if endpoint.operation:
+        return dict(endpoint.body_params)
+    return {name: label for name, label in endpoint.body_params.items() if printable_name(name)}
+
+
+def printable_query_params(endpoint: Endpoint) -> dict[str, str]:
+    """*endpoint*'s ``query_params`` as every output prints them and a generated
+    stub sends them: without a parameter whose name reads as a value
+    (:func:`graftpunk.har.paths.printable_name`), which
+    :func:`query_params_not_shown` counts. ``Endpoint.query_params`` keeps every
+    name."""
+    return {name: label for name, label in endpoint.query_params.items() if printable_name(name)}
+
+
+def query_params_not_shown(endpoint: Endpoint) -> int:
+    """How many of *endpoint*'s query parameter names
+    :func:`printable_query_params` leaves out."""
+    return len(endpoint.query_params) - len(printable_query_params(endpoint))
+
+
+def body_params_not_shown(endpoint: Endpoint) -> int:
+    """How many of *endpoint*'s body field names :func:`printable_body_params`
+    leaves out."""
+    return len(endpoint.body_params) - len(printable_body_params(endpoint))
+
+
+def login_fields_not_shown(observation: LoginObservation) -> int:
+    """How many of a login step's posted field names (any kind but
+    ``set_cookie``, whose cookie names ``RunDigest.cookie_names_not_shown``
+    counts) :func:`printable_login_fields` leaves out."""
+    if observation.kind == "set_cookie":
+        return 0
+    return len(observation.fields) - len(printable_login_fields(observation))
+
+
+def field_names_not_shown(d: RunDigest) -> int:
+    """How many distinct query parameter and posted body field names of *d* print
+    nowhere (``RunDigest.field_names_not_shown``): held back from a login step's
+    ``fields`` or an endpoint's ``query_params`` or ``body_params``. A name also
+    held back in another kind is counted there too; :func:`names_not_shown`
+    counts each name once."""
+    return len(_held_back_field_names(d))
+
+
+def _held_back_field_names(d: RunDigest) -> set[str]:
+    names = {
+        name
+        for observation in d.login
+        if observation.kind != "set_cookie"
+        for name in observation.fields
+        if not printable_name(name)
+    }
+    names.update(
+        name
+        for endpoint in d.endpoints
+        if not endpoint.operation
+        for name in endpoint.body_params
+        if not printable_name(name)
+    )
+    names.update(
+        name
+        for endpoint in d.endpoints
+        for name in endpoint.query_params
+        if not printable_name(name)
+    )
+    return names
+
+
+def names_not_shown(d: RunDigest) -> int:
+    """How many distinct recorded names of *d* print nowhere because they read as
+    a value (``RunDigest.names_not_shown``): the names every per-kind count
+    counts (cookie, header, meta tag, hidden input, query parameter and posted
+    field), each once, compared without regard to case."""
+    names = {name.lower() for name in d.cookie_names_held_back}
+    names.update(
+        t.name.lower()
+        for t in d.tokens
+        if t.kind in ("cookie", "meta") and not printable_name(t.name)
+    )
+    names.update(
+        name.lower()
+        for observation in d.login
+        if observation.kind == "set_cookie"
+        for name in observation.fields
+        if not printable_name(name)
+    )
+    spellings = header_spellings(d)
+    names.update(
+        lowered
+        for lowered in (
+            *(t.name.lower() for t in d.tokens if t.kind == "header"),
+            *(name.lower() for endpoint in d.endpoints for name in endpoint.custom_headers),
+        )
+        if lowered not in spellings
+    )
+    names.update(name.lower() for name in _held_back_hidden_names(d.tokens, d.login_forms))
+    names.update(name.lower() for name in _held_back_field_names(d))
+    return len(names)
 
 
 def printable_login_fields(observation: LoginObservation) -> tuple[str, ...]:
-    """*observation*'s ``fields`` as every output prints them: a ``set_cookie``
-    step's cookie names without one that reads as a value
-    (:func:`graftpunk.har.paths.printable_name`), which
-    ``RunDigest.cookie_names_not_shown`` counts. ``LoginObservation.fields`` keeps
-    them all."""
-    if observation.kind != "set_cookie":
-        return observation.fields
+    """*observation*'s ``fields`` as every output prints them: without a name that
+    reads as a value (:func:`graftpunk.har.paths.printable_name`). A
+    ``set_cookie`` step's held-back cookie names are counted in
+    ``RunDigest.cookie_names_not_shown``, and a posted field's in
+    :func:`login_fields_not_shown` and ``RunDigest.field_names_not_shown``.
+    ``LoginObservation.fields`` keeps them all."""
     return tuple(name for name in observation.fields if printable_name(name))
 
 
@@ -4295,6 +4490,18 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             tuple(cookies_seen), cookie_settings, cookies_sent, collapse_map
         ),
         cookie_names_not_shown=_cookie_names_not_shown(cookies_seen, id_cookie_names, cookies_sent),
+        cookie_names_held_back=tuple(
+            sorted(
+                {
+                    name
+                    for group in (cookies_seen, id_cookie_names, cookies_sent)
+                    for name in group
+                    if not printable_name(name)
+                }
+            )
+        ),
+        meta_names_not_shown=meta_names_not_shown(tokens),
+        hidden_names_not_shown=hidden_names_not_shown(tokens, ranked_forms),
         header_spellings=header_order,
         shared_values=_shared_values(graphql_entries),
         token_pairs=token_pairs,
@@ -4329,7 +4536,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             ],
         ),
     )
-    return replace(run, header_names_not_shown=run_header_names_not_shown(run))
+    return replace(
+        run,
+        header_names_not_shown=run_header_names_not_shown(run),
+        field_names_not_shown=field_names_not_shown(run),
+        names_not_shown=names_not_shown(run),
+    )
 
 
 # A segment that names a fixed part of a site's routing rather than a value: when

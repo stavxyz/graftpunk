@@ -318,7 +318,10 @@ def _spelled(letters: str) -> bool:
     more than 3 capitals."""
     if len(letters) > _MAX_CAPITALS_RUN and letters.isupper():
         return False
-    lowered = letters.lower()
+    # bj is not a pair English words use, but in "object" and "subject", which name
+    # many fields (objectId, subject); allowing bj everywhere passed more random
+    # text (#361), and "bject" almost never occurs in it.
+    lowered = letters.lower().replace("bject", "ject")
     return all(
         a in _VOWELS or b in _VOWELS or a + b in _WORD_CONSONANT_PAIRS
         for a, b in zip(lowered, lowered[1:], strict=False)
@@ -957,13 +960,124 @@ def _lower_word(word: str) -> bool:
     return _spelled(word) and (len(word) <= 3 or any(ch in _VOWELS for ch in word))
 
 
+# A name with a digit run inside a part (line2Address, oauth2Token, k8sNamespace):
+# the part splits into a known token that carries digits, matched in any case where
+# a word starts (Sha256, base64, x509), or a version starting the part
+# (v2Endpoint), and letter runs and digit runs. Every letter
+# run reads as words (_plain_part) and is not a run of capitals other than a known
+# acronym. A digit run of one or two digits sits between words of four letters or
+# more: after one, and before a capitalised one (line2Address, covid19Status), the
+# end, an x after a 2 or a 3 (retina2x), or, after a lone 2 read as a word
+# (added2cart), a lowercase one. As in camel case, at most one short word
+# that is not a listed short word or acronym. A version (v1beta1) passes whole.
+# Random text with a digit inside rarely puts a long spelled word on both sides.
+_DIGIT_TOKENS = tuple(
+    sorted(
+        (  # noqa: SIM905 - one compact string on purpose: the set is data
+            "argon2id argon2 ed25519 pbkdf2 oauth1 oauth2 base32 base64 utf8 utf16 ipv4 "
+            "ipv6 x509 k8s md5 sha1 sha224 sha256 sha384 sha512 i18n l10n"
+        ).split(),
+        key=len,
+        reverse=True,
+    )
+)
+_MAX_INNER_DIGITS = 2
+_MIN_WORD_BESIDE_DIGITS = 4
+_DIGITS_READ_AS_WORDS = frozenset(("2",))
+# A display scale (2x, 3x) after a word (retina2x).
+_SCALE_DIGITS = frozenset(("2", "3"))
+
+
+def _digit_token_at(part: str, at: int) -> int:
+    """The end of a known digit token starting a word at *at* in *part*, or 0."""
+    if at and not (part[at].isupper() or part[at - 1].isdigit()):
+        return 0
+    lowered = part[at:].lower()
+    for token in _DIGIT_TOKENS:
+        end = at + len(token)
+        if lowered.startswith(token) and (end == len(part) or not part[end].islower()):
+            return end
+    # A version only starts a part: inside one (jV29) it reads as random text.
+    version = None if at else _VERSION_RE.match(lowered)
+    if version:
+        end = at + version.end()
+        if end == len(part) or part[end].isupper():
+            return end
+    return 0
+
+
+def _digit_word_part(part: str) -> bool:
+    """*part* holds a digit run inside it and reads as words around it."""
+    if _VERSION_RE.fullmatch(part):
+        return True
+    if not part[:1].isalpha() or not any(ch.isdigit() for ch in part):
+        return False
+    atoms: list[tuple[str, str]] = []
+    at = 0
+    while at < len(part):
+        if part[at].isalpha() and (end := _digit_token_at(part, at)):
+            atoms.append(("token", part[at:end]))
+        elif part[at].isdigit():
+            end = at
+            while end < len(part) and part[end].isdigit():
+                end += 1
+            atoms.append(("digits", part[at:end]))
+        else:
+            end = at + 1
+            while (
+                end < len(part)
+                and part[end].isalpha()
+                and not (part[end].isupper() and _digit_token_at(part, end))
+            ):
+                end += 1
+            atoms.append(("letters", part[at:end]))
+        at = end
+    words: list[str] = []
+    for index, (kind, text) in enumerate(atoms):
+        if kind == "letters":
+            if text == "x" and index == len(atoms) - 1 and atoms[index - 1][1].isdigit():
+                if atoms[index - 1][1] not in _SCALE_DIGITS:
+                    return False
+                continue
+            if (text.isupper() and text not in _ACRONYMS) or not _plain_part(text):
+                return False
+            words += _CAMEL_WORD_RE.findall(text)
+        elif kind == "digits" and not _inner_digits(atoms, index):
+            return False
+    short = [w for w in words if len(w) <= 3 and w not in _SHORT_WORDS and not _camel_acronym(w)]
+    return len(short) <= 1
+
+
+def _inner_digits(atoms: list[tuple[str, str]], index: int) -> bool:
+    """Whether the digit run at *index* of *atoms* sits between words, by the rule
+    above :func:`_digit_word_part`."""
+    digits = atoms[index][1]
+    before = atoms[index - 1] if index else ("", "")
+    last = _CAMEL_WORD_RE.findall(before[1])[-1:] if before[0] == "letters" else []
+    if len(digits) > _MAX_INNER_DIGITS or not last or len(last[0]) < _MIN_WORD_BESIDE_DIGITS:
+        return False
+    if index == len(atoms) - 1:
+        return True
+    kind, text = atoms[index + 1]
+    if kind == "token":
+        # A hash name glued on after digits reads as the end of a value
+        # (abc12Sha256), as _hash_part rules.
+        return False
+    if text == "x":
+        return True
+    first = _CAMEL_WORD_RE.findall(text)[:1]
+    if not first or len(first[0]) < _MIN_WORD_BESIDE_DIGITS:
+        return False
+    return first[0][0].isupper() or digits in _DIGITS_READ_AS_WORDS
+
+
 def _part_reads_as_words(part: str) -> bool:
     if _WEBFORMS_CONTAINER_RE.fullmatch(part):
         return True
     hungarian = _HUNGARIAN_RE.fullmatch(part)
     if hungarian and (hungarian.group(2) == "Pwd" or _plain_part(hungarian.group(2))):
         return True
-    return _plain_part(part)
+    return _plain_part(part) or _digit_word_part(part)
 
 
 def _plain_part(part: str) -> bool:
@@ -1074,6 +1188,30 @@ _FRAMEWORK_NAMES = frozenset(
         "x-aspnet-version x-aspnetmvc-version x-dtpc grpc-status grpc-message x-cdn "
         "x-akamai-transformed akamai-grn x-iinfo x-sucuri-id apollographql-client-name "
         "apollographql-client-version upgrade "
+        # header names the rules above cannot pass without passing random text (#361):
+        # a camel word that splits into short words (WoW64, GUploader), a vowel-less
+        # word (Rq), a consonant pair English rarely spells with (Object), a
+        # two-letter word (Mp), and nine parts
+        "sec-ch-ua-wow64 x-guploader-uploadid x-envoy-expected-rq-timeout-ms "
+        "x-amz-object-lock-mode x-amz-mp-parts-count "
+        "x-amz-server-side-encryption-aws-kms-key-id "
+        # hidden input names a login form carries from a bot check: Cloudflare
+        # Turnstile's response field, whose vendor word the spelling rule rejects
+        "cf-turnstile-response "
+        # body field names the rules hold back: Microsoft's login form field and the
+        # vowel-less quantity abbreviation
+        "loginfmt qty "
+        # query parameter names the rules hold back: jQuery's cache-buster, a time
+        # zone, ad click ids, and a JSONP switch
+        "_ tz gclid fbclid dclid jsonp "
+        # more query names the rules hold back: an S3 signature v2 key, Ext JS's
+        # cache-buster, a page number, a format switch, Solr's filter query, handler
+        # and default field, imgix's format and library, and Mailchimp's campaign
+        # and email ids
+        "awsaccesskeyid _dc pg fmt fq qt df fm ixlib mc_cid mc_eid "
+        # more body field names: the WebForms async postback flag, a mobile push
+        # token, and Microsoft's login form fields beside loginfmt
+        "__asyncpost fcmtoken ppft i0116 i0118 "
         # cookie names
         ".aspxauth asp.net_sessionid .aspnetcore.session .aspnetcore.antiforgery "
         ".aspnetcore.cookies __cf_bm cf_clearance __cfruid __cflb _cfuvid _abck bm_sz bm_sv "

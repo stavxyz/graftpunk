@@ -60,13 +60,17 @@ from graftpunk.har.digest import (
     RunDigest,
     TokenCandidate,
     TokenPairing,
+    body_params_not_shown,
     endpoint_key,
     header_names_not_shown,
     header_spellings,
     held_back_token_count,
+    printable_body_params,
     printable_custom_headers,
+    printable_query_params,
     printable_token_pairs,
     printable_tokens,
+    query_params_not_shown,
 )
 from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
 from graftpunk.har.graphql import (
@@ -1010,7 +1014,9 @@ def _emits_body(endpoint: Endpoint) -> bool:
     """Whether the stub sends a request body (``json=``, or ``data=`` for a recorded
     form): only for a mutating method, so a GET that happened to record a body
     declares no body arguments."""
-    return bool(endpoint.body_params) and any(m in _MUTATING_METHODS for m in endpoint.methods)
+    return bool(printable_body_params(endpoint)) and any(
+        m in _MUTATING_METHODS for m in endpoint.methods
+    )
 
 
 @dataclass(frozen=True)
@@ -1068,7 +1074,7 @@ def _body_declarations(endpoint: Endpoint) -> dict[str, _Declaration | str]:
     json_body = endpoint.body_kind != "form"
     return {
         name: _declaration(label, json_body=json_body)
-        for name, label in endpoint.body_params.items()
+        for name, label in printable_body_params(endpoint).items()
     }
 
 
@@ -1077,7 +1083,7 @@ def _query_declarations(endpoint: Endpoint) -> dict[str, _Declaration]:
     (``_declaration`` refuses only JSON shapes); one that is not is a digest the
     generator does not understand, and is refused by name."""
     declared: dict[str, _Declaration] = {}
-    for name, label in endpoint.query_params.items():
+    for name, label in printable_query_params(endpoint).items():
         found = _declaration(label, json_body=False)
         if not isinstance(found, _Declaration):
             raise ValueError(
@@ -1137,7 +1143,7 @@ def _undeclared_body_fields(endpoint: Endpoint) -> dict[str, str]:
     for name, found in _body_declarations(endpoint).items():
         if not isinstance(found, str):
             continue
-        query_label = endpoint.query_params.get(name)
+        query_label = printable_query_params(endpoint).get(name)
         if query_label is not None:
             found = (
                 f'{found} (the query parameter "{name}" is {query_label}, and its '
@@ -1659,10 +1665,11 @@ def _graphql_operation_notes(endpoint: Endpoint) -> list[str]:
             f"{GP_FILL_MARKER}: every recording sent this operation in a batch, so gp "
             "observe fixtures writes no fixture for it."
         )
-    if endpoint.query_params:
+    if printable_query_params(endpoint):
         notes.append(
             f"{GP_FILL_MARKER}: the recording also sent query parameters "
-            f"({', '.join(sorted(endpoint.query_params))}), which {GRAPHQL_HELPER} does not "
+            f"({', '.join(sorted(printable_query_params(endpoint)))}), which {GRAPHQL_HELPER} "
+            "does not "
             "send; add them by hand if this operation needs them."
         )
     return notes
@@ -1871,8 +1878,8 @@ def _render_command_stub(
     call_lines = [f"{L3}{quoted_literal(method)},"]
     call_lines.extend(url_expr_lines(url_text, is_fstring=bool(path_params), indent=len(L3)))
     call_lines.append(f"{L3}role={quoted_literal(role)},")
-    if endpoint.query_params:
-        entries = [(p, identifier_for[p]) for p in sorted(endpoint.query_params)]
+    if printable_query_params(endpoint):
+        entries = [(p, identifier_for[p]) for p in sorted(printable_query_params(endpoint))]
         call_lines.extend(exploded_dict_lines("params", entries))
     if body_keys:
         entries = [(p, identifier_for[body_keys[p]]) for p in sorted(body_keys)]
@@ -2212,9 +2219,22 @@ def _recording_gap_notes(
             f"{GP_FILL_MARKER}: {unshown_headers} recorded header name(s) were left out "
             "because they read as values; add any this command needs by hand."
         )
+    unshown_query = query_params_not_shown(endpoint)
+    if unshown_query:
+        notes.append(
+            f"{GP_FILL_MARKER}: {unshown_query} recorded query parameter(s) were left out "
+            "because their names read as values; add any this command needs by hand."
+        )
+    unshown_body = body_params_not_shown(endpoint)
+    if unshown_body:
+        notes.append(
+            f"{GP_FILL_MARKER}: {unshown_body} recorded body field(s) were left out because "
+            "their names read as values; add any this command needs by hand."
+        )
+    sent_body = printable_body_params(endpoint)
     if endpoint.body_not_captured:
         recorded = f"{endpoint.body_not_captured} of {endpoint.count} recording(s)"
-        if endpoint.body_params:
+        if sent_body:
             notes.append(
                 f"{GP_FILL_MARKER}: the request body was not captured in {recorded}, so the "
                 "body fields below come from the others and may be incomplete; add any this "
@@ -2228,7 +2248,7 @@ def _recording_gap_notes(
             )
     if endpoint.body_omitted:
         recorded = f"{endpoint.body_omitted} of {endpoint.count} recording(s)"
-        if endpoint.body_params:
+        if sent_body:
             notes.append(
                 f"{GP_FILL_MARKER}: the request body was left out of {recorded} (over the "
                 "capture's max body size, or not text, with no bodies/ directory to keep "
@@ -2248,7 +2268,7 @@ def _recording_gap_notes(
         size = "" if endpoint.body_binary_size is None else f" ({endpoint.body_binary_size} bytes)"
         stored = f"{bodies_where} as `{endpoint.body_binary_file}`{size}"
         recorded = f"{endpoint.body_binary} of {endpoint.count} recording(s)"
-        if endpoint.body_params:
+        if sent_body:
             notes.append(
                 f"{GP_FILL_MARKER}: {recorded} sent a request body that is not text, kept "
                 f"{stored}, so the body fields below come from the others; read that file "

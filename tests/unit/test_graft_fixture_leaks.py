@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -1472,3 +1473,135 @@ def test_graphql_field_and_operation_names_in_a_capture_are_not_looked_for(
     fixture = json.dumps({"viewerAccount": response("Denied", "exampleOp")})
     result = _run(tmp_path, capture, fixture)
     assert result.returncode == 0, result.stdout
+
+
+def _traced(login: str, sort: str) -> dict:
+    """A GraphQL response with an Apollo-style tracing extension, an error naming
+    the fields it was asked for, and a sort order that is a field's name."""
+    return {
+        "data": {
+            "viewer": {
+                "__typename": "User",
+                "login": login,
+                "orders": {"__typename": "OrderConnection", "sortBy": sort, "createdAt": "x"},
+                "displayName": None,
+            }
+        },
+        "errors": [
+            {
+                "message": "Field displayName is unavailable",
+                "path": ["viewer", "displayName"],
+                "extensions": {
+                    "field": "displayName",
+                    "parentType": "User",
+                    "requestedFields": ["login", "orders", "displayName"],
+                },
+            }
+        ],
+        "extensions": {
+            "tracing": {
+                "execution": {
+                    "resolvers": [
+                        {"path": ["viewer", "orders"], "fieldName": "orders",
+                         "parentType": "User", "returnType": "OrderConnection"},
+                    ]
+                }
+            }
+        },
+    }  # fmt: skip
+
+
+def test_graphql_names_in_tracing_errors_and_a_sort_order_are_not_looked_for(
+    tmp_path: Path,
+) -> None:
+    """A tracing resolver's ``fieldName``, ``path``, ``parentType`` and
+    ``returnType``, an error's ``requestedFields``, and ``"sortBy": "createdAt"``
+    name the schema; a fixture that keeps the schema's keys and type names, but
+    drops ``errors`` and ``extensions`` and sorts another way, passes."""
+    capture = json.dumps(_traced("ann_okafor_77", "createdAt"))
+    fixture = _traced("pat_lee_00", "updatedAt")
+    del fixture["errors"], fixture["extensions"]
+    result = _run(tmp_path, capture, json.dumps(fixture, indent=2))
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    ("capture", "fixture", "value"),
+    [
+        (
+            {
+                "data": {"viewer": {"login": "aokonkwo"}, "reposByOwner": {"aokonkwo": [1]}},
+                "errors": [{"message": "x", "path": ["viewer"], "extensions": {"code": "E"}}],
+            },
+            '{"data": {"reposByOwner": {"aokonkwo": [1]}}}',
+            "aokonkwo",
+        ),
+        (
+            {
+                "data": {"viewer": None},
+                "errors": [{"message": "No viewer for ann.okafor@myshop.example", "path": []}],
+            },
+            '{"note": "ann.okafor@myshop.example"}',
+            "ann.okafor@myshop.example",
+        ),
+        (
+            {"data": {"orderId": "x"}, "extensions": {"tracing": {"session": "tok_8f2b9c41d7e6"}}},
+            '{"t": "tok_8f2b9c41d7e6"}',
+            "tok_8f2b9c41d7e6",
+        ),
+        (
+            {"data": {"orderId": "x"}, "errors": [{"extensions": {"ids": ["orderId", "ORD-447"]}}]},
+            '{"id": "ORD-447"}',
+            "ORD-447",
+        ),
+        (
+            {"data": {"byName": {"Okonkwo": 1}}, "errors": [{"extensions": {"who": "Okonkwo"}}]},
+            '{"byName": {"Okonkwo": 1}}',
+            "Okonkwo",
+        ),
+    ],
+    ids=["username-key-in-data", "email", "token-in-tracing", "id-in-list", "pascal-name"],
+)
+def test_account_values_beside_graphql_names_are_still_reported(
+    tmp_path: Path, capture: dict, fixture: str, value: str
+) -> None:
+    """Only an identifier naming a schema key or a type of the same body is skipped
+    under ``errors`` and ``extensions``, and only a camelCase one elsewhere: a
+    lowercase username the body also uses as a key, an email, a token, an id and
+    a capitalised name are each still reported."""
+    result = _run(tmp_path, json.dumps(capture), fixture)
+    assert result.returncode == 1
+    assert f"still in the fixture: {value!r}" in result.stdout
+
+
+_KEYED = {"viewer": {"login": "pat", "orders": {"totalCount": 2}, "displayName": "Pat"}}
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "user login aokonkwo is locked",
+        "cannot read orders of aokonkwo",
+        "the viewer jsmith has no orders",
+        "no orders for aokonkwo",
+    ],
+)
+@pytest.mark.parametrize(
+    "form",
+    [
+        lambda m: json.dumps({"errors": [{"message": m}]}),
+        lambda m: f"ERROR = {{'message': {m!r}}}\n",
+        lambda m: f"{m}\n",
+    ],
+    ids=["json", "python", "text"],
+)
+def test_a_value_beside_a_field_name_in_an_error_message_is_still_reported(
+    tmp_path: Path, message: str, form: Callable[[str], str]
+) -> None:
+    """A field name in a message is skipped by splitting the message at it, so the
+    text on each side, a lowercase username with it, is still looked for."""
+    capture = json.dumps({"data": _KEYED, "errors": [{"message": message, "path": ["viewer"]}]})
+    result = _run(tmp_path, capture, form(message))
+    assert result.returncode == 1, result.stdout
+    user = "jsmith" if "jsmith" in message else "aokonkwo"
+    assert any(user in value for value in _survivors(result.stdout)), result.stdout

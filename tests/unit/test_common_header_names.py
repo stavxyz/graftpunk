@@ -411,24 +411,21 @@ _CLOUD_SDK = (
 
 COMMON_HEADER_NAMES = _STANDARD_AND_VENDOR + _CLOUD_SDK
 
-# The names the gate holds back, each for a reason the gate keeps: a camel
-# word that splits into two short words (WoW64, GUploader), a vowel-less word
-# (Rq), a consonant pair English spells with too rarely to admit without
-# passing random text (Object), a two-letter word no list carries (Mp), and
-# more than eight parts.
-_HELD_BACK_AS_SPELLED = {
+# The six names the gate's rules held back until #361, each for a reason the
+# rules keep: a camel word that splits into two short words (WoW64, GUploader), a
+# vowel-less word (Rq), a consonant pair English spells with too rarely to admit
+# without passing random text (Object), a two-letter word no list carries (Mp),
+# and more than eight parts. Each now passes as a fixed name, in any case.
+_FIXED_SINCE_361 = (
     "Sec-CH-UA-WoW64",
     "X-Envoy-Expected-Rq-Timeout-Ms",
     "X-Amz-Server-Side-Encryption-Aws-Kms-Key-Id",
     "X-Amz-Object-Lock-Mode",
     "X-Amz-Mp-Parts-Count",
     "X-GUploader-UploadID",
-}
-_HELD_BACK_IN_LOWER_CASE = {
-    "x-envoy-expected-rq-timeout-ms",
-    "x-amz-server-side-encryption-aws-kms-key-id",
-    "x-amz-object-lock-mode",
-}
+)
+_HELD_BACK_AS_SPELLED: set[str] = set()
+_HELD_BACK_IN_LOWER_CASE: set[str] = set()
 
 
 def test_the_list_is_the_one_measured() -> None:
@@ -453,3 +450,17 @@ def test_har_facts_reads_each_name_as_the_digest_does() -> None:
     script = _load_har_facts()
     spellings = [spelling for name in COMMON_HEADER_NAMES for spelling in (name, name.lower())]
     assert [s for s in spellings if script.printable_name(s) != printable_name(s)] == []
+
+
+def test_the_six_names_pass_by_their_fixed_name_and_no_rule_widened() -> None:
+    """A fixed name passes in any case and only whole: one more part, or a
+    changed word, goes through the rules again and is held back."""
+    script = _load_har_facts()
+    for name in _FIXED_SINCE_361:
+        for spelling in (name, name.lower(), name.upper()):
+            assert printable_name(spelling), spelling
+            assert script.printable_name(spelling), spelling
+        assert not printable_name(name + "-Zq9vKx")
+        assert not script.printable_name(name + "-Zq9vKx")
+    assert not printable_name("X-Amz-Object-Lock-Zq9vKx")
+    assert not printable_name("X-Amz-Mp-Zq9vKx")

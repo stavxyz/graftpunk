@@ -29,7 +29,7 @@ import json
 import os
 import re
 import unicodedata
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -66,6 +66,23 @@ _SCHEMA_KEY = re.compile(
 )
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _TYPENAME = "__typename"
+# A camelCase identifier: a lowercase word, then capitalised words (createdAt).
+# One equal to a schema key of its own body is that field's name, held as a value
+# (a sort order, "sortBy": "createdAt"). A lowercase username ("aokonkwo") stays a
+# value even where the same body uses it as a key; a camelCase one its body also
+# uses as a key ("joOkafor") is skipped, a limit the script's docstring states.
+_CAMEL_CASE = re.compile(r"[a-z]+(?:[A-Z][a-z]+)+\Z")
+# The parts of a GraphQL response that describe the request rather than answer it:
+# an identifier under either that names a schema key or a type of the same body
+# (a tracing resolver's fieldName and parentType, an error's requestedFields) is
+# the schema's, not account data, and so is such a name standing as a word of a
+# longer string there ("Cannot query field displayName on type User"): the string
+# is split at it, and the text on each side is kept as a value of its own.
+_GRAPHQL_META = ("errors", "extensions")
+# A word of a longer string that can be a name: an identifier with nothing that
+# continues a word, an address or a path on either side, so neither part of
+# "ann.okafor@myshop.example" nor of "ORD-4471023" is one.
+_NAME_WORD = re.compile(r"(?<![\w.@/-])[A-Za-z_][A-Za-z0-9_]*(?![\w.@/-])")
 # A JSON or Python key in single or double quotes, JSON-escaped or not, before
 # its colon, where an object key stands: after the object's opening brace or a
 # comma. A quoted word before a colon anywhere else (a ternary, a case label,
@@ -227,10 +244,60 @@ def _without_path_names(error: object) -> object:
     return {**error, "path": [step for step in error["path"] if not _graphql_name(step)]}
 
 
+def _schema_names(node: object, keys: set[str], types: set[str]) -> None:
+    """Add each schema key in *node*, at any depth, to *keys*, and each type name
+    under ``__typename`` to *types*."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if _schema_key(str(key)):
+                keys.add(str(key))
+            if _type_name(key, value):
+                types.add(value)
+            else:
+                _schema_names(value, keys, types)
+    elif isinstance(node, list):
+        for value in node:
+            _schema_names(value, keys, types)
+
+
+def _without_names(
+    node: object, drop: Callable[[str], bool], words: frozenset[str] = frozenset()
+) -> object:
+    """*node* without each string value, at any depth, that *drop* holds a name;
+    another string holding a word in *words* becomes the list of the non-empty
+    texts between such words, so a value beside a name (``"no orders for
+    aokonkwo"``) is still a value. Keys are left as they are."""
+    if isinstance(node, dict):
+        return {key: _without_names(value, drop, words) for key, value in node.items()}
+    if isinstance(node, list):
+        return [
+            _without_names(value, drop, words)
+            for value in node
+            if not (isinstance(value, str) and drop(value))
+        ]
+    if isinstance(node, str):
+        if drop(node):
+            return None
+        if words:
+            pieces, at = [], 0
+            for match in _NAME_WORD.finditer(node):
+                if match.group(0) in words:
+                    pieces.append(node[at : match.start()])
+                    at = match.end()
+            if at:
+                pieces.append(node[at:])
+                return [piece.strip() for piece in pieces if piece.strip()]
+    return node
+
+
 def _without_field_names(document: object) -> object:
     """*document*, a JSON body or one of a batch, without the GraphQL field and
     operation names it holds as values: its ``operationName``, its
-    ``extensions.operationName``, and the names in each ``errors[*].path``."""
+    ``extensions.operationName``, the names in each ``errors[*].path``, an
+    identifier under ``errors`` or ``extensions`` equal to a schema key or a type
+    name of the same body (where it is a word of a longer string there, such as
+    an error's message, the string is split at it and the rest kept), and a
+    camelCase identifier anywhere equal to a schema key of the same body."""
     if not isinstance(document, dict):
         return document
     document = dict(document)
@@ -242,7 +309,21 @@ def _without_field_names(document: object) -> object:
     errors = document.get("errors")
     if isinstance(errors, list):
         document["errors"] = [_without_path_names(error) for error in errors]
-    return document
+    keys: set[str] = set()
+    types: set[str] = set()
+    _schema_names(document, keys, types)
+    names = frozenset(keys | types)
+
+    def meta(value: str) -> bool:
+        return value in names and _graphql_name(value)
+
+    def field(value: str) -> bool:
+        return value in keys and _CAMEL_CASE.match(value) is not None
+
+    for part in _GRAPHQL_META:
+        if part in document:
+            document[part] = _without_names(document[part], meta, names)
+    return _without_names(document, field)
 
 
 def _json_values(node: object) -> list[str]:
