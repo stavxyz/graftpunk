@@ -2602,7 +2602,9 @@ Form state is words, one word in capitals, a camelCase name, a name of a
 few words, or punctuation alone.
 Words are a search term such as `running shoes`, `iPhone 15`, `café`,
 `salt & pepper` or `512gb ssd`, a number of at most 5 digits such as `lot=12`,
-or a date. A word in capitals is a party or a code a form keeps in capitals
+or a date. Words are read percent-decoded (`caf%C3%A9` is `café`), and a value
+that decodes to bytes that are not UTF-8, or to a control character, is not
+words, so percent-encoded random bytes stay flagged. A word in capitals is a party or a code a form keeps in capitals
 (`LANDOWNER`, `GRANTEE`, `BRAL`); a camelCase name is a tab or field name
 (`currentTab`, `tabLISTresults`); a name is how a records search keeps a person
 (`SMITH, JOHN`, `ST. JOHN`, `O'Brien Mary`). A value in one pair of double quotes, as a
