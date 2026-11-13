@@ -26,7 +26,9 @@ from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
     UNCHANGED,
     SessionMetadata,
+    check_slot_name,
     dict_to_metadata,
+    is_slot_name,
     metadata_to_dict,
 )
 
@@ -324,7 +326,7 @@ class SupabaseSessionStorage:
         """Every entry directly under *path*, across as many pages as it takes.
 
         ``list`` returns at most ``limit`` entries per call (storage3's default
-        is 100), so a single call drops the rest.
+        is 100), so a single call drops the rest. One request per page.
         """
         entries: list[dict[str, Any]] = []
         offset = 0
@@ -336,22 +338,47 @@ class SupabaseSessionStorage:
             offset += _LIST_PAGE
 
     def _slot_files(self, storage: Any, folder: str) -> list[str]:
-        """Paths of every file under *folder*, descending into subfolders."""
-        files: list[str] = []
+        """Paths of every file under *folder*, descending into subfolders, each once."""
+        files: dict[str, None] = {}
         for entry in self._list_all(storage, folder):
             name = entry.get("name", "")
             if not name:
                 continue
             path = f"{folder}/{name}"
-            # Storage lists a folder as an entry without an object id.
+            # storage-api lists a folder with a null id and a file with its
+            # object's id (storage.search in its tenant migrations).
             if entry.get("id") is None:
-                files.extend(self._slot_files(storage, path))
+                files.update(dict.fromkeys(self._slot_files(storage, path)))
             else:
-                files.append(path)
-        return files
+                files[path] = None
+        return list(files)
+
+    def _has_object(self, storage: Any, path: str) -> bool:
+        """Whether the object at exactly *path* exists, by ``info`` (no prefix search).
+
+        Raises:
+            StorageApiError: For any failure other than not found
+        """
+        from storage3.exceptions import StorageApiError
+
+        try:
+            storage.info(path)
+        except StorageApiError as e:
+            if e.status in (404, "404"):
+                return False
+            raise
+        return True
 
     def _slots(self) -> dict[str, bool]:
         """Each slot folder at the bucket root, mapped to whether it holds ``metadata.json``.
+
+        Costs one request per page of the root, then one per slot (more for a
+        slot of over 100 entries), and one more for each slot whose name holds
+        ``_`` and lists a ``metadata.json``: older storage-api servers search a
+        folder with ``ILIKE`` on the unescaped prefix, where ``_`` matches any
+        character, so ``my_shop``'s listing can hold ``my-shop/metadata.json``.
+        That slot is confirmed by ``info`` on the exact path. storage3 2.27.2 has
+        no call that lists every slot's files at once.
 
         Raises:
             StorageError: If listing fails due to Supabase errors
@@ -366,10 +393,13 @@ class SupabaseSessionStorage:
                 name = entry.get("name", "")
                 if not name or name.startswith(".") or entry.get("id") is not None:
                     continue
-                slots[name] = any(
+                listed = any(
                     item.get("name") == "metadata.json" and item.get("id") is not None
                     for item in self._list_all(storage, name)
                 )
+                if listed and "_" in name:
+                    listed = self._has_object(storage, self._metadata_path(name))
+                slots[name] = listed
         except (HTTPStatusError, StorageApiError) as e:
             LOG.error("failed_to_list_sessions", error=str(e), backend="supabase")
             raise StorageError(f"Failed to list sessions: {e}") from e
@@ -380,7 +410,8 @@ class SupabaseSessionStorage:
 
         A slot folder is a session only when its ``metadata.json`` exists. Any
         other file in it does not make it a session, so it can never become a
-        candidate for account resolution (#382).
+        candidate for account resolution (#382). Costs 1 + N requests for N
+        slots (:meth:`_slots`).
 
         Returns:
             Sorted list of session names
@@ -393,19 +424,28 @@ class SupabaseSessionStorage:
         return sessions
 
     def incomplete_sessions(self) -> list[str]:
-        """Slot folders holding files but no ``metadata.json``.
+        """Slot folders holding files but no ``metadata.json``, named as a session can be.
 
         They are not sessions (:meth:`list_sessions` leaves them out), but
-        clearing every session removes them too.
+        clearing every session removes them too. Costs 1 + N requests, as
+        :meth:`list_sessions` does.
         """
-        return sorted(name for name, complete in self._slots().items() if not complete)
+        return sorted(
+            name for name, complete in self._slots().items() if not complete and is_slot_name(name)
+        )
 
     def remove_session(self, name: str) -> list[str]:
         """Delete every file under the slot folder ``<name>/``; return the paths deleted.
 
+        Only the paths ``remove`` reports deleting are returned: a path that went
+        between the listing and the delete, or one an older server's prefix
+        search listed from another folder (:meth:`_slots`), is not.
+
         Raises:
+            ValueError: *name* is not a session name; no request is sent
             StorageError: If listing or a delete fails due to Supabase errors
         """
+        check_slot_name(name)
         from httpx import HTTPStatusError
         from storage3.exceptions import StorageApiError
 
@@ -420,11 +460,14 @@ class SupabaseSessionStorage:
         for start in range(0, len(paths), _LIST_PAGE):
             batch = paths[start : start + _LIST_PAGE]
             try:
-                storage.remove(batch)
+                result = storage.remove(batch)
             except (HTTPStatusError, StorageApiError) as e:
                 LOG.error("session_file_delete_failed", name=name, paths=batch, error=str(e))
                 raise StorageError(f"Failed to delete '{batch[0]}': {e}") from e
-            removed.extend(batch)
+            # storage-api answers with the object rows it deleted, each named by
+            # its full path.
+            gone = {item.get("name") for item in result or [] if isinstance(item, dict)}
+            removed.extend(path for path in batch if path in gone)
 
         LOG.info("session_delete_completed", name=name, paths=removed, backend="supabase")
         return removed

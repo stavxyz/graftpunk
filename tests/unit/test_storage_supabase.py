@@ -905,3 +905,117 @@ class TestSupabaseStorageIdentity:
 
         assert metadata_dict["storage_backend"] == "supabase"
         assert metadata_dict["storage_location"] == "supabase://sessions"
+
+
+class OldServerBucket(FakeBucket):
+    """A bucket on a storage-api that searches a folder with ``ILIKE`` on the
+    unescaped prefix, where ``_`` matches any one character, and answers
+    ``info`` and ``remove`` for exact paths only."""
+
+    def __init__(self, paths):
+        super().__init__(paths)
+        self.info_calls: list[str] = []
+
+    def list(self, path=None, options=None):
+        import re
+
+        if not path:
+            return super().list(path, options)
+        self.list_calls += 1
+        options = options or {}
+        pattern = re.compile(re.escape(f"{path}/").replace("_", ".") + "(.*)", re.IGNORECASE)
+        entries: dict[str, dict] = {}
+        for file in self.files:
+            match = pattern.fullmatch(file)
+            if not match:
+                continue
+            head, sep, _rest = match.group(1).partition("/")
+            entries[head] = {"name": head, "id": None if sep else f"id-{file}"}
+        ordered = [entries[k] for k in sorted(entries)]
+        offset = options.get("offset", 0)
+        return ordered[offset : offset + options.get("limit", 100)]
+
+    def info(self, path):
+        from storage3.exceptions import StorageApiError
+
+        self.info_calls.append(path)
+        if path not in self.files:
+            raise StorageApiError("Object not found", "not_found", "404")
+        return {"name": path}
+
+    def remove(self, paths):
+        self.remove_calls.append(list(paths))
+        gone = [p for p in paths if p in self.files]
+        self.files -= set(gone)
+        return [{"name": p} for p in gone]
+
+
+class TestAnOldServersPrefixSearch:
+    """``_`` in a slot name is a wildcard to an older server's folder search."""
+
+    @patch("supabase.create_client")
+    def test_a_sibling_s_metadata_does_not_complete_the_slot(self, mock_create_client):
+        storage, mock_client = _make_storage(mock_create_client)
+        bucket = OldServerBucket(["my_shop/session.pickle.bak", "my-shop/metadata.json"])
+        mock_client.storage.from_.return_value = bucket
+
+        assert storage.list_sessions() == ["my-shop"]
+        assert storage.incomplete_sessions() == ["my_shop"]
+        assert "my_shop/metadata.json" in bucket.info_calls
+
+    @patch("supabase.create_client")
+    def test_a_slot_with_its_own_metadata_is_confirmed(self, mock_create_client):
+        storage, mock_client = _make_storage(mock_create_client)
+        bucket = OldServerBucket(["my_shop/metadata.json", "my-shop/metadata.json"])
+        mock_client.storage.from_.return_value = bucket
+
+        assert storage.list_sessions() == ["my-shop", "my_shop"]
+
+    @patch("supabase.create_client")
+    def test_a_name_without_an_underscore_costs_no_info_call(self, mock_create_client):
+        storage, mock_client = _make_storage(mock_create_client)
+        bucket = OldServerBucket(["myshop/metadata.json", "other/metadata.json"])
+        mock_client.storage.from_.return_value = bucket
+
+        assert storage.list_sessions() == ["myshop", "other"]
+        assert bucket.info_calls == []
+        # One root listing, then one per slot: 1 + N.
+        assert bucket.list_calls == 3
+
+    @patch("supabase.create_client")
+    def test_remove_reports_only_what_the_server_deleted(self, mock_create_client):
+        storage, mock_client = _make_storage(mock_create_client)
+        bucket = OldServerBucket(["my_shop/a.bak", "my-shop/metadata.json", "my-shop/b.bak"])
+        mock_client.storage.from_.return_value = bucket
+
+        removed = storage.remove_session("my_shop")
+
+        assert removed == ["my_shop/a.bak"]
+        assert bucket.files == {"my-shop/metadata.json", "my-shop/b.bak"}
+
+    @patch("supabase.create_client")
+    def test_an_info_error_other_than_not_found_raises(self, mock_create_client):
+        from storage3.exceptions import StorageApiError
+
+        storage, mock_client = _make_storage(mock_create_client)
+        bucket = OldServerBucket(["my_shop/metadata.json"])
+        bucket.info = MagicMock(side_effect=StorageApiError("denied", "forbidden", "403"))
+        mock_client.storage.from_.return_value = bucket
+
+        with pytest.raises(StorageError, match="Failed to list sessions"):
+            storage.list_sessions()
+
+    @patch("supabase.create_client")
+    def test_a_path_gone_before_the_delete_is_not_reported(self, mock_create_client):
+        storage, mock_client = _make_storage(mock_create_client)
+        bucket = FakeBucket(["myshop/metadata.json", "myshop/session.pickle"])
+        real_remove = bucket.remove
+
+        def remove_one_gone(paths):
+            bucket.files.discard("myshop/session.pickle")
+            return [item for item in real_remove(paths) if item["name"] != "myshop/session.pickle"]
+
+        bucket.remove = remove_one_gone
+        mock_client.storage.from_.return_value = bucket
+
+        assert storage.remove_session("myshop") == ["myshop/metadata.json"]

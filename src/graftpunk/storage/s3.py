@@ -36,7 +36,9 @@ from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
     UNCHANGED,
     SessionMetadata,
+    check_slot_name,
     dict_to_metadata,
+    is_slot_name,
     metadata_to_dict,
 )
 
@@ -397,16 +399,20 @@ class S3SessionStorage:
         clearing every session removes them too.
         """
         return sorted(
-            name for name, keys in self._slot_keys().items() if self._metadata_key(name) not in keys
+            name
+            for name, keys in self._slot_keys().items()
+            if self._metadata_key(name) not in keys and is_slot_name(name)
         )
 
     def remove_session(self, name: str) -> list[str]:
         """Delete every object under ``sessions/<name>/``; return the keys deleted.
 
         Raises:
+            ValueError: *name* is not a session name; no request is sent
             StorageError: If listing or a delete fails due to S3 errors
                 (except NotFound)
         """
+        check_slot_name(name)
         from botocore.exceptions import BotoCoreError, ClientError
 
         prefix = f"{_PREFIX}{name}/"

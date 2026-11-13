@@ -690,7 +690,7 @@ class TestIncompleteSlots:
 
             assert result.exit_code == 0, result.output
             assert "This will remove 1 session(s):" in result.output
-            assert "half-provider (incomplete, no metadata)" in result.output
+            assert "half-provider (incomplete, not a full session)" in result.output
             assert "Cancelled" in result.output
             assert half.exists()
         finally:

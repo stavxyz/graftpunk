@@ -8,6 +8,27 @@ if TYPE_CHECKING:
     from typing import Any
 
 
+def check_slot_name(name: str) -> None:
+    """Raise ``ValueError`` unless *name* is a session name graftpunk could have saved.
+
+    Every backend calls it before deleting anything under a slot: an empty
+    name, ``.``, ``..``, or a name with a path separator would otherwise reach
+    the sessions directory itself or a bucket's root.
+    """
+    from graftpunk.session_identity import validate_session_name
+
+    validate_session_name(name)
+
+
+def is_slot_name(name: str) -> bool:
+    """Whether *name* passes :func:`check_slot_name`."""
+    try:
+        check_slot_name(name)
+    except ValueError:
+        return False
+    return True
+
+
 def parse_datetime_iso(value: str | None) -> datetime | None:
     """Parse ISO datetime string to datetime with UTC timezone.
 
@@ -217,7 +238,8 @@ class SessionStorageBackend(Protocol):
         """Slots holding objects but no complete session, sorted.
 
         :meth:`list_sessions` leaves them out; clearing every session removes
-        them.
+        them. Only a name that passes :func:`check_slot_name` is one: anything
+        else stored there is not graftpunk's to delete.
         """
         ...
 
@@ -226,6 +248,10 @@ class SessionStorageBackend(Protocol):
 
         Returns:
             The keys or paths deleted; empty when there was nothing
+
+        Raises:
+            ValueError: *name* is not a session name (:func:`check_slot_name`),
+                raised before the backend is called
         """
         ...
 

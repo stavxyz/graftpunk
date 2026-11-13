@@ -18,7 +18,9 @@ from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
     UNCHANGED,
     SessionMetadata,
+    check_slot_name,
     dict_to_metadata,
+    is_slot_name,
     metadata_to_dict,
 )
 
@@ -430,7 +432,7 @@ class LocalSessionStorage:
         A crash during a save, an older release, or a hand-made copy can
         leave one. They are not sessions (:meth:`list_sessions` leaves them
         out, and loading one fails), but clearing every session removes them
-        too.
+        too. A directory whose name is no session name is never one.
         """
         if not self.base_dir.exists():
             return []
@@ -439,7 +441,7 @@ class LocalSessionStorage:
                 item.name
                 for item in self.base_dir.iterdir()
                 if item.is_dir()
-                and not item.name.startswith(".")
+                and is_slot_name(item.name)
                 and not ((item / "session.pickle").exists() and (item / "metadata.json").exists())
             )
         except OSError as exc:
@@ -452,7 +454,12 @@ class LocalSessionStorage:
         Paths are relative to the sessions directory. A legacy flat-file
         session is deleted when there is no directory. Empty when nothing was
         there or the delete failed (logged).
+
+        Raises:
+            ValueError: *name* is not a session name (``""``, ``.`` and ``..``
+                would be the sessions directory or its parent).
         """
+        check_slot_name(name)
         session_dir = self.base_dir / name
 
         if session_dir.is_dir():

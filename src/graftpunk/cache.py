@@ -39,7 +39,12 @@ from graftpunk.session_identity import (
     split_session_name,
     validate_session_name,  # public re-export
 )
-from graftpunk.storage.base import SessionMetadata, metadata_to_dict
+from graftpunk.storage.base import (
+    SessionMetadata,
+    check_slot_name,
+    is_slot_name,
+    metadata_to_dict,
+)
 
 if TYPE_CHECKING:
     from graftpunk.graftpunk_session import GraftpunkSession
@@ -1017,7 +1022,12 @@ def remove_session_objects(name: str, backend_override: str | None = None) -> li
 
     Unlike :func:`clear_session_cache`, which returns session names, this
     reports each object, so a caller can show that nothing was left behind.
+
+    Raises:
+        ValueError: *name* is not a session name (``""``, ``.``, ``..``, a
+            path separator), before any backend is created or called.
     """
+    check_slot_name(name)
     backend = _get_session_storage_backend(backend_override=backend_override)
     return backend.remove_session(name)
 
@@ -1048,6 +1058,11 @@ def clear_session_cache(
     # they are not listed, but loading one says to clear.
     leftovers = list_incomplete_sessions(backend_override=backend_override)
     for name in [*backend.list_sessions(), *leftovers]:
+        if not is_slot_name(name):
+            # A slot an older release saved under a name the rules now refuse:
+            # never deleted by a sweep (check_slot_name).
+            LOG.warning("session_not_cleared_invalid_name", name=name)
+            continue
         if backend.delete_session(name):
             removed.append(name)
 
