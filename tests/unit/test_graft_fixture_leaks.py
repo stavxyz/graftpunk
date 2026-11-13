@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -1571,3 +1572,36 @@ def test_account_values_beside_graphql_names_are_still_reported(
     result = _run(tmp_path, json.dumps(capture), fixture)
     assert result.returncode == 1
     assert f"still in the fixture: {value!r}" in result.stdout
+
+
+_KEYED = {"viewer": {"login": "pat", "orders": {"totalCount": 2}, "displayName": "Pat"}}
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "user login aokonkwo is locked",
+        "cannot read orders of aokonkwo",
+        "the viewer jsmith has no orders",
+        "no orders for aokonkwo",
+    ],
+)
+@pytest.mark.parametrize(
+    "form",
+    [
+        lambda m: json.dumps({"errors": [{"message": m}]}),
+        lambda m: f"ERROR = {{'message': {m!r}}}\n",
+        lambda m: f"{m}\n",
+    ],
+    ids=["json", "python", "text"],
+)
+def test_a_value_beside_a_field_name_in_an_error_message_is_still_reported(
+    tmp_path: Path, message: str, form: Callable[[str], str]
+) -> None:
+    """A field name in a message is skipped by splitting the message at it, so the
+    text on each side, a lowercase username with it, is still looked for."""
+    capture = json.dumps({"data": _KEYED, "errors": [{"message": message, "path": ["viewer"]}]})
+    result = _run(tmp_path, capture, form(message))
+    assert result.returncode == 1, result.stdout
+    user = "jsmith" if "jsmith" in message else "aokonkwo"
+    assert any(user in value for value in _survivors(result.stdout)), result.stdout

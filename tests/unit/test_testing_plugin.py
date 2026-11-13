@@ -476,7 +476,9 @@ def test_both_copies_skip_graphql_names_in_tracing_errors_and_a_sort_order() -> 
     )
     assert recorded._body_values(text) == [
         "aokonkwo",
-        "No        on      for ann@myshop.example",
+        "No",
+        "on",
+        "for ann@myshop.example",
         "ORD-4471023",
         "1",
     ]
@@ -520,6 +522,7 @@ def _random_text(rng: random.Random) -> str:
             "errors": [
                 {
                     "path": [rng.choice([*words, 0]) for _ in range(rng.randint(0, 3))],
+                    "message": " ".join(rng.choice([*words, "for", "no"]) for _ in range(4)),
                     "extensions": {"requestedFields": [rng.choice(words) for _ in range(2)]},
                 }
             ],

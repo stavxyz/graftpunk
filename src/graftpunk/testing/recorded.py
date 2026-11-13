@@ -76,7 +76,8 @@ _CAMEL_CASE = re.compile(r"[a-z]+(?:[A-Z][a-z]+)+\Z")
 # an identifier under either that names a schema key or a type of the same body
 # (a tracing resolver's fieldName and parentType, an error's requestedFields) is
 # the schema's, not account data, and so is such a name standing as a word of a
-# longer string there ("Cannot query field displayName on type User").
+# longer string there ("Cannot query field displayName on type User"): the string
+# is split at it, and the text on each side is kept as a value of its own.
 _GRAPHQL_META = ("errors", "extensions")
 # A word of a longer string that can be a name: an identifier with nothing that
 # continues a word, an address or a path on either side, so neither part of
@@ -262,9 +263,10 @@ def _schema_names(node: object, keys: set[str], types: set[str]) -> None:
 def _without_names(
     node: object, drop: Callable[[str], bool], words: frozenset[str] = frozenset()
 ) -> object:
-    """*node* without each string value, at any depth, that *drop* holds a name,
-    and with each word of another string that is in *words* blanked; keys are
-    left as they are."""
+    """*node* without each string value, at any depth, that *drop* holds a name;
+    another string holding a word in *words* becomes the list of the non-empty
+    texts between such words, so a value beside a name (``"no orders for
+    aokonkwo"``) is still a value. Keys are left as they are."""
     if isinstance(node, dict):
         return {key: _without_names(value, drop, words) for key, value in node.items()}
     if isinstance(node, list):
@@ -277,9 +279,14 @@ def _without_names(
         if drop(node):
             return None
         if words:
-            return _NAME_WORD.sub(
-                lambda m: " " * len(m.group(0)) if m.group(0) in words else m.group(0), node
-            )
+            pieces, at = [], 0
+            for match in _NAME_WORD.finditer(node):
+                if match.group(0) in words:
+                    pieces.append(node[at : match.start()])
+                    at = match.end()
+            if at:
+                pieces.append(node[at:])
+                return [piece.strip() for piece in pieces if piece.strip()]
     return node
 
 
@@ -288,9 +295,9 @@ def _without_field_names(document: object) -> object:
     operation names it holds as values: its ``operationName``, its
     ``extensions.operationName``, the names in each ``errors[*].path``, an
     identifier under ``errors`` or ``extensions`` equal to a schema key or a type
-    name of the same body (blanked where it is a word of a longer string there,
-    such as an error's message), and a camelCase identifier anywhere equal to a
-    schema key of the same body."""
+    name of the same body (where it is a word of a longer string there, such as
+    an error's message, the string is split at it and the rest kept), and a
+    camelCase identifier anywhere equal to a schema key of the same body."""
     if not isinstance(document, dict):
         return document
     document = dict(document)
