@@ -9,19 +9,35 @@ the "session expired" primitive).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
 
-from graftpunk.exceptions import CommandError, SessionRejectedError, UnexpectedResponseError
+from graftpunk.exceptions import (
+    MAX_RETRY_AFTER,
+    CommandError,
+    HTTPStatusError,
+    RateLimitedError,
+    SessionRejectedError,
+    SiteServerError,
+    UnexpectedResponseError,
+)
 from graftpunk.har.documents import is_login_document
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 
 _REJECTED_STATUSES = frozenset({401, 403})
+# Leading zeros aside, a delay of more digits than this is over the cap.
+_MAX_RETRY_AFTER_DIGITS = 16
+# The 5xx answers that mean the site is failing for now (RFC 9110 15.6). A 501
+# or 505 says the request will never work, so it keeps the plain wording.
+_SERVER_TROUBLE_STATUSES = frozenset({500, 502, 503, 504})
 _ROLES_WARNED_ATTR = "_gp_roles_unavailable_warned"
 # The request arguments whose values a site reads as text, so a Python value
 # has to be spelled the way the site spells it.
@@ -31,11 +47,43 @@ _NORMALISED_ARGUMENTS = ("params", "data")
 # does not recognise either.
 _BOOLEAN_TEXT = {True: "true", False: "false"}
 
-__all__ = ["SiteRequests"]
+__all__ = ["SiteRequests", "error_for_status"]
 
 
 def _path_of(url: str | None) -> str:
     return urlparse(url or "").path or "/"
+
+
+def _retry_after_seconds(value: str | None, now: datetime | None = None) -> int | None:
+    """A ``Retry-After`` header as whole seconds to wait, or ``None`` when unusable.
+
+    RFC 9110 10.2.3 allows delay-seconds or an HTTP date. Anything else is
+    dropped rather than echoed, since the header is the site's text, and so is
+    a wait longer than ``MAX_RETRY_AFTER`` (one day): the header's length and
+    value are the site's to choose, and neither may reach the user's terminal
+    as an absurd number or an error.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    try:
+        if value.isascii() and value.isdigit():
+            # Bounded before int(): past 4300 digits int() raises ValueError,
+            # and anything longer than this is over the cap anyway. Leading
+            # zeros carry no value, so "00...030" is still 30 seconds.
+            digits = value.lstrip("0") or "0"
+            if len(digits) > _MAX_RETRY_AFTER_DIGITS:
+                return None
+            seconds = int(digits)
+        else:
+            when = parsedate_to_datetime(value)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=UTC)
+            delay = (when - (now or datetime.now(UTC))).total_seconds()
+            seconds = max(0, math.ceil(delay))
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    return seconds if seconds <= MAX_RETRY_AFTER else None
 
 
 def _normalised_value(value: Any) -> Any:
@@ -62,6 +110,35 @@ def _normalised_arguments(mapping: Any) -> Any:
     if not isinstance(mapping, Mapping):
         return mapping
     return {key: _normalised_value(value) for key, value in mapping.items() if value is not None}
+
+
+def error_for_status(plugin_name: str, response: requests.Response) -> CommandError | None:
+    """The error a 4xx or 5xx *response* means, or ``None`` below 400: the one
+    status policy ``request_json``/``request_text`` raise and the CLI applies
+    to a ``requests.HTTPError`` a command let escape.
+
+    401/403 are :class:`SessionRejectedError` with the login hint, 429
+    :class:`RateLimitedError` with the ``Retry-After`` wait, 500/502/503/504
+    :class:`SiteServerError`, and any other status :class:`HTTPStatusError`.
+    Each message names the method and path only, never the query.
+    """
+    method = (response.request.method if response.request is not None else None) or "GET"
+    path = _path_of(response.url)
+    # requests types status_code as int | None; a response object that
+    # reached this point always has one set, so 0 here is unreachable in
+    # practice and only satisfies the type checker.
+    status = response.status_code or 0
+    if status in _REJECTED_STATUSES:
+        return SessionRejectedError(plugin_name, method, path, status)
+    if status == 429:
+        return RateLimitedError(
+            method, path, _retry_after_seconds(response.headers.get("Retry-After"))
+        )
+    if status in _SERVER_TROUBLE_STATUSES:
+        return SiteServerError(method, path, status)
+    if status >= 400:
+        return HTTPStatusError(method, path, status)
+    return None
 
 
 class SiteRequests:
@@ -93,16 +170,9 @@ class SiteRequests:
         return self._session.request(method, full_url, **kwargs)
 
     def _raise_for_rejection(self, response: requests.Response) -> None:
-        method = (response.request.method if response.request is not None else None) or "GET"
-        path = _path_of(response.url)
-        # requests types status_code as int | None; a response object that
-        # reached this point always has one set, so 0 here is unreachable in
-        # practice and only satisfies the type checker.
-        status = response.status_code or 0
-        if status in _REJECTED_STATUSES:
-            raise SessionRejectedError(self._plugin_name, method, path, status)
-        if status >= 400:
-            raise CommandError(f"{method} {path} returned {status}")
+        error = error_for_status(self._plugin_name, response)
+        if error is not None:
+            raise error
 
     def json(self, method: str, url: str, *, role: str = "xhr", **kwargs: Any) -> Any:
         """Send *method* *url* with role headers; return the parsed JSON body.
@@ -117,7 +187,10 @@ class SiteRequests:
             UnexpectedResponseError: A 2xx whose body is neither JSON nor a
                 login page, or that declares JSON but does not parse as JSON
                 (a truncated response).
-            CommandError: Any other 4xx or 5xx.
+            RateLimitedError: 429, with the ``Retry-After`` wait when given.
+            SiteServerError: 500, 502, 503 or 504.
+            HTTPStatusError: Any other 4xx or 5xx. All three are
+                ``CommandError`` subclasses carrying ``status``.
         """
         response = self._send(method, url, role, **kwargs)
         self._raise_for_rejection(response)
@@ -145,7 +218,8 @@ class SiteRequests:
         request entirely.
 
         Rejection is detected by status only, so an HTML endpoint's real
-        2xx body is never mistaken for an expired session.
+        2xx body is never mistaken for an expired session. A 4xx or 5xx
+        raises what :meth:`json` raises for it.
         """
         response = self._send(method, url, role, **kwargs)
         self._raise_for_rejection(response)

@@ -103,9 +103,22 @@ def _plugin(site: str, spec: PluginParamSpec) -> SitePlugin:
             ctx.session.post(f"{self.base_url}/login", data=b"\xff\xfe" + key.encode())
             return {}
 
-        @command(help="Fail with the key in the URL", params=[spec])
+        @command(help="Crash with the key in the URL", params=[spec])
         def fail(self, ctx: Any, api_key: str | None = None) -> dict[str, Any]:
+            # An unexpected error naming the URL, for the crash path and its
+            # logged traceback; an HTTPError's status is reported as advice
+            # instead (#203), which status_fail exercises.
+            response = ctx.session.get(f"{self.base_url}/error", params={"key": api_key})
+            raise RuntimeError(f"no handler for url: {response.url}")
+
+        @command(help="Fail on the status with the key in the URL", params=[spec])
+        def status_fail(self, ctx: Any, api_key: str | None = None) -> dict[str, Any]:
             ctx.session.get(f"{self.base_url}/error", params={"key": api_key}).raise_for_status()
+            return {}
+
+        @command(help="Fail on the status with the key in the URL path", params=[spec])
+        def status_fail_path(self, ctx: Any, api_key: str | None = None) -> dict[str, Any]:
+            ctx.session.get(f"{self.base_url}/accounts/{api_key}").raise_for_status()
             return {}
 
         @command(help="Refuse with the key in the message", params=[spec])
@@ -354,7 +367,7 @@ class TestNoEcho:
 
         output = strip_ansi(result.output)
         assert result.exit_code == 1
-        assert f"Command failed: 404 Client Error: Not Found for url: {site}" in output
+        assert f"Command failed: no handler for url: {site}" in output
         assert f"/error?key={REDACTED}" in output
         _assert_no_form(output)
         logs = read_logs()
@@ -363,8 +376,62 @@ class TestNoEcho:
         assert failed["level"] == "error"
         # The traceback is kept, scrubbed.
         assert failed["exception"].startswith("Traceback (most recent call last):")
-        assert f"HTTPError: 404 Client Error: Not Found for url: {site}" in (failed["exception"])
+        assert f"RuntimeError: no handler for url: {site}" in failed["exception"]
         assert f"/error?key={REDACTED}" in failed["exception"]
+
+    @pytest.mark.parametrize("observe_mode", ["off", "full"])
+    def test_a_status_error_prints_its_advice_and_logs_no_secret_and_no_traceback(
+        self,
+        site: str,
+        tmp_path: Path,
+        observe_mode: str,
+        gp_json_logs: JsonLogs,
+    ) -> None:
+        read_logs = gp_json_logs()
+        spec = PluginParamSpec.option("api_key", secret=True)
+        with patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path):
+            result = _invoke(
+                _plugin(site, spec),
+                ["status-fail", "--api-key", API_KEY],
+                obj={"observe_mode": observe_mode},
+            )
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 1
+        assert "GET /error returned 404" in output
+        assert "Command failed" not in output
+        _assert_no_form(output)
+        logs = read_logs()
+        _assert_no_form(json.dumps(logs))
+        assert not [e for e in logs if e["event"] == "plugin_command_failed"]
+        (http_error,) = [e for e in logs if e["event"] == "plugin_command_http_error"]
+        assert http_error["level"] == "debug"
+        assert http_error["status"] == 404
+        assert "exception" not in http_error
+        assert http_error["error"] == (
+            f"404 Client Error: Not Found for url: {site}/error?key={REDACTED}"
+        )
+
+    @pytest.mark.parametrize("observe_mode", ["off", "full"])
+    def test_a_secret_in_the_url_path_is_redacted_from_the_advice_line(
+        self, site: str, tmp_path: Path, observe_mode: str, gp_json_logs: JsonLogs
+    ) -> None:
+        """The advice line names the path, so a secret option sent in the path
+        reaches it; the CLI must redact it there (#203)."""
+        read_logs = gp_json_logs()
+        spec = PluginParamSpec.option("api_key", secret=True)
+        with patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path):
+            result = _invoke(
+                _plugin(site, spec),
+                ["status-fail-path", "--api-key", API_KEY],
+                obj={"observe_mode": observe_mode},
+            )
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 1
+        assert f"GET /accounts/{REDACTED} returned 404" in output
+        _assert_no_form(output)
+        _assert_no_form(json.dumps(read_logs()))
 
     def test_the_traceback_renders_scrubbed_in_the_console_format(
         self, site: str, gp_console_logs: Callable[[], Callable[[], str]]
@@ -967,7 +1034,13 @@ class TestWhatASecretCannotBe:
 
 
 def _yaml_plugin(
-    tmp_path: Path, site: str, param: str, *, url: str = "/home", headers: str = ""
+    tmp_path: Path,
+    site: str,
+    param: str,
+    *,
+    url: str = "/home",
+    headers: str = "",
+    raise_for_status: bool = False,
 ) -> SitePlugin:
     from graftpunk.plugins.yaml_loader import parse_yaml_plugin
     from graftpunk.plugins.yaml_plugin import create_yaml_site_plugin
@@ -982,7 +1055,7 @@ commands:
   search:
     help: "Search with a key"
     url: "{url}"
-    raise_for_status: false
+    raise_for_status: {"true" if raise_for_status else "false"}
 {headers}    params:
 {param}
 """
@@ -1023,6 +1096,23 @@ class TestYaml:
         (not_json,) = [e for e in logs if e["event"] == "json_parse_failed_returning_text"]
         assert request["url"] == f"{site}/home/{REDACTED}"
         assert not_json["url"] == f"{site}/home/{REDACTED}"
+
+    def test_a_secret_in_a_yaml_url_path_is_redacted_from_the_advice_line(
+        self, site: str, tmp_path: Path, gp_json_logs: JsonLogs
+    ) -> None:
+        """raise_for_status on a 404 whose path holds the secret: the advice
+        line names the path, redacted (#203)."""
+        read_logs = gp_json_logs()
+        plugin = _yaml_plugin(
+            tmp_path, site, SECRET_PARAM, url="/accounts/{api_key}", raise_for_status=True
+        )
+        result = _invoke(plugin, ["search", "--api-key", API_KEY])
+
+        output = strip_ansi(result.output)
+        assert result.exit_code == 1
+        assert f"GET /accounts/{REDACTED} returned 404" in output
+        _assert_no_form(output)
+        _assert_no_form(json.dumps(read_logs()))
 
     def test_a_plain_yaml_param_is_recorded_as_before(self, site: str, tmp_path: Path) -> None:
         plugin = _yaml_plugin(tmp_path, site, "      - name: api_key\n")

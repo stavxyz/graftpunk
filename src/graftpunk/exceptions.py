@@ -105,6 +105,67 @@ class SessionRejectedError(CommandError):
         )
 
 
+class HTTPStatusError(CommandError):
+    """``request_json`` or ``request_text`` got a 4xx or 5xx other than 401 and 403.
+
+    Carries ``status`` so a plugin can treat one status differently from
+    another without reading it back out of the message. 429 raises
+    :class:`RateLimitedError` and 500, 502, 503 and 504 raise
+    :class:`SiteServerError`, both subclasses of this one.
+    """
+
+    def __init__(self, method: str, path: str, status: int, advice: str = "") -> None:
+        self.method = method
+        self.path = path
+        self.status = status
+        message = f"{method} {path} returned {status}"
+        super().__init__(f"{message}: {advice}" if advice else message)
+
+
+# The longest Retry-After wait reported, in seconds (one day). A longer one is
+# treated as unusable: a site asking for days is better read as "a while" than
+# as a number the user cannot act on.
+MAX_RETRY_AFTER = 86400
+
+
+class RateLimitedError(HTTPStatusError):
+    """A 429: the site is limiting how often the session may ask.
+
+    ``retry_after`` is the wait the site asked for, in whole seconds, read from
+    a ``Retry-After`` header given as seconds or as an HTTP date; ``None`` when
+    the response carried no usable one, including a wait over
+    ``MAX_RETRY_AFTER`` (one day) or below zero.
+    """
+
+    def __init__(self, method: str, path: str, retry_after: int | None) -> None:
+        if retry_after is not None and not 0 <= retry_after <= MAX_RETRY_AFTER:
+            retry_after = None
+        self.retry_after = retry_after
+        if retry_after is None:
+            when = "Wait a while and try again."
+        elif retry_after == 0:
+            when = "Try again now."
+        else:
+            when = f"Try again in {_duration(retry_after)}."
+        super().__init__(method, path, 429, f"the site is rate limiting requests. {when}")
+
+
+class SiteServerError(HTTPStatusError):
+    """A 500, 502, 503 or 504: the site failed to answer, not the request."""
+
+    def __init__(self, method: str, path: str, status: int) -> None:
+        super().__init__(method, path, status, "the site is having trouble. Try again later.")
+
+
+def _duration(seconds: int) -> str:
+    if seconds < 120:
+        return f"{seconds} second{'s' if seconds != 1 else ''}"
+    minutes = -(-seconds // 60)
+    if minutes < 120:
+        return f"{minutes} minutes"
+    return f"{-(-minutes // 60)} hours"
+
+
 class UnexpectedResponseError(CommandError):
     """``request_json`` got a 2xx whose body is neither JSON nor a login page."""
 
