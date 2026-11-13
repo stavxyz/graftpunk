@@ -482,17 +482,27 @@ class LocalSessionStorage:
 
         if session_dir.is_dir():
             files = self._files_in(session_dir)
+            errors: list[str] = []
+
+            def keep_going(_func: object, path: object, exc: object) -> None:
+                # rmtree goes on past a file it cannot delete, so everything that
+                # can go does, whatever order the Python version walks in.
+                errors.append(f"{path}: {exc}")
+
             try:
-                shutil.rmtree(session_dir)
+                if sys.version_info >= (3, 12):
+                    shutil.rmtree(session_dir, onexc=keep_going)
+                else:
+                    shutil.rmtree(session_dir, onerror=keep_going)
             except OSError as exc:
+                errors.append(str(exc))
+            if errors:
                 remaining = self._files_in(session_dir) or [f"{name}/"]
                 kept = set(remaining)
-                LOG.error(
-                    "failed_to_delete_session", name=name, error=str(exc), remaining=remaining
-                )
+                LOG.error("failed_to_delete_session", name=name, errors=errors, remaining=remaining)
                 raise SessionNotFullyClearedError(
                     name, [f for f in files if f not in kept], remaining
-                ) from exc
+                )
             LOG.info("session_delete_completed", name=name, structure="directory", paths=files)
             # An empty directory is still a slot the caller asked to remove.
             return files or [f"{name}/"]
