@@ -78,7 +78,7 @@ async def _run_observe_go_with_fake_browser(base_dir: Path, namespace: str) -> N
     with (
         patch.dict("sys.modules", {"nodriver": nodriver}),
         patch("graftpunk.cli.observe_browser.OBSERVE_BASE_DIR", base_dir),
-        patch("graftpunk.observe.capture.NodriverCaptureBackend", return_value=backend),
+        patch("graftpunk.cli.observe_browser.NodriverCaptureBackend", return_value=backend),
     ):
         await run_observe_go(
             namespace, "https://example.com", 0.0, 5 * 1024 * 1024, session_name=None
