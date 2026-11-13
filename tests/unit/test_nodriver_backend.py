@@ -7363,7 +7363,7 @@ class TestNoDriverBackendChromeInItsOwnSession:
 
         async def login() -> None:
             async with BrowserSession(backend="nodriver", headless=True):
-                os.kill(os.getpid(), signal.SIGINT)
+                signal.raise_signal(signal.SIGINT)
                 await asyncio.sleep(30)
 
         with patch.dict("sys.modules", {"nodriver": self._nodriver_spawning_children(spawned)}):

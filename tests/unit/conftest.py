@@ -52,6 +52,60 @@ def _wide_consoles(monkeypatch):  # noqa: ANN001, ANN201
         monkeypatch.setattr(console, "width", 220)
 
 
+def signals_the_suite(target: int, *, group: bool, sig: int) -> str | None:
+    """Why signalling *target* would reach the process running the tests, or None.
+
+    *target* is what ``os.kill`` (``group=False``) or ``os.killpg`` (``group=True``)
+    was given. Signal 0 delivers nothing and only asks whether a process exists, so
+    it is always allowed. Otherwise refused: this process, its parent (the xdist
+    controller, or the shell that started pytest), and this process's group, which
+    holds the controller and every other worker, whether named as a group, as
+    ``0`` (the caller's own group), or as ``-1`` (every process the caller may
+    signal).
+    """
+    if sig == 0:
+        return None
+    own_group = os.getpgid(0) if hasattr(os, "getpgid") else None
+    if group:
+        if target in (0, own_group):
+            return f"process group {target}, which holds the test run"
+        return None
+    if target in (os.getpid(), os.getppid()):
+        return f"pid {target}, the test run itself"
+    if target in (0, -1) or (own_group is not None and target == -own_group):
+        return f"pid {target}, which reaches the test run's process group"
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _never_signal_the_suite(monkeypatch):  # noqa: ANN001, ANN201
+    """No unit test may send a signal to the test run, its parent or its process
+    group; such a send ends with a test failure naming it instead of being sent.
+
+    A signal that reaches the xdist controller or a sibling worker ends or stalls
+    the whole run with no report of which test sent it.
+    """
+    real_kill = os.kill
+    real_killpg = getattr(os, "killpg", None)
+
+    def kill(pid: int, sig: int) -> None:
+        reason = signals_the_suite(pid, group=False, sig=sig)
+        if reason is not None:
+            pytest.fail(f"a unit test tried to send signal {sig} to {reason}", pytrace=True)
+        real_kill(pid, sig)
+
+    monkeypatch.setattr(os, "kill", kill)
+    if real_killpg is not None:
+
+        def killpg(pgid: int, sig: int) -> None:
+            reason = signals_the_suite(pgid, group=True, sig=sig)
+            if reason is not None:
+                pytest.fail(f"a unit test tried to send signal {sig} to {reason}", pytrace=True)
+            real_killpg(pgid, sig)
+
+        monkeypatch.setattr(os, "killpg", killpg)
+
+
 @pytest.fixture(autouse=True)
 def _disarm_chrome_orphan_cleanup(monkeypatch):  # noqa: ANN001, ANN201
     """No unit test may signal a process or delete a directory it does not own.
