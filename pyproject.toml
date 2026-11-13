@@ -187,6 +187,7 @@ markers = [
     "unit: Unit tests",
     "integration: Integration tests",
     "real_browser: may start a real Chrome or chromedriver (exempt from the unit suite's guard)",
+    "signals_itself: raises a signal on its own test process on purpose (allowed raise_signal and pthread_kill by the unit suite's signal guard)",
 ]
 
 [tool.coverage.run]

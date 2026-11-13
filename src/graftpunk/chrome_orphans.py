@@ -201,7 +201,9 @@ class ProcessOps:
     """
 
     read_table: Callable[[], str] = _read_ps_table
-    kill: Callable[[int, int], None] = os.kill
+    # Looked up at call time, not bound at import, so a test's patch of os.kill
+    # (the unit suite's signal guard) covers the reaper too.
+    kill: Callable[[int, int], None] = lambda pid, sig: os.kill(pid, sig)  # noqa: E731
     pid_alive: Callable[[int], bool] = _pid_alive
     sleep: Callable[[float], None] = time.sleep
     monotonic: Callable[[], float] = time.monotonic

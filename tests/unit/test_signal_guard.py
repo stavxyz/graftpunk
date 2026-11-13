@@ -71,3 +71,59 @@ def test_os_kill_of_this_process_fails_the_test_instead_of_sending() -> None:
     finally:
         signal.signal(signal.SIGUSR1, previous)
     assert received == []
+
+
+def _with_sigusr1_recorded(send) -> list[int]:  # noqa: ANN001
+    """Run *send* with a SIGUSR1 handler that records instead of ending the worker,
+    and return what it recorded."""
+    received: list[int] = []
+    previous = signal.signal(signal.SIGUSR1, lambda signum, _frame: received.append(signum))
+    try:
+        send()
+    finally:
+        signal.signal(signal.SIGUSR1, previous)
+    return received
+
+
+def test_raise_signal_fails_the_test_instead_of_raising() -> None:
+    def send() -> None:
+        with pytest.raises(pytest.fail.Exception, match="signals_itself"):
+            signal.raise_signal(signal.SIGUSR1)
+
+    assert _with_sigusr1_recorded(send) == []
+
+
+def test_pthread_kill_fails_the_test_instead_of_sending() -> None:
+    import threading
+
+    def send() -> None:
+        with pytest.raises(pytest.fail.Exception, match="signals_itself"):
+            signal.pthread_kill(threading.get_ident(), signal.SIGUSR1)
+
+    assert _with_sigusr1_recorded(send) == []
+
+
+@pytest.mark.signals_itself
+def test_a_test_marked_signals_itself_can_raise_a_signal_on_itself() -> None:
+    assert _with_sigusr1_recorded(lambda: signal.raise_signal(signal.SIGUSR1)) == [signal.SIGUSR1]
+
+
+@pytest.mark.signals_itself
+def test_the_mark_does_not_open_os_kill() -> None:
+    def send() -> None:
+        with pytest.raises(pytest.fail.Exception, match="the test run itself"):
+            os.kill(os.getpid(), signal.SIGUSR1)
+
+    assert _with_sigusr1_recorded(send) == []
+
+
+def test_the_orphan_reaper_kills_through_the_guarded_os_kill() -> None:
+    """chrome_orphans' default operations look os.kill up when they send, so the
+    guard covers the reaper too (review 2, N2)."""
+    from graftpunk.chrome_orphans import DEFAULT_OPS
+
+    def send() -> None:
+        with pytest.raises(pytest.fail.Exception, match="the test run itself"):
+            DEFAULT_OPS.kill(os.getpid(), signal.SIGUSR1)
+
+    assert _with_sigusr1_recorded(send) == []

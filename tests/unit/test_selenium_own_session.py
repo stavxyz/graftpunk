@@ -598,6 +598,7 @@ class TestAPlainSeleniumLogin:
 
         self._assert_ended(fake_uc.created[0])
 
+    @pytest.mark.signals_itself
     def test_a_ctrl_c_ends_both(
         self, handlers_installed: None, fake_uc: type[_FakeUcChrome]
     ) -> None:

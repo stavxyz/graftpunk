@@ -7349,6 +7349,7 @@ class TestNoDriverBackendChromeInItsOwnSession:
         assert event["pid"] == spawned[0].pid
         assert "Ctrl+C" in event["consequence"]
 
+    @pytest.mark.signals_itself
     def test_a_ctrl_c_during_a_plain_login_still_ends_chrome(self) -> None:
         """The login engine's shape: ``async with BrowserSession`` under
         ``asyncio.run``, a real SIGINT to this process while the login waits.

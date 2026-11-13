@@ -78,15 +78,47 @@ def signals_the_suite(target: int, *, group: bool, sig: int) -> str | None:
 
 
 @pytest.fixture(autouse=True)
-def _never_signal_the_suite(monkeypatch):  # noqa: ANN001, ANN201
+def _never_signal_the_suite(request, monkeypatch):  # noqa: ANN001, ANN201
     """No unit test may send a signal to the test run, its parent or its process
-    group; such a send ends with a test failure naming it instead of being sent.
+    group through ``os.kill``, ``os.killpg``, ``signal.raise_signal`` or
+    ``signal.pthread_kill``; such a send ends with a test failure naming it
+    instead of being sent.
 
     A signal that reaches the xdist controller or a sibling worker ends or stalls
-    the whole run with no report of which test sent it.
+    the whole run with no report of which test sent it. What an in-process patch
+    cannot see stays out of reach: a ``kill`` command run in a subprocess, and a
+    child process that signals its parent. A test that raises a signal on itself
+    on purpose (a Ctrl+C under a handler it installed) is marked
+    ``signals_itself``, which allows ``raise_signal`` and ``pthread_kill`` for it
+    and nothing else.
     """
     real_kill = os.kill
     real_killpg = getattr(os, "killpg", None)
+
+    if request.node.get_closest_marker("signals_itself") is None:
+
+        def raise_signal(sig: int) -> None:
+            pytest.fail(
+                f"a unit test tried to raise signal {sig} on the test run; mark it "
+                "signals_itself if that is the point of the test",
+                pytrace=True,
+            )
+
+        def pthread_kill(thread_id: int, sig: int) -> None:
+            if sig != 0:
+                pytest.fail(
+                    f"a unit test tried to send signal {sig} to a thread of the test run; "
+                    "mark it signals_itself if that is the point of the test",
+                    pytrace=True,
+                )
+            real_pthread_kill(thread_id, sig)
+
+        import signal as signal_module
+
+        real_pthread_kill = getattr(signal_module, "pthread_kill", None)
+        monkeypatch.setattr(signal_module, "raise_signal", raise_signal)
+        if real_pthread_kill is not None:
+            monkeypatch.setattr(signal_module, "pthread_kill", pthread_kill)
 
     def kill(pid: int, sig: int) -> None:
         reason = signals_the_suite(pid, group=False, sig=sig)
