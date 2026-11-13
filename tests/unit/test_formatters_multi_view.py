@@ -1255,3 +1255,15 @@ def _render_in_a_subprocess(tmp_path: Path, rows: list[dict[str, str]], width: i
     except subprocess.TimeoutExpired:
         pytest.fail("the table formatter did not return within 60 s")
     assert result.stdout.strip() == "rendered", result.stderr
+
+
+@pytest.mark.parametrize(
+    "text", ["a\u200d", "x\u200d y", "\U0001f468\u200d", "a\u200d\n", "\u200d"]
+)
+def test_a_zwj_with_nothing_to_join_renders(text: str) -> None:
+    """Rich 14.3.1's ``cell_len`` raises ``StopIteration`` (a ``RuntimeError``
+    from the generator around it) on a ZWJ at the end of a text or before
+    whitespace; such a ZWJ joins nothing and is dropped."""
+    buf = io.StringIO()
+    TableFormatter().format([{"k": text}], Console(file=buf, width=40))
+    assert "\u200d" not in buf.getvalue()

@@ -327,6 +327,8 @@ def _rich_safe(text: str) -> str:
       after whitespace, where it has nothing to attach to; inside a word or
       an emoji sequence it is kept (ZWJ and ZWNJ, emoji tag characters, bidi
       marks, combining marks);
+    - a ZWJ at the end of the text or before whitespace, with nothing to join,
+      is dropped: Rich 14.3.1 raises ``StopIteration`` measuring it;
     - a control character other than tab and newline (Cc) is drawn as U+FFFD.
 
     Text without such characters is returned as it is.
@@ -334,14 +336,22 @@ def _rich_safe(text: str) -> str:
     if text.isascii() and text.isprintable():
         return text
     out: list[str] = []
-    for c in text:
+    last = len(text) - 1
+    for i, c in enumerate(text):
         if unicodedata.category(c) == "Cc" and c not in _KEPT_CONTROLS:
             out.append("\ufffd")
             continue
         if (not out or out[-1].isspace()) and _no_width(c):
             continue
+        if c == _ZWJ and (i == last or text[i + 1].isspace()):
+            # Rich 14.3.1's cell_len raises StopIteration on a ZWJ with nothing
+            # after it to join ("a\u200d" and "a\u200d b" both raise).
+            continue
         out.append(c)
     return "".join(out)
+
+
+_ZWJ = "\u200d"
 
 
 def _no_width(c: str) -> bool:
