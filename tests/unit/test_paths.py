@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from graftpunk import paths
 
 
@@ -110,17 +112,21 @@ class TestOneResolver:
     ):
         import requests
 
-        from graftpunk.cache import cache_session, list_sessions
+        from graftpunk import cache, encryption, workstation_env
+        from graftpunk.cache import cache_session, load_session
 
         first = tmp_path / "first"
         later = tmp_path / "later"
         monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(first))
         settings = self._fresh_settings()
-        assert list_sessions() == []
-
-        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(later))
+        encryption.reset_encryption_key_cache()
         session = requests.Session()
         session.cookies.set("sid", "1", domain="myshop.example")
+        cache_session(session, "early")
+        first_key = (first / ".session_key").read_bytes()
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(later))
+        session.cookies.set("sid", "2", domain="myshop.example")
         cache_session(session, "myshop")
 
         assert settings.config_dir == paths.config_dir() == later
@@ -128,6 +134,79 @@ class TestOneResolver:
         assert paths.workstation_env_path() == later / "env"
         assert (later / "sessions" / "myshop").is_dir()
         assert not (first / "sessions" / "myshop").exists()
+        # The session went to the new directory with that directory's own key,
+        # so a fresh process there reads it back (#282 review).
+        assert (later / ".session_key").read_bytes() != first_key
+        encryption.reset_encryption_key_cache()
+        cache._reset_session_storage_backend()
+        workstation_env._invalidate_cache()
+        loaded = load_session("myshop")
+        assert loaded.cookies.get("sid", domain="myshop.example") == "2"
+
+    def test_the_workstation_env_file_follows_a_late_change(self, monkeypatch, tmp_path):
+        from graftpunk import workstation_env
+
+        first = tmp_path / "first"
+        later = tmp_path / "later"
+        for directory, user in ((first, "alice"), (later, "bob")):
+            directory.mkdir()
+            (directory / "env").write_text(f"MYSHOP_USERNAME={user}@myshop.example\n")
+            (directory / "env").chmod(0o600)
+        monkeypatch.delenv("MYSHOP_USERNAME", raising=False)
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(first))
+        self._fresh_settings()
+        assert (
+            workstation_env.load().resolve_file_value("MYSHOP_USERNAME") == "alice@myshop.example"
+        )
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(later))
+
+        assert workstation_env.load().resolve_file_value("MYSHOP_USERNAME") == "bob@myshop.example"
+
+    def test_a_static_config_dir_in_the_workstation_env_file_is_not_applied(
+        self, monkeypatch, tmp_path, captured_logs
+    ):
+        """The file cannot move the directory it lives in; it warns as the command form does."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        (config_dir / "env").write_text(f"GRAFTPUNK_CONFIG_DIR={tmp_path / 'elsewhere'}\n")
+        (config_dir / "env").chmod(0o600)
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(config_dir))
+
+        settings = self._fresh_settings()
+
+        assert settings.config_dir == config_dir
+        assert paths.workstation_env_path() == config_dir / "env"
+        assert not (tmp_path / "elsewhere").exists()
+        events = [
+            (e["event"], e.get("envvar"))
+            for e in captured_logs
+            if e["event"] == "workstation_env_static_unsupported_for_field"
+        ]
+        assert events == [("workstation_env_static_unsupported_for_field", "GRAFTPUNK_CONFIG_DIR")]
+
+    @pytest.mark.parametrize("env_file", [None, "other.env", ["missing.env", "other.env"]])
+    def test_the_dotenv_warning_reads_the_files_the_settings_read(
+        self, monkeypatch, tmp_path, captured_logs, env_file
+    ):
+        from graftpunk.config import GraftpunkSettings
+
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        (cwd / ".env").write_text(f"GRAFTPUNK_CONFIG_DIR={tmp_path / 'from-dotenv'}\n")
+        (cwd / "other.env").write_text(f"GRAFTPUNK_CONFIG_DIR={tmp_path / 'from-other'}\n")
+        monkeypatch.chdir(cwd)
+        monkeypatch.delenv("GRAFTPUNK_CONFIG_DIR", raising=False)
+
+        GraftpunkSettings(_env_file=env_file)
+
+        warnings = [e for e in captured_logs if e["event"] == "config_dir_in_dotenv_ignored"]
+        if env_file is None:
+            assert warnings == []
+        else:
+            [warning] = warnings
+            assert warning["env_file"] == str(cwd / "other.env")
+            assert warning["ignored"] == str(tmp_path / "from-other")
 
     def test_a_relative_or_tilde_value_resolves_to_an_absolute_path(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)

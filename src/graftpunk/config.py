@@ -105,8 +105,11 @@ class GraftpunkSettings(BaseSettings):
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize settings and create config directory."""
+        # The .env files this instance reads: the caller's _env_file when given
+        # (None turns them off), else the class default.
+        env_files = kwargs.get("_env_file", type(self).model_config.get("env_file"))
         super().__init__(**kwargs)
-        _warn_if_config_dir_only_in_dotenv(self.model_config.get("env_file"))
+        _warn_if_config_dir_only_in_dotenv(env_files)
         # Create config directory if it doesn't exist
         self.config_dir.mkdir(parents=True, exist_ok=True)
         # Create sessions subdirectory
@@ -189,32 +192,38 @@ class GraftpunkSettings(BaseSettings):
         )
 
 
-def _warn_if_config_dir_only_in_dotenv(env_file: object) -> None:
-    """Warn when a cwd .env sets GRAFTPUNK_CONFIG_DIR and the real environment does not.
+def _warn_if_config_dir_only_in_dotenv(env_files: object) -> None:
+    """Warn when a .env the settings read sets GRAFTPUNK_CONFIG_DIR and the real env does not.
 
     graftpunk reads the config directory from the real environment only
     (:func:`graftpunk.paths.config_dir`). Before #282 a ``.env``-only value
     moved the sessions and plugins but not the workstation env file, so the
     value is ignored now, and this says so instead of leaving a reader to
     find out from where their sessions went.
+
+    *env_files* is what pydantic-settings reads: one path, a list or tuple of
+    paths (a later file wins), or None for none.
     """
     import os
 
-    if os.environ.get(paths.CONFIG_DIR_ENV) or not isinstance(env_file, (str, os.PathLike)):
+    if os.environ.get(paths.CONFIG_DIR_ENV) or env_files is None:
         return
-    if not os.path.isfile(env_file):
-        return
+    candidates = list(env_files) if isinstance(env_files, (list, tuple)) else [env_files]
     from dotenv import dotenv_values
 
-    try:
-        values = dotenv_values(env_file)
-    except (OSError, ValueError):
-        return
-    ignored = next(
-        (value for key, value in values.items() if key.upper() == paths.CONFIG_DIR_ENV and value),
-        None,
-    )
-    if ignored is None:
+    env_file: str | os.PathLike[str] | None = None
+    ignored: str | None = None
+    for candidate in candidates:
+        if not isinstance(candidate, (str, os.PathLike)) or not os.path.isfile(candidate):
+            continue
+        try:
+            values = dotenv_values(candidate)
+        except (OSError, ValueError):
+            continue
+        for key, value in values.items():
+            if key.upper() == paths.CONFIG_DIR_ENV and value:
+                env_file, ignored = candidate, value
+    if env_file is None or ignored is None:
         return
     from graftpunk.logging import get_logger
 

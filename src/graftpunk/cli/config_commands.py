@@ -39,10 +39,15 @@ def render_settings_panel(target_console: Console) -> None:
     elif settings.storage_backend == "local":
         storage_display = f"{escape(str(settings.storage_backend))} [dim](filesystem)[/dim]"
 
+    env_path = paths.workstation_env_path()
+    env_display = escape(str(env_path))
+    if not env_path.exists():
+        env_display += " [dim](does not exist)[/dim]"
+
     info = f"""
 [dim]Config directory:[/dim]   {escape(str(settings.config_dir))}
 [dim]Sessions directory:[/dim] {escape(str(settings.sessions_dir))}
-[dim]Workstation env:[/dim]    {escape(str(paths.workstation_env_path()))}
+[dim]Workstation env:[/dim]    {env_display}
 [dim]Storage backend:[/dim]    {storage_display}
 [dim]Session TTL:[/dim]        {settings.session_ttl_hours}h ({settings.session_ttl_hours // 24}d)
 [dim]Log level:[/dim]          {settings.log_level}
