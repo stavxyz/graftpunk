@@ -589,17 +589,24 @@ _SHEET_NAME_REFUSED = str.maketrans(dict.fromkeys("[]:*?/\\", "_"))
 
 def _sheet_name(title: str, used: set[str]) -> str:
     """*title* as a worksheet name Excel takes: refused characters as ``_``,
-    no leading or trailing ``'``, at most 31 characters, never empty, and
-    numbered when an earlier sheet has it (compared without case, as Excel
-    does). Adds the name to *used*."""
-    base = visible_text(title).translate(_SHEET_NAME_REFUSED).strip("'")[:31] or "Sheet"
+    cut to 31 characters and only then stripped of ``'`` at both ends (a cut
+    could leave one at the end), never empty, and numbered when an earlier
+    sheet has it (compared without case, as Excel does). Adds the name to
+    *used*."""
+    base = _sheet_base(visible_text(title).translate(_SHEET_NAME_REFUSED), 31)
     name, number = base, 1
     while name.lower() in used:
         number += 1
         suffix = f" ({number})"
-        name = base[: 31 - len(suffix)] + suffix
+        name = _sheet_base(base, 31 - len(suffix)) + suffix
     used.add(name.lower())
     return name
+
+
+def _sheet_base(text: str, limit: int) -> str:
+    """*text* cut to *limit* characters, then stripped of ``'`` at both ends;
+    ``Sheet`` when nothing is left."""
+    return text[:limit].strip("'") or "Sheet"
 
 
 def _fits_a_float(value: numbers.Real | decimal.Decimal) -> bool:

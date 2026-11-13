@@ -858,6 +858,40 @@ class TestXlsxSheetNames:
             "Sheet",
         ]
 
+    @pytest.mark.parametrize(
+        ("titles", "names"),
+        [
+            pytest.param(["a" * 30 + "'b"], ["a" * 30], id="apostrophe-at-the-31st"),
+            pytest.param(["a" * 28 + "'''x"], ["a" * 28], id="apostrophes-at-the-cut"),
+            pytest.param(
+                ["x" * 26 + "'yyyy", "x" * 26 + "'yyyy"],
+                ["x" * 26 + "'yyyy", "x" * 26 + " (2)"],
+                id="apostrophe-before-a-numbered-suffix",
+            ),
+            pytest.param(
+                ["z" * 26 + "'", "z" * 26 + "'"], ["z" * 26, "z" * 26 + " (2)"], id="numbered"
+            ),
+            pytest.param(["'''"], ["Sheet"], id="only-apostrophes"),
+        ],
+    )
+    def test_a_cut_never_leaves_an_apostrophe_at_either_end(
+        self, tmp_path: Path, titles: list[str], names: list[str]
+    ) -> None:
+        """Stripping ``'`` before the cut to 31 characters let the cut leave one
+        at the end, and xlsxwriter raised."""
+        import openpyxl
+
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        cfg = OutputConfig(
+            views=[ViewConfig(name=f"v{i}", path=f"v{i}", title=t) for i, t in enumerate(titles)]
+        )
+        out = tmp_path / "out.xlsx"
+        data = {f"v{i}": [{"k": i}] for i in range(len(titles))}
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, MagicMock(spec=Console), cfg, str(out))
+        assert openpyxl.load_workbook(out).sheetnames == names
+
 
 class TestLoneSurrogatesInCsvAndRaw:
     """``json.loads('"\\\\ud800"')`` makes a lone surrogate, which no UTF-8 file
