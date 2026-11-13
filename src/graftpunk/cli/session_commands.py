@@ -24,6 +24,7 @@ from graftpunk.exceptions import (
     GraftpunkError,
     SessionExpiredError,
     SessionNotFoundError,
+    SessionNotFullyClearedError,
     StorageError,
 )
 from graftpunk.plugins.formatters import write_raw
@@ -487,15 +488,25 @@ def _remove_each(
 ) -> tuple[list[tuple[dict, list[str]]], bool]:
     """Delete everything stored under each slot; pair each removed slot with what went.
 
-    A slot whose name the session-name rules refuse, or a storage error, prints
-    one line naming it and the others go on; the second value says whether any
-    failed.
+    A slot unsafe to delete under, a storage error, or a delete that left files
+    behind prints one line naming the slot (and what it kept) and the others go
+    on; the second value says whether any failed.
     """
     removed = []
     failed = False
     for slot in slots:
         try:
             objects = remove_session_objects(slot["name"], backend_override=backend_override)
+        except SessionNotFullyClearedError as exc:
+            if exc.removed:
+                removed.append((slot, exc.removed))
+            kept = ", ".join(exc.remaining)
+            console.print(
+                f"[red]✗ {escape(str(slot['name']))} kept {len(exc.remaining)} file(s): "
+                f"{escape(kept)}[/red]"
+            )
+            failed = True
+            continue
         except (ValueError, StorageError) as exc:
             console.print(
                 f"[red]✗ Could not clear {escape(str(slot['name']))}: {escape(str(exc))}[/red]"

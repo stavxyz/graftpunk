@@ -20,6 +20,7 @@ from graftpunk.storage.base import (
     SessionMetadata,
     check_slot_name,
     dict_to_metadata,
+    is_slot_file,
     is_slot_name,
     metadata_to_dict,
 )
@@ -432,8 +433,11 @@ class LocalSessionStorage:
         A crash during a save, an older release, or a hand-made copy can
         leave one. They are not sessions (:meth:`list_sessions` leaves them
         out, and loading one fails), but clearing every session removes them
-        too. A hidden directory, or a name deleting under is unsafe
-        (check_slot_name), is never one.
+        too. Only a directory holding ``session.pickle``, ``metadata.json``,
+        or a file named after one (``metadata.json.pre-test2``) is one: any
+        other directory in the sessions directory is never listed, so a sweep
+        never deletes it. Nor is a hidden directory, or one whose name
+        check_slot_name refuses.
         """
         if not self.base_dir.exists():
             return []
@@ -445,6 +449,7 @@ class LocalSessionStorage:
                 and not item.name.startswith(".")
                 and is_slot_name(item.name)
                 and not ((item / "session.pickle").exists() and (item / "metadata.json").exists())
+                and any(is_slot_file(child.name) for child in item.iterdir())
             )
         except OSError as exc:
             LOG.error("failed_to_list_incomplete_sessions", error=str(exc))

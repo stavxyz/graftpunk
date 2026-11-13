@@ -315,6 +315,13 @@ class FakeBucket:
         self.files -= set(paths)
         return [{"name": p} for p in paths]
 
+    def info(self, path):
+        from storage3.exceptions import StorageApiError
+
+        if path not in self.files:
+            raise StorageApiError("Object not found", "not_found", "404")
+        return {"name": path}
+
 
 PHANTOM_FILES = [
     "myshop/metadata.json.pre-test2",
@@ -972,15 +979,15 @@ class TestAnOldServersPrefixSearch:
         assert storage.list_sessions() == ["my-shop", "my_shop"]
 
     @patch("supabase.create_client")
-    def test_a_name_without_an_underscore_costs_no_info_call(self, mock_create_client):
+    def test_every_listed_metadata_is_confirmed_at_1_plus_2n(self, mock_create_client):
         storage, mock_client = _make_storage(mock_create_client)
         bucket = OldServerBucket(["myshop/metadata.json", "other/metadata.json"])
         mock_client.storage.from_.return_value = bucket
 
         assert storage.list_sessions() == ["myshop", "other"]
-        assert bucket.info_calls == []
-        # One root listing, then one per slot: 1 + N.
+        # One root listing, one listing and one info per session: 1 + 2N.
         assert bucket.list_calls == 3
+        assert bucket.info_calls == ["myshop/metadata.json", "other/metadata.json"]
 
     @patch("supabase.create_client")
     def test_remove_reports_only_what_the_server_deleted(self, mock_create_client):

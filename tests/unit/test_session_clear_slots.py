@@ -247,13 +247,14 @@ class TestALegacyNameStaysClearable:
 
     def test_the_sweep_and_the_backends_include_it(self, local_backend) -> None:
         slot = self._legacy(local_backend)
-        odd = local_backend.base_dir / "My Notes"
-        odd.mkdir()
-        (odd / "keep.txt").write_text("x")
+        half = local_backend.base_dir / "Half Shop"
+        half.mkdir()
+        (half / "session.pickle").write_bytes(b"x")
 
-        assert cache_mod.list_incomplete_sessions() == ["My Notes"]
-        assert sorted(cache_mod.clear_session_cache()) == ["Legacy", "My Notes"]
+        assert cache_mod.list_incomplete_sessions() == ["Half Shop"]
+        assert sorted(cache_mod.clear_session_cache()) == ["Half Shop", "Legacy"]
         assert not slot.exists()
+        assert not half.exists()
 
     def test_a_legacy_flat_file_clears_by_name(self, local_backend) -> None:
         flat = local_backend.base_dir / "OldShop.session.pickle"

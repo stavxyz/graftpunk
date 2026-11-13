@@ -26,6 +26,19 @@ def check_slot_name(name: str) -> None:
         raise ValueError(f"A session slot name cannot hold a control character: {name!r}")
 
 
+# The two files graftpunk writes in a slot. A file whose name starts with one of
+# them (session.pickle, metadata.json.pre-test2) is graftpunk's or a copy of it.
+SLOT_FILE_NAMES = ("session.pickle", "metadata.json")
+
+
+def is_slot_file(file_name: str) -> bool:
+    """Whether *file_name* (one path component) is a file graftpunk writes in a
+    slot, or a leftover named after one (``metadata.json.pre-test2``). A folder,
+    prefix or directory holding none is never an incomplete slot, so nothing a
+    clear sweeps was written by anyone else (#382)."""
+    return file_name.startswith(SLOT_FILE_NAMES)
+
+
 def is_slot_name(name: str) -> bool:
     """Whether *name* passes :func:`check_slot_name`."""
     try:
@@ -244,8 +257,10 @@ class SessionStorageBackend(Protocol):
         """Slots holding objects but no complete session, sorted.
 
         :meth:`list_sessions` leaves them out; clearing every session removes
-        them. A name deleting under is unsafe (:func:`check_slot_name`) is
-        never one.
+        them. Only a container holding a file graftpunk writes, or a
+        leftover named after one (:func:`is_slot_file`), is one: any other
+        folder, prefix or directory is never listed here, so a sweep never
+        deletes it. Neither is a name :func:`check_slot_name` refuses.
         """
         ...
 

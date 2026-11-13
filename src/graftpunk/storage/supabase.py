@@ -21,13 +21,19 @@ from datetime import UTC, datetime
 from typing import Any
 
 from graftpunk._distribution import install_command
-from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
+from graftpunk.exceptions import (
+    SessionExpiredError,
+    SessionNotFoundError,
+    SessionNotFullyClearedError,
+    StorageError,
+)
 from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
     UNCHANGED,
     SessionMetadata,
     check_slot_name,
     dict_to_metadata,
+    is_slot_file,
     is_slot_name,
     metadata_to_dict,
 )
@@ -372,13 +378,20 @@ class SupabaseSessionStorage:
     def _slots(self) -> dict[str, bool]:
         """Each slot folder at the bucket root, mapped to whether it holds ``metadata.json``.
 
-        Costs one request per page of the root, then one per slot (more for a
-        slot of over 100 entries), and one more for each slot whose name holds
-        ``_`` and lists a ``metadata.json``: older storage-api servers search a
-        folder with ``ILIKE`` on the unescaped prefix, where ``_`` matches any
-        character, so ``my_shop``'s listing can hold ``my-shop/metadata.json``.
-        That slot is confirmed by ``info`` on the exact path. storage3 2.27.2 has
-        no call that lists every slot's files at once.
+        A root folder holding no file graftpunk writes, nor one named after it
+        (:func:`~graftpunk.storage.base.is_slot_file`), is not a slot and is
+        left out, so another tool's folder in the bucket is never listed or
+        swept.
+
+        A folder that lists a ``metadata.json`` is confirmed by ``info`` on the
+        exact path: storage-api matches a folder listing without regard to
+        letter case (``lower(name)`` in its current search, ``ILIKE`` in older
+        ones, where ``_`` also matches any character), so ``MyShop``'s or
+        ``my_shop``'s listing can hold ``myshop/metadata.json`` or
+        ``my-shop/metadata.json``. Costs one request per page of the root, one
+        per root folder (more for one of over 100 entries), and one ``info``
+        per folder that lists a ``metadata.json``: 1 + 2N for N sessions.
+        storage3 2.27.2 has no call that lists every slot's files at once.
 
         Raises:
             StorageError: If listing fails due to Supabase errors
@@ -393,13 +406,16 @@ class SupabaseSessionStorage:
                 name = entry.get("name", "")
                 if not name or name.startswith(".") or entry.get("id") is not None:
                     continue
-                listed = any(
-                    item.get("name") == "metadata.json" and item.get("id") is not None
+                files = [
+                    item.get("name", "")
                     for item in self._list_all(storage, name)
+                    if item.get("id") is not None
+                ]
+                if not any(is_slot_file(file) for file in files):
+                    continue
+                slots[name] = "metadata.json" in files and self._has_object(
+                    storage, self._metadata_path(name)
                 )
-                if listed and "_" in name:
-                    listed = self._has_object(storage, self._metadata_path(name))
-                slots[name] = listed
         except (HTTPStatusError, StorageApiError) as e:
             LOG.error("failed_to_list_sessions", error=str(e), backend="supabase")
             raise StorageError(f"Failed to list sessions: {e}") from e
@@ -410,8 +426,8 @@ class SupabaseSessionStorage:
 
         A slot folder is a session only when its ``metadata.json`` exists. Any
         other file in it does not make it a session, so it can never become a
-        candidate for account resolution (#382). Costs 1 + N requests for N
-        slots (:meth:`_slots`).
+        candidate for account resolution (#382). Costs 1 + 2N requests for N
+        sessions (:meth:`_slots`).
 
         Returns:
             Sorted list of session names
@@ -427,8 +443,8 @@ class SupabaseSessionStorage:
         """Slot folders holding files but no ``metadata.json``, under a safe name.
 
         They are not sessions (:meth:`list_sessions` leaves them out), but
-        clearing every session removes them too. Costs 1 + N requests, as
-        :meth:`list_sessions` does.
+        clearing every session removes them too. A root folder holding no file
+        graftpunk writes is never one. Costs what :meth:`list_sessions` does.
         """
         return sorted(
             name for name, complete in self._slots().items() if not complete and is_slot_name(name)
@@ -443,6 +459,8 @@ class SupabaseSessionStorage:
 
         Raises:
             ValueError: *name* is not a session name; no request is sent
+            SessionNotFullyClearedError: The delete reported fewer paths than it
+                was given and the others are still there
             StorageError: If listing or a delete fails due to Supabase errors
         """
         check_slot_name(name)
@@ -468,6 +486,22 @@ class SupabaseSessionStorage:
             # its full path.
             gone = {item.get("name") for item in result or [] if isinstance(item, dict)}
             removed.extend(path for path in batch if path in gone)
+
+        try:
+            # A path remove() did not report: gone already, listed from another
+            # folder by an older server's search (_slots), or kept by the server
+            # (a row-level policy refusing the delete answers 200 with no rows).
+            # Only the last is still there.
+            done = set(removed)
+            remaining = [
+                path for path in paths if path not in done and self._has_object(storage, path)
+            ]
+        except (HTTPStatusError, StorageApiError) as e:
+            LOG.error("session_files_check_failed", name=name, error=str(e))
+            raise StorageError(f"Failed to check what '{name}' kept: {e}") from e
+        if remaining:
+            LOG.warning("session_files_kept", name=name, paths=remaining, backend="supabase")
+            raise SessionNotFullyClearedError(name, removed, remaining)
 
         LOG.info("session_delete_completed", name=name, paths=removed, backend="supabase")
         return removed

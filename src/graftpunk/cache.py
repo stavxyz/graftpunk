@@ -29,7 +29,12 @@ import requests
 from graftpunk._distribution import install_command
 from graftpunk.config import get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data
-from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNotFoundError
+from graftpunk.exceptions import (
+    EncryptionError,
+    SessionExpiredError,
+    SessionNotFoundError,
+    StorageError,
+)
 from graftpunk.logging import get_logger
 from graftpunk.session_identity import (
     ACCOUNT_RULE,
@@ -42,7 +47,6 @@ from graftpunk.session_identity import (
 from graftpunk.storage.base import (
     SessionMetadata,
     check_slot_name,
-    is_slot_name,
     metadata_to_dict,
 )
 
@@ -1032,18 +1036,37 @@ def remove_session_objects(name: str, backend_override: str | None = None) -> li
     return backend.remove_session(name)
 
 
+class ClearedSessions(list[str]):
+    """The session names a clear removed, as a list, with ``skipped``: the names a
+    sweep left in place (an unsafe name, a slot resolving outside the sessions
+    directory, a storage error, or files a delete left behind), each logged once."""
+
+    def __init__(self, removed: list[str], skipped: list[str] | None = None) -> None:
+        super().__init__(removed)
+        self.skipped: tuple[str, ...] = tuple(skipped or ())
+
+
 def clear_session_cache(
     session_name: str | None = None,
     backend_override: str | None = None,
-) -> list[str]:
+) -> ClearedSessions:
     """Clear cached sessions.
+
+    Clearing every session never stops partway: a slot that cannot be cleared
+    safely or completely is logged once (``session_not_cleared``), left out of
+    the result, and named in ``skipped``, and the sweep goes on.
 
     Args:
         session_name: If provided, clear only this session. Otherwise, clear all.
         backend_override: If set, use this backend type instead of the default.
 
     Returns:
-        List of removed session names.
+        The removed session names (a list), with ``skipped``.
+
+    Raises:
+        ValueError: *session_name* is unsafe to delete under
+            (:func:`graftpunk.storage.base.check_slot_name`).
+        StorageError: The backend failed clearing *session_name*.
     """
     backend = _get_session_storage_backend(backend_override=backend_override)
     removed: list[str] = []
@@ -1052,21 +1075,26 @@ def clear_session_cache(
         # Clear specific session
         if backend.delete_session(session_name):
             removed.append(session_name)
-        return removed
+        return ClearedSessions(removed)
 
     # Clear all sessions, and the slots a failed save left without metadata:
     # they are not listed, but loading one says to clear.
+    skipped: list[str] = []
     leftovers = list_incomplete_sessions(backend_override=backend_override)
     for name in [*backend.list_sessions(), *leftovers]:
-        if not is_slot_name(name):
-            # A name deleting under is unsafe (check_slot_name): no backend
-            # writes one, so it is left alone and logged.
-            LOG.warning("session_not_cleared_unsafe_name", name=name)
+        try:
+            # check_slot_name refuses a name under which deleting would be
+            # unsafe; the local backend also refuses a slot resolving outside
+            # the sessions directory.
+            deleted = backend.delete_session(name)
+        except (ValueError, StorageError) as exc:
+            LOG.warning("session_not_cleared", name=name, error=str(exc))
+            skipped.append(name)
             continue
-        if backend.delete_session(name):
+        if deleted:
             removed.append(name)
 
-    return removed
+    return ClearedSessions(removed, skipped)
 
 
 def copy_session(source: str, dest: str, *, account_identifier: str | None) -> None:

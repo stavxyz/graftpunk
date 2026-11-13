@@ -38,6 +38,7 @@ from graftpunk.storage.base import (
     SessionMetadata,
     check_slot_name,
     dict_to_metadata,
+    is_slot_file,
     is_slot_name,
     metadata_to_dict,
 )
@@ -393,15 +394,25 @@ class S3SessionStorage:
         )
 
     def incomplete_sessions(self) -> list[str]:
-        """Slot directories holding objects but no ``metadata.json``.
+        """Slot prefixes holding a file graftpunk writes, or one named after it,
+        but no ``metadata.json``.
 
         They are not sessions (:meth:`list_sessions` leaves them out), but
-        clearing every session removes them too.
+        clearing every session removes them too. Any other prefix under
+        ``sessions/`` (another tool's objects) is never listed, so a sweep
+        never deletes it.
         """
+        prefix_len = len(_PREFIX)
         return sorted(
             name
             for name, keys in self._slot_keys().items()
-            if self._metadata_key(name) not in keys and is_slot_name(name)
+            if self._metadata_key(name) not in keys
+            and is_slot_name(name)
+            and any(
+                is_slot_file(rest)
+                for key in keys
+                if "/" not in (rest := key[prefix_len + len(name) + 1 :])
+            )
         )
 
     def remove_session(self, name: str) -> list[str]:
