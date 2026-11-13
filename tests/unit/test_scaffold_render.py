@@ -1099,11 +1099,10 @@ class TestPluginModuleWithLoginForm:
         assert (
             "GP-FILL: submit has no selector: the first button after the password in the login "
             'dialog is not an explicit submit (an <input type="submit"> or <input '
-            'type="image">, or a <button type="submit">), no one button after the password '
-            "says it signs in by its class, text, or aria-label, and the group's buttons are "
-            'not one button right after the password; outside a form a typeless or type="button" '
-            "button may be a show-password or a close button, so none is guessed; write one "
-            "by hand."
+            'type="image">, or a <button type="submit">), and no button between the password '
+            "and the next field says it signs in by its class, text, or aria-label, nor is the "
+            'group\'s one button; outside a form a typeless or type="button" button may be a '
+            "show-password or a close button, so none is guessed; write one by hand."
         ) in comment
         assert "multi-step login" not in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
@@ -1257,11 +1256,10 @@ class TestPluginModuleWithLoginForm:
         assert (
             "GP-FILL: submit has no selector: the first button after the password in the login "
             'dialog is not an explicit submit (an <input type="submit"> or <input '
-            'type="image">, or a <button type="submit">), no one button after the password '
-            "says it signs in by its class, text, or aria-label, and the group's buttons are "
-            'not one button right after the password; outside a form a typeless or type="button" '
-            "button may be a show-password or a close button, so none is guessed; write one "
-            "by hand."
+            'type="image">, or a <button type="submit">), and no button between the password '
+            "and the next field says it signs in by its class, text, or aria-label, nor is the "
+            'group\'s one button; outside a form a typeless or type="button" button may be a '
+            "show-password or a close button, so none is guessed; write one by hand."
         ) in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
 

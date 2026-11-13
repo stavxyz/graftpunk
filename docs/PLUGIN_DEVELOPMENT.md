@@ -550,15 +550,21 @@ password: an `<input type="submit">` or `<input type="image">`, or a `<button
 type="submit">`. Outside a form a typeless or `type="button"` button submits
 nothing by itself and may be a show-password or a close button, so one is the
 submit only when it says so or stands alone
-([#375](https://github.com/stavxyz/graftpunk/issues/375)): the only button after
-the password whose class, text, or `aria-label` says it signs in (`sign-in-btn`,
-"Log in", "Sign in") and holds none of the words `show`, `hide`, `toggle`,
-`reveal`, `eye`, `visibility`, `forgot`, `reset`, `cancel`, `close`, `back`,
-`register`, `sign up`, `create`, `join`, `with`, `sso`, or `passkey` (so
-"Sign in with Google" is not it); else the group's one button-like
-control, when it comes right after the password with no text-like input between
-them and holds none of those words. Otherwise the submit is a `GP-FILL`, as a
-missing username is. A button's text is read only to judge it and is never
+([#375](https://github.com/stavxyz/graftpunk/issues/375)). Only the buttons
+between the password and the next field after it (any input but a hidden one, a
+checkbox, or a radio) count, and never one with no text and no `aria-label` (an
+icon), one whose `role` is `switch`, `checkbox`, `radio`, `tab`, or
+`menuitemcheckbox` or that carries `aria-pressed` or `aria-checked`, or one
+holding any of the words `show`, `hide`, `toggle`, `reveal`, `eye`, `visibility`,
+`forgot`, `reset`, `help`, `cancel`, `close`, `back`, `remember`, `register`,
+`sign up`, `create`, `join`, `with`, `sso`, `passkey`, or a sign-in provider's
+name (`google`, `apple`, `facebook`, `microsoft`, `github`, `twitter`, `linkedin`,
+`amazon`, `okta`). Of the rest, the submit is the one whose class token, text, or
+`aria-label` says it signs in by a whole word (`sign-in-btn`, `SignIn`, "Log
+in", "Log on"; "design", "Blog" and `login-help` do not); else the only button
+in that range when it says `submit`; else the group's one button-like control
+when it is the first after the password. Otherwise the submit is a `GP-FILL`,
+as a missing username is. A button's text is read only to judge it and is never
 written into the plugin. Its username lookup and its extra fields end at the
 first button-like control after the password (any `<button>`, or a submit,
 image, button, or reset input): that control is the submit when it is an
@@ -566,9 +572,8 @@ explicit one, and otherwise the rule above decides; a username found nowhere
 before it is a `GP-FILL` too. So a hidden reset panel's input after a typeless
 "Sign in" is never taken (the "Sign in" is the submit), and a show-password
 toggle or a Close button right after the password ends the fields there, so an
-input after it (a one-time code) is left out, and the submit after it is taken
-only when it says it signs in: a `GP-FILL` is the safer failure than a wrong
-selector. Each of its
+input after it (a one-time code) is left out, and no button after that input is
+taken: a `GP-FILL` is the safer failure than a wrong selector. Each of its
 inputs is selected by its id, else by a name no other input on the page shares,
 else by a stable attribute (see the fallbacks below), else it is unresolved; a control inside `<noscript>` is left out; its `action`
 and `method` are empty; and several such dialogs are listed with one holding a

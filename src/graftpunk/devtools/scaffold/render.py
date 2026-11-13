@@ -909,9 +909,9 @@ def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str 
                 f"{GP_FILL_MARKER}: submit has no selector: the first button after the "
                 f"password in the {group} is not an explicit submit (an "
                 '<input type="submit"> or <input type="image">, or a <button '
-                'type="submit">), no one button after the password says it signs in by '
-                "its class, text, or aria-label, and the group's buttons are not one "
-                "button right after the password; outside a form a typeless or "
+                'type="submit">), and no button between the password and the next field '
+                "says it signs in by its class, text, or aria-label, nor is the group's one "
+                "button; outside a form a typeless or "
                 'type="button" button may be a show-password or a close button, so none '
                 "is guessed; write one by hand."
             )
