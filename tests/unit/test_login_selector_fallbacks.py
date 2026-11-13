@@ -188,8 +188,13 @@ class TestFieldFallbacks:
     def test_a_label_naming_a_person_who_posted_nothing_is_used(self) -> None:
         """Pinned known gap: a placeholder that names the person but holds no value
         the run posted, no email address, and no id is used as it reads. The digest
-        drops only values a credential post sent (test_digest_json_login.py)."""
+        drops only values a credential post sent (test_digest_json_login.py). The
+        name gate #375 suggested would not drop it either: each of its words reads
+        as a name."""
+        from graftpunk.har.paths import printable_name
+
         label = "Welcome back Jane Doe, your username"
+        assert all(printable_name(word.strip(",")) for word in label.split())
         form = _only(
             _dialog(
                 f'<input type="text" placeholder="{label}">'

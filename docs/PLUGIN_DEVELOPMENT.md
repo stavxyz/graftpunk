@@ -548,17 +548,27 @@ with a sign-up or password-change shape, or with two password inputs and none
 marked `current-password` gives none. Its submit is an explicit one after the
 password: an `<input type="submit">` or `<input type="image">`, or a `<button
 type="submit">`. Outside a form a typeless or `type="button"` button submits
-nothing and may be a show-password or a close button, so it is never the submit,
-and a modal whose sign-in is one gets a `GP-FILL` for its submit, as it does for
-a missing username. Its username lookup, its extra fields, and the search for
-its submit all end at the first button-like control after the password (any
-`<button>`, or a submit, image, button, or reset input): that control is the
-submit when it is an explicit one, and otherwise the submit is a `GP-FILL`; a
-username found nowhere before it is a `GP-FILL` too. So a hidden reset panel's
-input and its submit after a typeless "Sign in" are never taken, and a
-show-password toggle or a Close button right after the password ends the fields
-there, so an input after it (a one-time code) is left out and the submit is a
-`GP-FILL`: a `GP-FILL` is the safer failure than a wrong selector. Each of its
+nothing by itself and may be a show-password or a close button, so one is the
+submit only when it says so or stands alone
+([#375](https://github.com/stavxyz/graftpunk/issues/375)): the only button after
+the password whose class, text, or `aria-label` says it signs in (`sign-in-btn`,
+"Log in", "Sign in") and holds none of the words `show`, `hide`, `toggle`,
+`reveal`, `eye`, `visibility`, `forgot`, `reset`, `cancel`, `close`, `back`,
+`register`, `sign up`, `create`, `join`, `with`, `sso`, or `passkey` (so
+"Sign in with Google" is not it); else the group's one button-like
+control, when it comes right after the password with no text-like input between
+them and holds none of those words. Otherwise the submit is a `GP-FILL`, as a
+missing username is. A button's text is read only to judge it and is never
+written into the plugin. Its username lookup and its extra fields end at the
+first button-like control after the password (any `<button>`, or a submit,
+image, button, or reset input): that control is the submit when it is an
+explicit one, and otherwise the rule above decides; a username found nowhere
+before it is a `GP-FILL` too. So a hidden reset panel's input after a typeless
+"Sign in" is never taken (the "Sign in" is the submit), and a show-password
+toggle or a Close button right after the password ends the fields there, so an
+input after it (a one-time code) is left out, and the submit after it is taken
+only when it says it signs in: a `GP-FILL` is the safer failure than a wrong
+selector. Each of its
 inputs is selected by its id, else by a name no other input on the page shares,
 else by a stable attribute (see the fallbacks below), else it is unresolved; a control inside `<noscript>` is left out; its `action`
 and `method` are empty; and several such dialogs are listed with one holding a
@@ -595,8 +605,9 @@ not count), never `<html>` or `<body>`: a login block asks for a username and a
 password, and a page's wrapper asks for more. The group is the controls inside
 the nearest such element that holds a username-like input before the password (a
 `username` or `email` autocomplete, an email type, or a name, id, placeholder,
-or `aria-label` holding `user`, `email`, `login`, or `account`, as in
-`placeholder="Enter your email"`), a button-like control after it, and no
+or `aria-label` holding `user`, `email`, `login`, or `account` once hyphens
+are taken out, as in `placeholder="Enter your email"` or `placeholder="E-mail"`),
+a button-like control after it, and no
 button-like control between that input and the password, starting after the last
 button-like control before that input (an input with a button of its own, such
 as a search box, belongs to something else); else, from the password on, those
@@ -712,7 +723,12 @@ the username, or an email address, compared as
 placeholder that shows the username on a recorded HTML page never reaches the
 plugin. A label naming the person that holds no posted value
 (`placeholder="Welcome back Jane Doe, your username"`) is used as it reads: a
-known gap. A submit button none of these picks gets a `GP-FILL` saying it has no
+known gap. Reading a label's words through the name gate
+(`graftpunk.har.paths.printable_name`) does not close it, because a person's name
+reads as words; a rule against a capitalised word after the first separates the
+recorded fixtures, but only by that one capital, so it misses a name written in
+lower case and drops every title-case label (`Email Address`), and it is not
+used ([#375](https://github.com/stavxyz/graftpunk/issues/375)). A submit button none of these picks gets a `GP-FILL` saying it has no
 stable selector and naming what was tried; its text is never written into the
 plugin, since it can name the account (`Continue as ...`) and a CSS selector
 cannot match text. A POST to where a login form a GET
