@@ -151,9 +151,12 @@ class TestLocal:
     def test_the_sweep_logs_a_skipped_slot_once(
         self, local_backend, tmp_path: Path, captured_logs
     ) -> None:
+        """A complete slot linked outside is listed as a session, so the sweep
+        reaches it, refuses it, and warns once."""
         outside = tmp_path / "outside"
         outside.mkdir()
         (outside / "session.pickle").write_bytes(b"x")
+        (outside / "metadata.json").write_text("{}")
         (local_backend.base_dir / "aalink").symlink_to(outside, target_is_directory=True)
 
         cache_mod.clear_session_cache()
@@ -461,3 +464,48 @@ class TestACaseOnlyForeignFolderOnSupabase:
 
         assert storage.list_sessions() == []
         assert storage.incomplete_sessions() == ["MyShop"]
+
+
+class TestLocalListingsSkipWhatTheyCannotUse:
+    """Review round 4 (toolkit Q1, Q2)."""
+
+    def test_a_directory_linked_outside_is_not_an_incomplete_slot(
+        self, local_backend, tmp_path: Path, captured_logs
+    ) -> None:
+        """It can never be cleared (remove_session refuses it), so listing it only
+        made every ``--all`` exit 1."""
+        old = tmp_path / "old-gp-sessions"
+        (old / "shop").mkdir(parents=True)
+        (old / "shop" / "metadata.json").write_text("{}")
+        (local_backend.base_dir / "backup").symlink_to(old, target_is_directory=True)
+        local_backend.save_session("myshop", b"data", _metadata("myshop"))
+
+        assert cache_mod.list_incomplete_sessions() == []
+        warnings = [e for e in captured_logs if e.get("event") == "incomplete_session_outside"]
+        assert [w["name"] for w in warnings] == ["backup"]
+
+        result = _clear("--all", "--force")
+
+        assert result.exit_code == 0, result.output
+        assert (old / "shop" / "metadata.json").exists()
+        assert not (local_backend.base_dir / "myshop").exists()
+
+    def test_list_sessions_skips_an_unreadable_directory(
+        self, local_backend, captured_logs
+    ) -> None:
+        import os
+        import stat
+        import sys
+
+        if sys.platform == "win32" or os.geteuid() == 0:
+            pytest.skip("POSIX directory permissions, not as root")
+        local_backend.save_session("myshop", b"data", _metadata("myshop"))
+        closed = local_backend.base_dir / "aaclosed"
+        closed.mkdir()
+        closed.chmod(0)
+        try:
+            assert cache_mod.list_sessions() == ["myshop"]
+        finally:
+            closed.chmod(stat.S_IRWXU)
+        warnings = [e for e in captured_logs if e.get("event") == "session_unreadable"]
+        assert [w["name"] for w in warnings] == ["aaclosed"]

@@ -404,15 +404,23 @@ class LocalSessionStorage:
     def list_sessions(self) -> list[str]:
         """List all session names.
 
+        An entry that cannot be read is skipped with one warning
+        (``session_unreadable``) and the others are listed.
+
         Returns:
             Sorted list of session names
         """
         if not self.base_dir.exists():
             return []
 
-        names = []
         try:
-            for item in self.base_dir.iterdir():
+            items = list(self.base_dir.iterdir())
+        except OSError as exc:
+            LOG.error("failed_to_list_sessions", error=str(exc))
+            return []
+        names = []
+        for item in items:
+            try:
                 # A slot is listed only with both files: a directory a crashed
                 # save left with a pickle and no metadata is not a session.
                 if (
@@ -424,12 +432,10 @@ class LocalSessionStorage:
                 elif item.is_file() and item.suffix == ".pickle":
                     # Legacy flat file structure
                     names.append(item.stem.replace(".session", ""))
-
-            LOG.debug("session_list_completed", count=len(names))
-            return sorted(names)
-        except OSError as exc:
-            LOG.error("failed_to_list_sessions", error=str(exc))
-            return []
+            except OSError as exc:
+                LOG.warning("session_unreadable", name=item.name, error=str(exc))
+        LOG.debug("session_list_completed", count=len(names))
+        return sorted(names)
 
     def incomplete_sessions(self) -> list[str]:
         """Slot directories missing their pickle or their metadata.
@@ -443,7 +449,9 @@ class LocalSessionStorage:
         clear left in a subdirectory can still be cleared; a directory holding
         none is never listed, so a sweep never deletes it. Nor is a hidden
         directory, or one whose name check_slot_name refuses. A directory that
-        cannot be read is skipped with one warning and the others are listed.
+        cannot be read is skipped with one warning and the others are listed,
+        and so is one that resolves outside the sessions directory (a symlink
+        pointing out), which :meth:`remove_session` refuses to delete.
         """
         if not self.base_dir.exists():
             return []
@@ -453,10 +461,14 @@ class LocalSessionStorage:
             LOG.error("failed_to_list_incomplete_sessions", error=str(exc))
             return []
         found: list[str] = []
+        root = self.base_dir.resolve()
         for item in items:
             if item.name.startswith(".") or not is_slot_name(item.name):
                 continue
             try:
+                if item.resolve().parent != root:
+                    LOG.warning("incomplete_session_outside", name=item.name)
+                    continue
                 if not item.is_dir() or (
                     (item / "session.pickle").exists() and (item / "metadata.json").exists()
                 ):
