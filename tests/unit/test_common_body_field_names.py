@@ -46,7 +46,7 @@ _API = (  # noqa: SIM905
     "message description title accept_terms acceptTerms terms newsletter subscribe "
     "marketingOptIn birthday dob gender company storeId store_id locationId shippingMethod "
     "paymentMethod payment_method_id cardNumber cvc expMonth expYear note comment rating "
-    "review_text"
+    "review_text objectId objectType subject"
 ).split()
 
 COMMON_BODY_FIELD_NAMES = tuple(
@@ -59,7 +59,7 @@ _FIXED_SINCE_359 = ("loginfmt", "qty")
 
 
 def test_the_list_is_the_one_measured() -> None:
-    assert len(COMMON_BODY_FIELD_NAMES) == 196
+    assert len(COMMON_BODY_FIELD_NAMES) == 199
 
 
 def test_the_gate_holds_back_none_of_the_common_body_field_names() -> None:
