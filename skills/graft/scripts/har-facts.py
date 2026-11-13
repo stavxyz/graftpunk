@@ -163,9 +163,7 @@ from __future__ import annotations
 import argparse
 import base64
 import ipaddress
-import itertools
 import json
-import operator
 import re
 import sys
 from collections import Counter
@@ -955,7 +953,7 @@ def _load(path: str) -> list[dict[str, Any]]:
         raise HarError(f"{path} is not UTF-8 text") from exc
     except OSError as exc:
         raise HarError(f"cannot read {path}") from exc
-    if _nesting(text) > _MAX_HAR_NESTING:
+    if _nesting(text, _MAX_HAR_NESTING) > _MAX_HAR_NESTING:
         raise HarError(
             f"{path} nests JSON deeper than {_MAX_HAR_NESTING} levels, so it is not read"
         )
@@ -1561,23 +1559,36 @@ def _shape(value: Any, indent: str, depth: int, max_depth: int = _MAX_DEPTH) -> 
 
 
 _MAX_JSON_NESTING = 64
-# A JSON string, escapes and all; one left open runs to the end of the text.
-_JSON_STRING_RE = re.compile(r'"[^"\\]*(?:\\[\s\S][^"\\]*)*"?')
-_NOT_A_BRACKET_RE = re.compile(r"[^\[\]{}]+")
-_BRACKET_STEPS = str.maketrans({"[": "\x02", "{": "\x02", "]": "\x00", "}": "\x00"})
 
 
-def _nesting(text: str) -> int:
-    """How deep JSON *text* nests objects and arrays, strings skipped; the script
-    bounds this itself, since how deep json.loads goes before RecursionError
-    changed across Python versions. It runs in C, not a loop over characters,
-    since it reads the whole HAR before json.loads does."""
-    brackets = _NOT_A_BRACKET_RE.sub("", _JSON_STRING_RE.sub("", text))
-    # 2 for an opening bracket and 0 for a closing one: after k brackets the sum is
-    # twice the openings, and the sum less k is the depth there.
-    steps = brackets.translate(_BRACKET_STEPS).encode("ascii")
-    depths = map(operator.sub, itertools.accumulate(steps), itertools.count(1))
-    return max(itertools.chain((0,), depths))
+def _nesting(text: str, limit: int = _MAX_JSON_NESTING) -> int:
+    """How deep JSON *text* nests objects and arrays, strings skipped (one left
+    open runs to the end), read in one pass that stops once it passes *limit*;
+    the script bounds this itself, since how deep json.loads goes before
+    RecursionError changed across Python versions. A loop over characters holds
+    nothing but its state, which matters since it reads the whole HAR before
+    json.loads does; a regex over the whole text took several times the memory."""
+    depth = deepest = 0
+    in_string = escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > deepest:
+                deepest = depth
+                if deepest > limit:
+                    break
+        elif char in "]}":
+            depth -= 1
+    return deepest
 
 
 def _json_shape(text: str, indent: str) -> list[str] | None:

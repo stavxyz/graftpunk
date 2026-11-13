@@ -12,6 +12,7 @@ import shutil
 import string
 import subprocess
 import time
+import tracemalloc
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -1410,3 +1411,20 @@ def test_nesting_is_judged_in_linear_time(shape: str) -> None:
 )
 def test_nesting_skips_brackets_inside_strings(text: str, depth: int) -> None:
     assert _load_script()._nesting(text) == depth
+
+
+@pytest.mark.parametrize("shape", ["escapes", "brackets"])
+def test_nesting_holds_no_copy_of_the_text(shape: str) -> None:
+    """The whole HAR is scanned before json.loads; a scan that copied it (a regex
+    sub over every string) peaked at four times 1.42.6's memory on a 35 MB HAR.
+    The peak stays under a hundredth of the text's size."""
+    nesting = _load_script()._nesting
+    body = '\\"' * 1_000_000 if shape == "escapes" else "[]" * 1_000_000
+    text = json.dumps({"log": {"entries": [], "body": body}})
+    tracemalloc.start()
+    try:
+        nesting(text)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < len(text) / 100, peak
