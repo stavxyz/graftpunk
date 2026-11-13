@@ -239,12 +239,11 @@ writes into the git-ignored `tests/captures/`. When the projection does not
 answer a question, read the `--json` digest and then ask the run's HAR through
 the skill's HAR reader, `scripts/har-facts.py`, which prints no cookie, header,
 query, or body value; names and path segments pass a heuristic gate that
-withholds most value-shaped text, but a plain word used as a key or a path
-segment (a username, a person's or place's name, a label, a handle such as
-`alice84`), a letter-only token that spells like a word, and the method, a
-non-web scheme, a content type's subtype, and the host, which print as recorded,
-can still be the account's own, so never copy one into code without the user's
-word, and treat the reader's output under this rule too. Read the HAR by hand
+withholds most value-shaped text, but a plain word used as a key, a path
+segment, a subdomain, or a content type's subtype (a username, a person's or
+place's name, a label, a handle such as `alice84`) and a letter-only token that
+spells like a word can still be the account's own, so never copy one into code
+without the user's word, and treat the reader's output under this rule too. Read the HAR by hand
 only for what the reader does not cover, narrowly, as `references/har.md` says.
 The `--json` digest prints paths as recorded, which can carry account or order
 ids; a capture holds the account's own data; a HAR holds both and, when the

@@ -268,3 +268,30 @@ def test_form_state_and_short_values_pair_nothing(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "shared values" not in result.stdout
     assert digest(DigestSource.from_har(har)).shared_values == ()
+
+
+def test_an_operation_line_holds_back_a_segment_the_gate_holds_back(tmp_path: Path) -> None:
+    """The line keeps the digest's key, with a segment the key keeps but the gate
+    holds back written {}, as a request line writes it; matching it says nothing."""
+    body = {"operationName": "AddToCart", "query": graphql_har.ADD_TO_CART_DOCUMENT}
+    entries = [
+        _entry(
+            "POST",
+            f"{graphql_har.HOST}/t/QXZKVBNMWT/graphql",
+            post_data=json.dumps(body),
+            body='{"data": {"addToCart": {"ok": true}}}',
+        )
+    ]
+    run = tmp_path / "run"
+    run.mkdir()
+    har = _write_har(run, entries)
+    result = _run("operations", str(har))
+    assert result.stdout.splitlines()[0] == (
+        "POST https://myshop.example.com/t/{}/graphql (AddToCart): 1 call(s), mutation"
+    )
+    request = _run("request", str(har), "/graphql")
+    assert request.stdout.splitlines()[0] == (
+        "POST https://myshop.example.com/t/{}/graphql (AddToCart)"
+    )
+    guess = _run("request", str(har), "QXZKVBNMWT")
+    assert (guess.returncode, guess.stdout) == (1, "")

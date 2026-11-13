@@ -926,7 +926,10 @@ _ACRONYMS = frozenset(
         "ID IDS URL URI API XML HTML JSON CSRF XSRF UUID IP UI SSO MFA OTP SMS PDF CSV UTC "
         "OS DOB SSN ZIP CVV CVC TOS GDPR HTTP HTTPS JWT SAML AJAX DOM CSS JS ISO VAT SKU "
         # the abbreviations cookie and token names use, some spelled with no vowel
-        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP "
+        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP NBF "
+        # the vowel-less abbreviations API and form field names and routes use
+        # (invoiceNbr, txn_id, txtQty, msrp, /svc/)
+        "NBR TXN QTY MSRP SVC "
         # the abbreviations header names use (X-Amz-Target, Grpc-Timeout,
         # HX-Request, Ocp-Apim-Trace, Sec-GPC, X-DNS-Prefetch-Control, X-PJAX), cloud
         # SDKs' among them (X-Amz-Sdk-Checksum-Algorithm, X-Amz-Sns-Message-Type,
@@ -942,6 +945,7 @@ _SHORT_WORDS = frozenset(
     "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am Ip Ms".split()  # noqa: SIM905
 )
 _MAX_PARTS = 8
+_GRAPHQL_WORD_RE = re.compile(r"GraphQL")
 _MAX_CAPITALS = 16
 _LONG_LOWER = 9
 
@@ -975,12 +979,16 @@ _DIGIT_TOKENS = tuple(
     sorted(
         (  # noqa: SIM905 - one compact string on purpose: the set is data
             "argon2id argon2 ed25519 pbkdf2 oauth1 oauth2 base32 base64 utf8 utf16 ipv4 "
-            "ipv6 x509 k8s md5 sha1 sha224 sha256 sha384 sha512 i18n l10n"
+            "ipv6 x509 k8s md5 sha1 sha224 sha256 sha384 sha512 i18n l10n a11y h264 h265 "
+            "e164"
         ).split(),
         key=len,
         reverse=True,
     )
 )
+# Cloud service names with a digit, read as a token only in lower case starting a
+# part (s3Key, s3Bucket): anywhere else two characters match too much random text.
+_LEADING_DIGIT_TOKENS = ("s3", "ec2")
 _MAX_INNER_DIGITS = 2
 _MIN_WORD_BESIDE_DIGITS = 4
 _DIGITS_READ_AS_WORDS = frozenset(("2",))
@@ -997,6 +1005,9 @@ def _digit_token_at(part: str, at: int) -> int:
         end = at + len(token)
         if lowered.startswith(token) and (end == len(part) or not part[end].islower()):
             return end
+    for token in () if at else _LEADING_DIGIT_TOKENS:
+        if part.startswith(token) and (len(token) == len(part) or part[len(token)].isupper()):
+            return len(token)
     # A version only starts a part: inside one (jV29) it reads as random text.
     version = None if at else _VERSION_RE.match(lowered)
     if version:
@@ -1108,9 +1119,9 @@ def _plain_part(part: str) -> bool:
     short = [w for w in words if len(w) <= 3 and w not in _SHORT_WORDS and not _camel_acronym(w)]
     if len(short) > 1:
         return False
-    for word in words:
+    for index, word in enumerate(words):
         lowered = word.lower()
-        if _camel_acronym(word):
+        if _camel_acronym(word) or _initial(words, index):
             continue
         if word.isupper():
             return False
@@ -1120,6 +1131,16 @@ def _plain_part(part: str) -> bool:
         elif len(word) < 2 or not _spelled(lowered) or not any(ch in _VOWELS for ch in lowered):
             return False
     return True
+
+
+# A first, middle, or last name's initial starting a camel name before Name
+# (txtFName). A lone letter before any capitalised word (eFiling, iPhone) passed
+# more random text when allowed (#279).
+_NAME_INITIALS = frozenset("FLM")
+
+
+def _initial(words: list[str], index: int) -> bool:
+    return not index and len(words) > 1 and words[0] in _NAME_INITIALS and words[1] == "Name"
 
 
 # Hash and MAC names and their standard sizes (sha256, HmacSha512, md5, blake2b),
@@ -1201,9 +1222,12 @@ _FRAMEWORK_NAMES = frozenset(
         # body field names the rules hold back: Microsoft's login form field and the
         # vowel-less quantity abbreviation
         "loginfmt qty "
+        # a JSON:API query switch, Segment's and ASP.NET Identity's cookie names
+        "jsonapi ajs_user_id ajs_anonymous_id .aspnetcore.identity.application "
         # query parameter names the rules hold back: jQuery's cache-buster, a time
-        # zone, ad click ids, and a JSONP switch
-        "_ tz gclid fbclid dclid jsonp "
+        # zone, ad click ids, a JSONP switch, and a foreign exchange flag (as an
+        # acronym, FX passed random text inside camel case, #279)
+        "_ tz gclid fbclid dclid jsonp fx "
         # more query names the rules hold back: an S3 signature v2 key, Ext JS's
         # cache-buster, a page number, a format switch, Solr's filter query, handler
         # and default field, imgix's format and library, and Mailchimp's campaign
@@ -1227,6 +1251,9 @@ _FRAMEWORK_NAMES = frozenset(
 # ASP.NET WebForms: a naming container (ctl00) and a control-type prefix before a
 # name that itself passes the gate (txtUserName, btnLogin, chkRememberMe).
 _WEBFORMS_CONTAINER_RE = re.compile(r"ctl\d{2}")
+# A WebForms element id: the control's name with its containers joined by _
+# where the posted name joins them by $ (ctl00_ContentPlaceHolder1_Login1_UserName).
+_WEBFORMS_ID_RE = re.compile(r"ctl\d{2}_")
 _HUNGARIAN_RE = re.compile(
     r"(txt|btn|chk|ddl|lbl|hdn|pwd|rdo|rbl|cbl|lnk|img|pnl|cbo|cmb|lst|gv|rpt|hl)([A-Z]\w*)"
 )
@@ -1268,7 +1295,9 @@ def printable_name(text: str) -> bool:
     parts = [part for part in _NAME_SPLIT_RE.split(text) if part]
     if not parts or len(parts) > _MAX_PARTS or not any(_has_letter(part) for part in parts):
         return False
-    if not _parts_read_as_words(text):
+    # GraphQL is one word, not Graph and an acronym QL: a bare QL acronym let
+    # random letters before it through (ostQL).
+    if not _parts_read_as_words(_GRAPHQL_WORD_RE.sub("Graph", text)):
         return False
     # Capitals beside lower case (uid_SAMCOOKIE, addr[ADDRKEY]) read as a value
     # dropped into a name; a name all in capitals (PHPSESSID, XSRF-TOKEN) does not.
@@ -1276,6 +1305,10 @@ def printable_name(text: str) -> bool:
         part.rstrip("0123456789").isupper() or part.isdigit() for part in parts
     ):
         return False
+    if _WEBFORMS_ID_RE.match(text):
+        # Judged as its posted name is: joined by _, the whole id reads as a
+        # base64 token by its letter-digit switches alone.
+        return not holds_an_id(text.replace("_", "$"))
     return not holds_an_id(text)
 
 

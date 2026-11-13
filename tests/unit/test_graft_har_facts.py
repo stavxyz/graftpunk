@@ -11,6 +11,8 @@ import random
 import shutil
 import string
 import subprocess
+import time
+import tracemalloc
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +21,8 @@ from typing import Any
 
 import pytest
 
+from graftpunk.har.naming import HTTP_METHODS
+from graftpunk.har.paths import looks_dynamic
 from tests.unit.guide_harness import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "skills" / "graft" / "scripts" / "har-facts.py"
@@ -79,6 +83,10 @@ _SECRETS = [
     "xqzkvbtrwamplhab",
     "dark",
     "12.5",
+    # A method, a subdomain, a content type's subtype, and a scheme the account chose.
+    "VICTIMVERB",
+    "zq9xklmpwr4t",
+    "victimscheme",
 ]
 
 _LOGIN_PAGE = (
@@ -324,6 +332,12 @@ def _har(tmp_path: Path) -> Path:
             },
             content={"mimeType": "text/html", "text": _SEARCH_PAGE},
         ),
+        _entry(
+            "VICTIMVERB",
+            "https://zq9xklmpwr4t7bv2.shop.test/hostcheck",
+            content={"mimeType": "application/x-zq9xklmpwr4t+json", "text": "{}"},
+        ),
+        _entry("GET", "victimscheme:go"),
     ]
     path = run / "network.har"
     path.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}, indent=2))
@@ -368,6 +382,10 @@ _EVERY_RUN = [
     ("response", "/"),
     ("request", "data"),
     ("response", "data"),
+    ("request", "another scheme"),
+    ("response", "another scheme"),
+    ("request", "/hostcheck"),
+    ("response", "/hostcheck"),
 ]
 
 
@@ -875,7 +893,9 @@ def test_the_gate_fails_values(value: str) -> None:
         ("jsonrpc", "jsonrpc"),
         ("xmlrpc.php", "xmlrpc.php"),
         ("cgi-bin", "cgi-bin"),
-        ("2fa", "2fa"),
+        # The digest's key replaces 2fa (it holds a digit), so the reader does too.
+        ("2fa", "{}"),
+        ("GraphQL", "GraphQL"),
         ("Login.aspx", "Login.aspx"),
         ("index.php", "index.php"),
         ("88812345.aspx", "{id}"),
@@ -1107,3 +1127,395 @@ def test_an_array_only_deleting_expires_reads_past_in_the_script() -> None:
     assert _load_script().cookies([entry])[1].endswith("expiry=past")
     entry["startedDateTime"] = "garbled"
     assert _load_script().cookies([entry])[1].endswith("expiry=unknown")
+
+
+# #278: the method, a non-web scheme, a content type's subtype, and the host
+# printed as recorded; a URL part and --method matched recorded text.
+
+
+@pytest.mark.parametrize(
+    ("host", "shown"),
+    [
+        ("zq9xklmpwr4t7bv2.myshop.example", "{}.myshop.example"),
+        ("a1b2c3d4e5f6a7b8.myshop.example", "{id}.myshop.example"),
+        ("88812345.api.myshop.example", "{id}.api.myshop.example"),
+        ("www.myshop.example", "www.myshop.example"),
+        ("api.eu-west-2.myshop.example", "api.eu-west-2.myshop.example"),
+        ("myshop.example", "myshop.example"),
+        ("localhost", "localhost"),
+        ("127.0.0.1", "127.0.0.1"),
+        ("[::1]", "[::1]"),
+        ("my shop.example", "{host}"),
+    ],
+)
+def test_a_host_keeps_its_site_domain_and_gates_each_label_left_of_it(
+    host: str, shown: str
+) -> None:
+    assert _load_script().shown_host(host) == shown
+
+
+def test_a_held_back_subdomain_is_a_placeholder_in_urls_and_cookie_domains(tmp_path: Path) -> None:
+    entry = _entry(
+        "GET",
+        "https://zq9xklmpwr4t7bv2.myshop.example/home",
+        response_headers=[_h("Set-Cookie", "a=1; Domain=zq9xklmpwr4t7bv2.myshop.example")],
+    )
+    entry["startedDateTime"] = "2026-10-31T10:00:00.000Z"
+    assert _load_script().cookies([entry]) == [
+        "cookie a",
+        "  set by GET https://{}.myshop.example/home (1 time); header: HttpOnly=no Secure=no "
+        "SameSite=- Path=- Domain={}.myshop.example expiry=session; not in the "
+        "response.cookies array",
+    ]
+
+
+def test_a_method_that_is_not_a_standard_one_is_not_shown(tmp_path: Path) -> None:
+    lines = _lines("response", str(_har(tmp_path)), "/hostcheck")
+    assert lines[0] == "(method not shown) https://{}.shop.test/hostcheck"
+
+
+def test_the_scripts_methods_are_graftpunks() -> None:
+    assert _load_script()._HTTP_METHODS == HTTP_METHODS
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        ("application/json; charset=utf-8", "application/json"),
+        ("application/x-www-form-urlencoded", "application/x-www-form-urlencoded"),
+        ("application/vnd.api+json", "application/vnd.api+json"),
+        ("application/vnd.github.v3+json", "application/vnd.github.v3+json"),
+        ("application/x-amz-json-1.1", "application/x-amz-json-1.1"),
+        ("image/jpeg", "image/jpeg"),
+        ("application/x-zq9xklmpwr4t+json", "application/{}+json"),
+        ("application/zq9xklmpwr4t7bv2", "application/{}"),
+        ("application/json+zq9xklmpwr4t", "application/{}"),
+        ("victimtype/json", "a content type that is not shown"),
+        ("application/json\x00", "a content type that is not shown"),
+    ],
+)
+def test_a_content_type_prints_a_standard_type_and_a_gated_subtype(raw: str, shown: str) -> None:
+    assert _load_script()._mime(raw) == shown
+
+
+def test_a_held_back_subtype_keeps_its_suffix_for_reading_the_body(tmp_path: Path) -> None:
+    lines = _lines("response", str(_har(tmp_path)), "/hostcheck")
+    assert "  status 200, content type application/{}+json" in lines
+    assert "    JSON object of 0 keys" in lines
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        ("mailto:alice.example@mail.example", "mailto:"),
+        ("javascript:void(0)", "javascript:"),
+        ("victimscheme:go", "a URL of another scheme"),
+        ("ws://myshop.example/live", "ws://myshop.example/live"),
+    ],
+)
+def test_a_scheme_prints_by_name_only_when_it_is_a_known_one(url: str, shown: str) -> None:
+    assert _load_script().templated_url(url) == shown
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("ACCTPATH_X",),
+        ("zq9xklmpwr4t7bv2",),
+        ("victimscheme",),
+        ("/hostcheck", "--method", "VICTIMVERB"),
+    ],
+    ids=["held-back-segment", "held-back-subdomain", "held-back-scheme", "held-back-method"],
+)
+def test_a_url_part_or_method_matches_only_what_the_script_prints(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    """A guess at a held-back value gets the same answer as a guess at a value the
+    recording lacks, so the exit status confirms nothing."""
+    har = str(_har(tmp_path))
+    for command in ("request", "response"):
+        result = _run(command, har, *args)
+        assert result.returncode == 1, result.stdout
+        assert result.stdout == ""
+
+
+def test_a_recorded_path_matches_with_the_flag(tmp_path: Path) -> None:
+    lines = _lines("request", str(_har(tmp_path)), "/reset/ACCTPATH_X/", "--recorded-path")
+    assert lines[0] == "GET https://shop.test/reset/{}/confirm"
+
+
+def test_a_printed_url_matches_without_the_flag(tmp_path: Path) -> None:
+    har = str(_har(tmp_path))
+    assert (
+        _lines("request", har, "/reset/{}/confirm")[0] == "GET https://shop.test/reset/{}/confirm"
+    )
+    assert _lines("request", har, "{}.shop.test")[0] == (
+        "(method not shown) https://{}.shop.test/hostcheck"
+    )
+
+
+# #279: real names counted as values, and path segments the digest templates.
+
+
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        ("_hjSessionUser_1234567", "_hjSessionUser_{}"),
+        ("_gat_gtag_UA_12345678_1", "_gat_gtag_UA_{}"),
+        ("_ga_ZXQ9KP3L2M", "_ga_{}"),
+        ("AMCV_6A3F1B2C5E8D9F0A1B2C3D4E%40AdobeOrg", "AMCV_{}"),
+        ("_ga_eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9", "_ga_{}"),
+        ("_ga_alice.example@mail.example", None),
+        ("uid_SAMCOOKIE_X", None),
+    ],
+)
+def test_a_framework_prefix_cookie_that_fails_prints_as_its_prefix_and_a_placeholder(
+    name: str, shown: str | None
+) -> None:
+    assert _load_script().shown_name(name) == shown
+
+
+def test_cookies_print_a_framework_prefix_cookie_once_per_prefix() -> None:
+    entry = _entry(
+        "GET",
+        "https://myshop.example/",
+        request_headers=[_h("Cookie", "_hjSession_7654321=1; _hjSession_1234567=2")],
+        response_headers=[_h("Set-Cookie", "_hjSessionUser_1234567=1; Path=/")],
+    )
+    entry["startedDateTime"] = "2026-10-31T10:00:00.000Z"
+    lines = _load_script().cookies([entry])
+    assert lines[0] == "cookie _hjSessionUser_{}"
+    assert lines[-1] == "sent in requests and never set in this recording: _hjSession_{}"
+    assert not any("1234567" in line or "7654321" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("segment", "printed"),
+    [("svc", "svc"), ("eFiling", "eFiling"), ("WebObjects", "WebObjects")],
+)
+def test_route_segments_279_found_held_back_print(segment: str, printed: str) -> None:
+    assert _load_script().templated_path(f"/{segment}/x") == f"/{printed}/x"
+
+
+def test_no_segment_prints_that_the_digests_key_replaces() -> None:
+    """A segment graftpunk's path rule reads as dynamic is never printed; before
+    #279, line2Address printed here and was {id} in the digest's key."""
+    script = _load_script()
+    rng = random.Random(_RNG_SEED)  # noqa: S311 - a fixed sample, not a secret
+    samples = list(_samples().values())
+    corpus = [rng.choice(samples)(rng) for _ in range(20_000)]
+    corpus += ["line2Address", "covid19Status", "added2cart", "name1", "v2", "page2", "s3Key"]
+    corpus += sorted(script._ENDPOINT_SEGMENTS)
+    printed = [s for s in corpus if script.templated_path(f"/{s}") == f"/{s}"]
+    assert [s for s in printed if looks_dynamic(s)] == []
+    assert script.templated_path("/line2Address") == "/{}"
+    assert script.templated_path("/name1") == "/name1"
+
+
+def test_a_webforms_element_id_prints_as_its_posted_name_does(tmp_path: Path) -> None:
+    page = (
+        '<form method="post" action="/Login.aspx">'
+        '<input name="ctl00$ContentPlaceHolder1$Login1$UserName" '
+        'id="ctl00_ContentPlaceHolder1_Login1_UserName">'
+        '<input id="ctl00_ContentPlaceHolder1_ctl01_ctl02_txtName">'
+        "</form>"
+    )
+    path = tmp_path / "network.har"
+    entry = _entry(
+        "GET", "https://myshop.example/Login.aspx", content={"mimeType": "text/html", "text": page}
+    )
+    path.write_text(json.dumps({"log": {"entries": [entry]}}))
+    lines = _lines("response", str(path), "/Login.aspx")
+    assert "      ctl00$ContentPlaceHolder1$Login1$UserName: text" in lines
+    element_id = "ctl00_ContentPlaceHolder1_ctl01_ctl02_txtName"
+    assert f"      (no name) text, control 2 of the form, id {element_id}" in lines
+
+
+# #280: repeated unnamed controls, and a whole HAR nested too deep to parse.
+
+
+def test_repeated_hidden_controls_whose_names_fail_are_one_line() -> None:
+    hidden = [(f"h{n}_Zq9XkLmPwR4t7Bv2Hn8Ks3Jd", "hidden", "") for n in range(30)]
+    controls = [
+        *hidden,
+        ("", "submit button", ""),
+        ("username", "text", ""),
+        ("", "hidden", ""),
+        ("h99_Zq9XkLmPwR4t7Bv2Hn8Ks3Jd", "hidden", "returnUrl"),
+    ]
+    assert _load_script()._controls(controls, "") == [
+        "username: text",
+        "(name not shown) hidden (30 controls, the first control 1 of the form)",
+        "(no name) submit button, control 31 of the form",
+        "(no name) hidden, control 33 of the form",
+        "(name not shown) hidden, control 34 of the form, id returnUrl",
+    ]
+
+
+def test_nameless_controls_that_are_not_hidden_keep_their_ids(tmp_path: Path) -> None:
+    """A script-built sign-in form whose inputs carry only ids: the id is the one
+    selector the reader gives, so each prints on its own line, as in 1.42.6."""
+    page = (
+        '<form method="post" action="/signin">'
+        '<input id="firstName"><input id="lastName"><input name="email">'
+        '<input type="password" id="password"><input type="password" id="confirmPassword">'
+        '<button type="submit" id="signIn">Sign in</button>'
+        '<button type="submit" id="cancel">Cancel</button>'
+        "</form>"
+    )
+    path = tmp_path / "network.har"
+    entry = _entry(
+        "GET", "https://myshop.example/signin", content={"mimeType": "text/html", "text": page}
+    )
+    path.write_text(json.dumps({"log": {"entries": [entry]}}))
+    lines = _lines("response", str(path), "/signin")
+    for expected in (
+        "      (no name) text, control 1 of the form, id firstName",
+        "      (no name) text, control 2 of the form, id lastName",
+        "      (no name) password, control 4 of the form, id password",
+        "      (no name) password, control 5 of the form, id confirmPassword",
+        "      (no name) submit button, control 6 of the form, id signIn",
+        "      (no name) submit button, control 7 of the form, id cancel",
+    ):
+        assert expected in lines, "\n".join(lines)
+
+
+def test_past_twelve_lines_the_rest_of_the_controls_are_counted() -> None:
+    kinds = sorted(_load_script()._INPUT_TYPES - {"hidden"})[:14]
+    controls = [("", kind, "") for kind in kinds]
+    lines = _load_script()._controls(controls, "")
+    assert len(lines) == 13
+    assert lines[-1] == "(2 more controls with no name or a name not shown)"
+
+
+def _nested_har(tmp_path: Path, depth: int) -> Path:
+    """A HAR whose deepest value sits *depth* levels down, counting the top object."""
+    path = tmp_path / "network.har"
+    inner = "[" * (depth - 2) + "]" * (depth - 2)
+    path.write_text(f'{{"log": {{"entries": [], "deep": {inner}}}}}')
+    return path
+
+
+def test_a_har_nested_past_the_bound_exits_2_before_it_is_parsed(tmp_path: Path) -> None:
+    """A HAR 20,000 deep exited 2 on Python 3.12 (RecursionError) and was read on
+    3.14; the bound is the script's own, so every Python answers alike."""
+    for depth, code in ((512, 1), (513, 2), (20_000, 2)):
+        path = _nested_har(tmp_path, depth)
+        result = _run("cookies", str(path))
+        assert result.returncode == code, (depth, result.stderr)
+        if code == 2:
+            assert result.stderr == (
+                f"har-facts: {path} nests JSON deeper than 512 levels, so it is not read.\n"
+            )
+        assert "[[[" not in result.stdout + result.stderr
+
+
+def _cpu_seconds(work: Callable[[], object]) -> float:
+    """The least CPU time of three runs of *work*."""
+    times = []
+    for _ in range(3):
+        start = time.process_time()
+        work()
+        times.append(time.process_time() - start)
+    return min(times)
+
+
+@pytest.mark.parametrize("shape", ["deep", "flat", "strings"])
+def test_nesting_is_judged_in_linear_time(shape: str) -> None:
+    """Eight times the text within 24 times the CPU time, however it nests."""
+    nesting = _load_script()._nesting
+
+    def text(size: int) -> str:
+        if shape == "deep":
+            return "[" * size + "]" * size
+        if shape == "flat":
+            return "[" + ",".join(["{}"] * size) + "]"
+        return json.dumps(['a\\"b' * 8] * size)
+
+    small, large = text(20_000), text(160_000)
+    ratio = _cpu_seconds(lambda: nesting(large)) / max(_cpu_seconds(lambda: nesting(small)), 1e-4)
+    assert ratio < 24, ratio
+
+
+@pytest.mark.parametrize(
+    ("text", "depth"),
+    [
+        ("", 0),
+        ("]]", 0),
+        ("[[]]", 2),
+        ('["[[[", {"a": "]]"}]', 2),
+        ('["\\"[[["]', 1),
+        ('["unclosed [[[', 1),
+        ('{"a": "\\\\"}', 1),
+    ],
+)
+def test_nesting_skips_brackets_inside_strings(text: str, depth: int) -> None:
+    assert _load_script()._nesting(text) == depth
+
+
+@pytest.mark.parametrize("shape", ["escapes", "brackets"])
+def test_nesting_holds_no_copy_of_the_text(shape: str) -> None:
+    """The whole HAR is scanned before json.loads; a scan that copied it (a regex
+    sub over every string) peaked at four times 1.42.6's memory on a 35 MB HAR.
+    The peak stays under a hundredth of the text's size."""
+    nesting = _load_script()._nesting
+    body = '\\"' * 1_000_000 if shape == "escapes" else "[]" * 1_000_000
+    text = json.dumps({"log": {"entries": [], "body": body}})
+    tracemalloc.start()
+    try:
+        nesting(text)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < len(text) / 100, peak
+
+
+@pytest.mark.parametrize("guess", ["hunter2", "alice", "zq9xklmpwr4t7bv2", "QTOK", "frag"])
+def test_the_recorded_path_flag_matches_the_path_alone(tmp_path: Path, guess: str) -> None:
+    """Userinfo, a held-back subdomain, a query, and a fragment are not the path,
+    so --recorded-path answers nothing about them."""
+    path = tmp_path / "network.har"
+    url = "https://alice:hunter2pw@zq9xklmpwr4t7bv2.myshop.example/plain/path?q=QTOK#frag"
+    path.write_text(json.dumps({"log": {"entries": [_entry("GET", url)]}}))
+    result = _run("request", str(path), guess, "--recorded-path")
+    assert (result.returncode, result.stdout) == (1, "")
+    assert _run("request", str(path), "/plain/path", "--recorded-path").returncode == 0
+
+
+# How many of 2,000 random values per kind, lowercased as a host is, print as a
+# subdomain label (seed 277). The listed host words (www4, img1, b2b, smtp, px)
+# widened none of these; kinds not listed print none.
+_HOST_LABELS_SHOWN = {
+    "base62 8": 96,
+    "base62 12": 20,
+    "base62 16": 1,
+    "base64url 8": 104,
+    "base64url 16": 8,
+    "base64url 22": 1,
+    "Stripe-style id": 1,
+    "hex 8": 1,
+    "lowercase 8": 297,
+    "lowercase 9": 226,
+    "lowercase 12": 97,
+    "lowercase 16": 33,
+    "capitals 9": 236,
+    "capitals 12": 112,
+    "capitals 16": 33,
+    "base36 12": 6,
+}
+
+
+@pytest.mark.parametrize("kind", list(_samples()))
+def test_random_subdomain_labels_print_at_the_measured_rate(kind: str) -> None:
+    host_label = _load_script()._host_label
+    rng = random.Random(f"{_RNG_SEED}-host-{kind}")  # noqa: S311 - a fixed sample
+    labels = [_samples()[kind](rng).lower() for _ in range(2_000)]
+    assert sum(1 for label in labels if host_label(label) == label) == _HOST_LABELS_SHOWN.get(
+        kind, 0
+    )
+
+
+@pytest.mark.parametrize("label", ["b2b", "b2c", "smtp", "px", "www4", "img1", "ww2", "gw"])
+def test_a_common_infrastructure_label_prints(label: str) -> None:
+    host = f"{label}.myshop.example"
+    assert _load_script().shown_host(host) == host

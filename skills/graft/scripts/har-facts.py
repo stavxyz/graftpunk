@@ -2,8 +2,8 @@
 
 Usage:
   har-facts.py cookies HAR [--name NAME]
-  har-facts.py request HAR URL_PART [--method METHOD]
-  har-facts.py response HAR URL_PART [--method METHOD]
+  har-facts.py request HAR URL_PART [--method METHOD] [--recorded-path]
+  har-facts.py response HAR URL_PART [--method METHOD] [--recorded-path]
   har-facts.py operations HAR [--operation NAME]
 
 ``request`` and ``response`` also take ``--operation NAME``.
@@ -11,9 +11,16 @@ Usage:
 A HAR holds the account's data and, from a recorded login, the session's cookies
 and tokens, and it can hold the password the user typed. The graft skill reads one
 through this script. What the script guarantees:
-it prints no cookie, header, query, or body value, apart from four pieces that
-print as recorded after a shape check alone: the request method, a non-web URL
-scheme, a content type's subtype, and the host. Names and path segments are
+it prints no cookie, header, query, or body value. The method prints only when it
+is a standard HTTP method, a URL scheme other than http, https, ws, and wss only
+when it is ``mailto``, ``javascript``, ``data``, ``tel``, ``blob``, or ``about``,
+and a content type only when its top-level type is a standard one, its subtype a
+known one or one whose name passes the gate below (a vendor, personal, or ``x-``
+tree prefix aside), and otherwise as ``{}`` with a known suffix kept
+(``application/{}+json``). A host prints as recorded when it is an IP address;
+a host name keeps its last two labels, the site's own domain, and each label
+left of them prints only when it passes the gate (``www`` and a few other fixed
+labels aside), else as ``{id}`` or ``{}``. Names and path segments are
 recorded text too, and those print only when they pass a heuristic allowlist
 gate, ``printable_name``, which withholds most value-shaped text but not all of
 it. A name passes when it is a fixed framework name (below), or at most 48
@@ -23,21 +30,29 @@ with every word spelled with the consonant pairs English uses (graftpunk's
 capitals only as a known acronym or in a name all in capitals (an acronym of
 three letters or more also passes in lower or capitalised case inside camel
 case, so ``Csrf``, ``xsrfToken``, and ``JwtToken`` pass, and a lone ``X`` may
-stand before a word, as in ``XCsrf``), digits only as a
-run of at most 2 ending a word, and nothing graftpunk's ``holds_an_id`` reads as
-an id. The spelling pairs and rule, and ``holds_an_id``, are copied here (the
-script cannot import graftpunk) and held equal to graftpunk's by tests. A path
-segment must also hold no run of more than three capitals outside a
-listed acronym.
+stand before a word, as in ``XCsrf``, and an ``F``, ``L``, or ``M`` before
+``Name``, as in ``FName``), digits only as a run of at most 2 ending a word or
+in a known token (``sha256``, ``a11y``, ``e164``, ``s3`` starting a name), and
+nothing graftpunk's ``holds_an_id`` reads as an id. The spelling pairs and rule,
+and ``holds_an_id``, are copied here (the script cannot import graftpunk) and
+held equal to graftpunk's by tests. A path segment must also hold no run of
+more than three capitals outside a listed acronym, and be one graftpunk's
+``looks_dynamic`` keeps, so no segment prints that the digest's key replaces.
 
 The fixed framework names pass by exact name: standard, CDN, and bot-manager
 header names (``Upgrade-Insecure-Requests``, ``WWW-Authenticate``, ``cf-ray``,
 ``x-amz-cf-id``), framework cookie names (``.ASPXAUTH``, ``ASP.NET_SessionId``,
 ``__cf_bm``, ``cf_clearance``, ``_abck``, ``bm_sz``, ``_fbp``, ``_gcl_au``),
 ASP.NET WebForms page state (``__VIEWSTATE``, ``__EVENTVALIDATION``), and route
-segments (``graphql``, ``jsonrpc``, ``xmlrpc.php``, ``cgi-bin``, ``2fa``). A shape a
-framework fixes passes when its other pieces pass the gate: a WebForms control
-(``ctl00$MainContent$txtUserName``, ``btnLogin``, ``pwdConfirm``), a Django
+segments (``graphql``, ``jsonrpc``, ``xmlrpc.php``, ``cgi-bin``,
+``eFiling``). A cookie name built from a framework's fixed prefix and a per-site
+suffix (``_ga_``, ``_hjSession_``, ``_hjSessionUser_``, ``AMCV_``, ``AMCVS_``,
+``_gat_gtag_UA_``, ``.AspNetCore.Antiforgery.``, ``ASPSESSIONID``) goes through
+the gate whole, like any name, and when it fails prints as the prefix and ``{}``
+in a cookie list. A shape a framework fixes passes when its other pieces pass
+the gate: a WebForms control (``ctl00$MainContent$txtUserName``, ``btnLogin``,
+``pwdConfirm``, and its element id ``ctl00_MainContent_txtUserName``, judged as
+the ``$``-joined name is), a Django
 formset field (``<prefix>-<index>-<field>``, the index at most 2 digits) or
 management field (``<prefix>-TOTAL_FORMS`` and the other three), the prefix and
 the field gated and the prefix gated unless it is 1 to 4 lower-case letters
@@ -45,10 +60,10 @@ the field gated and the prefix gated unless it is 1 to 4 lower-case letters
 
 What fails the gate is replaced or counted:
 
-- a URL prints as its scheme, a host of hostname characters, and its path with
+- a URL prints as its scheme, its host as above, and its path with
   each segment that fails written ``{id}`` (digits or an id shape), ``{token}``
   (16 characters or more), or ``{}``; a URL of a scheme other than http, https,
-  ws, or wss prints as that scheme alone;
+  ws, or wss prints as that scheme alone, or as ``a URL of another scheme``;
 - a query string prints its keys that pass, never a value, and counts the rest;
   a query or form body with no ``=`` is an unnamed blob of N bytes;
 - a JSON key, a form, multipart, or ``params`` field name, a header name, and a
@@ -65,11 +80,10 @@ What fails the gate is replaced or counted:
 
 What the gate lets through. A plain word that is also a value cannot be told
 from a field name: a username, a person's or place's name, a label, or a handle
-with a two-digit suffix, used as a JSON key or a path segment, prints (``alice``,
-``Mapleton``, ``main-street``, ``alice84``). A letter-only random token passes
-when it happens to spell like a word. The method, a non-web scheme, a content
-type's subtype, and the host print as recorded, so a per-account subdomain
-prints. Measured on 10,000 samples per row (seed 277,
+with a two-digit suffix, used as a JSON key, a path segment, a subdomain, or a
+piece of a content type's subtype, prints (``alice``, ``Mapleton``,
+``main-street``, ``alice84``). A letter-only random token passes
+when it happens to spell like a word. Measured on 10,000 samples per row (seed 277,
 2026-10-19), the share of random values that pass: none of base62 at 12, 16, or
 32 characters, hex at 16 or 40, base64url at 16, 22, or 43, base36 at 32, JWT
 pieces, emails, prefixed ids, or UUIDs; 0.17% of base62 at 8, 0.38% of base64url
@@ -94,48 +108,56 @@ response deletes the cookie), or ``unknown`` (not a number or a date, or an
 entry whose ``startedDateTime`` does not parse) for ``expiry``. Then it names
 the cookies the recording only sends. With ``--name``, it prints only the block
 of that exact name, whatever the gate says, since the caller already holds the
-name.
+name; its exit status says whether the recording holds that name, so a guessed
+name is answered: pass only a name already in hand.
 
 ``request`` and ``response`` match URL_PART against each entry's own request URL
-path, as recorded or templated (never a ``Referer`` or ``Location`` header), and
-``--method`` narrows by method. ``request`` prints the method, the URL with its
-query keys, the request header and cookie names, and the body's content type and
-field names with each value's type. ``response`` prints the status, the content
-type, the response header names, the names of the cookies it sets, and the
-body's shape: JSON keys and types (JSON nested deeper than 64 levels is not
-parsed), or an HTML page's title length and its forms, each with its method,
-templated action, and controls by name and type (repeats collapsed with a count,
-a control with no name or a name that fails by type and position). A field
-whose name reads as a password, a secret, a token, a card, or a key is listed by
-name alone. A response body streamed to ``bodies/`` is read only from the HAR's
-own ``bodies/`` directory, never through a link.
+as this script prints it (never a ``Referer`` or ``Location`` header), and
+``--method`` narrows by the method as it prints, so a match never says whether
+text the script holds back is in the recording. ``--recorded-path`` also matches
+URL_PART against the URL's path as recorded (never its userinfo, host, query, or
+fragment): a hit then says the recording holds URL_PART, so pass only text
+already in hand. ``request`` prints the method, the URL with its query keys, the
+request header and cookie names, and the body's content type and field names
+with each value's type. ``response`` prints the status, the content type, the
+response header names, the names of the cookies it sets, and the body's shape:
+JSON keys and types (JSON nested deeper than 64 levels is not parsed), or an
+HTML page's title length and its forms, each with its method, templated action,
+and controls by name and type (repeats collapsed with a count, a control with no
+name or a name that fails by type, position, and an id that passes, and hidden
+ones of those with no such id as one line with a count). A field whose name
+reads as a password, a secret, a token, a card, or a key is listed by name
+alone. A response body streamed to ``bodies/`` is read only from the HAR's own
+``bodies/`` directory, never through a link.
 
-``operations`` lists each GraphQL operation the recording's request bodies
-carry (graftpunk's own rule, copied and held equal by a test: a JSON object with a
+``operations`` lists each GraphQL operation the recording's request bodies carry
+(graftpunk's own rule, copied and held equal by a test: a JSON object with a
 ``query`` that reads as a GraphQL document, or an ``operationName`` beside
 ``extensions.persistedQuery``; each element of an array of them): its method,
-templated URL, and name in parentheses (``(anonymous)`` for none), the number of
-calls and how many came in a batch, its kind (``query``, ``mutation``,
-``subscription``, or ``persisted`` for a hash sent without a document), and the
-shapes of its first recorded variables and response, nested keys and types,
-never a value. An operation name prints when it is a GraphQL Name of at most 128
-characters that ``holds_an_id`` does not read as an id; it is an identifier fixed
-in the site's client code, the same for every account, so it does not pass
-through ``printable_name``, and any other name is filed under ``(anonymous)``.
-``operations`` ends with ``shared values (names only)``: each pair of a response
-field and a later request's variable that carried the same value (text of three
-characters or more, never a bool or null), as ``<Operation> <response path> ->
-<Operation> variables.<path>`` with a request count, so the links between
-operations (an id one returns and another takes) show without any value; a key
-that fails the gate is written ``{}``. ``--operation NAME`` narrows
+URL (its path as the digest keys it, with a segment the key keeps and the gate
+holds back written ``{}``), and name in parentheses (``(anonymous)`` for none),
+the number of calls and how many came in a batch, its kind (``query``,
+``mutation``, ``subscription``, or ``persisted`` for a hash sent without a
+document), and the shapes of its first recorded variables and response, nested
+keys and types, never a value. An operation name prints when it is a GraphQL
+Name of at most 128 characters that ``holds_an_id`` does not read as an id; it
+is an identifier fixed in the site's client code, the same for every account, so
+it does not pass through ``printable_name``, and any other name is filed under
+``(anonymous)``. ``operations`` ends with ``shared values (names only)``: each
+pair of a response field and a later request's variable that carried the same
+value (text of three characters or more, never a bool or null), as ``<Operation>
+<response path> -> <Operation> variables.<path>`` with a request count, so the
+links between operations (an id one returns and another takes) show without any
+value; a key that fails the gate is written ``{}``. ``--operation NAME`` narrows
 ``operations``, ``request``, and ``response`` to one operation (``anonymous``
-names the anonymous one), and ``request`` and
-``response`` add the operations an entry carries to its first line.
+names the anonymous one), and ``request`` and ``response`` add the operations an
+entry carries to its first line.
 
 At most 20 matching entries are described; past that, a count prints. Exit 0 when
 something was described, 1 when nothing matched, 2 on a usage error, a HAR that
-is missing or is not a HAR, or an entry that could not be read; no error message
-quotes the HAR. Standard library only, so it runs under any Python 3.9 or later.
+is missing, is not a HAR, or nests JSON deeper than 512 levels (checked before
+it is parsed), or an entry that could not be read; no error message quotes the
+HAR. Standard library only, so it runs under any Python 3.9 or later.
 """
 
 from __future__ import annotations
@@ -296,7 +318,10 @@ _ACRONYMS = frozenset(
         "ID IDS URL URI API XML HTML JSON CSRF XSRF UUID IP UI SSO MFA OTP SMS PDF CSV UTC "
         "OS DOB SSN ZIP CVV CVC TOS GDPR HTTP HTTPS JWT SAML AJAX DOM CSS JS ISO VAT SKU "
         # the abbreviations cookie and token names use, some spelled with no vowel
-        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP "
+        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP NBF "
+        # the vowel-less abbreviations API and form field names and routes use
+        # (invoiceNbr, txn_id, txtQty, msrp, /svc/)
+        "NBR TXN QTY MSRP SVC "
         # the abbreviations header names use (X-Amz-Target, Grpc-Timeout,
         # HX-Request, Ocp-Apim-Trace, Sec-GPC, X-DNS-Prefetch-Control, X-PJAX), cloud
         # SDKs' among them (X-Amz-Sdk-Checksum-Algorithm, X-Amz-Sns-Message-Type,
@@ -312,6 +337,7 @@ _SHORT_WORDS = frozenset(
     "Id By At To Of On In Is Up No Or Ok Me My Do Go If As Us Tv Pm Am Ip Ms".split()  # noqa: SIM905
 )
 _MAX_PARTS = 8
+_GRAPHQL_WORD_RE = re.compile(r"GraphQL")
 _MAX_CAPITALS = 16
 _LONG_LOWER = 9
 
@@ -345,12 +371,16 @@ _DIGIT_TOKENS = tuple(
     sorted(
         (  # noqa: SIM905 - one compact string on purpose: the set is data
             "argon2id argon2 ed25519 pbkdf2 oauth1 oauth2 base32 base64 utf8 utf16 ipv4 "
-            "ipv6 x509 k8s md5 sha1 sha224 sha256 sha384 sha512 i18n l10n"
+            "ipv6 x509 k8s md5 sha1 sha224 sha256 sha384 sha512 i18n l10n a11y h264 h265 "
+            "e164"
         ).split(),
         key=len,
         reverse=True,
     )
 )
+# Cloud service names with a digit, read as a token only in lower case starting a
+# part (s3Key, s3Bucket): anywhere else two characters match too much random text.
+_LEADING_DIGIT_TOKENS = ("s3", "ec2")
 _MAX_INNER_DIGITS = 2
 _MIN_WORD_BESIDE_DIGITS = 4
 _DIGITS_READ_AS_WORDS = frozenset(("2",))
@@ -367,6 +397,9 @@ def _digit_token_at(part: str, at: int) -> int:
         end = at + len(token)
         if lowered.startswith(token) and (end == len(part) or not part[end].islower()):
             return end
+    for token in () if at else _LEADING_DIGIT_TOKENS:
+        if part.startswith(token) and (len(token) == len(part) or part[len(token)].isupper()):
+            return len(token)
     # A version only starts a part: inside one (jV29) it reads as random text.
     version = None if at else _VERSION_RE.match(lowered)
     if version:
@@ -478,9 +511,9 @@ def _plain_part(part: str) -> bool:
     short = [w for w in words if len(w) <= 3 and w not in _SHORT_WORDS and not _camel_acronym(w)]
     if len(short) > 1:
         return False
-    for word in words:
+    for index, word in enumerate(words):
         lowered = word.lower()
-        if _camel_acronym(word):
+        if _camel_acronym(word) or _initial(words, index):
             continue
         if word.isupper():
             return False
@@ -490,6 +523,16 @@ def _plain_part(part: str) -> bool:
         elif len(word) < 2 or not _spelled(lowered) or not any(ch in _VOWELS for ch in lowered):
             return False
     return True
+
+
+# A first, middle, or last name's initial starting a camel name before Name
+# (txtFName). A lone letter before any capitalised word (eFiling, iPhone) passed
+# more random text when allowed (#279).
+_NAME_INITIALS = frozenset("FLM")
+
+
+def _initial(words: list[str], index: int) -> bool:
+    return not index and len(words) > 1 and words[0] in _NAME_INITIALS and words[1] == "Name"
 
 
 # Hash and MAC names and their standard sizes (sha256, HmacSha512, md5, blake2b),
@@ -571,9 +614,12 @@ _FRAMEWORK_NAMES = frozenset(
         # body field names the rules hold back: Microsoft's login form field and the
         # vowel-less quantity abbreviation
         "loginfmt qty "
+        # a JSON:API query switch, Segment's and ASP.NET Identity's cookie names
+        "jsonapi ajs_user_id ajs_anonymous_id .aspnetcore.identity.application "
         # query parameter names the rules hold back: jQuery's cache-buster, a time
-        # zone, ad click ids, and a JSONP switch
-        "_ tz gclid fbclid dclid jsonp "
+        # zone, ad click ids, a JSONP switch, and a foreign exchange flag (as an
+        # acronym, FX passed random text inside camel case, #279)
+        "_ tz gclid fbclid dclid jsonp fx "
         # more query names the rules hold back: an S3 signature v2 key, Ext JS's
         # cache-buster, a page number, a format switch, Solr's filter query, handler
         # and default field, imgix's format and library, and Mailchimp's campaign
@@ -594,9 +640,43 @@ _FRAMEWORK_NAMES = frozenset(
         "__eventtarget __eventargument __lastfocus __previouspage __requestverificationtoken"
     ).split()
 )
+# Cookie names a framework builds from a fixed prefix and a per-site suffix (an
+# app, site, organisation, or container id). The name goes through the gate whole,
+# like any other: a rule that passed the suffix on holds_an_id alone passed almost
+# every random token after a prefix (#279 review). A cookie name that fails prints
+# as its prefix and {} (shown_name), since the prefix is the framework's and
+# names the cookie. Compared without regard to case.
+_FRAMEWORK_PREFIXES = (
+    ".aspnetcore.antiforgery.",
+    "_hjsessionuser_",
+    "_hjsession_",
+    "amcv_",
+    "amcvs_",
+    "_ga_",
+    "_gat_gtag_ua_",
+    "aspsessionid",
+)
+# The suffix's characters: an Adobe organisation id ends in a percent-encoded @
+# (AMCV_<id>%40AdobeOrg).
+_PREFIXED_SUFFIX_RE = re.compile(r"[A-Za-z0-9_.\-%]{1,64}")
+
+
+def framework_prefix(text: str) -> str:
+    """The fixed framework prefix *text* starts with, as recorded, followed by a
+    suffix of name characters, or ``""``."""
+    lowered = text.lower()
+    for prefix in _FRAMEWORK_PREFIXES:
+        if lowered.startswith(prefix) and _PREFIXED_SUFFIX_RE.fullmatch(text[len(prefix) :]):
+            return text[: len(prefix)]
+    return ""
+
+
 # ASP.NET WebForms: a naming container (ctl00) and a control-type prefix before a
 # name that itself passes the gate (txtUserName, btnLogin, chkRememberMe).
 _WEBFORMS_CONTAINER_RE = re.compile(r"ctl\d{2}")
+# A WebForms element id: the control's name with its containers joined by _
+# where the posted name joins them by $ (ctl00_ContentPlaceHolder1_Login1_UserName).
+_WEBFORMS_ID_RE = re.compile(r"ctl\d{2}_")
 _HUNGARIAN_RE = re.compile(
     r"(txt|btn|chk|ddl|lbl|hdn|pwd|rdo|rbl|cbl|lnk|img|pnl|cbo|cmb|lst|gv|rpt|hl)([A-Z]\w*)"
 )
@@ -631,7 +711,9 @@ def printable_name(text: str) -> bool:
     parts = [part for part in _NAME_SPLIT_RE.split(text) if part]
     if not parts or len(parts) > _MAX_PARTS or not any(_has_letter(part) for part in parts):
         return False
-    if not _parts_read_as_words(text):
+    # GraphQL is one word, not Graph and an acronym QL: a bare QL acronym let
+    # random letters before it through (ostQL).
+    if not _parts_read_as_words(_GRAPHQL_WORD_RE.sub("Graph", text)):
         return False
     # Capitals beside lower case (uid_SAMCOOKIE, addr[ADDRKEY]) read as a value
     # dropped into a name; a name all in capitals (PHPSESSID, XSRF-TOKEN) does not.
@@ -639,6 +721,10 @@ def printable_name(text: str) -> bool:
         part.rstrip("0123456789").isupper() or part.isdigit() for part in parts
     ):
         return False
+    if _WEBFORMS_ID_RE.match(text):
+        # Judged as its posted name is: joined by _, the whole id reads as a
+        # base64 token by its letter-digit switches alone.
+        return not holds_an_id(text.replace("_", "$"))
     return not holds_an_id(text)
 
 
@@ -648,8 +734,13 @@ def _long_capitals(part: str) -> bool:
 
 
 def _printable_segment(segment: str) -> bool:
-    """A path segment prints when it passes the gate and holds no run of capitals
-    longer than an acronym: routes are words, and capitals in one are a code."""
+    """A path segment prints only when graftpunk's path rule keeps it
+    (:func:`looks_dynamic`), so the script never prints a segment the digest's key
+    replaces with a parameter, and then when it is a listed route segment or
+    passes the gate and holds no run of capitals longer than an acronym (routes
+    are words, and capitals in one are a code)."""
+    if looks_dynamic(segment):
+        return False
     text = unquote(segment)
     if text.lower() in _ENDPOINT_SEGMENTS:
         return True
@@ -661,9 +752,13 @@ def _printable_segment(segment: str) -> bool:
 
 
 # Route segments a framework or protocol fixes, and server pages by extension, the
-# stem of which still goes through the gate (Login.aspx, index.php).
+# stem of which still goes through the gate (Login.aspx, index.php). A lone letter
+# before a word (eFiling) passed random text as a rule of the gate (#279), so
+# such a route is listed.
 _ENDPOINT_SEGMENTS = frozenset(
-    "graphql gql jsonrpc xmlrpc.php cgi-bin 2fa robots.txt favicon.ico sitemap.xml".split()  # noqa: SIM905
+    (  # noqa: SIM905 - one compact string on purpose: the set is data
+        "graphql gql jsonrpc xmlrpc.php cgi-bin robots.txt favicon.ico sitemap.xml efiling"
+    ).split()
 )
 _PAGE_RE = re.compile(r"(.+)\.(?:aspx|ashx|asmx|php|jsp|do|cfm|html?)", re.I)
 
@@ -677,18 +772,49 @@ def _placeholder(segment: str) -> str:
 
 def templated_path(path: str) -> str:
     """*path* with each segment that fails the gate replaced by a placeholder."""
-    segments = path.split("/")
+    # Each segment's ;params are dropped first, as the digest's key drops them.
+    segments = _PATH_PARAMS_RE.sub("", path).split("/")
     out = [seg if not seg or _printable_segment(seg) else _placeholder(seg) for seg in segments]
     return "/".join(out)
 
 
 _HOST_RE = re.compile(r"[a-z0-9.\-]{1,253}|\[[0-9a-f:.]{2,45}\]")
 _WEB_SCHEMES = ("http", "https", "ws", "wss")
-_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]{0,15}")
+# The schemes a page or a redirect uses besides the web's, named; any other
+# scheme is recorded text (a custom app scheme can be a word the account chose).
+_KNOWN_SCHEMES = frozenset(("mailto", "javascript", "data", "tel", "blob", "about"))
+# The labels a site's own host starts with that the gate holds back, each with an
+# optional digit (www4, img1); measured on random labels of 2 to 32 characters, it
+# prints none the gate held back but these words.
+_HOST_WORD_RE = re.compile(r"(?:www|ww|img|gw|smtp|px|b2b|b2c|graphql|gql)\d?")
+# The labels a host keeps as recorded: the site's own registrable domain. A
+# per-account subdomain sits to their left.
+_SITE_LABELS = 2
 
 
 def _scheme(scheme: str) -> str:
-    return f"{scheme}:" if _SCHEME_RE.fullmatch(scheme) else "a URL of another scheme"
+    return f"{scheme}:" if scheme in _KNOWN_SCHEMES else "a URL of another scheme"
+
+
+def _host_label(label: str) -> str:
+    if not label or _HOST_WORD_RE.fullmatch(label) or printable_name(label):
+        return label
+    return "{id}" if label.isdigit() or holds_an_id(label) else "{}"
+
+
+def shown_host(host: str) -> str:
+    """*host* as the script prints it: an IP address as recorded, and a name with
+    its last two labels as recorded and each label left of them through the gate,
+    ``{id}`` or ``{}`` when it fails, so a per-account subdomain does not print."""
+    if not _HOST_RE.fullmatch(host):
+        return "{host}"
+    if host.startswith("[") or _is_ip(host):
+        return host
+    labels = host.split(".")
+    if len(labels) <= _SITE_LABELS:
+        return host
+    left, site = labels[:-_SITE_LABELS], labels[-_SITE_LABELS:]
+    return ".".join([*(_host_label(label) for label in left), *site])
 
 
 def templated_url(url: str) -> str:
@@ -703,8 +829,7 @@ def templated_url(url: str) -> str:
     path = templated_path(parts.path)
     if not scheme:
         return path or "(this page)"
-    host = (parts.hostname or "").lower()
-    host = host if _HOST_RE.fullmatch(host) else "{host}"
+    host = shown_host((parts.hostname or "").lower())
     try:
         port = parts.port
     except ValueError:
@@ -819,6 +944,12 @@ def looks_secret(name: str) -> bool:
 # Loading
 
 
+# How deep a whole HAR may nest: past any HAR a browser or gp writes, and under the
+# depth at which json.loads raises RecursionError on every Python the script runs
+# on, which differs by version (a HAR 20,000 deep failed on 3.12 and read on 3.14).
+_MAX_HAR_NESTING = 512
+
+
 class HarError(Exception):
     """The HAR cannot be read; the message says why without quoting it."""
 
@@ -830,6 +961,10 @@ def _load(path: str) -> list[dict[str, Any]]:
         raise HarError(f"{path} is not UTF-8 text") from exc
     except OSError as exc:
         raise HarError(f"cannot read {path}") from exc
+    if _nesting(text, _MAX_HAR_NESTING) > _MAX_HAR_NESTING:
+        raise HarError(
+            f"{path} nests JSON deeper than {_MAX_HAR_NESTING} levels, so it is not read"
+        )
     try:
         har = json.loads(text)
     except (ValueError, RecursionError) as exc:
@@ -851,19 +986,35 @@ def _list(container: dict[str, Any], key: str) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-_METHOD_RE = re.compile(r"[A-Z]{1,10}")
+# graftpunk.har.naming.HTTP_METHODS, copied (a test holds the two equal): any
+# other method is recorded text, which can be a word the account chose.
+_HTTP_METHODS = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
+)
 
 
 def _method(request: dict[str, Any]) -> str:
     method = str(request.get("method", "")).upper()
-    return method if _METHOD_RE.fullmatch(method) else "(method not shown)"
+    return method if method in _HTTP_METHODS else "(method not shown)"
 
 
-def _names(raw: list[str]) -> str:
-    """*raw* names, deduplicated, through the gate, with the rest counted."""
+def shown_name(name: str) -> str | None:
+    """Cookie *name* as the script prints it: whole when it passes the gate, as its
+    fixed framework prefix and ``{}`` when it fails and starts with one
+    (``_hjSessionUser_{}``), or None when it is counted instead."""
+    if printable_name(name):
+        return name
+    prefix = framework_prefix(name)
+    return f"{prefix}{{}}" if prefix else None
+
+
+def _names(raw: list[str], *, cookies: bool = False) -> str:
+    """*raw* names, deduplicated, through the gate, with the rest counted; cookie
+    names through :func:`shown_name`."""
     names = list(dict.fromkeys(name for name in raw if name))
-    shown = [name for name in names if printable_name(name)]
-    hidden = len(names) - len(shown)
+    labels = [shown_name(n) if cookies else (n if printable_name(n) else None) for n in names]
+    shown = list(dict.fromkeys(label for label in labels if label is not None))
+    hidden = labels.count(None)
     pieces = [", ".join(shown)] if shown else []
     if hidden:
         pieces.append(_value_names(hidden))
@@ -893,13 +1044,56 @@ def _request_cookie_names(request: dict[str, Any]) -> list[str]:
 
 
 _MIME_RE = re.compile(r"[a-z0-9][a-z0-9.+\-]{0,63}/[a-z0-9][a-z0-9.+\-]{0,63}")
+_MEDIA_TYPES = frozenset(
+    "application audio font image message model multipart text video".split()  # noqa: SIM905
+)
+# Subtypes the gate holds back, named here: they print as they are.
+_MEDIA_SUBTYPES = frozenset(
+    (  # noqa: SIM905 - one compact string on purpose: the set is data
+        "x-www-form-urlencoded xhtml+xml svg+xml x-ndjson ndjson x-msgpack msgpack gzip "
+        "x-gzip graphql graphql-response+json grpc+proto grpc-web+proto sparql-query sql "
+        "x-7z-compressed x-httpd-php vcard vtt jpeg jpg mp2t rfc822 gltf+json gltf-binary "
+        "vnd.openxmlformats-officedocument.spreadsheetml.sheet "
+        "vnd.openxmlformats-officedocument.wordprocessingml.document "
+        "vnd.openxmlformats-officedocument.presentationml.presentation"
+    ).split()
+)
+# The structured syntax suffixes, kept after a subtype the gate holds back.
+_MEDIA_SUFFIXES = frozenset("json xml zip cbor gzip yaml jwt json-seq wbxml ber der".split())  # noqa: SIM905
+# A vendor, personal, or unregistered tree's prefix, which the gate would read as
+# a word.
+_MEDIA_TREE_RE = re.compile(r"(?:vnd|prs|x)[.\-]")
+
+
+def _subtype(subtype: str) -> str:
+    """*subtype* when it is a known one or its pieces pass the gate, else ``{}``
+    with its structured syntax suffix (``{}+json``) when that is a known one."""
+    if subtype in _MEDIA_SUBTYPES:
+        return subtype
+    stem, plus, suffix = subtype.rpartition("+")
+    if not plus:
+        stem, suffix = subtype, ""
+    if suffix and suffix not in _MEDIA_SUFFIXES:
+        return "{}"
+    tree = _MEDIA_TREE_RE.match(stem)
+    name = stem[tree.end() :] if tree else stem
+    if name and printable_name(name):
+        return subtype
+    return f"{{}}+{suffix}" if suffix else "{}"
 
 
 def _mime(raw: str) -> str:
+    """A content type's base as the script prints it: a standard top-level type,
+    and its subtype through :func:`_subtype`."""
     base = raw.split(";", 1)[0].strip().lower()
     if not base:
         return ""
-    return base if _MIME_RE.fullmatch(base) else "a content type that is not shown"
+    if not _MIME_RE.fullmatch(base):
+        return "a content type that is not shown"
+    kind, _slash, subtype = base.partition("/")
+    if kind not in _MEDIA_TYPES:
+        return "a content type that is not shown"
+    return f"{kind}/{_subtype(subtype)}"
 
 
 # cookies
@@ -917,7 +1111,7 @@ def _domain(domain: str, host: str) -> str:
         return "-"
     bare = domain.lower().lstrip(".")
     if host and (host == bare or host.endswith("." + bare)) and _HOST_RE.fullmatch(bare):
-        return bare
+        return shown_host(bare)
     return "a domain outside the response's host"
 
 
@@ -1227,11 +1421,14 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
     """One block per cookie set, or with *only*, the block of that exact name,
     which the caller already holds and so may print whatever the gate says."""
 
-    def shown(name: str) -> bool:
-        return name == only if only is not None else printable_name(name)
+    def label_of(name: str) -> str | None:
+        if only is not None:
+            return name if name == only else None
+        return shown_name(name)
 
     settings: dict[str, Counter[tuple[str, str]]] = {}
     hidden_set: set[str] = set()
+    shown_set: set[str] = set()
     sent: dict[str, None] = {}
     for entry in entries:
         request, response = _part(entry, "request"), _part(entry, "response")
@@ -1269,20 +1466,24 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
             seen[name] += 1
             if only is not None and name != only:
                 continue
-            if not shown(name):
+            label = label_of(name)
+            if label is None:
                 hidden_set.add(name)
                 continue
-            settings.setdefault(name, Counter())[(where, text)] += 1
+            shown_set.add(name)
+            settings.setdefault(label, Counter())[(where, text)] += 1
         for name, cookies_of_name in array.items():
             for cookie in cookies_of_name[seen[name] :]:
                 if only is not None and name != only:
                     continue
-                if not shown(name):
+                label = label_of(name)
+                if label is None:
                     hidden_set.add(name)
                     continue
+                shown_set.add(name)
                 view = _describe(_array_view(cookie, host, _sent_at(entry)))
                 text = f"response.cookies array only (no Set-Cookie header line): {view}"
-                settings.setdefault(name, Counter())[(where, text)] += 1
+                settings.setdefault(label, Counter())[(where, text)] += 1
     lines: list[str] = []
     for name in sorted(settings):
         lines.append(f"cookie {name}")
@@ -1295,11 +1496,10 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
         if not lines and only in sent:
             lines.append(f"cookie {only}: sent in requests and never set in this recording")
         return lines
-    only_sent = [name for name in sent if name not in settings and name not in hidden_set]
+    only_sent = [name for name in sent if name not in shown_set and name not in hidden_set]
     if only_sent:
-        lines.append(
-            f"sent in requests and never set in this recording: {_names(sorted(only_sent))}"
-        )
+        names = _names(sorted(only_sent), cookies=True)
+        lines.append(f"sent in requests and never set in this recording: {names}")
     return lines
 
 
@@ -1369,29 +1569,32 @@ def _shape(value: Any, indent: str, depth: int, max_depth: int = _MAX_DEPTH) -> 
 _MAX_JSON_NESTING = 64
 
 
-def _nesting(text: str) -> int:
-    """How deep JSON *text* nests objects and arrays, strings skipped; the script
-    bounds this itself, since how deep json.loads goes before RecursionError
-    changed across Python versions."""
+def _nesting(text: str, limit: int = _MAX_JSON_NESTING) -> int:
+    """How deep JSON *text* nests objects and arrays, strings skipped (one left
+    open runs to the end), read in one pass that stops once it passes *limit*;
+    the script bounds this itself, since how deep json.loads goes before
+    RecursionError changed across Python versions. A loop over characters holds
+    nothing but its state, which matters since it reads the whole HAR before
+    json.loads does; a regex over the whole text took several times the memory."""
     depth = deepest = 0
     in_string = escaped = False
-    for ch in text:
+    for char in text:
         if in_string:
             if escaped:
                 escaped = False
-            elif ch == "\\":
+            elif char == "\\":
                 escaped = True
-            elif ch == '"':
+            elif char == '"':
                 in_string = False
-        elif ch == '"':
+        elif char == '"':
             in_string = True
-        elif ch in "[{":
+        elif char in "[{":
             depth += 1
             if depth > deepest:
                 deepest = depth
-                if deepest > _MAX_JSON_NESTING:
-                    return deepest
-        elif ch in "]}":
+                if deepest > limit:
+                    break
+        elif char in "]}":
             depth -= 1
     return deepest
 
@@ -1521,16 +1724,35 @@ def _controls(controls: list[tuple[str, str, str]], indent: str) -> list[str]:
     for name, kind in dict.fromkeys(named):
         repeat = f" ({counts[(name, kind)]} controls)" if counts[(name, kind)] > 1 else ""
         lines.append(f"{indent}{name}: {kind}{repeat}")
-    listed = 0
-    unlisted = 0
+    # The controls with no name or a name that fails, each on its own line, except
+    # that hidden inputs with no id that prints are one line per label with a count,
+    # as a named repeat is: a form's run of hidden state is not a field to fill,
+    # and an id that prints is the only selector a nameless control has.
+    entries: list[tuple[str, str, list[tuple[int, str]]]] = []
+    hidden_runs: dict[str, list[tuple[int, str]]] = {}
     for position, (name, kind, ident) in enumerate(controls, start=1):
         if name and printable_name(name):
             continue
-        if listed == _MAX_UNNAMED:
-            unlisted += 1
-            continue
-        listed += 1
         label = "(name not shown)" if name else "(no name)"
+        if kind == "hidden" and not (ident and printable_name(ident)):
+            if label not in hidden_runs:
+                hidden_runs[label] = []
+                entries.append((label, kind, hidden_runs[label]))
+            hidden_runs[label].append((position, ident))
+        else:
+            entries.append((label, kind, [(position, ident)]))
+    unlisted = 0
+    for listed, (label, kind, members) in enumerate(entries):
+        if listed >= _MAX_UNNAMED:
+            unlisted += len(members)
+            continue
+        position, ident = members[0]
+        if len(members) > 1:
+            lines.append(
+                f"{indent}{label} {kind} ({len(members)} controls, the first control "
+                f"{position} of the form)"
+            )
+            continue
         shown = f", id {ident}" if ident and printable_name(ident) else ""
         hidden_id = ", an id that reads as a value" if ident and not shown else ""
         lines.append(f"{indent}{label} {kind}, control {position} of the form{shown}{hidden_id}")
@@ -1598,28 +1820,37 @@ def _body_lines(mime: str, text: str | None, indent: str) -> list[str]:
 # request and response
 
 
-def _path_of(url: str) -> str:
+def _recorded_path(url: str) -> str:
+    """*url*'s path as recorded: never its userinfo, host, query, or fragment."""
     try:
         return urlsplit(url).path
     except ValueError:
-        return url.split("?", 1)[0].split("#", 1)[0]
+        return ""
 
 
 def _matches(
-    entries: list[dict[str, Any]], needle: str, method: str | None
+    entries: list[dict[str, Any]],
+    needle: str,
+    method: str | None,
+    har_path: Path,
+    *,
+    recorded: bool = False,
 ) -> list[dict[str, Any]]:
+    """The entries whose URL, as this script prints it, holds *needle*, and with
+    *method* whose method prints as it. A match on text the script does not print
+    would answer whether a guessed value is in the recording, so the recorded path
+    is searched only when *recorded* is set: the caller then holds the text."""
     found = []
     for entry in entries:
         request = _part(entry, "request")
         url = str(request.get("url", ""))
-        path = _path_of(url)
-        if (
-            needle not in path
-            and needle not in templated_path(path)
-            and needle not in url.split("?", 1)[0].split("#", 1)[0]
+        if not (
+            needle in templated_url(url)
+            or (entry_operations(entry, har_path) and needle in _operation_url(url))
+            or (recorded and needle in _recorded_path(url))
         ):
             continue
-        if method and str(request.get("method", "")).upper() != method.upper():
+        if method and _method(request) != method.upper():
             continue
         found.append(entry)
     return found
@@ -1681,7 +1912,7 @@ def describe_request(entry: dict[str, Any], har_path: Path) -> list[str]:
     lines = [f"{_method(request)} {templated_url(url)}{query_keys(url)}"]
     headers = _list(request, "headers")
     lines.append(f"  request headers: {_names(_header_names(headers))}")
-    lines.append(f"  request cookies: {_names(_request_cookie_names(request))}")
+    lines.append(f"  request cookies: {_names(_request_cookie_names(request), cookies=True)}")
     post = request.get("postData")
     if not isinstance(post, dict):
         lines.extend(_request_body_outcome(request, headers, har_path))
@@ -1755,7 +1986,7 @@ def describe_response(entry: dict[str, Any], har_path: Path) -> list[str]:
         for c in _list(response, "cookies")
         if isinstance(c, dict) and c.get("name")
     ]
-    lines.append(f"  sets cookies: {_names(names)}")
+    lines.append(f"  sets cookies: {_names(names, cookies=True)}")
     text, reason = _response_text(entry, har_path)
     lines.append("  body:")
     if text is None:
@@ -2107,8 +2338,9 @@ def entry_operations(entry: dict[str, Any], har_path: Path) -> list[dict[str, An
 
 # graftpunk.har.paths.template_path, copied (a test holds the two equal): the
 # digest's key for a path keeps a segment as it is unless it reads as an id
-# (/GraphQLController stays), so an operation's line names the key the digest,
-# --command and --match take.
+# (/GraphQLController stays). An operation's line starts from that key and
+# writes a segment the gate holds back as {}, so it matches the digest's key
+# only where every kept segment also passes the gate.
 _JOIN_SPLIT_RE = re.compile(r"[_\-]")
 _WORD_WITH_DIGITS_RE = re.compile(r"([A-Za-z]+)\d{1,2}")
 _VERSION_RE = re.compile(r"v\d{1,2}(?:alpha|beta|rc)?\d{0,2}")
@@ -2179,7 +2411,7 @@ def template_path(path: str) -> str:
 
 def _operation_url(url: str) -> str:
     """*url* as an operation's line prints it: scheme and host as ``templated_url``
-    prints them, and the path as the digest keys it."""
+    prints them, and the path by :func:`_operation_path`."""
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -2187,13 +2419,32 @@ def _operation_url(url: str) -> str:
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https"):
         return templated_url(url)
-    host = (parts.hostname or "").lower()
-    host = host if _HOST_RE.fullmatch(host) else "{host}"
+    host = shown_host((parts.hostname or "").lower())
     try:
         port = parts.port
     except ValueError:
         port = None
-    return f"{scheme}://{host}{f':{port}' if port else ''}{template_path(parts.path)}"
+    return f"{scheme}://{host}{f':{port}' if port else ''}{_operation_path(parts.path)}"
+
+
+def _operation_path(path: str) -> str:
+    """*path* as the digest keys it (:func:`template_path`), with each segment the
+    key keeps that the script's gate holds back (:func:`_printable_segment`)
+    written ``{}``: the key's placeholders and every segment that prints are the
+    digest's own, and nothing prints that a request line would hold back."""
+    key = template_path(path)
+    recorded = _PATH_PARAMS_RE.sub("", path).strip("/").split("/")
+    keyed = key.strip("/").split("/")
+    if len(recorded) != len(keyed):
+        return templated_path(path)
+    shown = [
+        segment if not segment or segment != raw or _printable_segment(raw) else "{}"
+        for raw, segment in zip(recorded, keyed)  # noqa: B905 - Python 3.9 has no strict=
+    ]
+    leading = "/" if key.startswith("/") else ""
+    trailing = "/" if len(key) > 1 and key.endswith("/") else ""
+    body = "/".join(shown)
+    return f"{leading}{body}{trailing}" if body else key
 
 
 # graftpunk.har.digest's scope rule, copied (a test holds the two equal): the
@@ -2338,7 +2589,7 @@ def _operation_label(name: str) -> str:
 
 def operations(entries: list[dict[str, Any]], har_path: Path, wanted: str | None) -> list[str]:
     """One block per GraphQL operation on the run's own hosts (:func:`in_scope_entries`):
-    its request line (the path as the digest keys it), calls, kind, and the
+    its request line (the path as :func:`_operation_path` prints it), calls, kind, and the
     variables' and response's shapes (keys and types, never a value)."""
     entries = in_scope_entries(entries)
     groups: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -2493,6 +2744,7 @@ def main(argv: list[str]) -> int:
         one.add_argument("url_part")
         one.add_argument("--method")
         one.add_argument("--operation")
+        one.add_argument("--recorded-path", action="store_true")
     graphql = sub.add_parser("operations")
     graphql.add_argument("har")
     graphql.add_argument("--operation")
@@ -2535,7 +2787,7 @@ def _run(args: argparse.Namespace, entries: list[dict[str, Any]]) -> int:
             return 1
         print("\n\n".join(blocks))
         return 0
-    found = _matches(entries, args.url_part, args.method)
+    found = _matches(entries, args.url_part, args.method, har_path, recorded=args.recorded_path)
     if args.operation is not None:
         found = [
             entry
@@ -2559,7 +2811,7 @@ def _run(args: argparse.Namespace, entries: list[dict[str, Any]]) -> int:
             lines = describe_response(entry, har_path)
         names = list(dict.fromkeys(op["name"] for op in entry_operations(entry, har_path)))
         if names:
-            # The operation's key, as the digest prints it and --command takes it.
+            # The digest's key, with any segment the gate holds back written as {}.
             url = str(_part(entry, "request").get("url", ""))
             lines[0] = lines[0].replace(templated_url(url), _operation_url(url), 1)
             lines[0] += " " + " ".join(_operation_label(name) for name in names)

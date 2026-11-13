@@ -1163,6 +1163,30 @@ def _name_corpus() -> list[str]:
         for word in _TOKEN_WORDS
         for spelling in (word, word.capitalize(), word.upper(), f"X-{word.capitalize()}")
     ]
+    corpus += [*_NAMES_SINCE_279, *_HELD_BACK_SINCE_279]
+    prefixes = ["_ga_", "_hjSessionUser_", "AMCV_", ".AspNetCore.Antiforgery.", "ASPSESSIONID"]
+    corpus += [
+        rng.choice(prefixes) + "".join(rng.choices(name_alphabet + "%", k=rng.randint(1, 70)))
+        for _ in range(2_000)
+    ]
+    corpus += [
+        "ctl00_"
+        + "_".join(
+            rng.choices(
+                [
+                    "ContentPlaceHolder1",
+                    "ctl01",
+                    "Login1",
+                    "UserName",
+                    "Zq9XkLmPwR4t7Bv2",
+                    "txtName",
+                    "88812345",
+                ],
+                k=rng.randint(1, 4),
+            )
+        )
+        for _ in range(1_000)
+    ]
     return corpus
 
 
@@ -1191,6 +1215,8 @@ _COPIED_GATE = [
     "_MIN_WORD_BESIDE_DIGITS",
     "_DIGITS_READ_AS_WORDS",
     "_SCALE_DIGITS",
+    "_LEADING_DIGIT_TOKENS",
+    "_NAME_INITIALS",
 ]
 _COPIED_GATE_PATTERNS = [
     "_NAME_CHARS_RE",
@@ -1204,6 +1230,7 @@ _COPIED_GATE_PATTERNS = [
     "_HASH_NAME_RE",
     "_HASH_SIZE_RE",
     "_NAME_PART_RE",
+    "_WEBFORMS_ID_RE",
 ]
 
 
@@ -1283,3 +1310,122 @@ def test_a_digit_run_between_words_or_in_a_token_reads_as_a_name_in_both_gates(
 def test_a_digit_run_not_between_words_is_still_held_back(name: str) -> None:
     assert not printable_name(name)
     assert not _load_har_facts().printable_name(name)
+
+
+# #279: names a real API, form, or framework uses that the gate counted as values.
+_NAMES_SINCE_279 = (
+    "nbf",
+    "msrp",
+    "txn_id",
+    "invoiceNbr",
+    "jsonapi",
+    "txtQty",
+    "fx",
+    "svc",
+    "a11y",
+    "h264",
+    "e164",
+    "s3Key",
+    "s3Bucket",
+    "txtFName",
+    "txtLName",
+    "ajs_user_id",
+    "ajs_anonymous_id",
+    ".AspNetCore.Identity.Application",
+    "ctl00_ContentPlaceHolder1_Login1_UserName",
+    "ctl00_ContentPlaceHolder1_ctl01_ctl02_txtName",
+    "GraphQLController",
+    "useGraphQLQuery",
+)
+# Probes the #279 rules must not let through: random text beside a new word or
+# token, a prefix before an id, and values the rules first tried let in.
+_HELD_BACK_SINCE_279 = (
+    # A framework cookie prefix vouches for nothing: the name is judged whole, so
+    # a per-site suffix that does not read as words is counted (the script prints
+    # the prefix and {}).
+    ".AspNetCore.Antiforgery.CfDJ8AbCdEf",
+    "AMCV_6A3F1B2C5E8D9F0A1B2C3D4E%40AdobeOrg",
+    "_ga_ZXQ9KP3L2M",
+    "ASPSESSIONIDQABCDEFG",
+    "_ga_34ncDKMsKJmpSYsfYCgCjEmQCNrUH93d",
+    "aspsessionidjanevictim",
+    "_hjSessionUser_1234567",
+    "_gat_gtag_UA_12345678_1",
+    "_ga_alice.example@mail.example",
+    "AMCV_Zq9XkLmPwR4t7Bv2Hn8Ks3Jd",
+    "ctl00_ContentPlaceHolder1_Zq9XkLmPwR4t7Bv2",
+    "ctl00_Login_88812345",
+    "s3Zq9vKx",
+    "jS3Poun3",
+    "dmommpS3",
+    "CulFX_lv",
+    "eBndimso",
+    "TKayrbpn",
+    "txtQName",
+    "fxZq9vKx",
+    "msrpQz9XvKw",
+    # GraphQL is a word, not Graph and an acronym QL: letters before a bare QL
+    # are not vouched for (a QL acronym passed these).
+    "ostQL",
+    "EyrkyQL4",
+    "QLOwd",
+    "UeyQL",
+    "kqQLzvXw",
+    "QLzqvx",
+)
+
+
+@pytest.mark.parametrize("name", _NAMES_SINCE_279)
+def test_a_name_279_found_held_back_reads_as_a_name_in_both_gates(name: str) -> None:
+    assert printable_name(name)
+    assert _load_har_facts().printable_name(name)
+
+
+@pytest.mark.parametrize("name", _HELD_BACK_SINCE_279)
+def test_a_value_beside_a_279_word_is_still_held_back_in_both_gates(name: str) -> None:
+    assert not printable_name(name)
+    assert not _load_har_facts().printable_name(name)
+
+
+# The framework cookie prefixes before each random kind, 500 per pair, seed 277: a
+# prefix vouches for no suffix, so both gates pass exactly what 1.42.6 passed
+# (pairs not listed pass none). A rule that passed the suffix on holds_an_id alone
+# passed nearly every base62, base64url, and JWT piece after a prefix.
+_COOKIE_PREFIXES = (
+    "_ga_",
+    "_gat_gtag_UA_",
+    "_hjSession_",
+    "_hjSessionUser_",
+    "AMCV_",
+    "AMCVS_",
+    ".AspNetCore.Antiforgery.",
+    "ASPSESSIONID",
+)
+_PREFIXED_PASSES_IN_1_42_6 = {
+    ("_ga_", "base64url 8"): 4,
+    ("_ga_", "lowercase 8"): 72,
+    ("_ga_", "lowercase 9"): 63,
+    ("_ga_", "lowercase 12"): 26,
+    ("_ga_", "lowercase 16"): 7,
+    ("_ga_", "base36 12"): 4,
+    ("_gat_gtag_UA_", "base62 8"): 1,
+    ("_gat_gtag_UA_", "base64url 8"): 2,
+    ("_gat_gtag_UA_", "lowercase 8"): 66,
+    ("_gat_gtag_UA_", "lowercase 9"): 54,
+    ("_gat_gtag_UA_", "lowercase 12"): 21,
+    ("_gat_gtag_UA_", "lowercase 16"): 9,
+    ("_gat_gtag_UA_", "base36 12"): 2,
+}
+
+
+@pytest.mark.parametrize("prefix", _COOKIE_PREFIXES)
+def test_a_cookie_prefix_before_a_random_value_passes_as_in_1_42_6(prefix: str) -> None:
+    from tests.unit.test_graft_har_facts import _RNG_SEED, _samples
+
+    script = _load_har_facts()
+    for kind, make in _samples().items():
+        rng = random.Random(f"{_RNG_SEED}-{prefix}-{kind}")  # noqa: S311 - a fixed sample
+        values = [prefix + make(rng) for _ in range(500)]
+        expected = _PREFIXED_PASSES_IN_1_42_6.get((prefix, kind), 0)
+        assert sum(map(printable_name, values)) == expected, kind
+        assert sum(map(script.printable_name, values)) == expected, kind
