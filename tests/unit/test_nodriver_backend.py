@@ -4702,10 +4702,12 @@ class TestNoDriverBackendCallTimeout:
 
         assert backend._call_timeout == threading.TIMEOUT_MAX
 
-    def test_a_call_that_finishes_as_the_wait_expires_returns_its_result(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("ending", ["return", "raise"])
+    def test_a_call_that_finishes_as_the_wait_expires_keeps_its_own_outcome(
+        self, monkeypatch: pytest.MonkeyPatch, ending: str
     ) -> None:
-        """wait() reports not done, but the call finished before the recheck."""
+        """wait() reports not done, but the call finished before the recheck:
+        its own result or error, not a TimeoutError."""
         import concurrent.futures
 
         backend = with_private_loop(NoDriverBackend())
@@ -4713,6 +4715,8 @@ class TestNoDriverBackendCallTimeout:
 
         async def work() -> str:
             await asyncio.to_thread(release.wait)
+            if ending == "raise":
+                raise ValueError("its own error")
             return "done"
 
         real_wait = concurrent.futures.wait
@@ -4724,7 +4728,45 @@ class TestNoDriverBackendCallTimeout:
 
         monkeypatch.setattr(concurrent.futures, "wait", wait_that_expires_as_the_call_finishes)
 
-        assert backend._run_async(work(), timeout=1, method="x") == "done"
+        if ending == "raise":
+            with pytest.raises(ValueError, match="its own error"):
+                backend._run_async(work(), timeout=1, method="x")
+        else:
+            assert backend._run_async(work(), timeout=1, method="x") == "done"
+
+    def test_a_timed_out_navigate_never_sets_the_page_late(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review 4, M2: the abandoned navigation runs on, but the tab it answers
+        with is never written over what a later navigate() set."""
+        backend = with_private_loop(NoDriverBackend(navigate_timeout=0.2))
+        backend._started = True
+        release: dict[str, asyncio.Event] = {}
+        finished = threading.Event()
+
+        class FakeBrowser:
+            async def get(self, url: str) -> str:
+                if url == "https://myshop.example/slow":
+                    release["event"] = asyncio.Event()
+                    await release["event"].wait()
+                    finished.set()
+                    return "late-tab"
+                return "new-tab"
+
+        backend._browser = FakeBrowser()
+        monkeypatch.setattr(backend, "_stop_pending_navigation", lambda: None)
+
+        with pytest.raises(BrowserError):
+            backend.navigate("https://myshop.example/slow")
+        backend.navigate("https://myshop.example/next")
+        assert backend._page == "new-tab"
+
+        loop = backend._loop
+        assert loop is not None
+        loop.call_soon_threadsafe(release["event"].set)
+        assert finished.wait(timeout=5)
+        time.sleep(0.05)
+        assert backend._page == "new-tab"
 
     @pytest.mark.parametrize("ending", ["return", "raise"])
     def test_a_call_still_running_when_the_wait_expires_is_abandoned_not_cancelled(

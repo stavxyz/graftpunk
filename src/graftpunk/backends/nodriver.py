@@ -2574,10 +2574,16 @@ class NoDriverBackend:
         """
         return self._started and self._browser is not None
 
-    async def _navigate_async(self, url: str) -> None:
-        """Async implementation of navigation."""
+    async def _navigate_async(self, url: str) -> Any:
+        """Async implementation of navigation: the tab ``Browser.get`` answers.
+
+        It returns the tab rather than setting ``self._page``: a navigation
+        that runs out of time is abandoned, not cancelled, and runs on, so a
+        write here could land after ``navigate()`` raised and overwrite what a
+        later navigation set. ``navigate()`` assigns it only when it answered
+        in time."""
         assert self._browser is not None  # Type narrowing for ty
-        self._page = await self._browser.get(url)
+        return await self._browser.get(url)
 
     async def _stop_loading_async(self) -> None:
         """Send ``Page.stopLoading`` to the tab ``navigate()`` navigates."""
@@ -2633,7 +2639,7 @@ class NoDriverBackend:
 
         LOG.debug("nodriver_backend_navigating", url=url)
         try:
-            self._run_async(
+            self._page = self._run_async(
                 self._navigate_async(url), timeout=self._navigate_timeout, method="navigate()"
             )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
