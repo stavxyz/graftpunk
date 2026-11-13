@@ -715,7 +715,7 @@ def load_session_for_api_resolved(
     **The pin contract.** A bare *name* (``"mysite"``) names a BASE, not a
     slot, and is resolved here, at load time:
 
-    1. a slot cached under the bare name itself wins — an exact hit, which
+    1. a slot cached under the bare name itself wins: an exact hit, which
        lists only to warn when labelled siblings exist (see below);
     2. otherwise the single labelled account under that base
        (:func:`graftpunk.session_identity.resolve_account_session`), at the
@@ -834,7 +834,7 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
     bare-name pin contract in full: since #176 ``gp <site> login`` writes
     sessions as ``base@label``, so a bare *name* is tried as an exact key
     first and only then resolved against the single cached account for that
-    base — one ``list_sessions()`` call on that miss path, and one on a bare
+    base, with one ``list_sessions()`` call on that miss path and one on a bare
     exact hit to warn about labelled siblings. A slot cached under the bare
     name itself always wins, so this differs from the CLI's unpinned
     resolution, which refuses when several accounts share a base.
