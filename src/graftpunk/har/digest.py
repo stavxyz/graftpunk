@@ -289,7 +289,9 @@ _MAX_FIELD_NAME_LEN = 64  # a form field name past this is not a field name
 # and ASP.NET WebForms names its fields ctl00$Main$txtSearch. An inner ":" is
 # admitted too: JSF prefixes a field's name with its form's (loginForm:password),
 # and graftpunk.har.documents.names_a_password already splits a name's segments
-# on it (#375).
+# on it (#375). This is every body and query name's rule, so a colon name is
+# kept among an endpoint's parameters as well; printable_name refuses it, so it
+# is never printed.
 _FORM_FIELD_NAME_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_.\-\[\]$:]*")
 
 

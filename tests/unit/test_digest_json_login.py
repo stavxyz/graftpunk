@@ -337,6 +337,17 @@ class TestAColonContainerPrefix:
 
         assert password_field_names(urlencode({":password": "hunter22"}), _FORM) == []
 
+    @pytest.mark.parametrize("name", ["loginForm:password", "filter:owner", "user:jsmith"])
+    def test_a_colon_name_is_stored_but_never_printed(self, name: str) -> None:
+        """The alphabet is the digest's one field-name rule, so a colon name is now
+        kept among an endpoint's parameters too; the name gate every printed name
+        goes through still refuses it."""
+        from graftpunk.har.digest import _plausible_field_name
+        from graftpunk.har.paths import printable_name
+
+        assert _plausible_field_name(name)
+        assert not printable_name(name)
+
 
 class TestAPasswordInAJsonList:
     def test_it_is_read_by_the_name_of_the_key_holding_the_list(self) -> None:
