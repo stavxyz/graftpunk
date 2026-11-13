@@ -24,9 +24,9 @@ from graftpunk.har.digest import (
     Endpoint,
     RunDigest,
     ShapeNode,
-    body_field_names_not_shown,
     body_params_not_shown,
     family_values,
+    field_names_not_shown,
     header_names_not_shown,
     header_spellings,
     held_back_token_count,
@@ -37,8 +37,10 @@ from graftpunk.har.digest import (
     printable_custom_headers,
     printable_hidden,
     printable_login_fields,
+    printable_query_params,
     printable_token_pairs,
     printable_tokens,
+    query_params_not_shown,
     run_header_names_not_shown,
 )
 from graftpunk.har.documents import LoginForm, printable_selectors, printable_unresolved_roles
@@ -159,9 +161,16 @@ def _endpoint_block(endpoint: Endpoint, spellings: Mapping[str, str]) -> list[st
     statuses = list(endpoint.statuses)
     lines.append(f"- host: `{endpoint.host}`, count: {endpoint.count}, statuses: {statuses}")
     lines.append(f"- content type: `{endpoint.content_type or '(none)'}`")
-    if endpoint.query_params:
-        params = ", ".join(f"{k}: {v}" for k, v in sorted(endpoint.query_params.items()))
+    query = printable_query_params(endpoint)
+    if query:
+        params = ", ".join(f"{k}: {v}" for k, v in sorted(query.items()))
         lines.append(f"- query params: {params}")
+    if unshown_query := query_params_not_shown(endpoint):
+        lines.append(
+            "- 1 query param whose name reads as a value is not shown"
+            if unshown_query == 1
+            else f"- {unshown_query} query params whose names read as values are not shown"
+        )
     body = printable_body_params(endpoint)
     if body:
         params = ", ".join(f"{k}: {v}" for k, v in sorted(body.items()))
@@ -428,12 +437,13 @@ def render_json(d: RunDigest) -> str:
     ``meta_names_not_shown``, computed here from the digest's tokens, counts
     them. A hidden input name that reads as a value is left out of ``tokens`` and
     of each login form's ``hidden``, and ``hidden_names_not_shown``, computed
-    here from the tokens and the forms, counts them. A posted body field name
-    that reads as a value is left out of each ``login`` step's ``fields`` (which
-    then carries ``fields_not_shown``) and each endpoint's ``body_params`` (which
-    then carries ``body_params_not_shown``,
+    here from the tokens and the forms, counts them. A query parameter or posted
+    body field name that reads as a value is left out of each ``login`` step's
+    ``fields`` (which then carries ``fields_not_shown``) and each endpoint's
+    ``query_params`` or ``body_params`` (which then carries
+    ``query_params_not_shown`` or ``body_params_not_shown``,
     :func:`graftpunk.har.digest.printable_body_params`), and
-    ``body_field_names_not_shown`` counts them for the run. ``token_pairs`` holds only the pairings
+    ``field_names_not_shown`` counts them for the run. ``token_pairs`` holds only the pairings
     :func:`graftpunk.har.digest.printable_token_pairs` prints."""
     rendered = _jsonable(d)
     rendered["cookies"] = [name for name in d.cookies if printable_name(name)]
@@ -450,9 +460,9 @@ def render_json(d: RunDigest) -> str:
         rendered["hidden_names_not_shown"] = hidden_inputs
     for form, projected_form in zip(d.login_forms, rendered["login_forms"], strict=True):
         projected_form["hidden"] = list(printable_hidden(form))
-    rendered.pop("body_field_names_not_shown", None)
-    if unshown_body := body_field_names_not_shown(d):
-        rendered["body_field_names_not_shown"] = unshown_body
+    rendered.pop("field_names_not_shown", None)
+    if unshown_body := field_names_not_shown(d):
+        rendered["field_names_not_shown"] = unshown_body
     rendered.pop("token_pairs", None)
     if pairs := printable_token_pairs(d, spellings):
         rendered["token_pairs"] = _jsonable(pairs)
@@ -510,9 +520,14 @@ def _put_custom_headers(
 
 
 def _put_body_params(projected: dict[str, Any], endpoint: Endpoint) -> None:
-    """Set *projected*'s ``body_params`` to *endpoint*'s printable ones
-    (:func:`graftpunk.har.digest.printable_body_params`), and
-    ``body_params_not_shown`` to how many it leaves out, only when any."""
+    """Set *projected*'s ``query_params`` and ``body_params`` to *endpoint*'s
+    printable ones (:func:`graftpunk.har.digest.printable_query_params`,
+    :func:`graftpunk.har.digest.printable_body_params`), and
+    ``query_params_not_shown`` and ``body_params_not_shown`` to how many each
+    leaves out, only when any."""
+    projected["query_params"] = dict(sorted(printable_query_params(endpoint).items()))
+    if unshown_query := query_params_not_shown(endpoint):
+        projected["query_params_not_shown"] = unshown_query
     projected["body_params"] = dict(sorted(printable_body_params(endpoint).items()))
     if unshown := body_params_not_shown(endpoint):
         projected["body_params_not_shown"] = unshown
@@ -533,7 +548,7 @@ def _projected_endpoint(
         "login_flow": endpoint.login_flow,
         "content_type": endpoint.content_type,
         "shape": summarize_shape(endpoint.shape),
-        "query_params": dict(sorted(endpoint.query_params.items())),
+        "query_params": {},
         "body_params": {},
         # Lost, left out, or kept only as a binary file: the HAR holds no
         # body text the projection could read fields from.

@@ -18,14 +18,15 @@ set it (no `Domain`). Any name the gate holds back is left out wherever it would
 print and counted: a cookie's in `cookie_names_not_shown`, a header's in
 `header_names_not_shown` (`custom_headers_not_shown` on an endpoint), a meta
 tag's in `meta_names_not_shown`, a hidden input's in `hidden_names_not_shown`,
-and a posted field's in `body_field_names_not_shown` (`fields_not_shown` on a
-login step, `body_params_not_shown` on an endpoint). It holds no header, cookie,
-or query value, and only one kind of body value: for an endpoint whose recorded
-JSON body is `{}`, `[]`, `""`, `0`, `false`, or `null`, that value. It does
-print paths as recorded, though: up to three example paths per endpoint (the
-query string stripped and a segment holding an email address replaced, but an
-account or order id kept), each login step's URL and redirect target, each
-form's action and page, and each token's page.
+and a query or posted field's in `field_names_not_shown` (`fields_not_shown` on
+a login step, `query_params_not_shown` and `body_params_not_shown` on an
+endpoint). It holds no header, cookie, or query value, and only one kind of body
+value: for an endpoint whose recorded JSON body is `{}`, `[]`, `""`, `0`,
+`false`, or `null`, that value. It does print paths as recorded, though: up to
+three example paths per endpoint (the query string stripped and a segment
+holding an email address replaced, but an account or order id kept), each login
+step's URL and redirect target, each form's action and page, and each token's
+page.
 
 ## Where the HAR is
 

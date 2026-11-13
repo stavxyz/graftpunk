@@ -477,8 +477,10 @@ _HELD_BACK_META = "csrf-Qz9vKwLx"
 # candidate and one of the form's ``hidden`` names, posted with the login as a
 # real form posts it.
 _HELD_BACK_HIDDEN = "csrfZq7Lm9Kv"
-# A posted JSON body field whose name printable_name holds back.
+# A posted JSON body field and a query parameter whose names printable_name holds
+# back.
 _HELD_BACK_FIELD = "noteQz9vKwLm"
+_HELD_BACK_QUERY = "refZq9vLmKx"
 # Hidden input names login forms commonly carry, each of which still prints in
 # --json's login_forms after #359.
 _COMMON_HIDDEN = (
@@ -540,7 +542,7 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
         request_headers={"Content-Type": "application/json"},
     )
     echoes_xsrf["request"]["cookies"] = [{"name": xsrf, "value": _VALUE}]
-    sends = _entry("GET", f"{_HOST}/api/c")
+    sends = _entry("GET", f"{_HOST}/api/c?page=2&{_HELD_BACK_QUERY}=1")
     sends["request"]["cookies"] = [{"name": auth, "value": _VALUE}, {"name": nameless, "value": ""}]
     headers = _entry(
         "GET", f"{_HOST}/api/d", request_headers=dict.fromkeys(_HELD_BACK_HEADERS, _VALUE)
@@ -565,18 +567,22 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     assert any(_HELD_BACK_HIDDEN in fields for fields in posted)
     assert any(_HELD_BACK_FIELD in e.body_params for e in d.endpoints)
     assert any(_HELD_BACK_HIDDEN in e.body_params for e in d.endpoints)
-    # The posted hidden input is counted once, as a hidden input.
-    assert d.body_field_names_not_shown == 1
+    assert any(_HELD_BACK_QUERY in e.query_params for e in d.endpoints)
+    # The posted hidden input is counted once, as a hidden input; the posted
+    # field and the query parameter are counted here.
+    assert d.field_names_not_shown == 2
     rendered = json.loads(render_json(d))
     assert rendered["meta_names_not_shown"] == 1
     assert rendered["hidden_names_not_shown"] == 1
-    assert rendered["body_field_names_not_shown"] == 1
+    assert rendered["field_names_not_shown"] == 2
+    assert any(e.get("query_params_not_shown") == 1 for e in rendered["endpoints"])
     login_post = next(obs for obs in rendered["login"] if obs["kind"] == "credential_post")
     assert login_post["fields_not_shown"] == 1
     held_rows = [e for e in rendered["endpoints"] if e.get("body_params_not_shown")]
     assert {"/login", "/api/b"} <= {e["template"] for e in held_rows}
     projected = render_endpoints_json(d)
     assert projected.count('"body_params_not_shown": 1') >= 2
+    assert '"query_params_not_shown": 1' in projected
     plugin = render(
         ScaffoldSpec(
             name="myshop", mode="new_project", backend="nodriver", base_url=_HOST, digest=d
@@ -590,6 +596,7 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
             _HELD_BACK_META,
             _HELD_BACK_HIDDEN,
             _HELD_BACK_FIELD,
+            _HELD_BACK_QUERY,
         ):
             assert name.lower() not in text.lower()
     assert "- 4 cookies whose names read as values are not shown" in _cookie_lines(d)
@@ -602,7 +609,11 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     assert "1 recorded body field(s) were left out because their names read as values" in (
         _plugin_text(d)
     )
+    assert "1 recorded query parameter(s) were left out because their names read as values" in (
+        _plugin_text(d)
+    )
     markdown = render_markdown(d)
+    assert "- 1 query param whose name reads as a value is not shown" in markdown
     assert "credential_post (password, username, 1 not shown)" in markdown
     assert markdown.count("- 1 body param whose name reads as a value is not shown") >= 2
 
