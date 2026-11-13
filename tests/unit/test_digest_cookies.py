@@ -474,8 +474,11 @@ _HELD_BACK = ("sessionZq9vLm2x", "xsrfQz9XvKw", "authTokenQx7vK", _VALUE_AS_NAME
 # value, so it is a pairing's source too.
 _HELD_BACK_META = "csrf-Qz9vKwLx"
 # A hidden input in the login form whose name printable_name holds back: a token
-# candidate and one of the form's ``hidden`` names.
+# candidate and one of the form's ``hidden`` names, posted with the login as a
+# real form posts it.
 _HELD_BACK_HIDDEN = "csrfZq7Lm9Kv"
+# A posted JSON body field whose name printable_name holds back.
+_HELD_BACK_FIELD = "noteQz9vKwLm"
 # Hidden input names login forms commonly carry, each of which still prints in
 # --json's login_forms after #359.
 _COMMON_HIDDEN = (
@@ -517,7 +520,7 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
         status=302,
         content_type="text/html",
         body="",
-        post_data="username=u&password=p",
+        post_data=f"username=u&password=p&{_HELD_BACK_HIDDEN}=v",
         request_headers={"Content-Type": "application/x-www-form-urlencoded"},
         response_headers={"Location": "/account"},
     )
@@ -530,7 +533,12 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     )
     sets_xsrf = _entry("GET", f"{_HOST}/api/a", set_cookies=[f"{xsrf}={_VALUE}; Path=/"])
     sets_xsrf["response"]["cookies"] = [{"name": xsrf, "value": _VALUE}]
-    echoes_xsrf = _entry("POST", f"{_HOST}/api/b")
+    echoes_xsrf = _entry(
+        "POST",
+        f"{_HOST}/api/b",
+        post_data=json.dumps({"note": "x", _HELD_BACK_FIELD: "y"}),
+        request_headers={"Content-Type": "application/json"},
+    )
     echoes_xsrf["request"]["cookies"] = [{"name": xsrf, "value": _VALUE}]
     sends = _entry("GET", f"{_HOST}/api/c")
     sends["request"]["cookies"] = [{"name": auth, "value": _VALUE}, {"name": nameless, "value": ""}]
@@ -553,9 +561,22 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     assert ("hidden_input", _HELD_BACK_HIDDEN) in {(t.kind, t.name) for t in d.tokens}
     assert any(_HELD_BACK_HIDDEN in form.hidden for form in d.login_forms)
     assert d.hidden_names_not_shown == 1
+    posted = [obs.fields for obs in d.login if obs.kind == "credential_post"]
+    assert any(_HELD_BACK_HIDDEN in fields for fields in posted)
+    assert any(_HELD_BACK_FIELD in e.body_params for e in d.endpoints)
+    assert any(_HELD_BACK_HIDDEN in e.body_params for e in d.endpoints)
+    # The posted hidden input is counted once, as a hidden input.
+    assert d.body_field_names_not_shown == 1
     rendered = json.loads(render_json(d))
     assert rendered["meta_names_not_shown"] == 1
     assert rendered["hidden_names_not_shown"] == 1
+    assert rendered["body_field_names_not_shown"] == 1
+    login_post = next(obs for obs in rendered["login"] if obs["kind"] == "credential_post")
+    assert login_post["fields_not_shown"] == 1
+    held_rows = [e for e in rendered["endpoints"] if e.get("body_params_not_shown")]
+    assert {"/login", "/api/b"} <= {e["template"] for e in held_rows}
+    projected = render_endpoints_json(d)
+    assert projected.count('"body_params_not_shown": 1') >= 2
     plugin = render(
         ScaffoldSpec(
             name="myshop", mode="new_project", backend="nodriver", base_url=_HOST, digest=d
@@ -563,7 +584,13 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     )
     for text in (render_markdown(d), render_json(d), render_endpoints_json(d), *plugin.values()):
         assert _VALUE not in text
-        for name in (*_HELD_BACK, *_HELD_BACK_HEADERS, _HELD_BACK_META, _HELD_BACK_HIDDEN):
+        for name in (
+            *_HELD_BACK,
+            *_HELD_BACK_HEADERS,
+            _HELD_BACK_META,
+            _HELD_BACK_HIDDEN,
+            _HELD_BACK_FIELD,
+        ):
             assert name.lower() not in text.lower()
     assert "- 4 cookies whose names read as values are not shown" in _cookie_lines(d)
     # The xsrf and auth cookies, the header in two cases counted once, the meta
@@ -572,6 +599,12 @@ def test_a_held_back_name_prints_in_no_output(tmp_path: Path) -> None:
     assert "5 token candidate(s) were left out because their names read as values" in (
         _plugin_text(d)
     )
+    assert "1 recorded body field(s) were left out because their names read as values" in (
+        _plugin_text(d)
+    )
+    markdown = render_markdown(d)
+    assert "credential_post (password, username, 1 not shown)" in markdown
+    assert markdown.count("- 1 body param whose name reads as a value is not shown") >= 2
 
 
 # Header names printable_name holds back and holds_an_id does not: a token-shaped

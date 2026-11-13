@@ -4,17 +4,17 @@ The user should never have to know the commands in advance. The source is the
 projection the `--endpoints-json` line of the Understand block of
 `references/commands.md` prints: one entry per endpoint with `method`,
 `template`, `host`, `login_flow`, `content_type`, `shape`, `query_params`,
-`body_params`, `body_not_captured`, and `custom_headers`, plus a `login`
-summary and the recording's `primary_host`. A row's `custom_headers_not_shown`
-counts header names held back as values: ask the user for them. A row with
-`body_not_captured` set has a request body gp could not read field names from,
-so its `body_params` are empty or partial: say so in the row rather than
-proposing a command with no inputs. The markdown digest's line says why: `body
-not text` names the binary body's file in `bodies/` (the user decides what the
-command sends); `body left out` means the capture had nowhere to put it, and a
-new recording made the way `references/commands.md` records one keeps it; `body
-not captured` means the recording holds no copy. Build the proposal from the
-projection; `references/har.md` says where to look for what it leaves out.
+`body_params`, `body_not_captured`, and `custom_headers`, plus a `login` summary
+and the recording's `primary_host`. A row's `custom_headers_not_shown` and
+`body_params_not_shown` count names held back as values: ask the user for them.
+A row with `body_not_captured` set has a request body gp could not read field
+names from, so its `body_params` are empty or partial: say so in the row rather
+than proposing a command with no inputs. The markdown digest's line says why:
+`body not text` names the binary body's file in `bodies/` (the user decides what
+the command sends); `body left out` means the capture had nowhere to put it, and
+a new recording made the way `references/commands.md` records one keeps it;
+`body not captured` means the recording holds no copy. Build the proposal from
+the projection; `references/har.md` says where to look for what it leaves out.
 
 A row with `operation` (schema 2) is one GraphQL operation, `body_params` its
 variables, `<METHOD> <template> (<operation>)` its `--command` key, and for the

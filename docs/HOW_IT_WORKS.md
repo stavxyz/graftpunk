@@ -812,7 +812,18 @@ input's name go through the gate too (#359): one that reads as a value is left
 out of the Tokens section, `--json`'s `tokens` and `token_pairs`, `token_config`,
 and, for a hidden input, a login form's `hidden` in `--json`, and is counted in
 the Tokens section's count (as a token candidate) and in `--json`'s
-`meta_names_not_shown` or `hidden_names_not_shown`. Header names are compared without
+`meta_names_not_shown` or `hidden_names_not_shown`. A posted body field name goes
+through the gate too: one that reads as a value is left out of a login step's
+fields (the Login section and `--json`'s `login[].fields`, which then says
+`N not shown` and carries `fields_not_shown`), of an endpoint's body params (the
+markdown, which adds a count line, and `body_params` in `--json` and
+`--endpoints-json`, beside `body_params_not_shown`), and of the fields a
+generated stub sends, which says in a `GP-FILL` note how many it left out.
+`--json`'s `body_field_names_not_shown` counts them for the run, leaving out a
+name another count already counts (a posted hidden input is counted as a hidden
+input), so a name counts once across kinds. A GraphQL operation's variables keep
+their own gate (`graftpunk.har.graphql`), since the operation document a stub
+sends names them. Header names are compared without
 regard to case, so `X-Token-Q` and `x-token-q` are one name, and whether it
 prints is decided once for the run: it prints in every output and on every
 endpoint that recorded it, in the first spelling recorded that passes the

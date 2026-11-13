@@ -454,6 +454,9 @@ _FRAMEWORK_NAMES = frozenset(
         # hidden input names a login form carries from a bot check: Cloudflare
         # Turnstile's response field, whose vendor word the spelling rule rejects
         "cf-turnstile-response "
+        # body field names the rules hold back: Microsoft's login form field and the
+        # vowel-less quantity abbreviation
+        "loginfmt qty "
         # cookie names
         ".aspxauth asp.net_sessionid .aspnetcore.session .aspnetcore.antiforgery "
         ".aspnetcore.cookies __cf_bm cf_clearance __cfruid __cflb _cfuvid _abck bm_sz bm_sv "

@@ -219,7 +219,12 @@ def test_an_ordinary_name_survives_in_every_name_position(tmp_path: Path, name: 
         if position == "query_key":
             found = any(name in e["query_params"] for e in projection["endpoints"])
         elif position in ("json_key", "form_key"):
-            found = any(name in e["body_params"] for e in projection["endpoints"])
+            # The digest keeps it; the projection prints it, or counts it when it
+            # reads as a value (printable_name, #359).
+            kept = any(name in e.body_params for e in result.endpoints)
+            printed = any(name in e["body_params"] for e in projection["endpoints"])
+            counted = any(e.get("body_params_not_shown") for e in projection["endpoints"])
+            found = kept and (printed if printable_name(name) else counted)
         elif position == "header_name":
             # The digest keeps it; the projection prints it, or counts it when it
             # reads as a value (printable_name, #347).

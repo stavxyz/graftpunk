@@ -24,12 +24,16 @@ from graftpunk.har.digest import (
     Endpoint,
     RunDigest,
     ShapeNode,
+    body_field_names_not_shown,
+    body_params_not_shown,
     family_values,
     header_names_not_shown,
     header_spellings,
     held_back_token_count,
     hidden_names_not_shown,
+    login_fields_not_shown,
     meta_names_not_shown,
+    printable_body_params,
     printable_custom_headers,
     printable_hidden,
     printable_login_fields,
@@ -158,10 +162,17 @@ def _endpoint_block(endpoint: Endpoint, spellings: Mapping[str, str]) -> list[st
     if endpoint.query_params:
         params = ", ".join(f"{k}: {v}" for k, v in sorted(endpoint.query_params.items()))
         lines.append(f"- query params: {params}")
-    if endpoint.body_params:
-        params = ", ".join(f"{k}: {v}" for k, v in sorted(endpoint.body_params.items()))
+    body = printable_body_params(endpoint)
+    if body:
+        params = ", ".join(f"{k}: {v}" for k, v in sorted(body.items()))
         label = "variables" if endpoint.operation else f"body params ({endpoint.body_kind})"
         lines.append(f"- {label}: {params}")
+    if unshown_body := body_params_not_shown(endpoint):
+        lines.append(
+            "- 1 body param whose name reads as a value is not shown"
+            if unshown_body == 1
+            else f"- {unshown_body} body params whose names read as values are not shown"
+        )
     if endpoint.operation_batched:
         lines.append(
             f"- batched: {endpoint.operation_batched} of {endpoint.count} recording(s) sent it "
@@ -287,7 +298,9 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     lines.append("## Login")
     if d.login:
         for obs in d.login:
-            fields = printable_login_fields(obs)
+            fields = list(printable_login_fields(obs))
+            if unshown_fields := login_fields_not_shown(obs):
+                fields.append(f"{unshown_fields} not shown")
             field_note = f" ({', '.join(fields)})" if fields else ""
             redirect_note = f" -> {obs.redirect_to}" if obs.redirect_to else ""
             # A login-shaped observation outside the login the generator uses (a
@@ -415,7 +428,12 @@ def render_json(d: RunDigest) -> str:
     ``meta_names_not_shown``, computed here from the digest's tokens, counts
     them. A hidden input name that reads as a value is left out of ``tokens`` and
     of each login form's ``hidden``, and ``hidden_names_not_shown``, computed
-    here from the tokens and the forms, counts them. ``token_pairs`` holds only the pairings
+    here from the tokens and the forms, counts them. A posted body field name
+    that reads as a value is left out of each ``login`` step's ``fields`` (which
+    then carries ``fields_not_shown``) and each endpoint's ``body_params`` (which
+    then carries ``body_params_not_shown``,
+    :func:`graftpunk.har.digest.printable_body_params`), and
+    ``body_field_names_not_shown`` counts them for the run. ``token_pairs`` holds only the pairings
     :func:`graftpunk.har.digest.printable_token_pairs` prints."""
     rendered = _jsonable(d)
     rendered["cookies"] = [name for name in d.cookies if printable_name(name)]
@@ -432,13 +450,19 @@ def render_json(d: RunDigest) -> str:
         rendered["hidden_names_not_shown"] = hidden_inputs
     for form, projected_form in zip(d.login_forms, rendered["login_forms"], strict=True):
         projected_form["hidden"] = list(printable_hidden(form))
+    rendered.pop("body_field_names_not_shown", None)
+    if unshown_body := body_field_names_not_shown(d):
+        rendered["body_field_names_not_shown"] = unshown_body
     rendered.pop("token_pairs", None)
     if pairs := printable_token_pairs(d, spellings):
         rendered["token_pairs"] = _jsonable(pairs)
     for observation, login in zip(d.login, rendered["login"], strict=True):
         login["fields"] = list(printable_login_fields(observation))
+        if unshown_fields := login_fields_not_shown(observation):
+            login["fields_not_shown"] = unshown_fields
     for endpoint, projected in zip(d.endpoints, rendered["endpoints"], strict=True):
         _put_custom_headers(projected, endpoint, spellings)
+        _put_body_params(projected, endpoint)
     return json.dumps(rendered, indent=2, sort_keys=True)
 
 
@@ -485,6 +509,15 @@ def _put_custom_headers(
         projected["custom_headers_not_shown"] = hidden
 
 
+def _put_body_params(projected: dict[str, Any], endpoint: Endpoint) -> None:
+    """Set *projected*'s ``body_params`` to *endpoint*'s printable ones
+    (:func:`graftpunk.har.digest.printable_body_params`), and
+    ``body_params_not_shown`` to how many it leaves out, only when any."""
+    projected["body_params"] = dict(sorted(printable_body_params(endpoint).items()))
+    if unshown := body_params_not_shown(endpoint):
+        projected["body_params_not_shown"] = unshown
+
+
 def _projected_endpoint(
     endpoint: Endpoint, method: str, spellings: Mapping[str, str]
 ) -> dict[str, Any]:
@@ -501,7 +534,7 @@ def _projected_endpoint(
         "content_type": endpoint.content_type,
         "shape": summarize_shape(endpoint.shape),
         "query_params": dict(sorted(endpoint.query_params.items())),
-        "body_params": dict(sorted(endpoint.body_params.items())),
+        "body_params": {},
         # Lost, left out, or kept only as a binary file: the HAR holds no
         # body text the projection could read fields from.
         "body_not_captured": endpoint.body_not_captured
@@ -510,6 +543,7 @@ def _projected_endpoint(
         > 0,
     }
     _put_custom_headers(projected, endpoint, spellings)
+    _put_body_params(projected, endpoint)
     if endpoint.operation:
         projected["operation"] = endpoint.operation
     if endpoint.family_members:

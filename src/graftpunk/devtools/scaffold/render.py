@@ -60,10 +60,12 @@ from graftpunk.har.digest import (
     RunDigest,
     TokenCandidate,
     TokenPairing,
+    body_params_not_shown,
     endpoint_key,
     header_names_not_shown,
     header_spellings,
     held_back_token_count,
+    printable_body_params,
     printable_custom_headers,
     printable_token_pairs,
     printable_tokens,
@@ -1010,7 +1012,9 @@ def _emits_body(endpoint: Endpoint) -> bool:
     """Whether the stub sends a request body (``json=``, or ``data=`` for a recorded
     form): only for a mutating method, so a GET that happened to record a body
     declares no body arguments."""
-    return bool(endpoint.body_params) and any(m in _MUTATING_METHODS for m in endpoint.methods)
+    return bool(printable_body_params(endpoint)) and any(
+        m in _MUTATING_METHODS for m in endpoint.methods
+    )
 
 
 @dataclass(frozen=True)
@@ -1068,7 +1072,7 @@ def _body_declarations(endpoint: Endpoint) -> dict[str, _Declaration | str]:
     json_body = endpoint.body_kind != "form"
     return {
         name: _declaration(label, json_body=json_body)
-        for name, label in endpoint.body_params.items()
+        for name, label in printable_body_params(endpoint).items()
     }
 
 
@@ -2212,9 +2216,16 @@ def _recording_gap_notes(
             f"{GP_FILL_MARKER}: {unshown_headers} recorded header name(s) were left out "
             "because they read as values; add any this command needs by hand."
         )
+    unshown_body = body_params_not_shown(endpoint)
+    if unshown_body:
+        notes.append(
+            f"{GP_FILL_MARKER}: {unshown_body} recorded body field(s) were left out because "
+            "their names read as values; add any this command needs by hand."
+        )
+    sent_body = printable_body_params(endpoint)
     if endpoint.body_not_captured:
         recorded = f"{endpoint.body_not_captured} of {endpoint.count} recording(s)"
-        if endpoint.body_params:
+        if sent_body:
             notes.append(
                 f"{GP_FILL_MARKER}: the request body was not captured in {recorded}, so the "
                 "body fields below come from the others and may be incomplete; add any this "
@@ -2228,7 +2239,7 @@ def _recording_gap_notes(
             )
     if endpoint.body_omitted:
         recorded = f"{endpoint.body_omitted} of {endpoint.count} recording(s)"
-        if endpoint.body_params:
+        if sent_body:
             notes.append(
                 f"{GP_FILL_MARKER}: the request body was left out of {recorded} (over the "
                 "capture's max body size, or not text, with no bodies/ directory to keep "
@@ -2248,7 +2259,7 @@ def _recording_gap_notes(
         size = "" if endpoint.body_binary_size is None else f" ({endpoint.body_binary_size} bytes)"
         stored = f"{bodies_where} as `{endpoint.body_binary_file}`{size}"
         recorded = f"{endpoint.body_binary} of {endpoint.count} recording(s)"
-        if endpoint.body_params:
+        if sent_body:
             notes.append(
                 f"{GP_FILL_MARKER}: {recorded} sent a request body that is not text, kept "
                 f"{stored}, so the body fields below come from the others; read that file "

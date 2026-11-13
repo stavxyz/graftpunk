@@ -908,7 +908,9 @@ third-party responses out). A name that reads as a value is counted here and
 printed in no section, Login and Tokens included. A header name that reads as a
 value is held back the same way: an endpoint's block and the Tokens section
 each say how many they leave out. So is a meta tag's or hidden input's
-token candidate name, counted in the Tokens section. See
+token candidate name, counted in the Tokens section, and a posted body field's
+name, counted in the endpoint's block and the login step; a generated stub does
+not send such a field and says how many it left out, so add it by hand. See
 [How graftpunk Works](HOW_IT_WORKS.md#building-a-plugin-from-a-recording) for
 each word.
 
