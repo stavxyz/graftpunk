@@ -381,9 +381,9 @@ class ProjectView:
     decide a module is first party: every top-level directory and ``*.py`` or
     ``*.pyi`` stem directly under each directory of the project's ``[tool.ruff]
     src`` (ruff's default ``[".", "src"]`` when unset; a root ``.ruff.toml`` or
-    ``ruff.toml`` wins over ``pyproject.toml``, as in ruff), plus any name the
-    project's own ``[tool.ruff.lint.isort] known-first-party`` (or the legacy
-    ``[tool.ruff.isort]``) declares. ``pysrc.with_import``'s ``first_party=``
+    ``ruff.toml`` wins over ``pyproject.toml``, and ``extend`` is followed, as
+    in ruff), plus any name the project's own ``[tool.ruff.lint.isort]
+    known-first-party`` (or the legacy ``[tool.ruff.isort]``) declares. ``pysrc.with_import``'s ``first_party=``
     argument, so ``add_command`` and ``gp plugin upgrade`` place a new import
     into isort's first-party section exactly when ruff itself would sort it
     there, whether the plugin lives in a package directory or is a single
@@ -671,7 +671,7 @@ def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[
     directory (skipping a dotdir, ``__pycache__``, ``venv``, ``node_modules``,
     or a name that is not a valid Python identifier) and each top-level
     ``*.py`` or ``*.pyi`` stem directly under each of ruff's ``src`` roots
-    (:func:`_ruff_src_roots`), plus any name the ruff settings'
+    (:func:`_ruff_settings`), plus any name the ruff settings'
     ``known-first-party`` declares. Scanning the filesystem, rather than
     deriving this from ``PluginView.module_path``, is what makes a
     single-module plugin (a ``*.py`` file with no package directory) first
@@ -679,7 +679,7 @@ def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[
     per-plugin derivation left in the set, so ruff never matched it."""
     settings = _ruff_settings(root, data)
     names: set[str] = set()
-    for base in _ruff_src_roots(root, settings):
+    for base in settings.src if settings.src is not None else (root, root / "src"):
         if _probe(base) != "dir":
             continue
         try:
@@ -703,7 +703,7 @@ def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[
             elif entry.suffix in (".py", ".pyi"):
                 # ruff's isort match_sources accepts either extension.
                 names.add(entry.stem)
-    names.update(_known_first_party(settings))
+    names.update(settings.known_first_party)
     return frozenset(names)
 
 
@@ -713,66 +713,136 @@ def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[
 _RUFF_SETTINGS_FILES = (".ruff.toml", "ruff.toml")
 
 
-def _ruff_settings(root: Path, data: dict[str, Any] | None) -> dict[str, Any]:
-    """The ruff settings table ruff itself would read for *root*: a
-    ``.ruff.toml`` or ``ruff.toml`` at the root (whose keys sit at the top
-    level), else *data*'s ``[tool.ruff]``. A settings file that cannot be read
-    or parsed yields no settings: ruff refuses to run on it, so no placement
-    could agree with ruff anyway, and the defaults are the closest guess. A
-    settings file named by ``extend`` is not followed."""
-    for name in _RUFF_SETTINGS_FILES:
-        path = root / name
-        if _probe(path) != "file":
-            continue
-        try:
-            parsed = tomllib.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-            return {}
+@dataclass(frozen=True)
+class _RuffSettings:
+    """What ruff resolves for first-party detection: the ``src`` roots, or
+    ``None`` for ruff's default, and ``known-first-party``."""
+
+    src: tuple[Path, ...] | None
+    known_first_party: frozenset[str]
+
+
+_NO_RUFF_FILE = object()
+
+
+def _read_ruff_file(path: Path) -> dict[str, Any] | object | None:
+    """*path*'s ruff settings table (the top level of a ``ruff.toml``, the
+    ``[tool.ruff]`` of a ``pyproject.toml``, empty when it has none);
+    ``_NO_RUFF_FILE`` when nothing ruff reads is there (absent, or a symlink
+    ruff's own ``is_file()`` cannot follow); ``None`` when it is there but
+    cannot be read or parsed, where ruff itself refuses to run."""
+    if _probe(path) != "file":
+        return _NO_RUFF_FILE
+    try:
+        parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    if path.name != "pyproject.toml":
         return parsed
-    tool = data.get("tool") if data is not None else None
+    tool = parsed.get("tool")
     ruff = tool.get("ruff") if isinstance(tool, dict) else None
     return ruff if isinstance(ruff, dict) else {}
 
 
-def _ruff_src_roots(root: Path, settings: dict[str, Any]) -> list[Path]:
-    """The directories ruff searches for first-party modules: the settings'
-    top-level ``src`` (ruff has no ``src`` under ``lint``; it refuses the
-    key there), resolved the way ruff resolves it (``resolve_src`` in
-    ruff_workspace::configuration, ruff 0.17.5): ``~`` and environment
-    variables expanded, a relative entry taken from the project root, and each
-    entry expanded as a glob, so an entry matching nothing contributes
-    nothing. Without a usable ``src``, ruff's default ``[".", "src"]``."""
-    src = settings.get("src")
+def _ruff_settings(root: Path, data: dict[str, Any] | None) -> _RuffSettings:
+    """The settings ruff itself resolves for *root*, by ruff 0.17.5's rules:
+
+    - The settings file is a root ``.ruff.toml`` or ``ruff.toml`` (whose keys
+      sit at the top level), else *data*'s ``[tool.ruff]``.
+    - ``extend`` is followed the way ``resolve_configuration_with_cache``
+      (ruff_workspace::resolver) follows it: ``~`` and environment variables
+      expanded (``Configuration::from_options``), a relative path taken from
+      the directory of the file that names it, and so on down the chain.
+    - Each file's ``src`` is resolved against that file's own directory, and
+      the first file in the chain that sets ``src`` wins
+      (``Configuration::combine``: ``self.src.or(config.src)``).
+    - ``known-first-party`` likewise comes from the first file that sets it,
+      and within one file ``[lint.isort]`` wins over the legacy ``[isort]``
+      (``lint.common.combine(lint_top_level)``, field by field).
+
+    A file in the chain that cannot be read or parsed, an ``extend`` naming a
+    missing file, or a cycle makes ruff refuse to run, so no placement could
+    agree with it; the defaults are the closest guess then."""
+    defaults = _RuffSettings(src=None, known_first_party=frozenset())
+    first: tuple[dict[str, Any], Path] | None = None
+    for name in _RUFF_SETTINGS_FILES:
+        table = _read_ruff_file(root / name)
+        if table is None:
+            return defaults
+        if isinstance(table, dict):
+            first = (table, root / name)
+            break
+    if first is None:
+        tool = data.get("tool") if data is not None else None
+        ruff = tool.get("ruff") if isinstance(tool, dict) else None
+        first = (ruff if isinstance(ruff, dict) else {}, root / "pyproject.toml")
+    chain = [first]
+    seen = {os.path.normpath(first[1])}
+    while True:
+        table, path = chain[-1]
+        extend = table.get("extend")
+        if not isinstance(extend, str):
+            break
+        expanded = os.path.expandvars(os.path.expanduser(extend))
+        target = Path(os.path.normpath(path.parent / expanded))
+        if str(target) in seen:
+            return defaults
+        seen.add(str(target))
+        extended = _read_ruff_file(target)
+        if not isinstance(extended, dict):
+            return defaults
+        chain.append((extended, target))
+    src: tuple[Path, ...] | None = None
+    for table, path in chain:
+        roots = _ruff_src_roots(path.parent, table.get("src"))
+        if roots is not None:
+            src = roots
+            break
+    known: frozenset[str] = frozenset()
+    for table, _path in chain:
+        declared = _known_first_party(table)
+        if declared is not None:
+            known = declared
+            break
+    return _RuffSettings(src=src, known_first_party=known)
+
+
+def _ruff_src_roots(base: Path, src: Any) -> tuple[Path, ...] | None:
+    """One settings file's ``src`` resolved the way ruff resolves it
+    (``resolve_src`` in ruff_workspace::configuration, ruff 0.17.5): ``~`` and
+    environment variables expanded, a relative entry taken from *base* (the
+    settings file's directory), and each entry expanded as a glob, so an
+    entry matching nothing contributes nothing. ``None`` when *src* is not a
+    list of strings, which leaves the choice to the next file in the chain.
+    ruff has no ``src`` under ``lint``; it refuses the key there."""
     if not isinstance(src, list) or not all(isinstance(entry, str) for entry in src):
-        return [root, root / "src"]
+        return None
     roots: list[Path] = []
     for entry in src:
         expanded = os.path.expandvars(os.path.expanduser(entry))
-        pattern = os.path.normpath(root / expanded)
+        pattern = os.path.normpath(base / expanded)
         # The Rust glob crate ruff uses lets "*" match a leading dot and "**"
         # cross directories, so both flags are on to match it.
-        roots.extend(
-            Path(match) for match in sorted(glob.glob(pattern, recursive=True, include_hidden=True))
-        )
-    return roots
+        matches = glob.glob(pattern, recursive=True, include_hidden=True)
+        roots.extend(Path(match) for match in sorted(matches))
+    return tuple(roots)
 
 
-def _known_first_party(settings: dict[str, Any]) -> frozenset[str]:
-    """The project's own declared first-party names: the ruff settings'
-    ``[lint.isort] known-first-party``, or the legacy ``[isort]
-    known-first-party`` when the project has not migrated. Either table being
-    the wrong shape is not this function's business to refuse; it reads what
+def _known_first_party(table: dict[str, Any]) -> frozenset[str] | None:
+    """One settings table's ``known-first-party``: ``[lint.isort]``'s when it
+    sets the key, else the legacy ``[isort]``'s; ``None`` when neither does.
+    A wrong shape is not this function's business to refuse; it reads what
     it can and ignores the rest."""
-    lint = settings.get("lint")
-    isort = lint.get("isort") if isinstance(lint, dict) else None
-    if not isinstance(isort, dict):
-        isort = settings.get("isort")
-    if not isinstance(isort, dict):
-        return frozenset()
-    known = isort.get("known-first-party")
-    if not isinstance(known, list):
-        return frozenset()
-    return frozenset(name for name in known if isinstance(name, str))
+    for isort in (_subtable(_subtable(table, "lint"), "isort"), _subtable(table, "isort")):
+        known = isort.get("known-first-party")
+        if isinstance(known, list):
+            return frozenset(name for name in known if isinstance(name, str))
+    return None
+
+
+def _subtable(table: dict[str, Any], key: str) -> dict[str, Any]:
+    value = table.get(key)
+    return value if isinstance(value, dict) else {}
 
 
 def _module_file(root: Path, module: str) -> str | None:

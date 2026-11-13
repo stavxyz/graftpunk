@@ -402,3 +402,82 @@ class TestRuffSrc:
         _single_module_project(tmp_path, under_src=False)
         (tmp_path / "typed_helpers.pyi").write_text("X: int\n")
         assert "typed_helpers" in read_project(tmp_path).first_party_packages
+
+
+class TestRuffExtend:
+    """``extend`` is followed as ruff follows it: each path from the directory
+    of the file naming it, each file's ``src`` from its own directory, and the
+    extending file's own ``src`` or ``known-first-party`` winning."""
+
+    def test_a_src_set_only_in_an_extended_file_counts_from_that_files_directory(
+        self, tmp_path: Path
+    ) -> None:
+        conftest = _lib_project(tmp_path, ruff='\n[tool.ruff]\nextend = "config/base.toml"\n')
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "base.toml").write_text('src = ["../lib"]\n')
+        assert read_project(tmp_path).first_party_packages == frozenset({"myshop_shared"})
+        upgrade_project(tmp_path)
+        assert "\n\nfrom myshop_shared import THING" in conftest.read_text()
+        _ruff_check_conftest(tmp_path)
+
+    def test_an_extended_pyproject_is_read_through_its_tool_ruff(self, tmp_path: Path) -> None:
+        _lib_project(tmp_path, ruff='\n[tool.ruff]\nextend = "shared/pyproject.toml"\n')
+        (tmp_path / "shared").mkdir()
+        (tmp_path / "shared" / "pyproject.toml").write_text('[tool.ruff]\nsrc = ["../lib"]\n')
+        assert read_project(tmp_path).first_party_packages == frozenset({"myshop_shared"})
+
+    def test_a_chain_of_extends_is_followed(self, tmp_path: Path) -> None:
+        _lib_project(tmp_path, ruff='\n[tool.ruff]\nextend = "a/one.toml"\n')
+        (tmp_path / "a" / "b").mkdir(parents=True)
+        (tmp_path / "a" / "one.toml").write_text('extend = "b/two.toml"\n')
+        (tmp_path / "a" / "b" / "two.toml").write_text('src = ["../../lib"]\n')
+        assert read_project(tmp_path).first_party_packages == frozenset({"myshop_shared"})
+
+    def test_the_extending_files_own_src_wins(self, tmp_path: Path) -> None:
+        conftest = _lib_project(
+            tmp_path, ruff='\n[tool.ruff]\nsrc = ["lib"]\nextend = "base.toml"\n'
+        )
+        (tmp_path / "base.toml").write_text('src = ["elsewhere"]\n')
+        (tmp_path / "elsewhere" / "other_pkg").mkdir(parents=True)
+        assert read_project(tmp_path).first_party_packages == frozenset({"myshop_shared"})
+        upgrade_project(tmp_path)
+        _ruff_check_conftest(tmp_path)
+        assert "\n\nfrom myshop_shared import THING" in conftest.read_text()
+
+    def test_known_first_party_is_inherited_unless_the_extending_file_sets_it(
+        self, tmp_path: Path
+    ) -> None:
+        _lib_project(tmp_path, ruff='\n[tool.ruff]\nsrc = []\nextend = "base.toml"\n')
+        base = tmp_path / "base.toml"
+        base.write_text('[lint.isort]\nknown-first-party = ["inherited"]\n')
+        assert read_project(tmp_path).first_party_packages == frozenset({"inherited"})
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            pyproject.read_text() + '\n[tool.ruff.lint.isort]\nknown-first-party = ["own"]\n'
+        )
+        assert read_project(tmp_path).first_party_packages == frozenset({"own"})
+
+    def test_an_environment_variable_in_extend_is_expanded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MYSHOP_RUFF_BASE", str(tmp_path / "config"))
+        _lib_project(tmp_path, ruff='\n[tool.ruff]\nextend = "$MYSHOP_RUFF_BASE/base.toml"\n')
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "base.toml").write_text('src = ["../lib"]\n')
+        assert read_project(tmp_path).first_party_packages == frozenset({"myshop_shared"})
+
+    @pytest.mark.parametrize(
+        "base",
+        [None, 'extend = "../pyproject.toml"\nsrc = ["../lib"]\n', "src = [\n"],
+        ids=["missing", "cycle", "unparseable"],
+    )
+    def test_a_chain_ruff_refuses_falls_back_to_the_defaults(
+        self, tmp_path: Path, base: str | None
+    ) -> None:
+        _lib_project(tmp_path, ruff='\n[tool.ruff]\nsrc = ["lib"]\nextend = "config/base.toml"\n')
+        if base is not None:
+            (tmp_path / "config").mkdir()
+            (tmp_path / "config" / "base.toml").write_text(base)
+        names = read_project(tmp_path).first_party_packages
+        assert {"aaa_plugin", "lib", "tests"} <= names
+        assert "myshop_shared" not in names

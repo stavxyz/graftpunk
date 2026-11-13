@@ -1524,7 +1524,7 @@ class TestUnfollowableSymlink:
         assert "shared" not in view.first_party_packages
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
-    def test_ruff_settings_skips_a_locked_ruff_toml(
+    def test_read_ruff_file_skips_a_locked_ruff_toml(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
         """ruff's own settings lookup asks is_file(), which reads a symlink it
@@ -1544,7 +1544,7 @@ class TestUnfollowableSymlink:
             locked.chmod(0o755)
         assert view.first_party_packages == frozenset({"myshop_shared"})
 
-    def test_ruff_settings_skips_a_self_loop_ruff_toml(self, tmp_path: Path) -> None:
+    def test_read_ruff_file_skips_a_self_loop_ruff_toml(self, tmp_path: Path) -> None:
         _generate(tmp_path)
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
