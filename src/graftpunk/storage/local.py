@@ -92,6 +92,30 @@ def _keep_backup(path: Path) -> Path | None:
     return backup
 
 
+def _present(path: Path) -> bool:
+    """Whether *path* exists; False only when it does not, and any other error
+    (a directory without read or search permission) raises.
+
+    ``Path.exists()`` cannot be used for this: from Python 3.14 it is
+    ``os.path.exists()``, which returns False for every ``OSError``, so an
+    unreadable slot would read as empty instead of being reported.
+    """
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return True
+
+
+def _holds_the_pair(directory: Path) -> bool:
+    """Whether *directory* holds both ``session.pickle`` and ``metadata.json``.
+
+    Raises:
+        OSError: *directory* cannot be searched.
+    """
+    return _present(directory / "session.pickle") and _present(directory / "metadata.json")
+
+
 def _kept_name(backup: Path) -> Path:
     """The name a backup takes once a failed restore leaves it the only old copy."""
     return backup.with_name(backup.name.removesuffix(".bak") + ".kept")
@@ -423,11 +447,7 @@ class LocalSessionStorage:
             try:
                 # A slot is listed only with both files: a directory a crashed
                 # save left with a pickle and no metadata is not a session.
-                if (
-                    item.is_dir()
-                    and (item / "session.pickle").exists()
-                    and (item / "metadata.json").exists()
-                ):
+                if item.is_dir() and _holds_the_pair(item):
                     names.append(item.name)
                 elif item.is_file() and item.suffix == ".pickle":
                     # Legacy flat file structure
@@ -469,9 +489,7 @@ class LocalSessionStorage:
                 if item.resolve().parent != root:
                     LOG.warning("incomplete_session_outside", name=item.name)
                     continue
-                if not item.is_dir() or (
-                    (item / "session.pickle").exists() and (item / "metadata.json").exists()
-                ):
+                if not item.is_dir() or _holds_the_pair(item):
                     continue
                 if self._holds_slot_file(item):
                     found.append(item.name)
