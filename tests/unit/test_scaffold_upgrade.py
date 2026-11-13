@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -622,6 +623,31 @@ class TestAncestorRuffSettings:
         upgrade_project(project)
         assert "\n\nfrom myshop_pkg import THING" in conftest.read_text()
         _ruff_check_conftest(project)
+
+    def test_a_relative_project_directory_searches_the_real_ancestors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The CLI's default --dir is ".", which has no parents as written."""
+        project, conftest = _nested_project(tmp_path, '\n[tool.ruff.lint]\nselect = ["I"]\n')
+        monkeypatch.chdir(project)
+        assert read_project(Path(".")).first_party_packages == frozenset({"plugins"})
+        upgrade_project(Path("."))
+        assert "from myshop_pkg import THING" in conftest.read_text()
+        _ruff_check_conftest(project)
+
+    def test_a_relative_project_directory_never_reads_the_current_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project, _conftest = _nested_project(tmp_path, "")
+        elsewhere = tmp_path / "cwdname"
+        elsewhere.mkdir()
+        (elsewhere / "ruff.toml").write_text('src = ["cwdname"]\n')
+        monkeypatch.chdir(elsewhere)
+        relative = Path(os.path.relpath(project, elsewhere))
+        assert (
+            read_project(relative).first_party_packages
+            == read_project(project).first_party_packages
+        )
 
     def test_an_ancestor_ruff_toml_counts_too(self, tmp_path: Path) -> None:
         project, _conftest = _nested_project(tmp_path, "")

@@ -981,7 +981,8 @@ _OS_PATH_ALLOWED_CALLS = frozenset(
         "relpath",
         "sep",
         "expanduser",
-        "expandvars",
+        # Reads the current directory, never what is at the path.
+        "abspath",
     }
 )
 

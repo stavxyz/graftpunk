@@ -69,10 +69,12 @@ def _retry_after_seconds(value: str | None, now: datetime | None = None) -> int 
     try:
         if value.isascii() and value.isdigit():
             # Bounded before int(): past 4300 digits int() raises ValueError,
-            # and anything longer than this is over the cap anyway.
-            if len(value) > _MAX_RETRY_AFTER_DIGITS:
+            # and anything longer than this is over the cap anyway. Leading
+            # zeros carry no value, so "00...030" is still 30 seconds.
+            digits = value.lstrip("0") or "0"
+            if len(digits) > _MAX_RETRY_AFTER_DIGITS:
                 return None
-            seconds = int(value)
+            seconds = int(digits)
         else:
             when = parsedate_to_datetime(value)
             if when.tzinfo is None:

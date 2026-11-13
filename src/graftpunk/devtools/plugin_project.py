@@ -823,7 +823,10 @@ def _discover_ruff_file(root: Path, data: dict[str, Any] | None) -> tuple[Any, P
     ``pyproject.toml``, already read. The table is ``None`` when the file
     found cannot be read or parsed, and ``{}`` at *root*'s ``pyproject.toml``
     when no directory has a settings file. ruff's next fallback, a user-level
-    settings file, is not read."""
+    settings file, is not read. *root* is made absolute first: the CLI's
+    default ``--dir .`` has no ``parents``, and a relative ``../proj`` would
+    walk the current directory instead of the project's ancestors."""
+    root = Path(os.path.abspath(root))
     for directory in (root, *root.parents):
         for name in _RUFF_SETTINGS_FILES:
             table = _read_ruff_file(directory / name)
@@ -870,6 +873,7 @@ def _ruff_settings(root: Path, data: dict[str, Any] | None) -> _RuffSettings:
     missing file, a cycle, or an unset variable with no default in any
     file's ``extend`` or ``src`` makes ruff refuse to run, so no placement
     could agree with it; the defaults at *root* are the closest guess then."""
+    root = Path(os.path.abspath(root))
     defaults = _RuffSettings(src=None, known_first_party=frozenset(), project_root=root)
     table, path = _discover_ruff_file(root, data)
     if not isinstance(table, dict):
