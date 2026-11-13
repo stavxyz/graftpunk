@@ -1005,6 +1005,10 @@ async def _wait_for_login_signal_nodriver(
         remaining = deadline - loop.time()
         last_tick = _is_deadline_tick(remaining)
         await asyncio.sleep(_poll_sleep_seconds(remaining))
+        # A tick that wakes at or past the deadline (a late wake-up on a busy loop)
+        # is the deadline tick: it reads the page and gets the deadline tick's
+        # allowance, rather than a budget of nothing that cuts off an instant read.
+        last_tick = last_tick or deadline - loop.time() <= 0
         url = tab_url(tab)
         reading = await _read_login_tick_nodriver_within(
             tab,

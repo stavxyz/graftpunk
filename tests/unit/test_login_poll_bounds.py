@@ -310,3 +310,45 @@ def test_a_window_with_no_tick_reports_no_invented_reason() -> None:
     """The default reason "neither a page nor a URL" could never be reported: every
     wait reads the document on its last tick (#205). A window starts with none."""
     assert _ReadWindow().error == ""
+
+
+@pytest.mark.asyncio
+async def test_a_tick_that_wakes_past_the_deadline_is_read_not_cut_off() -> None:
+    """A busy loop can wake a tick after the deadline; that tick is the deadline
+    tick, so an instant read is taken and ends the wait, not cut off for having
+    no time left."""
+    from graftpunk.plugins import login_settle
+
+    real_sleep = asyncio.sleep
+    loop = asyncio.get_running_loop()
+    tab = _SlowTab(0.0)
+    reads = []
+
+    async def instant_content() -> str:
+        reads.append(loop.time())
+        return "<html>Signing in</html>"
+
+    tab.get_content = instant_content  # type: ignore[method-assign]
+
+    async def late_sleep(seconds: float) -> None:
+        await real_sleep(seconds + 0.7)
+
+    with (
+        patch.object(login_settle.asyncio, "sleep", late_sleep),
+        patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+    ):
+        result = await _wait_for_login_signal_nodriver(
+            tab=tab,
+            login_config=DeclarativeNodriverLongWait.login_config,
+            failure_text="Invalid credentials",
+            site_name="ndlong",
+            deadline=loop.time() + 1.0,
+            pre_submit_url="https://app.example.com/login",
+        )
+
+    assert result is False
+    assert len(reads) == 1
+    read_failures = [
+        c for c in mock_log.debug.call_args_list if c[0][0] == "login_tick_read_failed"
+    ]
+    assert read_failures == []
