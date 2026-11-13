@@ -273,7 +273,11 @@ def _stamp_session_slot(session: Any, name: str) -> None:
 
 
 def cache_session(
-    session: T, session_name: str | None = None, *, account_rule: int | None = ACCOUNT_RULE
+    session: T,
+    session_name: str | None = None,
+    *,
+    account_rule: int | None = ACCOUNT_RULE,
+    key: bytes | None = None,
 ) -> str:
     """Cache a session with metadata.
 
@@ -288,9 +292,17 @@ def cache_session(
         account_rule: The account-label rule to record. A write-back passes the
             slot's recorded value, so a slot graftpunk 1.24.0 named stays
             recognisable as one (#293).
+        key: Optional raw Fernet key to encrypt with, for a host without
+            graftpunk's key file or vault (see :func:`encrypt_data`). When
+            None, the configured key is used. Read the session back with the
+            same key (``load_session_for_api_from_bytes(..., key=)``).
 
     Returns:
         Storage location string.
+
+    Raises:
+        EncryptionError: The key is malformed, or none was given and the
+            configured source has none.
     """
     if session_name is None:
         # Try to get session_name from the session object
@@ -306,7 +318,7 @@ def cache_session(
         LOG.info("caching_session", name=session_name, backend=settings.storage_backend)
         pickled_data = pickle.dumps(session)
         checksum = hashlib.sha256(pickled_data).hexdigest()
-        encrypted_data = encrypt_data(pickled_data)
+        encrypted_data = encrypt_data(pickled_data, key=key)
 
         # Extract metadata from session
         raw_metadata = _extract_session_metadata(session, session_name)

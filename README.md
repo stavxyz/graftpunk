@@ -539,7 +539,9 @@ Some services may consider automation a ToS violation. Use your judgment.
 ### Encryption
 
 - **Algorithm:** Fernet (AES-128-CBC + HMAC-SHA256)
-- **Key storage:** `~/.config/graftpunk/.session_key` with `0600` permissions
+- **Key storage:** `~/.config/graftpunk/.session_key` with `0600` permissions. The `local` backend creates it on first use; with `GRAFTPUNK_STORAGE_BACKEND=s3` the file must already exist (copy the key your other hosts use), and a save or load without it raises `EncryptionError`. Supabase keeps the key in Vault.
+- **A host without the key file** (a Worker holding the key as a secret) passes it as `key=` to `encrypt_data`, `decrypt_data`, `cache_session` and `load_session_for_api_from_bytes`.
+- **The key is a code-execution boundary, not only a confidentiality one:** a session is unpickled after Fernet authenticates it, so anyone holding the key can build bytes that run code where they are loaded. Store it with the same care as a deploy credential, and never load a blob from one trust domain with a key from another.
 - **Integrity:** SHA-256 checksum validated before deserializing
 
 ### Best Practices

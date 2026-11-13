@@ -525,3 +525,100 @@ class TestGetKeyFromSupabaseVault:
             pytest.raises(EncryptionError, match="not found in Supabase Vault"),
         ):
             _get_key_from_supabase_vault()
+
+
+class TestCallerSuppliedKey:
+    """encrypt_data and cache_session take the key a keyless host holds (#196)."""
+
+    def setup_method(self) -> None:
+        reset_encryption_key_cache()
+
+    def teardown_method(self) -> None:
+        reset_encryption_key_cache()
+
+    @staticmethod
+    def _configure(tmp_path, monkeypatch, backend: str):  # noqa: ANN205
+        from graftpunk.cache import _reset_session_storage_backend
+        from graftpunk.config import reset_settings
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", backend)
+        reset_settings()
+        _reset_session_storage_backend()
+        return tmp_path / ".session_key"
+
+    @pytest.mark.parametrize("backend", ["local", "s3"])
+    def test_a_caller_key_round_trips_and_no_key_file_is_made(self, tmp_path, monkeypatch, backend):
+        key_file = self._configure(tmp_path, monkeypatch, backend)
+        key = Fernet.generate_key()
+
+        encrypted = encrypt_data(b"cookie jar", key=key)
+
+        assert Fernet(key).decrypt(encrypted) == b"cookie jar"
+        assert decrypt_data(encrypted, key=key) == b"cookie jar"
+        assert not key_file.exists()
+
+    def test_a_malformed_caller_key_is_an_encryption_error(self, tmp_path, monkeypatch):
+        self._configure(tmp_path, monkeypatch, "local")
+
+        with pytest.raises(EncryptionError, match="Invalid encryption key"):
+            encrypt_data(b"cookie jar", key=b"not-a-fernet-key")
+
+    def test_no_key_file_and_no_key_raises_for_a_remote_backend(self, tmp_path, monkeypatch):
+        key_file = self._configure(tmp_path, monkeypatch, "s3")
+
+        with pytest.raises(EncryptionError) as raised:
+            encrypt_data(b"cookie jar")
+
+        message = str(raised.value)
+        assert str(key_file) in message
+        assert "GRAFTPUNK_STORAGE_BACKEND=s3" in message
+        assert "key=" in message
+        assert not key_file.exists()
+
+    def test_a_remote_backend_read_without_a_key_file_raises_the_same_error(
+        self, tmp_path, monkeypatch
+    ):
+        """Before #196 a read generated a fresh key, then reported a changed key."""
+        key_file = self._configure(tmp_path, monkeypatch, "s3")
+        encrypted = Fernet(Fernet.generate_key()).encrypt(b"cookie jar")
+
+        with pytest.raises(EncryptionError, match="No session encryption key"):
+            decrypt_data(encrypted)
+        assert not key_file.exists()
+
+    def test_a_remote_backend_uses_an_existing_key_file(self, tmp_path, monkeypatch):
+        key_file = self._configure(tmp_path, monkeypatch, "s3")
+        key = Fernet.generate_key()
+        key_file.write_bytes(key)
+
+        assert Fernet(key).decrypt(encrypt_data(b"cookie jar")) == b"cookie jar"
+
+    def test_the_local_backend_still_generates_its_key_beside_its_sessions(
+        self, tmp_path, monkeypatch
+    ):
+        key_file = self._configure(tmp_path, monkeypatch, "local")
+
+        assert decrypt_data(encrypt_data(b"cookie jar")) == b"cookie jar"
+        assert key_file.exists()
+
+    def test_cache_session_encrypts_with_the_caller_key(self, tmp_path, monkeypatch):
+        import requests
+
+        from graftpunk.cache import (
+            _get_session_storage_backend,
+            cache_session,
+            load_session_for_api_from_bytes,
+        )
+
+        key_file = self._configure(tmp_path, monkeypatch, "local")
+        key = Fernet.generate_key()
+        session = requests.Session()
+        session.cookies.set("sid", "abc", domain="myshop.example")
+
+        cache_session(session, "myshop", key=key)
+
+        blob, _metadata = _get_session_storage_backend().load_session("myshop")
+        api = load_session_for_api_from_bytes(blob, key=key)
+        assert api.cookies.get("sid", domain="myshop.example") == "abc"
+        assert not key_file.exists()

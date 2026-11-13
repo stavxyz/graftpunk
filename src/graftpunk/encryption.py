@@ -4,9 +4,15 @@ This module provides encryption/decryption for session data using
 Fernet (AES-128-CBC with HMAC authentication). Keys are sourced based
 on the storage backend configuration:
 
-- GRAFTPUNK_STORAGE_BACKEND=local: Local file (~/.config/graftpunk/.session_key)
+- GRAFTPUNK_STORAGE_BACKEND=local: Local file (~/.config/graftpunk/.session_key),
+  generated on first use
 - GRAFTPUNK_STORAGE_BACKEND=supabase: Supabase Vault
   (secret name from GRAFTPUNK_SESSION_KEY_VAULT_NAME)
+- any other backend (s3): the same local file, which must already exist
+
+A caller that holds the key itself (a Worker holding it as a secret) passes it
+as ``key=`` to :func:`encrypt_data` or :func:`decrypt_data` and no key source
+is consulted.
 
 Thread Safety:
     The encryption key is cached globally for performance (avoids repeated
@@ -37,8 +43,10 @@ def get_encryption_key() -> bytes:
     """Get encryption key for session data.
 
     Key source is determined by GRAFTPUNK_STORAGE_BACKEND:
-    - "local" (default): Local file (~/.config/graftpunk/.session_key)
+    - "local" (default): Local file (~/.config/graftpunk/.session_key),
+      generated on first use
     - "supabase": Supabase Vault (using GRAFTPUNK_SESSION_KEY_VAULT_NAME or default)
+    - any other backend: the same local file, which must already exist
 
     The key is cached in memory after first retrieval to avoid
     repeated round-trips to Vault or filesystem.
@@ -47,7 +55,8 @@ def get_encryption_key() -> bytes:
         Fernet-compatible 32-byte key (base64 encoded).
 
     Raises:
-        EncryptionError: If key cannot be retrieved or generated.
+        EncryptionError: If the key cannot be retrieved or generated, or the
+            key file is missing for a backend other than ``local``.
     """
     global _encryption_key_cache
 
@@ -74,10 +83,21 @@ def _load_encryption_key() -> bytes:
 
 
 def _get_key_from_file() -> bytes:
-    """Get or create encryption key from local file.
+    """Get the encryption key from the local key file, creating it only for local storage.
+
+    The local backend keeps its sessions in the same config directory as the
+    key file, so a key generated here lives exactly as long as the sessions it
+    encrypts. Any other backend stores sessions somewhere that outlives this
+    host's config directory: a key generated for it on an ephemeral host would
+    encrypt sessions nothing can ever decrypt (#196), so a missing file is an
+    error there.
 
     Returns:
         Fernet-compatible key bytes.
+
+    Raises:
+        EncryptionError: The key file is missing and the storage backend is not
+            ``local``.
     """
     settings = get_settings()
     key_file = settings.config_dir / ".session_key"
@@ -86,7 +106,19 @@ def _get_key_from_file() -> bytes:
         LOG.debug("using_encryption_key_from_file")
         return key_file.read_bytes()
 
+    backend = settings.storage_backend.lower()
+    if backend != "local":
+        raise EncryptionError(
+            f"No session encryption key at {key_file}, and GRAFTPUNK_STORAGE_BACKEND={backend} "
+            "stores sessions where a key generated on this host could not follow them. "
+            "Copy the key the other hosts use to that file (mode 0600), create a new one with "
+            "python -c 'from cryptography.fernet import Fernet; "
+            "print(Fernet.generate_key().decode())', "
+            "or pass the key as key= to encrypt_data, decrypt_data or cache_session."
+        )
+
     # Generate new key and save it with secure permissions from creation
+    key_file.parent.mkdir(parents=True, exist_ok=True)
     key = Fernet.generate_key()
     fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as f:
@@ -209,18 +241,42 @@ def reset_encryption_key_cache() -> None:
     _encryption_key_cache = None
 
 
-def encrypt_data(data: bytes) -> bytes:
+def _fernet(key: bytes | None) -> Fernet:
+    """A Fernet for *key*, or for the configured key when *key* is None.
+
+    Fernet() itself raises ValueError on a malformed key (wrong length, not
+    url-safe base64, stray trailing newline). That is the single likeliest
+    failure for a caller passing ``key=`` from a secret store, so it is mapped
+    to EncryptionError rather than escaping as a bare ValueError that the
+    documented contracts below do not mention.
+    """
+    fernet_key = key if key is not None else get_encryption_key()
+    try:
+        return Fernet(fernet_key)
+    except (ValueError, TypeError) as exc:
+        raise EncryptionError(
+            "Invalid encryption key: a Fernet key must be 32 url-safe base64-encoded bytes."
+        ) from exc
+
+
+def encrypt_data(data: bytes, *, key: bytes | None = None) -> bytes:
     """Encrypt data using Fernet symmetric encryption.
 
     Args:
         data: Raw bytes to encrypt.
+        key: Optional raw Fernet key. When given, encrypt with it directly,
+            bypassing the configured key sources, the counterpart of
+            :func:`decrypt_data`'s ``key``. When None (default), use the
+            configured key.
 
     Returns:
         Encrypted bytes.
+
+    Raises:
+        EncryptionError: If the key is malformed, or no key was given and the
+            configured source has none (see :func:`get_encryption_key`).
     """
-    key = get_encryption_key()
-    fernet = Fernet(key)
-    return fernet.encrypt(data)
+    return _fernet(key).encrypt(data)
 
 
 def decrypt_data(data: bytes, *, key: bytes | None = None) -> bytes:
@@ -242,18 +298,7 @@ def decrypt_data(data: bytes, *, key: bytes | None = None) -> bytes:
     """
     from cryptography.fernet import InvalidToken
 
-    fernet_key = key if key is not None else get_encryption_key()
-    # Fernet() itself raises ValueError on a malformed key (wrong length, not
-    # url-safe base64, stray trailing newline). That is the single likeliest
-    # failure for a caller passing `key=` from a secret store, so it is mapped
-    # to EncryptionError rather than escaping as a bare ValueError that the
-    # documented contract above doesn't mention.
-    try:
-        fernet = Fernet(fernet_key)
-    except (ValueError, TypeError) as exc:
-        raise EncryptionError(
-            "Invalid encryption key: a Fernet key must be 32 url-safe base64-encoded bytes."
-        ) from exc
+    fernet = _fernet(key)
     try:
         return fernet.decrypt(data)
     except InvalidToken as exc:
