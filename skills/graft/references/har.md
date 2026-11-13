@@ -64,11 +64,12 @@ header, query, or body value; answer from its output:
   block, for a name you already hold; leave it off to list every cookie. It
   answers yes or no for an exact name, so a guess at a name that carries an
   account value is confirmed by the answer: ask only for names the task needs.
-- `request` with a piece of the URL's path in place of `<url-part>` (as
-  recorded, or as the templated path the script prints): for each request whose
-  own URL holds it, the method, the templated URL with its query keys, the
-  request header and cookie names, and the body's field names with each value's
-  type. Leave `--method <METHOD>` off to match every method.
+- `request` with a piece of the URL as the script prints it (`{id}`, `{token}`,
+  or `{}` where it holds text back) for `<url-part>`: for each request whose own
+  URL holds it, the method, the templated URL with its query keys, the request
+  header and cookie names, and the body's field names with each value's type.
+  Leave `--method <METHOD>` off to match every method. A recorded path matches
+  only with `--recorded-path`, which confirms it: pass only one you hold.
 - `response`, matched the same way: the status, the content type, the response
   header and set cookie names, and the body's shape, JSON keys and types or an
   HTML page's title length and its forms, each with its method, templated
@@ -77,20 +78,19 @@ header, query, or body value; answer from its output:
   keys it, its calls (and batched ones), kind, nested variable and response keys
   and types, then which response field fed which later variable, by name.
 
-Names and path segments print only when they pass a heuristic gate for field
-names, which also lets fixed framework names through (CDN and bot-manager
-headers and cookies, ASP.NET WebForms controls, Django formset fields, routes
-such as `graphql`). What fails is a placeholder (`{id}`, `{token}`, `{}`, a
-scheme alone, an unnamed blob of N bytes, a title's length class) or a count
-("N names that read as values, not shown"). The gate stops random tokens with
-digits or mixed case, but a plain word used as a key or path segment (a
-username, a person's or place's name, a label, a handle like `alice84`), a
-letter-only token that spells like a word (10.84% of 9-letter random tokens,
-5.20% at 12), and the method, a non-web scheme, a content type's subtype, and
-the host, which print as recorded, can still be the account's own: never copy
-one into code without the user's word. A field whose name reads as a secret is
-listed by name alone. Exit 1 means nothing matched; exit 2 means the HAR is
-missing, is not a HAR, or holds an entry the script could not read.
+Names, path segments, subdomains, and content subtypes print only when they pass
+a heuristic gate for field names, which also lets fixed framework names through
+(CDN and bot-manager headers and cookies, ASP.NET WebForms controls, Django
+formset fields, routes such as `graphql`). What fails is a placeholder (`{id}`,
+`{token}`, `{}`, a scheme alone or `a URL of another scheme`, `(method not
+shown)`, an unnamed blob of N bytes, a title's length class) or a count ("N
+names that read as values, not shown"). The gate stops random tokens with digits
+or mixed case, but a plain word (a username, a person's or place's name, a
+label, a handle like `alice84`) and a letter-only token that spells like a word
+(10.84% of 9-letter random tokens, 5.20% at 12) can still be the account's own:
+never copy one into code without the user's word. A field whose name reads as a
+secret is listed by name alone. Exit 1 means nothing matched; exit 2 means the
+HAR is missing, is not a HAR, or holds an entry the script could not read.
 
 When a name a step needs is counted as reading like a value, use `--name` for a
 cookie whose name you hold, and ask the user for any other name (a login field,

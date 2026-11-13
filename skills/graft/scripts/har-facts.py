@@ -2,8 +2,8 @@
 
 Usage:
   har-facts.py cookies HAR [--name NAME]
-  har-facts.py request HAR URL_PART [--method METHOD]
-  har-facts.py response HAR URL_PART [--method METHOD]
+  har-facts.py request HAR URL_PART [--method METHOD] [--recorded-path]
+  har-facts.py response HAR URL_PART [--method METHOD] [--recorded-path]
   har-facts.py operations HAR [--operation NAME]
 
 ``request`` and ``response`` also take ``--operation NAME``.
@@ -11,9 +11,16 @@ Usage:
 A HAR holds the account's data and, from a recorded login, the session's cookies
 and tokens, and it can hold the password the user typed. The graft skill reads one
 through this script. What the script guarantees:
-it prints no cookie, header, query, or body value, apart from four pieces that
-print as recorded after a shape check alone: the request method, a non-web URL
-scheme, a content type's subtype, and the host. Names and path segments are
+it prints no cookie, header, query, or body value. The method prints only when it
+is a standard HTTP method, a URL scheme other than http, https, ws, and wss only
+when it is ``mailto``, ``javascript``, ``data``, ``tel``, ``blob``, or ``about``,
+and a content type only when its top-level type is a standard one, its subtype a
+known one or one whose name passes the gate below (a vendor, personal, or ``x-``
+tree prefix aside), and otherwise as ``{}`` with a known suffix kept
+(``application/{}+json``). A host prints as recorded when it is an IP address;
+a host name keeps its last two labels, the site's own domain, and each label
+left of them prints only when it passes the gate (``www`` and a few other fixed
+labels aside), else as ``{id}`` or ``{}``. Names and path segments are
 recorded text too, and those print only when they pass a heuristic allowlist
 gate, ``printable_name``, which withholds most value-shaped text but not all of
 it. A name passes when it is a fixed framework name (below), or at most 48
@@ -45,10 +52,10 @@ the field gated and the prefix gated unless it is 1 to 4 lower-case letters
 
 What fails the gate is replaced or counted:
 
-- a URL prints as its scheme, a host of hostname characters, and its path with
+- a URL prints as its scheme, its host as above, and its path with
   each segment that fails written ``{id}`` (digits or an id shape), ``{token}``
   (16 characters or more), or ``{}``; a URL of a scheme other than http, https,
-  ws, or wss prints as that scheme alone;
+  ws, or wss prints as that scheme alone, or as ``a URL of another scheme``;
 - a query string prints its keys that pass, never a value, and counts the rest;
   a query or form body with no ``=`` is an unnamed blob of N bytes;
 - a JSON key, a form, multipart, or ``params`` field name, a header name, and a
@@ -65,11 +72,10 @@ What fails the gate is replaced or counted:
 
 What the gate lets through. A plain word that is also a value cannot be told
 from a field name: a username, a person's or place's name, a label, or a handle
-with a two-digit suffix, used as a JSON key or a path segment, prints (``alice``,
-``Mapleton``, ``main-street``, ``alice84``). A letter-only random token passes
-when it happens to spell like a word. The method, a non-web scheme, a content
-type's subtype, and the host print as recorded, so a per-account subdomain
-prints. Measured on 10,000 samples per row (seed 277,
+with a two-digit suffix, used as a JSON key, a path segment, a subdomain, or a
+piece of a content type's subtype, prints (``alice``, ``Mapleton``,
+``main-street``, ``alice84``). A letter-only random token passes
+when it happens to spell like a word. Measured on 10,000 samples per row (seed 277,
 2026-10-19), the share of random values that pass: none of base62 at 12, 16, or
 32 characters, hex at 16 or 40, base64url at 16, 22, or 43, base36 at 32, JWT
 pieces, emails, prefixed ids, or UUIDs; 0.17% of base62 at 8, 0.38% of base64url
@@ -94,21 +100,26 @@ response deletes the cookie), or ``unknown`` (not a number or a date, or an
 entry whose ``startedDateTime`` does not parse) for ``expiry``. Then it names
 the cookies the recording only sends. With ``--name``, it prints only the block
 of that exact name, whatever the gate says, since the caller already holds the
-name.
+name; its exit status says whether the recording holds that name, so a guessed
+name is answered: pass only a name already in hand.
 
 ``request`` and ``response`` match URL_PART against each entry's own request URL
-path, as recorded or templated (never a ``Referer`` or ``Location`` header), and
-``--method`` narrows by method. ``request`` prints the method, the URL with its
-query keys, the request header and cookie names, and the body's content type and
-field names with each value's type. ``response`` prints the status, the content
-type, the response header names, the names of the cookies it sets, and the
-body's shape: JSON keys and types (JSON nested deeper than 64 levels is not
-parsed), or an HTML page's title length and its forms, each with its method,
-templated action, and controls by name and type (repeats collapsed with a count,
-a control with no name or a name that fails by type and position). A field
-whose name reads as a password, a secret, a token, a card, or a key is listed by
-name alone. A response body streamed to ``bodies/`` is read only from the HAR's
-own ``bodies/`` directory, never through a link.
+as this script prints it (never a ``Referer`` or ``Location`` header), and
+``--method`` narrows by the method as it prints, so a match never says whether
+text the script holds back is in the recording. ``--recorded-path`` also matches
+URL_PART against the URL as recorded, its query and fragment left out: a hit
+then says the recording holds URL_PART, so pass only text already in hand.
+``request`` prints the method, the URL with its query keys, the request header
+and cookie names, and the body's content type and field names with each value's
+type. ``response`` prints the status, the content type, the response header
+names, the names of the cookies it sets, and the body's shape: JSON keys and
+types (JSON nested deeper than 64 levels is not parsed), or an HTML page's title
+length and its forms, each with its method, templated action, and controls by
+name and type (repeats collapsed with a count, a control with no name or a name
+that fails by type and position). A field whose name reads as a password, a
+secret, a token, a card, or a key is listed by name alone. A response body
+streamed to ``bodies/`` is read only from the HAR's own ``bodies/`` directory,
+never through a link.
 
 ``operations`` lists each GraphQL operation the recording's request bodies
 carry (graftpunk's own rule, copied and held equal by a test: a JSON object with a
@@ -684,11 +695,39 @@ def templated_path(path: str) -> str:
 
 _HOST_RE = re.compile(r"[a-z0-9.\-]{1,253}|\[[0-9a-f:.]{2,45}\]")
 _WEB_SCHEMES = ("http", "https", "ws", "wss")
-_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]{0,15}")
+# The schemes a page or a redirect uses besides the web's, named; any other
+# scheme is recorded text (a custom app scheme can be a word the account chose).
+_KNOWN_SCHEMES = frozenset(("mailto", "javascript", "data", "tel", "blob", "about"))
+# The labels a site's own host starts with that the gate holds back.
+_HOST_WORDS = frozenset(("www", "www1", "www2", "www3", "ww2", "img", "gw", "graphql", "gql"))
+# The labels a host keeps as recorded: the site's own registrable domain. A
+# per-account subdomain sits to their left.
+_SITE_LABELS = 2
 
 
 def _scheme(scheme: str) -> str:
-    return f"{scheme}:" if _SCHEME_RE.fullmatch(scheme) else "a URL of another scheme"
+    return f"{scheme}:" if scheme in _KNOWN_SCHEMES else "a URL of another scheme"
+
+
+def _host_label(label: str) -> str:
+    if not label or label in _HOST_WORDS or printable_name(label):
+        return label
+    return "{id}" if label.isdigit() or holds_an_id(label) else "{}"
+
+
+def shown_host(host: str) -> str:
+    """*host* as the script prints it: an IP address as recorded, and a name with
+    its last two labels as recorded and each label left of them through the gate,
+    ``{id}`` or ``{}`` when it fails, so a per-account subdomain does not print."""
+    if not _HOST_RE.fullmatch(host):
+        return "{host}"
+    if host.startswith("[") or _is_ip(host):
+        return host
+    labels = host.split(".")
+    if len(labels) <= _SITE_LABELS:
+        return host
+    left, site = labels[:-_SITE_LABELS], labels[-_SITE_LABELS:]
+    return ".".join([*(_host_label(label) for label in left), *site])
 
 
 def templated_url(url: str) -> str:
@@ -703,8 +742,7 @@ def templated_url(url: str) -> str:
     path = templated_path(parts.path)
     if not scheme:
         return path or "(this page)"
-    host = (parts.hostname or "").lower()
-    host = host if _HOST_RE.fullmatch(host) else "{host}"
+    host = shown_host((parts.hostname or "").lower())
     try:
         port = parts.port
     except ValueError:
@@ -851,12 +889,16 @@ def _list(container: dict[str, Any], key: str) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-_METHOD_RE = re.compile(r"[A-Z]{1,10}")
+# graftpunk.har.naming.HTTP_METHODS, copied (a test holds the two equal): any
+# other method is recorded text, which can be a word the account chose.
+_HTTP_METHODS = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
+)
 
 
 def _method(request: dict[str, Any]) -> str:
     method = str(request.get("method", "")).upper()
-    return method if _METHOD_RE.fullmatch(method) else "(method not shown)"
+    return method if method in _HTTP_METHODS else "(method not shown)"
 
 
 def _names(raw: list[str]) -> str:
@@ -893,13 +935,56 @@ def _request_cookie_names(request: dict[str, Any]) -> list[str]:
 
 
 _MIME_RE = re.compile(r"[a-z0-9][a-z0-9.+\-]{0,63}/[a-z0-9][a-z0-9.+\-]{0,63}")
+_MEDIA_TYPES = frozenset(
+    "application audio font image message model multipart text video".split()  # noqa: SIM905
+)
+# Subtypes the gate holds back, named here: they print as they are.
+_MEDIA_SUBTYPES = frozenset(
+    (  # noqa: SIM905 - one compact string on purpose: the set is data
+        "x-www-form-urlencoded xhtml+xml svg+xml x-ndjson ndjson x-msgpack msgpack gzip "
+        "x-gzip graphql graphql-response+json grpc+proto grpc-web+proto sparql-query sql "
+        "x-7z-compressed x-httpd-php vcard vtt jpeg jpg mp2t rfc822 gltf+json gltf-binary "
+        "vnd.openxmlformats-officedocument.spreadsheetml.sheet "
+        "vnd.openxmlformats-officedocument.wordprocessingml.document "
+        "vnd.openxmlformats-officedocument.presentationml.presentation"
+    ).split()
+)
+# The structured syntax suffixes, kept after a subtype the gate holds back.
+_MEDIA_SUFFIXES = frozenset("json xml zip cbor gzip yaml jwt json-seq wbxml ber der".split())  # noqa: SIM905
+# A vendor, personal, or unregistered tree's prefix, which the gate would read as
+# a word.
+_MEDIA_TREE_RE = re.compile(r"(?:vnd|prs|x)[.\-]")
+
+
+def _subtype(subtype: str) -> str:
+    """*subtype* when it is a known one or its pieces pass the gate, else ``{}``
+    with its structured syntax suffix (``{}+json``) when that is a known one."""
+    if subtype in _MEDIA_SUBTYPES:
+        return subtype
+    stem, plus, suffix = subtype.rpartition("+")
+    if not plus:
+        stem, suffix = subtype, ""
+    if suffix and suffix not in _MEDIA_SUFFIXES:
+        return "{}"
+    tree = _MEDIA_TREE_RE.match(stem)
+    name = stem[tree.end() :] if tree else stem
+    if name and printable_name(name):
+        return subtype
+    return f"{{}}+{suffix}" if suffix else "{}"
 
 
 def _mime(raw: str) -> str:
+    """A content type's base as the script prints it: a standard top-level type,
+    and its subtype through :func:`_subtype`."""
     base = raw.split(";", 1)[0].strip().lower()
     if not base:
         return ""
-    return base if _MIME_RE.fullmatch(base) else "a content type that is not shown"
+    if not _MIME_RE.fullmatch(base):
+        return "a content type that is not shown"
+    kind, _slash, subtype = base.partition("/")
+    if kind not in _MEDIA_TYPES:
+        return "a content type that is not shown"
+    return f"{kind}/{_subtype(subtype)}"
 
 
 # cookies
@@ -917,7 +1002,7 @@ def _domain(domain: str, host: str) -> str:
         return "-"
     bare = domain.lower().lstrip(".")
     if host and (host == bare or host.endswith("." + bare)) and _HOST_RE.fullmatch(bare):
-        return bare
+        return shown_host(bare)
     return "a domain outside the response's host"
 
 
@@ -1598,28 +1683,29 @@ def _body_lines(mime: str, text: str | None, indent: str) -> list[str]:
 # request and response
 
 
-def _path_of(url: str) -> str:
-    try:
-        return urlsplit(url).path
-    except ValueError:
-        return url.split("?", 1)[0].split("#", 1)[0]
-
-
 def _matches(
-    entries: list[dict[str, Any]], needle: str, method: str | None
+    entries: list[dict[str, Any]],
+    needle: str,
+    method: str | None,
+    har_path: Path,
+    *,
+    recorded: bool = False,
 ) -> list[dict[str, Any]]:
+    """The entries whose URL, as this script prints it, holds *needle*, and with
+    *method* whose method prints as it. A match on text the script does not print
+    would answer whether a guessed value is in the recording, so the recorded path
+    is searched only when *recorded* is set: the caller then holds the text."""
     found = []
     for entry in entries:
         request = _part(entry, "request")
         url = str(request.get("url", ""))
-        path = _path_of(url)
-        if (
-            needle not in path
-            and needle not in templated_path(path)
-            and needle not in url.split("?", 1)[0].split("#", 1)[0]
+        if not (
+            needle in templated_url(url)
+            or (entry_operations(entry, har_path) and needle in _operation_url(url))
+            or (recorded and needle in url.split("?", 1)[0].split("#", 1)[0])
         ):
             continue
-        if method and str(request.get("method", "")).upper() != method.upper():
+        if method and _method(request) != method.upper():
             continue
         found.append(entry)
     return found
@@ -2187,8 +2273,7 @@ def _operation_url(url: str) -> str:
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https"):
         return templated_url(url)
-    host = (parts.hostname or "").lower()
-    host = host if _HOST_RE.fullmatch(host) else "{host}"
+    host = shown_host((parts.hostname or "").lower())
     try:
         port = parts.port
     except ValueError:
@@ -2493,6 +2578,7 @@ def main(argv: list[str]) -> int:
         one.add_argument("url_part")
         one.add_argument("--method")
         one.add_argument("--operation")
+        one.add_argument("--recorded-path", action="store_true")
     graphql = sub.add_parser("operations")
     graphql.add_argument("har")
     graphql.add_argument("--operation")
@@ -2535,7 +2621,7 @@ def _run(args: argparse.Namespace, entries: list[dict[str, Any]]) -> int:
             return 1
         print("\n\n".join(blocks))
         return 0
-    found = _matches(entries, args.url_part, args.method)
+    found = _matches(entries, args.url_part, args.method, har_path, recorded=args.recorded_path)
     if args.operation is not None:
         found = [
             entry

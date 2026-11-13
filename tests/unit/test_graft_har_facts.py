@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from graftpunk.har.naming import HTTP_METHODS
 from tests.unit.guide_harness import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "skills" / "graft" / "scripts" / "har-facts.py"
@@ -79,6 +80,10 @@ _SECRETS = [
     "xqzkvbtrwamplhab",
     "dark",
     "12.5",
+    # A method, a subdomain, a content type's subtype, and a scheme the account chose.
+    "VICTIMVERB",
+    "zq9xklmpwr4t",
+    "victimscheme",
 ]
 
 _LOGIN_PAGE = (
@@ -324,6 +329,12 @@ def _har(tmp_path: Path) -> Path:
             },
             content={"mimeType": "text/html", "text": _SEARCH_PAGE},
         ),
+        _entry(
+            "VICTIMVERB",
+            "https://zq9xklmpwr4t7bv2.shop.test/hostcheck",
+            content={"mimeType": "application/x-zq9xklmpwr4t+json", "text": "{}"},
+        ),
+        _entry("GET", "victimscheme:go"),
     ]
     path = run / "network.har"
     path.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}, indent=2))
@@ -368,6 +379,10 @@ _EVERY_RUN = [
     ("response", "/"),
     ("request", "data"),
     ("response", "data"),
+    ("request", "another scheme"),
+    ("response", "another scheme"),
+    ("request", "/hostcheck"),
+    ("response", "/hostcheck"),
 ]
 
 
@@ -1107,3 +1122,128 @@ def test_an_array_only_deleting_expires_reads_past_in_the_script() -> None:
     assert _load_script().cookies([entry])[1].endswith("expiry=past")
     entry["startedDateTime"] = "garbled"
     assert _load_script().cookies([entry])[1].endswith("expiry=unknown")
+
+
+# #278: the method, a non-web scheme, a content type's subtype, and the host
+# printed as recorded; a URL part and --method matched recorded text.
+
+
+@pytest.mark.parametrize(
+    ("host", "shown"),
+    [
+        ("zq9xklmpwr4t7bv2.myshop.example", "{}.myshop.example"),
+        ("a1b2c3d4e5f6a7b8.myshop.example", "{id}.myshop.example"),
+        ("88812345.api.myshop.example", "{id}.api.myshop.example"),
+        ("www.myshop.example", "www.myshop.example"),
+        ("api.eu-west-2.myshop.example", "api.eu-west-2.myshop.example"),
+        ("myshop.example", "myshop.example"),
+        ("localhost", "localhost"),
+        ("127.0.0.1", "127.0.0.1"),
+        ("[::1]", "[::1]"),
+        ("my shop.example", "{host}"),
+    ],
+)
+def test_a_host_keeps_its_site_domain_and_gates_each_label_left_of_it(
+    host: str, shown: str
+) -> None:
+    assert _load_script().shown_host(host) == shown
+
+
+def test_a_held_back_subdomain_is_a_placeholder_in_urls_and_cookie_domains(tmp_path: Path) -> None:
+    entry = _entry(
+        "GET",
+        "https://zq9xklmpwr4t7bv2.myshop.example/home",
+        response_headers=[_h("Set-Cookie", "a=1; Domain=zq9xklmpwr4t7bv2.myshop.example")],
+    )
+    entry["startedDateTime"] = "2026-10-31T10:00:00.000Z"
+    assert _load_script().cookies([entry]) == [
+        "cookie a",
+        "  set by GET https://{}.myshop.example/home (1 time); header: HttpOnly=no Secure=no "
+        "SameSite=- Path=- Domain={}.myshop.example expiry=session; not in the "
+        "response.cookies array",
+    ]
+
+
+def test_a_method_that_is_not_a_standard_one_is_not_shown(tmp_path: Path) -> None:
+    lines = _lines("response", str(_har(tmp_path)), "/hostcheck")
+    assert lines[0] == "(method not shown) https://{}.shop.test/hostcheck"
+
+
+def test_the_scripts_methods_are_graftpunks() -> None:
+    assert _load_script()._HTTP_METHODS == HTTP_METHODS
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        ("application/json; charset=utf-8", "application/json"),
+        ("application/x-www-form-urlencoded", "application/x-www-form-urlencoded"),
+        ("application/vnd.api+json", "application/vnd.api+json"),
+        ("application/vnd.github.v3+json", "application/vnd.github.v3+json"),
+        ("application/x-amz-json-1.1", "application/x-amz-json-1.1"),
+        ("image/jpeg", "image/jpeg"),
+        ("application/x-zq9xklmpwr4t+json", "application/{}+json"),
+        ("application/zq9xklmpwr4t7bv2", "application/{}"),
+        ("application/json+zq9xklmpwr4t", "application/{}"),
+        ("victimtype/json", "a content type that is not shown"),
+        ("application/json\x00", "a content type that is not shown"),
+    ],
+)
+def test_a_content_type_prints_a_standard_type_and_a_gated_subtype(raw: str, shown: str) -> None:
+    assert _load_script()._mime(raw) == shown
+
+
+def test_a_held_back_subtype_keeps_its_suffix_for_reading_the_body(tmp_path: Path) -> None:
+    lines = _lines("response", str(_har(tmp_path)), "/hostcheck")
+    assert "  status 200, content type application/{}+json" in lines
+    assert "    JSON object of 0 keys" in lines
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        ("mailto:alice.example@mail.example", "mailto:"),
+        ("javascript:void(0)", "javascript:"),
+        ("victimscheme:go", "a URL of another scheme"),
+        ("ws://myshop.example/live", "ws://myshop.example/live"),
+    ],
+)
+def test_a_scheme_prints_by_name_only_when_it_is_a_known_one(url: str, shown: str) -> None:
+    assert _load_script().templated_url(url) == shown
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("ACCTPATH_X",),
+        ("zq9xklmpwr4t7bv2",),
+        ("victimscheme",),
+        ("/hostcheck", "--method", "VICTIMVERB"),
+    ],
+    ids=["held-back-segment", "held-back-subdomain", "held-back-scheme", "held-back-method"],
+)
+def test_a_url_part_or_method_matches_only_what_the_script_prints(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    """A guess at a held-back value gets the same answer as a guess at a value the
+    recording lacks, so the exit status confirms nothing."""
+    har = str(_har(tmp_path))
+    for command in ("request", "response"):
+        result = _run(command, har, *args)
+        assert result.returncode == 1, result.stdout
+        assert result.stdout == ""
+
+
+def test_a_recorded_path_matches_with_the_flag(tmp_path: Path) -> None:
+    lines = _lines("request", str(_har(tmp_path)), "/reset/ACCTPATH_X/", "--recorded-path")
+    assert lines[0] == "GET https://shop.test/reset/{}/confirm"
+
+
+def test_a_printed_url_matches_without_the_flag(tmp_path: Path) -> None:
+    har = str(_har(tmp_path))
+    assert (
+        _lines("request", har, "/reset/{}/confirm")[0] == "GET https://shop.test/reset/{}/confirm"
+    )
+    assert _lines("request", har, "{}.shop.test")[0] == (
+        "(method not shown) https://{}.shop.test/hostcheck"
+    )
