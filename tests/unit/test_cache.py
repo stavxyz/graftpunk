@@ -1046,9 +1046,11 @@ class TestUpdateSessionCookies:
         ):
             mock_load.return_value = (cached_session, MagicMock(account_rule=None))
             update_session_cookies(api_session, "testsession")
-            mock_load.assert_called_once_with("testsession")
+            mock_load.assert_called_once_with("testsession", key=None)
             # The slot's recorded account rule is carried, so a 1.24.0 slot stays one (#293).
-            mock_cache.assert_called_once_with(cached_session, "testsession", account_rule=None)
+            mock_cache.assert_called_once_with(
+                cached_session, "testsession", account_rule=None, key=None
+            )
 
     def test_load_failure_logs_warning_and_returns(self) -> None:
         """If loading the cached session fails, log a warning and return."""
@@ -1099,8 +1101,8 @@ class TestUpdateSessionCookies:
         ):
             update_session_cookies(api_session, "testsession")
 
-        mock_load.assert_called_once_with("testsession")
-        mock_cache.assert_called_once_with(cached_session, "testsession", account_rule=2)
+        mock_load.assert_called_once_with("testsession", key=None)
+        mock_cache.assert_called_once_with(cached_session, "testsession", account_rule=2, key=None)
         # Verify token cache was transferred to the original session
         assert getattr(cached_session, _CACHE_ATTR) == token_cache
 

@@ -622,3 +622,217 @@ class TestCallerSuppliedKey:
         api = load_session_for_api_from_bytes(blob, key=key)
         assert api.cookies.get("sid", domain="myshop.example") == "abc"
         assert not key_file.exists()
+
+
+class TestMissingKeyIsNotAnExpiredSession:
+    """On a non-local backend a missing key file is its own error, on every path (#196 review)."""
+
+    def setup_method(self) -> None:
+        reset_encryption_key_cache()
+
+    def teardown_method(self) -> None:
+        reset_encryption_key_cache()
+
+    @staticmethod
+    def _s3_settings_over_local_files(tmp_path, monkeypatch):  # noqa: ANN205
+        """Settings say s3 (so the key rule is s3's); the slots live in a local store."""
+        from graftpunk import cache
+        from graftpunk.config import reset_settings
+        from graftpunk.storage.local import LocalSessionStorage
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
+        reset_settings()
+        cache._reset_session_storage_backend()
+        store = LocalSessionStorage(base_dir=tmp_path / "sessions")
+        monkeypatch.setattr(cache, "_get_session_storage_backend", lambda **_kw: store)
+        return store
+
+    def _cache_then_lose_the_key(self, tmp_path, monkeypatch):  # noqa: ANN205
+        import requests
+
+        from graftpunk.cache import cache_session
+        from graftpunk.config import reset_settings
+
+        self._s3_settings_over_local_files(tmp_path, monkeypatch)
+        session = requests.Session()
+        session.cookies.set("sid", "abc", domain="myshop.example")
+        cache_session(session, "myshop")
+        (tmp_path / ".session_key").unlink()
+        reset_encryption_key_cache()
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "s3")
+        reset_settings()
+
+    @pytest.mark.parametrize("loader", ["load_session", "load_session_for_api"])
+    def test_a_load_names_the_missing_key_and_never_says_clear(self, tmp_path, monkeypatch, loader):
+        from graftpunk import cache
+        from graftpunk.exceptions import MissingEncryptionKeyError, SessionExpiredError
+
+        self._cache_then_lose_the_key(tmp_path, monkeypatch)
+
+        with pytest.raises(MissingEncryptionKeyError) as raised:
+            getattr(cache, loader)("myshop")
+
+        assert not isinstance(raised.value, SessionExpiredError)
+        message = str(raised.value)
+        assert str(tmp_path / ".session_key") in message
+        assert "key=" in message
+        assert "clear" not in message
+        assert not (tmp_path / ".session_key").exists()
+
+    def test_a_wrong_key_is_still_reported_as_an_unreadable_session(self, tmp_path, monkeypatch):
+        from graftpunk.cache import load_session
+        from graftpunk.exceptions import SessionExpiredError
+
+        self._cache_then_lose_the_key(tmp_path, monkeypatch)
+        (tmp_path / ".session_key").write_bytes(Fernet.generate_key())
+
+        with pytest.raises(SessionExpiredError, match="cannot be decrypted"):
+            load_session("myshop")
+
+    def test_a_save_without_a_key_writes_nothing(self, tmp_path, monkeypatch):
+        import requests
+
+        from graftpunk import cache
+        from graftpunk.config import reset_settings
+        from graftpunk.exceptions import MissingEncryptionKeyError
+
+        saves: list[str] = []
+
+        class RecordingBackend:
+            def save_session(self, name, data, metadata):  # noqa: ANN001, ANN201
+                saves.append(name)
+                return name
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "s3")
+        reset_settings()
+        monkeypatch.setattr(cache, "_get_session_storage_backend", lambda **_kw: RecordingBackend())
+
+        with pytest.raises(MissingEncryptionKeyError):
+            cache.cache_session(requests.Session(), "myshop")
+
+        assert saves == []
+        assert not (tmp_path / ".session_key").exists()
+
+
+class TestTheKeyFollowsTheConfigDir:
+    """The cached key belongs to the key file it was read from (#282 review)."""
+
+    def teardown_method(self) -> None:
+        reset_encryption_key_cache()
+
+    def test_a_late_config_dir_change_reads_that_directorys_key(self, tmp_path, monkeypatch):
+        from graftpunk.config import reset_settings
+
+        first, later = tmp_path / "first", tmp_path / "later"
+        for directory in (first, later):
+            directory.mkdir()
+            (directory / ".session_key").write_bytes(Fernet.generate_key())
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(first))
+        reset_settings()
+        reset_encryption_key_cache()
+        assert get_encryption_key() == (first / ".session_key").read_bytes()
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(later))
+
+        assert get_encryption_key() == (later / ".session_key").read_bytes()
+        assert get_encryption_key() is get_encryption_key()
+
+
+class TestCallerKeyOnEveryWritePath:
+    """Every write path, and load_session, takes the caller's key= (#196 review)."""
+
+    def setup_method(self) -> None:
+        reset_encryption_key_cache()
+
+    def teardown_method(self) -> None:
+        reset_encryption_key_cache()
+
+    @staticmethod
+    def _local(tmp_path, monkeypatch):  # noqa: ANN205
+        from graftpunk import cache
+        from graftpunk.config import reset_settings
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
+        reset_settings()
+        cache._reset_session_storage_backend()
+        return tmp_path / ".session_key"
+
+    @staticmethod
+    def _blob(name: str) -> bytes:
+        from graftpunk.cache import _get_session_storage_backend
+
+        return _get_session_storage_backend().load_session(name)[0]
+
+    @staticmethod
+    def _session(value: str):  # noqa: ANN205
+        import requests
+
+        session = requests.Session()
+        session.cookies.set("sid", value, domain="myshop.example")
+        return session
+
+    def test_load_session_with_a_caller_key(self, tmp_path, monkeypatch):
+        from graftpunk.cache import cache_session, load_session
+
+        key_file = self._local(tmp_path, monkeypatch)
+        key = Fernet.generate_key()
+        cache_session(self._session("abc"), "myshop", key=key)
+
+        loaded = load_session("myshop", key=key)
+
+        assert loaded.cookies.get("sid", domain="myshop.example") == "abc"
+        assert not key_file.exists()
+
+    def test_copy_session_reads_and_writes_with_the_caller_key(self, tmp_path, monkeypatch):
+        from graftpunk.cache import cache_session, copy_session, load_session_for_api_from_bytes
+
+        key_file = self._local(tmp_path, monkeypatch)
+        key = Fernet.generate_key()
+        cache_session(self._session("abc"), "myshop", key=key)
+
+        copy_session("myshop", "myshop@alice", account_identifier="alice@myshop.example", key=key)
+
+        api = load_session_for_api_from_bytes(self._blob("myshop@alice"), key=key)
+        assert api.cookies.get("sid", domain="myshop.example") == "abc"
+        assert not key_file.exists()
+
+    def test_update_session_cookies_writes_back_with_the_caller_key(self, tmp_path, monkeypatch):
+        from graftpunk.cache import (
+            cache_session,
+            load_session_for_api_from_bytes,
+            update_session_cookies,
+        )
+
+        key_file = self._local(tmp_path, monkeypatch)
+        key = Fernet.generate_key()
+        cache_session(self._session("old"), "myshop", key=key)
+        api = load_session_for_api_from_bytes(self._blob("myshop"), key=key)
+        api.cookies.set("sid", "new", domain="myshop.example")
+
+        update_session_cookies(api, "myshop", key=key)
+
+        stored = load_session_for_api_from_bytes(self._blob("myshop"), key=key)
+        assert stored.cookies.get("sid", domain="myshop.example") == "new"
+        assert not key_file.exists()
+
+    def test_cache_login_session_encrypts_with_the_caller_key(self, tmp_path, monkeypatch):
+        from graftpunk.cache import load_session_for_api_from_bytes
+        from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
+
+        class MyShop(SitePlugin):
+            site_name = "myshop"
+            base_url = "https://myshop.example"
+            session_name = "myshop"
+
+        key_file = self._local(tmp_path, monkeypatch)
+        key = Fernet.generate_key()
+
+        used = cache_login_session(MyShop(), self._session("abc"), name="myshop@alice", key=key)
+
+        api = load_session_for_api_from_bytes(self._blob(used), key=key)
+        assert api.cookies.get("sid", domain="myshop.example") == "abc"
+        assert not key_file.exists()

@@ -1508,6 +1508,7 @@ def cache_login_session(
     *,
     name: str | None = None,
     identifier: str | None = None,
+    key: bytes | None = None,
 ) -> str:
     """The one login-flow cache funnel. Explicit arguments first.
 
@@ -1529,7 +1530,9 @@ def cache_login_session(
     write goes ahead recording no account.
 
     The identifier rides the session object so ``_extract_session_metadata``
-    records it. Returns the session name used.
+    records it. *key*, when given, is the raw Fernet key the session is
+    encrypted with instead of the configured one (see ``cache_session``).
+    Returns the session name used.
     """
     from graftpunk.session_identity import ACCOUNT_RULE, GP_ACCOUNT_ATTR
 
@@ -1567,7 +1570,7 @@ def cache_login_session(
             account, account_rule = None, ACCOUNT_RULE
     if account is not None:
         setattr(session, GP_ACCOUNT_ATTR, account)
-    cache_session(session, session_name, account_rule=account_rule)
+    cache_session(session, session_name, account_rule=account_rule, key=key)
     return session_name
 
 

@@ -30,13 +30,16 @@ from cryptography.fernet import Fernet
 
 from graftpunk._distribution import install_command
 from graftpunk.config import get_settings
-from graftpunk.exceptions import EncryptionError
+from graftpunk.exceptions import EncryptionError, MissingEncryptionKeyError
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 
-# Cache the encryption key in memory to avoid repeated round-trips
-_encryption_key_cache: bytes | None = None
+# Cache the encryption key in memory to avoid repeated round-trips, together
+# with the source it came from (the key file's path, or the Vault secret), so a
+# GRAFTPUNK_CONFIG_DIR changed after the first read loads that directory's key
+# instead of encrypting its sessions with the old one (#282).
+_encryption_key_cache: tuple[str, bytes] | None = None
 
 
 def get_encryption_key() -> bytes:
@@ -55,16 +58,27 @@ def get_encryption_key() -> bytes:
         Fernet-compatible 32-byte key (base64 encoded).
 
     Raises:
-        EncryptionError: If the key cannot be retrieved or generated, or the
-            key file is missing for a backend other than ``local``.
+        EncryptionError: If the key cannot be retrieved or generated.
+        MissingEncryptionKeyError: The key file is missing for a backend other
+            than ``local`` (a subclass of EncryptionError).
     """
     global _encryption_key_cache
 
-    if _encryption_key_cache is not None:
-        return _encryption_key_cache
+    source = _key_source()
+    if _encryption_key_cache is not None and _encryption_key_cache[0] == source:
+        return _encryption_key_cache[1]
 
-    _encryption_key_cache = _load_encryption_key()
-    return _encryption_key_cache
+    key = _load_encryption_key()
+    _encryption_key_cache = (source, key)
+    return key
+
+
+def _key_source() -> str:
+    """Where the configured key comes from: the Vault secret, or the key file's path."""
+    settings = get_settings()
+    if settings.storage_backend.lower() == "supabase":
+        return f"supabase-vault:{settings.session_key_vault_name}"
+    return str(settings.config_dir / ".session_key")
 
 
 def _load_encryption_key() -> bytes:
@@ -96,8 +110,8 @@ def _get_key_from_file() -> bytes:
         Fernet-compatible key bytes.
 
     Raises:
-        EncryptionError: The key file is missing and the storage backend is not
-            ``local``.
+        MissingEncryptionKeyError: The key file is missing and the storage
+            backend is not ``local``.
     """
     settings = get_settings()
     key_file = settings.config_dir / ".session_key"
@@ -108,7 +122,7 @@ def _get_key_from_file() -> bytes:
 
     backend = settings.storage_backend.lower()
     if backend != "local":
-        raise EncryptionError(
+        raise MissingEncryptionKeyError(
             f"No session encryption key at {key_file}, and GRAFTPUNK_STORAGE_BACKEND={backend} "
             "stores sessions where a key generated on this host could not follow them. "
             "Copy the key the other hosts use to that file (mode 0600), create a new one with "

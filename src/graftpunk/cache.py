@@ -31,6 +31,7 @@ from graftpunk.config import get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data
 from graftpunk.exceptions import (
     EncryptionError,
+    MissingEncryptionKeyError,
     SessionExpiredError,
     SessionNotFoundError,
     StorageError,
@@ -368,7 +369,9 @@ def cache_session(
         raise
 
 
-def load_session(name: str, backend_override: str | None = None) -> SessionLike:
+def load_session(
+    name: str, backend_override: str | None = None, *, key: bytes | None = None
+) -> SessionLike:
     """Load a cached session.
 
     Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
@@ -391,6 +394,8 @@ def load_session(name: str, backend_override: str | None = None) -> SessionLike:
     Args:
         name: Session name.
         backend_override: If set, use this backend type instead of the default.
+        key: Optional raw Fernet key to decrypt with instead of the configured
+            one (see :func:`graftpunk.encryption.decrypt_data`).
 
     Returns:
         Loaded session object.
@@ -398,13 +403,17 @@ def load_session(name: str, backend_override: str | None = None) -> SessionLike:
     Raises:
         SessionNotFoundError: If session file doesn't exist.
         SessionExpiredError: If session cannot be decrypted or has invalid structure.
+        MissingEncryptionKeyError: No key was given and the configured backend
+            has no key file to read (see :func:`graftpunk.encryption.get_encryption_key`).
     """
-    session, _metadata = _load_session_with_metadata(name, backend_override=backend_override)
+    session, _metadata = _load_session_with_metadata(
+        name, backend_override=backend_override, key=key
+    )
     return session
 
 
 def _load_session_with_metadata(
-    name: str, backend_override: str | None = None
+    name: str, backend_override: str | None = None, *, key: bytes | None = None
 ) -> tuple[SessionLike, SessionMetadata]:
     """Load a cached session together with the SessionMetadata already fetched
     during that same backend read.
@@ -417,6 +426,7 @@ def _load_session_with_metadata(
     Args:
         name: Session name to load.
         backend_override: If set, use this backend type instead of the default.
+        key: Optional raw Fernet key; None uses the configured key.
 
     Returns:
         The deserialized session and the ``SessionMetadata`` read in the same
@@ -426,6 +436,9 @@ def _load_session_with_metadata(
         SessionNotFoundError: No session is stored under *name*.
         SessionExpiredError: The session is expired, cannot be decrypted, or
             fails its checksum/deserialization.
+        MissingEncryptionKeyError: No key was given and there is none to read.
+            Passed through, not reported as an expired session, because the fix
+            is to provide the key, not to clear the session.
     """
     backend = _get_session_storage_backend(backend_override=backend_override)
     settings = get_settings()
@@ -436,7 +449,11 @@ def _load_session_with_metadata(
 
         # Decrypt
         try:
-            decrypted_data = decrypt_data(encrypted_data)
+            decrypted_data = decrypt_data(encrypted_data, key=key)
+        except MissingEncryptionKeyError:
+            # No key at all is fixed by providing one, never by clearing the
+            # session (which on a shared bucket is every host's session).
+            raise
         except EncryptionError as exc:
             LOG.error("session_decryption_failed", name=name, backend=settings.storage_backend)
             raise SessionExpiredError(
@@ -492,7 +509,7 @@ def _load_session_with_metadata(
         LOG.info("successfully_loaded_session", name=name, backend=settings.storage_backend)
         return session, metadata
 
-    except (SessionNotFoundError, SessionExpiredError):
+    except (SessionNotFoundError, SessionExpiredError, MissingEncryptionKeyError):
         raise
     except ModuleNotFoundError as exc:
         # A cached BrowserSession pickle names graftpunk.session, which imports
@@ -965,7 +982,9 @@ def _write_back_target(api_session: requests.Session, session_name: str) -> str:
     return loaded_name
 
 
-def update_session_cookies(api_session: requests.Session, session_name: str) -> None:
+def update_session_cookies(
+    api_session: requests.Session, session_name: str, *, key: bytes | None = None
+) -> None:
     """Persist an API session's cookies and token cache back to the session cache.
 
     Loads the original cached session (preserving browser metadata),
@@ -998,11 +1017,14 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         session_name: Name of the cached session to update, used verbatim unless
             no slot exists under it and it is the bare base of the slot
             *api_session* was last loaded from or saved to.
+        key: Optional raw Fernet key, for a host without the key file: the
+            stored session is read and written back with it. None uses the
+            configured key.
     """
     target = session_name
     try:
         try:
-            original, stored_metadata = _load_session_with_metadata(session_name)
+            original, stored_metadata = _load_session_with_metadata(session_name, key=key)
         except SessionNotFoundError:
             # The literal name answers first, so an existing slot is never
             # passed over; only its absence lets the session's own stamp name
@@ -1010,7 +1032,7 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
             target = _write_back_target(api_session, session_name)
             if target == session_name:
                 raise
-            original, stored_metadata = _load_session_with_metadata(target)
+            original, stored_metadata = _load_session_with_metadata(target, key=key)
     except Exception as exc:  # noqa: BLE001 — best-effort save
         LOG.warning(
             "session_save_skipped_load_failed",
@@ -1041,7 +1063,7 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         # the metadata at load (#293).
         if getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier:
             setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
-        cache_session(original, target, account_rule=stored_metadata.account_rule)
+        cache_session(original, target, account_rule=stored_metadata.account_rule, key=key)
         LOG.info("session_cookies_updated", session_name=target)
     except Exception as exc:  # noqa: BLE001 — best-effort save
         LOG.warning(
@@ -1178,7 +1200,9 @@ def clear_session_cache(
     return ClearedSessions(removed, skipped)
 
 
-def copy_session(source: str, dest: str, *, account_identifier: str | None) -> None:
+def copy_session(
+    source: str, dest: str, *, account_identifier: str | None, key: bytes | None = None
+) -> None:
     """Copy the session cached under *source* to *dest*, recording *account_identifier*.
 
     The session is unpickled and pickled again, so the names and identifier it
@@ -1190,17 +1214,21 @@ def copy_session(source: str, dest: str, *, account_identifier: str | None) -> N
     *source* afterwards. *source* equal to *dest* rewrites the slot in place.
     *source* itself is never deleted here.
 
+    *key*, when given, is the raw Fernet key both slots are read and written
+    with, for a host without the key file; None uses the configured key.
+
     Raises:
         ValueError: *dest* is not a legal session name.
         SessionNotFoundError: Nothing is cached under *source*.
         SessionExpiredError: *source* is expired or cannot be read, or the copy
             did not read back as written.
         ImportError: *source* needs the browser stack, which is not installed.
+        MissingEncryptionKeyError: No key was given and there is none to read.
         Exception: Whatever the backend raises when saving *dest*.
     """
     validate_session_name(dest)
     backend = _get_session_storage_backend()
-    session, metadata = _load_session_with_metadata(source)
+    session, metadata = _load_session_with_metadata(source, key=key)
     setattr(session, GP_ACCOUNT_ATTR, account_identifier)
     if hasattr(session, "_session_name"):
         setattr(session, "_session_name", dest)  # noqa: B010 (the name a BrowserSession pickles)
@@ -1214,11 +1242,11 @@ def copy_session(source: str, dest: str, *, account_identifier: str | None) -> N
         account_identifier=account_identifier,
         account_rule=ACCOUNT_RULE,
     )
-    backend.save_session(dest, encrypt_data(pickled_data), copied)
+    backend.save_session(dest, encrypt_data(pickled_data, key=key), copied)
     stored_data, stored_metadata = backend.load_session(dest)
     if (
         stored_metadata.checksum != checksum
-        or hashlib.sha256(decrypt_data(stored_data)).hexdigest() != checksum
+        or hashlib.sha256(decrypt_data(stored_data, key=key)).hexdigest() != checksum
     ):
         raise SessionExpiredError(f"Session '{dest}' did not read back as written.")
 

@@ -33,6 +33,16 @@ class EncryptionError(GraftpunkError):
     """Raised when encryption or decryption operations fail."""
 
 
+class MissingEncryptionKeyError(EncryptionError):
+    """Raised when no session key exists and graftpunk must not generate one.
+
+    Distinct from a key that is present but wrong: a missing key is fixed by
+    copying the key or passing ``key=``, never by clearing sessions, so the
+    session loaders pass it through instead of reporting the session as
+    expired (#196).
+    """
+
+
 class StorageError(GraftpunkError):
     """Raised when a storage backend operation fails."""
 
