@@ -337,10 +337,11 @@ def json_to_pdf(
     for row in rows:
         table_data.append([text(row.get(col, "")) for col in columns])
 
-    # Render table. Drawn once as it is; a row fpdf2 cannot fit on one page
-    # makes it raise, and the document is then drawn again with each cell cut
-    # to the lines a page holds (_fit_part). Measuring every cell up front
-    # took two to three times as long on ordinary tables.
+    # Render table. Drawn once at the default layout when the line estimate
+    # fits every cell on a page; otherwise, or when fpdf2 still raises, the
+    # document is drawn again with fpdf2's own wrapping choosing a tighter
+    # layout before any cell is cut (_draw_table). Measuring every cell with
+    # fpdf2 up front took two to three times as long on ordinary tables.
     pdf.set_font(_PDF_FONT, size=7)
     margin, parts = _column_layout(pdf, table_data, page_width)
     try:
@@ -535,6 +536,20 @@ def _column_layout(
     return _MIN_CELL_MARGIN, _split(columns, fits)
 
 
+# Each tighter layout a table is tried at before any cell is cut: the font
+# size in points and the row line height as a multiple of it. fpdf2's table
+# default is twice the font size; 1.42.0 drew every table at 7 pt and that
+# height in Helvetica, and DejaVu Sans, wider, wraps the same text to more
+# lines, so a row 1.42.0 fitted on a page could pass it here.
+_LAYOUTS = ((7, 2.0), (7, 1.5), (7, 1.25), (6, 1.25), (5, 1.25))
+
+
+class _NeedsFitting(Exception):  # noqa: N818 - a signal, not an error
+    """The first, estimated drawing found a cell taller than a page at the
+    default layout: the document is drawn again with fpdf2's own wrapping
+    choosing the layout and cutting only what still does not fit."""
+
+
 def _draw_table(
     pdf: FPDF,
     table_data: list[list[str]],
@@ -545,43 +560,47 @@ def _draw_table(
     fit: bool,
 ) -> int:
     """Draw *table_data* as one table per part, and return how many cells were
-    cut. With *fit*, each cell is first cut to the lines a page holds
-    (:func:`_fit_part`); a part with a cut cell whose columns cannot hold the
-    cut mark is split again at the width the mark needs."""
+    cut.
+
+    Without *fit*, every cell must fit a page at the default layout by the
+    line estimate, or :class:`_NeedsFitting` is raised before anything is
+    drawn. With *fit*, each part takes the first layout in ``_LAYOUTS`` at
+    which no cell needs cutting by fpdf2's own wrapping, and only at the last
+    is a cell cut (:func:`_fit_part`); a part with a cut cell whose columns
+    cannot hold the cut mark is split again at the width the mark needs."""
     from fpdf.fonts import FontFace
 
     headings_style = FontFace(emphasis="BOLD", fill_color=(220, 220, 220))
+    # fpdf2's multi_cell adds every glyph it wraps to the font subset, so the
+    # layouts tried and cells cut on the way are measured on a document of
+    # their own: the pdf holds only the glyphs it draws.
+    measure = _new_pdf() if fit else pdf
     saved_margin = pdf.c_margin
-    pdf.c_margin = margin
+    pdf.c_margin = measure.c_margin = margin
     cut = 0
     drawn = 0
     try:
         for part in parts:
-            work: list[tuple[list[int], tuple[list[list[str]], int] | None]] = [(part, None)]
-            if fit:
-                try:
-                    width = page_width / max(len(part), 1)
-                    fitted = _fit_part(pdf, _columns_of(table_data, part), width, exact=True)
-                    work = [(part, fitted)]
-                except _MarkTooWide:
-                    needed = _widest(pdf, table_data, _CUT_MARK) + 2 * margin + _WIDTH_SLACK
-                    pieces = _split(part, max(int(page_width // needed), 1))
-                    work = [(piece, None) for piece in pieces]
-            for piece, done in work:
-                col_width = page_width / max(len(piece), 1)
-                rows = _columns_of(table_data, piece)
-                # Without fit, cells are fitted by the estimate (_estimate_lines);
-                # with it, by fpdf2's own wrapping.
-                rows, piece_cut = done or _fit_part(pdf, rows, col_width, exact=fit)
+            try:
+                work = [(part, _choose_layout(measure, table_data, part, page_width, fit=fit))]
+            except _MarkTooWide:
+                needed = _widest(measure, table_data, _CUT_MARK) + 2 * margin + _WIDTH_SLACK
+                pieces = _split(part, max(int(page_width // needed), 1))
+                work = [
+                    (piece, _choose_layout(measure, table_data, piece, page_width, fit=fit))
+                    for piece in pieces
+                ]
+            for piece, (rows, piece_cut, size, factor) in work:
                 cut += piece_cut
                 if drawn:
                     pdf.ln(4)
                 drawn += 1
-                pdf.set_font(_PDF_FONT, size=7)
+                pdf.set_font(_PDF_FONT, size=size)
                 with pdf.table(
                     headings_style=headings_style,
-                    col_widths=(col_width,) * len(piece),
+                    col_widths=(page_width / max(len(piece), 1),) * len(piece),
                     first_row_as_headings=True,
+                    line_height=factor * pdf.font_size,
                 ) as table:
                     for row_data in rows:
                         row_obj = table.row()
@@ -590,6 +609,32 @@ def _draw_table(
     finally:
         pdf.c_margin = saved_margin
     return cut
+
+
+def _choose_layout(
+    pdf: FPDF, table_data: list[list[str]], part: list[int], page_width: float, *, fit: bool
+) -> tuple[list[list[str]], int, float, float]:
+    """The rows of *part* fitted to a page, how many cells were cut, and the
+    font size and line-height factor they are drawn at (``_LAYOUTS``)."""
+    col_width = page_width / max(len(part), 1)
+    rows = _columns_of(table_data, part)
+    if not fit:
+        size, factor = _LAYOUTS[0]
+        fitted, cut = _fit_part(pdf, rows, col_width, exact=False, size=size, factor=factor)
+        if cut:
+            raise _NeedsFitting
+        return fitted, 0, size, factor
+    last = len(_LAYOUTS) - 1
+    for index, (size, factor) in enumerate(_LAYOUTS):
+        try:
+            fitted, cut = _fit_part(pdf, rows, col_width, exact=True, size=size, factor=factor)
+        except _MarkTooWide:
+            if index == last:
+                raise
+            continue
+        if not cut or index == last:
+            return fitted, cut, size, factor
+    raise AssertionError("unreachable: the last layout returns")  # pragma: no cover
 
 
 def _columns_of(table_data: list[list[str]], part: list[int]) -> list[list[str]]:
@@ -602,7 +647,13 @@ class _MarkTooWide(Exception):  # noqa: N818 - a signal, not an error
 
 
 def _fit_part(
-    pdf: FPDF, rows: list[list[str]], col_width: float, *, exact: bool
+    pdf: FPDF,
+    rows: list[list[str]],
+    col_width: float,
+    *,
+    exact: bool,
+    size: float = 7,
+    factor: float = 2.0,
 ) -> tuple[list[list[str]], int]:
     """*rows* (headings first) with each cell cut to the lines one page holds,
     and how many cells were cut.
@@ -614,13 +665,13 @@ def _fit_part(
     quarter of a page's lines and a body cell what the page has left, less one
     line of slack. A cut cell ends in ``_CUT_MARK``.
     """
-    pdf.set_font(_PDF_FONT, size=7)
-    line_height = 2 * pdf.font_size  # fpdf2's table default
+    pdf.set_font(_PDF_FONT, size=size)
+    line_height = factor * pdf.font_size
     total = int((pdf.page_break_trigger - pdf.t_margin) // line_height)
     width = col_width  # the width fpdf2's table hands multi_cell
     cut = 0
 
-    pdf.set_font(_PDF_FONT, style="B", size=7)
+    pdf.set_font(_PDF_FONT, style="B", size=size)
     heading_cap = max(1, total // 4)
     bold: dict[str, float] = {}
     regular: dict[str, float] = {}
@@ -641,7 +692,7 @@ def _fit_part(
         heading_lines = max(heading_lines, lines)
         cut += was_cut
 
-    pdf.set_font(_PDF_FONT, size=7)
+    pdf.set_font(_PDF_FONT, size=size)
     body_cap = max(1, total - heading_lines - 1)
     body = []
     for row in rows[1:]:
@@ -701,6 +752,10 @@ def _fit_cell(
     kept = list(lines[:cap])
     while True:
         last = kept[-1]
+        # fpdf2's lines can hold characters the text did not (the hyphen it
+        # draws at a soft-hyphen break), so a width is looked up as it is met.
+        for c in set(last) - widths.keys():
+            widths[c] = pdf.get_string_width(c)
         while last and sum(map(widths.__getitem__, last)) + widths[_CUT_MARK] > usable:
             last = last[:-1]
         kept[-1] = last + _CUT_MARK

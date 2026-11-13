@@ -741,7 +741,8 @@ class TestPdfCellsTooTallForAPage:
 
     @pytest.mark.parametrize(
         ("columns", "length"),
-        [(1, 12000), (5, 1800), (12, 600), (20, 300), (40, 150), (200, 400)],
+        # Past what fits even at 5 pt (TestPdfDrawsWholeWhat1420DrewWhole).
+        [(1, 30000), (5, 6000), (12, 2500), (20, 1500), (40, 700), (200, 400)],
     )
     def test_a_long_cell_is_cut_with_one_warning(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], columns: int, length: int
@@ -969,3 +970,42 @@ class TestPdfSpeed:
         # Ten times the characters: linear is 10x; fpdf2's quadratic line
         # breaking made it about 100x.
         assert large <= 15 * small + 0.2, (small, large)
+
+
+class TestPdfDrawsWholeWhat1420DrewWhole:
+    """DejaVu Sans wraps a cell to more lines than Helvetica, so round 4 cut
+    cells 1.42.0 drew whole: three rows of 20 columns of 200 characters of short
+    words, for one. A table is now tried at a smaller line height, then a
+    smaller font, before any cell is cut."""
+
+    @pytest.mark.parametrize(
+        ("columns", "length"),
+        [(20, 200), (20, 385), (10, 600), (10, 770), (5, 1542), (5, 1650), (1, 8856)],
+    )
+    def test_no_cell_is_cut(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], columns: int, length: int
+    ) -> None:
+        """Each of these 1.42.0 drew whole (5 x 1650 it raised on); the lengths
+        are 1.42.0's limits where it had one, measured with the same text."""
+        from graftpunk.logging import configure_logging
+
+        configure_logging(level="WARNING")
+        text = ("abc de " * (length // 7 + 2))[:length]
+        rows = [{f"c{i}": text for i in range(columns)} for _ in range(3)]
+        path, _ = json_to_pdf(rows, tmp_path / "out.pdf")
+        assert "pdf_cells_truncated" not in capsys.readouterr().err
+        assert 0x2026 not in _pdf_code_points(Path(path).read_bytes())
+
+    def test_a_table_that_fits_keeps_the_default_layout(self, tmp_path: Path) -> None:
+        path, _ = json_to_pdf([{"a": "abc de " * 10, "b": 1}] * 30, tmp_path / "out.pdf")
+        content = _pdf_text_bytes(Path(path).read_bytes())
+        assert b" 7.00 Tf" in content
+        assert b" 6.00 Tf" not in content
+        assert b" 5.00 Tf" not in content
+
+    def test_a_tall_row_is_drawn_smaller_rather_than_cut(self, tmp_path: Path) -> None:
+        text = ("abc de " * 60)[:385]
+        rows = [{f"c{i}": text for i in range(20)} for _ in range(3)]
+        path, _ = json_to_pdf(rows, tmp_path / "out.pdf")
+        content = _pdf_text_bytes(Path(path).read_bytes())
+        assert b" 5.00 Tf" in content or b" 6.00 Tf" in content
