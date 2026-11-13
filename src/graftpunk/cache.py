@@ -660,13 +660,14 @@ def no_account_cached_message(name: str) -> str:
     )
 
 
-# Bare names already warned about by _warn_if_bare_slot_shadows_labelled, so a
-# long-running process says it once per name rather than on every load (#197).
-_bare_slot_shadow_warned: set[str] = set()
+# Bare names _warn_if_bare_slot_shadows_labelled has already checked, with or
+# without siblings, so a bare name costs at most one listing per process and a
+# long-running process warns once per name rather than on every load (#197).
+_bare_slot_sibling_checked: set[str] = set()
 
 
 def _warn_if_bare_slot_shadows_labelled(name: str) -> None:
-    """Warn once per process when the bare slot *name* was loaded while labelled siblings exist.
+    """Check once per process whether the loaded bare slot *name* has labelled siblings, and warn.
 
     Since #176 ``gp <site> login`` writes ``base@label`` slots, so a bare slot
     that still answers a bare-name load is usually the stale one from before
@@ -675,9 +676,14 @@ def _warn_if_bare_slot_shadows_labelled(name: str) -> None:
     matched by splitting on the ``@`` separator, never by prefix: ``myshop``
     has no sibling ``myshopextra@bob``. A listing failure costs only the
     warning, never the load that already succeeded.
+
+    Each bare name is checked once per process whatever the result, so a
+    name lists at most once: a sibling created later in the same process, or
+    one a failed listing could not see, goes unwarned.
     """
-    if name in _bare_slot_shadow_warned:
+    if name in _bare_slot_sibling_checked:
         return
+    _bare_slot_sibling_checked.add(name)
     try:
         cached = list_sessions()
     except Exception as exc:  # noqa: BLE001 (an advisory check never fails the load)
@@ -690,7 +696,6 @@ def _warn_if_bare_slot_shadows_labelled(name: str) -> None:
     )
     if not siblings:
         return
-    _bare_slot_shadow_warned.add(name)
     LOG.warning(
         "session_bare_slot_shadows_labelled",
         name=name,
@@ -732,8 +737,9 @@ def load_session_for_api_resolved(
     cached, ``mysite`` loads the bare slot rather than refusing. It does log
     one ``session_bare_slot_shadows_labelled`` warning per bare name per
     process naming the labelled siblings (#197), at the cost of one
-    ``list_sessions()`` call on that exact hit; with ``resolve=False`` the
-    load is exact-only and lists nothing, so it does not warn.
+    ``list_sessions()`` call on the first such exact hit per bare name per
+    process, siblings or not; with ``resolve=False`` the load is exact-only
+    and lists nothing, so it does not warn.
 
     Whatever slot is loaded is the operating name for every write-back of that
     invocation: pass the returned name — never the requested one — to
@@ -834,8 +840,9 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
     bare-name pin contract in full: since #176 ``gp <site> login`` writes
     sessions as ``base@label``, so a bare *name* is tried as an exact key
     first and only then resolved against the single cached account for that
-    base, with one ``list_sessions()`` call on that miss path and one on a bare
-    exact hit to warn about labelled siblings. A slot cached under the bare
+    base, with one ``list_sessions()`` call on that miss path, and one on the
+    first bare exact hit per name per process to warn about labelled
+    siblings. A slot cached under the bare
     name itself always wins, so this differs from the CLI's unpinned
     resolution, which refuses when several accounts share a base.
 

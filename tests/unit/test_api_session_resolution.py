@@ -269,6 +269,25 @@ class TestBareSlotShadowsLabelledWarning:
         assert len(_shadow_warnings(captured_logs)) == 1
         assert calls["count"] == 0
 
+    @pytest.mark.parametrize("siblings", [[], ["myshop@alice"]])
+    def test_a_bare_name_lists_at_most_once_per_process(
+        self,
+        fresh_backend,  # noqa: ANN001
+        monkeypatch,  # noqa: ANN001
+        siblings,  # noqa: ANN001
+    ) -> None:
+        """Checked once whatever the answer, so a single-account user pays one listing."""
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        for sibling in siblings:
+            cache_session(_cached_session("alice@example.com"), sibling)
+        calls = _count_listings(monkeypatch)
+
+        for _ in range(5):
+            _api, loaded = load_session_for_api_resolved("myshop")
+            assert loaded == "myshop"
+
+        assert calls["count"] == 1
+
     def test_no_warning_without_labelled_siblings(
         self,
         fresh_backend,  # noqa: ANN001
