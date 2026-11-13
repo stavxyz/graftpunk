@@ -598,6 +598,7 @@ class TestAPlainSeleniumLogin:
 
         self._assert_ended(fake_uc.created[0])
 
+    @pytest.mark.signals_itself
     def test_a_ctrl_c_ends_both(
         self, handlers_installed: None, fake_uc: type[_FakeUcChrome]
     ) -> None:
@@ -609,7 +610,7 @@ class TestAPlainSeleniumLogin:
         sessions: list[bool] = []
         with pytest.raises(KeyboardInterrupt), BrowserSession(backend="selenium", headless=True):
             sessions += [os.getsid(p.pid) == p.pid for p in fake_uc.created[0].processes]
-            os.kill(os.getpid(), signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
             time.sleep(30)
 
         assert sessions == [True, True]

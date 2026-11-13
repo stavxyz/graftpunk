@@ -12,7 +12,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import structlog
 from structlog.testing import capture_logs
 
 from graftpunk import chrome_orphans
@@ -391,17 +390,10 @@ class TestFindOrphans:
 
         assert find_orphans([proc], ops=FakeKernel({}, alive_pids=frozenset({4240})).ops) == []
 
-    def test_the_matching_rule_is_logged_with_the_process(self) -> None:
-        # capture_logs() keeps a configured WARNING filter (configure_logging(),
-        # as the CLI installs it), which would drop this INFO event before it
-        # is captured; reset_defaults() lifts it for the rest of this test. The autouse
-        # _reset_structlog fixture in tests/conftest.py resets structlog again
-        # afterwards, so the next test starts from structlog's own defaults.
-        structlog.reset_defaults()
-        with capture_logs() as logs:
-            find_orphans([_proc(4242, 1, owner=999999)], ops=FakeKernel({}).ops)
+    def test_the_matching_rule_is_logged_with_the_process(self, captured_logs) -> None:
+        find_orphans([_proc(4242, 1, owner=999999)], ops=FakeKernel({}).ops)
 
-        (event,) = [e for e in logs if e["event"] == "chrome_orphan_found"]
+        (event,) = [e for e in captured_logs if e["event"] == "chrome_orphan_found"]
         assert event["pid"] == 4242
         assert event["owner_pid"] == 999999
         assert event["rule"] == "owner_dead"
@@ -460,7 +452,9 @@ class TestReapOrphans:
         assert kernel.reads == 7
         assert kernel.now == pytest.approx(3.0)
 
-    def test_a_process_that_vanished_is_logged_and_the_pass_continues(self, armed: None) -> None:
+    def test_a_process_that_vanished_is_logged_and_the_pass_continues(
+        self, armed: None, captured_logs
+    ) -> None:
         """A pid can exit between the scan and the signal. The next orphan still gets one."""
         kernel = FakeKernel(
             {
@@ -470,18 +464,14 @@ class TestReapOrphans:
             kill_raises={4242: ProcessLookupError(3, "No such process")},
         )
 
-        # The already-gone case logs at DEBUG, below the WARNING filter
-        # configure_logging() installs; reset_defaults() lifts any such filter.
-        structlog.reset_defaults()
-        with capture_logs() as logs:
-            reaped = reap_orphans(ops=kernel.ops)
+        reaped = reap_orphans(ops=kernel.ops)
 
         assert [p.pid for p in reaped] == [4243]
         assert (4243, signal.SIGTERM) in kernel.signals
         assert list(kernel.rows) == [4242]
         assert any(
-            e["event"] == "chrome_orphan_cleanup_failed" and e["pid"] == 4242 for e in logs
-        ), logs
+            e["event"] == "chrome_orphan_cleanup_failed" and e["pid"] == 4242 for e in captured_logs
+        ), captured_logs
 
     def test_a_kill_that_is_refused_is_logged_and_the_pass_continues(self, armed: None) -> None:
         kernel = FakeKernel(

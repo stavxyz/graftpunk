@@ -27,6 +27,7 @@ from graftpunk.plugins.formatters import (
     XlsxFormatter,
     format_output,
 )
+from tests.unit.cli_harness import strip_ansi
 
 
 def _parse_csv_output(console: MagicMock) -> list[list[str]]:
@@ -615,7 +616,7 @@ def test_pdf_renders_a_list_of_dicts_keyed_by_number_none_and_tuple(tmp_path: Pa
 def _table_text(data: object, output_config: Any = None) -> str:
     buf = io.StringIO()
     TableFormatter().format(data, Console(file=buf, width=200), output_config=output_config)
-    return buf.getvalue()
+    return strip_ansi(buf.getvalue())
 
 
 def _xlsx_rows(tmp_path: Path, data: object, output_config: Any = None) -> list[list[object]]:

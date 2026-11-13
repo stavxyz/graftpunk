@@ -235,6 +235,10 @@ class TestBareSlotShadowsLabelledWarning:
         assert warning["name"] == "myshop"
         assert warning["labelled"] == ["myshop@alice", "myshop@bob"]
         assert "gp session clear myshop" in warning["hint"]
+        # The order the clear needs (#198): readers of the exact name move first,
+        # and an unattended clear needs --force to get past the prompt.
+        assert "move such readers to the labelled name first" in warning["hint"]
+        assert "--force" in warning["hint"]
 
     def test_the_warning_carries_no_session_contents(
         self,

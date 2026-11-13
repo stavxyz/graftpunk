@@ -455,7 +455,7 @@ def test_session_export_prints_the_usage_line_whole_on_a_narrow_terminal(
 
     assert result.exit_code == 0, result.output
     line = f"http --session='{target}' https://example.com/api"
-    assert any(line in row for row in result.output.splitlines()), result.output
+    assert any(line in row for row in strip_ansi(result.output).splitlines()), result.output
 
 
 def test_session_export_to_a_file_httpie_cannot_read_fails_cleanly(

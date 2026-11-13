@@ -17,6 +17,7 @@ from graftpunk.cli.session_commands import session_app
 from graftpunk.exceptions import StorageError
 from graftpunk.storage.base import SessionMetadata, metadata_to_dict
 from graftpunk.storage.local import LocalSessionStorage
+from tests.unit.cli_harness import strip_ansi
 
 _BAD_NAMES = ["", ".", "..", "a/b", "../myshop", "myshop/..", "a\\b", "my\x00shop", "my\nshop"]
 
@@ -118,8 +119,9 @@ class TestTheNamedSlotIsTheOneCleared:
 
         result = _clear_all_prompt()
 
-        assert "myshop (incomplete, not a full session)" in result.output
-        assert "no metadata" not in result.output
+        output = strip_ansi(result.output)
+        assert "myshop (incomplete, not a full session)" in output
+        assert "no metadata" not in output
 
 
 def _clear_all_prompt():

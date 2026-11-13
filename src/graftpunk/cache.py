@@ -734,7 +734,10 @@ def _warn_if_bare_slot_shadows_labelled(name: str) -> None:
         labelled=siblings,
         hint=(
             f"loaded the bare slot '{name}'; load a labelled slot by its full name, "
-            f"or run 'gp session clear {name}' if the bare slot is stale"
+            f"or run 'gp session clear {name}' if the bare slot is stale. Anything "
+            f"that reads the slot '{name}' by that exact name, outside graftpunk's "
+            "resolution, stops working once it is cleared, so move such readers to "
+            "the labelled name first; add --force where the clear runs unattended"
         ),
     )
 

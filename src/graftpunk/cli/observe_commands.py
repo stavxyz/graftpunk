@@ -80,19 +80,15 @@ observe_app = typer.Typer(
 )
 
 
-def resolve_run(session_name: str, run_id: str | None, *, base_dir: Path | None = None) -> Path:
+def resolve_run(session_name: str, run_id: str | None) -> Path:
     """The run directory (session[, run]) means: the newest run when *run_id* is omitted.
 
-    ``base_dir`` defaults to this module's ``OBSERVE_BASE_DIR`` binding, which
-    every production caller relies on; the keyword exists for tests that
-    resolve against a temporary tree (its four callers are in
-    ``tests/unit/test_observe_commands.py``).
+    Runs are looked up under this module's ``OBSERVE_BASE_DIR`` binding.
 
     Raises:
         typer.Exit: No runs exist for the session, or the named run is missing.
     """
-    base = base_dir if base_dir is not None else OBSERVE_BASE_DIR
-    session_dir = base / session_dirname(session_name)
+    session_dir = OBSERVE_BASE_DIR / session_dirname(session_name)
     if not session_dir.is_dir():
         console.print(f"[red]No runs found for session '{escape(session_name)}'[/red]")
         raise typer.Exit(1)
@@ -104,7 +100,7 @@ def resolve_run(session_name: str, run_id: str | None, *, base_dir: Path | None 
             raise typer.Exit(1)
         return run_dirs[-1]
 
-    run_dir = run_dir_of(session_name, run_id, base_dir=base)
+    run_dir = run_dir_of(session_name, run_id, base_dir=OBSERVE_BASE_DIR)
     if not run_dir.exists():
         console.print(
             f"[red]Run '{escape(run_id)}' not found for session '{escape(session_name)}'[/red]"

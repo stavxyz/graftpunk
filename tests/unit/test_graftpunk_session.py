@@ -334,13 +334,14 @@ class TestCanonicalFallback:
         assert canonical["Sec-Fetch-Mode"] == "navigate"
         assert canonical["Sec-Fetch-Dest"] == "document"
 
-    def test_unknown_default_role_warns(self, capsys):
+    def test_unknown_default_role_warns(self, captured_logs):
         session = GraftpunkSession(header_roles=SAMPLE_ROLES)
         session.gp_default_role = "typo"
         req = requests.Request("GET", "https://example.com/page")
         prepared = session.prepare_request(req)
-        captured = capsys.readouterr()
-        assert "unknown_role_no_headers_applied" in captured.err
+        warnings = [e for e in captured_logs if e["event"] == "unknown_role_no_headers_applied"]
+        assert len(warnings) == 1
+        assert warnings[0]["log_level"] == "warning"
         # Browser identity still present from session defaults
         assert prepared.headers["User-Agent"] == "Mozilla/5.0 Test"
 
@@ -415,19 +416,19 @@ class TestSessionHeaderRestoration:
 class TestWarnings:
     """Warning logs for misconfiguration scenarios."""
 
-    def test_no_ua_in_any_role_warns(self, capsys):
+    def test_no_ua_in_any_role_warns(self, captured_logs):
         roles = {
             "navigation": {"Accept": "text/html"},
             "xhr": {"Accept": "application/json"},
         }
         GraftpunkSession(header_roles=roles)
-        captured = capsys.readouterr()
-        assert "no_browser_identity_in_roles" in captured.err
+        assert [e["event"] for e in captured_logs if e["log_level"] == "warning"] == [
+            "no_browser_identity_in_roles"
+        ]
 
-    def test_empty_roles_does_not_warn(self, capsys):
+    def test_empty_roles_does_not_warn(self, captured_logs):
         GraftpunkSession(header_roles={})
-        captured = capsys.readouterr()
-        assert "no_browser_identity_in_roles" not in captured.err
+        assert "no_browser_identity_in_roles" not in [e["event"] for e in captured_logs]
 
 
 class TestCaseInsensitiveGet:
@@ -529,11 +530,12 @@ class TestRoleHeadersFor:
         headers = session._role_headers_for("nonexistent")
         assert headers == {}
 
-    def test_unknown_role_warns(self, capsys):
+    def test_unknown_role_warns(self, captured_logs):
         session = GraftpunkSession(header_roles=SAMPLE_ROLES)
         session._role_headers_for("nonexistent")
-        captured = capsys.readouterr()
-        assert "unknown_role_no_headers_applied" in captured.err
+        (warning,) = [e for e in captured_logs if e["event"] == "unknown_role_no_headers_applied"]
+        assert warning["role"] == "nonexistent"
+        assert warning["log_level"] == "warning"
 
     def test_a_plugins_own_role_is_sent_as_declared(self):
         """A role a plugin declares is the author's (#370): its Accept-Encoding and
@@ -928,14 +930,15 @@ class TestRoleRegistry:
         assert "MUTATED" not in stored
 
     @pytest.mark.usefixtures("_clean_registry")
-    def test_register_role_overwrites_existing(self, capsys):
+    def test_register_role_overwrites_existing(self, captured_logs):
         register_role("test-overwrite", {"Accept": "text/html"})
         register_role("test-overwrite", {"Accept": "application/json"})
         result = get_role_headers("test-overwrite")
         assert result is not None
         assert result["Accept"] == "application/json"
-        captured = capsys.readouterr()
-        assert "role_overwritten" in captured.err
+        assert [e["event"] for e in captured_logs if e["event"] == "role_overwritten"] == [
+            "role_overwritten"
+        ]
 
     @pytest.mark.usefixtures("_clean_registry")
     def test_register_role_appears_in_list(self):

@@ -52,6 +52,92 @@ def _wide_consoles(monkeypatch):  # noqa: ANN001, ANN201
         monkeypatch.setattr(console, "width", 220)
 
 
+def signals_the_suite(target: int, *, group: bool, sig: int) -> str | None:
+    """Why signalling *target* would reach the process running the tests, or None.
+
+    *target* is what ``os.kill`` (``group=False``) or ``os.killpg`` (``group=True``)
+    was given. Signal 0 delivers nothing and only asks whether a process exists, so
+    it is always allowed. Otherwise refused: this process, its parent (the xdist
+    controller, or the shell that started pytest), and this process's group, which
+    holds the controller and every other worker, whether named as a group, as
+    ``0`` (the caller's own group), or as ``-1`` (every process the caller may
+    signal).
+    """
+    if sig == 0:
+        return None
+    own_group = os.getpgid(0) if hasattr(os, "getpgid") else None
+    if group:
+        if target in (0, own_group):
+            return f"process group {target}, which holds the test run"
+        return None
+    if target in (os.getpid(), os.getppid()):
+        return f"pid {target}, the test run itself"
+    if target in (0, -1) or (own_group is not None and target == -own_group):
+        return f"pid {target}, which reaches the test run's process group"
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _never_signal_the_suite(request, monkeypatch):  # noqa: ANN001, ANN201
+    """No unit test may send a signal to the test run, its parent or its process
+    group through ``os.kill``, ``os.killpg``, ``signal.raise_signal`` or
+    ``signal.pthread_kill``; such a send ends with a test failure naming it
+    instead of being sent.
+
+    A signal that reaches the xdist controller or a sibling worker ends or stalls
+    the whole run with no report of which test sent it. What an in-process patch
+    cannot see stays out of reach: a ``kill`` command run in a subprocess, and a
+    child process that signals its parent. A test that raises a signal on itself
+    on purpose (a Ctrl+C under a handler it installed) is marked
+    ``signals_itself``, which allows ``raise_signal`` and ``pthread_kill`` for it
+    and nothing else.
+    """
+    real_kill = os.kill
+    real_killpg = getattr(os, "killpg", None)
+
+    if request.node.get_closest_marker("signals_itself") is None:
+
+        def raise_signal(sig: int) -> None:
+            pytest.fail(
+                f"a unit test tried to raise signal {sig} on the test run; mark it "
+                "signals_itself if that is the point of the test",
+                pytrace=True,
+            )
+
+        def pthread_kill(thread_id: int, sig: int) -> None:
+            if sig != 0:
+                pytest.fail(
+                    f"a unit test tried to send signal {sig} to a thread of the test run; "
+                    "mark it signals_itself if that is the point of the test",
+                    pytrace=True,
+                )
+            real_pthread_kill(thread_id, sig)
+
+        import signal as signal_module
+
+        real_pthread_kill = getattr(signal_module, "pthread_kill", None)
+        monkeypatch.setattr(signal_module, "raise_signal", raise_signal)
+        if real_pthread_kill is not None:
+            monkeypatch.setattr(signal_module, "pthread_kill", pthread_kill)
+
+    def kill(pid: int, sig: int) -> None:
+        reason = signals_the_suite(pid, group=False, sig=sig)
+        if reason is not None:
+            pytest.fail(f"a unit test tried to send signal {sig} to {reason}", pytrace=True)
+        real_kill(pid, sig)
+
+    monkeypatch.setattr(os, "kill", kill)
+    if real_killpg is not None:
+
+        def killpg(pgid: int, sig: int) -> None:
+            reason = signals_the_suite(pgid, group=True, sig=sig)
+            if reason is not None:
+                pytest.fail(f"a unit test tried to send signal {sig} to {reason}", pytrace=True)
+            real_killpg(pgid, sig)
+
+        monkeypatch.setattr(os, "killpg", killpg)
+
+
 @pytest.fixture(autouse=True)
 def _disarm_chrome_orphan_cleanup(monkeypatch):  # noqa: ANN001, ANN201
     """No unit test may signal a process or delete a directory it does not own.

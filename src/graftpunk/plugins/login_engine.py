@@ -14,6 +14,7 @@ import urllib.parse
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from graftpunk import console as gp_console
+from graftpunk.cdp_wait import answer_within
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe.run import Redaction
@@ -769,8 +770,9 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
         # too (#320, NoDriverBackend).
         async with BrowserSession(backend="nodriver", headless=run_headless) as session:
             try:
-                async with asyncio.timeout(_LOGIN_NAV_TIMEOUT):
-                    tab = await session.driver.get(login_target)
+                # Not asyncio.timeout: the browser stays open until the session exits,
+                # which may use its connection (graftpunk.cdp_wait: why that matters).
+                tab = await answer_within(session.driver.get(login_target), _LOGIN_NAV_TIMEOUT)
             except TimeoutError:
                 LOG.error(
                     "login_page_navigation_timeout",

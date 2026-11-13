@@ -19,7 +19,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
-from graftpunk import signals
+from graftpunk import load_session, signals
 from graftpunk.browser_launch import (
     CHROME_SHARES_SESSION_CONSEQUENCE,
     NodriverBrowserHandle,
@@ -30,10 +30,12 @@ from graftpunk.browser_launch import (
     prepare_browser_launch,
 )
 from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
+from graftpunk.dialogs import answer_dialogs_in_new_tabs, close_dialogs_in_new_tabs
+from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.run import make_run_id, save_observe_run
-from graftpunk.observe.storage import session_dirname
+from graftpunk.observe.storage import ObserveStorage, session_dirname
 
 console = Console(emoji=False)
 LOG = get_logger(__name__)
@@ -82,8 +84,6 @@ async def end_observe_browser(browser: Any, handle: NodriverBrowserHandle) -> No
     """Close the browser's new-tab dialog answerer on this loop, then
     :func:`stop_observe_browser`: the answerer's connection keeps auto-attach on
     until it is closed (#353)."""
-    from graftpunk.dialogs import close_dialogs_in_new_tabs
-
     try:
         await close_dialogs_in_new_tabs(browser)
     finally:
@@ -119,13 +119,13 @@ async def setup_observe_session(
         The set-up :class:`ObserveSession`, or None on failure.
     """
 
+    # These stay here because the CLI must import without the browser stack (the
+    # lean-install CI job, test_cli_import_stays_browser_free): nodriver is the
+    # browser extra, graftpunk.session imports requestium and selenium, and
+    # graftpunk.observe.capture imports selenium whenever it is installed.
     import nodriver
 
-    from graftpunk import load_session
-    from graftpunk.dialogs import answer_dialogs_in_new_tabs
-    from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
     from graftpunk.observe.capture import NodriverCaptureBackend
-    from graftpunk.observe.storage import ObserveStorage
     from graftpunk.session import inject_cookies_to_nodriver
 
     session = None

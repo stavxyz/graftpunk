@@ -118,26 +118,32 @@ def _invoke_fixtures(out_dir: Path, *extra: str):
 
 
 class TestResolveRun:
+    @pytest.fixture(autouse=True)
+    def _runs_under_tmp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Resolve against this test's own tree, as the command tests below do."""
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path)
+
     def test_defaults_to_the_newest_run(self, tmp_path: Path) -> None:
         (tmp_path / "myshop" / "20260101-080000").mkdir(parents=True)
         (tmp_path / "myshop" / "20260101-120000").mkdir(parents=True)
-        run_dir = resolve_run("myshop", None, base_dir=tmp_path)
-        assert run_dir.name == "20260101-120000"
+        run_dir = resolve_run("myshop", None)
+        assert run_dir == tmp_path / "myshop" / "20260101-120000"
 
     def test_explicit_run_id(self, tmp_path: Path) -> None:
         (tmp_path / "myshop" / "run-specific").mkdir(parents=True)
-        run_dir = resolve_run("myshop", "run-specific", base_dir=tmp_path)
-        assert run_dir.name == "run-specific"
+        run_dir = resolve_run("myshop", "run-specific")
+        assert run_dir == tmp_path / "myshop" / "run-specific"
 
-    def test_missing_session_exits_1(self, tmp_path: Path) -> None:
+    def test_missing_session_exits_1(self) -> None:
         with pytest.raises(typer.Exit) as exc:
-            resolve_run("ghost", None, base_dir=tmp_path)
+            resolve_run("ghost", None)
         assert exc.value.exit_code == 1
 
     def test_missing_run_id_exits_1(self, tmp_path: Path) -> None:
         (tmp_path / "myshop").mkdir(parents=True)
-        with pytest.raises(typer.Exit):
-            resolve_run("myshop", "no-such-run", base_dir=tmp_path)
+        with pytest.raises(typer.Exit) as exc:
+            resolve_run("myshop", "no-such-run")
+        assert exc.value.exit_code == 1
 
 
 class TestDigestCommand:

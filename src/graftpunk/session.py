@@ -20,7 +20,6 @@ Example:
     >>> session = BrowserSession(backend="selenium", headless=False)
 """
 
-import asyncio
 import copy
 from collections.abc import Iterable
 from http import cookiejar
@@ -36,6 +35,7 @@ import slugify as slugify_lib
 from graftpunk import console as gp_console
 from graftpunk.backends.nodriver import DEFAULT_CALL_TIMEOUT_S, DEFAULT_NAVIGATE_TIMEOUT_S
 from graftpunk.browser_launch import release_selenium_processes
+from graftpunk.cdp_wait import answer_within
 from graftpunk.cookies import (
     BrowserCookiesMixin,
     _browser_cookie_domain,
@@ -375,8 +375,9 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 "Cannot transfer cookies: browser is None. Ensure browser was started successfully."
             )
         try:
-            async with asyncio.timeout(timeout):
-                cookies = await browser.cookies.get_all()
+            # Not asyncio.timeout: the caller may go on using this browser
+            # (graftpunk.cdp_wait says why a cancelled call would hang it).
+            cookies = await answer_within(browser.cookies.get_all(), timeout)
         except TimeoutError:
             LOG.error("cookie_transfer_timeout", timeout=timeout)
             raise BrowserError(

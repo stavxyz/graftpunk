@@ -52,7 +52,7 @@ def test_config_show_same_panel(_isolated):
 
 
 def _panel_rows(stdout: str) -> dict[str, str]:
-    rows = (line.strip("│ ").partition(":") for line in stdout.splitlines())
+    rows = (line.strip("│ ").partition(":") for line in strip_ansi(stdout).splitlines())
     return {label.strip(): value.strip() for label, _, value in rows if value}
 
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import contextvars
 import inspect
 import json
 import os
@@ -258,10 +260,20 @@ async def _start(tab: FakeTab, **kwargs: Any) -> NodriverCaptureBackend:
     return backend
 
 
+# Whether the running code was called by stop: a context variable rather than the
+# current task, because a DevTools call the recorder makes runs in a task of its own
+# (graftpunk.cdp_wait.shield_call), which inherits the caller's context.
+_IN_STOP: contextvars.ContextVar[bool] = contextvars.ContextVar("_IN_STOP", default=False)
+
+
 async def _stop(backend: NodriverCaptureBackend, tab: FakeTab) -> None:
     tab.stopping = True
     tab.stop_task = asyncio.current_task()
-    await backend.stop_capture_async()
+    token = _IN_STOP.set(True)
+    try:
+        await backend.stop_capture_async()
+    finally:
+        _IN_STOP.reset(token)
 
 
 async def _record(tab: FakeTab, events: list[Any], **kwargs: Any) -> NodriverCaptureBackend:
@@ -501,7 +513,7 @@ class SlowTab(FakeTab):
         self.delay = delay
 
     async def send(self, cmd: Any, **kwargs: Any) -> Any:
-        asked_in_flight = asyncio.current_task() is not self.stop_task
+        asked_in_flight = not _IN_STOP.get()
         if asked_in_flight and getattr(cmd, "__name__", "") == "get_request_post_data":
             await asyncio.sleep(self.delay)
         return self._answer(
@@ -1248,7 +1260,7 @@ class OverlapTab(FakeTab):
 
     async def send(self, cmd: Any, **kwargs: Any) -> Any:
         if getattr(cmd, "__name__", "") == "get_request_post_data":
-            in_stop = asyncio.current_task() is self.stop_task
+            in_stop = _IN_STOP.get()
             await asyncio.sleep(0.15 if in_stop else 0.05)
         return self._answer(cmd, kwargs.get("sessionId", self.session_id))
 
@@ -2621,6 +2633,34 @@ class TestSnapshotFromTheIsolatedWorldListener:
         post = next(e for e in backend.get_har_entries() if e["request"]["method"] == "POST")
         assert post["request"]["_domSnapshot"] == "snapshots/42.1.html"
         assert 'id="login-modal"' in (tmp_path / "snapshots" / "42.1.html").read_text()
+
+    @pytest.mark.asyncio
+    async def test_a_disable_answered_late_leaves_the_tab_s_connection_working(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The DOM.disable wait gives up without cancelling the command: on nodriver
+        0.48.1 an answer to a cancelled command ends the tab's listener, and the
+        tab is read again afterwards (the page source)."""
+        from tests.unit.cdp048 import Connection048
+
+        monkeypatch.setattr(capture, "_DOM_DISABLE_WAIT_S", 0.05)
+        connection = Connection048()
+
+        class LateDisable(FakeTab):
+            async def send(self, cmd: Any, **kwargs: Any) -> Any:
+                if getattr(cmd, "__name__", "") == "disable":
+                    return await connection.send(None, after=0.2)
+                return await super().send(cmd, **kwargs)
+
+        tab = LateDisable({}, _never)
+        backend = await _start(tab, dom_snapshots_dir=tmp_path / "snapshots")
+        try:
+            await tab.dispatch(_will_be_sent("43.3", inline=_LOGIN_BODY, url=LOGIN))
+            await asyncio.sleep(0.3)
+            assert await connection.still_answers()
+        finally:
+            connection.close()
+            await _stop(backend, tab)
 
     @pytest.mark.asyncio
     async def test_a_disable_the_page_never_answers_does_not_hold_the_snapshot(
@@ -4485,3 +4525,94 @@ class TestPageSource:
         await asyncio.gather(holder, page, queued)
         assert finished == ["holder", "queued snapshot", "page source"]
         await _stop(backend, tab)
+
+
+class _LateTab(FakeTab):
+    """A FakeTab whose first command named *method* goes over a connection that
+    behaves as nodriver 0.48.1's does, and answers 0.3 s later than asked."""
+
+    def __init__(self, method: str, connection: Any, **kwargs: Any) -> None:
+        super().__init__({"8.6": BODY}, _always, **kwargs)
+        self._late_method = method
+        self._connection = connection
+        self.late_sent = False
+
+    async def send(self, cmd: Any, **kwargs: Any) -> Any:
+        name = {
+            "get_request_post_data": "Network.getRequestPostData",
+            "get_document": "DOM.getDocument",
+        }.get(getattr(cmd, "__name__", ""), "")
+        if name == self._late_method and not self.late_sent:
+            self.late_sent = True
+            answer = self._answer(cmd, kwargs.get("sessionId", self.session_id))
+            return await self._connection.send(answer, after=0.3)
+        return await super().send(cmd, **kwargs)
+
+
+class TestACancelledCaptureTaskLeavesTheTabAnswering:
+    """Review 3, I2 to I4: the tasks capture cancels (a post-data fetch still running
+    at stop, an after-read at save, a failure-step read when the step closes) await
+    their DevTools calls through ``graftpunk.cdp_wait.shield_call``, so the cancel
+    ends the task and leaves the command to its answer. On nodriver 0.48.1 a
+    cancelled command whose answer then arrives ends the tab's listener."""
+
+    @pytest.mark.asyncio
+    async def test_a_post_data_fetch_cancelled_at_stop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.unit.cdp048 import Connection048
+
+        monkeypatch.setattr(capture, "_POST_DATA_SETTLE_TIMEOUT_S", 0.01)
+        connection = Connection048()
+        tab = _LateTab("Network.getRequestPostData", connection)
+        try:
+            with capture_logs() as logs:
+                await _record(tab, _fetch_post("8.6"))
+            assert [e["count"] for e in logs if e["event"].endswith("_fetch_cancelled")] == [1]
+            await asyncio.sleep(0.4)
+            assert await connection.still_answers()
+        finally:
+            connection.close()
+
+    @pytest.mark.asyncio
+    async def test_an_after_read_cancelled_by_close_after_reads(self) -> None:
+        from tests.unit.cdp048 import Connection048
+
+        connection = Connection048()
+        tab = _LateTab("DOM.getDocument", connection)
+        tab.dom_html = "<html></html>"
+        backend = await _start(tab)
+        try:
+            read = backend._start_read_task("8.6", backend._read_dom(tab, after_read=True))
+            assert read is not None
+            await asyncio.sleep(0.05)
+            await backend.close_after_reads()
+            assert read.cancelled()
+            await asyncio.sleep(0.4)
+            assert await connection.still_answers()
+        finally:
+            connection.close()
+            await _stop(backend, tab)
+
+    @pytest.mark.asyncio
+    async def test_a_failure_step_read_cancelled_when_the_step_closes(self) -> None:
+        from tests.unit.cdp048 import Connection048
+
+        connection = Connection048()
+        tab = _LateTab("DOM.getDocument", connection)
+        tab.dom_html = "<html></html>"
+        backend = await _start(tab)
+        try:
+            read = backend._start_read_task("8.6", backend._read_dom(tab))
+            assert read is not None
+            backend._step_read_tasks["8.6"] = read
+            await asyncio.sleep(0.05)
+            backend.skip_failure_step()
+            with contextlib.suppress(asyncio.CancelledError):
+                await read
+            assert read.cancelled()
+            await asyncio.sleep(0.4)
+            assert await connection.still_answers()
+        finally:
+            connection.close()
+            await _stop(backend, tab)

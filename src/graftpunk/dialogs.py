@@ -25,6 +25,7 @@ import urllib.parse
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
+from graftpunk.cdp_wait import answer_within
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -81,23 +82,36 @@ class DialogAnswerer:
         from graftpunk.observe.capture import _capture_session_kwargs
 
         kwargs = _capture_session_kwargs(self._tab, self._session_id)
-        if await _accept_dialog(event, lambda cmd: self._tab.send(cmd, **kwargs)):
+        if await _accept_dialog(
+            event, lambda cmd: self._tab.send(cmd, **kwargs), nodriver_connection=True
+        ):
             self.answered += 1
         else:
             self.failed += 1
 
 
-async def _accept_dialog(event: Any, send: Callable[[Any], Awaitable[Any]]) -> bool:
+async def _accept_dialog(
+    event: Any, send: Callable[[Any], Awaitable[Any]], *, nodriver_connection: bool
+) -> bool:
     """Accept the dialog *event* announces through *send*, log the outcome, and
-    return whether Chrome took the answer (see :meth:`DialogAnswerer.on_dialog_opening`)."""
+    return whether Chrome took the answer (see :meth:`DialogAnswerer.on_dialog_opening`).
+
+    *nodriver_connection* says *send* goes over a nodriver tab's connection, which
+    the page goes on using, so the bounded wait must not cancel the command
+    (:mod:`graftpunk.cdp_wait`). Over graftpunk's own connection cancelling is
+    safe, and it drops the command's reply slot at once."""
     import nodriver.cdp.page as cdp_page
 
     kind = str(getattr(getattr(event, "type_", None), "value", "") or "unknown")
     host = urllib.parse.urlsplit(str(getattr(event, "url", "") or "")).hostname
     prompt_text = (getattr(event, "default_prompt", None) or "") if kind == "prompt" else None
+    command = cdp_page.handle_java_script_dialog(accept=True, prompt_text=prompt_text)
     try:
-        async with asyncio.timeout(_DIALOG_ANSWER_WAIT_S):
-            await send(cdp_page.handle_java_script_dialog(accept=True, prompt_text=prompt_text))
+        if nodriver_connection:
+            await answer_within(send(command), _DIALOG_ANSWER_WAIT_S)
+        else:
+            async with asyncio.timeout(_DIALOG_ANSWER_WAIT_S):
+                await send(command)
     except Exception as exc:  # noqa: BLE001 - best-effort; never holds up the run
         LOG.debug(
             "nodriver_dialog_answer_failed",
@@ -477,6 +491,8 @@ class NewPageAnswerer:
         session_id: str | None = None,
     ) -> dict[str, Any]:
         """Send one command and wait, at most ``_INSTALL_WAIT_S``, for its result."""
+        # Cancelling is safe here: this is graftpunk's own connection, whose reader
+        # skips a reply whose future is done and whose slot _reply drops either way.
         async with asyncio.timeout(_INSTALL_WAIT_S):
             return await self._reply(conn, method, params, session_id)
 
@@ -571,7 +587,9 @@ class NewPageAnswerer:
         except Exception as exc:  # noqa: BLE001 - an event this nodriver cannot read
             LOG.debug("nodriver_dialog_event_unreadable", error=str(exc))
             return
-        if await _accept_dialog(event, lambda cmd: self._send(conn, cmd, session_id)):
+        if await _accept_dialog(
+            event, lambda cmd: self._send(conn, cmd, session_id), nodriver_connection=False
+        ):
             self.answered += 1
         else:
             self.failed += 1

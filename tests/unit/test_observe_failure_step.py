@@ -1041,7 +1041,7 @@ class _Interactive:
 
     @property
     def text(self) -> str:
-        return " ".join(self.out.getvalue().split())
+        return " ".join(strip_ansi(self.out.getvalue()).split())
 
     def patches(self) -> contextlib.ExitStack:
         stack = contextlib.ExitStack()
@@ -1066,6 +1066,7 @@ def _ctrl_c() -> None:
     signal.raise_signal(signal.SIGINT)
 
 
+@pytest.mark.signals_itself
 class TestThePrompt:
     @pytest.mark.asyncio
     async def test_enter_marks_the_failed_post_and_ctrl_c_saves(
@@ -1242,6 +1243,7 @@ class TestThePrompt:
         )
 
 
+@pytest.mark.signals_itself
 class TestAnEmptyMark:
     async def _marked_then_stopped(
         self, kept: tuple[str, ...] | None

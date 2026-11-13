@@ -9,8 +9,6 @@ from typing import Any
 
 import pytest
 import requests
-import structlog
-from structlog.testing import capture_logs
 
 from graftpunk.exceptions import (
     CommandError,
@@ -412,34 +410,23 @@ class TestPlainSessionHasNoRoles:
         SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/orders")
         assert session.calls == [("GET", "https://myshop.example.com/orders")]
 
-    def test_warning_logged_once_per_session_not_once_per_call(self) -> None:
-        """Captures through structlog, not stdio.
-
-        `graftpunk.cli.main` points structlog's `PrintLoggerFactory` at
-        stderr as an import side effect; whether that import has happened
-        yet in a given pytest-xdist worker is not deterministic, so a
-        `capsys` assertion on a specific stream flakes. `capture_logs()` is
-        the pattern used elsewhere in this suite for the same reason (see
-        `tests/unit/test_storage_local.py`, `test_nodriver_backend.py`,
-        `test_login_identity.py`). `reset_defaults()` first lifts any level
-        filter `configure_logging()` installed, matching
-        `test_storage_local.py`'s precedent, even though this event is
-        already at WARNING.
-        """
+    def test_warning_logged_once_per_session_not_once_per_call(self, captured_logs) -> None:
+        """Captures through structlog (the ``captured_logs`` fixture), not stdio,
+        so the assertion does not depend on where a configuration sends lines."""
 
         class _PlainSession:
             def request(self, method: str, url: str, **kwargs: Any) -> _FakeResponse:
                 return _FakeResponse(200)
 
         session = _PlainSession()
-        structlog.reset_defaults()
-        with capture_logs() as logs:
-            policy = SiteRequests(session, "myshop", "https://myshop.example.com")
-            policy.json("GET", "/a")
-            policy.json("GET", "/b")
-            second_policy = SiteRequests(session, "myshop", "https://myshop.example.com")
-            second_policy.json("GET", "/c")
-        warnings = [event for event in logs if event["event"] == "session_roles_unavailable"]
+        policy = SiteRequests(session, "myshop", "https://myshop.example.com")
+        policy.json("GET", "/a")
+        policy.json("GET", "/b")
+        second_policy = SiteRequests(session, "myshop", "https://myshop.example.com")
+        second_policy.json("GET", "/c")
+        warnings = [
+            event for event in captured_logs if event["event"] == "session_roles_unavailable"
+        ]
         assert len(warnings) == 1
 
 

@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
+from graftpunk.cdp_wait import answer_by
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 
@@ -510,6 +511,19 @@ def _poll_sleep_seconds(remaining: float) -> float:
     return min(_LOGIN_POLL_INTERVAL, max(0.0, remaining))
 
 
+def _hard_end(deadline: float) -> float:
+    """The moment the nodriver post-submit wait is over, whatever the browser does:
+    one poll interval past *deadline*.
+
+    The deadline tick starts at the deadline and is there to read the page, so a
+    timeout can name a rate-limit page; the interval is its time to do that. Every
+    nodriver read of the poll, the grace window and the readiness wait is abandoned
+    at this one absolute moment, never at a budget measured from when the read
+    started, so a wait made of several slow reads still ends here.
+    """
+    return deadline + _LOGIN_POLL_INTERVAL
+
+
 def tab_url(tab: Any) -> str:
     """The nodriver tab's current URL, or an empty string when it cannot be read."""
     try:
@@ -558,6 +572,49 @@ def _warn_success_before_submit(*, login_config: LoginConfig, site_name: str, ba
         backend=backend,
         hint=hint,
     )
+
+
+def _invalid_success_selector(selector: str) -> PluginError:
+    """The error that ends a login whose ``success`` selector the browser rejects.
+
+    Such a selector fails the same way on every tick, so waiting cannot help: the
+    wait would spend its whole budget and then blame the page or the signal.
+    """
+    return PluginError(
+        f"LoginConfig.success is not a valid CSS selector: '{selector}'. "
+        "The browser rejected it, so no page can ever match it. Correct the "
+        "selector in the plugin's login configuration."
+    )
+
+
+def _selector_rejected_js(selector: str) -> str:
+    """A page expression that is true only when the browser rejects *selector* as
+    malformed: ``querySelector`` throws a ``SyntaxError`` DOMException for a
+    selector it cannot parse (DOM Standard, "scope-match a selectors string"),
+    whatever document it runs against, so a page mid-navigation cannot make a
+    valid selector look rejected. The comment names the check for the tests'
+    scripted tab."""
+    return (
+        "/* graftpunk:selector-check */ (() => { try { document.querySelector("
+        f"{json.dumps(selector)}); return false; }} catch (e) {{ return e instanceof "
+        'DOMException && e.name === "SyntaxError"; } })()'
+    )
+
+
+async def _selector_rejected_nodriver(tab: Any, selector: str) -> bool:
+    """Whether the tab's browser rejects *selector* as malformed.
+
+    Asked only after ``Tab.query_selector`` raised: nodriver 0.48.1 re-raises the
+    CDP ``ProtocolException`` for a malformed selector with the same generic
+    message and code as a node that went invalid mid-navigation, so the exception
+    alone cannot tell the two apart. An evaluate that fails or answers anything
+    but ``true`` leaves the tick to be read as unreadable, as before.
+    """
+    try:
+        answer = await tab.evaluate(_selector_rejected_js(selector), return_by_value=True)
+    except Exception:  # broad by design: the check only adds a verdict, never removes one
+        return False
+    return answer is True
 
 
 def _success_probe_js(selector: str) -> str:
@@ -674,7 +731,10 @@ class _ReadWindow:
         self.answered = False
         self.page_read = False
         self.page_text = ""
-        self.error = "the browser reported neither a page nor a URL"
+        # Set by the first tick that fails. A wait reports it only when no tick
+        # answered, and every wait reads the document on its last tick, so by then
+        # some tick has either answered or failed and set this.
+        self.error = ""
         self.url = ""
         self.success_found: bool | None = None
 
@@ -768,6 +828,11 @@ async def _read_login_tick_nodriver(
     connection error), and catching only the protocol error let that one out of
     ``login()`` while the selenium twin failed cleanly, so every read failure is
     treated the same way and named by ``exc_type`` in the trail.
+
+    A ``success`` selector the browser rejects as malformed is the exception, as it
+    is on selenium: when the element query raises, the page is asked whether it
+    rejects the selector (``_selector_rejected_nodriver``), and a rejected selector
+    ends the login there and then with a ``PluginError`` naming it.
     """
     try:
         page_text = await tab.get_content() if want_page_text else ""
@@ -775,17 +840,15 @@ async def _read_login_tick_nodriver(
         if success_selector:
             # query_selector returns immediately, found or not: the poll is the
             # retry, and a probe that slept inside nodriver would stretch the cadence.
-            #
-            # A selector the browser rejects as malformed is not told apart here, as
-            # the selenium twin tells it apart. nodriver 0.48.1's Tab.query_selector
-            # re-raises whatever ProtocolException the CDP call returned, and
-            # ProtocolException carries only the CDP error's message and its generic
-            # server-error code, the same pair a node that went invalid mid-navigation
-            # arrives with. Classifying a bad selector by message text would be
-            # guessing at a string the protocol does not promise, so it stays a
-            # transient tick here and the wait ends in a timeout.
-            element = await tab.query_selector(success_selector)
+            try:
+                element = await tab.query_selector(success_selector)
+            except Exception as exc:  # broad by design: classified below, else re-raised
+                if await _selector_rejected_nodriver(tab, success_selector):
+                    raise _invalid_success_selector(success_selector) from exc
+                raise
             success_found = element is not None
+    except PluginError:
+        raise
     except Exception as exc:  # broad by design: an unreadable tick is pending, see above
         LOG.debug(
             "login_tick_read_failed",
@@ -796,6 +859,44 @@ async def _read_login_tick_nodriver(
         )
         return _TickReading("", url, None, error=str(exc), page_asked=want_page_text)
     return _TickReading(page_text, url, success_found, page_asked=want_page_text)
+
+
+async def _read_login_tick_nodriver_by(
+    tab: Any,  # nodriver.Tab
+    *,
+    end: float,
+    url: str,
+    success_selector: str,
+    want_page_text: bool,
+    site_name: str,
+) -> _TickReading:
+    """:func:`_read_login_tick_nodriver`, abandoned without being cancelled at
+    *end* (see ``_hard_end`` and :func:`graftpunk.cdp_wait.answer_by`). A read that
+    is abandoned is an unreadable tick."""
+    try:
+        return await answer_by(
+            _read_login_tick_nodriver(
+                tab,
+                url=url,
+                success_selector=success_selector,
+                want_page_text=want_page_text,
+                site_name=site_name,
+            ),
+            end=end,
+        )
+    except TimeoutError:
+        error = (
+            "the browser did not answer before the login wait's end, one poll "
+            "interval past its timeout, so the read was abandoned"
+        )
+        LOG.debug(
+            "login_tick_read_failed",
+            plugin=site_name,
+            error=error,
+            exc_type="TimeoutError",
+            backend="nodriver",
+        )
+        return _TickReading("", url, None, error=error, page_asked=want_page_text)
 
 
 def _read_login_tick_selenium(
@@ -809,19 +910,17 @@ def _read_login_tick_selenium(
     """The selenium twin of :func:`_read_login_tick_nodriver`.
 
     A missing element is NoSuchElementException and reads as "not yet"; any other
-    WebDriverException is a read taken while the browser was navigating, so the
-    tick is unreadable rather than failed.
+    failure is a read taken while the browser was navigating or after it went away,
+    so the tick is unreadable rather than failed. That includes errors that are not
+    a WebDriverException: with chromedriver gone, selenium 4.40.0 raises urllib3's
+    MaxRetryError from ``page_source``, which used to escape ``login()``.
 
     A selector the browser rejects as malformed is the exception to that: it is an
     InvalidSelectorException on every tick, so the wait would spend its whole budget
     and end by blaming the browser for a page it read perfectly well. The selector
     cannot become valid, so it ends the login there and then.
     """
-    from selenium.common.exceptions import (
-        InvalidSelectorException,
-        NoSuchElementException,
-        WebDriverException,
-    )
+    from selenium.common.exceptions import InvalidSelectorException, NoSuchElementException
 
     try:
         page_text = driver.page_source if want_page_text else ""
@@ -833,12 +932,8 @@ def _read_login_tick_selenium(
             except NoSuchElementException:
                 success_found = False
     except InvalidSelectorException as exc:
-        raise PluginError(
-            f"LoginConfig.success is not a valid CSS selector: '{success_selector}'. "
-            "The browser rejected it, so no page can ever match it. Correct the "
-            "selector in the plugin's login configuration."
-        ) from exc
-    except WebDriverException as exc:
+        raise _invalid_success_selector(success_selector) from exc
+    except Exception as exc:  # broad by design: an unreadable tick is pending, see above
         LOG.debug(
             "login_tick_read_failed",
             plugin=site_name,
@@ -907,13 +1002,19 @@ async def _wait_for_login_signal_nodriver(
     success_url = login_config.success_url
     last = _ReadWindow()
     marker_noted = False
+    end = _hard_end(deadline)
     while True:
         remaining = deadline - loop.time()
         last_tick = _is_deadline_tick(remaining)
         await asyncio.sleep(_poll_sleep_seconds(remaining))
+        # A tick that wakes at or past the deadline (a late wake-up on a busy loop,
+        # or a slow read on the tick before) is the deadline tick: it reads the page,
+        # and nothing follows it.
+        last_tick = last_tick or deadline - loop.time() <= 0
         url = tab_url(tab)
-        reading = await _read_login_tick_nodriver(
+        reading = await _read_login_tick_nodriver_by(
             tab,
+            end=end,
             url=url,
             success_selector=success_selector,
             want_page_text=_page_text_decides(
@@ -943,7 +1044,10 @@ async def _wait_for_login_signal_nodriver(
         if decision.note_marker:
             _debug_rate_limit_marker(site_name=site_name, url=reading.url, backend="nodriver")
             marker_noted = True
-        if last_tick:
+        # A read abandoned at the end was the last one the wait had time for; one
+        # started now could not answer and would only add a second command in
+        # flight on the tab.
+        if last_tick or loop.time() >= end:
             break
 
     if not last.answered:
@@ -970,7 +1074,14 @@ def _wait_for_login_signal_selenium(
     deadline: float,
     pre_submit_url: str,
 ) -> bool:
-    """The selenium twin of :func:`_wait_for_login_signal_nodriver`."""
+    """The selenium twin of :func:`_wait_for_login_signal_nodriver`.
+
+    One difference: a read here is a blocking WebDriver call, which cannot be cut
+    off at the deadline the way the nodriver twin abandons its reads
+    (``_hard_end``). Abandoning one would leave it in flight ahead of the
+    engine's next command to the same driver, so a slow read still runs to
+    completion, and a wait whose reads are slow ends that much past ``timeout``.
+    """
     success_selector = login_config.success
     success_url = login_config.success_url
     last = _ReadWindow()
@@ -1054,10 +1165,12 @@ async def _watch_for_failure_nodriver(
     """
     loop = asyncio.get_running_loop()
     last = _ReadWindow()
+    end = _hard_end(deadline)
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
-        reading = await _read_login_tick_nodriver(
+        reading = await _read_login_tick_nodriver_by(
             tab,
+            end=end,
             url=tab_url(tab),
             success_selector="",
             # The page text is this window's only signal, so it is read every tick.
@@ -1139,13 +1252,19 @@ async def _await_document_ready_nodriver(tab: Any, *, deadline: float, site_name
     Best-effort: the success signal can appear on a document still fetching the
     response that carries the session cookie, and cookies captured a moment later
     are the point of the wait. A readyState that cannot be read (a protocol error
-    mid-redirect, a backend that does not evaluate) is not a login failure, so it
-    ends the wait rather than the login.
+    mid-redirect, a backend that does not evaluate, a read still unanswered at the
+    wait's end) is not a login failure, so it ends the wait rather than the login.
+
+    A signal found at or past the deadline gets no readiness wait at all, and a read
+    started before it is abandoned at the same end the poll keeps (``_hard_end``).
     """
     loop = asyncio.get_running_loop()
+    if loop.time() >= deadline:
+        return
+    end = _hard_end(deadline)
     while True:
         try:
-            state = await tab.evaluate("document.readyState")
+            state = await answer_by(tab.evaluate("document.readyState"), end=end)
         except Exception as exc:  # broad by design: readiness is best-effort, see the docstring
             LOG.debug(
                 "login_document_ready_unavailable",

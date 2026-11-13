@@ -506,7 +506,7 @@ class TestATwoHostRecording:
             env=env,
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
-        summary = pytest_result.stdout.strip().splitlines()[-1]
+        summary = strip_ansi(pytest_result.stdout).strip().splitlines()[-1]
         assert summary.startswith("3 passed"), pytest_result.stdout
 
     def test_the_output_names_the_command_on_the_other_host(

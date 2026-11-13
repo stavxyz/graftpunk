@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -559,6 +560,11 @@ class TestExtractTokensFromTab:
         assert results == {}
 
 
+def _far() -> float:
+    """An end for _poll_for_tokens that no test here reaches."""
+    return asyncio.get_running_loop().time() + 60.0
+
+
 class TestPollForTokens:
     """Direct tests for _poll_for_tokens retry logic."""
 
@@ -574,7 +580,9 @@ class TestPollForTokens:
         mock_tab = _AwaitableMock()
         mock_tab.get_content = AsyncMock(return_value='<meta csrf="abc123">')
 
-        results = await _poll_for_tokens(mock_tab, [token], "https://x.com/dash", "test")
+        results = await _poll_for_tokens(
+            mock_tab, [token], "https://x.com/dash", "test", end=_far()
+        )
 
         assert results == {"X-CSRF": "abc123"}
         mock_tab.sleep.assert_not_called()
@@ -593,7 +601,9 @@ class TestPollForTokens:
             side_effect=["<html>loading...</html>", '<meta csrf="abc123">']
         )
 
-        results = await _poll_for_tokens(mock_tab, [token], "https://x.com/dash", "test")
+        results = await _poll_for_tokens(
+            mock_tab, [token], "https://x.com/dash", "test", end=_far()
+        )
 
         assert results == {"X-CSRF": "abc123"}
         mock_tab.sleep.assert_called_once()
@@ -610,7 +620,9 @@ class TestPollForTokens:
         mock_tab = _AwaitableMock()
         mock_tab.get_content = AsyncMock(return_value="<html>no token here</html>")
 
-        results = await _poll_for_tokens(mock_tab, [token], "https://x.com/dash", "test")
+        results = await _poll_for_tokens(
+            mock_tab, [token], "https://x.com/dash", "test", end=_far()
+        )
 
         assert results == {}
 
@@ -622,7 +634,7 @@ class TestPollForTokens:
         mock_tab = _AwaitableMock()
         mock_tab.get_content = AsyncMock(side_effect=['<meta a="1">', '<meta a="1" b="2">'])
 
-        results = await _poll_for_tokens(mock_tab, [t1, t2], "https://x.com/p", "test")
+        results = await _poll_for_tokens(mock_tab, [t1, t2], "https://x.com/p", "test", end=_far())
 
         assert results == {"X-A": "1", "X-B": "2"}
 

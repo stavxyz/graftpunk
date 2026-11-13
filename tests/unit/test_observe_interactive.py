@@ -119,7 +119,7 @@ class TestRunObserveInteractiveSavesOnStop:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.load_session",
+                "graftpunk.cli.observe_browser.load_session",
                 return_value=mock_session,
             ) as mock_load,
             patch(
@@ -132,7 +132,7 @@ class TestRunObserveInteractiveSavesOnStop:
                 return_value=mock_backend,
             ) as mock_backend_cls,
             patch(
-                "graftpunk.observe.storage.ObserveStorage",
+                "graftpunk.cli.observe_browser.ObserveStorage",
                 return_value=mock_storage,
             ),
             patch("asyncio.get_running_loop", return_value=mock_loop),
@@ -194,7 +194,7 @@ class TestRunObserveInteractiveSavesOnStop:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.load_session",
+                "graftpunk.cli.observe_browser.load_session",
                 side_effect=SessionNotFoundError("Session not found"),
             ) as mock_load,
             pytest.raises(typer.Exit) as exc_info,
@@ -226,7 +226,7 @@ class TestRunObserveInteractiveSavesOnStop:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.load_session",
+                "graftpunk.cli.observe_browser.load_session",
                 side_effect=SessionExpiredError("Session expired"),
             ),
             pytest.raises(typer.Exit) as exc_info,
@@ -278,7 +278,7 @@ class TestRunObserveInteractiveSavesOnStop:
                 "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=mock_backend,
             ),
-            patch("graftpunk.observe.storage.ObserveStorage", return_value=MagicMock()),
+            patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=MagicMock()),
             patch("asyncio.get_running_loop", return_value=mock_loop),
             patch("asyncio.Event", return_value=already_set_event),
         ):
@@ -436,7 +436,7 @@ class TestSetupObserveSessionTakesDomSnapshots:
             patch(
                 "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
             ) as backend_cls,
-            patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
+            patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=mock_storage),
         ):
             await setup_observe_session(
                 "test-ns", "https://example.com", 1024, headless=True, session_name=None
@@ -475,8 +475,8 @@ class TestSetupObserveSessionTakesDomSnapshots:
             patch(
                 "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
             ) as backend_cls,
-            patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
-            patch("graftpunk.dialogs.answer_dialogs_in_new_tabs", new_tabs),
+            patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=mock_storage),
+            patch("graftpunk.cli.observe_browser.answer_dialogs_in_new_tabs", new_tabs),
         ):
             await setup_observe_session(
                 "test-ns", "https://example.com", 1024, headless=headless, session_name=None
@@ -526,7 +526,7 @@ class TestSetupObserveSessionSigintIsolation:
                 return_value=mock_backend,
             ),
             patch(
-                "graftpunk.observe.storage.ObserveStorage",
+                "graftpunk.cli.observe_browser.ObserveStorage",
                 return_value=mock_storage,
             ),
         ):
@@ -586,7 +586,7 @@ class TestSetupObserveSessionSigintIsolation:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch("graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend),
-            patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
+            patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=mock_storage),
         ):
             await setup_observe_session(
                 "test-ns", "https://example.com", 1024, headless=True, session_name=None
@@ -629,9 +629,10 @@ class TestSetupObserveSessionSigintIsolation:
             with (
                 patch.dict("sys.modules", {"nodriver": mock_nodriver}),
                 patch(
-                    "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
+                    "graftpunk.observe.capture.NodriverCaptureBackend",
+                    return_value=mock_backend,
                 ),
-                patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
+                patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=mock_storage),
             ):
                 observed = await setup_observe_session(
                     "test-ns", "https://example.com", 1024, headless=True, session_name=None
@@ -729,9 +730,10 @@ class TestSetupObserveSessionSigintIsolation:
             with (
                 patch.dict("sys.modules", {"nodriver": mock_nodriver}),
                 patch(
-                    "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
+                    "graftpunk.observe.capture.NodriverCaptureBackend",
+                    return_value=mock_backend,
                 ),
-                patch("graftpunk.observe.storage.ObserveStorage", return_value=mock_storage),
+                patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=mock_storage),
             ):
                 observed = await setup_observe_session(
                     "test-ns", "https://example.com", 1024, headless=True, session_name=None
@@ -820,7 +822,7 @@ class TestObserveBrowserHygiene:
                 "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=self._capture_backend(),
             ),
-            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+            patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
         ):
             await setup_observe_session(
                 "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
@@ -859,7 +861,7 @@ class TestObserveBrowserHygiene:
                 "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=self._capture_backend(),
             ),
-            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+            patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
         ):
             await setup_observe_session(
                 "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
@@ -891,7 +893,7 @@ class TestObserveBrowserHygiene:
                 "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=self._capture_backend(),
             ),
-            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+            patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
         ):
             await setup_observe_session(
                 "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
@@ -922,7 +924,7 @@ class TestObserveBrowserHygiene:
                 "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=self._capture_backend(),
             ),
-            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+            patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
             patch("graftpunk.cli.observe_browser.save_observe_run", new=record_then_save),
         ):
             await run_observe_go(
@@ -958,7 +960,7 @@ class TestObserveBrowserHygiene:
                 "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=self._capture_backend(),
             ),
-            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+            patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
             patch("graftpunk.cli.observe_browser.save_observe_run", new_callable=AsyncMock),
         ):
             await run_observe_go(
@@ -1045,7 +1047,7 @@ class TestObserveArmsTheSignalHandlers:
                 "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=hygiene._capture_backend(),
             ),
-            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+            patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
         ):
             await setup_observe_session(
                 "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
@@ -1129,7 +1131,7 @@ class TestObserveGoClosesTheNewTabAnswerer:
             ),
             patch(f"{where}.save_observe_run", AsyncMock()),
             patch(
-                "graftpunk.dialogs.close_dialogs_in_new_tabs",
+                "graftpunk.cli.observe_browser.close_dialogs_in_new_tabs",
                 AsyncMock(side_effect=asyncio.CancelledError),
             ),
             patch(f"{where}.signals.unregister_live_browser") as unregister,

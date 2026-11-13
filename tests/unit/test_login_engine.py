@@ -439,8 +439,10 @@ class TestLoginEngineExceptionPaths:
             call_args = instance.__exit__.call_args
             assert call_args[0][0] is RuntimeError
 
-    def test_selenium_non_nosuchelement_exception_propagates(self) -> None:
-        """Test that non-NoSuchElementException errors propagate from success check."""
+    def test_selenium_read_error_that_is_not_a_webdriver_error_fails_cleanly(self) -> None:
+        """An error from the success check that is not a WebDriverException ends the
+        login with a warning, as the nodriver twin does, instead of escaping
+        ``login()`` (#205)."""
         from graftpunk.plugins.login_engine import generate_login_method
 
         plugin = DeclarativeQuotes()
@@ -464,9 +466,13 @@ class TestLoginEngineExceptionPaths:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.time.sleep"),
-            pytest.raises(ConnectionError, match="WebDriver session crashed"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
-            login_method({"username": "user", "password": "test"})  # noqa: S106
+            result = login_method({"username": "user", "password": "test"})  # noqa: S106
+
+        assert result is False
+        warning = _warning_kwargs(mock_log, "login_page_unreadable")
+        assert warning["error"] == "WebDriver session crashed"
 
 
 class TestLoginFieldMapping:

@@ -1092,12 +1092,9 @@ class TestRedaction:
             logger_factory=factory,
             cache_logger_on_first_use=False,
         )
-        try:
-            log = get_logger("probe")
-            with log_secrets(["tok-secret-99"]), hidden_name("myshop@pin4417q"):
-                getattr(log, method)("x", name="myshop@pin4417q", option="tok-secret-99")
-        finally:
-            structlog.reset_defaults()
+        log = get_logger("probe")
+        with log_secrets(["tok-secret-99"]), hidden_name("myshop@pin4417q"):
+            getattr(log, method)("x", name="myshop@pin4417q", option="tok-secret-99")
 
         (call,) = factory.logger.calls
         assert call.method_name == method

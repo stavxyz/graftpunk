@@ -62,6 +62,7 @@ from graftpunk.browser_launch import (
     chrome_in_own_session,
     prepare_browser_launch,
 )
+from graftpunk.cdp_wait import drop_late_answer
 from graftpunk.chrome_orphans import (
     base_browser_args,
     remove_browser_temp_profile,
@@ -1678,13 +1679,18 @@ class NoDriverBackend:
             # A KeyboardInterrupt while waiting must not leave the coroutine
             # running on the loop, and its cleanup (a start releasing a
             # half-started browser) should finish before the caller moves on.
+            # Cancelling is safe here: the session is ending, so no later call
+            # needs the connection the cancel may stop answering.
             cancel_and_wait()
             raise
-        # The call ran out of time. Cancel it so it does not hold the tab,
-        # and leave the loop running for the next call.
-        cancel_and_wait()
-        # The coroutine ran to the end before the cancel reached it (including
-        # between wait() returning and the cancel): it gets its own outcome.
+        # The call ran out of time. Give up on it without cancelling it: on
+        # nodriver 0.48.1 a cancelled DevTools command whose answer then arrives
+        # ends the connection's listener, and every later call on this browser
+        # would wait forever (graftpunk.cdp_wait). It runs on to its end and its
+        # outcome is dropped; the loop stays up for the next call.
+        future.add_done_callback(drop_late_answer)
+        # The coroutine ran to the end between wait() returning and now: it gets
+        # its own outcome.
         if "result" in outcome:
             return outcome["result"]
         if "error" in outcome:
@@ -2568,10 +2574,16 @@ class NoDriverBackend:
         """
         return self._started and self._browser is not None
 
-    async def _navigate_async(self, url: str) -> None:
-        """Async implementation of navigation."""
+    async def _navigate_async(self, url: str) -> Any:
+        """Async implementation of navigation: the tab ``Browser.get`` answers.
+
+        It returns the tab rather than setting ``self._page``: a navigation
+        that runs out of time is abandoned, not cancelled, and runs on, so a
+        write here could land after ``navigate()`` raised and overwrite what a
+        later navigation set. ``navigate()`` assigns it only when it answered
+        in time."""
         assert self._browser is not None  # Type narrowing for ty
-        self._page = await self._browser.get(url)
+        return await self._browser.get(url)
 
     async def _stop_loading_async(self) -> None:
         """Send ``Page.stopLoading`` to the tab ``navigate()`` navigates."""
@@ -2627,7 +2639,7 @@ class NoDriverBackend:
 
         LOG.debug("nodriver_backend_navigating", url=url)
         try:
-            self._run_async(
+            self._page = self._run_async(
                 self._navigate_async(url), timeout=self._navigate_timeout, method="navigate()"
             )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:

@@ -236,7 +236,7 @@ For straightforward HTTP calls, no Python needed:
 ```yaml
 # ~/.config/graftpunk/plugins/mybank.yaml
 site_name: mybank
-base_url: "https://secure.mybank.example.com"
+base_url: "https://mybank.example"
 
 login:
   url: /login
@@ -275,7 +275,7 @@ from graftpunk.plugins import CommandContext, LoginConfig, LoginStep, SitePlugin
 
 class MyBankPlugin(SitePlugin):
     site_name = "mybank"
-    base_url = "https://secure.mybank.example.com"
+    base_url = "https://mybank.example"
     backend = "nodriver"  # or "selenium"
     api_version = 1
 
@@ -372,15 +372,15 @@ names are in [How it works](docs/HOW_IT_WORKS.md#multi-account-sessions).
 Make authenticated requests using cached sessions without writing a plugin:
 
 ```bash
-gp http get -s mybank https://secure.mybank.example.com/api/accounts
-gp http post -s mybank https://secure.mybank.example.com/api/transfer --data '{"amount": 100}'
+gp http get -s mybank https://mybank.example/api/accounts
+gp http post -s mybank https://mybank.example/api/transfer --data '{"amount": 100}'
 ```
 
 Use `--role` to set browser header roles (built-in or plugin-defined):
 
 ```bash
-gp http get -s mybank --role xhr https://secure.mybank.example.com/api/status
-gp http get -s mybank --role api https://secure.mybank.example.com/v2/data  # custom plugin role
+gp http get -s mybank --role xhr https://mybank.example/api/status
+gp http get -s mybank --role api https://mybank.example/v2/data  # custom plugin role
 ```
 
 Supports all HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`.
@@ -391,13 +391,13 @@ Capture browser activity for debugging:
 
 ```bash
 # Open authenticated browser and capture network traffic
-gp observe -s mybank go https://secure.mybank.example.com/dashboard
+gp observe -s mybank go https://mybank.example/dashboard
 
 # Interactive mode — browse manually, Ctrl+C to save
-gp observe -s mybank interactive https://secure.mybank.example.com/dashboard
+gp observe -s mybank interactive https://mybank.example/dashboard
 
 # Or use the --interactive flag on observe go
-gp observe -s mybank go --interactive https://secure.mybank.example.com/dashboard
+gp observe -s mybank go --interactive https://mybank.example/dashboard
 
 # View captured data
 gp observe list
@@ -414,7 +414,8 @@ Pass `--observe full` to any command to capture what it does: a plugin command's
 Record the site, read the recording, scaffold a project from it, then fill in
 the stubs and test them against fixtures. A first capture has no cached session
 to name, so it runs `--no-session` and is filed under the name graftpunk infers
-from the host, which `gp observe list` prints (`<name>` below). Each step, with
+from the host, its second-to-last label (`mybank` for `mybank.example`), which
+`gp observe list` prints. Each step, with
 the options and the rules, is in
 [Writing a graftpunk plugin](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md):
 [Capture](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#capture),
@@ -422,9 +423,9 @@ the options and the rules, is in
 [Scaffold](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#scaffold).
 
 ```bash
-gp observe --no-session interactive https://secure.mybank.example.com/dashboard
-gp observe digest <name>
-gp plugin new mybank --from-run <name>
+gp observe --no-session interactive https://mybank.example/dashboard
+gp observe digest mybank
+gp plugin new mybank --from-run mybank
 ```
 
 `--command "NAME=METHOD template"`, repeatable, scaffolds only the endpoints you
@@ -438,7 +439,7 @@ invented one
 ([Deriving a fixture from a capture](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#deriving-a-fixture-from-a-capture)):
 
 ```bash
-gp observe fixtures <name> --match "GET /api/accounts"
+gp observe fixtures mybank --match "GET /api/accounts"
 ```
 
 Install the project with its `dev` extra, which brings pytest and ruff, then
@@ -465,7 +466,7 @@ requirement.
 
 ```bash
 gp plugin upgrade
-gp plugin add-command mybank --from-run <name> --command "statements=GET /api/statements"
+gp plugin add-command mybank --from-run mybank --command "statements=GET /api/statements"
 ```
 
 ## Configuration
@@ -484,13 +485,14 @@ CLI flags: `-v` (info), `-vv` (debug), `--log-format json`, `--observe full`, `-
 
 ### Workstation configuration (`gp config`)
 
-Persist per-machine environment for gp in `~/.config/graftpunk/env` —
-credentials as lazy 1Password (or any) command values, settings as statics:
+Persist per-machine environment for gp in `~/.config/graftpunk/env`:
+credentials as lazy command values, settings as statics. Any command that prints
+the value works, such as your secret manager's CLI:
 
 ```bash
 gp config set GRAFTPUNK_BROWSER_EXECUTABLE_PATH "/path/to/chrome"
-gp config set MYSHOP_USERNAME '$(op read "op://vault/item/username")'
-gp config set MYSHOP_PASSWORD '$(op read "op://vault/item/password")'
+gp config set MYSHOP_USERNAME '$(your-secret-tool read myshop/username)'
+gp config set MYSHOP_PASSWORD '$(your-secret-tool read myshop/password)'
 gp config list
 ```
 

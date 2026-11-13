@@ -38,6 +38,7 @@ from graftpunk.cookies import (
     use_browser_cookie_policy,
 )
 from graftpunk.graftpunk_session import GraftpunkSession
+from tests.unit.cli_harness import strip_ansi
 from tests.unit.test_lite_cli_hints import _cache_fixture_session
 
 _FIX = pathlib.Path(__file__).parent.parent / "fixtures"
@@ -1268,7 +1269,7 @@ def test_gp_session_show_names_the_dotless_host_a_cookie_was_captured_from(
     assert result.exit_code == 0, result.output
     shown = {
         label: value.split()[0]
-        for line in result.output.splitlines()
+        for line in strip_ansi(result.output).splitlines()
         if ":" in line
         for label, value in [line.strip("│ ").split(":", 1)]
     }
