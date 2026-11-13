@@ -115,20 +115,20 @@ name is answered: pass only a name already in hand.
 as this script prints it (never a ``Referer`` or ``Location`` header), and
 ``--method`` narrows by the method as it prints, so a match never says whether
 text the script holds back is in the recording. ``--recorded-path`` also matches
-URL_PART against the URL as recorded, its query and fragment left out: a hit
-then says the recording holds URL_PART, so pass only text already in hand.
-``request`` prints the method, the URL with its query keys, the request header
-and cookie names, and the body's content type and field names with each value's
-type. ``response`` prints the status, the content type, the response header
-names, the names of the cookies it sets, and the body's shape: JSON keys and
-types (JSON nested deeper than 64 levels is not parsed), or an HTML page's title
-length and its forms, each with its method, templated action, and controls by
-name and type (repeats collapsed with a count, a control with no name or a name
-that fails by type, position, and an id that passes, and hidden ones of those
-with no such id as one line with a count). A
-field whose name reads as a password, a secret, a token, a card, or a key is
-listed by name alone. A response body streamed to ``bodies/`` is read only from
-the HAR's own ``bodies/`` directory, never through a link.
+URL_PART against the URL's path as recorded (never its userinfo, host, query, or
+fragment): a hit then says the recording holds URL_PART, so pass only text
+already in hand. ``request`` prints the method, the URL with its query keys, the
+request header and cookie names, and the body's content type and field names
+with each value's type. ``response`` prints the status, the content type, the
+response header names, the names of the cookies it sets, and the body's shape:
+JSON keys and types (JSON nested deeper than 64 levels is not parsed), or an
+HTML page's title length and its forms, each with its method, templated action,
+and controls by name and type (repeats collapsed with a count, a control with no
+name or a name that fails by type, position, and an id that passes, and hidden
+ones of those with no such id as one line with a count). A field whose name
+reads as a password, a secret, a token, a card, or a key is listed by name
+alone. A response body streamed to ``bodies/`` is read only from the HAR's own
+``bodies/`` directory, never through a link.
 
 ``operations`` lists each GraphQL operation the recording's request bodies carry
 (graftpunk's own rule, copied and held equal by a test: a JSON object with a
@@ -1815,6 +1815,14 @@ def _body_lines(mime: str, text: str | None, indent: str) -> list[str]:
 # request and response
 
 
+def _recorded_path(url: str) -> str:
+    """*url*'s path as recorded: never its userinfo, host, query, or fragment."""
+    try:
+        return urlsplit(url).path
+    except ValueError:
+        return ""
+
+
 def _matches(
     entries: list[dict[str, Any]],
     needle: str,
@@ -1834,7 +1842,7 @@ def _matches(
         if not (
             needle in templated_url(url)
             or (entry_operations(entry, har_path) and needle in _operation_url(url))
-            or (recorded and needle in url.split("?", 1)[0].split("#", 1)[0])
+            or (recorded and needle in _recorded_path(url))
         ):
             continue
         if method and _method(request) != method.upper():

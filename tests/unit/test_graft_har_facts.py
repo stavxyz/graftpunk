@@ -1468,3 +1468,15 @@ def test_nesting_holds_no_copy_of_the_text(shape: str) -> None:
     finally:
         tracemalloc.stop()
     assert peak < len(text) / 100, peak
+
+
+@pytest.mark.parametrize("guess", ["hunter2", "alice", "zq9xklmpwr4t7bv2", "QTOK", "frag"])
+def test_the_recorded_path_flag_matches_the_path_alone(tmp_path: Path, guess: str) -> None:
+    """Userinfo, a held-back subdomain, a query, and a fragment are not the path,
+    so --recorded-path answers nothing about them."""
+    path = tmp_path / "network.har"
+    url = "https://alice:hunter2pw@zq9xklmpwr4t7bv2.myshop.example/plain/path?q=QTOK#frag"
+    path.write_text(json.dumps({"log": {"entries": [_entry("GET", url)]}}))
+    result = _run("request", str(path), guess, "--recorded-path")
+    assert (result.returncode, result.stdout) == (1, "")
+    assert _run("request", str(path), "/plain/path", "--recorded-path").returncode == 0
