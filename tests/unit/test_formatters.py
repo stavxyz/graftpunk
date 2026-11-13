@@ -285,12 +285,23 @@ class TestCsvFormatter:
         CsvFormatter().format([1, 2, 3], console)
         console.file.write.assert_called_once_with(json.dumps([1, 2, 3], default=str) + "\n")
 
-    def test_mixed_type_list_falls_back_to_raw(self) -> None:
-        """A list mixing dicts and non-dicts falls back rather than crashing."""
+    def test_mixed_type_list_writes_a_non_dict_row_in_the_value_column(self) -> None:
+        """A list mixing dicts and non-dicts is a table, as in every tabular
+        formatter: the non-dict row's value goes in the ``value`` column."""
         console = MagicMock(spec=Console)
         data = [{"name": "Alice"}, "not a dict", {"name": "Bob"}]
         CsvFormatter().format(data, console)
-        console.file.write.assert_called_once_with(json.dumps(data, default=str) + "\n")
+        assert _parse_csv_output(console) == [
+            ["name", "value"],
+            ["Alice", ""],
+            ["", "not a dict"],
+            ["Bob", ""],
+        ]
+
+    def test_a_list_with_no_dict_falls_back_to_raw(self) -> None:
+        console = MagicMock(spec=Console)
+        CsvFormatter().format(["x", 2], console)
+        console.file.write.assert_called_once_with(json.dumps(["x", 2]) + "\n")
 
     def test_list_of_dicts_with_missing_keys(self) -> None:
         console = MagicMock(spec=Console)

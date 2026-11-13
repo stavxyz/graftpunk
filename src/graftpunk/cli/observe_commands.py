@@ -69,7 +69,7 @@ from graftpunk.session_context import resolve_session
 from graftpunk.session_identity import split_session_name
 from graftpunk.testing.sidecar import ObserveRun, SidecarError
 
-console = Console()
+console = Console(emoji=False)
 LOG = get_logger(__name__)
 
 _DEFAULT_FIXTURE_LIMIT = 5
@@ -125,22 +125,25 @@ def _refuse_write(path: Path, exc: OSError) -> NoReturn:
     raise typer.Exit(1) from None
 
 
+def _refuse_recording(reason: object) -> NoReturn:
+    """One line naming the HAR and why it could not be read, then exit 1: the
+    words ``gp plugin new --from-run`` and ``gp plugin add-command`` print for
+    the same file (#217). *reason* is a parser error, whose text already names
+    the file once, or a FileNotFoundError's."""
+    console.print(f"[red]Could not read the recording: {escape(str(reason))}[/red]", soft_wrap=True)
+    raise typer.Exit(1)
+
+
 def _digest_source(session_name: str | None, run_id: str | None, har: Path | None) -> DigestSource:
     if har is not None and session_name is not None:
         console.print("[red]Pass a session or --har, not both.[/red]")
         raise typer.Exit(1)
     if har is not None:
-        if not har.exists():
-            console.print(f"[red]HAR file not found: {escape(str(har))}[/red]")
-            raise typer.Exit(1)
         return DigestSource.from_har(har)
     if session_name is None:
         console.print("[red]Session name required, or pass --har.[/red]")
         raise typer.Exit(1)
     run_dir = resolve_run(session_name, run_id)
-    if not (run_dir / "network.har").exists():
-        console.print(f"[red]No network.har in run '{escape(run_dir.name)}'[/red]")
-        raise typer.Exit(1)
     return DigestSource.from_run_dir(run_dir, session=session_name, run_id=run_dir.name)
 
 
@@ -180,9 +183,8 @@ def digest_cmd(
     source = _digest_source(session, run, har)
     try:
         result = digest(source, all_hosts=all_hosts)
-    except HARParseError as exc:
-        console.print(f"[red]Could not read the HAR: {escape(str(exc))}[/red]", soft_wrap=True)
-        raise typer.Exit(1) from None
+    except (FileNotFoundError, HARParseError) as exc:
+        _refuse_recording(exc)
     if endpoints_json:
         text = render_endpoints_json(result)
     elif as_json:
@@ -201,7 +203,7 @@ def digest_cmd(
         # (found running TestDigestCommand.test_digest_json_flag: the printed
         # text failed json.loads because a path was hard-wrapped inside a
         # string value; deviation from the brief, which omitted soft_wrap).
-        console.print(text, markup=False, highlight=False, soft_wrap=True)
+        console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
 Pattern = tuple[str, str, str]
@@ -351,9 +353,6 @@ def fixtures_cmd(
 
     run_dir = resolve_run(session, run)
     har_path = run_dir / "network.har"
-    if not har_path.exists():
-        console.print(f"[red]No network.har in run '{escape(run_dir.name)}'[/red]")
-        raise typer.Exit(1)
 
     target_dir = out if out is not None else Path.cwd() / CAPTURES_DIR
 
@@ -364,9 +363,8 @@ def fixtures_cmd(
         run_digest = digest(
             DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name)
         )
-    except HARParseError as exc:
-        console.print(f"[red]Could not read the HAR: {escape(str(exc))}[/red]", soft_wrap=True)
-        raise typer.Exit(1) from None
+    except (FileNotFoundError, HARParseError) as exc:
+        _refuse_recording(exc)
     flagged = flagged_reasons_of(run_digest, entries)
     # Held in memory only: the sidecar records names, never these values.
     recorded_values = flagged_values_of(run_digest, entries)

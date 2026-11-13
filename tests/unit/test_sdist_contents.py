@@ -56,3 +56,32 @@ def test_sdist_contains_only_the_allowlist(tmp_path: Path) -> None:
         if name.split("/", 2)[1:2] == ["src"] and name.count("/") >= 2
     }
     assert src_children == {"graftpunk"}
+
+
+@pytest.mark.skipif(UV is None, reason="uv is needed to build the wheel")
+def test_the_wheel_ships_the_fonts_and_declares_their_licence(tmp_path: Path) -> None:
+    """The pdf export's DejaVu Sans fonts are under the Bitstream Vera and Arev
+    terms: the wheel carries their licence beside them and names it in its
+    metadata, with the licence expression."""
+    import zipfile
+
+    assert UV is not None
+    subprocess.run(  # noqa: S603
+        [UV, "build", "--wheel", "--out-dir", str(tmp_path)],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+    )
+    (wheel,) = tmp_path.glob("graftpunk-*.whl")
+    with zipfile.ZipFile(wheel) as archive:
+        names = set(archive.namelist())
+        (metadata_name,) = [n for n in names if n.endswith(".dist-info/METADATA")]
+        metadata = archive.read(metadata_name).decode()
+    assert {
+        "graftpunk/plugins/fonts/DejaVuSans.ttf",
+        "graftpunk/plugins/fonts/DejaVuSans-Bold.ttf",
+        "graftpunk/plugins/fonts/LICENSE-DejaVu.txt",
+    } <= names
+    assert "License-Expression: MIT AND Bitstream-Vera" in metadata.splitlines()
+    assert "License-File: src/graftpunk/plugins/fonts/LICENSE-DejaVu.txt" in metadata.splitlines()
+    assert "License-File: LICENSE" in metadata.splitlines()

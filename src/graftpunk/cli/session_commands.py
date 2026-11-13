@@ -37,7 +37,7 @@ session_app = typer.Typer(
     name="session",
     help="Manage encrypted browser sessions.",
 )
-console = Console()
+console = Console(emoji=False)
 
 
 @session_app.callback(invoke_without_command=True)

@@ -564,7 +564,7 @@ class CommandResult:
         from rich.console import Console
 
         from graftpunk.plugins.formatters import discover_formatters
-        from graftpunk.plugins.output_config import parse_view_arg
+        from graftpunk.plugins.output_config import select_views
 
         # Resolve formatters using the 3-level hierarchy
         formatters = discover_formatters()
@@ -581,20 +581,13 @@ class CommandResult:
         # Apply view filtering
         output_config = self.output_config
         if views and output_config is not None:
-            names: list[str] = []
-            column_overrides: dict[str, list[str]] = {}
-            for arg in views:
-                name, cols = parse_view_arg(arg)
-                names.append(name)
-                if cols:
-                    column_overrides[name] = cols
-            output_config = output_config.filter_views(names, column_overrides)
+            output_config = select_views(output_config, views)
 
         output_path = str(output) if output else ""
 
         # --- Output path given: write to file, return Path ---
         if output_path:
-            buf_console = Console(file=io.StringIO(), width=200)
+            buf_console = Console(file=io.StringIO(), width=200, emoji=False)
             formatter.format(
                 self.data,
                 buf_console,
@@ -611,7 +604,7 @@ class CommandResult:
             ) as tmp:
                 tmp_path = tmp.name
             try:
-                buf_console = Console(file=io.StringIO(), width=200)
+                buf_console = Console(file=io.StringIO(), width=200, emoji=False)
                 formatter.format(
                     self.data,
                     buf_console,
@@ -624,7 +617,9 @@ class CommandResult:
 
         # --- Text format, no output path: return str ---
         buf = io.StringIO()
-        buf_console = Console(file=buf, width=200, color_system=None, force_terminal=False)
+        buf_console = Console(
+            file=buf, width=200, emoji=False, color_system=None, force_terminal=False
+        )
         formatter.format(
             self.data,
             buf_console,

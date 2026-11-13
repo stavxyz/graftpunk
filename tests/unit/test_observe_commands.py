@@ -230,7 +230,7 @@ class TestDigestCommand:
         assert result.exit_code == 1
         assert isinstance(result.exception, SystemExit)
         output = strip_ansi(result.output)
-        assert "Could not read the HAR" in output
+        assert "Could not read the recording" in output
         assert "Traceback" not in output
 
     def test_digest_missing_har_file_is_one_line_error(self, tmp_path: Path) -> None:
@@ -301,7 +301,7 @@ class TestFixturesCommand:
         assert result.exit_code == 1
         assert isinstance(result.exception, SystemExit)
         output = strip_ansi(result.output)
-        assert "Could not read the HAR" in output
+        assert "Could not read the recording" in output
         assert "Traceback" not in output
         assert not out_dir.exists()
 
@@ -2021,3 +2021,64 @@ def test_the_all_hosts_help_says_the_default_keeps_the_primary_hosts_domain() ->
     digest_command = typer.main.get_command(observe_app).commands["digest"]
     (option,) = [p for p in digest_command.params if "--all-hosts" in p.opts]
     assert option.help == "Model every host, not just the primary host's domain"
+
+
+def _break_har(har_path: Path, kind: str) -> None:
+    if kind == "missing":
+        har_path.unlink()
+    elif kind == "directory":
+        har_path.unlink()
+        har_path.mkdir()
+    elif kind == "invalid-json":
+        har_path.write_text('{"log": {"entries": [')
+    elif kind == "schema":
+        har_path.write_text("{}")
+    else:
+        har_path.write_bytes(b"\xff\xfe\x00")
+
+
+_BROKEN_HARS = ["missing", "directory", "invalid-json", "schema", "non-utf8"]
+
+
+class TestUnreadableRecording:
+    """#217: a run whose network.har cannot be read prints one line naming the
+    file once, in the words gp plugin new --from-run prints, and exits 1."""
+
+    @pytest.mark.parametrize("kind", _BROKEN_HARS)
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            pytest.param(["observe", "digest", "myshop"], id="digest"),
+            pytest.param(["observe", "fixtures", "myshop", "--match", "GET /a"], id="fixtures"),
+        ],
+    )
+    def test_one_line_naming_the_file_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, argv: list[str]
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(observe_base, "myshop", "run-1", [_entry("GET", "https://myshop.example/a")])
+        (har_path,) = observe_base.rglob("network.har")
+        _break_har(har_path, kind)
+        out_dir = tmp_path / "out"
+        extra = ["--out", str(out_dir)] if argv[1] == "fixtures" else []
+        result = runner.invoke(_build_app(), [*argv, *extra])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        lines = strip_ansi(result.output).strip().splitlines()
+        assert len(lines) == 1, lines
+        assert lines[0].startswith("Could not read the recording: ")
+        assert lines[0].count(str(har_path)) == 1
+        assert not out_dir.exists()
+
+    @pytest.mark.parametrize("kind", _BROKEN_HARS)
+    def test_a_bare_har_reads_the_same(self, tmp_path: Path, kind: str) -> None:
+        har_path = tmp_path / "network.har"
+        har_path.write_text(json.dumps({"log": {"version": "1.2", "entries": []}}))
+        _break_har(har_path, kind)
+        result = runner.invoke(_build_app(), ["observe", "digest", "--har", str(har_path)])
+        assert result.exit_code == 1
+        lines = strip_ansi(result.output).strip().splitlines()
+        assert len(lines) == 1, lines
+        assert lines[0].startswith("Could not read the recording: ")
+        assert lines[0].count(str(har_path)) == 1

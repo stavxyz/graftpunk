@@ -2001,13 +2001,16 @@ commands:
 
 ### Output Formatting
 
-All plugin commands support `--format` / `-f` with five built-in formatters:
+All plugin commands support `--format` / `-f` with six built-in formatters:
 
 - **`json`** (default): Pretty-printed JSON with syntax highlighting via Rich.
 - **`table`**: Rich tables. Lists of dicts become rows; single dicts become key-value pairs. Falls back to JSON for other types.
 - **`csv`**: Comma-separated values. Headers are the union of all row keys. Nested dicts/lists are JSON-serialized in cells. A cell that is not a number and starts with `=`, `+`, `-`, `@`, a tab, a carriage return, a line feed, or a full-width `＝`, `＋`, `－` or `＠` gets a leading `'`, so a spreadsheet shows it as text and never runs it as a formula (#288). Header cells and `json_to_csv` follow the same rule.
 - **`xlsx`**: Excel workbook saved to disk. Files are written to `GP_DOWNLOADS_DIR` (default: `./gp-downloads/`), with bold headers and auto-sized columns. Every non-empty string is written as a text cell, never as a formula or a hyperlink; an empty string or a missing key leaves a blank cell, and numbers stay numeric cells (#288).
 - **`raw`**: Strings pass through directly; other types are JSON-dumped without highlighting.
+- **`pdf`**: A table set in the bundled DejaVu Sans, saved to disk like `xlsx`. A character the font has no glyph for (CJK, for one) is drawn as U+FFFD, with one warning naming it. A column must hold the widest character in the table plus a cell margin on each side: a table whose columns fit at fpdf2's 1 mm margin is drawn as is, one that fits at a margin down to 0.4 mm is drawn at that margin, and a wider one is split into consecutive tables of as many columns as fit at 0.4 mm, each led by the first column. A cell taller than a page (fpdf2 cannot split a row across pages) is cut to what fits and ends in `…`, with one warning counting the cells cut; the table is drawn once as it is, and drawn again with its cells fitted only when a row does not fit, and a column makes room for `…` only when one of its cells is cut. A run of more than 16 characters with no width (combining marks, zero-width spaces) is shortened to 16, with one warning, as fpdf2 lays such runs out in quadratic time. An empty title draws no title, and a metadata pair with an empty value is left out.
+
+A list is written as a table by one rule in every tabular formatter (`table`, `csv`, `xlsx`, `pdf`): its columns are the union of every row's keys, in first-seen order, and an item that is not a dict is a row with its value in a `value` column. `table` and `csv` print a list that holds no dict at all as JSON and raw text; `xlsx` and `pdf` write it as the one `value` column. A view's column filter applies to every list, so it keeps or drops the `value` column of a list with no dict like any other column; a list it leaves with columns is then written as a table by `table` and `csv` too.
 
 Third-party formatters can be registered via the `graftpunk.formatters` entry-point group. They must implement the `OutputFormatter` protocol (a `name` property and a `format()` method).
 
@@ -2065,7 +2068,7 @@ gp mysite list --view invoices:id,amount
 gp mysite list --view invoices --view summary
 ```
 
-The `--view` option is repeatable. When used with a single view, section headers are suppressed for cleaner output.
+The `--view` option is repeatable. When used with a single view, section headers are suppressed for cleaner output. Naming one view more than once (`--view invoices:id --view invoices:amount`) shows it once with the union of the columns asked for, in the order first given, and prints one warning; a bare `--view invoices` among them asks for the view's own columns.
 
 #### OutputConfig Types
 

@@ -10,16 +10,18 @@ from __future__ import annotations
 
 import datetime
 import decimal
+import enum
 import fractions
 import logging as stdlib_logging
 import os
 import pathlib
+import re
 import sys
 import threading
 import traceback
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, TextIO
@@ -27,6 +29,8 @@ from typing import Any, TextIO
 import structlog
 import structlog._native as _structlog_native
 from structlog.typing import EventDict, WrappedLogger
+
+from graftpunk._safe_text import safe_repr, safe_text, visible_text
 
 
 def add_log_level(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
@@ -189,6 +193,46 @@ class _ReadText:
         return self._representation
 
 
+class _FrozenInt(int):
+    """An int subclass's number with the texts the scrub read (#372): ``%d``
+    and JSON take the number, ``str`` and ``repr`` the texts, and neither can
+    change before the renderer reads it."""
+
+    _text: str
+    _representation: str
+
+    def __new__(cls, number: int, text: str, representation: str) -> _FrozenInt:
+        made = super().__new__(cls, number)
+        made._text = text
+        made._representation = representation
+        return made
+
+    def __str__(self) -> str:
+        return self._text
+
+    def __repr__(self) -> str:
+        return self._representation
+
+
+class _FrozenFloat(float):
+    """:class:`_FrozenInt` for a float subclass."""
+
+    _text: str
+    _representation: str
+
+    def __new__(cls, number: float, text: str, representation: str) -> _FrozenFloat:
+        made = super().__new__(cls, number)
+        made._text = text
+        made._representation = representation
+        return made
+
+    def __str__(self) -> str:
+        return self._text
+
+    def __repr__(self) -> str:
+        return self._representation
+
+
 class _StructlogValue(_ReadText):
     """What a value with a ``__structlog__`` method and clean ``str`` and
     ``repr`` is logged as: the method's return, scrubbed, for a renderer that
@@ -237,6 +281,17 @@ def _key(key: Any) -> Any:
         except Exception:  # noqa: BLE001 - inside the logger: logging it would recurse
             return _unprintable(key)
     return key
+
+
+def _json_key(key: Any) -> Any:
+    """A scrubbed dict key as JSON can write it: a string, number, bool or None
+    as it is, and any other key (a tuple, an object with ``__structlog__``) as
+    its text. structlog's JSONRenderer raises on such a key out of the log
+    call, and calls no ``__structlog__`` or default for a key (#371)."""
+    if key is None or isinstance(key, str | int | float | bool):
+        return key
+    texts = _texts(key)
+    return texts[0] if texts else _unprintable(key)
 
 
 # How many values one log line's scrub (or redacted_values rewrite) visits
@@ -394,9 +449,11 @@ class _LineScrub(_LineWalk):
     text.
     """
 
-    def __init__(self, redact: Callable[[str], str]) -> None:
+    def __init__(self, redact: Callable[[str], str], *, plain_numbers: bool = False) -> None:
         super().__init__()
         self._redact = redact
+        # Every int or float subclass as its plain number, as JSON writes it.
+        self._plain_numbers = plain_numbers
         self._reprs: dict[int, tuple[Any, str]] = {}
 
     def text(self, text: str) -> str:
@@ -433,7 +490,7 @@ class _LineScrub(_LineWalk):
         if isinstance(value, dict):
             result: dict[Any, Any] = {}
             for key, item in value.items():
-                scrubbed_key = _key(self(key, depth))
+                scrubbed_key = _json_key(self(key, depth))
                 # Two keys that scrub to the same text both stay, the later one numbered.
                 candidate, number = scrubbed_key, 1
                 while candidate in result:
@@ -462,8 +519,25 @@ class _LineScrub(_LineWalk):
             scrubbed = self.text(text)
             if scrubbed != text:
                 return scrubbed
-        if isinstance(value, int | float) or type(value) in _FIXED_TYPES:
+        if type(value) in (int, float) or type(value) in _FIXED_TYPES:
             return value
+        if isinstance(value, enum.Enum):
+            # A member's texts read its fixed name and value.
+            return value
+        if isinstance(value, int | float):
+            # A subclass's str or repr may read state a later __structlog__ in
+            # this line changes (#372). The plain number keeps %d and a native
+            # JSON number; one whose str is not the plain number's keeps them
+            # too, printing the texts the scrub read.
+            if isinstance(value, int):
+                whole = int.__int__(value)
+                if self._plain_numbers or texts[0] == str(whole):
+                    return whole
+                return _FrozenInt(whole, texts[0], texts[1])
+            real = float.__float__(value)
+            if self._plain_numbers or texts[0] == str(real):
+                return real
+            return _FrozenFloat(real, texts[0], texts[1])
         if self._closes_loop(value, depth):
             # Its own __structlog__ return led back to it: its repr ends the loop.
             return texts[1]
@@ -533,9 +607,207 @@ def _scrubbing_call(logger: GraftpunkLogger, name: str, secrets: tuple[str, ...]
                 kwargs["exception"] = "".join(traceback.format_exception(*exc_info)).rstrip("\n")
             if base == "exception":
                 target = "aerror" if is_async else "error"
-        return getattr(bound, target)(*scrub(args), **scrub(kwargs))
+        line = _formatted(args, _event_index(name), scrub)
+        return getattr(bound, target)(*scrub(line), **scrub(kwargs))
 
     return call
+
+
+def _event_index(name: str) -> int:
+    """Where the event sits in a log method's positional arguments: after the
+    level for ``log`` and ``alog``, first for every other method."""
+    return 1 if name in ("log", "alog") else 0
+
+
+def _percent(event: Any, positional: tuple[Any, ...]) -> str:
+    """``event % positional`` as structlog's bound loggers interpolate it: a
+    single non-empty mapping formats by name."""
+    if not isinstance(event, str):
+        raise TypeError(f"the event is a {type(event).__name__}, not a format string")
+    if len(positional) == 1 and isinstance(positional[0], Mapping) and positional[0]:
+        return event % positional[0]
+    return event % positional
+
+
+def _unformatted(event: Any, positional: tuple[Any, ...], error: BaseException) -> str:
+    """The line for a ``%`` format that fails: the format string as written,
+    a note naming the failure, and each argument's repr."""
+    shown = ", ".join(safe_repr(value) for value in positional)
+    return (
+        f"{safe_text(event)} [formatting failed: {type(error).__name__}: "
+        f"{safe_text(error)}; arguments: {shown}]"
+    )
+
+
+def _plain_number(raw: Any, scrubbed: Any) -> Any:
+    """*raw* as a number carrying the scrubbed text, when the scrub turned it
+    into text (its digits held a secret), else *scrubbed*.
+
+    Only for an argument every one of whose conversions is ``d``, ``i``,
+    ``u``, ``f`` or ``F`` (:func:`_numeric_retry`): those write the number's
+    decimal digits, which the text scrub of the formatted message matches.
+    ``%s`` and ``%r`` of it take the scrubbed text. Hex, octal, exponent and
+    character forms (``x``, ``X``, ``o``, ``e``, ``E``, ``g``, ``G``, ``c``)
+    write a form the scrub cannot match, and never get the number."""
+    if not isinstance(scrubbed, str) or isinstance(raw, bool):
+        return scrubbed
+    if isinstance(raw, int):
+        return _FrozenInt(int.__int__(raw), scrubbed, scrubbed)
+    if isinstance(raw, float):
+        return _FrozenFloat(float.__float__(raw), scrubbed, scrubbed)
+    if type(raw) in (decimal.Decimal, fractions.Fraction):
+        return raw
+    return scrubbed
+
+
+# One %-conversion: an optional mapping key, flags, width, precision, length
+# modifier, and the conversion character.
+_CONVERSION = re.compile(r"%(?:\(([^)]*)\))?[#0 +\-]*(\*|\d+)?(?:\.(\*|\d+))?[hlL]?([a-zA-Z%])")
+_DECIMAL_CONVERSIONS = frozenset("diufF")
+
+
+def _numeric_retry(
+    event: str, positional: tuple[Any, ...], scrubbed: tuple[Any, ...]
+) -> tuple[Any, ...]:
+    """*scrubbed* with a number put back (:func:`_plain_number`) where every
+    conversion that takes it writes decimal digits: by position, or by name
+    for a single mapping. A ``*`` width or precision takes arguments too, so
+    nothing is put back in a format that has one."""
+    conversions = [m for m in _CONVERSION.finditer(event) if m.group(4) != "%"]
+    if any("*" in (m.group(2) or "", m.group(3) or "") for m in conversions):
+        return scrubbed
+    if len(positional) == 1 and isinstance(positional[0], Mapping) and positional[0]:
+        raw, ready = positional[0], scrubbed[0]
+        if not isinstance(ready, dict):
+            return scrubbed
+        kinds: dict[str, set[str]] = {}
+        for m in conversions:
+            kinds.setdefault(m.group(1) or "", set()).add(m.group(4))
+        restored = dict(ready)
+        for key, used in kinds.items():
+            if used <= _DECIMAL_CONVERSIONS and key in raw and key in ready:
+                restored[key] = _plain_number(raw[key], ready[key])
+        return (restored,)
+    kinds_at = [m.group(4) for m in conversions]
+    return tuple(
+        _plain_number(raw, ready)
+        if index < len(kinds_at) and kinds_at[index] in _DECIMAL_CONVERSIONS
+        else ready
+        for index, (raw, ready) in enumerate(zip(positional, scrubbed, strict=True))
+    )
+
+
+def _formatted(
+    args: tuple[Any, ...], index: int, scrub: Callable[[Any], Any] | None = None
+) -> tuple[Any, ...]:
+    """A log method's arguments with the event and its ``%`` arguments as the
+    one formatted message, so structlog's logger has nothing left to
+    interpolate and never raises on a bad format.
+
+    With *scrub* (inside a secret scope) the message is formatted from the
+    scrubbed arguments, so an escaped form of a secret (``%r`` of bytes, ``%a``)
+    is never written. If that fails, which a number whose digits held a secret
+    makes it do under ``%d``, such numbers are put back where every conversion
+    of them writes decimal digits (:func:`_numeric_retry`) and the message is
+    formatted again. A format that still fails, or fails without a
+    scope, is written by :func:`_unformatted`. The message is scrubbed last in
+    every case.
+    """
+    if len(args) <= index + 1:
+        return args
+    head, event, positional = args[:index], args[index], args[index + 1 :]
+    if scrub is None:
+        try:
+            message = _percent(event, positional)
+        except Exception as error:  # noqa: BLE001 - a log call must not raise
+            message = _unformatted(event, positional, error)
+        return (*head, message)
+    scrubbed = scrub(positional)
+    if not isinstance(scrubbed, tuple):
+        scrubbed = tuple(scrub(value) for value in positional)
+    try:
+        message = _percent(event, scrubbed)
+    except Exception as first:  # noqa: BLE001 - try again with plain numbers
+        try:
+            if not isinstance(event, str):
+                raise first
+            message = _percent(event, _numeric_retry(event, positional, scrubbed))
+        except Exception as error:  # noqa: BLE001 - a log call must not raise
+            message = _unformatted(event, scrubbed, error)
+    return (*head, scrub(message))
+
+
+def _formatting_call(method: Any, index: int) -> Any:
+    """*method* with its ``%`` arguments formatted by :func:`_formatted`, unless
+    structlog's level filter drops the line."""
+    if getattr(method, "__func__", method) in _DROPPED_LINE_METHODS:
+        return method
+
+    def call(*args: Any, **kwargs: Any) -> Any:
+        return method(*_formatted(args, index), **kwargs)
+
+    return call
+
+
+def _unchanged(text: str) -> str:
+    return text
+
+
+class _SafeRenderer:
+    """A structlog renderer that never raises out of the log call: gp's JSON
+    and console formats each wrap theirs in one.
+
+    A line the renderer cannot write is written again after the scrub's walk
+    with nothing to redact. The walk makes a key that is not a string, number,
+    bool or None its text (#371), a container that holds itself its repr, and
+    a value whose ``str`` and ``repr`` both raise (one whose ``__repr__``
+    raises, an int past Python's 4300-digit limit) a fixed placeholder. If that
+    fails too, the line is a fixed event carrying the level and timestamp. A
+    line the renderer can write is written as before.
+    """
+
+    def __init__(
+        self, render: Callable[[WrappedLogger, str, EventDict], Any], *, json: bool
+    ) -> None:
+        self._render = render
+        # JSON writes an int or float subclass as its number; the walk does too.
+        self._plain_numbers = json
+
+    def __call__(self, logger: WrappedLogger, method_name: str, event_dict: EventDict) -> Any:
+        return _writable(self._line(logger, method_name, event_dict))
+
+    def _line(self, logger: WrappedLogger, method_name: str, event_dict: EventDict) -> Any:
+        try:
+            return self._render(logger, method_name, dict(event_dict))
+        except Exception:  # noqa: BLE001, S110 - a log call must not raise
+            pass
+        try:
+            walked = _LineScrub(_unchanged, plain_numbers=self._plain_numbers)(event_dict)
+            return self._render(logger, method_name, walked)
+        except Exception:  # noqa: BLE001 - a log call must not raise
+            return self._render(logger, method_name, _last_resort(event_dict))
+
+
+def _writable(line: Any) -> Any:
+    """A rendered line with each lone surrogate as U+FFFD: the console format
+    writes one as is, and a UTF-8 stderr raised ``UnicodeEncodeError`` out of
+    the log call (JSON escapes it)."""
+    return visible_text(line) if isinstance(line, str) else line
+
+
+_UNRENDERABLE = "<unrenderable log line>"
+
+
+def _last_resort(event_dict: EventDict) -> EventDict:
+    """The line when nothing else renders: a fixed event, and the level and
+    timestamp when they are strings (add_log_level and TimeStamper write
+    them so)."""
+    line: dict[str, Any] = {"event": _UNRENDERABLE}
+    for key in ("level", "timestamp"):
+        value = event_dict.get(key)
+        if type(value) is str:
+            line[key] = value
+    return line
 
 
 def _processors(json_output: bool, colors: bool) -> list[Any]:
@@ -543,11 +815,17 @@ def _processors(json_output: bool, colors: bool) -> list[Any]:
     # ran before it (structlog 21.2.0 and later), so only JSON output gets it.
     # plain_traceback keeps the console traceback as format_exc_info wrote it.
     tail: list[Any] = (
-        [structlog.processors.format_exc_info, structlog.processors.JSONRenderer()]
+        [
+            structlog.processors.format_exc_info,
+            _SafeRenderer(structlog.processors.JSONRenderer(), json=True),
+        ]
         if json_output
         else [
-            structlog.dev.ConsoleRenderer(
-                colors=colors, exception_formatter=structlog.dev.plain_traceback
+            _SafeRenderer(
+                structlog.dev.ConsoleRenderer(
+                    colors=colors, exception_formatter=structlog.dev.plain_traceback
+                ),
+                json=False,
             )
         ]
     )
@@ -728,6 +1006,8 @@ class GraftpunkLogger:
         secrets = _current_secrets()
         if secrets and is_log_method:
             method = _scrubbing_call(self, name, secrets)
+        elif is_log_method:
+            method = _formatting_call(getattr(self._resolve(), name), _event_index(name))
         else:
             method = getattr(self._resolve(), name)
         # redacted_values() rewrites its pairs first; log_secrets() then

@@ -16,6 +16,7 @@ import collections
 import dataclasses
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -2521,3 +2522,611 @@ class TestRecorderLogs:
 
         (warning,) = [e for e in logs if e["event"] == "post_data_unavailable"]
         assert warning["url"].endswith(f"/api/search?key={REDACTED}")
+
+
+class _StructlogKey:
+    """A hashable dict key with a ``__structlog__`` method (#371)."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def __structlog__(self) -> str:
+        return f"key:{self.text}"
+
+    def __repr__(self) -> str:
+        return f"Key({self.text})"
+
+    def __hash__(self) -> int:
+        return hash(self.text)
+
+
+def _log_in(fmt: str, scoped: bool, **values: Any) -> None:
+    """One line logged under gp's *fmt* format, inside a secret scope or not.
+    Configured in the call: configure_logging binds the
+    stderr of that moment."""
+    from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+    configure_logging(level="DEBUG", json_output=fmt == "json")
+    log = get_logger("t")
+    if scoped:
+        with log_secrets([SCOPE_KEY]):
+            log.warning("line", **values)
+    else:
+        log.warning("line", **values)
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+@pytest.mark.parametrize("scoped", [False, True], ids=["outside-scope", "inside-scope"])
+class TestNonStringKeys:
+    """#371: a key JSON cannot write made JSONRenderer raise out of the log call."""
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param(_StructlogKey("clean"), id="structlog-clean"),
+            pytest.param(_StructlogKey(SCOPE_KEY), id="structlog-secret"),
+            pytest.param((1, SCOPE_KEY), id="tuple-secret"),
+            pytest.param(frozenset({"clean"}), id="frozenset"),
+        ],
+    )
+    def test_the_line_renders_and_a_secret_in_the_key_is_redacted(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool, key: Any
+    ) -> None:
+        _log_in(fmt, scoped, data={key: 1, "other": 2})
+        text = strip_ansi(capsys.readouterr().err)
+        assert "line" in text
+        assert "other" in text
+        if scoped:
+            assert SCOPE_KEY not in text
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert len(line["data"]) == 2
+            (written,) = [k for k in line["data"] if k != "other"]
+            assert written == (str(key) if not scoped else str(key).replace(SCOPE_KEY, REDACTED))
+
+    def test_a_container_that_holds_itself_renders(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool
+    ) -> None:
+        loop: list[Any] = [1]
+        loop.append(loop)
+        _log_in(fmt, scoped, value=loop)
+        text = strip_ansi(capsys.readouterr().err)
+        assert "[1, [...]]" in text
+
+    def test_int_and_string_keys_are_written_as_before(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool
+    ) -> None:
+        _log_in(fmt, scoped, data={1: "a", "b": 2, None: 3})
+        text = strip_ansi(capsys.readouterr().err)
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["data"] == {"1": "a", "b": 2, "null": 3}
+        else:
+            assert "{1: 'a', 'b': 2, None: 3}" in text
+
+
+class _StatefulInt(int):
+    """An int whose str and repr read state a later ``__structlog__`` changes (#372)."""
+
+    state = ["clean"]
+
+    def __repr__(self) -> str:
+        return f"StatefulInt({self.state[0]})"
+
+    __str__ = __repr__
+
+
+class _PlainTextInt(int):
+    """An int subclass whose str is the plain number's and whose repr reads state."""
+
+    state = ["clean"]
+
+    def __str__(self) -> str:
+        return int.__repr__(self)
+
+    def __repr__(self) -> str:
+        return f"PlainTextInt({self.state[0]})"
+
+
+class _SetsState:
+    def __structlog__(self) -> str:
+        _StatefulInt.state[0] = SCOPE_KEY
+        _PlainTextInt.state[0] = SCOPE_KEY
+        return "set"
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+class TestNumberSubclassText:
+    """#372: inside a secret scope an int or float subclass was kept live, so
+    a later member's ``__structlog__`` could change the text it printed."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self) -> Iterator[None]:
+        _StatefulInt.state[0] = "clean"
+        _PlainTextInt.state[0] = "clean"
+        yield
+        _StatefulInt.state[0] = "clean"
+        _PlainTextInt.state[0] = "clean"
+
+    def test_a_subclass_whose_text_differs_logs_the_text_read(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        _log_in(fmt, True, n=_StatefulInt(5), m=_SetsState())
+        text = strip_ansi(capsys.readouterr().err)
+        assert SCOPE_KEY not in text
+        if fmt == "json":
+            # JSON writes the number, never the subclass's text.
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["n"] == 5
+        else:
+            assert "n=StatefulInt(clean)" in text
+
+    def test_percent_d_takes_a_subclass_whose_text_differs(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("count %d of %s", _StatefulInt(7), _StatefulInt(8))
+        assert "count 7 of StatefulInt(clean)" in strip_ansi(capsys.readouterr().err)
+
+    def test_a_subclass_whose_text_is_the_numbers_logs_the_plain_number(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        _log_in(fmt, True, n=_PlainTextInt(5), m=_SetsState())
+        text = strip_ansi(capsys.readouterr().err)
+        assert SCOPE_KEY not in text
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["n"] == 5
+        else:
+            assert "n=5" in text
+
+    def test_percent_d_formatting_still_takes_the_number(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("count %d", _PlainTextInt(7))
+        assert "count 7" in strip_ansi(capsys.readouterr().err)
+
+    def test_a_float_subclass_whose_text_is_the_numbers_stays_a_number(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        class Price(float):
+            pass
+
+        _log_in(fmt, True, p=Price(2.5))
+        text = strip_ansi(capsys.readouterr().err)
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["p"] == 2.5
+        else:
+            assert "p=2.5" in text
+
+    def test_an_int_enum_member_is_kept(self, capsys: pytest.CaptureFixture[str], fmt: str) -> None:
+        import enum
+
+        class Color(enum.IntEnum):
+            RED = 1
+
+        _log_in(fmt, True, c=Color.RED)
+        text = strip_ansi(capsys.readouterr().err)
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["c"] == 1
+        else:
+            assert "c=<Color.RED: 1>" in text
+
+
+class _NoText:
+    """A value whose ``str`` and ``repr`` both raise."""
+
+    def __repr__(self) -> str:
+        raise RuntimeError("no repr")
+
+    __str__ = __repr__
+
+    def __hash__(self) -> int:
+        return 1
+
+
+class _SecretInt(int):
+    def __repr__(self) -> str:
+        return f"SecretInt({SCOPE_KEY})"
+
+    __str__ = __repr__
+
+
+class _Price(float):
+    """A float subclass whose text is not the number's."""
+
+    def __repr__(self) -> str:
+        return f"Price({float.__repr__(self)})"
+
+    __str__ = __repr__
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+class TestLoggingNeverRaises:
+    """A log call raised out of the caller: ``%d`` on a number whose text held a
+    scoped secret, and, in the console format, a value or key whose ``repr``
+    raises or an int past Python's 4300-digit limit."""
+
+    def _text(self, capsys: pytest.CaptureFixture[str]) -> str:
+        return strip_ansi(capsys.readouterr().err)
+
+    def test_percent_d_on_a_number_whose_digits_hold_the_secret(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets(["482"]):
+            get_logger("t").warning("fetched %d rows of %s", 14821, "x482y")
+        text = self._text(capsys)
+        assert "fetched" in text
+        assert "482" not in _without_timestamps(text)
+        assert f"fetched 1{REDACTED}1 rows of x{REDACTED}y" in text
+
+    def test_percent_d_on_a_subclass_whose_text_holds_the_secret(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("n %d is %s", _SecretInt(5), _SecretInt(6))
+        text = self._text(capsys)
+        assert f"n 5 is SecretInt({REDACTED})" in text
+        assert SCOPE_KEY not in text
+
+    def test_a_mapping_argument_formats_by_name(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("got %(n)d for %(who)s", {"n": 3, "who": SCOPE_KEY})
+        text = self._text(capsys)
+        assert f"got 3 for {REDACTED}" in text
+
+    @pytest.mark.parametrize("scoped", [False, True], ids=["outside-scope", "inside-scope"])
+    @pytest.mark.parametrize(
+        "values",
+        [
+            pytest.param({"v": _NoText()}, id="repr-raises"),
+            pytest.param({"data": {_NoText(): 1}}, id="key-repr-raises"),
+            pytest.param({"v": 10**5000}, id="int-past-4300-digits"),
+        ],
+    )
+    def test_an_unprintable_value_renders(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool, values: dict[str, Any]
+    ) -> None:
+        _log_in(fmt, scoped, **values)
+        text = self._text(capsys)
+        assert "line" in text
+        assert "<unprintable" in text
+
+    def test_a_float_subclass_whose_text_differs(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([SCOPE_KEY]):
+            get_logger("t").warning("p %.1f", _Price(2.5), p=_Price(2.5))
+        text = self._text(capsys)
+        assert "p 2.5" in text
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["p"] == 2.5
+        else:
+            assert "p=Price(2.5)" in text
+
+    def test_the_last_resort_line_keeps_level_and_timestamp(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the walk fails too, the line is a fixed event with the level
+        and timestamp."""
+        import graftpunk.logging as gp_logging
+
+        def walk_fails(self: Any, value: Any, depth: int = 0) -> Any:
+            raise RuntimeError("walk")
+
+        monkeypatch.setattr(gp_logging._LineScrub, "__call__", walk_fails)
+        _log_in(fmt, False, v=_NoText())
+        text = self._text(capsys)
+        assert "<unrenderable log line>" in text
+        assert "warning" in text
+        if fmt == "json":
+            (line,) = [json.loads(raw) for raw in text.splitlines() if raw]
+            assert line["level"] == "warning"
+            assert line["timestamp"].startswith("20")
+        else:
+            assert re.search(r"^\d{4}-\d\d-\d\dT", text)
+
+
+_NON_ASCII_SECRET = "p\u00e4ssw\u00f6rd"  # noqa: S105 - a test secret
+
+
+class _StrRaises:
+    def __str__(self) -> str:
+        raise RuntimeError("no str")
+
+    def __repr__(self) -> str:
+        return "StrRaises()"
+
+
+_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?|\b\d{2}:\d{2}:\d{2}(?:\.\d+)?\b")
+
+
+def _without_timestamps(text: str) -> str:
+    """*text* without its log timestamps, which hold any short digit secret
+    (``482`` in ``01:32:57.448281Z``) by chance."""
+    return _TIMESTAMP.sub("<time>", text)
+
+
+def _escaped_forms(secret: str) -> list[str]:
+    """The forms ``%r`` of bytes and ``%a`` write a non-ASCII secret in."""
+    return [
+        repr(secret.encode())[2:-1],
+        ascii(secret)[1:-1],
+        secret,
+    ]
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+class TestNoSecretInAFormattedMessage:
+    """Round 2 formatted a ``%`` message from the raw arguments and scrubbed
+    the text, so ``%r`` of bytes and ``%a`` wrote a non-ASCII secret as escape
+    sequences the text scrub did not match. The message is formatted from the
+    scrubbed arguments now."""
+
+    def _log(self, fmt: str, event: str, *args: Any) -> str:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([_NON_ASCII_SECRET, "482", SCOPE_KEY]):
+            get_logger("t").warning(event, *args)
+        return ""
+
+    @pytest.mark.parametrize(
+        ("event", "args"),
+        [
+            pytest.param("raw %r", (_NON_ASCII_SECRET.encode(),), id="percent-r-bytes"),
+            pytest.param("pw %a", (_NON_ASCII_SECRET,), id="percent-a"),
+            pytest.param("pw %s", (_NON_ASCII_SECRET,), id="percent-s"),
+            pytest.param(
+                "pw %r",
+                ([_NON_ASCII_SECRET.encode(), " " + _NON_ASCII_SECRET],),
+                id="percent-r-list",
+            ),
+            pytest.param("n %d of %r", (14821, _NON_ASCII_SECRET.encode()), id="percent-d-and-r"),
+            pytest.param(
+                "%(who)s and %(pw)r",
+                ({"who": SCOPE_KEY, "pw": _NON_ASCII_SECRET.encode()},),
+                id="mapping",
+            ),
+            pytest.param(
+                "%s%s", (_NON_ASCII_SECRET[:4], _NON_ASCII_SECRET[4:]), id="split-across-two"
+            ),
+        ],
+    )
+    def test_redacted(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, event: str, args: tuple[Any, ...]
+    ) -> None:
+        self._log(fmt, event, *args)
+        err = capsys.readouterr().err
+        raw = (
+            err.encode("utf-8").decode("unicode_escape", errors="replace") if fmt == "json" else err
+        )
+        for form in _escaped_forms(_NON_ASCII_SECRET):
+            assert form not in err, form
+            assert form not in raw, form
+        assert "482" not in _without_timestamps(err)
+        assert SCOPE_KEY not in err
+        assert REDACTED in err
+
+    def test_percent_d_of_a_number_whose_text_holds_the_secret(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        self._log(fmt, "fetched %d rows, %s", 14821, 14821)
+        err = capsys.readouterr().err
+        assert f"fetched 1{REDACTED}1 rows, 1{REDACTED}1" in err
+
+
+_BAD_FORMATS: list[Any] = [
+    pytest.param("%d %d", (1,), "TypeError", id="too-few-arguments"),
+    pytest.param("n %d", (1, 2), "TypeError", id="too-many-arguments"),
+    pytest.param("n", ("x",), "TypeError", id="no-conversion"),
+    pytest.param("n %d", ("x",), "TypeError", id="percent-d-of-a-string"),
+    pytest.param("n %y", (1,), "ValueError", id="unknown-conversion"),
+    pytest.param("%(k)s", ({"z": 1},), "KeyError", id="missing-mapping-key"),
+    pytest.param("n %d", (10**5000,), "ValueError", id="int-past-4300-digits"),
+    pytest.param("v %s", (_StrRaises(),), "RuntimeError", id="str-raises"),
+]
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+@pytest.mark.parametrize("scoped", [False, True], ids=["outside-scope", "inside-scope"])
+class TestABadFormatNeverRaises:
+    """structlog's bound logger interpolated ``%`` arguments itself and raised
+    out of the log call on a bad format, inside a secret scope or not. The
+    line now carries the format string, a note, and the arguments' reprs."""
+
+    @pytest.mark.parametrize(("event", "args", "error"), _BAD_FORMATS)
+    def test_the_line_renders(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        fmt: str,
+        scoped: bool,
+        event: str,
+        args: tuple[Any, ...],
+        error: str,
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        log = get_logger("t")
+        if scoped:
+            with log_secrets([SCOPE_KEY]):
+                log.warning(event, *args)
+        else:
+            log.warning(event, *args)
+        err = strip_ansi(capsys.readouterr().err)
+        if scoped and error == "RuntimeError":
+            # The scope's scrub reads the value's repr when its str raises,
+            # so the format succeeds with that text.
+            assert "v StrRaises()" in err
+            return
+        assert event in err
+        assert "formatting failed" in err
+        assert error in err
+
+    def test_a_secret_in_a_failed_format_is_redacted(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool
+    ) -> None:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        if not scoped:
+            pytest.skip("redaction applies inside a scope")
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([_NON_ASCII_SECRET]):
+            get_logger("t").warning("%d %d", _NON_ASCII_SECRET.encode())
+        err = capsys.readouterr().err
+        for form in _escaped_forms(_NON_ASCII_SECRET):
+            assert form not in err
+        assert "formatting failed" in err
+
+    def test_the_log_method_takes_its_level_first(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, scoped: bool
+    ) -> None:
+        import logging as stdlib_logging
+
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        log = get_logger("t")
+        if scoped:
+            with log_secrets([SCOPE_KEY]):
+                log.log(stdlib_logging.WARNING, "n %d of %s", 3, SCOPE_KEY)
+        else:
+            log.log(stdlib_logging.WARNING, "n %d of %s", 3, "x")
+        err = strip_ansi(capsys.readouterr().err)
+        assert "n 3 of " in err
+        assert SCOPE_KEY not in err
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+@pytest.mark.parametrize("scoped", [False, True], ids=["outside-scope", "inside-scope"])
+def test_a_lone_surrogate_logs_to_a_strict_utf8_stderr(
+    monkeypatch: pytest.MonkeyPatch, fmt: str, scoped: bool
+) -> None:
+    """The console format wrote a lone surrogate as is, and a UTF-8 stderr (as
+    Python's is) raised ``UnicodeEncodeError`` out of the log call."""
+    import io as stdlib_io
+
+    raw = stdlib_io.BytesIO()
+    monkeypatch.setattr(
+        sys, "stderr", stdlib_io.TextIOWrapper(raw, encoding="utf-8", errors="strict")
+    )
+    from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+    configure_logging(level="DEBUG", json_output=fmt == "json")
+    log = get_logger("t")
+    if scoped:
+        with log_secrets([SCOPE_KEY]):
+            log.warning("line", v="a\ud800b")
+    else:
+        log.warning("line", v="a\ud800b")
+    sys.stderr.flush()
+    text = raw.getvalue().decode("utf-8")
+    assert "line" in text
+    assert "a�b" in text or "a\\ud800b" in text
+
+
+_NUMERIC_SECRET = 1234567
+_NUMERIC_FORMS = [
+    str(_NUMERIC_SECRET),
+    format(_NUMERIC_SECRET, "x"),
+    format(_NUMERIC_SECRET, "X"),
+    format(_NUMERIC_SECRET, "o"),
+    format(_NUMERIC_SECRET, "e"),
+    format(_NUMERIC_SECRET, "E"),
+    format(_NUMERIC_SECRET, "g"),
+    "123456",  # %g's six significant digits
+]
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+class TestNoReversibleNumericForm:
+    """Round 3's retry handed ``%`` the raw number whatever the conversion, so
+    ``%x``, ``%o`` and ``%e`` wrote a numeric secret in hex, octal or exponent
+    form, which the text scrub cannot match. A number is put back only for
+    ``d``, ``i``, ``u``, ``f`` and ``F``."""
+
+    def _log(self, capsys: pytest.CaptureFixture[str], fmt: str, event: str, *args: Any) -> str:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([str(_NUMERIC_SECRET)]):
+            get_logger("t").warning(event, *args)
+        err = strip_ansi(capsys.readouterr().err)
+        # The timestamp can hold digits by chance: check the rest of the line.
+        return re.sub(r"\d{4}-\d\d-\d\dT[\d:.]+Z", "", err)
+
+    @pytest.mark.parametrize(
+        "conversion", ["x", "X", "o", "e", "E", "g", "G", "c", "#x", "08o", ".3e"]
+    )
+    def test_a_non_decimal_conversion_writes_the_failed_line(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, conversion: str
+    ) -> None:
+        line = self._log(capsys, fmt, f"acct %{conversion}", _NUMERIC_SECRET)
+        for form in _NUMERIC_FORMS:
+            assert form not in line, form
+        assert "formatting failed" in line
+        assert REDACTED in line
+
+    def test_with_secret_bytes_before_it(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        line = self._log(capsys, fmt, "%r %x", str(_NUMERIC_SECRET).encode(), _NUMERIC_SECRET)
+        for form in _NUMERIC_FORMS:
+            assert form not in line, form
+
+    @pytest.mark.parametrize("conversion", ["d", "i", "u", "f", "F", "5d", ".1f"])
+    def test_a_decimal_conversion_writes_the_redacted_number(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, conversion: str
+    ) -> None:
+        line = self._log(capsys, fmt, f"acct %{conversion} end", _NUMERIC_SECRET)
+        assert "formatting failed" not in line
+        assert f"acct {REDACTED}" in line
+        for form in _NUMERIC_FORMS:
+            assert form not in line, form
+
+    def test_a_mapping_writes_the_redacted_number(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        line = self._log(capsys, fmt, "acct %(a)d of %(b)s", {"a": _NUMERIC_SECRET, "b": "x"})
+        assert f"acct {REDACTED} of x" in line
+
+    def test_a_mapping_key_used_by_a_non_decimal_conversion_is_not_put_back(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        line = self._log(capsys, fmt, "acct %(a)d %(a)x", {"a": _NUMERIC_SECRET})
+        for form in _NUMERIC_FORMS:
+            assert form not in line, form
+        assert "formatting failed" in line
+
+    def test_one_decimal_and_one_hex_use_of_the_same_value(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        line = self._log(capsys, fmt, "acct %d %x", _NUMERIC_SECRET, _NUMERIC_SECRET)
+        for form in _NUMERIC_FORMS:
+            assert form not in line, form
+        assert "formatting failed" in line

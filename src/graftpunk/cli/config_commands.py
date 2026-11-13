@@ -18,8 +18,8 @@ from graftpunk import paths, workstation_env
 from graftpunk.cli.login_commands import SECRET_KEYWORDS
 from graftpunk.config import get_settings
 
-console = Console()
-err_console = Console(stderr=True)
+console = Console(emoji=False)
+err_console = Console(stderr=True, emoji=False)
 
 config_app = typer.Typer(
     name="config",
@@ -121,6 +121,7 @@ def get_cmd(
                 style="red",
                 markup=False,
                 highlight=False,
+                emoji=False,
             )
         else:
             err_console.print(f"[red]command for {escape(str(name))} failed (see log output)[/red]")

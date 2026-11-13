@@ -109,7 +109,7 @@ app = typer.Typer(
     # login credentials; an uncaught exception's traceback must not print them.
     pretty_exceptions_show_locals=False,
 )
-console = Console()
+console = Console(emoji=False)
 
 
 class ObserveMode(enum.StrEnum):

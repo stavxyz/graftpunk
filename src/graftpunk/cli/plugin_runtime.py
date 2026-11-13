@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from graftpunk.observe.run import Redaction
 
 LOG = get_logger(__name__)
-_format_console = Console()
+_format_console = Console(emoji=False)
 
 
 def _driver_of(session: object) -> Any:

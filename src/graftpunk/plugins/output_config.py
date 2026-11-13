@@ -4,10 +4,13 @@ Provides dataclasses for configuring how command output is filtered,
 formatted, and displayed across table, CSV, and other formats.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from graftpunk import console as gp_console
 from graftpunk.logging import get_logger
+from graftpunk.plugins.export import table_rows
 
 LOG = get_logger(__name__)
 
@@ -99,14 +102,15 @@ class OutputConfig:
     def filter_views(
         self,
         names: list[str],
-        column_overrides: dict[str, list[str]] | None = None,
+        column_overrides: dict[str, list[str] | ColumnFilter] | None = None,
     ) -> "OutputConfig":
         """Return a new OutputConfig with only the requested views.
 
         Args:
             names: View names to include, in the requested order.
-            column_overrides: Optional mapping of view name to column list.
-                Replaces the view's ColumnFilter with an include filter.
+            column_overrides: Optional mapping of view name to a column list,
+                which replaces the view's ColumnFilter with an include filter,
+                or to a ColumnFilter, which replaces it as given.
 
         Returns:
             New OutputConfig with filtered views. Preserves ``default_view``
@@ -115,17 +119,84 @@ class OutputConfig:
         overrides = column_overrides or {}
         views_by_name = {v.name: v for v in self.views}
         filtered: list[ViewConfig] = []
-        for name in names:
+        # A name given twice keeps its first place: two copies of one view
+        # would fail the unique-name check (#292).
+        for name in dict.fromkeys(names):
             view = views_by_name.get(name)
             if view is None:
                 LOG.warning("filter_views_unknown", name=name, available=list(views_by_name))
                 continue
             if name in overrides:
-                view = replace(view, columns=ColumnFilter("include", tuple(overrides[name])))
+                override = overrides[name]
+                if not isinstance(override, ColumnFilter):
+                    override = ColumnFilter("include", tuple(override))
+                view = replace(view, columns=override)
             filtered.append(view)
         filtered_names = {v.name for v in filtered}
         default = self.default_view if self.default_view in filtered_names else ""
         return OutputConfig(views=tuple(filtered), default_view=default)
+
+
+def select_views(config: OutputConfig, view_args: Sequence[str]) -> OutputConfig:
+    """*config* narrowed to the views ``--view`` arguments name, in the order given.
+
+    A view named more than once is shown once with the union of the columns
+    its arguments ask for, and one warning names every repeated view (#292).
+    An argument with a column list asks for those columns, and one without
+    asks for the view's own columns, so the union is:
+
+    - no column list at all: the view's own filter, unchanged;
+    - only column lists: those columns, in first-seen order;
+    - a bare argument and a column list, for a view with an include filter:
+      its columns and the listed ones, in first-seen order;
+    - the same, for a view with no filter: every column;
+    - the same, for a view with an exclude filter: every column the filter
+      shows plus the listed ones, so a listed column the filter excludes is
+      shown (the exclude filter less the listed columns).
+    """
+    names: list[str] = []
+    repeated: list[str] = []
+    merged: dict[str, list[str]] = {}
+    listed: dict[str, list[str]] = {}
+    bare: set[str] = set()
+    for arg in view_args:
+        name, cols = parse_view_arg(arg)
+        if name not in names:
+            names.append(name)
+        elif name not in repeated:
+            repeated.append(name)
+        if cols:
+            asked = listed.setdefault(name, [])
+            asked.extend(c for c in cols if c not in asked)
+        else:
+            bare.add(name)
+            view = config.get_view(name)
+            own = view.columns if view is not None else None
+            if own is None or own.mode == "exclude":
+                continue
+            cols = list(own.columns)
+        columns = merged.setdefault(name, [])
+        columns.extend(c for c in cols if c not in columns)
+    if repeated:
+        gp_console.warn(
+            f"--view given more than once for {', '.join(repeated)}: "
+            "showing each view once, with the union of the columns asked for."
+        )
+    overrides: dict[str, list[str] | ColumnFilter] = {}
+    for name, asked in listed.items():
+        if name not in bare:
+            overrides[name] = merged[name]
+            continue
+        view = config.get_view(name)
+        own = view.columns if view is not None else None
+        if own is None:
+            continue  # every column
+        if own.mode == "include":
+            overrides[name] = merged[name]
+        else:
+            kept = tuple(c for c in own.columns if c not in asked)
+            overrides[name] = ColumnFilter("exclude", kept)
+    return config.filter_views(names, overrides)
 
 
 def parse_view_arg(arg: str) -> tuple[str, list[str]]:
@@ -203,12 +274,17 @@ def apply_column_filter(
     data: list[dict],
     column_filter: ColumnFilter | None,
 ) -> list[dict]:
-    """Apply column filter to list of dictionaries."""
+    """Apply column filter to list of dictionaries.
+
+    A row that is not a dict is first the one-column row ``{"value": row}``
+    (:func:`graftpunk.plugins.export.table_rows`), so the filter keeps or drops
+    it like any other column, where ``row[k]`` raised.
+    """
     if column_filter is None:
         return data
 
     result = []
-    for row in data:
+    for row in table_rows(data):
         if column_filter.mode == "include":
             filtered = {k: row[k] for k in column_filter.columns if k in row}
         else:

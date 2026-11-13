@@ -2,6 +2,8 @@
 
 import pytest
 
+from graftpunk.plugins.cli_plugin import CommandResult
+from graftpunk.plugins.formatters import format_output
 from graftpunk.plugins.output_config import (
     ColumnDisplayConfig,
     ColumnFilter,
@@ -11,6 +13,7 @@ from graftpunk.plugins.output_config import (
     auto_detect_columns,
     extract_view_data,
     parse_view_arg,
+    select_views,
 )
 
 
@@ -406,3 +409,103 @@ class TestExtractViewData:
         data = {"items": [{"id": 1, "active": True}, {"id": 2, "active": False}]}
         result = extract_view_data(data, "items[?active]")
         assert result == [{"id": 1, "active": True}]
+
+
+class TestRepeatedViewArgs:
+    """#292: --view items:a --view items:b raised ValueError: Duplicate view
+    names after the command's request had run."""
+
+    def _cfg(self) -> OutputConfig:
+        return OutputConfig(
+            views=[
+                ViewConfig(name="items", title="Items"),
+                ViewConfig(name="picked", columns=ColumnFilter("include", ("id", "sku"))),
+                ViewConfig(name="page", title="Page"),
+            ],
+        )
+
+    def test_repeats_merge_as_the_union_in_first_seen_order(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        out = select_views(self._cfg(), ["items:a,b", "page", "items:c,a"])
+        assert [v.name for v in out.views] == ["items", "page"]
+        assert out.views[0].columns == ColumnFilter("include", ("a", "b", "c"))
+        assert out.views[1].columns is None
+        err = capsys.readouterr().err
+        assert err.count("--view given more than once") == 1
+        assert "items" in err
+
+    def test_one_warning_names_every_repeated_view(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        select_views(self._cfg(), ["items:a", "page", "items:b", "page", "items:c"])
+        err = capsys.readouterr().err
+        assert err.count("--view given more than once") == 1
+        assert "items, page" in err
+
+    def test_no_repeat_no_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
+        out = select_views(self._cfg(), ["items:a", "page"])
+        assert out.views[0].columns == ColumnFilter("include", ("a",))
+        assert capsys.readouterr().err == ""
+
+    def test_a_column_an_exclude_view_hides_is_shown_when_asked_for(self) -> None:
+        """``--view ex:x --view ex`` on a view excluding x and y: the union of
+        x and the view's own columns shows x, and still hides y."""
+        cfg = OutputConfig(
+            views=[ViewConfig(name="ex", columns=ColumnFilter("exclude", ("x", "y")))]
+        )
+        for args in (["ex:x", "ex"], ["ex", "ex:x"]):
+            out = select_views(cfg, args)
+            assert out.views[0].columns == ColumnFilter("exclude", ("y",)), args
+
+    def test_an_exclude_view_with_only_column_lists_shows_just_those(self) -> None:
+        cfg = OutputConfig(views=[ViewConfig(name="ex", columns=ColumnFilter("exclude", ("x",)))])
+        out = select_views(cfg, ["ex:x", "ex:a"])
+        assert out.views[0].columns == ColumnFilter("include", ("x", "a"))
+
+    def test_an_exclude_view_named_only_bare_keeps_its_filter(self) -> None:
+        cfg = OutputConfig(views=[ViewConfig(name="ex", columns=ColumnFilter("exclude", ("x",)))])
+        out = select_views(cfg, ["ex", "ex"])
+        assert out.views[0].columns == ColumnFilter("exclude", ("x",))
+
+    def test_a_bare_repeat_of_an_unfiltered_view_shows_every_column(self) -> None:
+        out = select_views(self._cfg(), ["items", "items:a"])
+        assert [v.name for v in out.views] == ["items"]
+        assert out.views[0].columns is None
+
+    def test_a_bare_repeat_of_an_include_view_joins_its_own_columns(self) -> None:
+        out = select_views(self._cfg(), ["picked:name", "picked"])
+        assert out.views[0].columns == ColumnFilter("include", ("name", "id", "sku"))
+
+    def test_a_view_only_ever_named_bare_keeps_its_own_filter(self) -> None:
+        out = select_views(self._cfg(), ["picked", "picked"])
+        assert out.views[0].columns == ColumnFilter("include", ("id", "sku"))
+
+    def test_filter_views_keeps_the_first_of_a_repeated_name(self) -> None:
+        out = self._cfg().filter_views(["page", "items", "page"])
+        assert [v.name for v in out.views] == ["page", "items"]
+
+    def test_command_result_export_merges_repeated_views(self) -> None:
+        result = CommandResult(
+            data={"items": [{"a": 1, "b": 2, "c": 3}]},
+            output_config=OutputConfig(views=[ViewConfig(name="items", path="items")]),
+        )
+        text = result.export(format="csv", views=("items:a", "items:c"))
+        assert isinstance(text, str)
+        assert text.splitlines()[0] == "a,c"
+
+    def test_format_output_merges_repeated_views(self, capsys: pytest.CaptureFixture[str]) -> None:
+        import io
+
+        from rich.console import Console
+
+        buf = io.StringIO()
+        result = CommandResult(
+            data={"items": [{"a": 1, "b": 2, "c": 3}]},
+            output_config=OutputConfig(views=[ViewConfig(name="items", path="items")]),
+        )
+        format_output(
+            result, "csv", Console(file=buf), view_args=("items:b", "items:a"), user_explicit=True
+        )
+        assert buf.getvalue().splitlines()[0] == "b,a"
+        assert capsys.readouterr().err.count("--view given more than once") == 1

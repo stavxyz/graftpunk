@@ -35,7 +35,7 @@ from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.run import make_run_id, save_observe_run
 from graftpunk.observe.storage import session_dirname
 
-console = Console()
+console = Console(emoji=False)
 LOG = get_logger(__name__)
 
 
