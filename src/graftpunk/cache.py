@@ -360,10 +360,7 @@ def cache_session(
         # after the pickle above on purpose: the name describes this copy, not
         # the bytes, and the blob must stay free of it.
         _stamp_session_slot(session, session_name)
-        base, label = split_session_name(session_name)
-        if label is not None:
-            # A new sibling of a bare slot: let the next bare load look again (#197).
-            _bare_slot_sibling_checked.discard(base)
+        _recheck_bare_slot_after_write(session_name)
         LOG.info("wrote_session_to_backend", name=session_name, location=location)
         return location
 
@@ -689,6 +686,14 @@ def no_account_cached_message(name: str) -> str:
 # drops a name when it writes a labelled slot under it, so a sibling this
 # process creates is seen by the next load.
 _bare_slot_sibling_checked: set[str] = set()
+
+
+def _recheck_bare_slot_after_write(name: str) -> None:
+    """After writing slot *name*, let the next load of its bare base look for
+    siblings again when *name* is labelled: it is a new sibling (#197)."""
+    base, label = split_session_name(name)
+    if label is not None:
+        _bare_slot_sibling_checked.discard(base)
 
 
 def _warn_if_bare_slot_shadows_labelled(name: str) -> None:
@@ -1258,6 +1263,7 @@ def copy_session(
         account_rule=ACCOUNT_RULE,
     )
     backend.save_session(dest, encrypt_data(pickled_data, key=key), copied)
+    _recheck_bare_slot_after_write(dest)
     stored_data, stored_metadata = backend.load_session(dest)
     if (
         stored_metadata.checksum != checksum

@@ -330,6 +330,21 @@ class TestBareSlotShadowsLabelledWarning:
         [warning] = _shadow_warnings(captured_logs)
         assert warning["labelled"] == ["myshop@alice"]
 
+    def test_a_labelled_slot_copied_in_this_process_is_seen_by_the_next_load(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        load_session_for_api_resolved("myshop")
+        assert _shadow_warnings(captured_logs) == []
+
+        cache_mod.copy_session("myshop", "myshop@bob", account_identifier="bob@example.com")
+        load_session_for_api_resolved("myshop")
+
+        [warning] = _shadow_warnings(captured_logs)
+        assert warning["labelled"] == ["myshop@bob"]
+
     def test_no_warning_without_labelled_siblings(
         self,
         fresh_backend,  # noqa: ANN001
