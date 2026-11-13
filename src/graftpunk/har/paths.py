@@ -1074,6 +1074,13 @@ _FRAMEWORK_NAMES = frozenset(
         "x-aspnet-version x-aspnetmvc-version x-dtpc grpc-status grpc-message x-cdn "
         "x-akamai-transformed akamai-grn x-iinfo x-sucuri-id apollographql-client-name "
         "apollographql-client-version upgrade "
+        # header names the rules above cannot pass without passing random text (#361):
+        # a camel word that splits into short words (WoW64, GUploader), a vowel-less
+        # word (Rq), a consonant pair English rarely spells with (Object), a
+        # two-letter word (Mp), and nine parts
+        "sec-ch-ua-wow64 x-guploader-uploadid x-envoy-expected-rq-timeout-ms "
+        "x-amz-object-lock-mode x-amz-mp-parts-count "
+        "x-amz-server-side-encryption-aws-kms-key-id "
         # cookie names
         ".aspxauth asp.net_sessionid .aspnetcore.session .aspnetcore.antiforgery "
         ".aspnetcore.cookies __cf_bm cf_clearance __cfruid __cflb _cfuvid _abck bm_sz bm_sv "
