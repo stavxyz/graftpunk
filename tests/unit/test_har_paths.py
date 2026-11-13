@@ -1204,7 +1204,6 @@ _COPIED_GATE_PATTERNS = [
     "_HASH_NAME_RE",
     "_HASH_SIZE_RE",
     "_NAME_PART_RE",
-    "_YEAR_PART_RE",
 ]
 
 
@@ -1234,7 +1233,6 @@ def test_the_har_readers_name_gate_patterns_are_graftpunks(name: str) -> None:
         "x509Certificate",
         "k8sNamespace",
         "v2Endpoint",
-        "my-post-2024",
         "objectId",
         "subject",
     ],
@@ -1260,6 +1258,10 @@ def test_a_digit_run_between_words_or_in_a_token_reads_as_a_name_in_both_gates(
         "post-1824",
         "post-2024x",
         "jV29",
+        "kevin-1979",
+        "linda_1990",
+        "wp-settings-2015",
+        "my-post-2024",
     ],
     ids=[
         "lowercase-after-a-digit-other-than-2",
@@ -1272,6 +1274,10 @@ def test_a_digit_run_between_words_or_in_a_token_reads_as_a_name_in_both_gates(
         "not-a-year",
         "year-glued",
         "version-inside",
+        "username-with-a-birth-year",
+        "username-with-a-year-underscored",
+        "per-user-id-in-the-year-range",
+        "slug-with-a-year",
     ],
 )
 def test_a_digit_run_not_between_words_is_still_held_back(name: str) -> None:

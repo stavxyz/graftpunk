@@ -17,12 +17,13 @@ _LOGIN = (  # noqa: SIM905 - one compact string on purpose: the list is data
     "username password email login user pass passwd pwd remember rememberMe remember_me "
     "user[email] user[password] user[login] user[remember_me] session[email] "
     "session[password] j_username j_password loginfmt identifier Email Password UserName "
-    "Username Login LoginName loginName emailAddress email_address phone phoneNumber mobile"
+    "Username Login LoginName loginName emailAddress email_address phone phoneNumber mobile "
+    "PPFT i0116 i0118"
 ).split()
 _CSRF_AND_PAGE_STATE = (  # noqa: SIM905
     "__RequestVerificationToken authenticity_token _token csrfmiddlewaretoken csrf_token "
     "_csrf csrf __VIEWSTATE __EVENTVALIDATION __VIEWSTATEGENERATOR __EVENTTARGET "
-    "__EVENTARGUMENT __VIEWSTATEENCRYPTED __LASTFOCUS __PREVIOUSPAGE form_key _wpnonce "
+    "__EVENTARGUMENT __VIEWSTATEENCRYPTED __LASTFOCUS __PREVIOUSPAGE __ASYNCPOST form_key _wpnonce "
     "nonce _csrf_token YII_CSRF_TOKEN"
 ).split()
 _OAUTH_AND_SAML = (  # noqa: SIM905
@@ -46,20 +47,21 @@ _API = (  # noqa: SIM905
     "message description title accept_terms acceptTerms terms newsletter subscribe "
     "marketingOptIn birthday dob gender company storeId store_id locationId shippingMethod "
     "paymentMethod payment_method_id cardNumber cvc expMonth expYear note comment rating "
-    "review_text objectId objectType subject"
+    "review_text objectId objectType subject fcmToken"
 ).split()
 
 COMMON_BODY_FIELD_NAMES = tuple(
     dict.fromkeys(_LOGIN + _CSRF_AND_PAGE_STATE + _OAUTH_AND_SAML + _FRAMEWORK_AND_BOT_CHECK + _API)
 )
 
-# Held back by the rules until #359's second round, now fixed names: Microsoft's
-# login form field and the vowel-less quantity abbreviation.
-_FIXED_SINCE_359 = ("loginfmt", "qty")
+# Held back by the rules until #359's later rounds, now fixed names: Microsoft's
+# login form fields, the vowel-less quantity abbreviation, the WebForms async
+# postback flag and a mobile push token.
+_FIXED_SINCE_359 = ("loginfmt", "qty", "PPFT", "i0116", "i0118", "__ASYNCPOST", "fcmToken")
 
 
 def test_the_list_is_the_one_measured() -> None:
-    assert len(COMMON_BODY_FIELD_NAMES) == 199
+    assert len(COMMON_BODY_FIELD_NAMES) == 204
 
 
 def test_the_gate_holds_back_none_of_the_common_body_field_names() -> None:

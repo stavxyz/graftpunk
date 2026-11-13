@@ -206,12 +206,14 @@ def test_no_id_reaches_a_generated_file_the_projection_or_a_sidecar(
         assert value not in render_markdown(result)
 
 
-# The one must-be-kept name the name gate holds back: eight lowercase letters with
-# no consonant pair English spells with, which random letters match as often.
-_HELD_BACK_BY_THE_GATE = frozenset({"abcdefgh"})
+# The must-be-kept names the name gate holds back: eight lowercase letters with no
+# consonant pair English spells with, which random letters match as often, and two
+# slugs ending in a year, a part a username or a per-user id ends in too
+# (kevin-1979, wp-settings-2015).
+_HELD_BACK_BY_THE_GATE = frozenset({"abcdefgh", "my-post-2024", "red-widget-2024"})
 
 
-def test_the_name_gate_prints_every_must_be_kept_name_but_one() -> None:
+def test_the_name_gate_prints_every_must_be_kept_name_but_three() -> None:
     names = [n for n in MUST_BE_KEPT if not n[0].isdigit()]
     assert {n for n in names if not printable_name(n)} == _HELD_BACK_BY_THE_GATE
 

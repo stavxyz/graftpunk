@@ -986,8 +986,6 @@ _MIN_WORD_BESIDE_DIGITS = 4
 _DIGITS_READ_AS_WORDS = frozenset(("2",))
 # A display scale (2x, 3x) after a word (retina2x).
 _SCALE_DIGITS = frozenset(("2", "3"))
-# A year part (my-post-2024) after a part holding letters, joined by - or _.
-_YEAR_PART_RE = re.compile(r"(?:19|20)\d\d")
 
 
 def _digit_token_at(part: str, at: int) -> int:
@@ -1173,14 +1171,7 @@ def _parts_read_as_words(text: str) -> bool:
             continue
         if index:
             before = matches[index - 1]
-            joiner = text[before.end() : match.start()]
-            if _sized_part(before.group(), joiner, part):
-                continue
-            if (
-                joiner in ("-", "_")
-                and _YEAR_PART_RE.fullmatch(part)
-                and _has_letter(before.group())
-            ):
+            if _sized_part(before.group(), text[before.end() : match.start()], part):
                 continue
         return False
     return True
@@ -1213,6 +1204,14 @@ _FRAMEWORK_NAMES = frozenset(
         # query parameter names the rules hold back: jQuery's cache-buster, a time
         # zone, ad click ids, and a JSONP switch
         "_ tz gclid fbclid dclid jsonp "
+        # more query names the rules hold back: an S3 signature v2 key, Ext JS's
+        # cache-buster, a page number, a format switch, Solr's filter query, handler
+        # and default field, imgix's format and library, and Mailchimp's campaign
+        # and email ids
+        "awsaccesskeyid _dc pg fmt fq qt df fm ixlib mc_cid mc_eid "
+        # more body field names: the WebForms async postback flag, a mobile push
+        # token, and Microsoft's login form fields beside loginfmt
+        "__asyncpost fcmtoken ppft i0116 i0118 "
         # cookie names
         ".aspxauth asp.net_sessionid .aspnetcore.session .aspnetcore.antiforgery "
         ".aspnetcore.cookies __cf_bm cf_clearance __cfruid __cflb _cfuvid _abck bm_sz bm_sv "

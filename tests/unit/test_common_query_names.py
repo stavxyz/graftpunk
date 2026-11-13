@@ -15,7 +15,7 @@ from tests.unit.test_har_paths import _load_har_facts
 
 _PAGING = (  # noqa: SIM905 - one compact string on purpose: the list is data
     "page per_page perPage pageSize page_size pageNumber page_number limit offset start "
-    "count size cursor after before first last next prev skip take top $top $skip "
+    "count size cursor after before first last next prev skip take top $top $skip pg "
     "$filter $orderby $select $expand $count"
 ).split()
 _SEARCH_SORT_FILTER = (  # noqa: SIM905
@@ -27,7 +27,7 @@ _LOCALE = (  # noqa: SIM905
     "locale lang language hl gl country region currency tz timezone market"
 ).split()
 _CACHE_BUSTERS = (  # noqa: SIM905
-    "_ t ts timestamp v ver version cb cacheBuster cache_buster nocache rand r rnd bust"
+    "_ t ts timestamp v ver version cb cacheBuster cache_buster nocache rand r rnd bust _dc"
 ).split()
 _OAUTH_AND_OIDC = (  # noqa: SIM905
     "client_id redirect_uri response_type response_mode scope state nonce code "
@@ -43,7 +43,8 @@ _API = (  # noqa: SIM905
     "id ids format callback jsonp api_key apiKey key fields expand include_deleted "
     "return_url returnUrl ReturnUrl next redirect redirect_to continue lat lng lon "
     "latitude longitude radius zip postalCode storeId store_id locationId sku productId "
-    "variant cartId userId accountId output pretty debug objectId"
+    "variant cartId userId accountId output pretty debug objectId AWSAccessKeyId fmt fq "
+    "qt df fm ixlib mc_cid mc_eid"
 ).split()
 
 COMMON_QUERY_NAMES = tuple(
@@ -60,7 +61,7 @@ COMMON_QUERY_NAMES = tuple(
 
 
 def test_the_list_is_the_one_measured() -> None:
-    assert len(COMMON_QUERY_NAMES) == 165
+    assert len(COMMON_QUERY_NAMES) == 176
 
 
 def test_the_gate_holds_back_none_of_the_common_query_names() -> None:
@@ -68,7 +69,25 @@ def test_the_gate_holds_back_none_of_the_common_query_names() -> None:
 
 
 # Held back by the rules until #359's second round, now fixed names.
-_FIXED_SINCE_359 = ("_", "tz", "gclid", "fbclid", "dclid", "jsonp")
+_FIXED_SINCE_359 = (
+    "_",
+    "tz",
+    "gclid",
+    "fbclid",
+    "dclid",
+    "jsonp",
+    "AWSAccessKeyId",
+    "_dc",
+    "pg",
+    "fmt",
+    "fq",
+    "qt",
+    "df",
+    "fm",
+    "ixlib",
+    "mc_cid",
+    "mc_eid",
+)
 
 
 def test_the_fixed_names_pass_only_whole() -> None:

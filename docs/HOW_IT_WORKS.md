@@ -823,8 +823,9 @@ generated stub sends, which says in a `GP-FILL` note how many it left out. The
 gate passes a digit run inside a name when it sits between words (`line2Address`,
 `covid19Status`, after a lone `2` read as a word `added2cart`, a scale such as
 `retina2x`) or in a known token (`oauth2`, `sha256`, `base64`, `utf8`, `ipv4`,
-`x509`, `k8s`), a year part after a word part (`my-post-2024`), and the word
-`object` or `subject` (`objectId`).
+`x509`, `k8s`), and the word `object` or `subject` (`objectId`). A part that is a
+year (`kevin-1979`, `wp-settings-2015`) is held back, as a username's birth year
+or a per-user id can be one.
 `--json`'s `field_names_not_shown` counts them for the run, leaving out a
 name another count already counts (a posted hidden input is counted as a hidden
 input), so a name counts once across kinds. A GraphQL operation's variables keep
