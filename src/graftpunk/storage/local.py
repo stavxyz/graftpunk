@@ -434,30 +434,56 @@ class LocalSessionStorage:
     def incomplete_sessions(self) -> list[str]:
         """Slot directories missing their pickle or their metadata.
 
-        A crash during a save, an older release, or a hand-made copy can
-        leave one. They are not sessions (:meth:`list_sessions` leaves them
-        out, and loading one fails), but clearing every session removes them
-        too. Only a directory holding ``session.pickle``, ``metadata.json``,
-        or a file named after one (``metadata.json.pre-test2``) is one: any
-        other directory in the sessions directory is never listed, so a sweep
-        never deletes it. Nor is a hidden directory, or one whose name
-        check_slot_name refuses.
+        A crash during a save, an older release, a hand-made copy, or a clear
+        that failed partway can leave one. They are not sessions
+        (:meth:`list_sessions` leaves them out, and loading one fails), but
+        clearing every session removes them too. Only a directory holding
+        ``session.pickle``, ``metadata.json``, or a file named after one
+        (``metadata.json.pre-test2``) at any depth is one, so what a partial
+        clear left in a subdirectory can still be cleared; a directory holding
+        none is never listed, so a sweep never deletes it. Nor is a hidden
+        directory, or one whose name check_slot_name refuses. A directory that
+        cannot be read is skipped with one warning and the others are listed.
         """
         if not self.base_dir.exists():
             return []
         try:
-            return sorted(
-                item.name
-                for item in self.base_dir.iterdir()
-                if item.is_dir()
-                and not item.name.startswith(".")
-                and is_slot_name(item.name)
-                and not ((item / "session.pickle").exists() and (item / "metadata.json").exists())
-                and any(is_slot_file(child.name) for child in item.iterdir())
-            )
+            items = sorted(self.base_dir.iterdir())
         except OSError as exc:
             LOG.error("failed_to_list_incomplete_sessions", error=str(exc))
             return []
+        found: list[str] = []
+        for item in items:
+            if item.name.startswith(".") or not is_slot_name(item.name):
+                continue
+            try:
+                if not item.is_dir() or (
+                    (item / "session.pickle").exists() and (item / "metadata.json").exists()
+                ):
+                    continue
+                if self._holds_slot_file(item):
+                    found.append(item.name)
+            except OSError as exc:
+                LOG.warning("incomplete_session_unreadable", name=item.name, error=str(exc))
+        return found
+
+    @staticmethod
+    def _holds_slot_file(directory: Path) -> bool:
+        """Whether *directory* holds a slot-named file (:func:`is_slot_file`) at any
+        depth.
+
+        Raises:
+            OSError: *directory* itself cannot be read.
+        """
+        errors: list[OSError] = []
+        for _top, _dirs, names in os.walk(directory, onerror=errors.append):
+            if any(is_slot_file(name) for name in names):
+                return True
+        # os.walk reports an unreadable top directory through onerror and yields
+        # nothing; an unreadable subdirectory below it only hides that part.
+        if errors and errors[0].filename == str(directory):
+            raise errors[0]
+        return False
 
     def remove_session(self, name: str) -> list[str]:
         """Delete the slot directory and everything in it; return the paths deleted.

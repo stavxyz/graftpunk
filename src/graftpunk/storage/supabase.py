@@ -383,15 +383,22 @@ class SupabaseSessionStorage:
         left out, so another tool's folder in the bucket is never listed or
         swept.
 
-        A folder that lists a ``metadata.json`` is confirmed by ``info`` on the
-        exact path: storage-api matches a folder listing without regard to
-        letter case (``lower(name)`` in its current search, ``ILIKE`` in older
-        ones, where ``_`` also matches any character), so ``MyShop``'s or
-        ``my_shop``'s listing can hold ``myshop/metadata.json`` or
-        ``my-shop/metadata.json``. Costs one request per page of the root, one
-        per root folder (more for one of over 100 entries), and one ``info``
-        per folder that lists a ``metadata.json``: 1 + 2N for N sessions.
-        storage3 2.27.2 has no call that lists every slot's files at once.
+        Whether a folder is a session, an incomplete slot, or neither is decided
+        by ``info`` on exact paths, never by the listing alone: storage-api
+        matches a folder listing without regard to letter case (``lower(name)``
+        in its current search, ``ILIKE`` in older ones, where ``_`` also matches
+        any character) and groups root folders the same way, keeping one
+        spelling. So ``MyShop``'s listing can hold ``myshop``'s files, and a
+        root entry ``MyShop`` can stand for both. Each root entry is judged under
+        its own spelling and under its lower-case one: a session when
+        ``<folder>/metadata.json`` exists, an incomplete slot when another
+        slot-named file it listed exists at ``<folder>/<file>``. So another
+        tool's ``MyShop/avatar.png`` beside a complete ``myshop/`` is never
+        listed, and ``myshop`` still is. Costs one request per page of the root,
+        one per root folder (more for one of over 100 entries), and one ``info``
+        per session (1 + 2N for N sessions), plus one per slot-named file
+        checked in a folder that is not a session. storage3 2.27.2 has no call
+        that lists every slot's files at once.
 
         Raises:
             StorageError: If listing fails due to Supabase errors
@@ -411,11 +418,24 @@ class SupabaseSessionStorage:
                     for item in self._list_all(storage, name)
                     if item.get("id") is not None
                 ]
-                if not any(is_slot_file(file) for file in files):
+                slot_files = [file for file in files if is_slot_file(file)]
+                if not slot_files:
                     continue
-                slots[name] = "metadata.json" in files and self._has_object(
-                    storage, self._metadata_path(name)
-                )
+                # The listing may hold a differently cased sibling's files, and
+                # the root may list that sibling under this entry's spelling, so
+                # the folder is judged by exact paths, under its own spelling and
+                # the lower-case one a session name takes.
+                for folder in dict.fromkeys((name, name.lower())):
+                    if folder in slots:
+                        continue
+                    if "metadata.json" in slot_files and self._has_object(
+                        storage, self._metadata_path(folder)
+                    ):
+                        slots[folder] = True
+                    elif any(
+                        self._has_object(storage, f"{folder}/{file}") for file in slot_files
+                    ):
+                        slots[folder] = False
         except (HTTPStatusError, StorageApiError) as e:
             LOG.error("failed_to_list_sessions", error=str(e), backend="supabase")
             raise StorageError(f"Failed to list sessions: {e}") from e

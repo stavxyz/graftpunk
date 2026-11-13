@@ -86,14 +86,38 @@ class TestLocal:
         assert (foreign / "export.csv").exists()
         assert not (local_backend.base_dir / "myshop").exists()
 
-    def test_a_backup_of_metadata_nested_deeper_does_not_make_a_slot(self, local_backend) -> None:
-        foreign = local_backend.base_dir / "backup"
-        (foreign / "myshop").mkdir(parents=True)
-        (foreign / "myshop" / "metadata.json").write_text("{}")
+    def test_slot_files_nested_deeper_make_an_incomplete_slot(self, local_backend) -> None:
+        """Review round 3 (toolkit P2): what a partial clear leaves can sit in a
+        subdirectory, so a slot-named file at any depth counts."""
+        left = local_backend.base_dir / "myshop" / "locked"
+        left.mkdir(parents=True)
+        (left / "metadata.json.pre-test2").write_text("{}")
 
-        assert cache_mod.list_incomplete_sessions() == []
-        assert cache_mod.clear_session_cache() == []
-        assert (foreign / "myshop" / "metadata.json").exists()
+        assert cache_mod.list_incomplete_sessions() == ["myshop"]
+
+    def test_an_unreadable_directory_does_not_hide_the_others(
+        self, local_backend, captured_logs
+    ) -> None:
+        """Review round 3 (toolkit P3)."""
+        import os
+        import stat
+        import sys
+
+        if sys.platform == "win32" or os.geteuid() == 0:
+            pytest.skip("POSIX directory permissions, not as root")
+        closed = local_backend.base_dir / "aaclosed"
+        closed.mkdir(parents=True)
+        (closed / "session.pickle").write_bytes(b"x")
+        half = local_backend.base_dir / "half"
+        half.mkdir()
+        (half / "session.pickle").write_bytes(b"x")
+        closed.chmod(0)
+        try:
+            assert cache_mod.list_incomplete_sessions() == ["half"]
+        finally:
+            closed.chmod(stat.S_IRWXU)
+        warnings = [e for e in captured_logs if e.get("event") == "incomplete_session_unreadable"]
+        assert [w["name"] for w in warnings] == ["aaclosed"]
 
     def test_leftovers_and_a_pickle_only_slot_are_swept_as_before(self, local_backend) -> None:
         left = local_backend.base_dir / "myshop"
@@ -299,8 +323,10 @@ def locked_slot(local_backend):
     try:
         yield local_backend
     finally:
-        locked.chmod(stat.S_IRWXU)
-        keep.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        # A test may have finished the clear, so the slot can be gone.
+        if locked.exists():
+            locked.chmod(stat.S_IRWXU)
+            keep.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
 class TestALocalDeleteThatKeepsFiles:
@@ -346,3 +372,92 @@ class TestALocalDeleteThatKeepsFiles:
             local_backend.remove_session("oldshop")
 
         assert err.value.remaining == ["oldshop.session.pickle"]
+
+
+class TestAPartialLocalClearCanBeFinished:
+    """Review round 3 (toolkit P2): after a clear that kept files, fixing the
+    permission and clearing again finishes the job."""
+
+    @pytest.mark.parametrize("args", [["myshop", "--force"], ["--all", "--force"]])
+    def test_clear_again_after_restoring_permission(self, locked_slot, args) -> None:
+        import stat
+
+        first = _clear("myshop", "--force")
+        assert first.exit_code == 1
+        locked = locked_slot.base_dir / "myshop" / "locked"
+        locked.chmod(stat.S_IRWXU)
+
+        second = _clear(*args)
+
+        assert second.exit_code == 0, second.output
+        assert "myshop/locked/metadata.json.pre-test2" in second.output
+        assert not (locked_slot.base_dir / "myshop").exists()
+
+
+class TestACaseOnlyForeignFolderOnSupabase:
+    """Review round 3 (toolkit P1): another tool's ``MyShop/`` beside a complete
+    ``myshop/``, on a server that lists and groups folders without regard to case."""
+
+    @staticmethod
+    def _bucket(paths):
+        pytest.importorskip("supabase")
+
+        class CaseFoldBucket:
+            def __init__(self, paths):
+                self.files = set(paths)
+
+            def list(self, path=None, options=None):
+                options = options or {}
+                prefix = f"{path}/" if path else ""
+                entries: dict[str, dict] = {}
+                for file in sorted(self.files, key=lambda f: (f.lower(), f)):
+                    if not file.lower().startswith(prefix.lower()):
+                        continue
+                    head, sep, _rest = file[len(prefix) :].partition("/")
+                    key = head.lower() if sep else head
+                    entries.setdefault(key, {"name": head, "id": None if sep else f"id-{file}"})
+                ordered = [entries[k] for k in sorted(entries)]
+                offset = options.get("offset", 0)
+                return ordered[offset : offset + options.get("limit", 100)]
+
+            def info(self, path):
+                from storage3.exceptions import StorageApiError
+
+                if path not in self.files:
+                    raise StorageApiError("Object not found", "not_found", "404")
+                return {"name": path}
+
+            def remove(self, paths):
+                gone = [p for p in paths if p in self.files]
+                self.files -= set(gone)
+                return [{"name": p} for p in gone]
+
+        return CaseFoldBucket(paths)
+
+    def _storage(self, bucket):
+        with patch("supabase.create_client") as create:
+            from graftpunk.storage.supabase import SupabaseSessionStorage
+
+            storage = SupabaseSessionStorage(url="https://x.supabase.co", service_key="k")
+        create.return_value.storage.from_.return_value = bucket
+        return storage
+
+    @pytest.mark.parametrize(
+        "foreign", ["MyShop/avatar.png", "MYSHOP/avatar.png"], ids=["MyShop", "MYSHOP"]
+    )
+    def test_the_foreign_folder_is_never_listed_or_swept(self, foreign, monkeypatch) -> None:
+        bucket = self._bucket([foreign, "myshop/metadata.json", "myshop/session.pickle"])
+        storage = self._storage(bucket)
+        monkeypatch.setattr(cache_mod, "_get_session_storage_backend", lambda **_: storage)
+
+        assert storage.list_sessions() == ["myshop"]
+        assert storage.incomplete_sessions() == []
+        assert list(cache_mod.clear_session_cache()) == ["myshop"]
+        assert bucket.files == {foreign}
+
+    def test_a_case_variant_leftovers_slot_alone_is_incomplete(self) -> None:
+        bucket = self._bucket(["MyShop/metadata.json.pre-test2"])
+        storage = self._storage(bucket)
+
+        assert storage.list_sessions() == []
+        assert storage.incomplete_sessions() == ["MyShop"]
