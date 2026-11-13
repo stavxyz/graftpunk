@@ -13,12 +13,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
+from graftpunk.exceptions import (
+    SessionExpiredError,
+    SessionNotFoundError,
+    SessionNotFullyClearedError,
+)
 from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
     UNCHANGED,
     SessionMetadata,
+    check_slot_name,
     dict_to_metadata,
+    is_slot_file,
+    is_slot_name,
     metadata_to_dict,
 )
 
@@ -83,6 +90,30 @@ def _keep_backup(path: Path) -> Path | None:
         LOG.warning("session_backup_failed", error_type=type(exc).__name__)
         return None
     return backup
+
+
+def _present(path: Path) -> bool:
+    """Whether *path* exists; False only when it does not, and any other error
+    (a directory without read or search permission) raises.
+
+    ``Path.exists()`` cannot be used for this: from Python 3.14 it is
+    ``os.path.exists()``, which returns False for every ``OSError``, so an
+    unreadable slot would read as empty instead of being reported.
+    """
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return True
+
+
+def _holds_the_pair(directory: Path) -> bool:
+    """Whether *directory* holds both ``session.pickle`` and ``metadata.json``.
+
+    Raises:
+        OSError: *directory* cannot be searched.
+    """
+    return _present(directory / "session.pickle") and _present(directory / "metadata.json")
 
 
 def _kept_name(backup: Path) -> Path:
@@ -397,56 +428,164 @@ class LocalSessionStorage:
     def list_sessions(self) -> list[str]:
         """List all session names.
 
+        An entry that cannot be read is skipped with one warning
+        (``session_unreadable``) and the others are listed.
+
         Returns:
             Sorted list of session names
         """
         if not self.base_dir.exists():
             return []
 
-        names = []
         try:
-            for item in self.base_dir.iterdir():
+            items = list(self.base_dir.iterdir())
+        except OSError as exc:
+            LOG.error("failed_to_list_sessions", error=str(exc))
+            return []
+        names = []
+        for item in items:
+            try:
                 # A slot is listed only with both files: a directory a crashed
                 # save left with a pickle and no metadata is not a session.
-                if (
-                    item.is_dir()
-                    and (item / "session.pickle").exists()
-                    and (item / "metadata.json").exists()
-                ):
+                if item.is_dir() and _holds_the_pair(item):
                     names.append(item.name)
                 elif item.is_file() and item.suffix == ".pickle":
                     # Legacy flat file structure
                     names.append(item.stem.replace(".session", ""))
-
-            LOG.debug("session_list_completed", count=len(names))
-            return sorted(names)
-        except OSError as exc:
-            LOG.error("failed_to_list_sessions", error=str(exc))
-            return []
+            except OSError as exc:
+                LOG.warning("session_unreadable", name=item.name, error=str(exc))
+        LOG.debug("session_list_completed", count=len(names))
+        return sorted(names)
 
     def incomplete_sessions(self) -> list[str]:
-        """Slot directories holding a pickle but no metadata.
+        """Slot directories missing their pickle or their metadata.
 
-        A crash during a save, or an older release, can leave one. They are
-        not sessions (:meth:`list_sessions` leaves them out, and loading one
-        fails), but clearing every session removes them too.
+        A crash during a save, an older release, a hand-made copy, or a clear
+        that failed partway can leave one. They are not sessions
+        (:meth:`list_sessions` leaves them out, and loading one fails), but
+        clearing every session removes them too. Only a directory holding
+        ``session.pickle``, ``metadata.json``, or a file named after one
+        (``metadata.json.pre-test2``) at any depth is one, so what a partial
+        clear left in a subdirectory can still be cleared; a directory holding
+        none is never listed, so a sweep never deletes it. Nor is a hidden
+        directory, or one whose name check_slot_name refuses. A directory that
+        cannot be read is skipped with one warning and the others are listed,
+        and so is one that resolves outside the sessions directory (a symlink
+        pointing out), which :meth:`remove_session` refuses to delete.
         """
         if not self.base_dir.exists():
             return []
         try:
-            return sorted(
-                item.name
-                for item in self.base_dir.iterdir()
-                if item.is_dir()
-                and (item / "session.pickle").exists()
-                and not (item / "metadata.json").exists()
-            )
+            items = sorted(self.base_dir.iterdir())
         except OSError as exc:
             LOG.error("failed_to_list_incomplete_sessions", error=str(exc))
             return []
+        found: list[str] = []
+        root = self.base_dir.resolve()
+        for item in items:
+            if item.name.startswith(".") or not is_slot_name(item.name):
+                continue
+            try:
+                if item.resolve().parent != root:
+                    LOG.warning("incomplete_session_outside", name=item.name)
+                    continue
+                if not item.is_dir() or _holds_the_pair(item):
+                    continue
+                if self._holds_slot_file(item):
+                    found.append(item.name)
+            except OSError as exc:
+                LOG.warning("incomplete_session_unreadable", name=item.name, error=str(exc))
+        return found
+
+    @staticmethod
+    def _holds_slot_file(directory: Path) -> bool:
+        """Whether *directory* holds a slot-named file (:func:`is_slot_file`) at any
+        depth.
+
+        Raises:
+            OSError: *directory* itself cannot be read.
+        """
+        errors: list[OSError] = []
+        for _top, _dirs, names in os.walk(directory, onerror=errors.append):
+            if any(is_slot_file(name) for name in names):
+                return True
+        # os.walk reports an unreadable top directory through onerror and yields
+        # nothing; an unreadable subdirectory below it only hides that part.
+        if errors and errors[0].filename == str(directory):
+            raise errors[0]
+        return False
+
+    def remove_session(self, name: str) -> list[str]:
+        """Delete the slot directory and everything in it; return the paths deleted.
+
+        Paths are relative to the sessions directory. A legacy flat-file
+        session is deleted when there is no directory. Empty when nothing was
+        there.
+
+        Raises:
+            ValueError: deleting under *name* is unsafe
+                (:func:`~graftpunk.storage.base.check_slot_name`), or its slot
+                resolves outside the sessions directory.
+            SessionNotFullyClearedError: The delete failed partway (a
+                directory without write permission, say); it names what was
+                deleted and what is still there.
+        """
+        check_slot_name(name)
+        session_dir = self.base_dir / name
+        root = self.base_dir.resolve()
+        if session_dir.resolve().parent != root:
+            raise ValueError(f"Session slot {name!r} resolves outside {root}")
+
+        if session_dir.is_dir():
+            files = self._files_in(session_dir)
+            errors: list[str] = []
+
+            def keep_going(_func: object, path: object, exc: object) -> None:
+                # rmtree goes on past a file it cannot delete, so everything that
+                # can go does, whatever order the Python version walks in.
+                errors.append(f"{path}: {exc}")
+
+            try:
+                if sys.version_info >= (3, 12):
+                    shutil.rmtree(session_dir, onexc=keep_going)
+                else:
+                    shutil.rmtree(session_dir, onerror=keep_going)
+            except OSError as exc:
+                errors.append(str(exc))
+            if errors:
+                remaining = self._files_in(session_dir) or [f"{name}/"]
+                kept = set(remaining)
+                LOG.error("failed_to_delete_session", name=name, errors=errors, remaining=remaining)
+                raise SessionNotFullyClearedError(
+                    name, [f for f in files if f not in kept], remaining
+                )
+            LOG.info("session_delete_completed", name=name, structure="directory", paths=files)
+            # An empty directory is still a slot the caller asked to remove.
+            return files or [f"{name}/"]
+
+        # Try legacy flat file structure
+        old_path = self.base_dir / f"{name}.session.pickle"
+        if old_path.exists():
+            try:
+                old_path.unlink()
+            except OSError as exc:
+                LOG.error("failed_to_delete_session", name=name, error=str(exc))
+                raise SessionNotFullyClearedError(name, [], [old_path.name]) from exc
+            LOG.info("session_delete_completed", name=name, structure="flat_file")
+            return [old_path.name]
+
+        return []
+
+    def _files_in(self, directory: Path) -> list[str]:
+        """The files under *directory*, relative to the sessions directory, as far
+        as they can be listed (a directory that cannot be read lists nothing)."""
+        found: list[str] = []
+        for top, _dirs, names in os.walk(directory):
+            found.extend(str((Path(top) / n).relative_to(self.base_dir)) for n in names)
+        return sorted(found)
 
     def delete_session(self, name: str) -> bool:
-        """Delete a session.
+        """Delete a session, with every file in its slot directory.
 
         Args:
             name: Session identifier
@@ -454,29 +593,7 @@ class LocalSessionStorage:
         Returns:
             True if deleted, False if not found
         """
-        session_dir = self.base_dir / name
-
-        if session_dir.is_dir():
-            try:
-                shutil.rmtree(session_dir)
-                LOG.info("session_delete_completed", name=name, structure="directory")
-                return True
-            except OSError as exc:
-                LOG.error("failed_to_delete_session", name=name, error=str(exc))
-                return False
-
-        # Try legacy flat file structure
-        old_path = self.base_dir / f"{name}.session.pickle"
-        if old_path.exists():
-            try:
-                old_path.unlink()
-                LOG.info("session_delete_completed", name=name, structure="flat_file")
-                return True
-            except OSError as exc:
-                LOG.error("failed_to_delete_session", name=name, error=str(exc))
-                return False
-
-        return False
+        return bool(self.remove_session(name))
 
     def get_session_metadata(self, name: str) -> SessionMetadata | None:
         """Get session metadata without loading the full session.

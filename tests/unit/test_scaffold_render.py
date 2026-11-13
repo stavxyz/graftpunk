@@ -1099,10 +1099,10 @@ class TestPluginModuleWithLoginForm:
         assert (
             "GP-FILL: submit has no selector: the first button after the password in the login "
             'dialog is not an explicit submit (an <input type="submit"> or <input '
-            'type="image">, or a <button type="submit">), or there is none; outside a '
-            'form a typeless or type="button" button submits nothing and may be a '
-            "show-password or a close button, so a submit after it is not taken either; "
-            "write one by hand."
+            'type="image">, or a <button type="submit">), and no button between the password '
+            "and the next field says it signs in by its class, text, or aria-label, nor is the "
+            'group\'s one button; outside a form a typeless or type="button" button may be a '
+            "show-password or a close button, so none is guessed; write one by hand."
         ) in comment
         assert "multi-step login" not in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
@@ -1224,19 +1224,20 @@ class TestPluginModuleWithLoginForm:
         [
             '<input type="email" id="u"><input type="password" id="p">'
             '<button type="button" id="eye">Show</button>'
-            '<button type="submit" id="go">Sign in</button>',
+            '<button type="submit" id="go">Go</button>',
             '<div class="modal-body"><input type="email" id="u"><input type="password" '
             'id="p"></div><div class="modal-footer"><button type="button" id="close">'
-            'Close</button><button type="submit" id="go">Sign in</button></div>',
-            '<input type="email" id="u"><input type="password" id="p"><button id="signin">'
-            'Sign in</button><div hidden><input type="email" id="r" name="reset_email">'
+            'Close</button><button type="submit" id="go">Go</button></div>',
+            '<input type="email" id="u"><input type="password" id="p"><button id="go">'
+            'Go</button><div hidden><input type="email" id="r" name="reset_email">'
             '<button type="submit" id="send">Send link</button></div>',
         ],
-        ids=["toggle-then-submit", "close-before-sign-in", "hidden-panel"],
+        ids=["toggle-then-submit", "close-before-go", "hidden-panel"],
     )
     def test_a_submit_after_the_first_button_is_a_gp_fill_that_says_why(self, inner: str) -> None:
         """Review round 6 (toolkit I1, p6c): the dialog does hold a submit, after a
-        button that is not one, and the comment says why it was not taken."""
+        button that is not one, none of its buttons says it signs in, and the comment
+        says why none was taken. A "Sign in" button would be the submit (#375)."""
         html = f'<div role="dialog">{inner}</div>'
         (form,) = extract_login_forms(html, source="https://myshop.example.com/")
         spec = ScaffoldSpec(
@@ -1255,10 +1256,10 @@ class TestPluginModuleWithLoginForm:
         assert (
             "GP-FILL: submit has no selector: the first button after the password in the login "
             'dialog is not an explicit submit (an <input type="submit"> or <input '
-            'type="image">, or a <button type="submit">), or there is none; outside a '
-            'form a typeless or type="button" button submits nothing and may be a '
-            "show-password or a close button, so a submit after it is not taken either; "
-            "write one by hand."
+            'type="image">, or a <button type="submit">), and no button between the password '
+            "and the next field says it signs in by its class, text, or aria-label, nor is the "
+            'group\'s one button; outside a form a typeless or type="button" button may be a '
+            "show-password or a close button, so none is guessed; write one by hand."
         ) in comment
         assert 'submit="GP-FILL: submit selector"' in plugin_code
 

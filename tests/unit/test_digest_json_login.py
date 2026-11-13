@@ -309,6 +309,54 @@ class TestASettingWordCountsOnlyInThePasswordsOwnSegment:
         assert is_credential_body(urlencode({name: "hunter22", "user": "alice"}), _FORM)
 
 
+class TestAColonContainerPrefix:
+    """JSF prefixes a field's name with its form's id and a colon (#375)."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["loginForm:password", "j_idt12:loginForm:password", "rememberForm:password"],
+    )
+    def test_a_colon_prefixed_password_makes_a_credential_post(self, name: str) -> None:
+        from urllib.parse import urlencode
+
+        body = urlencode({"loginForm:username": "alice", name: "hunter22"})
+        assert password_field_names(body, _FORM) == [name]
+        assert is_credential_body(body, _FORM)
+
+    @pytest.mark.parametrize("name", ["loginForm:rememberPassword", "loginForm:password:show"])
+    def test_a_setting_after_the_colon_still_names_none(self, name: str) -> None:
+        """The setting-word split and the credential rule read the same segments."""
+        from urllib.parse import urlencode
+
+        body = urlencode({"loginForm:username": "alice", name: "1"})
+        assert password_field_names(body, _FORM) == []
+        assert not is_credential_body(body, _FORM)
+
+    def test_a_leading_colon_is_still_no_field_name(self) -> None:
+        from urllib.parse import urlencode
+
+        assert password_field_names(urlencode({":password": "hunter22"}), _FORM) == []
+
+    def test_a_colon_name_is_stored_but_never_printed(self, tmp_path: Path) -> None:
+        """The alphabet is the digest's one field-name rule, so a colon name is now
+        kept among an endpoint's parameters too; the name gate every printed name
+        goes through still refuses it."""
+        from graftpunk.har.digest import body_params_not_shown, printable_body_params
+
+        post = _entry(
+            "POST",
+            "https://myshop.example.com/api/search",
+            post_data="search:term=boots&page=2",
+            request_headers={"Content-Type": _FORM},
+        )
+        result = digest(DigestSource(har_path=_write_har(tmp_path, [post])))
+        (endpoint,) = [e for e in result.endpoints if "POST" in e.methods]
+
+        assert set(endpoint.body_params) == {"search:term", "page"}
+        assert set(printable_body_params(endpoint)) == {"page"}
+        assert body_params_not_shown(endpoint) == 1
+
+
 class TestAPasswordInAJsonList:
     def test_it_is_read_by_the_name_of_the_key_holding_the_list(self) -> None:
         """The scrub reads a list item under the key holding the list

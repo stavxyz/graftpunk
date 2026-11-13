@@ -5,6 +5,9 @@ Follows the same file-pair pattern as local and S3 backends:
 - {session_name}/session.pickle - Encrypted session data
 - {session_name}/metadata.json - Session metadata (JSON)
 
+A slot folder is a session only while its metadata.json exists; deleting a
+session removes every file in the folder.
+
 This is a BREAKING CHANGE from the previous implementation that used
 Supabase database table for metadata. Users with existing sessions
 will need to re-login.
@@ -18,12 +21,20 @@ from datetime import UTC, datetime
 from typing import Any
 
 from graftpunk._distribution import install_command
-from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
+from graftpunk.exceptions import (
+    SessionExpiredError,
+    SessionNotFoundError,
+    SessionNotFullyClearedError,
+    StorageError,
+)
 from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
     UNCHANGED,
     SessionMetadata,
+    check_slot_name,
     dict_to_metadata,
+    is_slot_file,
+    is_slot_name,
     metadata_to_dict,
 )
 
@@ -31,6 +42,8 @@ LOG = get_logger(__name__)
 
 # Storage configuration
 CACHE_CONTROL_SECONDS = 3600  # 1 hour
+# Entries per list call, and paths per remove call.
+_LIST_PAGE = 100
 
 
 class SupabaseSessionStorage:
@@ -315,11 +328,77 @@ class SupabaseSessionStorage:
         LOG.info("session_load_completed", name=name, backend="supabase")
         return encrypted_data, metadata
 
-    def list_sessions(self) -> list[str]:
-        """List all session names.
+    def _list_all(self, storage: Any, path: str) -> list[dict[str, Any]]:
+        """Every entry directly under *path*, across as many pages as it takes.
 
-        Returns:
-            Sorted list of session names
+        ``list`` returns at most ``limit`` entries per call (storage3's default
+        is 100), so a single call drops the rest. One request per page.
+        """
+        entries: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = storage.list(path, {"limit": _LIST_PAGE, "offset": offset}) or []
+            entries.extend(page)
+            if len(page) < _LIST_PAGE:
+                return entries
+            offset += _LIST_PAGE
+
+    def _slot_files(self, storage: Any, folder: str) -> list[str]:
+        """Paths of every file under *folder*, descending into subfolders, each once."""
+        files: dict[str, None] = {}
+        for entry in self._list_all(storage, folder):
+            name = entry.get("name", "")
+            if not name:
+                continue
+            path = f"{folder}/{name}"
+            # storage-api lists a folder with a null id and a file with its
+            # object's id (storage.search in its tenant migrations).
+            if entry.get("id") is None:
+                files.update(dict.fromkeys(self._slot_files(storage, path)))
+            else:
+                files[path] = None
+        return list(files)
+
+    def _has_object(self, storage: Any, path: str) -> bool:
+        """Whether the object at exactly *path* exists, by ``info`` (no prefix search).
+
+        Raises:
+            StorageApiError: For any failure other than not found
+        """
+        from storage3.exceptions import StorageApiError
+
+        try:
+            storage.info(path)
+        except StorageApiError as e:
+            if e.status in (404, "404"):
+                return False
+            raise
+        return True
+
+    def _slots(self) -> dict[str, bool]:
+        """Each slot folder at the bucket root, mapped to whether it holds ``metadata.json``.
+
+        A root folder holding no file graftpunk writes, nor one named after it
+        (:func:`~graftpunk.storage.base.is_slot_file`), is not a slot and is
+        left out, so another tool's folder in the bucket is never listed or
+        swept.
+
+        Whether a folder is a session, an incomplete slot, or neither is decided
+        by ``info`` on exact paths, never by the listing alone: storage-api
+        matches a folder listing without regard to letter case (``lower(name)``
+        in its current search, ``ILIKE`` in older ones, where ``_`` also matches
+        any character) and groups root folders the same way, keeping one
+        spelling. So ``MyShop``'s listing can hold ``myshop``'s files, and a
+        root entry ``MyShop`` can stand for both. Each root entry is judged under
+        its own spelling and under its lower-case one: a session when
+        ``<folder>/metadata.json`` exists, an incomplete slot when another
+        slot-named file it listed exists at ``<folder>/<file>``. So another
+        tool's ``MyShop/avatar.png`` beside a complete ``myshop/`` is never
+        listed, and ``myshop`` still is. Costs one request per page of the root,
+        one per root folder (more for one of over 100 entries), and one ``info``
+        per session (1 + 2N for N sessions), plus one per slot-named file
+        checked in a folder that is not a session. storage3 2.27.2 has no call
+        that lists every slot's files at once.
 
         Raises:
             StorageError: If listing fails due to Supabase errors
@@ -329,65 +408,135 @@ class SupabaseSessionStorage:
 
         try:
             storage = self.client.storage.from_(self.bucket_name)
-            # List top-level folders in the bucket
-            result = storage.list()
-
-            if not result:
-                return []
-
-            # Each session is a folder containing session.pickle and metadata.json
-            # The list() call returns folder/file entries at root level
-            sessions: set[str] = set()
-            for item in result:
-                # Supabase Storage returns objects with 'name' field
-                # Folders appear as entries; we extract session names from paths
-                name = item.get("name", "")
-                if name and not name.startswith("."):
-                    # This could be a folder name directly, or we may need to
-                    # parse paths if list returns full paths
-                    sessions.add(name)
-
-            LOG.debug("session_list_completed", count=len(sessions), backend="supabase")
-            return sorted(sessions)
+            slots: dict[str, bool] = {}
+            for entry in self._list_all(storage, ""):
+                name = entry.get("name", "")
+                if not name or name.startswith(".") or entry.get("id") is not None:
+                    continue
+                files = [
+                    item.get("name", "")
+                    for item in self._list_all(storage, name)
+                    if item.get("id") is not None
+                ]
+                slot_files = [file for file in files if is_slot_file(file)]
+                if not slot_files:
+                    continue
+                # The listing may hold a differently cased sibling's files, and
+                # the root may list that sibling under this entry's spelling, so
+                # the folder is judged by exact paths, under its own spelling and
+                # the lower-case one a session name takes.
+                for folder in dict.fromkeys((name, name.lower())):
+                    if folder in slots:
+                        continue
+                    if "metadata.json" in slot_files and self._has_object(
+                        storage, self._metadata_path(folder)
+                    ):
+                        slots[folder] = True
+                    elif any(self._has_object(storage, f"{folder}/{file}") for file in slot_files):
+                        slots[folder] = False
         except (HTTPStatusError, StorageApiError) as e:
             LOG.error("failed_to_list_sessions", error=str(e), backend="supabase")
             raise StorageError(f"Failed to list sessions: {e}") from e
+        return slots
+
+    def list_sessions(self) -> list[str]:
+        """List the session slots in the bucket.
+
+        A slot folder is a session only when its ``metadata.json`` exists. Any
+        other file in it does not make it a session, so it can never become a
+        candidate for account resolution (#382). Costs 1 + 2N requests for N
+        sessions (:meth:`_slots`).
+
+        Returns:
+            Sorted list of session names
+
+        Raises:
+            StorageError: If listing fails due to Supabase errors
+        """
+        sessions = sorted(name for name, complete in self._slots().items() if complete)
+        LOG.debug("session_list_completed", count=len(sessions), backend="supabase")
+        return sessions
+
+    def incomplete_sessions(self) -> list[str]:
+        """Slot folders holding files but no ``metadata.json``, under a safe name.
+
+        They are not sessions (:meth:`list_sessions` leaves them out), but
+        clearing every session removes them too. A root folder holding no file
+        graftpunk writes is never one. Costs what :meth:`list_sessions` does.
+        """
+        return sorted(
+            name for name, complete in self._slots().items() if not complete and is_slot_name(name)
+        )
+
+    def remove_session(self, name: str) -> list[str]:
+        """Delete every file under the slot folder ``<name>/``; return the paths deleted.
+
+        Only the paths ``remove`` reports deleting are returned: a path that went
+        between the listing and the delete, or one an older server's prefix
+        search listed from another folder (:meth:`_slots`), is not.
+
+        Raises:
+            ValueError: *name* is not a session name; no request is sent
+            SessionNotFullyClearedError: The delete reported fewer paths than it
+                was given and the others are still there
+            StorageError: If listing or a delete fails due to Supabase errors
+        """
+        check_slot_name(name)
+        from httpx import HTTPStatusError
+        from storage3.exceptions import StorageApiError
+
+        storage = self.client.storage.from_(self.bucket_name)
+        try:
+            paths = self._slot_files(storage, name)
+        except (HTTPStatusError, StorageApiError) as e:
+            LOG.error("session_files_list_failed", name=name, error=str(e))
+            raise StorageError(f"Failed to list files for '{name}': {e}") from e
+
+        removed: list[str] = []
+        for start in range(0, len(paths), _LIST_PAGE):
+            batch = paths[start : start + _LIST_PAGE]
+            try:
+                result = storage.remove(batch)
+            except (HTTPStatusError, StorageApiError) as e:
+                LOG.error("session_file_delete_failed", name=name, paths=batch, error=str(e))
+                raise StorageError(f"Failed to delete '{batch[0]}': {e}") from e
+            # storage-api answers with the object rows it deleted, each named by
+            # its full path.
+            gone = {item.get("name") for item in result or [] if isinstance(item, dict)}
+            removed.extend(path for path in batch if path in gone)
+
+        try:
+            # A path remove() did not report: gone already, listed from another
+            # folder by an older server's search (_slots), or kept by the server
+            # (a row-level policy refusing the delete answers 200 with no rows).
+            # Only the last is still there.
+            done = set(removed)
+            remaining = [
+                path for path in paths if path not in done and self._has_object(storage, path)
+            ]
+        except (HTTPStatusError, StorageApiError) as e:
+            LOG.error("session_files_check_failed", name=name, error=str(e))
+            raise StorageError(f"Failed to check what '{name}' kept: {e}") from e
+        if remaining:
+            LOG.warning("session_files_kept", name=name, paths=remaining, backend="supabase")
+            raise SessionNotFullyClearedError(name, removed, remaining)
+
+        LOG.info("session_delete_completed", name=name, paths=removed, backend="supabase")
+        return removed
 
     def delete_session(self, name: str) -> bool:
-        """Delete a session.
+        """Delete every file in the session's slot folder.
 
         Args:
             name: Session identifier
 
         Returns:
-            True if deleted successfully
+            True if any file was deleted, False if there was none
 
         Raises:
-            StorageError: If delete fails due to Supabase errors (except NotFound)
+            StorageError: If delete fails due to Supabase errors
         """
-        from httpx import HTTPStatusError
-        from storage3.exceptions import StorageApiError
-
-        session_path = self._session_path(name)
-        metadata_path = self._metadata_path(name)
-
-        storage = self.client.storage.from_(self.bucket_name)
-
-        # Delete both files from storage
-        for path in (session_path, metadata_path):
-            try:
-                storage.remove([path])
-                LOG.debug("session_file_deleted", name=name, path=path)
-            except (HTTPStatusError, StorageApiError) as e:
-                # 404/NotFound is acceptable - file didn't exist
-                response = getattr(e, "response", None)
-                status = getattr(e, "status", None) or getattr(response, "status_code", None)
-                if status not in (404, "404"):
-                    LOG.error("session_file_delete_failed", name=name, path=path, error=str(e))
-                    raise StorageError(f"Failed to delete '{path}': {e}") from e
-
-        LOG.info("session_delete_completed", name=name, backend="supabase")
-        return True
+        return bool(self.remove_session(name))
 
     def get_session_metadata(self, name: str) -> SessionMetadata | None:
         """Get session metadata without loading the full session.

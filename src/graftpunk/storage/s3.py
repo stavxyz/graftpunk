@@ -17,6 +17,9 @@ Configuration:
 Storage Structure:
     sessions/{name}/session.pickle - Encrypted session data
     sessions/{name}/metadata.json - Session metadata
+
+A slot is a session only while its metadata.json exists; deleting a session
+removes every object under sessions/{name}/.
 """
 
 import json
@@ -33,11 +36,16 @@ from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
     UNCHANGED,
     SessionMetadata,
+    check_slot_name,
     dict_to_metadata,
+    is_slot_file,
+    is_slot_name,
     metadata_to_dict,
 )
 
 LOG = get_logger(__name__)
+
+_PREFIX = "sessions/"
 
 
 class S3SessionStorage:
@@ -345,8 +353,35 @@ class S3SessionStorage:
         LOG.info("session_loaded", name=name, size=len(encrypted_data))
         return encrypted_data, metadata
 
+    def _slot_keys(self) -> dict[str, list[str]]:
+        """Every key under ``sessions/``, grouped by the slot directory it sits in.
+
+        Raises:
+            StorageError: If listing fails due to S3 errors
+        """
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        slots: dict[str, list[str]] = {}
+        paginator = self._client.get_paginator("list_objects_v2")
+        try:
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=_PREFIX):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    name, sep, _rest = key[len(_PREFIX) :].partition("/")
+                    if name and sep:
+                        slots.setdefault(name, []).append(key)
+        except (ClientError, BotoCoreError) as e:
+            LOG.error("list_sessions_failed", error=str(e))
+            raise StorageError(f"Failed to list sessions: {e}") from e
+        return slots
+
     def list_sessions(self) -> list[str]:
-        """List all session names in the bucket.
+        """List the session slots in the bucket.
+
+        A slot is a session only when its ``metadata.json`` exists. Any other
+        object under ``sessions/<name>/`` (a hand-made copy, a crashed save's
+        pickle) does not make ``<name>`` a session, so it can never become a
+        candidate for account resolution (#382).
 
         Returns:
             Sorted list of session names
@@ -354,57 +389,87 @@ class S3SessionStorage:
         Raises:
             StorageError: If listing fails due to S3 errors
         """
+        return sorted(
+            name for name, keys in self._slot_keys().items() if self._metadata_key(name) in keys
+        )
+
+    def incomplete_sessions(self) -> list[str]:
+        """Slot prefixes holding a file graftpunk writes, or one named after it,
+        but no ``metadata.json``.
+
+        They are not sessions (:meth:`list_sessions` leaves them out), but
+        clearing every session removes them too. Any other prefix under
+        ``sessions/`` (another tool's objects) is never listed, so a sweep
+        never deletes it.
+        """
+        prefix_len = len(_PREFIX)
+        return sorted(
+            name
+            for name, keys in self._slot_keys().items()
+            if self._metadata_key(name) not in keys
+            and is_slot_name(name)
+            and any(
+                is_slot_file(rest)
+                for key in keys
+                if "/" not in (rest := key[prefix_len + len(name) + 1 :])
+            )
+        )
+
+    def remove_session(self, name: str) -> list[str]:
+        """Delete every object under ``sessions/<name>/``; return the keys deleted.
+
+        Raises:
+            ValueError: *name* is not a session name; no request is sent
+            StorageError: If listing or a delete fails due to S3 errors
+                (except NotFound)
+        """
+        check_slot_name(name)
         from botocore.exceptions import BotoCoreError, ClientError
 
-        sessions: set[str] = set()
+        prefix = f"{_PREFIX}{name}/"
         paginator = self._client.get_paginator("list_objects_v2")
-
         try:
-            for page in paginator.paginate(Bucket=self.bucket):
-                for obj in page.get("Contents", []):
-                    key = obj["Key"]
-                    # Extract session name from path: sessions/{name}/session.pickle
-                    if key.startswith("sessions/") and "/" in key[9:]:
-                        session_name = key.split("/")[1]
-                        sessions.add(session_name)
+            keys = [
+                obj["Key"]
+                for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix)
+                for obj in page.get("Contents", [])
+            ]
         except (ClientError, BotoCoreError) as e:
-            LOG.error("list_sessions_failed", error=str(e))
-            raise StorageError(f"Failed to list sessions: {e}") from e
+            LOG.error("list_session_objects_failed", name=name, error=str(e))
+            raise StorageError(f"Failed to list objects for '{name}': {e}") from e
 
-        return sorted(sessions)
+        removed: list[str] = []
+        for key in keys:
+            try:
+                self._client.delete_object(Bucket=self.bucket, Key=key)
+            except ClientError as e:
+                error_code = e.response.get("Error", {}).get("Code", "")
+                # Gone between the listing and the delete: nothing to remove.
+                if error_code in ("NoSuchKey", "404"):
+                    continue
+                LOG.error("delete_object_failed", key=key, error=str(e))
+                raise StorageError(f"Failed to delete '{key}': {e}") from e
+            except BotoCoreError as e:
+                LOG.error("delete_object_failed", key=key, error=str(e))
+                raise StorageError(f"Failed to delete '{key}': {e}") from e
+            removed.append(key)
+
+        LOG.info("session_deleted", name=name, keys=removed)
+        return removed
 
     def delete_session(self, name: str) -> bool:
-        """Delete session data and metadata from S3.
+        """Delete every object under the session's prefix.
 
         Args:
             name: Session identifier
 
         Returns:
-            True if deleted successfully
+            True if any object was deleted, False if there was none
 
         Raises:
             StorageError: If delete fails due to S3 errors (except NotFound)
         """
-        from botocore.exceptions import BotoCoreError, ClientError
-
-        session_key = self._session_key(name)
-        metadata_key = self._metadata_key(name)
-
-        for key in (session_key, metadata_key):
-            try:
-                self._client.delete_object(Bucket=self.bucket, Key=key)
-            except ClientError as e:
-                error_code = e.response.get("Error", {}).get("Code", "")
-                # NoSuchKey is fine - the object didn't exist
-                if error_code not in ("NoSuchKey", "404"):
-                    LOG.error("delete_object_failed", key=key, error=str(e))
-                    raise StorageError(f"Failed to delete '{key}': {e}") from e
-            except BotoCoreError as e:
-                LOG.error("delete_object_failed", key=key, error=str(e))
-                raise StorageError(f"Failed to delete '{key}': {e}") from e
-
-        LOG.info("session_deleted", name=name)
-        return True
+        return bool(self.remove_session(name))
 
     def get_session_metadata(self, name: str) -> SessionMetadata | None:
         """Get session metadata without loading session data.

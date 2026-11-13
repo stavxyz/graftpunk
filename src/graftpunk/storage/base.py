@@ -8,6 +8,46 @@ if TYPE_CHECKING:
     from typing import Any
 
 
+def check_slot_name(name: str) -> None:
+    """Raise ``ValueError`` when deleting under the slot *name* is unsafe.
+
+    Every backend calls it before deleting anything under a slot. Refused: an
+    empty name, ``.``, ``..``, a name holding ``/`` or ``\\``, and one holding
+    NUL or another control character, each of which could reach the sessions
+    directory itself, a parent of it, or a bucket's root. Nothing else is: a
+    name an older release saved and today's session-name rules refuse
+    (``MyShop``) still names its own slot, and it must stay clearable.
+    """
+    if name in ("", ".", ".."):
+        raise ValueError(f"Not a session slot: {name!r}")
+    if "/" in name or "\\" in name:
+        raise ValueError(f"A session slot name cannot hold a path separator: {name!r}")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise ValueError(f"A session slot name cannot hold a control character: {name!r}")
+
+
+# The two files graftpunk writes in a slot. A file whose name starts with one of
+# them (session.pickle, metadata.json.pre-test2) is graftpunk's or a copy of it.
+SLOT_FILE_NAMES = ("session.pickle", "metadata.json")
+
+
+def is_slot_file(file_name: str) -> bool:
+    """Whether *file_name* (one path component) is a file graftpunk writes in a
+    slot, or a leftover named after one (``metadata.json.pre-test2``). A folder,
+    prefix or directory holding none is never an incomplete slot, so nothing a
+    clear sweeps was written by anyone else (#382)."""
+    return file_name.startswith(SLOT_FILE_NAMES)
+
+
+def is_slot_name(name: str) -> bool:
+    """Whether *name* passes :func:`check_slot_name`."""
+    try:
+        check_slot_name(name)
+    except ValueError:
+        return False
+    return True
+
+
 def parse_datetime_iso(value: str | None) -> datetime | None:
     """Parse ISO datetime string to datetime with UTC timezone.
 
@@ -205,13 +245,39 @@ class SessionStorageBackend(Protocol):
     def list_sessions(self) -> list[str]:
         """List all session names.
 
+        A slot is a session only while its metadata exists; other objects
+        stored under the slot's name never make it one.
+
         Returns:
             Sorted list of session names
         """
         ...
 
+    def incomplete_sessions(self) -> list[str]:
+        """Slots holding objects but no complete session, sorted.
+
+        :meth:`list_sessions` leaves them out; clearing every session removes
+        them. Only a container holding a file graftpunk writes, or a
+        leftover named after one (:func:`is_slot_file`), is one: any other
+        folder, prefix or directory is never listed here, so a sweep never
+        deletes it. Neither is a name :func:`check_slot_name` refuses.
+        """
+        ...
+
+    def remove_session(self, name: str) -> list[str]:
+        """Delete everything stored under the slot *name*.
+
+        Returns:
+            The keys or paths deleted; empty when there was nothing
+
+        Raises:
+            ValueError: *name* is not a session name (:func:`check_slot_name`),
+                raised before the backend is called
+        """
+        ...
+
     def delete_session(self, name: str) -> bool:
-        """Delete a session.
+        """Delete everything stored under the slot *name*.
 
         Args:
             name: Session identifier

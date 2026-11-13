@@ -312,12 +312,13 @@ class TestASnapshotLoginGroupOutsideAnyDialog:
         assert form.submit == "#login-submit"
         assert "q" not in form.input_names
 
-    def test_a_typeless_sign_in_bounds_the_group_and_its_submit_is_a_gp_fill(self) -> None:
+    def test_a_typeless_sign_in_bounds_the_group_and_is_its_submit(self) -> None:
+        """A script-drawn login's typeless "Sign in" is the submit (#375)."""
         html = self._DIV_LOGIN.replace('<button type="submit"', "<button")
         (form,) = extract_login_forms(html, source=_SITE, snapshot=True)
         assert form.fields["username"] == "#login-username"
-        assert form.submit is None
-        assert "submit" in form.unresolved_roles
+        assert form.submit == "#login-submit"
+        assert "submit" not in form.unresolved_roles
 
     def test_a_password_with_no_button_after_it_is_a_group_alone(self) -> None:
         html = (

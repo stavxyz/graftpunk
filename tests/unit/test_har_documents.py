@@ -1373,24 +1373,25 @@ class TestLoginFieldsInADialogOutsideAnyForm:
         assert form.submit is None
         assert form.absent_roles == ("submit",)
 
-    def test_a_type_button_is_never_the_submit(self) -> None:
+    def test_a_type_button_sign_in_is_the_submit(self) -> None:
+        """A script-driven login's button says what it does (#375)."""
         html = _in_dialog(
             '<input id="u"><input type="password" id="p">'
             '<button type="button" id="go">Sign in</button>'
         )
         (form,) = extract_login_forms(html, source="s")
-        assert form.submit is None
-        assert form.absent_roles == ("submit",)
-        assert form.unresolved_roles == ("submit",)
+        assert form.submit == "#go"
+        assert form.absent_roles == ()
+        assert form.unresolved_roles == ()
 
     def test_a_show_password_toggle_beside_the_password_is_never_the_submit(self) -> None:
         """Review round 2 (n1 T1, shapes A and A2): the toggle in the password's own
-        wrapper is not the submit, and the username before it is kept. Since review
-        round 5 the toggle also ends the submit search, so the sign-in after it is a
+        wrapper is not the submit, and the username before it is kept. The sign-in
+        after it is the submit when it says so (#375); one that says nothing is a
         GP-FILL rather than a guess."""
-        for sign_in in (
-            '<button type="submit" id="go">Sign in</button>',
-            '<button type="submit" id="go">x</button>',
+        for sign_in, submit in (
+            ('<button type="submit" id="go">Sign in</button>', "#go"),
+            ('<button type="submit" id="go">x</button>', None),
         ):
             html = _in_dialog(
                 '<div class="row"><input type="email" id="u" name="email"></div>'
@@ -1400,11 +1401,12 @@ class TestLoginFieldsInADialogOutsideAnyForm:
             )
             (form,) = extract_login_forms(html, source="s")
             assert form.fields == {"username": "#u", "password": "#p"}
-            assert form.submit is None
-            assert "submit" in form.unresolved_roles
+            assert form.submit == submit
+            assert ("submit" in form.unresolved_roles) is (submit is None)
 
-    def test_a_toggle_and_a_type_button_sign_in_leave_the_submit_to_a_gp_fill(self) -> None:
-        """Review round 2 (n1 T2, shapes A3)."""
+    def test_a_toggle_and_a_type_button_sign_in(self) -> None:
+        """Review round 2 (n1 T2, shapes A3): the toggle says "show", the sign-in
+        says it signs in (#375)."""
         html = _in_dialog(
             '<div class="row"><input type="email" id="u" name="email"></div>'
             '<div class="input-group"><input type="password" id="p" name="password">'
@@ -1413,8 +1415,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#u", "password": "#p"}
-        assert form.submit is None
-        assert "submit" in form.unresolved_roles
+        assert form.submit == "#go"
 
     def test_a_close_button_before_the_sign_in_is_never_the_submit(self) -> None:
         """Review round 2 (n3 B1): a Bootstrap footer of two type=button buttons."""
@@ -1426,12 +1427,11 @@ class TestLoginFieldsInADialogOutsideAnyForm:
             '<button type="button" id="go">Sign in</button></div>'
         )
         (form,) = extract_login_forms(html, source="s")
-        assert form.submit is None
-        assert "submit" in form.unresolved_roles
+        assert form.submit == "#go"
 
-    def test_a_bootstrap_footer_s_close_button_ends_the_submit_search(self) -> None:
-        """A Close ``type="button"`` before the submitting Sign in ends the search
-        (review round 5): the submit is a GP-FILL, the fields are kept."""
+    def test_a_bootstrap_footer_s_close_button_ends_the_fields(self) -> None:
+        """A Close ``type="button"`` before the submitting Sign in ends the field
+        block (review round 5); the Sign in is still the submit (#375)."""
         html = (
             '<header><input type="search" id="q" name="q"></header>'
             + _in_dialog(
@@ -1445,8 +1445,7 @@ class TestLoginFieldsInADialogOutsideAnyForm:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#login-email", "password": "#login-password"}
-        assert form.submit is None
-        assert "submit" in form.unresolved_roles
+        assert form.submit == "#login-go"
 
     def test_a_bootstrap_footer_whose_first_button_submits(self) -> None:
         html = _in_dialog(
@@ -1977,32 +1976,44 @@ class TestDialogSubmitAndParsingRound3:
         ("inner", "submit"),
         [
             # toggle.py: a typeless show-password toggle, then a type=submit sign-in.
-            # The toggle ends the submit search (review round 5): a GP-FILL.
+            # The toggle ends the fields (review round 5); the sign-in says it signs
+            # in, so it is the submit (#375).
             (
                 '<input type="email" id="u" name="email"><div class="pw">'
                 '<input type="password" id="p" name="password">'
                 '<button class="toggle" aria-label="Show password" id="eye"></button></div>'
                 '<button type="submit" id="signin">Sign in</button>',
-                None,
+                "#signin",
             ),
-            # A typeless toggle, then a typeless sign-in: neither submits outside a form.
+            # A typeless toggle, then a typeless sign-in.
             (
                 '<input type="email" id="u" name="email"><input type="password" id="p" '
                 'name="password"><button aria-label="Show password" id="eye"></button>'
                 '<button id="signin">Sign in</button>',
-                None,
+                "#signin",
             ),
             # A typeless "Forgot password?" button, then a typeless sign-in.
             (
                 '<input type="email" id="u" name="email"><input type="password" id="p" '
                 'name="password"><button class="link" id="forgot">Forgot password?</button>'
                 '<button id="signin">Sign in</button>',
+                "#signin",
+            ),
+            # Two typeless buttons that say nothing: a GP-FILL, never a guess.
+            (
+                '<input type="email" id="u" name="email"><input type="password" id="p" '
+                'name="password"><button id="eye"></button><button id="go">Go</button>',
                 None,
             ),
         ],
-        ids=["typeless-toggle-then-submit", "two-typeless", "forgot-then-typeless"],
+        ids=[
+            "typeless-toggle-then-submit",
+            "two-typeless",
+            "forgot-then-typeless",
+            "two-silent",
+        ],
     )
-    def test_a_typeless_button_is_never_a_dialog_s_submit(
+    def test_a_typeless_button_is_a_dialog_s_submit_only_when_it_says_so(
         self, inner: str, submit: str | None
     ) -> None:
         (form,) = extract_login_forms(_in_dialog(inner), source="s")
@@ -2105,8 +2116,9 @@ class TestDialogFieldBlockAndForeignContentRound4:
     """Review round 4 of #267."""
 
     def test_the_field_block_ends_at_a_typeless_sign_in(self) -> None:
-        """A typeless "Sign in" is no submit, but the fields end there: a hidden
-        reset panel's input after it is no login field."""
+        """The fields end at a typeless "Sign in": a hidden reset panel's input after
+        it is no login field. The Sign in is the submit (#375), and the panel's
+        button is not."""
         html = _in_dialog(
             '<input type="email" id="u" name="email"><input type="password" id="p" '
             'name="password"><button id="signin">Sign in</button>'
@@ -2115,8 +2127,7 @@ class TestDialogFieldBlockAndForeignContentRound4:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#u", "password": "#p"}
-        assert form.submit is None
-        assert "submit" in form.unresolved_roles
+        assert form.submit == "#signin"
 
     @pytest.mark.parametrize(
         "control",
@@ -2176,12 +2187,18 @@ class TestDialogSubmitBoundedByTheFieldBlockRound5:
     """Review round 5 of #267: the submit search stops where the fields end."""
 
     @pytest.mark.parametrize(
-        "sign_in",
-        ['<button id="signin">Sign in</button>', '<button type="button" id="signin">In</button>'],
+        ("sign_in", "submit"),
+        [
+            ('<button id="signin">Sign in</button>', "#signin"),
+            ('<button type="button" id="signin">In</button>', None),
+        ],
         ids=["typeless", "type-button"],
     )
-    def test_a_hidden_panel_s_explicit_submit_is_never_taken(self, sign_in: str) -> None:
-        """Review round 5 (toolkit I1, B1 and B2)."""
+    def test_a_hidden_panel_s_explicit_submit_is_never_taken(
+        self, sign_in: str, submit: str | None
+    ) -> None:
+        """Review round 5 (toolkit I1, B1 and B2). A button saying "Sign in" is the
+        submit (#375); one saying nothing leaves a GP-FILL."""
         html = _in_dialog(
             f'<input type="email" id="u" name="email"><input type="password" id="p" '
             f'name="password">{sign_in}<div class="reset" hidden><input type="email" '
@@ -2190,22 +2207,24 @@ class TestDialogSubmitBoundedByTheFieldBlockRound5:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#u", "password": "#p"}
-        assert form.submit is None
-        assert "submit" in form.unresolved_roles
+        assert form.submit == submit
+        assert ("submit" in form.unresolved_roles) is (submit is None)
 
-    def test_a_toggle_after_the_password_ends_the_fields_and_the_submit_search(self) -> None:
+    @pytest.mark.parametrize("text", ["Sign in", "Go"])
+    def test_a_toggle_after_the_password_ends_the_fields(self, text: str) -> None:
         """Review round 5 (toolkit M1, F1): the intended trade, a GP-FILL over a
-        wrong selector. The OTP input after the toggle is dropped, and the submit
-        after it is a GP-FILL."""
+        wrong selector. The OTP input after the toggle is dropped, and a button
+        past it is never the submit, whatever it says (#375 round 2)."""
+        submit = None
         html = _in_dialog(
             '<input type="email" id="u" name="email"><input type="password" id="p" '
             'name="password"><button type="button" id="eye">Show</button>'
-            '<input id="otp" name="otp"><button type="submit" id="go">Sign in</button>'
+            f'<input id="otp" name="otp"><button type="submit" id="go">{text}</button>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": "#u", "password": "#p"}
-        assert form.submit is None
-        assert "submit" in form.unresolved_roles
+        assert form.submit == submit
+        assert ("submit" in form.unresolved_roles) is (submit is None)
 
     @pytest.mark.parametrize(
         "submit",
@@ -2325,3 +2344,352 @@ class TestARealFormInsideADialog:
         )
         (form,) = extract_login_forms(html, source="s")
         assert not form.in_dialog
+
+
+_SNAPSHOT_SOURCE = "https://myshop.example.com/login"
+
+
+def _snapshot_form(html: str):
+    (form,) = extract_login_forms(html, source=_SNAPSHOT_SOURCE, snapshot=True)
+    return form
+
+
+class TestAFormlessGroupsScriptSubmit:
+    """A formless group's submit when no explicit submit follows the password (#375)."""
+
+    @pytest.mark.parametrize(
+        ("button", "submit"),
+        [
+            ('<button class="sign-in-btn">Go</button>', "button.sign-in-btn"),
+            ('<button type="button" class="btn-login">Go</button>', "button.btn-login"),
+            ('<button id="go">Log in</button>', "#go"),
+            ('<button type="button" id="go">Sign In</button>', "#go"),
+            ('<button id="go" aria-label="Sign in"></button>', "#go"),
+            ('<input type="button" id="go" value="Log in">', "#go"),
+        ],
+        ids=["class", "class-type-button", "text", "text-type-button", "aria", "input-value"],
+    )
+    def test_the_only_button_that_says_it_signs_in_is_the_submit(
+        self, button: str, submit: str
+    ) -> None:
+        form = _snapshot_form(
+            '<div class="login"><input type="text" placeholder="Username">'
+            '<input type="password"><button type="button" id="eye" aria-label="Show password">'
+            f"</button>{button}</div>"
+        )
+        assert form.submit == submit
+        assert "submit" not in form.unresolved_roles
+
+    def test_a_sign_in_with_no_stable_selector_is_found_but_unresolved(self) -> None:
+        """Found, so not absent; nothing selects it, so a GP-FILL says so."""
+        form = _snapshot_form(
+            '<div class="login"><input type="text" placeholder="Username">'
+            '<input type="password"><button type="button" aria-label="Show password">'
+            "</button><button>Log in</button></div>"
+        )
+        assert form.submit is None
+        assert "submit" in form.unresolved_roles
+        assert "submit" not in form.absent_roles
+
+    def test_a_lone_button_right_after_the_password_is_the_submit(self) -> None:
+        form = _snapshot_form(
+            '<div class="login"><input type="text" id="u" placeholder="Username">'
+            '<input type="password" id="p"><button id="go">→</button></div>'
+        )
+        assert form.submit == "#go"
+
+    def test_a_lone_button_in_a_dialog_is_the_submit(self) -> None:
+        (form,) = extract_login_forms(
+            _in_dialog('<input id="u"><input type="password" id="p"><button id="go">Go</button>'),
+            source="s",
+        )
+        assert form.submit == "#go"
+
+    @pytest.mark.parametrize(
+        "html",
+        [
+            # A lone toggle is no submit.
+            '<div class="login"><input type="text" id="u" placeholder="Username">'
+            '<input type="password" id="p"><button id="eye">Show</button></div>',
+            '<div class="login"><input type="text" id="u" placeholder="Username">'
+            '<input type="password" id="p"><button class="pw-toggle" id="eye"></button></div>',
+            # An input between the password and a lone button.
+            '<div class="login"><input type="text" id="u" placeholder="Username">'
+            '<input type="password" id="p"><input type="text" id="otp" name="otp">'
+            '<button id="go">Go</button></div>',
+            # Two buttons that say they sign in.
+            '<div class="login"><input type="text" id="u" placeholder="Username">'
+            '<input type="password" id="p"><button id="a">Sign in</button>'
+            '<button id="b">Login</button></div>',
+            # Two buttons that say nothing.
+            '<div class="login"><input type="text" id="u" placeholder="Username">'
+            '<input type="password" id="p"><button id="a">Go</button>'
+            '<button id="b">Help</button></div>',
+            # A sign-up button is no sign-in.
+            '<div class="login"><input type="text" id="u" placeholder="Username">'
+            '<input type="password" id="p"><button id="eye">Show</button>'
+            '<button id="b">Sign up</button></div>',
+        ],
+        ids=["toggle-text", "toggle-class", "otp-between", "two-sign-ins", "two-silent", "sign-up"],
+    )
+    def test_no_guess_when_the_buttons_do_not_say(self, html: str) -> None:
+        form = _snapshot_form(html)
+        assert form.submit is None
+        assert "submit" in form.unresolved_roles
+
+    def test_a_lone_button_before_the_password_is_no_submit(self) -> None:
+        (form,) = extract_login_forms(
+            _in_dialog('<button id="x">Go</button><input id="u"><input type="password" id="p">'),
+            source="s",
+        )
+        assert form.submit is None
+
+    def test_a_real_form_is_unchanged(self) -> None:
+        html = (
+            '<form action="/login"><input id="u"><input type="password" id="p">'
+            '<button type="button" id="eye">Show</button><button id="go">Go</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.submit == "#go"
+
+    def test_the_button_text_survives_the_stored_snapshot(self) -> None:
+        """The text the rule reads is what the snapshot sanitizer keeps."""
+        body = "username=jsmith&password=hunter22secret"
+        html = stored_dom_snapshot(
+            '<html><body><div class="login"><input type="text" placeholder="Username">'
+            '<input type="password"><button type="button" aria-label="Show password">'
+            '</button><button id="go">Sign in</button></div></body></html>',
+            body,
+            "application/x-www-form-urlencoded",
+        )
+        form = _snapshot_form(html)
+        assert form.submit == "#go"
+
+    def test_button_text_is_never_printed(self) -> None:
+        """Read to judge the button only: a selector never spells it."""
+        form = _snapshot_form(
+            '<div class="login"><input type="text" id="u" placeholder="Username">'
+            '<input type="password" id="p"><button class="btn">Sign in as Jane Doe</button>'
+            "</div>"
+        )
+        assert form.submit == "button.btn"
+
+
+class TestAHyphenatedUsernameHint:
+    """``E-mail`` is a username hint as ``email`` is (#375)."""
+
+    @pytest.mark.parametrize("attribute", ['placeholder="E-mail"', 'aria-label="Your e-mail"'])
+    def test_a_snapshot_block_s_username(self, attribute: str) -> None:
+        form = _snapshot_form(
+            f'<div class="login"><input type="text" {attribute}>'
+            '<input type="password"><button type="submit">Go</button></div>'
+        )
+        assert "username" in form.fields
+        assert "username" not in form.unresolved_roles
+
+    def test_a_form_s_named_username_beats_an_unhinted_input(self) -> None:
+        html = (
+            '<form action="/login"><input type="text" id="e" name="e-mail">'
+            '<input type="text" id="promo" name="promo"><input type="password" id="p">'
+            '<button id="go">Go</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["username"] == "#e"
+
+    def test_log_in_id_is_a_hint(self) -> None:
+        form = _snapshot_form(
+            '<div class="login"><input type="text" placeholder="Log-in ID">'
+            '<input type="password"><button type="submit">Go</button></div>'
+        )
+        assert "username" in form.fields
+
+
+def test_a_sign_in_by_another_route_is_not_the_submit() -> None:
+    """A "Sign in with Google" button beside the password's own one is not it (#375)."""
+    form = _snapshot_form(
+        '<div class="login"><input type="text" id="u" placeholder="Username">'
+        '<input type="password" id="p"><button id="go">Continue</button>'
+        '<button id="g">Sign in with Google</button></div>'
+    )
+    assert form.submit is None
+    assert "submit" in form.unresolved_roles
+
+
+_U = '<input type="text" id="u" placeholder="Username"><input type="password" id="p">'
+_EYE = '<button id="eye" aria-label="Show password"></button>'
+
+
+class TestTheScriptSubmitStaysInTheLoginFields:
+    """#375 round 2: the reviewers' probes, each in snapshot mode."""
+
+    @pytest.mark.parametrize(
+        ("inner", "submit"),
+        [
+            # A panel's button past a field after the password.
+            (
+                f'{_U}<button id="eye"></button><div class="reset"><input type="email" id="re" '
+                'placeholder="Email"><button id="send">Submit</button></div>',
+                None,
+            ),
+            (
+                f'{_U}<button id="eye"></button><div class="otp"><input type="text" id="otp">'
+                '<input type="button" id="vf" value="Submit code"></div>',
+                None,
+            ),
+            (
+                f'{_U}<button type="button" id="next">Continue</button><div hidden>'
+                '<input type="email" id="r"><button class="btn-submit" id="send">Send link'
+                "</button></div>",
+                None,
+            ),
+            (
+                f'{_U}<button type="button" id="go">Continue</button><input type="email" id="nl">'
+                '<button type="button" id="sub" class="submit">Subscribe</button>',
+                None,
+            ),
+            (f'{_U}{_EYE}<input type="search" id="s"><button id="si">Sign in</button>', None),
+            # Whole words only.
+            (f'{_U}{_EYE}<button id="x" class="btn design">Info</button>', None),
+            (f'{_U}{_EYE}<button id="x">Blog only</button>', None),
+            (f'{_U}{_EYE}<button id="h" class="login-help">?</button>', None),
+            (f'{_U}{_EYE}<button id="f">Forgot login?</button>', None),
+            # Never taken, lone or not: a provider, a switch, an icon-only button.
+            (f'{_U}<button id="g">Google</button>', None),
+            (f'{_U}<button id="r" role="switch">Remember me</button>', None),
+            (f'{_U}<button id="r" aria-pressed="false">Stay</button>', None),
+            (f'{_U}<button id="x"><svg></svg></button>', None),
+            (
+                f'{_U}<div class="relative"><button type="button" class="absolute right-2">'
+                '<svg></svg></button></div><div role="button" id="go">Sign in</div>',
+                None,
+            ),
+            # Still taken.
+            (
+                f'{_U}{_EYE}<button id="x" class="btn-primary">Log in</button>'
+                '<button id="j">Join now</button>',
+                "#x",
+            ),
+            (
+                f'{_U}{_EYE}<button id="x" class="login-btn">Sign in</button>'
+                '<button id="c" class="close">x</button>',
+                "#x",
+            ),
+            (f'{_U}{_EYE}<button id="x" class="SignInButton">Go</button>', "#x"),
+            (f'{_U}{_EYE}<button id="x">LOG ON</button>', "#x"),
+            (f'{_U}<input type="checkbox" id="rm"><button id="x">Sign in</button>', "#x"),
+            (f'{_U}<button id="n">Next</button>', "#n"),
+            (f'{_U}<button id="g">Continue</button>', "#g"),
+            (f'{_U}<button id="s">Submit</button>', "#s"),
+            # "Submit" counts only as the one button in the range.
+            (f'{_U}{_EYE}<button id="s">Submit</button>', None),
+            # A button left unclosed: its text ends where a link starts.
+            (
+                f'{_U}<button id="go">Sign in<a href="/f">Forgot password?</a>',
+                "#go",
+            ),
+        ],
+        ids=[
+            "reset-panel-submit",
+            "otp-panel-submit-code",
+            "hidden-panel-btn-submit",
+            "newsletter-submit-class",
+            "sign-in-after-search",
+            "design",
+            "blog-only",
+            "login-help",
+            "forgot-login",
+            "google-alone",
+            "remember-switch",
+            "aria-pressed",
+            "icon-only",
+            "icon-toggle-and-div-button",
+            "log-in-beside-join",
+            "sign-in-beside-close",
+            "camel-case-class",
+            "log-on",
+            "checkbox-between",
+            "next-alone",
+            "continue-alone",
+            "submit-alone",
+            "submit-beside-toggle",
+            "unclosed-button",
+        ],
+    )
+    def test_probe(self, inner: str, submit: str | None) -> None:
+        (form,) = extract_login_forms(
+            f'<div class="login">{inner}</div>', source=_SNAPSHOT_SOURCE, snapshot=True
+        )
+        assert form.submit == submit
+        assert ("submit" in form.unresolved_roles) is (submit is None)
+
+    def test_a_field_between_the_password_and_a_sign_in_ends_the_range(self) -> None:
+        """An OTP field after the password stays a login field, but the button past
+        it is not taken: a GP-FILL over a guess."""
+        (form,) = extract_login_forms(
+            _in_dialog(
+                '<input id="u"><input type="password" id="p"><input type="text" id="otp" '
+                'name="otp"><button id="go">Sign in</button>'
+            ),
+            source="s",
+        )
+        assert form.fields == {"username": "#u", "password": "#p", "otp": "#otp"}
+        assert form.submit is None
+
+
+class TestAButtonsTextInsideItsChildren:
+    """#375 round 3: a button's text runs to its own end tag, through block children."""
+
+    @pytest.mark.parametrize(
+        "button",
+        [
+            '<button id="go"><div class="label">Log in</div></button>',
+            '<button id="go"><p>Sign in</p></button>',
+            '<button id="go"><span><span>Log in</span></span></button>',
+            '<button id="go"><label>Sign in</label></button>',
+            '<button id="go"><div><svg></svg></div><div>Log in</div></button>',
+        ],
+        ids=["div", "p", "nested-span", "label", "icon-then-div"],
+    )
+    def test_a_sign_in_in_a_child_is_taken(self, button: str) -> None:
+        (form,) = extract_login_forms(
+            f'<div class="login">{_U}{_EYE}{button}</div>',
+            source=_SNAPSHOT_SOURCE,
+            snapshot=True,
+        )
+        assert form.submit == "#go"
+
+    def test_a_lone_button_whose_text_sits_in_a_div_is_taken(self) -> None:
+        (form,) = extract_login_forms(
+            f'<div class="login">{_U}<button id="go"><div>Continue</div></button></div>',
+            source=_SNAPSHOT_SOURCE,
+            snapshot=True,
+        )
+        assert form.submit == "#go"
+
+    def test_an_unclosed_button_stops_at_an_end_tag_outside_it(self) -> None:
+        """The wrapper's end tag closes the button a browser would close there, so
+        the Forgot password text after it is not the button's."""
+        (form,) = extract_login_forms(
+            f'<div class="login"><div>{_U}<button id="go">Sign in</div>'
+            "<span>Forgot password?</span></div>",
+            source=_SNAPSHOT_SOURCE,
+            snapshot=True,
+        )
+        assert form.submit == "#go"
+
+    def test_an_unclosed_button_stops_at_a_link(self) -> None:
+        (form,) = extract_login_forms(
+            f'<div class="login">{_U}<button id="go">Sign in<a href="/f">Forgot password?</a>'
+            "</div>",
+            source=_SNAPSHOT_SOURCE,
+            snapshot=True,
+        )
+        assert form.submit == "#go"
+
+    def test_a_childs_toggle_word_still_refuses_the_button(self) -> None:
+        (form,) = extract_login_forms(
+            f'<div class="login">{_U}<button id="eye"><div>Show password</div></button></div>',
+            source=_SNAPSHOT_SOURCE,
+            snapshot=True,
+        )
+        assert form.submit is None

@@ -12,18 +12,19 @@ from rich.table import Table
 from rich.text import Text
 
 from graftpunk import (
-    clear_session_cache,
     get_session_metadata,
     list_sessions_with_metadata,
     load_session,
 )
-from graftpunk.cache import list_incomplete_sessions
+from graftpunk.cache import list_incomplete_sessions, list_sessions, remove_session_objects
+from graftpunk.cli import plugin_commands
 from graftpunk.cli.errors import needs_browser_stack
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.exceptions import (
     GraftpunkError,
     SessionExpiredError,
     SessionNotFoundError,
+    SessionNotFullyClearedError,
     StorageError,
 )
 from graftpunk.plugins.formatters import write_raw
@@ -320,7 +321,7 @@ def session_clear(
         typer.Option("--force", "-f", help="Skip confirmation prompt"),
     ] = False,
 ) -> None:
-    """Remove cached session(s).
+    """Remove cached session(s), with every object stored under each one.
 
     Clear by session name, domain, or all:
 
@@ -346,8 +347,7 @@ def session_clear(
         # Slots a failed save left without metadata: not sessions, but loading
         # one says to clear, so clearing everything removes them too (#293).
         incomplete = [
-            {"name": name, "domain": "incomplete, no metadata"}
-            for name in list_incomplete_sessions(backend_override=backend_override)
+            {"name": name, "domain": _INCOMPLETE} for name in _incomplete_or_exit(backend_override)
         ]
         if not all_metadata and not incomplete:
             console.print("[dim]No sessions to clear[/dim]")
@@ -364,16 +364,7 @@ def session_clear(
                 console.print("[dim]Cancelled[/dim]")
                 return
 
-        removed = []
-        for s in [*all_metadata, *incomplete]:
-            result = clear_session_cache(
-                s["name"],
-                backend_override=backend_override,
-            )
-            if result:
-                removed.append(s)
-
-        _print_removed(removed)
+        _clear_and_report([*all_metadata, *incomplete], backend_override)
         return
 
     assert target is not None
@@ -395,19 +386,9 @@ def session_clear(
                 console.print("[dim]Cancelled[/dim]")
                 return
 
-        removed = []
-        for s in matches:
-            result = clear_session_cache(
-                s["name"],
-                backend_override=backend_override,
-            )
-            if result:
-                removed.append(s)
-
-        _print_removed(removed)
+        _clear_and_report(matches, backend_override)
     else:
-        target = resolve_session_name_or_exit(target, backend_override=backend_override)
-        match = next((s for s in all_metadata if s["name"] == target), None)
+        target, match = _slot_to_clear(target, all_metadata, backend_override)
 
         if not match:
             console.print(f"[red]Session '{escape(str(target))}' not found[/red]")
@@ -421,8 +402,7 @@ def session_clear(
                 console.print("[dim]Cancelled[/dim]")
                 return
 
-        clear_session_cache(target, backend_override=backend_override)
-        _print_removed([match])
+        _clear_and_report([match], backend_override)
 
 
 @session_app.command("use")
@@ -457,13 +437,104 @@ def session_unset() -> None:
     console.print("[green]Active session cleared[/green]")
 
 
-def _print_removed(removed: list[dict]) -> None:
-    """Print the list of removed sessions."""
+# How gp session clear lists a slot that holds objects but no complete session.
+_INCOMPLETE = "incomplete, not a full session"
+
+
+def _incomplete_or_exit(backend_override: str | None) -> list[str]:
+    """The backend's incomplete slots; a storage error prints one line and exits 1."""
+    try:
+        return list_incomplete_sessions(backend_override=backend_override)
+    except (ValueError, StorageError) as exc:
+        console.print(f"[red]✗ Storage backend error: {escape(str(exc))}[/red]")
+        raise typer.Exit(1) from None
+
+
+def _slot_to_clear(
+    target: str, all_metadata: list[dict], backend_override: str | None
+) -> tuple[str, dict | None]:
+    """The slot ``gp session clear <target>`` removes, and its listing entry.
+
+    The exact slot comes first, complete or holding leftovers only: a clear
+    never removes a slot the user did not name (#382). Then, for a plugin site
+    name, its base when only leftovers are cached there, as the exact-base rule
+    takes a complete base. Only with neither is the name resolved, so a
+    labelled sibling is reached only when no slot of that name exists.
+    """
+    exact = next((s for s in all_metadata if s["name"] == target), None)
+    if exact is not None:
+        return target, exact
+    try:
+        listed = target in list_sessions(backend_override=backend_override)
+    except (ValueError, StorageError) as exc:
+        console.print(f"[red]✗ Storage backend error: {escape(str(exc))}[/red]")
+        raise typer.Exit(1) from None
+    if listed:
+        # A session with no readable metadata (a legacy flat file): still its
+        # own slot, under whatever name an older release gave it.
+        return target, {"name": target, "domain": None}
+    incomplete = _incomplete_or_exit(backend_override)
+    if target in incomplete:
+        return target, {"name": target, "domain": _INCOMPLETE}
+    base = plugin_commands._plugin_session_map.get(target)
+    if base is not None and base in incomplete:
+        return base, {"name": base, "domain": _INCOMPLETE}
+    resolved = resolve_session_name_or_exit(target, backend_override=backend_override)
+    return resolved, next((s for s in all_metadata if s["name"] == resolved), None)
+
+
+def _remove_each(
+    slots: list[dict], backend_override: str | None
+) -> tuple[list[tuple[dict, list[str]]], bool]:
+    """Delete everything stored under each slot; pair each removed slot with what went.
+
+    A slot unsafe to delete under, a storage error, or a delete that left files
+    behind prints one line naming the slot (and what it kept) and the others go
+    on; the second value says whether any failed.
+    """
+    removed = []
+    failed = False
+    for slot in slots:
+        try:
+            objects = remove_session_objects(slot["name"], backend_override=backend_override)
+        except SessionNotFullyClearedError as exc:
+            if exc.removed:
+                removed.append((slot, exc.removed))
+            kept = ", ".join(exc.remaining)
+            console.print(
+                f"[red]✗ {escape(str(slot['name']))} kept {len(exc.remaining)} file(s): "
+                f"{escape(kept)}[/red]"
+            )
+            failed = True
+            continue
+        except (ValueError, StorageError) as exc:
+            console.print(
+                f"[red]✗ Could not clear {escape(str(slot['name']))}: {escape(str(exc))}[/red]"
+            )
+            failed = True
+            continue
+        if objects:
+            removed.append((slot, list(objects)))
+    return removed, failed
+
+
+def _clear_and_report(slots: list[dict], backend_override: str | None) -> None:
+    """Clear *slots*, print what went, and exit 1 when any slot could not be cleared."""
+    removed, failed = _remove_each(slots, backend_override)
+    _print_removed(removed)
+    if failed:
+        raise typer.Exit(1)
+
+
+def _print_removed(removed: list[tuple[dict, list[str]]]) -> None:
+    """Print each removed session and every object deleted with it."""
     if not removed:
         console.print("[dim]No sessions removed[/dim]")
         return
 
     console.print(f"\n[green]Removed {len(removed)} session(s):[/green]")
-    for s in removed:
+    for s, objects in removed:
         domain = escape(str(s.get("domain") or "no domain"))
         console.print(f"  - {escape(str(s.get('name', '?')))} ({domain})")
+        for key in objects:
+            console.print(f"      [dim]{escape(str(key))}[/dim]")

@@ -81,6 +81,12 @@ _ASCII_WHITESPACE_RE = re.compile(r"[\t\n\f\r ]+")
 # (graftpunk.observe.snapshot, with graftpunk.observe.run.REDACTED, which this module
 # does not import), lowercased. A request-time snapshot keeps the token as written.
 _SNAPSHOT_REDACTION_MARK = "***redacted***"
+# The most of a button's text kept: enough for "Sign in to your account".
+_MAX_BUTTON_TEXT = 80
+# Start tags of interactive content, which never sits inside a button, so one
+# ends a button left unclosed. A div, p, span or label inside a button is part of
+# its text ("<button><div>Log in</div></button>", common in script-drawn pages).
+_ENDS_BUTTON_TEXT = frozenset({"a", "button", "input", "select", "textarea", "form"})
 
 
 def autofill_field_name(value: str) -> str:
@@ -263,6 +269,14 @@ class _RawInput:
     placeholder: str = ""
     aria_label: str = ""
     classes: tuple[str, ...] = ()
+    # A button's text (its content, or a button input's value), capped at
+    # _MAX_BUTTON_TEXT: read only to judge whether it signs in, never printed,
+    # since it can name the account ("Continue as ...").
+    text: str = ""
+    # A button's role attribute, lowered, and whether it carries aria-pressed or
+    # aria-checked: a switch or a toggle is never a submit.
+    role: str = ""
+    pressed: bool = False
 
 
 @dataclass
@@ -349,6 +363,11 @@ class _DocumentParser(HTMLParser):
         # Inside <svg> or <math>, where "/>" closes an element; elsewhere a browser
         # ignores it on an element that is not void.
         self._foreign = 0
+        # The <button> whose content is being read, for its text, and how many
+        # elements are open inside it: an end tag with none open closes an
+        # element the button sat in, so the button was left unclosed.
+        self._button: _RawInput | None = None
+        self._button_depth = 0
 
     def _innermost_dialog(self) -> int | None:
         while self._dialogs and self._dialogs[-1] in self._closed:
@@ -368,6 +387,12 @@ class _DocumentParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {k: (v or "") for k, v in attrs}
+        if self._button is not None:
+            if tag in _ENDS_BUTTON_TEXT:
+                # A button left unclosed in recorded HTML: what follows is not its text.
+                self._button = None
+            elif tag not in _VOID_TAGS:
+                self._button_depth += 1
         if tag in ("svg", "math"):
             self._foreign += 1
         if tag not in _VOID_TAGS:
@@ -414,7 +439,15 @@ class _DocumentParser(HTMLParser):
                 classes=tuple(_ASCII_WHITESPACE_RE.split(values.get("class", "").strip()))
                 if values.get("class", "").strip()
                 else (),
+                text=values.get("value", "")[:_MAX_BUTTON_TEXT]
+                if tag == "input" and input_type.lower() in ("button", "submit")
+                else "",
+                role=values.get("role", "").strip().lower(),
+                pressed="aria-pressed" in values or "aria-checked" in values,
             )
+            if tag == "button":
+                self._button = raw_input
+                self._button_depth = 0
             raw_input.container = self._current
             raw_input.in_noscript = self._noscript > 0
             raw_input.dialog = self._innermost_dialog()
@@ -446,7 +479,17 @@ class _DocumentParser(HTMLParser):
             if block.tag == tag:
                 return
 
+    def handle_data(self, data: str) -> None:
+        button = self._button
+        if button is not None and len(button.text) < _MAX_BUTTON_TEXT:
+            button.text = (button.text + data)[:_MAX_BUTTON_TEXT]
+
     def handle_endtag(self, tag: str) -> None:
+        if self._button is not None:
+            if tag == "button" or self._button_depth == 0:
+                self._button = None
+            else:
+                self._button_depth -= 1
         if self._track_blocks:
             self._close_blocks(tag)
         if self._open_count.get(tag, 0) > 0:
@@ -904,11 +947,140 @@ def _is_button_like(raw: _RawInput) -> bool:
     )
 
 
+def _holds_a_username_hint(text: str) -> bool:
+    """Whether *text* holds a ``_USERNAME_HINTS`` word in any letter case, hyphens
+    taken out first, so ``E-mail`` and ``Log-in ID`` hold one."""
+    lowered = text.lower().replace("-", "")
+    return any(hint in lowered for hint in _USERNAME_HINTS)
+
+
 def _has_username_hint(raw: _RawInput) -> bool:
     if raw.autocomplete in _USERNAME_AUTOCOMPLETE or raw.input_type == "email":
         return True
-    lowered = raw.name.lower()
-    return any(hint in lowered for hint in _USERNAME_HINTS)
+    return _holds_a_username_hint(raw.name)
+
+
+# A word, or two adjacent words, of one of a button's class tokens, its text, or
+# its aria-label that say it signs in. Matched as whole words, so "design",
+# "Blog only" and "login-help" (by its "help") say nothing.
+_SIGN_IN_WORDS = frozenset({"signin", "login", "logon"})
+_SIGN_IN_PAIRS = frozenset({("sign", "in"), ("log", "in"), ("log", "on")})
+# Words that make a button something else: a show-password toggle, a link to
+# another flow, a dialog's own control, a setting, or a sign-in by another route
+# ("Sign in with Google", "Use a passkey", a lone "Google").
+_NOT_SIGN_IN_WORDS = frozenset(
+    {
+        "show",
+        "hide",
+        "toggle",
+        "reveal",
+        "eye",
+        "visibility",
+        "forgot",
+        "reset",
+        "help",
+        "cancel",
+        "close",
+        "back",
+        "remember",
+        "register",
+        "signup",
+        "create",
+        "join",
+        "with",
+        "sso",
+        "passkey",
+        "google",
+        "apple",
+        "facebook",
+        "microsoft",
+        "github",
+        "twitter",
+        "linkedin",
+        "amazon",
+        "okta",
+    }
+)
+# Roles that make a <button> a setting or a tab, never what submits.
+_NOT_SUBMIT_ROLES = frozenset({"switch", "checkbox", "radio", "menuitemcheckbox", "tab"})
+
+
+def _button_word_runs(raw: _RawInput) -> list[list[str]]:
+    """The lower-cased words of each of *raw*'s class tokens, its text, and its
+    aria-label, one list per source, split as a field name's words are
+    (``sign-in-btn`` and ``SignIn`` give ``sign``, ``in``)."""
+    sources = (*raw.classes, raw.text, raw.aria_label)
+    runs = [[word.lower() for word in _NAME_WORD_RE.findall(source)] for source in sources]
+    return [run for run in runs if run]
+
+
+def _says_sign_in(runs: list[list[str]]) -> bool:
+    return any(
+        word in _SIGN_IN_WORDS or (word, after) in _SIGN_IN_PAIRS
+        for run in runs
+        for word, after in zip(run, [*run[1:], ""], strict=True)
+    )
+
+
+def _may_be_taken(raw: _RawInput, runs: list[list[str]]) -> bool:
+    """Whether a button may be a formless group's submit at all: it carries text or
+    an aria-label (an icon-only button is as likely a toggle), is no switch,
+    checkbox or tab (by ``role``, ``aria-pressed`` or ``aria-checked``), and holds
+    no ``_NOT_SIGN_IN_WORDS`` word ("sign up" counts as ``signup``)."""
+    if not (raw.text.strip() or raw.aria_label.strip()):
+        return False
+    if raw.role in _NOT_SUBMIT_ROLES or raw.pressed:
+        return False
+    words = {word for run in runs for word in run}
+    sign_up = any(
+        (word, after) == ("sign", "up")
+        for run in runs
+        for word, after in zip(run, [*run[1:], ""], strict=True)
+    )
+    return not (sign_up or words & _NOT_SIGN_IN_WORDS)
+
+
+def _ends_the_submit_range(raw: _RawInput) -> bool:
+    """A control after the password that starts something else: any field but a
+    hidden input, a checkbox or a radio ("Remember me" sits between a password
+    and its sign-in)."""
+    return not _is_button_like(raw) and raw.input_type not in ("hidden", "checkbox", "radio")
+
+
+def _script_submit(inputs: list[_RawInput], password_index: int, block_end: int) -> int | None:
+    """A formless group's submit when the first button after the password is not an
+    explicit one (#375). Only the buttons between the password and the next field
+    (:func:`_ends_the_submit_range`) or the group's end count, and only those that
+    may be taken at all (:func:`_may_be_taken`). Of those, the one whose class,
+    text or aria-label says it signs in by a whole word (``sign-in-btn``, "Log
+    in"); else the only button in that range when it says ``submit``; else the
+    group's one button-like control, when it is the first after the password.
+    None otherwise: two sign-in buttons, a field between the password and its
+    button, or a button that may not be taken give a ``GP-FILL``, never a guess."""
+    end = next(
+        (i for i in range(password_index + 1, len(inputs)) if _ends_the_submit_range(inputs[i])),
+        len(inputs),
+    )
+    in_range = [
+        index
+        for index in range(password_index + 1, end)
+        if _is_button_like(inputs[index]) and inputs[index].input_type != "reset"
+    ]
+    runs = {index: _button_word_runs(inputs[index]) for index in in_range}
+    takeable = [index for index in in_range if _may_be_taken(inputs[index], runs[index])]
+    signing_in = [index for index in takeable if _says_sign_in(runs[index])]
+    if signing_in:
+        return signing_in[0] if len(signing_in) == 1 else None
+    if (
+        len(in_range) == 1
+        and takeable == in_range
+        and any("submit" in run for run in runs[in_range[0]])
+    ):
+        return in_range[0]
+    buttons = [raw for raw in inputs if _is_button_like(raw)]
+    if len(buttons) == 1 and takeable == [block_end]:
+        return block_end
+    return None
 
 
 _LITERAL_USERNAME_NAMES = frozenset({"username", "email", "login", "user"})
@@ -1285,8 +1457,7 @@ def _username_hinted(raw: _RawInput) -> bool:
     placeholder ("Enter your email")."""
     if _has_username_hint(raw):
         return True
-    lowered = f"{raw.element_id} {raw.placeholder} {raw.aria_label}".lower()
-    return any(hint in lowered for hint in _USERNAME_HINTS)
+    return _holds_a_username_hint(f"{raw.element_id} {raw.placeholder} {raw.aria_label}")
 
 
 def _username_hint_strength(raw: _RawInput) -> int:
@@ -1427,15 +1598,18 @@ def extract_login_forms(
     The page's controls outside every form yield more, after the forms and without
     changing them: one per formless login group (:func:`_formless_login_groups`), a
     script-driven login modal marked as a dialog. The same role rules run over each
-    group's controls, with one difference: its username lookup, its extra fields,
-    and the search for its submit all end at the first button-like control after
-    the password (any ``<button>``, or a submit, image, button, or reset input), so
-    a hidden reset panel's input after it is never the username. That control is the
-    submit only when it is an explicit one (an ``<input type="submit">`` or
-    ``<input type="image">``, or a ``<button type="submit">``), never a typeless or
-    ``type="button"`` button, which submits nothing outside a form; otherwise the
-    submit is absent and unresolved like a missing username, so the generated step
-    carries a ``GP-FILL``. Its selectors are unscoped
+    group's controls, with one difference: its username lookup and its extra
+    fields end at the first button-like control after the password (any
+    ``<button>``, or a submit, image, button, or reset input), so a hidden reset
+    panel's input after it is never the username. That control is the submit when it
+    is an explicit one (an ``<input type="submit">`` or ``<input type="image">``, or
+    a ``<button type="submit">``); otherwise a typeless or ``type="button"`` button,
+    which submits nothing outside a form by itself, is the submit only as
+    :func:`_script_submit` states (among the buttons before the next field, the
+    one that says it signs in by a whole word, or a lone one), and with none the
+    submit is absent and
+    unresolved like a missing username, so the generated step carries a
+    ``GP-FILL``. Its selectors are unscoped
     (:func:`_formless_selectors`), its ``action`` and ``method`` are empty (no
     browser submits it, a script sends it with a method of its own), its
     ``action_target`` is ``("", "")``, and ``formless`` is set.
@@ -1590,11 +1764,11 @@ def _login_form(
     if formless:
         # Outside a <form> a button submits nothing unless the page's script makes
         # it, and a typeless or type="button" one there is as likely a show-password
-        # toggle or a Close button. So the fields, and the submit search, end at the
-        # first button-like control after the password: it is the submit only when
-        # it is an explicit one, else the submit is a GP-FILL. A hidden reset panel's
-        # submit after a typeless "Sign in" is never taken, and a toggle right after
-        # the password ends the fields there (a GP-FILL over a wrong selector).
+        # toggle or a Close button. So the fields end at the first button-like
+        # control after the password: it is the submit when it is an explicit one;
+        # else a button is taken only when it says it signs in or stands alone
+        # (_script_submit), and otherwise the submit is a GP-FILL. A toggle right
+        # after the password ends the fields there (a GP-FILL over a wrong selector).
         block_end = next(
             (i for i in range(password_index + 1, len(inputs)) if _is_button_like(inputs[i])),
             len(inputs),
@@ -1604,7 +1778,7 @@ def _login_form(
             if block_end < len(inputs)
             and _is_submit(inputs[block_end])
             and (inputs[block_end].tag != "button" or inputs[block_end].typed)
-            else None
+            else _script_submit(inputs, password_index, block_end)
         )
     else:
         # A form keeps its rule: the first submit after the password, a typeless

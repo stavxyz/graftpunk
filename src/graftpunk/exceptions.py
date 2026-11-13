@@ -37,6 +37,24 @@ class StorageError(GraftpunkError):
     """Raised when a storage backend operation fails."""
 
 
+class SessionNotFullyClearedError(StorageError):
+    """A slot's delete went through without error but left some of its files.
+
+    Attributes:
+        removed: The keys or paths that were deleted.
+        remaining: The keys or paths listed for the delete and still there.
+    """
+
+    def __init__(self, name: str, removed: list[str], remaining: list[str]) -> None:
+        self.name = name
+        self.removed = list(removed)
+        self.remaining = list(remaining)
+        super().__init__(
+            f"Session '{name}' kept {len(self.remaining)} file(s) after the delete: "
+            + ", ".join(self.remaining)
+        )
+
+
 class PluginError(GraftpunkError):
     """Raised when plugin loading or execution fails."""
 

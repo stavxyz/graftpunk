@@ -29,7 +29,12 @@ import requests
 from graftpunk._distribution import install_command
 from graftpunk.config import get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data
-from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNotFoundError
+from graftpunk.exceptions import (
+    EncryptionError,
+    SessionExpiredError,
+    SessionNotFoundError,
+    StorageError,
+)
 from graftpunk.logging import get_logger
 from graftpunk.session_identity import (
     ACCOUNT_RULE,
@@ -39,7 +44,11 @@ from graftpunk.session_identity import (
     split_session_name,
     validate_session_name,  # public re-export
 )
-from graftpunk.storage.base import SessionMetadata, metadata_to_dict
+from graftpunk.storage.base import (
+    SessionMetadata,
+    check_slot_name,
+    metadata_to_dict,
+)
 
 if TYPE_CHECKING:
     from graftpunk.graftpunk_session import GraftpunkSession
@@ -1003,28 +1012,61 @@ def list_sessions_with_metadata(
 
 
 def list_incomplete_sessions(backend_override: str | None = None) -> list[str]:
-    """Slots holding a session pickle but no metadata, which no listing shows.
+    """Slots holding objects but no complete session, which no listing shows.
 
-    A crash during a save, or an older release, can leave one on the local
-    backend; other backends report none. Clearing every session removes them.
+    A crash during a save, an older release, or a hand-made copy beside a
+    slot's files can leave one. Clearing every session removes them.
     """
     backend = _get_session_storage_backend(backend_override=backend_override)
-    incomplete = getattr(backend, "incomplete_sessions", None)
-    return list(incomplete()) if callable(incomplete) else []
+    return backend.incomplete_sessions()
+
+
+def remove_session_objects(name: str, backend_override: str | None = None) -> list[str]:
+    """Delete everything stored under the slot *name*; return the keys or paths deleted.
+
+    Unlike :func:`clear_session_cache`, which returns session names, this
+    reports each object, so a caller can show that nothing was left behind.
+
+    Raises:
+        ValueError: *name* is not a session name (``""``, ``.``, ``..``, a
+            path separator), before any backend is created or called.
+    """
+    check_slot_name(name)
+    backend = _get_session_storage_backend(backend_override=backend_override)
+    return backend.remove_session(name)
+
+
+class ClearedSessions(list[str]):
+    """The session names a clear removed, as a list, with ``skipped``: the names a
+    sweep left in place (an unsafe name, a slot resolving outside the sessions
+    directory, a storage error, or files a delete left behind), each logged once."""
+
+    def __init__(self, removed: list[str], skipped: list[str] | None = None) -> None:
+        super().__init__(removed)
+        self.skipped: tuple[str, ...] = tuple(skipped or ())
 
 
 def clear_session_cache(
     session_name: str | None = None,
     backend_override: str | None = None,
-) -> list[str]:
+) -> ClearedSessions:
     """Clear cached sessions.
+
+    Clearing every session never stops partway: a slot that cannot be cleared
+    safely or completely is logged once (``session_not_cleared``), left out of
+    the result, and named in ``skipped``, and the sweep goes on.
 
     Args:
         session_name: If provided, clear only this session. Otherwise, clear all.
         backend_override: If set, use this backend type instead of the default.
 
     Returns:
-        List of removed session names.
+        The removed session names (a list), with ``skipped``.
+
+    Raises:
+        ValueError: *session_name* is unsafe to delete under
+            (:func:`graftpunk.storage.base.check_slot_name`).
+        StorageError: The backend failed clearing *session_name*.
     """
     backend = _get_session_storage_backend(backend_override=backend_override)
     removed: list[str] = []
@@ -1033,16 +1075,26 @@ def clear_session_cache(
         # Clear specific session
         if backend.delete_session(session_name):
             removed.append(session_name)
-        return removed
+        return ClearedSessions(removed)
 
     # Clear all sessions, and the slots a failed save left without metadata:
     # they are not listed, but loading one says to clear.
+    skipped: list[str] = []
     leftovers = list_incomplete_sessions(backend_override=backend_override)
     for name in [*backend.list_sessions(), *leftovers]:
-        if backend.delete_session(name):
+        try:
+            # check_slot_name refuses a name under which deleting would be
+            # unsafe; the local backend also refuses a slot resolving outside
+            # the sessions directory.
+            deleted = backend.delete_session(name)
+        except (ValueError, StorageError) as exc:
+            LOG.warning("session_not_cleared", name=name, error=str(exc))
+            skipped.append(name)
+            continue
+        if deleted:
             removed.append(name)
 
-    return removed
+    return ClearedSessions(removed, skipped)
 
 
 def copy_session(source: str, dest: str, *, account_identifier: str | None) -> None:

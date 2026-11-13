@@ -260,17 +260,172 @@ class TestListSessions:
         assert sessions == ["session-a", "session-b"]
 
 
+class FakeS3:
+    """An in-memory bucket answering the S3 calls the backend makes.
+
+    ``list_objects_v2`` pages hold *page_size* keys, so a test can make a
+    listing span several pages the way a large bucket does.
+    """
+
+    def __init__(self, keys, page_size=1000):
+        self.objects = dict.fromkeys(keys, b"x")
+        self.page_size = page_size
+        self.pages_served = 0
+
+    def get_paginator(self, operation):
+        assert operation == "list_objects_v2"
+        return self
+
+    def paginate(self, Bucket, Prefix=""):  # noqa: N803 (boto3's argument names)
+        keys = sorted(k for k in self.objects if k.startswith(Prefix))
+        for start in range(0, len(keys), self.page_size):
+            self.pages_served += 1
+            yield {"Contents": [{"Key": k} for k in keys[start : start + self.page_size]]}
+        if not keys:
+            yield {}
+
+    def delete_object(self, Bucket, Key):  # noqa: N803
+        self.objects.pop(Key, None)
+        return {}
+
+
+# A slot cleared by a release that deleted only the two files it wrote, beside
+# a labelled slot for the same site: the shape #382 was found in.
+PHANTOM_BUCKET = [
+    "sessions/myshop/metadata.json.pre-test2",
+    "sessions/myshop/session.pickle.pre-test2",
+    "sessions/myshop@jane/metadata.json",
+    "sessions/myshop@jane/session.pickle",
+]
+
+
+def _s3_storage(client):
+    from graftpunk.storage.s3 import S3SessionStorage
+
+    return S3SessionStorage(bucket="test-bucket", client=client)
+
+
 class TestDeleteSession:
-    """Tests for delete_session method."""
+    """delete_session removes every object under the slot's prefix (#382)."""
 
-    def test_delete_session_success(self, storage, mock_s3_client):
-        """Test successful session deletion."""
-        mock_s3_client.delete_object.return_value = {}
+    def test_delete_session_removes_the_pair(self):
+        s3 = FakeS3(["sessions/myshop/session.pickle", "sessions/myshop/metadata.json"])
 
-        result = storage.delete_session("test-session")
+        assert _s3_storage(s3).delete_session("myshop") is True
+        assert s3.objects == {}
 
-        assert result is True
-        assert mock_s3_client.delete_object.call_count == 2
+    def test_delete_session_removes_leftovers_and_reports_them(self):
+        s3 = FakeS3(PHANTOM_BUCKET)
+
+        removed = _s3_storage(s3).remove_session("myshop")
+
+        assert removed == [
+            "sessions/myshop/metadata.json.pre-test2",
+            "sessions/myshop/session.pickle.pre-test2",
+        ]
+        assert sorted(s3.objects) == [
+            "sessions/myshop@jane/metadata.json",
+            "sessions/myshop@jane/session.pickle",
+        ]
+
+    def test_delete_session_does_not_touch_a_slot_whose_name_extends_it(self):
+        s3 = FakeS3(["sessions/myshop@jane/metadata.json", "sessions/myshopper/metadata.json"])
+
+        assert _s3_storage(s3).delete_session("myshop") is False
+        assert len(s3.objects) == 2
+
+    def test_delete_session_pages_through_a_large_slot(self):
+        keys = [f"sessions/myshop/backup-{i:03}" for i in range(7)]
+        s3 = FakeS3([*keys, "sessions/myshop/metadata.json"], page_size=3)
+
+        removed = _s3_storage(s3).remove_session("myshop")
+
+        assert len(removed) == 8
+        assert s3.pages_served == 3
+        assert s3.objects == {}
+
+    def test_delete_session_of_nothing_is_false(self):
+        assert _s3_storage(FakeS3([])).delete_session("myshop") is False
+
+    def test_delete_session_raises_on_a_server_error(self, mock_s3_client):
+        from botocore.exceptions import ClientError
+
+        mock_s3_client.get_paginator.return_value.paginate.return_value = [
+            {"Contents": [{"Key": "sessions/myshop/metadata.json"}]}
+        ]
+        mock_s3_client.delete_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied"}}, "DeleteObject"
+        )
+
+        with pytest.raises(StorageError, match="Failed to delete"):
+            _s3_storage(mock_s3_client).delete_session("myshop")
+
+    def test_delete_session_skips_an_object_already_gone(self, mock_s3_client):
+        from botocore.exceptions import ClientError
+
+        mock_s3_client.get_paginator.return_value.paginate.return_value = [
+            {"Contents": [{"Key": "sessions/myshop/metadata.json"}]}
+        ]
+        mock_s3_client.delete_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey"}}, "DeleteObject"
+        )
+
+        assert _s3_storage(mock_s3_client).remove_session("myshop") == []
+
+    def test_delete_session_raises_when_the_listing_fails(self, mock_s3_client):
+        from botocore.exceptions import ClientError
+
+        mock_s3_client.get_paginator.return_value.paginate.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied"}}, "ListObjectsV2"
+        )
+
+        with pytest.raises(StorageError, match="Failed to list objects"):
+            _s3_storage(mock_s3_client).delete_session("myshop")
+
+
+class TestPhantomSlots:
+    """Objects under sessions/<name>/ without metadata.json are not a session (#382)."""
+
+    def test_leftovers_do_not_make_a_session(self):
+        assert _s3_storage(FakeS3(PHANTOM_BUCKET)).list_sessions() == ["myshop@jane"]
+
+    def test_leftovers_are_an_incomplete_slot(self):
+        assert _s3_storage(FakeS3(PHANTOM_BUCKET)).incomplete_sessions() == ["myshop"]
+
+    def test_leftovers_are_never_a_resolver_candidate(self):
+        from graftpunk.session_identity import resolve_account_session
+
+        sessions = _s3_storage(FakeS3(PHANTOM_BUCKET)).list_sessions()
+
+        assert resolve_account_session("myshop", sessions) == "myshop@jane"
+
+    def test_a_pickle_without_metadata_is_not_a_session(self):
+        s3 = FakeS3(["sessions/myshop/session.pickle"])
+
+        assert _s3_storage(s3).list_sessions() == []
+        assert _s3_storage(s3).incomplete_sessions() == ["myshop"]
+
+    def test_listing_spans_pages(self):
+        keys = [f"sessions/site-{i}/{f}" for i in range(5) for f in ("metadata.json", "x.bak")]
+        s3 = FakeS3(keys, page_size=3)
+
+        assert _s3_storage(s3).list_sessions() == [f"site-{i}" for i in range(5)]
+        assert s3.pages_served == 4
+
+    def test_keys_outside_a_slot_are_ignored(self):
+        s3 = FakeS3(["sessions/metadata.json", "other/x/metadata.json", "sessions//metadata.json"])
+
+        assert _s3_storage(s3).list_sessions() == []
+        assert _s3_storage(s3).incomplete_sessions() == []
+
+    def test_clear_leaves_nothing_under_the_prefix(self, monkeypatch):
+        from graftpunk import cache as cache_mod
+
+        s3 = FakeS3(PHANTOM_BUCKET)
+        monkeypatch.setattr(cache_mod, "_get_session_storage_backend", lambda **_: _s3_storage(s3))
+
+        assert cache_mod.clear_session_cache() == ["myshop@jane", "myshop"]
+        assert s3.objects == {}
 
 
 class TestGetSessionMetadata:

@@ -8514,7 +8514,6 @@ class TestTheRecordingSuggestsASuccessSelector:
             "<<sign in>>\r\nlog=jsmith\r\npwd=hunter-two\r\n",
             # A first line holding "=" whose name is not spelled like a field's.
             "user name=jsmith\r\npwd=hunter-two\r\n",
-            "loginForm:log=jsmith\r\nloginForm:pwd=hunter-two\r\n",
         ):
             result = self._valued_run(tmp_path, body, "text/plain", self._WORDPRESS_LOGIN)
             assert result.success_candidates == (), body
@@ -8522,10 +8521,12 @@ class TestTheRecordingSuggestsASuccessSelector:
     @pytest.mark.parametrize(
         "body",
         [
-            # A JSF-style name and a name with a space: neither is spelled like a
-            # field name, and each still starts its own field after the first line.
-            "loginForm=loginForm\r\nloginForm:log=jsmith\r\nloginForm:pwd=hunter-two\r\n",
+            # A name with a space is not spelled like a field name, and still
+            # starts its own field after the first line.
             "go=1\r\nuser name=jsmith\r\npwd=hunter-two\r\n",
+            # A JSF-style name is one (#375), on the first line or after it.
+            "loginForm=loginForm\r\nloginForm:log=jsmith\r\nloginForm:pwd=hunter-two\r\n",
+            "loginForm:log=jsmith\r\nloginForm:pwd=hunter-two\r\n",
         ],
     )
     def test_a_text_plain_line_holding_an_equals_sign_starts_a_field(

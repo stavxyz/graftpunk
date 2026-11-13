@@ -710,9 +710,9 @@ class TestSessionSurfaces:
         """Run `gp session clear <name> --force`; the slots it removed."""
         cleared: list[str] = []
 
-        def clear(slot: str, **_kwargs: Any) -> bool:
+        def clear(slot: str, **_kwargs: Any) -> list[str]:
             cleared.append(slot)
-            return True
+            return [f"{slot}/metadata.json"]
 
         metadata = [{"name": slot, "domain": "myshop.example"} for slot in self.SLOTS]
         with (
@@ -721,7 +721,7 @@ class TestSessionSurfaces:
                 "graftpunk.cli.session_commands.list_sessions_with_metadata",
                 return_value=metadata,
             ),
-            patch("graftpunk.cli.session_commands.clear_session_cache", side_effect=clear),
+            patch("graftpunk.cli.session_commands.remove_session_objects", side_effect=clear),
         ):
             result = runner.invoke(app, ["session", "clear", name, "--force"])
         assert result.exit_code == 0, result.output

@@ -909,9 +909,11 @@ def _render_login_step(form: LoginForm, *, indent: int, commented_wait_for: str 
                 f"{GP_FILL_MARKER}: submit has no selector: the first button after the "
                 f"password in the {group} is not an explicit submit (an "
                 '<input type="submit"> or <input type="image">, or a <button '
-                'type="submit">), or there is none; outside a form a typeless or '
-                'type="button" button submits nothing and may be a show-password or a '
-                "close button, so a submit after it is not taken either; write one by hand."
+                'type="submit">), and no button between the password and the next field '
+                "says it signs in by its class, text, or aria-label, nor is the group's one "
+                "button; outside a form a typeless or "
+                'type="button" button may be a show-password or a close button, so none '
+                "is guessed; write one by hand."
             )
         elif role in form.absent_roles and form.block_bound == "button":
             # A password-only group (graftpunk.har.documents._block_login_groups).

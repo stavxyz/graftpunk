@@ -376,7 +376,7 @@ class TestNamesAreNotMarkup:
         assert result.exit_code != 0
         assert "nope [/z]" in strip_ansi(result.output)
 
-    @patch("graftpunk.cli.session_commands.clear_session_cache", return_value=True)
+    @patch("graftpunk.cli.session_commands.remove_session_objects", return_value=["metadata.json"])
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
     def test_clear_all_summary_keeps_names_verbatim(self, mock_list, _mock_clear) -> None:
         mock_list.return_value = [_make_session(name="evil [/x]", domain="[red]x.example")]

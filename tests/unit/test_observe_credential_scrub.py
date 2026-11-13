@@ -1639,6 +1639,9 @@ class TestAContainerPrefixDoesNotHideAPassword:
             "ctl00$MessagePanel$txtPwd",
             "ctl00$Main$ErrorPanel$Password",
             "ctl00$placeholder$txtPassword",
+            # JSF: the form's id and a colon (#375).
+            "loginForm:password",
+            "j_idt12:loginForm:password",
         ],
     )
     def test_the_password_is_taken(self, tmp_path: Path, name: str) -> None:

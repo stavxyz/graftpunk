@@ -202,7 +202,7 @@ class TestClearCommand:
     """Tests for session clear command."""
 
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
-    @patch("graftpunk.cli.session_commands.clear_session_cache")
+    @patch("graftpunk.cli.session_commands.remove_session_objects")
     def test_clear_by_name(self, mock_clear, mock_list_meta):
         """Clear a specific session by name (no dots = name)."""
         mock_list_meta.return_value = [
@@ -222,7 +222,7 @@ class TestClearCommand:
         mock_clear.assert_called_once_with("hackernews", backend_override=None)
 
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
-    @patch("graftpunk.cli.session_commands.clear_session_cache")
+    @patch("graftpunk.cli.session_commands.remove_session_objects")
     def test_clear_by_name_not_found(self, mock_clear, mock_list_meta):
         """Clear by name when session doesn't exist."""
         mock_list_meta.return_value = []
@@ -234,7 +234,7 @@ class TestClearCommand:
         assert "not found" in result.output.lower()
 
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
-    @patch("graftpunk.cli.session_commands.clear_session_cache")
+    @patch("graftpunk.cli.session_commands.remove_session_objects")
     def test_clear_by_domain(self, mock_clear, mock_list_meta):
         """Clear sessions matching a domain (dots = domain)."""
         mock_list_meta.return_value = [
@@ -285,7 +285,7 @@ class TestClearCommand:
         assert "no sessions" in result.output.lower() or "not found" in result.output.lower()
 
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
-    @patch("graftpunk.cli.session_commands.clear_session_cache")
+    @patch("graftpunk.cli.session_commands.remove_session_objects")
     def test_clear_all_with_force(self, mock_clear, mock_list_meta):
         """Clear all sessions with --all --force."""
         mock_list_meta.return_value = [
@@ -312,7 +312,7 @@ class TestClearCommand:
         assert mock_clear.call_count == 2
 
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
-    @patch("graftpunk.cli.session_commands.clear_session_cache")
+    @patch("graftpunk.cli.session_commands.remove_session_objects")
     def test_clear_all_prompts_without_force(self, mock_clear, mock_list_meta):
         """Clear all prompts for confirmation without --force."""
         mock_list_meta.return_value = [
@@ -349,7 +349,7 @@ class TestClearCommand:
         )
 
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
-    @patch("graftpunk.cli.session_commands.clear_session_cache")
+    @patch("graftpunk.cli.session_commands.remove_session_objects")
     def test_clear_by_name_prompts_without_force(self, mock_clear, mock_list_meta):
         """Clear by name prompts for confirmation without --force."""
         mock_list_meta.return_value = [
@@ -368,7 +368,7 @@ class TestClearCommand:
         mock_clear.assert_not_called()
 
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
-    @patch("graftpunk.cli.session_commands.clear_session_cache")
+    @patch("graftpunk.cli.session_commands.remove_session_objects")
     def test_clear_always_shows_removed_list(self, mock_clear, mock_list_meta):
         """Clear always prints list of removed sessions."""
         mock_list_meta.return_value = [
@@ -1372,7 +1372,7 @@ class TestResolveSessionNameIntegration:
         mock_resolve.assert_called_once_with("my-plugin", backend_override=None)
         assert "resolved-session" in result.output
 
-    @patch("graftpunk.cli.session_commands.clear_session_cache")
+    @patch("graftpunk.cli.session_commands.remove_session_objects")
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
     @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
     def test_clear_resolves_site_name_to_session_name(
