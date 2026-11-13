@@ -336,19 +336,22 @@ def _rich_safe(text: str) -> str:
     if text.isascii() and text.isprintable():
         return text
     out: list[str] = []
-    last = len(text) - 1
-    for i, c in enumerate(text):
+    for c in text:
         if unicodedata.category(c) == "Cc" and c not in _KEPT_CONTROLS:
             out.append("\ufffd")
             continue
         if (not out or out[-1].isspace()) and _no_width(c):
             continue
-        if c == _ZWJ and (i == last or text[i + 1].isspace()):
-            # Rich 14.3.1's cell_len raises StopIteration on a ZWJ with nothing
-            # after it to join ("a\u200d" and "a\u200d b" both raise).
-            continue
         out.append(c)
-    return "".join(out)
+    # Rich 14.3.1's cell_len raises StopIteration on a ZWJ with nothing after
+    # it to join ("a\u200d" and "a\u200d b" both raise), so a ZWJ that ends the
+    # result or comes before whitespace there is dropped, from the end back.
+    kept: list[str] = []
+    for c in reversed(out):
+        if c == _ZWJ and (not kept or kept[-1].isspace()):
+            continue
+        kept.append(c)
+    return "".join(reversed(kept))
 
 
 _ZWJ = "\u200d"

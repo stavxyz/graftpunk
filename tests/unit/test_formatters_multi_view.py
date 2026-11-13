@@ -1258,7 +1258,16 @@ def _render_in_a_subprocess(tmp_path: Path, rows: list[dict[str, str]], width: i
 
 
 @pytest.mark.parametrize(
-    "text", ["a\u200d", "x\u200d y", "\U0001f468\u200d", "a\u200d\n", "\u200d"]
+    "text",
+    [
+        "a\u200d",
+        "x\u200d y",
+        "\U0001f468\u200d",
+        "a\u200d\n",
+        "\u200d",
+        "a\u200d\u200d",
+        "a\u200d\u200d b",
+    ],
 )
 def test_a_zwj_with_nothing_to_join_renders(text: str) -> None:
     """Rich 14.3.1's ``cell_len`` raises ``StopIteration`` (a ``RuntimeError``
