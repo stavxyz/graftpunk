@@ -8,7 +8,9 @@ import decimal
 import json
 import random
 import re
+import time
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -672,7 +674,7 @@ class TestPdfWideTables:
     """At about 45 columns a column was narrower than one character and fpdf2
     raised "Not enough horizontal space to render a single character"."""
 
-    @pytest.mark.parametrize("count", [45, 60, 150, 400])
+    @pytest.mark.parametrize("count", [70, 150, 400])
     def test_a_wide_table_renders_in_parts(self, tmp_path: Path, count: int) -> None:
         data = [{f"column_{i}": "W" * 5 for i in range(count)}] * 3
         path, pages = json_to_pdf(data, tmp_path / "out.pdf")
@@ -680,6 +682,22 @@ class TestPdfWideTables:
         one = json_to_pdf([{"c0": "W"}], tmp_path / "one.pdf")[0]
         per_cell = _heading_fills(Path(one).read_bytes())
         assert _heading_fills(Path(path).read_bytes()) // per_cell > count
+
+    @pytest.mark.parametrize(
+        ("cell", "count"),
+        [("W", 43), ("1", 55), ("a", 55), ("12", 50)],
+    )
+    def test_no_fewer_columns_in_one_table_than_1_42_0(
+        self, tmp_path: Path, cell: str, count: int
+    ) -> None:
+        """1.42.0 (Helvetica) drew these as one table: 43 columns of ``W`` and
+        55 of ``1`` or ``a``, with headings ``c0`` to ``cN``. DejaVu Sans is
+        wider, so such a table is drawn with a smaller cell margin instead of
+        being split; nothing is cut, so no column makes room for the cut mark."""
+        one = json_to_pdf([{"c0": "W"}], tmp_path / "one.pdf")[0]
+        per_cell = _heading_fills(Path(one).read_bytes())
+        path, _ = json_to_pdf([{f"c{i}": cell for i in range(count)}] * 2, tmp_path / "out.pdf")
+        assert _heading_fills(Path(path).read_bytes()) == count * per_cell
 
     def test_a_table_that_fits_is_one_table_as_before(self, tmp_path: Path) -> None:
         one = json_to_pdf([{"c0": "W"}], tmp_path / "one.pdf")[0]
@@ -723,7 +741,7 @@ class TestPdfCellsTooTallForAPage:
 
     @pytest.mark.parametrize(
         ("columns", "length"),
-        [(1, 12000), (5, 1500), (12, 600), (20, 300), (40, 150), (200, 400)],
+        [(1, 12000), (5, 1800), (12, 600), (20, 300), (40, 150), (200, 400)],
     )
     def test_a_long_cell_is_cut_with_one_warning(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], columns: int, length: int
@@ -861,3 +879,72 @@ def test_the_pdf_export_never_raises_on_fuzzed_input(tmp_path: Path, seed: int) 
             metadata={rnd.choice(["k", "", "中"]): rnd.choice(["", "v", "5"]) for _ in range(2)},
             flatten=rnd.random() < 0.8,
         )
+
+
+def _least_cpu(work: Callable[[], object], runs: int = 3) -> float:
+    """The least CPU time of *runs* calls of *work*: CPU time, never wall clock,
+    and the least, so a busy machine slows neither side of a ratio."""
+    times = []
+    for _ in range(runs):
+        start = time.process_time()
+        work()
+        times.append(time.process_time() - start)
+    return min(times)
+
+
+def _plain_fpdf_table(rows: list[dict[str, str]], out: Path) -> None:
+    """The same table drawn by fpdf2 alone, in the bundled font, with no
+    fitting: what json_to_pdf's own work is measured against."""
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+
+    import graftpunk.plugins
+
+    fonts = Path(graftpunk.plugins.__file__).parent / "fonts"
+    pdf = FPDF()
+    pdf.add_font("DejaVuSans", fname=fonts / "DejaVuSans.ttf")
+    pdf.add_font("DejaVuSans", style="B", fname=fonts / "DejaVuSans-Bold.ttf")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("DejaVuSans", size=7)
+    columns = list(rows[0])
+    width = (pdf.w - pdf.l_margin - pdf.r_margin) / len(columns)
+    with pdf.table(
+        headings_style=FontFace(emphasis="BOLD", fill_color=(220, 220, 220)),
+        col_widths=(width,) * len(columns),
+        first_row_as_headings=True,
+    ) as table:
+        for row in [dict(zip(columns, columns, strict=True)), *rows]:
+            cells = table.row()
+            for column in columns:
+                cells.cell(row[column])
+    pdf.output(str(out))
+
+
+class TestPdfSpeed:
+    """Fitting every cell up front made an ordinary table two to three times
+    slower to export, and a cell of 50,000 combining marks took 100 s."""
+
+    def test_an_ordinary_table_costs_little_more_than_fpdf2_drawing_it(
+        self, tmp_path: Path
+    ) -> None:
+        # Cells of up to about 35 lines in 20 columns: within a page, but past
+        # the cheap bound that let round 2 skip measuring a cell.
+        words = "lorem ipsum dolor sit amet "
+        rows = [{f"c{c}": (words * 10)[: 140 + c] for c in range(20)} for _ in range(20)]
+        ours = _least_cpu(lambda: json_to_pdf(rows, tmp_path / "ours.pdf"))
+        plain = _least_cpu(lambda: _plain_fpdf_table(rows, tmp_path / "plain.pdf"))
+        assert ours <= 1.3 * plain + 0.05, (ours, plain)
+
+    @pytest.mark.parametrize("filler", ["́", "​"], ids=["combining", "zero-width-space"])
+    def test_a_cell_of_characters_with_no_width_fits_in_near_linear_time(
+        self, tmp_path: Path, filler: str
+    ) -> None:
+        def export(n: int) -> Callable[[], object]:
+            return lambda: json_to_pdf([{"a": "a" + filler * n, "b": 1}], tmp_path / f"{n}.pdf")
+
+        small = _least_cpu(export(5000))
+        large = _least_cpu(export(50000))
+        # Ten times the characters: linear is 10x; fpdf2's quadratic line
+        # breaking made it about 100x.
+        assert large <= 15 * small + 0.2, (small, large)
