@@ -13,7 +13,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
+from graftpunk.exceptions import (
+    SessionExpiredError,
+    SessionNotFoundError,
+    SessionNotFullyClearedError,
+)
 from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
     UNCHANGED,
@@ -460,12 +464,15 @@ class LocalSessionStorage:
 
         Paths are relative to the sessions directory. A legacy flat-file
         session is deleted when there is no directory. Empty when nothing was
-        there or the delete failed (logged).
+        there.
 
         Raises:
             ValueError: deleting under *name* is unsafe
                 (:func:`~graftpunk.storage.base.check_slot_name`), or its slot
                 resolves outside the sessions directory.
+            SessionNotFullyClearedError: The delete failed partway (a
+                directory without write permission, say); it names what was
+                deleted and what is still there.
         """
         check_slot_name(name)
         session_dir = self.base_dir / name
@@ -474,16 +481,18 @@ class LocalSessionStorage:
             raise ValueError(f"Session slot {name!r} resolves outside {root}")
 
         if session_dir.is_dir():
+            files = self._files_in(session_dir)
             try:
-                files = sorted(
-                    str(path.relative_to(self.base_dir))
-                    for path in session_dir.rglob("*")
-                    if not path.is_dir()
-                )
                 shutil.rmtree(session_dir)
             except OSError as exc:
-                LOG.error("failed_to_delete_session", name=name, error=str(exc))
-                return []
+                remaining = self._files_in(session_dir) or [f"{name}/"]
+                kept = set(remaining)
+                LOG.error(
+                    "failed_to_delete_session", name=name, error=str(exc), remaining=remaining
+                )
+                raise SessionNotFullyClearedError(
+                    name, [f for f in files if f not in kept], remaining
+                ) from exc
             LOG.info("session_delete_completed", name=name, structure="directory", paths=files)
             # An empty directory is still a slot the caller asked to remove.
             return files or [f"{name}/"]
@@ -495,11 +504,19 @@ class LocalSessionStorage:
                 old_path.unlink()
             except OSError as exc:
                 LOG.error("failed_to_delete_session", name=name, error=str(exc))
-                return []
+                raise SessionNotFullyClearedError(name, [], [old_path.name]) from exc
             LOG.info("session_delete_completed", name=name, structure="flat_file")
             return [old_path.name]
 
         return []
+
+    def _files_in(self, directory: Path) -> list[str]:
+        """The files under *directory*, relative to the sessions directory, as far
+        as they can be listed (a directory that cannot be read lists nothing)."""
+        found: list[str] = []
+        for top, _dirs, names in os.walk(directory):
+            found.extend(str((Path(top) / n).relative_to(self.base_dir)) for n in names)
+        return sorted(found)
 
     def delete_session(self, name: str) -> bool:
         """Delete a session, with every file in its slot directory.

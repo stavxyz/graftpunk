@@ -276,3 +276,73 @@ class TestSupabase:
 
         assert list(result) == ["myshop"]
         assert result.skipped == ("aashop",)
+
+
+@pytest.fixture
+def locked_slot(local_backend):
+    """A slot whose ``locked/`` subdirectory has no write permission, so the file
+    inside it cannot be deleted (a read-only file alone can be: unlinking needs
+    write permission on its directory). Permissions are restored in teardown."""
+    import os
+    import stat
+    import sys
+
+    if sys.platform == "win32" or os.geteuid() == 0:
+        pytest.skip("POSIX directory permissions, not as root")
+    local_backend.save_session("myshop", b"data", _metadata("myshop"))
+    locked = local_backend.base_dir / "myshop" / "locked"
+    locked.mkdir()
+    keep = locked / "metadata.json.pre-test2"
+    keep.write_text("{}")
+    keep.chmod(stat.S_IRUSR)
+    locked.chmod(stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        yield local_backend
+    finally:
+        locked.chmod(stat.S_IRWXU)
+        keep.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+class TestALocalDeleteThatKeepsFiles:
+    """Same rule as Supabase: a delete that leaves files behind says so."""
+
+    def test_remove_session_names_what_remains(self, locked_slot) -> None:
+        from graftpunk.exceptions import SessionNotFullyClearedError
+
+        with pytest.raises(SessionNotFullyClearedError) as err:
+            locked_slot.remove_session("myshop")
+
+        assert err.value.remaining == ["myshop/locked/metadata.json.pre-test2"]
+        assert "myshop/metadata.json" in err.value.removed
+        assert (locked_slot.base_dir / "myshop" / "locked" / "metadata.json.pre-test2").exists()
+
+    def test_gp_session_clear_prints_it_and_exits_1(self, locked_slot) -> None:
+        result = _clear("myshop", "--force")
+
+        assert result.exit_code == 1
+        assert "myshop kept 1 file(s): myshop/locked/metadata.json.pre-test2" in result.output
+
+    def test_the_sweep_reports_it_in_skipped(self, locked_slot) -> None:
+        locked_slot.save_session("zshop", b"data", _metadata("zshop"))
+
+        result = cache_mod.clear_session_cache()
+
+        assert list(result) == ["zshop"]
+        assert result.skipped == ("myshop",)
+
+    def test_a_flat_file_that_cannot_be_deleted_is_reported(
+        self, local_backend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.exceptions import SessionNotFullyClearedError
+
+        flat = local_backend.base_dir / "oldshop.session.pickle"
+        flat.write_bytes(b"x")
+
+        def refuse(self, *args, **kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        with pytest.raises(SessionNotFullyClearedError) as err:
+            local_backend.remove_session("oldshop")
+
+        assert err.value.remaining == ["oldshop.session.pickle"]
