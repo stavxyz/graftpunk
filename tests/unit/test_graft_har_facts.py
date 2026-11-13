@@ -562,7 +562,8 @@ def test_an_html_response_gives_title_length_and_forms_never_text(tmp_path: Path
         "    form POST /account/{}/update",
         "      ship: select",
         "      note: textarea",
-        "      (name not shown) text (3 controls, the first control 1 of the form)",
+        "      (name not shown) text, control 1 of the form",
+        "      (name not shown) text, control 3 of the form",
         "    form GET http://shop.test/x",
     ):
         assert expected in lines, "\n".join(lines)
@@ -1329,23 +1330,58 @@ def test_a_webforms_element_id_prints_as_its_posted_name_does(tmp_path: Path) ->
 # #280: repeated unnamed controls, and a whole HAR nested too deep to parse.
 
 
-def test_repeated_controls_whose_names_fail_are_one_line_per_type() -> None:
+def test_repeated_hidden_controls_whose_names_fail_are_one_line() -> None:
     hidden = [(f"h{n}_Zq9XkLmPwR4t7Bv2Hn8Ks3Jd", "hidden", "") for n in range(30)]
-    controls = [*hidden, ("", "submit button", ""), ("username", "text", ""), ("", "hidden", "")]
+    controls = [
+        *hidden,
+        ("", "submit button", ""),
+        ("username", "text", ""),
+        ("", "hidden", ""),
+        ("h99_Zq9XkLmPwR4t7Bv2Hn8Ks3Jd", "hidden", "returnUrl"),
+    ]
     assert _load_script()._controls(controls, "") == [
         "username: text",
         "(name not shown) hidden (30 controls, the first control 1 of the form)",
         "(no name) submit button, control 31 of the form",
         "(no name) hidden, control 33 of the form",
+        "(name not shown) hidden, control 34 of the form, id returnUrl",
     ]
 
 
+def test_nameless_controls_that_are_not_hidden_keep_their_ids(tmp_path: Path) -> None:
+    """A script-built sign-in form whose inputs carry only ids: the id is the one
+    selector the reader gives, so each prints on its own line, as in 1.42.6."""
+    page = (
+        '<form method="post" action="/signin">'
+        '<input id="firstName"><input id="lastName"><input name="email">'
+        '<input type="password" id="password"><input type="password" id="confirmPassword">'
+        '<button type="submit" id="signIn">Sign in</button>'
+        '<button type="submit" id="cancel">Cancel</button>'
+        "</form>"
+    )
+    path = tmp_path / "network.har"
+    entry = _entry(
+        "GET", "https://myshop.example/signin", content={"mimeType": "text/html", "text": page}
+    )
+    path.write_text(json.dumps({"log": {"entries": [entry]}}))
+    lines = _lines("response", str(path), "/signin")
+    for expected in (
+        "      (no name) text, control 1 of the form, id firstName",
+        "      (no name) text, control 2 of the form, id lastName",
+        "      (no name) password, control 4 of the form, id password",
+        "      (no name) password, control 5 of the form, id confirmPassword",
+        "      (no name) submit button, control 6 of the form, id signIn",
+        "      (no name) submit button, control 7 of the form, id cancel",
+    ):
+        assert expected in lines, "\n".join(lines)
+
+
 def test_past_twelve_lines_the_rest_of_the_controls_are_counted() -> None:
-    kinds = sorted(_load_script()._INPUT_TYPES)[:14]
-    controls = [("", kind, "") for kind in kinds for _ in range(2)]
+    kinds = sorted(_load_script()._INPUT_TYPES - {"hidden"})[:14]
+    controls = [("", kind, "") for kind in kinds]
     lines = _load_script()._controls(controls, "")
     assert len(lines) == 13
-    assert lines[-1] == "(4 more controls with no name or a name not shown)"
+    assert lines[-1] == "(2 more controls with no name or a name not shown)"
 
 
 def _nested_har(tmp_path: Path, depth: int) -> Path:

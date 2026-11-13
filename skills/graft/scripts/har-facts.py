@@ -124,7 +124,8 @@ names, the names of the cookies it sets, and the body's shape: JSON keys and
 types (JSON nested deeper than 64 levels is not parsed), or an HTML page's title
 length and its forms, each with its method, templated action, and controls by
 name and type (repeats collapsed with a count, a control with no name or a name
-that fails by type and position, and repeats of those by type with a count). A
+that fails by type, position, and an id that passes, and hidden ones of those
+with no such id as one line with a count). A
 field whose name reads as a password, a secret, a token, a card, or a key is
 listed by name alone. A response body streamed to ``bodies/`` is read only from
 the HAR's own ``bodies/`` directory, never through a link.
@@ -1716,16 +1717,25 @@ def _controls(controls: list[tuple[str, str, str]], indent: str) -> list[str]:
     for name, kind in dict.fromkeys(named):
         repeat = f" ({counts[(name, kind)]} controls)" if counts[(name, kind)] > 1 else ""
         lines.append(f"{indent}{name}: {kind}{repeat}")
-    # The controls with no name or a name that fails, by label and type, so a run
-    # of hidden inputs is one line with a count, as a named repeat is.
-    groups: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    # The controls with no name or a name that fails, each on its own line, except
+    # that hidden inputs with no id that prints are one line per label with a count,
+    # as a named repeat is: a form's run of hidden state is not a field to fill,
+    # and an id that prints is the only selector a nameless control has.
+    entries: list[tuple[str, str, list[tuple[int, str]]]] = []
+    hidden_runs: dict[str, list[tuple[int, str]]] = {}
     for position, (name, kind, ident) in enumerate(controls, start=1):
         if name and printable_name(name):
             continue
         label = "(name not shown)" if name else "(no name)"
-        groups.setdefault((label, kind), []).append((position, ident))
+        if kind == "hidden" and not (ident and printable_name(ident)):
+            if label not in hidden_runs:
+                hidden_runs[label] = []
+                entries.append((label, kind, hidden_runs[label]))
+            hidden_runs[label].append((position, ident))
+        else:
+            entries.append((label, kind, [(position, ident)]))
     unlisted = 0
-    for listed, ((label, kind), members) in enumerate(groups.items()):
+    for listed, (label, kind, members) in enumerate(entries):
         if listed >= _MAX_UNNAMED:
             unlisted += len(members)
             continue
