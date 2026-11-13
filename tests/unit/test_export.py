@@ -810,6 +810,20 @@ class TestPdfEmptyTexts:
         _, pages = json_to_pdf([{"a": 1}], tmp_path / "out.pdf", vendor="", vendor_info="")
         assert pages == 1
 
+    @pytest.mark.parametrize("blank", ["\r", "\r\r", "\n", "\x0c", "​" * 40])
+    def test_texts_that_are_empty_once_laid_out(self, tmp_path: Path, blank: str) -> None:
+        """fpdf2 deletes every carriage return, so a metadata value of only
+        ``\\r`` reached ``cell()`` empty and raised (found by the fuzz)."""
+        _, pages = json_to_pdf(
+            [{"a": 1}],
+            tmp_path / "out.pdf",
+            title=blank,
+            vendor=blank,
+            vendor_info=blank,
+            metadata={"k": blank, blank: "v"},
+        )
+        assert pages == 1
+
 
 _FUZZ_CHARS = [
     "W",

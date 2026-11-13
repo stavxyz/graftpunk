@@ -314,9 +314,9 @@ def json_to_pdf(
         vendor_info=text(vendor_info) if vendor_info else "",
         title=text(title, bold=True) if title else "",
         metadata=[
-            (text(f"{safe_text(key)}: ", bold=True), text(value))
+            (text(f"{safe_text(key)}: ", bold=True), shown)
             for key, value in (metadata or {}).items()
-            if safe_text(value)
+            if (shown := text(value))
         ],
     )
     # The probe has drawn nothing yet: the first attempt draws on it.
