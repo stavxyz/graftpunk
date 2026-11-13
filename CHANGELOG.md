@@ -24,6 +24,10 @@ This is a patch release of two fixes. On S3 and Supabase, an object left under a
 - **`SessionNotFullyClearedError`** (a `StorageError`), raised by `remove_session` when a delete went through but left files: it names what was deleted and what is still there (#382).
 - **`clear_session_cache()` returns a `ClearedSessions`**: still a list of the removed names, with `skipped`, the slots a sweep could not clear (#382).
 
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.33 and still needs graftpunk 1.42.2 or later** (#375). Only the guide it ships changed: it describes how a formless login group's submit is chosen, that a button's text is read through its `div`, `p`, `span` and `label` children, the `E-mail` username hint, and why a placeholder naming a person is still used. The skill runs nothing that depends on them, so the floor stays.
+
 ### Fixed
 
 - **An object under a session's name never makes it a session** (#382, ask 1). See Upgrading item 2. `gp session list` showed only names with metadata in 1.42.2, so the extra names the resolver counted could not be seen.
@@ -35,7 +39,7 @@ This is a patch release of two fixes. On S3 and Supabase, an object left under a
 - **`clear_session_cache()` finishes a sweep** (#382). A slot it cannot clear safely or completely is logged once (`session_not_cleared`), skipped, and returned in `skipped`. In 1.42.2 a storage error from S3 or Supabase raised out of the sweep with the slots already deleted unreported.
 - **A slot that fails to clear is named, and `gp session clear` exits 1**, and an error listing incomplete slots prints one line and exits 1, as the session listing beside it does.
 - **One unreadable directory in the local sessions directory no longer hides every incomplete slot.** It is skipped with one warning (`incomplete_session_unreadable`); 1.42.2 listed none when one directory could not be read. A directory linked outside the sessions directory, which `remove_session` refuses to delete, is not listed as an incomplete slot either (warning `incomplete_session_outside`), so it does not make every `--all` exit 1.
-- **One unreadable directory no longer hides every local session.** `list_sessions` skips it with one warning (`session_unreadable`) and lists the rest; 1.42.2 returned no sessions at all, so `gp session list`, account resolution and `--all` saw none.
+- **One unreadable directory no longer hides every local session.** `list_sessions` skips it with one warning (`session_unreadable`) and lists the rest; 1.42.2 returned no sessions at all, so `gp session list`, account resolution and `--all` saw none. Unreadable is judged with `os.stat`, because from Python 3.14 `Path.exists()` returns False for a permission error instead of raising, which would hide the directory without a warning.
 - **A formless group's sign-in button is its submit** (#375, item 1). See Upgrading item 5. A button's text is its content up to its own end tag, through any `div`, `p`, `span` or `label` inside it, and is read to judge it, never written into the plugin. Sign-in words match whole words, so "design", "Blog" and `login-help` say nothing; a toggle, a switch (`role="switch"`, `aria-pressed`), an icon-only button, a Close, Forgot password or help button, a sign-up, a provider's button ("Google", "Continue with ...") and any button past the next field after the password are never taken; and two sign-in buttons still give a `GP-FILL`.
 - **`E-mail` is a username hint** (#375, item 2). The hint words are matched with hyphens taken out, in a name, id, placeholder or `aria-label`.
 - **A JSF colon prefix no longer hides a credential post** (#375, item 3). The digest's field-name alphabet admits an inner `:`, and the part of a name the credential rule judges is split on `:` as `names_a_password` already split it, so `loginForm:password` is a password and `loginForm:rememberPassword` is not. The alphabet is every body and query name's rule; see Upgrading item 5.
