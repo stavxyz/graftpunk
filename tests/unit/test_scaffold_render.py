@@ -3218,11 +3218,14 @@ class TestRenderedTreeIsRuffClean:
         observation = LoginObservation(
             order=1, method="GET", url=long_url, status=200, kind="form_page", fields=()
         )
-        # A meta tag name as long as the name gate lets through (48 characters;
-        # a longer one reads as a value and is left out, #347, #359).
+        # A hidden input name as long as the name gate lets through (48
+        # characters; a longer one reads as a value and is left out, #347,
+        # #359), so its GP-FILL line passes the generated width and wraps.
         long_token_name = "csrf-token-for-the-storefront-checkout-page-form"  # noqa: S105
         assert len(long_token_name) == 48
-        lone = TokenCandidate(kind="meta", name=long_token_name, seen_on=("GET /dashboard",))
+        lone = TokenCandidate(
+            kind="hidden_input", name=long_token_name, seen_on=("GET /dashboard",)
+        )
         digest = _digest(login=(observation,), tokens=(lone,))
         long_base_url = "https://" + "x" * 100 + ".example.com"
         assert 110 <= len(long_base_url) <= 130
@@ -3237,6 +3240,7 @@ class TestRenderedTreeIsRuffClean:
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
         assert "1." in plugin_code
         assert "unpaired token candidate" in plugin_code
+        assert f"    #   '{long_token_name}'" in plugin_code.splitlines()
         tree = self._write_tree(tmp_path / "long_observation", files)
         self._assert_tree_is_clean(tree)
 

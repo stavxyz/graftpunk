@@ -170,8 +170,9 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _TYPENAME = "__typename"
 # A camelCase identifier: a lowercase word, then capitalised words (createdAt).
 # One equal to a schema key of its own body is that field's name, held as a value
-# (a sort order, "sortBy": "createdAt"). A username is lowercase, so a capture's
-# "aokonkwo" stays a value even where the same body uses it as a key.
+# (a sort order, "sortBy": "createdAt"). A lowercase username ("aokonkwo") stays a
+# value even where the same body uses it as a key; a camelCase one its body also
+# uses as a key ("joOkafor") is skipped, a limit the script's docstring states.
 _CAMEL_CASE = re.compile(r"[a-z]+(?:[A-Z][a-z]+)+\Z")
 # The parts of a GraphQL response that describe the request rather than answer it:
 # an identifier under either that names a schema key or a type of the same body
