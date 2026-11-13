@@ -447,9 +447,11 @@ class TestNodriverDeadline:
         failures = [c for c in mock_log.debug.call_args_list if c[0][0] == "login_tick_read_failed"]
         assert failures == []
 
-    def test_a_tick_that_wakes_past_the_deadline_is_the_last(self) -> None:
-        """A busy loop can wake a tick after the deadline; it reads the page and the
-        wait ends there."""
+    @pytest.mark.parametrize("late", [0.7, 2.0])
+    def test_a_tick_that_wakes_past_the_deadline_is_the_last(self, late: float) -> None:
+        """A busy loop can wake a tick after the deadline, even after the wait's end
+        (``late`` 2.0); it still takes an answer that is at hand, and the wait ends
+        there."""
         from graftpunk.plugins import login_settle
 
         reads: list[float] = []
@@ -468,7 +470,7 @@ class TestNodriverDeadline:
         real_sleep = asyncio.sleep
 
         async def late_sleep(seconds: float) -> None:
-            await real_sleep(seconds + 0.7)
+            await real_sleep(seconds + late)
 
         async def wait() -> bool:
             loop = asyncio.get_running_loop()

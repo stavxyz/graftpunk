@@ -19,7 +19,6 @@ import asyncio
 import contextlib
 import dataclasses
 import fnmatch
-import inspect
 import json
 import time
 from collections.abc import Callable, Iterator
@@ -536,13 +535,11 @@ async def _answer_by(awaitable: Any, *, end: float) -> Any:
     error is collected and dropped when it comes.
     """
     loop = asyncio.get_running_loop()
-    if loop.time() >= end:
-        # No time left: the read is not started at all.
-        if inspect.iscoroutine(awaitable):
-            awaitable.close()
-        raise TimeoutError
     task = asyncio.ensure_future(awaitable)
-    done, _pending = await asyncio.wait({task}, timeout=end - loop.time())
+    # Even with no time left the read gets the loop pass it was scheduled for, ahead
+    # of the timeout: an answer already at hand (a closed tab's error) is taken, and
+    # a busy loop that woke the tick late does not turn it into an abandoned read.
+    done, _pending = await asyncio.wait({task}, timeout=max(0.0, end - loop.time()))
     if task in done:
         return task.result()
     task.add_done_callback(_drop_late_answer)
