@@ -13,6 +13,7 @@ import csv
 import json
 import numbers
 import os
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -140,7 +141,7 @@ def _drawable(pdf: FPDF, text: str, missing: set[str], *, bold: bool = False) ->
     """*text* with each character the font has no glyph for as ``_NO_GLYPH``,
     each such character added to *missing*."""
     cmap = pdf.fonts[_PDF_FONT.lower() + ("B" if bold else "")].cmap
-    if all(ord(c) in cmap or c in _LAYOUT_CHARACTERS for c in text):
+    if all(ord(c) in cmap or c in _LAYOUT_CHARACTERS for c in set(text)):
         return text
     kept = []
     for c in text:
@@ -451,17 +452,15 @@ def _bounded_runs(pdf: FPDF, text: str) -> tuple[str, bool]:
     was. Line breaks and tabs are fpdf2's to lay out and end a run."""
     if len(text) <= _MAX_ZERO_WIDTH_RUN:
         return text, False
-    widths: dict[str, bool] = {}
     pdf.set_font(_PDF_FONT, size=7)
+    zero = {c for c in set(text) if c not in _LAYOUT_CHARACTERS and pdf.get_string_width(c) == 0}
+    if not zero:
+        return text, False
     kept: list[str] = []
     run = 0
     shortened = False
     for c in text:
-        zero = widths.get(c)
-        if zero is None:
-            zero = c not in _LAYOUT_CHARACTERS and pdf.get_string_width(c) == 0
-            widths[c] = zero
-        if zero:
+        if c in zero:
             run += 1
             if run > _MAX_ZERO_WIDTH_RUN:
                 shortened = True
@@ -725,41 +724,51 @@ except ImportError:  # pragma: no cover - an fpdf2 without it
 def _estimate_lines(text: str, usable: float, widths: dict[str, float], limit: int) -> list[str]:
     """The lines fpdf2's word wrapping makes of *text* at *usable* width, as
     closely as a few lines can copy it, stopping after *limit* lines: a line
-    breaks at a newline or form feed, at the last space before the text
-    passes the width (the space dropped), or before the character that passes
-    it when the line has no space."""
+    breaks at a newline or form feed, at the last space before the text passes
+    the width (the space dropped), or, for a word wider than a line, before the
+    character that passes it. Words are measured whole, so a cell costs a few
+    operations per word."""
     lines: list[str] = []
-    start = 0
-    line_width = 0.0
-    last_space = -1
-    i = 0
-    n = len(text)
-    while i < n and len(lines) < limit:
-        c = text[i]
-        if c in "\n\x0c":
-            lines.append(text[start:i])
-            start, line_width, last_space = i + 1, 0.0, -1
-            i += 1
-            continue
-        w = widths[c]
-        if line_width + w > usable and i > start:
-            if c in _BREAKING_SPACES:
-                lines.append(text[start:i])
-                start, line_width, last_space = i + 1, 0.0, -1
-                i += 1
+    for paragraph in _HARD_BREAKS.split(text):
+        line: list[str] = []
+        line_width = 0.0
+        pending_space = ""
+        for token in _SPACES.split(paragraph):
+            if not token:
                 continue
-            if last_space >= start:
-                lines.append(text[start:last_space])
-                start, last_space = last_space + 1, -1
-                line_width = sum(map(widths.__getitem__, text[start:i]))
+            if token[0] in _BREAKING_SPACES:
+                pending_space += token
                 continue
-            lines.append(text[start:i])
-            start, line_width, last_space = i, 0.0, -1
-            continue
-        if c in _BREAKING_SPACES:
-            last_space = i
-        line_width += w
-        i += 1
-    if start < n and len(lines) < limit:
-        lines.append(text[start:])
+            space_width = sum(map(widths.__getitem__, pending_space))
+            word_width = sum(map(widths.__getitem__, token))
+            if line and line_width + space_width + word_width > usable:
+                lines.append("".join(line))
+                if len(lines) >= limit:
+                    return lines
+                line, line_width, space_width = [], 0.0, 0.0
+                pending_space = ""
+            if line_width + space_width + word_width <= usable:
+                line.append(pending_space + token)
+                line_width += space_width + word_width
+            else:
+                # A word wider than the line: broken before the character that
+                # passes the width, as fpdf2 does with no space to break at.
+                start = len(line) == 0
+                for c in pending_space + token if not start else token:
+                    w = widths[c]
+                    if line and line_width + w > usable:
+                        lines.append("".join(line))
+                        if len(lines) >= limit:
+                            return lines
+                        line, line_width = [], 0.0
+                    line.append(c)
+                    line_width += w
+            pending_space = ""
+        lines.append("".join(line))
+        if len(lines) >= limit:
+            return lines
     return lines
+
+
+_HARD_BREAKS = re.compile("[\n\x0c]")
+_SPACES = re.compile(f"([{re.escape(_BREAKING_SPACES)}]+)")
