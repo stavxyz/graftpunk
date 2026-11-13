@@ -907,9 +907,13 @@ def _least_cpu(work: Callable[[], object], runs: int = 3) -> float:
     return min(times)
 
 
-def _plain_fpdf_table(rows: list[dict[str, str]], out: Path) -> None:
+def _plain_fpdf_table(
+    rows: list[dict[str, str]], out: Path, line_height_factor: float | None = None
+) -> None:
     """The same table drawn by fpdf2 alone, in the bundled font, with no
-    fitting: what json_to_pdf's own work is measured against."""
+    fitting: what json_to_pdf's own work is measured against. A
+    *line_height_factor* draws the row line height at that multiple of the
+    font size, as the export does for a table it shrinks."""
     from fpdf import FPDF
     from fpdf.fonts import FontFace
 
@@ -928,6 +932,7 @@ def _plain_fpdf_table(rows: list[dict[str, str]], out: Path) -> None:
         headings_style=FontFace(emphasis="BOLD", fill_color=(220, 220, 220)),
         col_widths=(width,) * len(columns),
         first_row_as_headings=True,
+        line_height=None if line_height_factor is None else line_height_factor * pdf.font_size,
     ) as table:
         for row in [dict(zip(columns, columns, strict=True)), *rows]:
             cells = table.row()
@@ -956,6 +961,27 @@ class TestPdfSpeed:
         for _ in range(5):
             ours.append(_least_cpu(lambda: json_to_pdf(rows, tmp_path / "ours.pdf"), runs=1))
             plain.append(_least_cpu(lambda: _plain_fpdf_table(rows, tmp_path / "p.pdf"), runs=1))
+        assert min(ours) <= 1.5 * min(plain) + 0.05, (ours, plain)
+
+    def test_a_table_that_shrinks_costs_little_more_than_fpdf2_drawing_its_layout(
+        self, tmp_path: Path
+    ) -> None:
+        """20 columns of 200 characters of short words are too tall at fpdf2's
+        default line height and fit at 1.5 times the font size. Round 5
+        measured every cell with fpdf2 at two layouts before drawing, 2.4 times
+        fpdf2 drawing the chosen layout; now only rows the estimate puts near
+        the page limit are measured."""
+        text = ("abc de " * 40)[:200]
+        rows = [{f"c{c}": text for c in range(20)} for _ in range(30)]
+        json_to_pdf(rows, tmp_path / "ours.pdf")
+        assert b" 7.00 Tf" in _pdf_text_bytes((tmp_path / "ours.pdf").read_bytes())
+        ours: list[float] = []
+        plain: list[float] = []
+        for _ in range(5):
+            ours.append(_least_cpu(lambda: json_to_pdf(rows, tmp_path / "ours.pdf"), runs=1))
+            plain.append(
+                _least_cpu(lambda: _plain_fpdf_table(rows, tmp_path / "p.pdf", 1.5), runs=1)
+            )
         assert min(ours) <= 1.5 * min(plain) + 0.05, (ours, plain)
 
     @pytest.mark.parametrize("filler", ["́", "​"], ids=["combining", "zero-width-space"])

@@ -345,10 +345,14 @@ def json_to_pdf(
     pdf.set_font(_PDF_FONT, size=7)
     margin, parts = _column_layout(pdf, table_data, page_width)
     try:
-        cut = _draw_table(pdf, table_data, parts, margin, page_width, fit=False)
-    except Exception:  # noqa: BLE001 - drawn again, every cell fitted to a page
-        pdf = _start_pdf(header)
-        cut = _draw_table(pdf, table_data, parts, margin, page_width, fit=True)
+        cut = _draw_table(pdf, table_data, parts, margin, page_width, mode="estimate")
+    except Exception:  # noqa: BLE001 - drawn again, a tighter layout chosen
+        try:
+            pdf = _start_pdf(header)
+            cut = _draw_table(pdf, table_data, parts, margin, page_width, mode="near")
+        except Exception:  # noqa: BLE001 - the estimate was off: every cell measured
+            pdf = _start_pdf(header)
+            cut = _draw_table(pdf, table_data, parts, margin, page_width, mode="exact")
     return _write_pdf(pdf, output, missing, cut, runs[0])
 
 
@@ -557,24 +561,21 @@ def _draw_table(
     margin: float,
     page_width: float,
     *,
-    fit: bool,
+    mode: str,
 ) -> int:
     """Draw *table_data* as one table per part, and return how many cells were
-    cut.
-
-    Without *fit*, every cell must fit a page at the default layout by the
-    line estimate, or :class:`_NeedsFitting` is raised before anything is
-    drawn. With *fit*, each part takes the first layout in ``_LAYOUTS`` at
-    which no cell needs cutting by fpdf2's own wrapping, and only at the last
-    is a cell cut (:func:`_fit_part`); a part with a cut cell whose columns
-    cannot hold the cut mark is split again at the width the mark needs."""
+    cut. *mode* is passed to :func:`_choose_layout`: ``estimate`` raises
+    :class:`_NeedsFitting` before anything is drawn when a cell does not fit
+    the default layout; ``near`` and ``exact`` choose a tighter layout before
+    cutting. A part with a cut cell whose columns cannot hold the cut mark is
+    split again at the width the mark needs."""
     from fpdf.fonts import FontFace
 
     headings_style = FontFace(emphasis="BOLD", fill_color=(220, 220, 220))
     # fpdf2's multi_cell adds every glyph it wraps to the font subset, so the
     # layouts tried and cells cut on the way are measured on a document of
     # their own: the pdf holds only the glyphs it draws.
-    measure = _new_pdf() if fit else pdf
+    measure = pdf if mode == "estimate" else _new_pdf()
     saved_margin = pdf.c_margin
     pdf.c_margin = measure.c_margin = margin
     cut = 0
@@ -582,12 +583,12 @@ def _draw_table(
     try:
         for part in parts:
             try:
-                work = [(part, _choose_layout(measure, table_data, part, page_width, fit=fit))]
+                work = [(part, _choose_layout(measure, table_data, part, page_width, mode=mode))]
             except _MarkTooWide:
                 needed = _widest(measure, table_data, _CUT_MARK) + 2 * margin + _WIDTH_SLACK
                 pieces = _split(part, max(int(page_width // needed), 1))
                 work = [
-                    (piece, _choose_layout(measure, table_data, piece, page_width, fit=fit))
+                    (piece, _choose_layout(measure, table_data, piece, page_width, mode=mode))
                     for piece in pieces
                 ]
             for piece, (rows, piece_cut, size, factor) in work:
@@ -612,23 +613,48 @@ def _draw_table(
 
 
 def _choose_layout(
-    pdf: FPDF, table_data: list[list[str]], part: list[int], page_width: float, *, fit: bool
+    pdf: FPDF, table_data: list[list[str]], part: list[int], page_width: float, *, mode: str
 ) -> tuple[list[list[str]], int, float, float]:
     """The rows of *part* fitted to a page, how many cells were cut, and the
-    font size and line-height factor they are drawn at (``_LAYOUTS``)."""
+    font size and line-height factor they are drawn at (``_LAYOUTS``).
+
+    *mode* is ``estimate`` (the default layout if the line estimate fits every
+    cell, else :class:`_NeedsFitting`), ``near`` (each layout in turn, fpdf2's
+    own wrapping measuring only the rows the estimate puts near the page
+    limit), or ``exact`` (fpdf2's wrapping measuring every cell)."""
     col_width = page_width / max(len(part), 1)
     rows = _columns_of(table_data, part)
-    if not fit:
+    last = len(_LAYOUTS) - 1
+    if mode == "estimate":
         size, factor = _LAYOUTS[0]
         fitted, cut = _fit_part(pdf, rows, col_width, exact=False, size=size, factor=factor)
         if cut:
             raise _NeedsFitting
         return fitted, 0, size, factor
-    last = len(_LAYOUTS) - 1
-    # The line estimate picks where to start, so fpdf2's own wrapping (two to
-    # three times the cost of drawing) runs at one or two layouts, not five: at
-    # the layout before the first one the estimate fits, in case it overstates,
-    # or at the last when it fits none.
+    if mode == "near":
+        for index, (size, factor) in enumerate(_LAYOUTS):
+            final = index == last
+            try:
+                fitted, cut = _fit_part(
+                    pdf,
+                    rows,
+                    col_width,
+                    exact=True,
+                    size=size,
+                    factor=factor,
+                    near=True,
+                    final=final,
+                )
+            except _MarkTooWide:
+                if final:
+                    raise
+                continue
+            if not cut or final:
+                return fitted, cut, size, factor
+        raise AssertionError("unreachable: the last layout returns")  # pragma: no cover
+    # exact: the line estimate picks where to start, so fpdf2's own wrapping
+    # runs at one or two layouts, not five: at the layout before the first one
+    # the estimate fits, in case it overstates, or at the last when it fits none.
     start = last
     for index, (size, factor) in enumerate(_LAYOUTS):
         try:
@@ -671,6 +697,8 @@ def _fit_part(
     exact: bool,
     size: float = 7,
     factor: float = 2.0,
+    near: bool = False,
+    final: bool = True,
 ) -> tuple[list[list[str]], int]:
     """*rows* (headings first) with each cell cut to the lines one page holds,
     and how many cells were cut.
@@ -713,13 +741,54 @@ def _fit_part(
     body_cap = max(1, total - heading_lines - 1)
     body = []
     for row in rows[1:]:
+        if near:
+            # Only a row the estimate puts near the page limit is measured with
+            # fpdf2's own wrapping; one well under it is kept as it is, and,
+            # unless this is the last layout, one well over it fails the layout.
+            tallest = max(
+                (_estimated_lines(pdf, text, width, body_cap, regular) for text in row), default=1
+            )
+            if tallest <= _NEAR_BELOW * body_cap:
+                body.append(list(row))
+                continue
+            if not final and tallest > _NEAR_ABOVE * body_cap:
+                return [headings, *body], cut + 1
         fitted_row = []
         for text in row:
             fitted, _lines, was_cut = _fit_cell(pdf, text, width, body_cap, regular, exact=exact)
             fitted_row.append(fitted)
             cut += was_cut
+        if near and not final and cut:
+            return [headings, *body], cut
         body.append(fitted_row)
     return [headings, *body], cut
+
+
+# The band around a page's lines within which a row's estimate is checked
+# with fpdf2's own wrapping (_fit_part with near): the estimate copies
+# fpdf2's word wrapping closely, and a row outside the band is taken at its
+# estimate. A drawing the estimate gets wrong raises in fpdf2, and the export
+# then measures every cell (_draw_table's "exact").
+_NEAR_BELOW = 0.9
+_NEAR_ABOVE = 1.1
+
+
+def _estimated_lines(pdf: FPDF, text: str, width: float, cap: int, widths: dict[str, float]) -> int:
+    """The lines *text* takes at *width* by :func:`_estimate_lines`, counted to
+    one past *cap* at most; the cheap upper bound when that is already under
+    ``_NEAR_BELOW`` of *cap*."""
+    if not text:
+        return 1
+    usable = max(width - 2 * pdf.c_margin, 0.01)
+    for c in set(text) - widths.keys():
+        widths[c] = pdf.get_string_width(c)
+    bound = text.count("\n") + text.count("\x0c") + 1
+    bound += 3 * int(sum(map(widths.__getitem__, text)) // usable + 1)
+    if bound <= _NEAR_BELOW * cap:
+        return bound
+    narrowest = min((w for c, w in widths.items() if w > 0 and c in text), default=usable)
+    per_line = (int(usable / narrowest) + 2) * (_MAX_ZERO_WIDTH_RUN + 1)
+    return len(_estimate_lines(text[: (cap + 1) * per_line + 1], usable, widths, cap + 1))
 
 
 def _fit_cell(
