@@ -563,8 +563,10 @@ instead of the session directly:
   *url* (relative to `base_url`, or absolute) with role headers and returns
   the parsed JSON body. A 401 or 403 raises `SessionRejectedError`; a 2xx
   whose body is a login page also does (a stale session's tell); any other
-  non-JSON 2xx raises `UnexpectedResponseError`; any other 4xx/5xx raises
-  `CommandError`.
+  non-JSON 2xx raises `UnexpectedResponseError`; a 429 raises
+  `RateLimitedError` (with the `Retry-After` wait when given); a 500, 502,
+  503 or 504 raises `SiteServerError`; any other 4xx/5xx raises
+  `HTTPStatusError`. All of these are `CommandError` subclasses.
 - `ctx.request_text(method, url, *, role="navigation", **kwargs) -> str`
   returns any 2xx body as text, detecting rejection by status only, so an
   HTML endpoint's real response is never mistaken for an expired session.

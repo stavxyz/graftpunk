@@ -1611,10 +1611,35 @@ Both normalise a `params` or `data` mapping before sending it:
   run: `Run: gp myshop login`.
 - `UnexpectedResponseError` on a 2xx that is neither JSON nor a login page, or
   that declares JSON and does not parse as JSON (a truncated response).
-- `CommandError` on any other 4xx or 5xx.
+- `RateLimitedError` on a 429. Its message says the site is rate limiting
+  requests and, when the response carries a `Retry-After` header (seconds or an
+  HTTP date), how long to wait; `retry_after` holds that wait in seconds, or
+  `None`. Neither method retries on its own.
+- `SiteServerError` on a 500, 502, 503 or 504. Its message says the site is
+  having trouble and to try again later.
+- `HTTPStatusError` on any other 4xx or 5xx, with the message
+  `GET /api/orders/42 returned 404`.
 
-`SessionRejectedError` and `UnexpectedResponseError` are `CommandError`
-subclasses, and the CLI prints a `CommandError`'s message as one error line and
+`RateLimitedError` and `SiteServerError` are `HTTPStatusError` subclasses, and
+all three carry `status`, `method` and `path`, so a command can treat one status
+differently without reading the message:
+
+```python
+from graftpunk.exceptions import CommandError, HTTPStatusError
+
+
+@command(help="One invoice by id")
+def invoice(self, ctx: CommandContext, invoice_id: str) -> dict:
+    try:
+        return ctx.request_json("GET", f"/api/invoices/{invoice_id}")
+    except HTTPStatusError as exc:
+        if exc.status == 404:
+            raise CommandError(f"No invoice {invoice_id}") from exc
+        raise
+```
+
+`SessionRejectedError`, `UnexpectedResponseError` and `HTTPStatusError` are
+`CommandError` subclasses, and the CLI prints a `CommandError`'s message as one error line and
 exits 1, with no traceback. A `PluginError` prints
 as `Plugin error: <message>` and exits 1. Anything else is a crash: the CLI logs
 a full traceback and prints `Command failed: <message>`.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -10,10 +11,17 @@ import requests
 import structlog
 from structlog.testing import capture_logs
 
-from graftpunk.exceptions import CommandError, SessionRejectedError, UnexpectedResponseError
+from graftpunk.exceptions import (
+    CommandError,
+    HTTPStatusError,
+    RateLimitedError,
+    SessionRejectedError,
+    SiteServerError,
+    UnexpectedResponseError,
+)
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.plugins.cli_plugin import CommandContext
-from graftpunk.plugins.site_requests import SiteRequests
+from graftpunk.plugins.site_requests import SiteRequests, _retry_after_seconds
 
 
 class _FakeResponse:
@@ -25,9 +33,10 @@ class _FakeResponse:
         text: str = "{}",
         request_method: str = "GET",
         url: str = "https://myshop.example.com/x",
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.status_code = status_code
-        self.headers = {"Content-Type": content_type}
+        self.headers = {"Content-Type": content_type, **(headers or {})}
         self.text = text
         self.url = url
         self.request = requests.PreparedRequest()
@@ -127,6 +136,115 @@ class TestRejection:
         session = _RoleAwareSession(_FakeResponse(500))
         with pytest.raises(CommandError):
             SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/x")
+
+
+def _raised(status: int, method: str = "json", **headers: str) -> CommandError:
+    response = _FakeResponse(status, content_type="application/json", headers=headers)
+    requests_ = SiteRequests(_RoleAwareSession(response), "myshop", "https://myshop.example.com")
+    with pytest.raises(CommandError) as exc:
+        getattr(requests_, method)("GET", "/x")
+    return exc.value
+
+
+class TestStatusAdvice:
+    """429 and 5xx get their own error and advice (#203); every one stays a CommandError."""
+
+    @pytest.mark.parametrize("method", ["json", "text"])
+    def test_429_with_retry_after_seconds_says_how_long(self, method: str) -> None:
+        error = _raised(429, method, **{"Retry-After": "30"})
+        assert type(error) is RateLimitedError
+        assert error.status == 429
+        assert error.retry_after == 30
+        assert error.user_message == (
+            "GET /x returned 429: the site is rate limiting requests. Try again in 30 seconds."
+        )
+
+    @pytest.mark.parametrize("method", ["json", "text"])
+    def test_429_without_retry_after_gives_no_number(self, method: str) -> None:
+        error = _raised(429, method)
+        assert type(error) is RateLimitedError
+        assert error.retry_after is None
+        assert error.user_message == (
+            "GET /x returned 429: the site is rate limiting requests. Wait a while and try again."
+        )
+
+    def test_429_with_a_retry_after_date_says_how_long_from_now(self) -> None:
+        error = _raised(429, **{"Retry-After": "Fri, 31 Dec 2100 23:59:59 GMT"})
+        assert isinstance(error, RateLimitedError)
+        assert error.retry_after is not None
+        assert error.retry_after > 0
+        assert "Try again in " in error.user_message
+        assert "2100" not in error.user_message
+
+    def test_429_with_an_unreadable_retry_after_never_echoes_it(self) -> None:
+        error = _raised(429, **{"Retry-After": "soon <script>", "X-Secret": "abc123"})
+        assert isinstance(error, RateLimitedError)
+        assert error.retry_after is None
+        assert "soon" not in error.user_message
+        assert "abc123" not in error.user_message
+
+    @pytest.mark.parametrize("method", ["json", "text"])
+    @pytest.mark.parametrize("status", [500, 502, 503, 504])
+    def test_server_trouble_statuses_say_try_again_later(self, status: int, method: str) -> None:
+        error = _raised(status, method, **{"Retry-After": "30"})
+        assert type(error) is SiteServerError
+        assert error.status == status
+        assert error.user_message == (
+            f"GET /x returned {status}: the site is having trouble. Try again later."
+        )
+
+    @pytest.mark.parametrize("method", ["json", "text"])
+    @pytest.mark.parametrize("status", [400, 404, 410, 422, 501, 505])
+    def test_other_statuses_keep_the_plain_wording_and_carry_status(
+        self, status: int, method: str
+    ) -> None:
+        error = _raised(status, method)
+        assert type(error) is HTTPStatusError
+        assert error.status == status
+        assert (error.method, error.path) == ("GET", "/x")
+        assert error.user_message == f"GET /x returned {status}"
+
+    @pytest.mark.parametrize("method", ["json", "text"])
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_401_and_403_keep_session_rejected(self, status: int, method: str) -> None:
+        error = _raised(status, method, **{"Retry-After": "30"})
+        assert type(error) is SessionRejectedError
+        assert not isinstance(error, HTTPStatusError)
+
+    def test_the_new_errors_are_caught_as_command_error(self) -> None:
+        assert issubclass(RateLimitedError, HTTPStatusError)
+        assert issubclass(SiteServerError, HTTPStatusError)
+        assert issubclass(HTTPStatusError, CommandError)
+
+
+class TestRetryAfterSeconds:
+    _NOW = datetime(2026, 11, 13, 12, 0, 0, tzinfo=UTC)
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("0", 0),
+            (" 120 ", 120),
+            ("Fri, 13 Nov 2026 12:01:30 GMT", 90),
+            ("Fri, 13 Nov 2026 11:00:00 GMT", 0),
+            (None, None),
+            ("", None),
+            ("-5", None),
+            ("1.5", None),
+            ("\u0661\u0662", None),
+            ("tomorrow", None),
+        ],
+    )
+    def test_parses_seconds_or_an_http_date(self, value: str | None, expected: int | None) -> None:
+        assert _retry_after_seconds(value, now=self._NOW) == expected
+
+    @pytest.mark.parametrize(
+        ("seconds", "wording"),
+        [(1, "1 second"), (119, "119 seconds"), (120, "2 minutes"), (7201, "3 hours")],
+    )
+    def test_long_waits_read_in_larger_units(self, seconds: int, wording: str) -> None:
+        error = RateLimitedError("GET", "/x", seconds)
+        assert error.user_message.endswith(f"Try again in {wording}.")
 
 
 class TestUnexpectedResponse:
@@ -363,4 +481,26 @@ class TestCliOneLineRendering:
         assert result.exit_code == 1
         assert "Traceback" not in result.output
         assert "not JSON" in result.output
+
+    def test_a_429_renders_as_one_line_with_its_advice_through_the_cli(self) -> None:
+        from graftpunk.plugins import SitePlugin, command
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        class _LimitedPlugin(SitePlugin):
+            site_name = "myshop"
+            session_name = "myshop"
+            help_text = "test"
+            requires_session = False
+
+            @command(help="Fetch orders")
+            def orders(self, ctx: CommandContext) -> dict:
+                response = _FakeResponse(429, headers={"Retry-After": "30"})
+                return SiteRequests(
+                    _RoleAwareSession(response), "myshop", "https://myshop.example.com"
+                ).json("GET", "/orders")
+
+        result = invoke_plugin_app(_LimitedPlugin(), ["myshop", "orders"])
+        assert result.exit_code == 1
+        assert "Traceback" not in result.output
+        assert "rate limiting requests. Try again in 30 seconds." in " ".join(result.output.split())
         assert result.output.count("\n") <= 2

@@ -9,19 +9,31 @@ the "session expired" primitive).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
 
-from graftpunk.exceptions import CommandError, SessionRejectedError, UnexpectedResponseError
+from graftpunk.exceptions import (
+    HTTPStatusError,
+    RateLimitedError,
+    SessionRejectedError,
+    SiteServerError,
+    UnexpectedResponseError,
+)
 from graftpunk.har.documents import is_login_document
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 
 _REJECTED_STATUSES = frozenset({401, 403})
+# The 5xx answers that mean the site is failing for now (RFC 9110 15.6). A 501
+# or 505 says the request will never work, so it keeps the plain wording.
+_SERVER_TROUBLE_STATUSES = frozenset({500, 502, 503, 504})
 _ROLES_WARNED_ATTR = "_gp_roles_unavailable_warned"
 # The request arguments whose values a site reads as text, so a Python value
 # has to be spelled the way the site spells it.
@@ -36,6 +48,27 @@ __all__ = ["SiteRequests"]
 
 def _path_of(url: str | None) -> str:
     return urlparse(url or "").path or "/"
+
+
+def _retry_after_seconds(value: str | None, now: datetime | None = None) -> int | None:
+    """A ``Retry-After`` header as whole seconds to wait, or ``None`` when unusable.
+
+    RFC 9110 10.2.3 allows delay-seconds or an HTTP date. Anything else is
+    dropped rather than echoed, since the header is the site's text.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if value.isascii() and value.isdigit():
+        return int(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    delay = (when - (now or datetime.now(UTC))).total_seconds()
+    return max(0, math.ceil(delay))
 
 
 def _normalised_value(value: Any) -> Any:
@@ -101,8 +134,13 @@ class SiteRequests:
         status = response.status_code or 0
         if status in _REJECTED_STATUSES:
             raise SessionRejectedError(self._plugin_name, method, path, status)
+        if status == 429:
+            retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+            raise RateLimitedError(method, path, retry_after)
+        if status in _SERVER_TROUBLE_STATUSES:
+            raise SiteServerError(method, path, status)
         if status >= 400:
-            raise CommandError(f"{method} {path} returned {status}")
+            raise HTTPStatusError(method, path, status)
 
     def json(self, method: str, url: str, *, role: str = "xhr", **kwargs: Any) -> Any:
         """Send *method* *url* with role headers; return the parsed JSON body.
@@ -117,7 +155,10 @@ class SiteRequests:
             UnexpectedResponseError: A 2xx whose body is neither JSON nor a
                 login page, or that declares JSON but does not parse as JSON
                 (a truncated response).
-            CommandError: Any other 4xx or 5xx.
+            RateLimitedError: 429, with the ``Retry-After`` wait when given.
+            SiteServerError: 500, 502, 503 or 504.
+            HTTPStatusError: Any other 4xx or 5xx. All three are
+                ``CommandError`` subclasses carrying ``status``.
         """
         response = self._send(method, url, role, **kwargs)
         self._raise_for_rejection(response)
@@ -145,7 +186,8 @@ class SiteRequests:
         request entirely.
 
         Rejection is detected by status only, so an HTML endpoint's real
-        2xx body is never mistaken for an expired session.
+        2xx body is never mistaken for an expired session. A 4xx or 5xx
+        raises what :meth:`json` raises for it.
         """
         response = self._send(method, url, role, **kwargs)
         self._raise_for_rejection(response)
