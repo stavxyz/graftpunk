@@ -3614,6 +3614,97 @@ class TestTokenRefreshOn403:
             # Should exit with error (caught by generic exception handler)
             assert result.exit_code == 1
 
+    @staticmethod
+    def _token_page_error(status: int) -> requests.exceptions.HTTPError:
+        response = requests.Response()
+        response.status_code = status
+        response.url = "https://example.com/dashboard"
+        response.request = requests.Request("GET", response.url).prepare()
+        return requests.exceptions.HTTPError(response=response)
+
+    def _run_with_token_prep(self, handler: Any, prepare: Any) -> tuple[int, str, MagicMock]:
+        mock_session = MagicMock()
+        mock_session.driver = MagicMock()
+        mock_plugin = MockPlugin()
+        mock_plugin.token_config = MagicMock()  # type: ignore[attr-defined]
+        mock_plugin.base_url = "https://example.com"  # type: ignore[attr-defined]
+        cmd_spec = CommandSpec(
+            name="test", handler=handler, click_kwargs={"help": "Test"}, params=()
+        )
+        app = build_command_app(mock_plugin, cmd_spec)
+        with (
+            patch("graftpunk.tokens.prepare_session", side_effect=prepare) as mock_prepare,
+            patch("graftpunk.tokens.clear_cached_tokens"),
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
+            ),
+        ):
+            result = TyperCliRunner().invoke(app, [])
+        return result.exit_code, " ".join(strip_ansi(result.output).split()), mock_prepare
+
+    def test_a_token_page_failure_in_the_retry_keeps_the_token_framing(
+        self, isolated_config: Path
+    ) -> None:
+        """The 403 retry re-fetches the token page; a 500 there is a token
+        extraction failure, described with the status advice (#203)."""
+        calls = 0
+
+        def handler(ctx: Any, **kwargs: Any) -> dict[str, str]:
+            nonlocal calls
+            calls += 1
+            raise self._make_403_error()
+
+        prepared = 0
+
+        def prepare(*args: Any) -> None:
+            nonlocal prepared
+            prepared += 1
+            if prepared == 2:
+                raise self._token_page_error(500)
+
+        exit_code, output, _ = self._run_with_token_prep(handler, prepare)
+        assert exit_code == 1
+        assert calls == 1
+        assert (
+            "Token extraction failed: GET /dashboard returned 500: "
+            "the site is having trouble. Try again later."
+        ) in output
+        assert "Command failed" not in output
+        assert "check the network" not in output
+
+    def test_a_token_page_status_before_the_handler_gets_the_same_advice(
+        self, isolated_config: Path
+    ) -> None:
+        def prepare(*args: Any) -> None:
+            raise self._token_page_error(503)
+
+        exit_code, output, _ = self._run_with_token_prep(lambda ctx, **kw: {}, prepare)
+        assert exit_code == 1
+        assert (
+            "Token extraction failed: GET /dashboard returned 503: "
+            "the site is having trouble. Try again later."
+        ) in output
+
+    def test_a_token_page_that_cannot_be_reached_in_the_retry_says_so(
+        self, isolated_config: Path
+    ) -> None:
+        def handler(ctx: Any, **kwargs: Any) -> dict[str, str]:
+            raise self._make_403_error()
+
+        prepared = 0
+
+        def prepare(*args: Any) -> None:
+            nonlocal prepared
+            prepared += 1
+            if prepared == 2:
+                raise requests.exceptions.ConnectionError("connection refused")
+
+        exit_code, output, _ = self._run_with_token_prep(handler, prepare)
+        assert exit_code == 1
+        assert "Token extraction failed: connection refused" in output
+        assert "The token page could not be fetched; check the network and retry." in output
+
     def test_a_403_that_survives_the_retry_prints_the_login_hint(
         self, isolated_config: Path
     ) -> None:

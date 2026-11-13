@@ -280,33 +280,7 @@ def _inject_tokens_and_run(
     # --- Token injection (CLI-specific ValueError handling) ---
     token_config = getattr(plugin, "token_config", None)
     if token_config is not None and needs_session:
-        from graftpunk.tokens import (
-            prepare_session as _prepare_tokens,
-        )
-
-        base_url = getattr(plugin, "base_url", "")
-        try:
-            _prepare_tokens(session, token_config, base_url)
-        except SessionInvalidatedError as exc:
-            gp_console.error(f"Token extraction failed: {exc}")
-            gp_console.info(
-                f"The session is no longer authenticated; run: gp {plugin.site_name} login"
-            )
-            raise SystemExit(1) from exc
-        except TokenPatternMismatchError as exc:
-            gp_console.error(f"Token extraction failed: {exc}")
-            gp_console.info("The site's response no longer matches the Token config; update it.")
-            raise SystemExit(1) from exc
-        except requests.RequestException as exc:
-            # An http extraction re-raises the request's failure (tokens.extract_token).
-            # It runs before the handler, on the token config's URL, so it holds
-            # no option value.
-            gp_console.error(f"Token extraction failed: {exc}")
-            gp_console.info("The token page could not be fetched; check the network and retry.")
-            raise SystemExit(1) from exc
-        except ValueError as exc:
-            gp_console.error(f"Token extraction failed: {exc}")
-            raise SystemExit(1) from exc
+        _prepare_tokens_or_exit(plugin, session, token_config)
 
     # --- Build context and execute via shared pipeline ---
     try:
@@ -335,9 +309,6 @@ def _inject_tokens_and_run(
                 and token_config is not None
             ):
                 from graftpunk.tokens import clear_cached_tokens
-                from graftpunk.tokens import (
-                    prepare_session as _prep,
-                )
 
                 LOG.info(
                     "token_403_retry",
@@ -345,11 +316,7 @@ def _inject_tokens_and_run(
                     url=exc.response.url,
                 )
                 clear_cached_tokens(session)
-                _prep(
-                    session,
-                    token_config,
-                    getattr(plugin, "base_url", ""),
-                )
+                _prepare_tokens_or_exit(plugin, session, token_config)
                 cmd_ctx._session_dirty = True
                 result = execute_plugin_command(
                     cmd_spec,
@@ -410,6 +377,38 @@ def _inject_tokens_and_run(
             exc_type=type(exc).__name__,
         )
         gp_console.error(f"Command failed: {error}")
+        raise SystemExit(1) from exc
+
+
+def _prepare_tokens_or_exit(plugin: Any, session: Any, token_config: Any) -> None:
+    """Extract the plugin's tokens into *session*, before the handler and again
+    in the 403 retry, or print why not under "Token extraction failed" and exit
+    1. A token page that answered with a 4xx or 5xx is described as
+    ``request_json`` describes that status. The token config's URL holds no
+    option value, so nothing here needs the option secrets scrubbed."""
+    from graftpunk.tokens import prepare_session
+
+    try:
+        prepare_session(session, token_config, getattr(plugin, "base_url", ""))
+    except SessionInvalidatedError as exc:
+        gp_console.error(f"Token extraction failed: {exc}")
+        gp_console.info(f"The session is no longer authenticated; run: gp {plugin.site_name} login")
+        raise SystemExit(1) from exc
+    except TokenPatternMismatchError as exc:
+        gp_console.error(f"Token extraction failed: {exc}")
+        gp_console.info("The site's response no longer matches the Token config; update it.")
+        raise SystemExit(1) from exc
+    except requests.RequestException as exc:
+        # An http extraction re-raises the request's failure (tokens.extract_token).
+        status_error = _status_error(plugin.site_name, exc)
+        if status_error is not None:
+            gp_console.error(f"Token extraction failed: {status_error.user_message}")
+            raise SystemExit(1) from exc
+        gp_console.error(f"Token extraction failed: {exc}")
+        gp_console.info("The token page could not be fetched; check the network and retry.")
+        raise SystemExit(1) from exc
+    except ValueError as exc:
+        gp_console.error(f"Token extraction failed: {exc}")
         raise SystemExit(1) from exc
 
 
