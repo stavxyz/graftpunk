@@ -201,154 +201,399 @@ class TestSeleniumReadGuard:
         assert {c[1]["exc_type"] for c in read_failures} == {"MaxRetryError"}
 
 
-class _SlowTab:
-    """A tab that answers its URL at once and its document only after *read_seconds*."""
+class _VirtualSelector:
+    """A selector that, when nothing is ready, moves the loop's clock to the next
+    timer instead of sleeping, so a test measures the wait's own arithmetic and
+    never the machine's load."""
 
-    def __init__(self, read_seconds: float) -> None:
+    def __init__(self, real: Any, loop: _VirtualTimeLoop) -> None:
+        self._real = real
+        self._loop = loop
+
+    def select(self, timeout: float | None = None) -> Any:
+        events = self._real.select(0)
+        if not events:
+            if timeout is None:
+                raise AssertionError("the loop would wait forever: nothing is scheduled")
+            self._loop.now += timeout
+        return events
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+
+class _VirtualTimeLoop(asyncio.SelectorEventLoop):
+    """An event loop whose clock moves only when every task is waiting on a timer."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.now = 1000.0
+        self._selector = _VirtualSelector(self._selector, self)
+
+    def time(self) -> float:
+        return self.now
+
+
+def _run_virtual(make: Any) -> tuple[Any, float]:
+    """Run ``make()`` (a coroutine factory) on a virtual-time loop; return its
+    result and the virtual seconds it took."""
+    loop = _VirtualTimeLoop()
+    try:
+
+        async def timed() -> tuple[Any, float]:
+            started = loop.time()
+            result = await make()
+            return result, loop.time() - started
+
+        return loop.run_until_complete(timed())
+    finally:
+        # As asyncio.run does: an abandoned read, or the model connection's
+        # listener, is still pending here.
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()
+
+
+_FOREVER = 10_000.0  # a read that never answers within any wait
+
+
+class _TimedTab:
+    """A tab whose reads take a set time on the loop's clock. ``success_from`` is the
+    loop time from which the success element is found, and ``evaluate`` answers the
+    readiness read after ``ready_seconds``."""
+
+    def __init__(
+        self,
+        *,
+        read_seconds: float,
+        success_from: float = float("inf"),
+        ready_seconds: float = 0.0,
+        page_seconds: float | None = None,
+        page: str = "<html>Signing in</html>",
+    ) -> None:
         self.read_seconds = read_seconds
-        self.reads_started = 0
+        self.page_seconds = read_seconds if page_seconds is None else page_seconds
+        self.success_from = success_from
+        self.ready_seconds = ready_seconds
+        self.page = page
         self.url = "https://app.example.com/login"
+        self.readiness_reads = 0
 
     async def get_content(self) -> str:
-        self.reads_started += 1
+        await asyncio.sleep(self.page_seconds)
+        return self.page
+
+    async def query_selector(self, selector: str) -> object | None:
         await asyncio.sleep(self.read_seconds)
-        return "<html>Signing in</html>"
+        return object() if asyncio.get_running_loop().time() >= self.success_from else None
 
-    async def query_selector(self, selector: str) -> None:
-        return None
+    async def evaluate(self, expression: str, **kwargs: Any) -> Any:
+        assert expression == "document.readyState", expression
+        self.readiness_reads += 1
+        await asyncio.sleep(self.ready_seconds)
+        return "complete"
 
 
-_SLACK = 0.3  # scheduling slack on a loaded machine, on top of the documented bound
+def _config(timeout: float, *, failure: str | None = "Invalid credentials") -> LoginConfig:
+    return LoginConfig(
+        steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+        url="/login",
+        failure=failure,
+        success=".dashboard",
+        timeout=timeout,
+        settle=0.0,
+    )
+
+
+_TIMEOUTS = [0.6, 1.0, 2.0]
+# The documented bound, with room only for float rounding.
+_EPSILON = 1e-6
 
 
 class TestNodriverDeadline:
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("read_seconds", [0.8, 3600.0])
-    async def test_the_signal_poll_ends_within_one_interval_of_its_timeout(
-        self, read_seconds: float
+    """The nodriver post-submit wait ends at most one poll interval past ``timeout``
+    however slowly the browser answers (#205), measured on a virtual clock."""
+
+    @pytest.mark.parametrize("timeout", _TIMEOUTS)
+    @pytest.mark.parametrize("read_seconds", [0.2, 0.45, 0.8, _FOREVER])
+    def test_the_signal_poll_ends_by_one_interval_past_its_timeout(
+        self, timeout: float, read_seconds: float
     ) -> None:
-        """A read slower than the time left used to run to completion, and the
-        deadline tick then read again; a read that never returned held the login
-        forever."""
-        loop = asyncio.get_running_loop()
-        tab = _SlowTab(read_seconds)
-        timeout = 1.0
-        started = loop.time()
+        tab = _TimedTab(read_seconds=read_seconds)
 
-        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
-            result = await asyncio.wait_for(
-                _wait_for_login_signal_nodriver(
-                    tab=tab,
-                    login_config=DeclarativeNodriverLongWait.login_config,
-                    failure_text="Invalid credentials",
-                    site_name="ndlong",
-                    deadline=started + timeout,
-                    pre_submit_url="https://app.example.com/login",
-                ),
-                timeout=30,
-            )
-        elapsed = loop.time() - started
-
-        assert result is False
-        assert elapsed <= timeout + _LOGIN_POLL_INTERVAL + _SLACK, elapsed
-        warning = _warning_kwargs(mock_log, "login_signal_timeout")
-        assert "did not answer within" in warning["error"]
-
-    @pytest.mark.asyncio
-    async def test_the_grace_window_ends_within_one_interval_of_its_end(self) -> None:
-        loop = asyncio.get_running_loop()
-        tab = _SlowTab(3600.0)
-        window = 1.0
-        started = loop.time()
-
-        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
-            result = await asyncio.wait_for(
-                _watch_for_failure_nodriver(
-                    tab=tab,
-                    failure_text="Invalid credentials",
-                    site_name="ndlong",
-                    deadline=started + window,
-                ),
-                timeout=30,
-            )
-        elapsed = loop.time() - started
-
-        assert result is False
-        assert elapsed <= window + _LOGIN_POLL_INTERVAL + _SLACK, elapsed
-        assert (
-            "did not answer within" in _warning_kwargs(mock_log, "login_page_unreadable")["error"]
-        )
-
-    @pytest.mark.asyncio
-    async def test_a_read_that_answers_in_time_is_not_cut_off(self) -> None:
-        loop = asyncio.get_running_loop()
-        tab = _SlowTab(0.0)
-        tab.get_content = _content_with("Invalid credentials")  # type: ignore[method-assign]
-
-        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
-            result = await _wait_for_login_signal_nodriver(
+        async def wait() -> bool:
+            loop = asyncio.get_running_loop()
+            return await _wait_for_login_signal_nodriver(
                 tab=tab,
-                login_config=DeclarativeNodriverLongWait.login_config,
+                login_config=_config(timeout),
                 failure_text="Invalid credentials",
                 site_name="ndlong",
-                deadline=loop.time() + 5.0,
+                deadline=loop.time() + timeout,
                 pre_submit_url="https://app.example.com/login",
             )
 
+        with patch("graftpunk.plugins.login_settle.LOG"):
+            result, elapsed = _run_virtual(wait)
+
         assert result is False
-        assert _warning_kwargs(mock_log, "login_failure_text_detected")["plugin"] == "ndlong"
+        assert elapsed <= timeout + _LOGIN_POLL_INTERVAL + _EPSILON, elapsed
+
+    @pytest.mark.parametrize("timeout", _TIMEOUTS)
+    def test_a_signal_found_at_the_deadline_gets_no_readiness_wait(self, timeout: float) -> None:
+        """The reviewers' case: a slow read finds the success element on the deadline
+        tick, and the readiness read never answers. The readiness wait used to add a
+        second interval."""
+        from graftpunk.plugins.login_settle import wait_for_login_outcome_nodriver
+
+        holder: dict[str, _TimedTab] = {}
+
+        async def wait() -> bool:
+            loop = asyncio.get_running_loop()
+            # The element lookup takes 0.4 s; the document comes back at once.
+            tab = _TimedTab(
+                read_seconds=0.4,
+                page_seconds=0.0,
+                success_from=loop.time() + timeout,
+                ready_seconds=_FOREVER,
+            )
+            holder["tab"] = tab
+            return await wait_for_login_outcome_nodriver(
+                tab=tab,
+                login_config=_config(timeout, failure=None),
+                failure_text="",
+                site_name="ndlong",
+                pre_submit_url="https://app.example.com/login",
+            )
+
+        with patch("graftpunk.plugins.login_settle.LOG"):
+            result, elapsed = _run_virtual(wait)
+
+        assert result is True
+        assert elapsed <= timeout + _LOGIN_POLL_INTERVAL + _EPSILON, elapsed
+        assert holder["tab"].readiness_reads == 0
+
+    @pytest.mark.parametrize("timeout", _TIMEOUTS)
+    def test_a_readiness_read_that_never_answers_ends_with_the_wait(self, timeout: float) -> None:
+        from graftpunk.plugins.login_settle import wait_for_login_outcome_nodriver
+
+        holder: dict[str, _TimedTab] = {}
+
+        async def wait() -> bool:
+            loop = asyncio.get_running_loop()
+            # Found on the first tick, half an interval in; readiness never answers.
+            tab = _TimedTab(read_seconds=0.0, success_from=loop.time(), ready_seconds=_FOREVER)
+            holder["tab"] = tab
+            return await wait_for_login_outcome_nodriver(
+                tab=tab,
+                login_config=_config(timeout, failure=None),
+                failure_text="",
+                site_name="ndlong",
+                pre_submit_url="https://app.example.com/login",
+            )
+
+        with patch("graftpunk.plugins.login_settle.LOG"):
+            result, elapsed = _run_virtual(wait)
+
+        assert result is True
+        assert holder["tab"].readiness_reads == 1
+        assert elapsed == pytest.approx(timeout + _LOGIN_POLL_INTERVAL), elapsed
+
+    @pytest.mark.parametrize("timeout", _TIMEOUTS)
+    def test_the_grace_window_ends_by_one_interval_past_its_end(self, timeout: float) -> None:
+        tab = _TimedTab(read_seconds=_FOREVER)
+
+        async def wait() -> bool:
+            loop = asyncio.get_running_loop()
+            return await _watch_for_failure_nodriver(
+                tab=tab,
+                failure_text="Invalid credentials",
+                site_name="ndlong",
+                deadline=loop.time() + timeout,
+            )
+
+        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
+            result, elapsed = _run_virtual(wait)
+
+        assert result is False
+        assert elapsed <= timeout + _LOGIN_POLL_INTERVAL + _EPSILON, elapsed
+        assert (
+            "did not answer before" in _warning_kwargs(mock_log, "login_page_unreadable")["error"]
+        )
+
+    def test_a_tick_that_wakes_just_before_the_deadline_still_reads(self) -> None:
+        """A tick that wakes a few milliseconds before the deadline used to get a
+        budget of those milliseconds, which cut off a 50 ms read (#205 review)."""
+        tab = _TimedTab(read_seconds=0.05)
+
+        async def wait() -> bool:
+            loop = asyncio.get_running_loop()
+            # The first tick wakes at 0.50, 0.03 before the deadline, and its read
+            # takes 0.05.
+            return await _wait_for_login_signal_nodriver(
+                tab=tab,
+                login_config=_config(0.53),
+                failure_text="Invalid credentials",
+                site_name="ndlong",
+                deadline=loop.time() + 0.53,
+                pre_submit_url="https://app.example.com/login",
+            )
+
+        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
+            _run_virtual(wait)
+
+        failures = [c for c in mock_log.debug.call_args_list if c[0][0] == "login_tick_read_failed"]
+        assert failures == []
+
+    def test_a_tick_that_wakes_past_the_deadline_is_the_last(self) -> None:
+        """A busy loop can wake a tick after the deadline; it reads the page and the
+        wait ends there."""
+        from graftpunk.plugins import login_settle
+
+        reads: list[float] = []
+
+        class _CountingTab(_TimedTab):
+            """Answers without sleeping: the patched sleep below would delay it too."""
+
+            async def get_content(self) -> str:
+                reads.append(asyncio.get_running_loop().time())
+                return self.page
+
+            async def query_selector(self, selector: str) -> None:
+                return None
+
+        tab = _CountingTab(read_seconds=0.0)
+        real_sleep = asyncio.sleep
+
+        async def late_sleep(seconds: float) -> None:
+            await real_sleep(seconds + 0.7)
+
+        async def wait() -> bool:
+            loop = asyncio.get_running_loop()
+            return await _wait_for_login_signal_nodriver(
+                tab=tab,
+                login_config=_config(1.0),
+                failure_text="Invalid credentials",
+                site_name="ndlong",
+                deadline=loop.time() + 1.0,
+                pre_submit_url="https://app.example.com/login",
+            )
+
+        with (
+            patch.object(login_settle.asyncio, "sleep", late_sleep),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result, _elapsed = _run_virtual(wait)
+
+        assert result is False
+        assert len(reads) == 1
+        failures = [c for c in mock_log.debug.call_args_list if c[0][0] == "login_tick_read_failed"]
+        assert failures == []
 
 
-def _content_with(text: str) -> Any:
-    async def get_content() -> str:
-        return f"<html>{text}</html>"
+class _Connection048:
+    """The part of nodriver 0.48.1's ``Connection`` that decides what an abandoned
+    command does: ``send`` registers a future and awaits it, and the listener task
+    sets each answer's result with no check that the future is still pending, so an
+    answer to a cancelled command raises ``InvalidStateError`` there and ends the
+    listener (``nodriver/core/connection.py``, 0.48.1)."""
 
-    return get_content
+    def __init__(self) -> None:
+        self._futures: dict[int, asyncio.Future[str]] = {}
+        self._answers: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+        self._ids = 0
+        self.listener = asyncio.ensure_future(self._listen())
+
+    async def send(self, answer: str, *, after: float) -> str:
+        loop = asyncio.get_running_loop()
+        self._ids += 1
+        future: asyncio.Future[str] = loop.create_future()
+        self._futures[self._ids] = future
+        loop.call_later(after, self._answers.put_nowait, (self._ids, answer))
+        return await future
+
+    async def _listen(self) -> None:
+        while True:
+            command_id, answer = await self._answers.get()
+            self._futures.pop(command_id).set_result(answer)
+
+
+class _ConnectionTab:
+    """A tab whose document read goes over a ``_Connection048``; the first read
+    answers after 0.3 s, later ones at once."""
+
+    url = "https://app.example.com/login"
+
+    def __init__(self, connection: _Connection048) -> None:
+        self.connection = connection
+        self.reads = 0
+
+    async def get_content(self) -> str:
+        self.reads += 1
+        return await self.connection.send(
+            "<html>Signing in</html>", after=0.3 if self.reads == 1 else 0.0
+        )
+
+
+class TestAnAbandonedReadLeavesTheTabWorking:
+    def test_the_model_reproduces_the_listener_dying_on_a_cancelled_command(self) -> None:
+        """The control: cancelling the command, as asyncio.wait_for does, ends the
+        listener, so the next command is never answered."""
+
+        async def scenario() -> tuple[bool, str]:
+            connection = _Connection048()
+            tab = _ConnectionTab(connection)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(tab.get_content(), timeout=0.1)
+            await asyncio.sleep(0.5)
+            try:
+                second = await asyncio.wait_for(tab.get_content(), timeout=2.0)
+            except TimeoutError:
+                second = "no answer"
+            return connection.listener.done(), second
+
+        (listener_done, second), _ = _run_virtual(scenario)
+
+        assert listener_done is True
+        assert second == "no answer"
+
+    def test_a_read_abandoned_by_the_wait_does_not_end_the_listener(self) -> None:
+        from graftpunk.plugins.login_settle import _read_login_tick_nodriver_by
+
+        async def scenario() -> tuple[str, bool, str]:
+            loop = asyncio.get_running_loop()
+            connection = _Connection048()
+            tab = _ConnectionTab(connection)
+            first = await _read_login_tick_nodriver_by(
+                tab,
+                end=loop.time() + 0.1,
+                url=tab.url,
+                success_selector="",
+                want_page_text=True,
+                site_name="ndlong",
+            )
+            await asyncio.sleep(0.5)
+            second = await _read_login_tick_nodriver_by(
+                tab,
+                end=loop.time() + 2.0,
+                url=tab.url,
+                success_selector="",
+                want_page_text=True,
+                site_name="ndlong",
+            )
+            return first.error, connection.listener.done(), second.page_text
+
+        with patch("graftpunk.plugins.login_settle.LOG"):
+            (first_error, listener_done, second_page), _ = _run_virtual(scenario)
+
+        assert "did not answer before" in first_error
+        assert listener_done is False
+        assert second_page == "<html>Signing in</html>"
 
 
 def test_a_window_with_no_tick_reports_no_invented_reason() -> None:
     """The default reason "neither a page nor a URL" could never be reported: every
     wait reads the document on its last tick (#205). A window starts with none."""
     assert _ReadWindow().error == ""
-
-
-@pytest.mark.asyncio
-async def test_a_tick_that_wakes_past_the_deadline_is_read_not_cut_off() -> None:
-    """A busy loop can wake a tick after the deadline; that tick is the deadline
-    tick, so an instant read is taken and ends the wait, not cut off for having
-    no time left."""
-    from graftpunk.plugins import login_settle
-
-    real_sleep = asyncio.sleep
-    loop = asyncio.get_running_loop()
-    tab = _SlowTab(0.0)
-    reads = []
-
-    async def instant_content() -> str:
-        reads.append(loop.time())
-        return "<html>Signing in</html>"
-
-    tab.get_content = instant_content  # type: ignore[method-assign]
-
-    async def late_sleep(seconds: float) -> None:
-        await real_sleep(seconds + 0.7)
-
-    with (
-        patch.object(login_settle.asyncio, "sleep", late_sleep),
-        patch("graftpunk.plugins.login_settle.LOG") as mock_log,
-    ):
-        result = await _wait_for_login_signal_nodriver(
-            tab=tab,
-            login_config=DeclarativeNodriverLongWait.login_config,
-            failure_text="Invalid credentials",
-            site_name="ndlong",
-            deadline=loop.time() + 1.0,
-            pre_submit_url="https://app.example.com/login",
-        )
-
-    assert result is False
-    assert len(reads) == 1
-    read_failures = [
-        c for c in mock_log.debug.call_args_list if c[0][0] == "login_tick_read_failed"
-    ]
-    assert read_failures == []

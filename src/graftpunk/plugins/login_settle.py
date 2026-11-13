@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import dataclasses
 import fnmatch
+import inspect
 import json
 import time
 from collections.abc import Callable, Iterator
@@ -510,18 +511,48 @@ def _poll_sleep_seconds(remaining: float) -> float:
     return min(_LOGIN_POLL_INTERVAL, max(0.0, remaining))
 
 
-def _read_budget(remaining: float, *, last_tick: bool) -> float:
-    """Seconds one nodriver read may take, given *remaining* seconds of the wait.
+def _hard_end(deadline: float) -> float:
+    """The moment the nodriver post-submit wait is over, whatever the browser does:
+    one poll interval past *deadline*.
 
-    A read that may end the wait (the deadline tick, and every read of the grace
-    window and the readiness wait, which stop at the first read that finishes past
-    the deadline) gets one poll interval past the deadline: the deadline tick starts
-    at the deadline and is there to read the page, so a timeout can name a
-    rate-limit page. Every other tick is cut off at the deadline, so the tick that
-    follows it is the deadline tick. Either way the wait ends no later than one poll
-    interval past ``timeout`` however slowly the browser answers.
+    The deadline tick starts at the deadline and is there to read the page, so a
+    timeout can name a rate-limit page; the interval is its time to do that. Every
+    nodriver read of the poll, the grace window and the readiness wait is abandoned
+    at this one absolute moment, never at a budget measured from when the read
+    started, so a wait made of several slow reads still ends here.
     """
-    return max(remaining, 0.0) + (_LOGIN_POLL_INTERVAL if last_tick else 0.0)
+    return deadline + _LOGIN_POLL_INTERVAL
+
+
+async def _answer_by(awaitable: Any, *, end: float) -> Any:
+    """Await *awaitable* until the loop's clock reaches *end*, and raise
+    ``TimeoutError`` if it has not answered by then, without cancelling it.
+
+    nodriver 0.48.1's ``Connection`` sets the result of a command's future with no
+    check that the future is still pending, outside any ``try``, so cancelling a
+    command whose answer later arrives raises ``InvalidStateError`` in the tab's
+    listener task, which then ends, and every later command on that tab waits
+    forever. An abandoned read therefore keeps running, and its late answer or
+    error is collected and dropped when it comes.
+    """
+    loop = asyncio.get_running_loop()
+    if loop.time() >= end:
+        # No time left: the read is not started at all.
+        if inspect.iscoroutine(awaitable):
+            awaitable.close()
+        raise TimeoutError
+    task = asyncio.ensure_future(awaitable)
+    done, _pending = await asyncio.wait({task}, timeout=end - loop.time())
+    if task in done:
+        return task.result()
+    task.add_done_callback(_drop_late_answer)
+    raise TimeoutError
+
+
+def _drop_late_answer(task: asyncio.Future[Any]) -> None:
+    """Collect an abandoned read's outcome, so asyncio does not log it as never retrieved."""
+    if not task.cancelled():
+        task.exception()
 
 
 def tab_url(tab: Any) -> str:
@@ -861,19 +892,20 @@ async def _read_login_tick_nodriver(
     return _TickReading(page_text, url, success_found, page_asked=want_page_text)
 
 
-async def _read_login_tick_nodriver_within(
+async def _read_login_tick_nodriver_by(
     tab: Any,  # nodriver.Tab
     *,
-    budget: float,
+    end: float,
     url: str,
     success_selector: str,
     want_page_text: bool,
     site_name: str,
 ) -> _TickReading:
-    """:func:`_read_login_tick_nodriver`, cut off after *budget* seconds (see
-    ``_read_budget``). A read that is cut off is an unreadable tick."""
+    """:func:`_read_login_tick_nodriver`, abandoned at *end* (see ``_hard_end``
+    and ``_answer_by``). A read that is abandoned, or that there is no time left
+    to start, is an unreadable tick."""
     try:
-        return await asyncio.wait_for(
+        return await _answer_by(
             _read_login_tick_nodriver(
                 tab,
                 url=url,
@@ -881,12 +913,12 @@ async def _read_login_tick_nodriver_within(
                 want_page_text=want_page_text,
                 site_name=site_name,
             ),
-            timeout=budget,
+            end=end,
         )
     except TimeoutError:
         error = (
-            f"the browser did not answer within {budget:.1f}s, so the read was "
-            "abandoned at the login wait's deadline"
+            "the browser did not answer before the login wait's end, one poll "
+            "interval past its timeout, so the read was abandoned"
         )
         LOG.debug(
             "login_tick_read_failed",
@@ -1001,18 +1033,19 @@ async def _wait_for_login_signal_nodriver(
     success_url = login_config.success_url
     last = _ReadWindow()
     marker_noted = False
+    end = _hard_end(deadline)
     while True:
         remaining = deadline - loop.time()
         last_tick = _is_deadline_tick(remaining)
         await asyncio.sleep(_poll_sleep_seconds(remaining))
-        # A tick that wakes at or past the deadline (a late wake-up on a busy loop)
-        # is the deadline tick: it reads the page and gets the deadline tick's
-        # allowance, rather than a budget of nothing that cuts off an instant read.
+        # A tick that wakes at or past the deadline (a late wake-up on a busy loop,
+        # or a slow read on the tick before) is the deadline tick: it reads the page,
+        # and nothing follows it.
         last_tick = last_tick or deadline - loop.time() <= 0
         url = tab_url(tab)
-        reading = await _read_login_tick_nodriver_within(
+        reading = await _read_login_tick_nodriver_by(
             tab,
-            budget=_read_budget(deadline - loop.time(), last_tick=last_tick),
+            end=end,
             url=url,
             success_selector=success_selector,
             want_page_text=_page_text_decides(
@@ -1072,8 +1105,8 @@ def _wait_for_login_signal_selenium(
     """The selenium twin of :func:`_wait_for_login_signal_nodriver`.
 
     One difference: a read here is a blocking WebDriver call, which cannot be cut
-    off at the deadline the way the nodriver twin cuts off its reads
-    (``_read_budget``). Abandoning one would leave it in flight ahead of the
+    off at the deadline the way the nodriver twin abandons its reads
+    (``_hard_end``). Abandoning one would leave it in flight ahead of the
     engine's next command to the same driver, so a slow read still runs to
     completion, and a wait whose reads are slow ends that much past ``timeout``.
     """
@@ -1160,11 +1193,12 @@ async def _watch_for_failure_nodriver(
     """
     loop = asyncio.get_running_loop()
     last = _ReadWindow()
+    end = _hard_end(deadline)
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
-        reading = await _read_login_tick_nodriver_within(
+        reading = await _read_login_tick_nodriver_by(
             tab,
-            budget=_read_budget(deadline - loop.time(), last_tick=True),
+            end=end,
             url=tab_url(tab),
             success_selector="",
             # The page text is this window's only signal, so it is read every tick.
@@ -1246,16 +1280,19 @@ async def _await_document_ready_nodriver(tab: Any, *, deadline: float, site_name
     Best-effort: the success signal can appear on a document still fetching the
     response that carries the session cookie, and cookies captured a moment later
     are the point of the wait. A readyState that cannot be read (a protocol error
-    mid-redirect, a backend that does not evaluate) is not a login failure, so it
-    ends the wait rather than the login.
+    mid-redirect, a backend that does not evaluate, a read still unanswered at the
+    wait's end) is not a login failure, so it ends the wait rather than the login.
+
+    A signal found at or past the deadline gets no readiness wait at all, and a read
+    started before it is abandoned at the same end the poll keeps (``_hard_end``).
     """
     loop = asyncio.get_running_loop()
+    if loop.time() >= deadline:
+        return
+    end = _hard_end(deadline)
     while True:
         try:
-            state = await asyncio.wait_for(
-                tab.evaluate("document.readyState"),
-                timeout=_read_budget(deadline - loop.time(), last_tick=True),
-            )
+            state = await _answer_by(tab.evaluate("document.readyState"), end=end)
         except Exception as exc:  # broad by design: readiness is best-effort, see the docstring
             LOG.debug(
                 "login_document_ready_unavailable",
