@@ -565,7 +565,7 @@ class TestIncompleteSlots:
             )
 
             assert result.exit_code == 0, result.output
-            assert "half-provider" in result.output
+            assert "half-provider" in strip_ansi(result.output)
             assert not half.exists()
         finally:
             cache_mod._reset_session_storage_backend()
@@ -599,7 +599,7 @@ class TestIncompleteSlots:
             output = strip_ansi(result.output)
             assert "Removed 1 session(s):" in output
             assert "myshop/metadata.json.pre-test2" in output
-            assert "myshop/session.pickle.pre-test2" in result.output
+            assert "myshop/session.pickle.pre-test2" in output
             assert not slot.exists()
         finally:
             cache_mod._reset_session_storage_backend()
@@ -687,7 +687,7 @@ class TestIncompleteSlots:
             output = strip_ansi(result.output)
             assert "This will remove 1 session(s):" in output
             assert "half-provider (incomplete, not a full session)" in output
-            assert "Cancelled" in result.output
+            assert "Cancelled" in output
             assert half.exists()
         finally:
             cache_mod._reset_session_storage_backend()
