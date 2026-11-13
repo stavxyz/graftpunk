@@ -209,8 +209,11 @@ login keeps answering a bare-name load, and the load logs
 clear <name>` removes it, in this order:
 
 1. Move every reader that addresses the bare slot by its exact name, outside
-   graftpunk's resolution, to the labelled name (or to `load_session_for_api`,
-   which resolves). A worker that builds `sessions/<name>/session.pickle` itself
+   graftpunk's resolution, to the labelled name it should read
+   (`myshop@alice`). A bare-name `load_session_for_api` resolves only while one
+   labelled account is cached under the base; with two or more it raises
+   `AmbiguousSessionError`, so pin the account there too. A worker that builds
+   `sessions/<name>/session.pickle` itself
    from a fixed key is such a reader: once the bare slot is gone it finds
    nothing, and a reader that answers a missing session with an empty cookie
    header rather than an error is logged out without a sign.
@@ -1808,7 +1811,7 @@ The top-level login configuration includes:
 - **`failure`**: Optional text that indicates login failure.
 - **`success`**: Optional CSS selector that indicates login success.
 - **`success_url`**: Optional glob matched against the whole browser URL after the last step, such as `https://app.example.com/*` or `*/dashboard*`. It counts only once the URL differs from the one the last submit was clicked from, so a glob that also matches the login page reports nothing rather than reporting success too early. Use it for a login that finishes on a recognisable URL, on its own or alongside `success`; with both set, both have to hold.
-- **`timeout`**: Seconds to wait after the last step for the success or failure signal (default `30`). Raise it for a login that finishes through a slow identity-provider redirect chain. It bounds the whole post-submit wait: the document-readiness wait that follows the signal spends what the poll left of it. On nodriver a read still running at the deadline is abandoned, so the wait ends at most one poll interval (0.5 seconds) past `timeout` however slowly the browser answers. On selenium a read is a blocking WebDriver call that runs to completion, so a slow read can carry the wait past `timeout` by however long it takes. It also caps each step's readiness wait before the step acts, at whichever is smaller of it and 5 seconds.
+- **`timeout`**: Seconds to wait after the last step for the success or failure signal (default `30`). Raise it for a login that finishes through a slow identity-provider redirect chain. It bounds the whole post-submit wait: the document-readiness wait that follows the signal spends what the poll left of it. On nodriver every read of the wait, the readiness read included, is abandoned one poll interval (0.5 seconds) past `timeout` if it has not answered, so the wait ends by then however slowly the browser answers; an abandoned read is left to finish on its own, never cancelled. On selenium a read is a blocking WebDriver call that runs to completion, so a slow read can carry the wait past `timeout` by however long it takes. It also caps each step's readiness wait before the step acts, at whichever is smaller of it and 5 seconds.
 - **`settle`**: Seconds to wait after the success signal, once the document has finished loading, before cookies are captured (default `1`). A login with no success signal never reaches it.
 - **`headless`**: Run the login browser headless (default `false`, so a human can solve a CAPTCHA or 2FA prompt). `gp <plugin> login --headless` / `--headful` override it for one invocation in either direction; the flags are offered only on declarative logins (a plugin's own `login()` method cannot honour them).
 
