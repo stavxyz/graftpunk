@@ -1480,3 +1480,42 @@ def test_the_recorded_path_flag_matches_the_path_alone(tmp_path: Path, guess: st
     result = _run("request", str(path), guess, "--recorded-path")
     assert (result.returncode, result.stdout) == (1, "")
     assert _run("request", str(path), "/plain/path", "--recorded-path").returncode == 0
+
+
+# How many of 2,000 random values per kind, lowercased as a host is, print as a
+# subdomain label (seed 277). The listed host words (www4, img1, b2b, smtp, px)
+# widened none of these; kinds not listed print none.
+_HOST_LABELS_SHOWN = {
+    "base62 8": 96,
+    "base62 12": 20,
+    "base62 16": 1,
+    "base64url 8": 104,
+    "base64url 16": 8,
+    "base64url 22": 1,
+    "Stripe-style id": 1,
+    "hex 8": 1,
+    "lowercase 8": 297,
+    "lowercase 9": 226,
+    "lowercase 12": 97,
+    "lowercase 16": 33,
+    "capitals 9": 236,
+    "capitals 12": 112,
+    "capitals 16": 33,
+    "base36 12": 6,
+}
+
+
+@pytest.mark.parametrize("kind", list(_samples()))
+def test_random_subdomain_labels_print_at_the_measured_rate(kind: str) -> None:
+    host_label = _load_script()._host_label
+    rng = random.Random(f"{_RNG_SEED}-host-{kind}")  # noqa: S311 - a fixed sample
+    labels = [_samples()[kind](rng).lower() for _ in range(2_000)]
+    assert sum(1 for label in labels if host_label(label) == label) == _HOST_LABELS_SHOWN.get(
+        kind, 0
+    )
+
+
+@pytest.mark.parametrize("label", ["b2b", "b2c", "smtp", "px", "www4", "img1", "ww2", "gw"])
+def test_a_common_infrastructure_label_prints(label: str) -> None:
+    host = f"{label}.myshop.example"
+    assert _load_script().shown_host(host) == host

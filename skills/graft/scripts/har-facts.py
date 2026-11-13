@@ -780,8 +780,10 @@ _WEB_SCHEMES = ("http", "https", "ws", "wss")
 # The schemes a page or a redirect uses besides the web's, named; any other
 # scheme is recorded text (a custom app scheme can be a word the account chose).
 _KNOWN_SCHEMES = frozenset(("mailto", "javascript", "data", "tel", "blob", "about"))
-# The labels a site's own host starts with that the gate holds back.
-_HOST_WORDS = frozenset(("www", "www1", "www2", "www3", "ww2", "img", "gw", "graphql", "gql"))
+# The labels a site's own host starts with that the gate holds back, each with an
+# optional digit (www4, img1); measured on random labels of 2 to 32 characters, it
+# prints none the gate held back but these words.
+_HOST_WORD_RE = re.compile(r"(?:www|ww|img|gw|smtp|px|b2b|b2c|graphql|gql)\d?")
 # The labels a host keeps as recorded: the site's own registrable domain. A
 # per-account subdomain sits to their left.
 _SITE_LABELS = 2
@@ -792,7 +794,7 @@ def _scheme(scheme: str) -> str:
 
 
 def _host_label(label: str) -> str:
-    if not label or label in _HOST_WORDS or printable_name(label):
+    if not label or _HOST_WORD_RE.fullmatch(label) or printable_name(label):
         return label
     return "{id}" if label.isdigit() or holds_an_id(label) else "{}"
 
