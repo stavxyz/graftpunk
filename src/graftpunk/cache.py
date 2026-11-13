@@ -647,6 +647,48 @@ def no_account_cached_message(name: str) -> str:
     )
 
 
+# Bare names already warned about by _warn_if_bare_slot_shadows_labelled, so a
+# long-running process says it once per name rather than on every load (#197).
+_bare_slot_shadow_warned: set[str] = set()
+
+
+def _warn_if_bare_slot_shadows_labelled(name: str) -> None:
+    """Warn once per process when the bare slot *name* was loaded while labelled siblings exist.
+
+    Since #176 ``gp <site> login`` writes ``base@label`` slots, so a bare slot
+    that still answers a bare-name load is usually the stale one from before
+    the first labelled login. The load keeps returning it (the pin contract in
+    :func:`load_session_for_api_resolved`); this only says so. Siblings are
+    matched by splitting on the ``@`` separator, never by prefix: ``myshop``
+    has no sibling ``myshopextra@bob``. A listing failure costs only the
+    warning, never the load that already succeeded.
+    """
+    if name in _bare_slot_shadow_warned:
+        return
+    try:
+        cached = list_sessions()
+    except Exception as exc:  # noqa: BLE001 (an advisory check never fails the load)
+        LOG.debug("session_bare_slot_sibling_check_skipped", name=name, error=str(exc))
+        return
+    siblings = sorted(
+        other
+        for other in cached
+        if split_session_name(other)[0] == name and split_session_name(other)[1] is not None
+    )
+    if not siblings:
+        return
+    _bare_slot_shadow_warned.add(name)
+    LOG.warning(
+        "session_bare_slot_shadows_labelled",
+        name=name,
+        labelled=siblings,
+        hint=(
+            f"loaded the bare slot '{name}'; load a labelled slot by its full name, "
+            f"or run 'gp session clear {name}' if the bare slot is stale"
+        ),
+    )
+
+
 def load_session_for_api_resolved(
     name: str, *, resolve: bool = True
 ) -> tuple[requests.Session, str]:
@@ -660,8 +702,8 @@ def load_session_for_api_resolved(
     **The pin contract.** A bare *name* (``"mysite"``) names a BASE, not a
     slot, and is resolved here, at load time:
 
-    1. a slot cached under the bare name itself wins — an exact hit, and no
-       listing happens;
+    1. a slot cached under the bare name itself wins — an exact hit, which
+       lists only to warn when labelled siblings exist (see below);
     2. otherwise the single labelled account under that base
        (:func:`graftpunk.session_identity.resolve_account_session`), at the
        cost of ONE ``list_sessions()`` call on this miss path only;
@@ -674,7 +716,11 @@ def load_session_for_api_resolved(
 
     Because step 1 answers first, this deliberately does NOT raise where the
     CLI's unpinned resolution would: with both ``mysite`` and ``mysite@alice``
-    cached, ``mysite`` loads the bare slot rather than refusing.
+    cached, ``mysite`` loads the bare slot rather than refusing. It does log
+    one ``session_bare_slot_shadows_labelled`` warning per bare name per
+    process naming the labelled siblings (#197), at the cost of one
+    ``list_sessions()`` call on that exact hit; with ``resolve=False`` the
+    load is exact-only and lists nothing, so it does not warn.
 
     Whatever slot is loaded is the operating name for every write-back of that
     invocation: pass the returned name — never the requested one — to
@@ -737,6 +783,8 @@ def load_session_for_api_resolved(
         LOG.info("api_session_resolved_account", requested=name, resolved=resolved)
         browser_session = load_session(resolved)
         loaded_name = resolved
+    elif resolve and split_session_name(name)[1] is None:
+        _warn_if_bare_slot_shadows_labelled(name)
 
     header_roles = getattr(browser_session, "_gp_header_roles", {})
     api_session = _api_session_from_session(browser_session)
@@ -773,9 +821,10 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
     bare-name pin contract in full: since #176 ``gp <site> login`` writes
     sessions as ``base@label``, so a bare *name* is tried as an exact key
     first and only then resolved against the single cached account for that
-    base — one ``list_sessions()`` call, on that miss path only. A slot cached
-    under the bare name itself always wins, so this differs from the CLI's
-    unpinned resolution, which refuses when several accounts share a base.
+    base — one ``list_sessions()`` call on that miss path, and one on a bare
+    exact hit to warn about labelled siblings. A slot cached under the bare
+    name itself always wins, so this differs from the CLI's unpinned
+    resolution, which refuses when several accounts share a base.
 
     **If you will persist changes to the returned session** (cookies, tokens)
     with :func:`update_session_cookies`, prefer

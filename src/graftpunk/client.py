@@ -261,8 +261,10 @@ class GraftpunkClient:
             ``GRAFTPUNK_SESSION`` or ``.gp-session`` is deliberately ignored
             by library code).
 
-            A client pinned to a name that EXISTS pays no listing at all: the
-            first command's load is an exact hit. A BARE pin whose exact slot
+            A client pinned to a labelled name that EXISTS pays no listing at
+            all: the first command's load is an exact hit. A BARE pin that
+            exists pays one listing, to warn when labelled siblings exist
+            (``session_bare_slot_shadows_labelled``). A BARE pin whose exact slot
             is missing (``session="myshop"`` with only ``myshop@alice``
             cached) is a base name, resolved by the load itself -- one
             listing, then the slot it resolves to becomes this client's

@@ -96,6 +96,9 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # existing: this single call, at this single seam, makes every test see
     # its own config_dir's workstation env file (or lack of one).
     workstation_env._invalidate_cache()
+    # The bare-slot warning fires once per process (#197); each test is its own
+    # process as far as that warning is concerned.
+    monkeypatch.setattr("graftpunk.cache._bare_slot_shadow_warned", set())
 
     yield config_dir
 
