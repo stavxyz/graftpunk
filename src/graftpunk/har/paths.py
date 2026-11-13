@@ -1247,35 +1247,6 @@ _FRAMEWORK_NAMES = frozenset(
         "__eventtarget __eventargument __lastfocus __previouspage __requestverificationtoken"
     ).split()
 )
-# Cookie names a framework builds from a fixed prefix and a per-site suffix (an
-# app, site, organisation, or container id), the same for every account: the
-# suffix passes unless holds_an_id reads it as an id. Compared without regard to
-# case.
-_FRAMEWORK_PREFIXES = (
-    ".aspnetcore.antiforgery.",
-    "_hjsessionuser_",
-    "_hjsession_",
-    "amcv_",
-    "amcvs_",
-    "_ga_",
-    "_gat_gtag_ua_",
-    "aspsessionid",
-)
-# The suffix's characters: an Adobe organisation id ends in a percent-encoded @
-# (AMCV_<id>%40AdobeOrg).
-_PREFIXED_SUFFIX_RE = re.compile(r"[A-Za-z0-9_.\-%]{1,64}")
-
-
-def framework_prefix(text: str) -> str:
-    """The fixed framework prefix *text* starts with, as recorded, followed by a
-    suffix of name characters, or ``""``."""
-    lowered = text.lower()
-    for prefix in _FRAMEWORK_PREFIXES:
-        if lowered.startswith(prefix) and _PREFIXED_SUFFIX_RE.fullmatch(text[len(prefix) :]):
-            return text[: len(prefix)]
-    return ""
-
-
 # ASP.NET WebForms: a naming container (ctl00) and a control-type prefix before a
 # name that itself passes the gate (txtUserName, btnLogin, chkRememberMe).
 _WEBFORMS_CONTAINER_RE = re.compile(r"ctl\d{2}")
@@ -1304,18 +1275,13 @@ def _formset_prefix(prefix: str) -> bool:
 
 def printable_name(text: str) -> bool:
     """True when recorded *text* may be printed as a name: it reads as a name, not
-    as a value. A fixed framework name passes, and so does a framework prefix
-    (``_ga_``, ``AMCV_``) before a suffix :func:`holds_an_id` does not hold;
-    otherwise *text* is at most 48
+    as a value. A fixed framework name passes; otherwise *text* is at most 48
     characters of parts joined by ``_ . $ - [ ]``, each a short number, capitals,
     or words in lower or camel case spelled with the consonant pairs English uses
     (:func:`_spelled`), and :func:`holds_an_id` does not hold it. The graft skill's
     ``har-facts.py`` prints a name only when its copy of this rule passes it (a
     test holds the two equal); the digest prints a cookie or header name only
     when it passes, and counts the rest."""
-    prefix = framework_prefix(text)
-    if prefix:
-        return not holds_an_id(text[len(prefix) :])
     if not text or len(text) > _MAX_NAME_LEN or not _NAME_CHARS_RE.fullmatch(text):
         return False
     if text.lower() in _FRAMEWORK_NAMES:

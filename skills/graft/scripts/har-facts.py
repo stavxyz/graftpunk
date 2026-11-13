@@ -45,11 +45,11 @@ header names (``Upgrade-Insecure-Requests``, ``WWW-Authenticate``, ``cf-ray``,
 ``__cf_bm``, ``cf_clearance``, ``_abck``, ``bm_sz``, ``_fbp``, ``_gcl_au``),
 ASP.NET WebForms page state (``__VIEWSTATE``, ``__EVENTVALIDATION``), and route
 segments (``graphql``, ``jsonrpc``, ``xmlrpc.php``, ``cgi-bin``, ``2fa``,
-``eFiling``). A cookie name a framework builds from a fixed prefix and a per-site
-suffix (``_ga_<container>``, ``_hjSessionUser_<site>``, ``AMCV_<org>``,
-``.AspNetCore.Antiforgery.<app>``, ``ASPSESSIONID<letters>``) passes when
-``holds_an_id`` does not read the suffix as an id, and prints as the prefix and
-``{}`` when it does. A shape a framework fixes passes when its other pieces pass
+``eFiling``). A cookie name built from a framework's fixed prefix and a per-site
+suffix (``_ga_``, ``_hjSession_``, ``_hjSessionUser_``, ``AMCV_``, ``AMCVS_``,
+``_gat_gtag_UA_``, ``.AspNetCore.Antiforgery.``, ``ASPSESSIONID``) goes through
+the gate whole, like any name, and when it fails prints as the prefix and ``{}``
+in a cookie list. A shape a framework fixes passes when its other pieces pass
 the gate: a WebForms control (``ctl00$MainContent$txtUserName``, ``btnLogin``,
 ``pwdConfirm``, and its element id ``ctl00_MainContent_txtUserName``, judged as
 the ``$``-joined name is), a Django
@@ -639,9 +639,11 @@ _FRAMEWORK_NAMES = frozenset(
     ).split()
 )
 # Cookie names a framework builds from a fixed prefix and a per-site suffix (an
-# app, site, organisation, or container id), the same for every account: the
-# suffix passes unless holds_an_id reads it as an id. Compared without regard to
-# case.
+# app, site, organisation, or container id). The name goes through the gate whole,
+# like any other: a rule that passed the suffix on holds_an_id alone passed almost
+# every random token after a prefix (#279 review). A cookie name that fails prints
+# as its prefix and {} (shown_name), since the prefix is the framework's and
+# names the cookie. Compared without regard to case.
 _FRAMEWORK_PREFIXES = (
     ".aspnetcore.antiforgery.",
     "_hjsessionuser_",
@@ -695,9 +697,6 @@ def _formset_prefix(prefix: str) -> bool:
 
 def printable_name(text: str) -> bool:
     """The one output gate: whether recorded *text* may be printed as a name."""
-    prefix = framework_prefix(text)
-    if prefix:
-        return not holds_an_id(text[len(prefix) :])
     if not text or len(text) > _MAX_NAME_LEN or not _NAME_CHARS_RE.fullmatch(text):
         return False
     if text.lower() in _FRAMEWORK_NAMES:
@@ -992,8 +991,8 @@ def _method(request: dict[str, Any]) -> str:
 
 
 def shown_name(name: str) -> str | None:
-    """*name* as the script prints it: whole when it passes the gate, as its fixed
-    framework prefix and ``{}`` when the suffix after that prefix is an id
+    """Cookie *name* as the script prints it: whole when it passes the gate, as its
+    fixed framework prefix and ``{}`` when it fails and starts with one
     (``_hjSessionUser_{}``), or None when it is counted instead."""
     if printable_name(name):
         return name
@@ -1001,10 +1000,11 @@ def shown_name(name: str) -> str | None:
     return f"{prefix}{{}}" if prefix else None
 
 
-def _names(raw: list[str]) -> str:
-    """*raw* names, deduplicated, through the gate, with the rest counted."""
+def _names(raw: list[str], *, cookies: bool = False) -> str:
+    """*raw* names, deduplicated, through the gate, with the rest counted; cookie
+    names through :func:`shown_name`."""
     names = list(dict.fromkeys(name for name in raw if name))
-    labels = [shown_name(name) for name in names]
+    labels = [shown_name(n) if cookies else (n if printable_name(n) else None) for n in names]
     shown = list(dict.fromkeys(label for label in labels if label is not None))
     hidden = labels.count(None)
     pieces = [", ".join(shown)] if shown else []
@@ -1490,9 +1490,8 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
         return lines
     only_sent = [name for name in sent if name not in shown_set and name not in hidden_set]
     if only_sent:
-        lines.append(
-            f"sent in requests and never set in this recording: {_names(sorted(only_sent))}"
-        )
+        names = _names(sorted(only_sent), cookies=True)
+        lines.append(f"sent in requests and never set in this recording: {names}")
     return lines
 
 
@@ -1897,7 +1896,7 @@ def describe_request(entry: dict[str, Any], har_path: Path) -> list[str]:
     lines = [f"{_method(request)} {templated_url(url)}{query_keys(url)}"]
     headers = _list(request, "headers")
     lines.append(f"  request headers: {_names(_header_names(headers))}")
-    lines.append(f"  request cookies: {_names(_request_cookie_names(request))}")
+    lines.append(f"  request cookies: {_names(_request_cookie_names(request), cookies=True)}")
     post = request.get("postData")
     if not isinstance(post, dict):
         lines.extend(_request_body_outcome(request, headers, har_path))
@@ -1971,7 +1970,7 @@ def describe_response(entry: dict[str, Any], har_path: Path) -> list[str]:
         for c in _list(response, "cookies")
         if isinstance(c, dict) and c.get("name")
     ]
-    lines.append(f"  sets cookies: {_names(names)}")
+    lines.append(f"  sets cookies: {_names(names, cookies=True)}")
     text, reason = _response_text(entry, har_path)
     lines.append("  body:")
     if text is None:

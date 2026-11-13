@@ -1260,13 +1260,14 @@ def test_a_printed_url_matches_without_the_flag(tmp_path: Path) -> None:
     [
         ("_hjSessionUser_1234567", "_hjSessionUser_{}"),
         ("_gat_gtag_UA_12345678_1", "_gat_gtag_UA_{}"),
-        ("_ga_ZXQ9KP3L2M", "_ga_ZXQ9KP3L2M"),
-        ("AMCV_6A3F1B2C5E8D9F0A1B2C3D4E%40AdobeOrg", "AMCV_6A3F1B2C5E8D9F0A1B2C3D4E%40AdobeOrg"),
+        ("_ga_ZXQ9KP3L2M", "_ga_{}"),
+        ("AMCV_6A3F1B2C5E8D9F0A1B2C3D4E%40AdobeOrg", "AMCV_{}"),
+        ("_ga_eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9", "_ga_{}"),
         ("_ga_alice.example@mail.example", None),
         ("uid_SAMCOOKIE_X", None),
     ],
 )
-def test_a_framework_prefix_prints_with_its_id_suffix_as_a_placeholder(
+def test_a_framework_prefix_cookie_that_fails_prints_as_its_prefix_and_a_placeholder(
     name: str, shown: str | None
 ) -> None:
     assert _load_script().shown_name(name) == shown

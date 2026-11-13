@@ -855,11 +855,13 @@ year (`kevin-1979`, `wp-settings-2015`) is held back, as a username's birth year
 or a per-user id can be one. Since 1.42.7 (#279) the gate also passes the
 vowel-less abbreviations `nbf`, `msrp`, `txn`, `nbr`, `qty`, and `svc` in any
 case, the tokens `a11y`, `h264`, `h265`, and `e164`, `s3` or `ec2` starting a
-name (`s3Key`), an `F`, `L`, or `M` before `Name` (`txtFName`), a cookie name
-built from a framework's fixed prefix and a per-site suffix (`_ga_<container>`,
-`_hjSessionUser_<site>`, `AMCV_<org>`, `.AspNetCore.Antiforgery.<app>`,
-`ASPSESSIONID<letters>`) when the suffix holds no id, and a WebForms element id
-(`ctl00_MainContent_txtUserName`) judged as its `$`-joined posted name is.
+name (`s3Key`), an `F`, `L`, or `M` before `Name` (`txtFName`), the fixed names
+`fx`, `jsonapi`, `ajs_user_id`, `ajs_anonymous_id`, and
+`.AspNetCore.Identity.Application`, and a WebForms element id
+(`ctl00_MainContent_txtUserName`) judged as its `$`-joined posted name is. A
+cookie name built from a framework prefix and a per-site suffix (`_ga_`,
+`AMCV_`, `ASPSESSIONID`, and the like) is judged whole, as any name is, so one
+whose suffix does not read as words stays counted.
 `--json`'s `field_names_not_shown` counts them for the run. Each per-kind count
 (`cookie_names_not_shown`, `header_names_not_shown`, `meta_names_not_shown`,
 `hidden_names_not_shown`, `field_names_not_shown`, and the per-endpoint and
