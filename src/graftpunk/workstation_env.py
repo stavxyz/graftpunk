@@ -178,7 +178,19 @@ class WorkstationEnv:
         empty credential is never useful; fall to the file tier).
         """
         for entry in self._entries.values():
-            if entry.kind == STATIC and entry.name not in os.environ:
+            if entry.kind != STATIC:
+                continue
+            if entry.name == paths.CONFIG_DIR_ENV:
+                # The file lives inside the config directory, so a value here
+                # would move everything but the file it came from (#282).
+                LOG.warning(
+                    "workstation_env_static_unsupported_for_field",
+                    envvar=entry.name,
+                    hint="the workstation env file cannot move its own directory; "
+                    "set GRAFTPUNK_CONFIG_DIR in the real environment",
+                )
+                continue
+            if entry.name not in os.environ:
                 os.environ[entry.name] = entry.raw_value
 
 
@@ -224,6 +236,10 @@ def _parse(text: str, source: str) -> dict[str, Entry]:
 
 
 _cached: WorkstationEnv | None = None
+# The file _cached was parsed from. The config directory is read live (#282),
+# so a GRAFTPUNK_CONFIG_DIR changed after the first load re-reads the file
+# under the new directory instead of answering from the old one.
+_cached_path: Path | None = None
 
 
 def load() -> WorkstationEnv:
@@ -243,11 +259,16 @@ def load() -> WorkstationEnv:
     every lookup behaves as if the file were empty — rather than crashing
     every `gp` invocation, including ones like `gp config path` that need
     no file access at all.
+
+    The cache is per file path: after GRAFTPUNK_CONFIG_DIR changes, the next
+    load reads the new directory's file. Statics injected at bootstrap stay
+    as injected.
     """
-    global _cached
-    if _cached is not None:
-        return _cached
+    global _cached, _cached_path
     path = paths.workstation_env_path()
+    if _cached is not None and _cached_path == path:
+        return _cached
+    _cached_path = path
     if not path.is_file():
         _cached = WorkstationEnv({})
         return _cached

@@ -2400,7 +2400,10 @@ not mean an approval prompt every time you use the CLI.
 Precedence for a credential, highest first: the real environment, then the
 workstation env file, then an interactive prompt. graftpunk's own `GRAFTPUNK_*`
 settings have one more tier: real environment, workstation env file, a `.env` in
-the working directory, then the field's default. An environment variable set to
+the working directory, then the field's default. `GRAFTPUNK_CONFIG_DIR` is the
+exception: it comes from the real environment only, because the workstation env
+file lives inside that directory, and a value set only in a `.env` is ignored
+with a `config_dir_in_dotenv_ignored` warning. An environment variable set to
 the empty string counts as unset, so a stray `export MYSHOP_PASSWORD=` does not
 shadow the file.
 

@@ -173,7 +173,7 @@ def test_expired_session_on_the_exact_key_propagates_without_listing(
     """A non-not-found failure is the answer, not a reason to go looking."""
     calls = _count_listings(monkeypatch)
 
-    def _expired(name: str):  # noqa: ANN202
+    def _expired(name: str, **_kwargs):  # noqa: ANN003, ANN202
         raise SessionExpiredError(f"Session '{name}' failed integrity check.")
 
     monkeypatch.setattr(cache_mod, "load_session", _expired)
@@ -196,7 +196,8 @@ def test_legacy_bare_slot_wins_over_a_labelled_sibling(fresh_backend, monkeypatc
     """A slot cached under the bare name itself is an exact hit — deliberately.
 
     This is the one input where the loader does NOT raise where the CLI's
-    unpinned resolution would: the exact key answers first, and never lists.
+    unpinned resolution would: the exact key answers first. It lists once,
+    only to warn about the labelled sibling (#197).
     """
     cache_session(_cached_session("legacy@example.com"), "myshop")
     cache_session(_cached_session("alice@example.com"), "myshop@alice")
@@ -206,7 +207,230 @@ def test_legacy_bare_slot_wins_over_a_labelled_sibling(fresh_backend, monkeypatc
 
     assert loaded == "myshop"
     assert getattr(api, GP_ACCOUNT_ATTR) == "legacy@example.com"
-    assert calls["count"] == 0
+    assert calls["count"] == 1
+
+
+def _shadow_warnings(logs: list[dict]) -> list[dict]:
+    return [e for e in logs if e["event"] == "session_bare_slot_shadows_labelled"]
+
+
+class TestBareSlotShadowsLabelledWarning:
+    """A bare exact hit with labelled siblings warns once per process and still loads (#197)."""
+
+    def test_warns_naming_the_bare_slot_and_its_siblings(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+        cache_session(_cached_session("bob@example.com"), "myshop@bob")
+
+        api, loaded = load_session_for_api_resolved("myshop")
+
+        assert loaded == "myshop"
+        assert getattr(api, GP_ACCOUNT_ATTR) == "legacy@example.com"
+        [warning] = _shadow_warnings(captured_logs)
+        assert warning["log_level"] == "warning"
+        assert warning["name"] == "myshop"
+        assert warning["labelled"] == ["myshop@alice", "myshop@bob"]
+        assert "gp session clear myshop" in warning["hint"]
+
+    def test_the_warning_carries_no_session_contents(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+    ) -> None:
+        legacy = _cached_session("legacy@example.com")
+        legacy.cookies.set("sid", "s3cr3t-cookie-value", domain="myshop.example")
+        cache_session(legacy, "myshop")
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+        load_session_for_api_resolved("myshop")
+
+        [warning] = _shadow_warnings(captured_logs)
+        assert "s3cr3t-cookie-value" not in repr(warning)
+        assert "legacy@example.com" not in repr(warning)
+
+    def test_warns_once_per_process_for_the_same_bare_name(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+        load_session_for_api_resolved("myshop")
+        calls = _count_listings(monkeypatch)
+
+        load_session_for_api("myshop")
+        load_session_for_api("myshop")
+
+        assert len(_shadow_warnings(captured_logs)) == 1
+        assert calls["count"] == 0
+
+    @pytest.mark.parametrize("siblings", [[], ["myshop@alice"]])
+    def test_a_bare_name_lists_at_most_once_per_process(
+        self,
+        fresh_backend,  # noqa: ANN001
+        monkeypatch,  # noqa: ANN001
+        siblings,  # noqa: ANN001
+    ) -> None:
+        """Checked once whatever the answer, so a single-account user pays one listing."""
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        for sibling in siblings:
+            cache_session(_cached_session("alice@example.com"), sibling)
+        calls = _count_listings(monkeypatch)
+
+        for _ in range(5):
+            _api, loaded = load_session_for_api_resolved("myshop")
+            assert loaded == "myshop"
+
+        assert calls["count"] == 1
+
+    def test_a_failed_listing_is_tried_again_on_the_next_load(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+        real_list_sessions = cache_mod.list_sessions
+        calls = {"count": 0}
+
+        def _fails_once(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("listing unavailable")
+            return real_list_sessions(*args, **kwargs)
+
+        monkeypatch.setattr(cache_mod, "list_sessions", _fails_once)
+
+        load_session_for_api_resolved("myshop")
+        assert _shadow_warnings(captured_logs) == []
+        load_session_for_api_resolved("myshop")
+        load_session_for_api_resolved("myshop")
+
+        assert calls["count"] == 2
+        assert len(_shadow_warnings(captured_logs)) == 1
+
+    def test_a_labelled_slot_cached_in_this_process_is_seen_by_the_next_load(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        load_session_for_api_resolved("myshop")
+        assert _shadow_warnings(captured_logs) == []
+
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+        load_session_for_api_resolved("myshop")
+
+        [warning] = _shadow_warnings(captured_logs)
+        assert warning["labelled"] == ["myshop@alice"]
+
+    def test_a_labelled_slot_copied_in_this_process_is_seen_by_the_next_load(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        load_session_for_api_resolved("myshop")
+        assert _shadow_warnings(captured_logs) == []
+
+        cache_mod.copy_session("myshop", "myshop@bob", account_identifier="bob@example.com")
+        load_session_for_api_resolved("myshop")
+
+        [warning] = _shadow_warnings(captured_logs)
+        assert warning["labelled"] == ["myshop@bob"]
+
+    def test_no_warning_without_labelled_siblings(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+
+        load_session_for_api_resolved("myshop")
+
+        assert _shadow_warnings(captured_logs) == []
+
+    def test_a_longer_base_sharing_the_prefix_is_not_a_sibling(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+    ) -> None:
+        """``myshopextra@bob`` starts with ``myshop`` but is another base."""
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        cache_session(_cached_session("bob@example.com"), "myshopextra@bob")
+
+        load_session_for_api_resolved("myshop")
+
+        assert _shadow_warnings(captured_logs) == []
+
+    def test_labelled_only_resolves_without_the_warning(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+    ) -> None:
+        """The documented remedy (clear the bare slot) leaves only the labelled one."""
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+        _api, loaded = load_session_for_api_resolved("myshop")
+
+        assert loaded == "myshop@alice"
+        assert _shadow_warnings(captured_logs) == []
+
+    def test_a_labelled_exact_hit_does_not_warn_or_list(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+        calls = _count_listings(monkeypatch)
+
+        load_session_for_api_resolved("myshop@alice")
+
+        assert _shadow_warnings(captured_logs) == []
+        assert calls["count"] == 0
+
+    def test_resolve_false_neither_lists_nor_warns(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+        calls = _count_listings(monkeypatch)
+
+        _api, loaded = load_session_for_api_resolved("myshop", resolve=False)
+
+        assert loaded == "myshop"
+        assert _shadow_warnings(captured_logs) == []
+        assert calls["count"] == 0
+
+    def test_a_listing_failure_does_not_fail_the_load(
+        self,
+        fresh_backend,  # noqa: ANN001
+        captured_logs,  # noqa: ANN001
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        cache_session(_cached_session("legacy@example.com"), "myshop")
+        cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+        def _broken_listing(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise OSError("listing unavailable")
+
+        monkeypatch.setattr(cache_mod, "list_sessions", _broken_listing)
+
+        _api, loaded = load_session_for_api_resolved("myshop")
+
+        assert loaded == "myshop"
+        assert _shadow_warnings(captured_logs) == []
 
 
 def test_miss_path_performs_exactly_one_listing(fresh_backend, monkeypatch) -> None:  # noqa: ANN001

@@ -609,7 +609,7 @@ class TestLoadSessionForApiGraftpunkSession:
         mock_session.cookies = requests.cookies.RequestsCookieJar()
         mock_session.headers = {"User-Agent": "test"}
         mock_session._gp_header_roles = {"navigation": {"User-Agent": "Browser"}}
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
 
         api_session = load_session_for_api("test")
         assert isinstance(api_session, GraftpunkSession)
@@ -626,7 +626,7 @@ class TestLoadSessionForApiGraftpunkSession:
         mock_session.headers = {"User-Agent": "test"}
         # Simulate old session without _gp_header_roles attribute
         del mock_session._gp_header_roles
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
 
         api_session = load_session_for_api("test")
         assert isinstance(api_session, GraftpunkSession)
@@ -647,7 +647,7 @@ class TestLoadSessionForApiGraftpunkSession:
             "X-CSRF": CachedToken(name="X-CSRF", value="tok123", extracted_at=1000, ttl=300)
         }
         setattr(mock_session, _CACHE_ATTR, token_cache)
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
 
         api_session = load_session_for_api("cached-session")
         assert hasattr(api_session, _CACHE_ATTR)
@@ -675,7 +675,7 @@ class TestLoadSessionForApiGraftpunkSession:
             }
         }
         del mock_session._gp_cached_tokens
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
 
         api_session = load_session_for_api("test")
 
@@ -696,7 +696,7 @@ class TestLoadSessionForApiGraftpunkSession:
         }
         mock_session._gp_header_roles = {}
         del mock_session._gp_cached_tokens
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
 
         api_session = load_session_for_api("test")
 
@@ -717,7 +717,7 @@ class TestLoadSessionForApiGraftpunkSession:
         }
         mock_session._gp_header_roles = {}
         del mock_session._gp_cached_tokens
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
 
         api_session = load_session_for_api("test")
 
@@ -737,7 +737,7 @@ class TestLoadSessionForApiGraftpunkSession:
         }
         mock_session._gp_header_roles = {}
         del mock_session._gp_cached_tokens
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
 
         api_session = load_session_for_api("test")
 
@@ -755,7 +755,7 @@ class TestLoadSessionForApiGraftpunkSession:
         # No _gp_cached_tokens attribute
         del mock_session._gp_cached_tokens
         del mock_session._gp_csrf_tokens
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
 
         api_session = load_session_for_api("no-cache-session")
         from graftpunk.tokens import _CACHE_ATTR
@@ -776,7 +776,7 @@ class TestLoadSessionForApiGraftpunkSession:
 
         csrf_tokens = {"X-CSRF": "secret123", "X-Token": "abc"}
         setattr(mock_session, _CSRF_TOKENS_ATTR, csrf_tokens)
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
 
         api_session = load_session_for_api("csrf-session")
         result = getattr(api_session, _CSRF_TOKENS_ATTR, None)
@@ -797,7 +797,7 @@ class TestLoadSessionForApiGraftpunkSession:
         del mock_session._gp_cached_tokens
 
         setattr(mock_session, _CSRF_TOKENS_ATTR, {})
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
 
         api_session = load_session_for_api("empty-csrf")
         result = getattr(api_session, _CSRF_TOKENS_ATTR, None)
@@ -1046,9 +1046,11 @@ class TestUpdateSessionCookies:
         ):
             mock_load.return_value = (cached_session, MagicMock(account_rule=None))
             update_session_cookies(api_session, "testsession")
-            mock_load.assert_called_once_with("testsession")
+            mock_load.assert_called_once_with("testsession", key=None)
             # The slot's recorded account rule is carried, so a 1.24.0 slot stays one (#293).
-            mock_cache.assert_called_once_with(cached_session, "testsession", account_rule=None)
+            mock_cache.assert_called_once_with(
+                cached_session, "testsession", account_rule=None, key=None
+            )
 
     def test_load_failure_logs_warning_and_returns(self) -> None:
         """If loading the cached session fails, log a warning and return."""
@@ -1099,8 +1101,8 @@ class TestUpdateSessionCookies:
         ):
             update_session_cookies(api_session, "testsession")
 
-        mock_load.assert_called_once_with("testsession")
-        mock_cache.assert_called_once_with(cached_session, "testsession", account_rule=2)
+        mock_load.assert_called_once_with("testsession", key=None)
+        mock_cache.assert_called_once_with(cached_session, "testsession", account_rule=2, key=None)
         # Verify token cache was transferred to the original session
         assert getattr(cached_session, _CACHE_ATTR) == token_cache
 

@@ -96,6 +96,9 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # existing: this single call, at this single seam, makes every test see
     # its own config_dir's workstation env file (or lack of one).
     workstation_env._invalidate_cache()
+    # Each bare name is checked for labelled siblings once per process (#197);
+    # each test is its own process as far as that check is concerned.
+    monkeypatch.setattr("graftpunk.cache._bare_slot_sibling_checked", set())
 
     yield config_dir
 

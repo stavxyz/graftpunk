@@ -20,13 +20,6 @@ class GraftpunkSettings(BaseSettings):
         default="local",
         description="Storage backend: local, supabase, s3",
     )
-    config_dir: Path = Field(
-        # Lambda (not the bare function ref) so the resolver stays
-        # late-bound: tests can monkeypatch paths.config_dir and the
-        # default picks it up.
-        default_factory=lambda: paths.config_dir(),
-        description="Configuration directory for graftpunk data",
-    )
     session_ttl_hours: int = Field(
         default=720,  # 30 days
         description="Session TTL in hours",
@@ -112,12 +105,29 @@ class GraftpunkSettings(BaseSettings):
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize settings and create config directory."""
+        # The .env files this instance reads: the caller's _env_file when given
+        # (None turns them off), else the class default.
+        env_files = kwargs.get("_env_file", type(self).model_config.get("env_file"))
         super().__init__(**kwargs)
+        _warn_if_config_dir_only_in_dotenv(env_files)
         # Create config directory if it doesn't exist
         self.config_dir.mkdir(parents=True, exist_ok=True)
         # Create sessions subdirectory
         sessions_dir = self.config_dir / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def config_dir(self) -> Path:
+        """The configuration directory: :func:`graftpunk.paths.config_dir`, read on every access.
+
+        Not a settings field. A field would be filled once, from the
+        environment or a cwd ``.env``, while the workstation env file is
+        located through ``paths.config_dir()`` live; the two disagreed on an
+        empty value, a ``.env``-only value, and a variable set after the
+        settings singleton was built (#282). Calling through the module
+        attribute keeps it late-bound, so tests can monkeypatch the resolver.
+        """
+        return paths.config_dir()
 
     @property
     def sessions_dir(self) -> Path:
@@ -182,11 +192,55 @@ class GraftpunkSettings(BaseSettings):
         )
 
 
+def _warn_if_config_dir_only_in_dotenv(env_files: object) -> None:
+    """Warn when a .env the settings read sets GRAFTPUNK_CONFIG_DIR and the real env does not.
+
+    graftpunk reads the config directory from the real environment only
+    (:func:`graftpunk.paths.config_dir`). Before #282 a ``.env``-only value
+    moved the sessions and plugins but not the workstation env file, so the
+    value is ignored now, and this says so instead of leaving a reader to
+    find out from where their sessions went.
+
+    *env_files* is what pydantic-settings reads: one path, a list or tuple of
+    paths (a later file wins), or None for none.
+    """
+    import os
+
+    if os.environ.get(paths.CONFIG_DIR_ENV) or env_files is None:
+        return
+    candidates = list(env_files) if isinstance(env_files, (list, tuple)) else [env_files]
+    from dotenv import dotenv_values
+
+    env_file: str | os.PathLike[str] | None = None
+    ignored: str | None = None
+    for candidate in candidates:
+        if not isinstance(candidate, (str, os.PathLike)) or not os.path.isfile(candidate):
+            continue
+        try:
+            values = dotenv_values(candidate)
+        except (OSError, ValueError):
+            continue
+        for key, value in values.items():
+            if key.upper() == paths.CONFIG_DIR_ENV and value:
+                env_file, ignored = candidate, value
+    if env_file is None or ignored is None:
+        return
+    from graftpunk.logging import get_logger
+
+    get_logger(__name__).warning(
+        "config_dir_in_dotenv_ignored",
+        env_file=os.path.abspath(env_file),
+        ignored=ignored,
+        using=str(paths.config_dir()),
+        hint=f"export {paths.CONFIG_DIR_ENV} in the environment instead",
+    )
+
+
 # Leaf fields consumed ONLY via external attribute access — safe for the
 # lazy overlay. Reads that happen INSIDE model methods/properties
-# (get_storage_config()'s supabase_*/s3_*, sessions_dir's config_dir) bind
-# to the raw model and can never see the overlay, so command values for
-# those fields are unsupported (warned + ignored; supply via real env).
+# (get_storage_config()'s supabase_*/s3_*) bind to the raw model and can
+# never see the overlay, so command values for those fields are unsupported
+# (warned + ignored; supply via real env).
 PROXY_SAFE_FIELDS = frozenset({"browser_executable_path"})
 
 
@@ -255,6 +309,16 @@ def _build_lazy_field_map() -> dict[str, str]:
     lazy: dict[str, str] = {}
     command_names = workstation_env.load().command_entry_names()
     matched_env_names: set[str] = set()
+    if paths.CONFIG_DIR_ENV in command_names:
+        # Not a field (GraftpunkSettings.config_dir is a property), but a
+        # setting all the same: say "unsupported", not "typo".
+        matched_env_names.add(paths.CONFIG_DIR_ENV)
+        log.warning(
+            "workstation_env_command_unsupported_for_field",
+            envvar=paths.CONFIG_DIR_ENV,
+            hint="command values are unsupported for this setting; "
+            "treat as static-only or supply via the real environment",
+        )
     for field_name in GraftpunkSettings.model_fields:
         env_name = _field_env_name(field_name)
         if env_name not in command_names:

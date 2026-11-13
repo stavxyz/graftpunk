@@ -51,6 +51,28 @@ def test_config_show_same_panel(_isolated):
         assert label in result.stdout
 
 
+def _panel_rows(stdout: str) -> dict[str, str]:
+    rows = (line.strip("│ ").partition(":") for line in stdout.splitlines())
+    return {label.strip(): value.strip() for label, _, value in rows if value}
+
+
+def test_config_show_names_the_workstation_env_file_beside_the_sessions(_isolated):
+    """Both paths in one panel, so a split between them is visible at a glance (#282)."""
+    (_isolated / "env").write_text("MYSHOP_USERNAME=alice@myshop.example\n")
+    (_isolated / "env").chmod(0o600)
+    result = runner.invoke(app, ["config", "show"])
+    assert result.exit_code == 0
+    lines = _panel_rows(result.stdout)
+    assert lines["Sessions directory"] == str(_isolated / "sessions")
+    assert lines["Workstation env"] == str(_isolated / "env")
+
+
+def test_config_show_says_when_the_workstation_env_file_does_not_exist(_isolated):
+    result = runner.invoke(app, ["config", "show"])
+    assert result.exit_code == 0
+    assert _panel_rows(result.stdout)["Workstation env"] == f"{_isolated / 'env'} (does not exist)"
+
+
 def test_config_path(_isolated):
     result = runner.invoke(app, ["config", "path"])
     assert result.exit_code == 0

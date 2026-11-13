@@ -424,7 +424,7 @@ class TestExecutionPipeline:
         client.fetch()
         # Unpinned: the operating name is resolved just above the load, on
         # first use (#181), so the load itself is exact-only (#182).
-        mock_load.assert_called_once_with("testsite", resolve=False)
+        mock_load.assert_called_once_with("testsite", resolve=False, key=None)
 
     @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
@@ -607,7 +607,7 @@ class TestSessionPersistence:
         mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         client.login()
-        mock_update.assert_called_once_with(mock_load.return_value[0], "testsite")
+        mock_update.assert_called_once_with(mock_load.return_value[0], "testsite", key=None)
 
     @patch("graftpunk.client.update_session_cookies")
     @patch("graftpunk.client.load_session_for_api_resolved")
@@ -1104,7 +1104,7 @@ class TestClosePersistence:
         client._session_name = "testsite@alice"
         client._session_dirty = True
         client.close()
-        mock_update.assert_called_once_with(mock_session, "testsite@alice")
+        mock_update.assert_called_once_with(mock_session, "testsite@alice", key=None)
 
     @patch("graftpunk.client.update_session_cookies")
     @patch("graftpunk.client.get_plugin")
@@ -1446,7 +1446,7 @@ class TestClientOperatingSession:
             assert client._session_name == "myshop"
             client.execute("items")
             # Resolved against the listing here, so the load is exact-only.
-            mock_load.assert_called_once_with("myshop@alice", resolve=False)
+            mock_load.assert_called_once_with("myshop@alice", resolve=False, key=None)
         assert client._session_name == "myshop@alice"  # env deliberately ignored
 
     def test_unpinned_ambiguity_surfaces_at_first_use_not_construction(

@@ -28,7 +28,7 @@ import requests
 
 from graftpunk._distribution import install_command
 from graftpunk.config import get_settings
-from graftpunk.encryption import decrypt_data, encrypt_data
+from graftpunk.encryption import decrypt_data, encrypt_data, resolve_key
 from graftpunk.exceptions import (
     EncryptionError,
     SessionExpiredError,
@@ -51,6 +51,8 @@ from graftpunk.storage.base import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from graftpunk.graftpunk_session import GraftpunkSession
     from graftpunk.storage.base import SessionStorageBackend
 
@@ -80,6 +82,10 @@ _EPHEMERAL_HEADERS: frozenset[str] = frozenset({"x-csrf-token"})
 
 # Global session storage backend (lazy-loaded)
 _session_storage_backend: "SessionStorageBackend | None" = None
+# The sessions directory a cached local backend was built for. The config
+# directory is read live (#282), so a GRAFTPUNK_CONFIG_DIR changed after the
+# backend was built must reach the backend too, not only the settings.
+_session_storage_backend_dir: "Path | None" = None
 
 
 _VALID_BACKEND_TYPES = {"local", "supabase", "s3"}
@@ -152,21 +158,28 @@ def _get_session_storage_backend(
     if backend_override is not None:
         return _create_backend(backend_override)
 
-    global _session_storage_backend
-
-    if _session_storage_backend is not None:
-        return _session_storage_backend
+    global _session_storage_backend, _session_storage_backend_dir
 
     settings = get_settings()
+    local = settings.storage_backend == "local"
+    if _session_storage_backend is not None and (
+        not local
+        or _session_storage_backend_dir is None
+        or _session_storage_backend_dir == settings.sessions_dir
+    ):
+        return _session_storage_backend
+
     _session_storage_backend = _create_backend(settings.storage_backend)
+    _session_storage_backend_dir = settings.sessions_dir if local else None
 
     return _session_storage_backend
 
 
 def _reset_session_storage_backend() -> None:
     """Reset the session storage backend (for testing)."""
-    global _session_storage_backend
+    global _session_storage_backend, _session_storage_backend_dir
     _session_storage_backend = None
+    _session_storage_backend_dir = None
 
 
 def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]:
@@ -273,7 +286,11 @@ def _stamp_session_slot(session: Any, name: str) -> None:
 
 
 def cache_session(
-    session: T, session_name: str | None = None, *, account_rule: int | None = ACCOUNT_RULE
+    session: T,
+    session_name: str | None = None,
+    *,
+    account_rule: int | None = ACCOUNT_RULE,
+    key: bytes | None = None,
 ) -> str:
     """Cache a session with metadata.
 
@@ -288,9 +305,17 @@ def cache_session(
         account_rule: The account-label rule to record. A write-back passes the
             slot's recorded value, so a slot graftpunk 1.24.0 named stays
             recognisable as one (#293).
+        key: Optional raw Fernet key to encrypt with, for a host without
+            graftpunk's key file or vault (see :func:`encrypt_data`). When
+            None, the configured key is used. Read the session back with the
+            same key (``load_session_for_api_from_bytes(..., key=)``).
 
     Returns:
         Storage location string.
+
+    Raises:
+        EncryptionError: The key is malformed, or none was given and the
+            configured source has none.
     """
     if session_name is None:
         # Try to get session_name from the session object
@@ -306,7 +331,7 @@ def cache_session(
         LOG.info("caching_session", name=session_name, backend=settings.storage_backend)
         pickled_data = pickle.dumps(session)
         checksum = hashlib.sha256(pickled_data).hexdigest()
-        encrypted_data = encrypt_data(pickled_data)
+        encrypted_data = encrypt_data(pickled_data, key=key)
 
         # Extract metadata from session
         raw_metadata = _extract_session_metadata(session, session_name)
@@ -335,6 +360,7 @@ def cache_session(
         # after the pickle above on purpose: the name describes this copy, not
         # the bytes, and the blob must stay free of it.
         _stamp_session_slot(session, session_name)
+        _recheck_bare_slot_after_write(session_name)
         LOG.info("wrote_session_to_backend", name=session_name, location=location)
         return location
 
@@ -343,7 +369,9 @@ def cache_session(
         raise
 
 
-def load_session(name: str, backend_override: str | None = None) -> SessionLike:
+def load_session(
+    name: str, backend_override: str | None = None, *, key: bytes | None = None
+) -> SessionLike:
     """Load a cached session.
 
     Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
@@ -366,6 +394,8 @@ def load_session(name: str, backend_override: str | None = None) -> SessionLike:
     Args:
         name: Session name.
         backend_override: If set, use this backend type instead of the default.
+        key: Optional raw Fernet key to decrypt with instead of the configured
+            one (see :func:`graftpunk.encryption.decrypt_data`).
 
     Returns:
         Loaded session object.
@@ -373,13 +403,17 @@ def load_session(name: str, backend_override: str | None = None) -> SessionLike:
     Raises:
         SessionNotFoundError: If session file doesn't exist.
         SessionExpiredError: If session cannot be decrypted or has invalid structure.
+        MissingEncryptionKeyError: No key was given and the configured backend
+            has no key file to read (see :func:`graftpunk.encryption.get_encryption_key`).
     """
-    session, _metadata = _load_session_with_metadata(name, backend_override=backend_override)
+    session, _metadata = _load_session_with_metadata(
+        name, backend_override=backend_override, key=key
+    )
     return session
 
 
 def _load_session_with_metadata(
-    name: str, backend_override: str | None = None
+    name: str, backend_override: str | None = None, *, key: bytes | None = None
 ) -> tuple[SessionLike, SessionMetadata]:
     """Load a cached session together with the SessionMetadata already fetched
     during that same backend read.
@@ -392,6 +426,7 @@ def _load_session_with_metadata(
     Args:
         name: Session name to load.
         backend_override: If set, use this backend type instead of the default.
+        key: Optional raw Fernet key; None uses the configured key.
 
     Returns:
         The deserialized session and the ``SessionMetadata`` read in the same
@@ -401,6 +436,11 @@ def _load_session_with_metadata(
         SessionNotFoundError: No session is stored under *name*.
         SessionExpiredError: The session is expired, cannot be decrypted, or
             fails its checksum/deserialization.
+        MissingEncryptionKeyError: No key was given and there is none to read.
+        EncryptionError: The key cannot be obtained (Vault unreachable, the
+            supabase package or settings missing) or is malformed. Both are
+            passed through, not reported as an expired session, because the
+            fix is to provide a good key, not to clear the session.
     """
     backend = _get_session_storage_backend(backend_override=backend_override)
     settings = get_settings()
@@ -409,9 +449,14 @@ def _load_session_with_metadata(
         # Load encrypted data from backend
         encrypted_data, metadata = backend.load_session(name)
 
-        # Decrypt
+        # Obtain and check the key outside the conversion below: a key that is
+        # missing, unreachable or malformed is fixed by providing a good one,
+        # never by clearing the session (on a shared bucket, every host's).
+        # Only a key that fails to decrypt these bytes means the session is
+        # unreadable.
+        fernet_key = resolve_key(key)
         try:
-            decrypted_data = decrypt_data(encrypted_data)
+            decrypted_data = decrypt_data(encrypted_data, key=fernet_key)
         except EncryptionError as exc:
             LOG.error("session_decryption_failed", name=name, backend=settings.storage_backend)
             raise SessionExpiredError(
@@ -467,7 +512,7 @@ def _load_session_with_metadata(
         LOG.info("successfully_loaded_session", name=name, backend=settings.storage_backend)
         return session, metadata
 
-    except (SessionNotFoundError, SessionExpiredError):
+    except (SessionNotFoundError, SessionExpiredError, EncryptionError):
         raise
     except ModuleNotFoundError as exc:
         # A cached BrowserSession pickle names graftpunk.session, which imports
@@ -635,8 +680,67 @@ def no_account_cached_message(name: str) -> str:
     )
 
 
+# Bare names _warn_if_bare_slot_shadows_labelled has listed for, with or
+# without siblings, so a bare name costs one successful listing per process
+# and a long-running process does not warn on every load (#197). cache_session
+# drops a name when it writes a labelled slot under it, so a sibling this
+# process creates is seen by the next load.
+_bare_slot_sibling_checked: set[str] = set()
+
+
+def _recheck_bare_slot_after_write(name: str) -> None:
+    """After writing slot *name*, let the next load of its bare base look for
+    siblings again when *name* is labelled: it is a new sibling (#197)."""
+    base, label = split_session_name(name)
+    if label is not None:
+        _bare_slot_sibling_checked.discard(base)
+
+
+def _warn_if_bare_slot_shadows_labelled(name: str) -> None:
+    """Check once per process whether the loaded bare slot *name* has labelled siblings, and warn.
+
+    Since #176 ``gp <site> login`` writes ``base@label`` slots, so a bare slot
+    that still answers a bare-name load is usually the stale one from before
+    the first labelled login. The load keeps returning it (the pin contract in
+    :func:`load_session_for_api_resolved`); this only says so. Siblings are
+    matched by splitting on the ``@`` separator, never by prefix: ``myshop``
+    has no sibling ``myshopextra@bob``. A listing failure costs only the
+    warning, never the load that already succeeded.
+
+    A name is marked checked once a listing succeeds, siblings or not, so
+    it lists once per process; a failed listing is tried again on the next
+    load. A labelled slot this process caches under the name clears the
+    mark (:func:`cache_session`). A sibling another process creates later
+    goes unwarned until this process restarts.
+    """
+    if name in _bare_slot_sibling_checked:
+        return
+    try:
+        cached = list_sessions()
+    except Exception as exc:  # noqa: BLE001 (an advisory check never fails the load)
+        LOG.debug("session_bare_slot_sibling_check_skipped", name=name, error=str(exc))
+        return
+    _bare_slot_sibling_checked.add(name)
+    siblings = sorted(
+        other
+        for other in cached
+        if split_session_name(other)[0] == name and split_session_name(other)[1] is not None
+    )
+    if not siblings:
+        return
+    LOG.warning(
+        "session_bare_slot_shadows_labelled",
+        name=name,
+        labelled=siblings,
+        hint=(
+            f"loaded the bare slot '{name}'; load a labelled slot by its full name, "
+            f"or run 'gp session clear {name}' if the bare slot is stale"
+        ),
+    )
+
+
 def load_session_for_api_resolved(
-    name: str, *, resolve: bool = True
+    name: str, *, resolve: bool = True, key: bytes | None = None
 ) -> tuple[requests.Session, str]:
     """Load a cached session for API use AND report the name it came from.
 
@@ -648,8 +752,8 @@ def load_session_for_api_resolved(
     **The pin contract.** A bare *name* (``"mysite"``) names a BASE, not a
     slot, and is resolved here, at load time:
 
-    1. a slot cached under the bare name itself wins — an exact hit, and no
-       listing happens;
+    1. a slot cached under the bare name itself wins: an exact hit, which
+       lists only to warn when labelled siblings exist (see below);
     2. otherwise the single labelled account under that base
        (:func:`graftpunk.session_identity.resolve_account_session`), at the
        cost of ONE ``list_sessions()`` call on this miss path only;
@@ -662,7 +766,12 @@ def load_session_for_api_resolved(
 
     Because step 1 answers first, this deliberately does NOT raise where the
     CLI's unpinned resolution would: with both ``mysite`` and ``mysite@alice``
-    cached, ``mysite`` loads the bare slot rather than refusing.
+    cached, ``mysite`` loads the bare slot rather than refusing. It does log
+    one ``session_bare_slot_shadows_labelled`` warning per bare name per
+    process naming the labelled siblings (#197), at the cost of one
+    ``list_sessions()`` call on the first such exact hit per bare name per
+    process, siblings or not; with ``resolve=False`` the load is exact-only
+    and lists nothing, so it does not warn.
 
     Whatever slot is loaded is the operating name for every write-back of that
     invocation: pass the returned name — never the requested one — to
@@ -679,6 +788,8 @@ def load_session_for_api_resolved(
             :func:`graftpunk.session_identity.compute_operating_session_name`'s
             resolution tier: it resolved against the same listing, so a second
             one would be a wasted round-trip and a miss is genuinely a miss.
+        key: Optional raw Fernet key to decrypt with, for a host without
+            graftpunk's key file or vault; None uses the configured key.
 
     Returns:
         ``(session, loaded_name)`` — the API session, and the cache key it was
@@ -702,7 +813,7 @@ def load_session_for_api_resolved(
     miss: SessionNotFoundError | None = None
     loaded_name = name
     try:
-        browser_session = load_session(name)
+        browser_session = load_session(name, key=key)
     except SessionNotFoundError as exc:
         if not resolve:
             # INFO, not WARNING: this is invisible under the library's
@@ -723,8 +834,10 @@ def load_session_for_api_resolved(
             LOG.info("session_not_found_for_api", name=name, resolve=True)
             raise SessionNotFoundError(no_account_cached_message(name)) from miss
         LOG.info("api_session_resolved_account", requested=name, resolved=resolved)
-        browser_session = load_session(resolved)
+        browser_session = load_session(resolved, key=key)
         loaded_name = resolved
+    elif resolve and split_session_name(name)[1] is None:
+        _warn_if_bare_slot_shadows_labelled(name)
 
     header_roles = getattr(browser_session, "_gp_header_roles", {})
     api_session = _api_session_from_session(browser_session)
@@ -742,7 +855,9 @@ def load_session_for_api_resolved(
     return api_session, loaded_name
 
 
-def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session:
+def load_session_for_api(
+    name: str, *, resolve: bool = True, key: bytes | None = None
+) -> requests.Session:
     """Load cached session for API use (no browser launched).
 
     This extracts cookies and headers from a cached BrowserSession
@@ -761,9 +876,11 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
     bare-name pin contract in full: since #176 ``gp <site> login`` writes
     sessions as ``base@label``, so a bare *name* is tried as an exact key
     first and only then resolved against the single cached account for that
-    base — one ``list_sessions()`` call, on that miss path only. A slot cached
-    under the bare name itself always wins, so this differs from the CLI's
-    unpinned resolution, which refuses when several accounts share a base.
+    base, with one ``list_sessions()`` call on that miss path, and one on the
+    first bare exact hit per name per process to warn about labelled
+    siblings. A slot cached under the bare
+    name itself always wins, so this differs from the CLI's unpinned
+    resolution, which refuses when several accounts share a base.
 
     **If you will persist changes to the returned session** (cookies, tokens)
     with :func:`update_session_cookies`, prefer
@@ -779,6 +896,7 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
             base name (``"mysite"``) or a full ``base@label`` name.
         resolve: Whether the bare-base fallback applies; ``False`` means exact
             only (see :func:`load_session_for_api_resolved`).
+        key: Optional raw Fernet key; None uses the configured key.
 
     Returns:
         GraftpunkSession with cookies, headers, and header roles
@@ -795,7 +913,7 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
         ImportError: If the browser stack needed to reconstruct the cached
             object is not installed (see note above).
     """
-    api_session, _loaded_name = load_session_for_api_resolved(name, resolve=resolve)
+    api_session, _loaded_name = load_session_for_api_resolved(name, resolve=resolve, key=key)
     return api_session
 
 
@@ -884,7 +1002,9 @@ def _write_back_target(api_session: requests.Session, session_name: str) -> str:
     return loaded_name
 
 
-def update_session_cookies(api_session: requests.Session, session_name: str) -> None:
+def update_session_cookies(
+    api_session: requests.Session, session_name: str, *, key: bytes | None = None
+) -> None:
     """Persist an API session's cookies and token cache back to the session cache.
 
     Loads the original cached session (preserving browser metadata),
@@ -917,11 +1037,14 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         session_name: Name of the cached session to update, used verbatim unless
             no slot exists under it and it is the bare base of the slot
             *api_session* was last loaded from or saved to.
+        key: Optional raw Fernet key, for a host without the key file: the
+            stored session is read and written back with it. None uses the
+            configured key.
     """
     target = session_name
     try:
         try:
-            original, stored_metadata = _load_session_with_metadata(session_name)
+            original, stored_metadata = _load_session_with_metadata(session_name, key=key)
         except SessionNotFoundError:
             # The literal name answers first, so an existing slot is never
             # passed over; only its absence lets the session's own stamp name
@@ -929,7 +1052,7 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
             target = _write_back_target(api_session, session_name)
             if target == session_name:
                 raise
-            original, stored_metadata = _load_session_with_metadata(target)
+            original, stored_metadata = _load_session_with_metadata(target, key=key)
     except Exception as exc:  # noqa: BLE001 — best-effort save
         LOG.warning(
             "session_save_skipped_load_failed",
@@ -960,7 +1083,7 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         # the metadata at load (#293).
         if getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier:
             setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
-        cache_session(original, target, account_rule=stored_metadata.account_rule)
+        cache_session(original, target, account_rule=stored_metadata.account_rule, key=key)
         LOG.info("session_cookies_updated", session_name=target)
     except Exception as exc:  # noqa: BLE001 — best-effort save
         LOG.warning(
@@ -1097,7 +1220,9 @@ def clear_session_cache(
     return ClearedSessions(removed, skipped)
 
 
-def copy_session(source: str, dest: str, *, account_identifier: str | None) -> None:
+def copy_session(
+    source: str, dest: str, *, account_identifier: str | None, key: bytes | None = None
+) -> None:
     """Copy the session cached under *source* to *dest*, recording *account_identifier*.
 
     The session is unpickled and pickled again, so the names and identifier it
@@ -1109,17 +1234,21 @@ def copy_session(source: str, dest: str, *, account_identifier: str | None) -> N
     *source* afterwards. *source* equal to *dest* rewrites the slot in place.
     *source* itself is never deleted here.
 
+    *key*, when given, is the raw Fernet key both slots are read and written
+    with, for a host without the key file; None uses the configured key.
+
     Raises:
         ValueError: *dest* is not a legal session name.
         SessionNotFoundError: Nothing is cached under *source*.
         SessionExpiredError: *source* is expired or cannot be read, or the copy
             did not read back as written.
         ImportError: *source* needs the browser stack, which is not installed.
+        MissingEncryptionKeyError: No key was given and there is none to read.
         Exception: Whatever the backend raises when saving *dest*.
     """
     validate_session_name(dest)
     backend = _get_session_storage_backend()
-    session, metadata = _load_session_with_metadata(source)
+    session, metadata = _load_session_with_metadata(source, key=key)
     setattr(session, GP_ACCOUNT_ATTR, account_identifier)
     if hasattr(session, "_session_name"):
         setattr(session, "_session_name", dest)  # noqa: B010 (the name a BrowserSession pickles)
@@ -1133,11 +1262,12 @@ def copy_session(source: str, dest: str, *, account_identifier: str | None) -> N
         account_identifier=account_identifier,
         account_rule=ACCOUNT_RULE,
     )
-    backend.save_session(dest, encrypt_data(pickled_data), copied)
+    backend.save_session(dest, encrypt_data(pickled_data, key=key), copied)
+    _recheck_bare_slot_after_write(dest)
     stored_data, stored_metadata = backend.load_session(dest)
     if (
         stored_metadata.checksum != checksum
-        or hashlib.sha256(decrypt_data(stored_data)).hexdigest() != checksum
+        or hashlib.sha256(decrypt_data(stored_data, key=key)).hexdigest() != checksum
     ):
         raise SessionExpiredError(f"Session '{dest}' did not read back as written.")
 
