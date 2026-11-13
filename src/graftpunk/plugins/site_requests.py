@@ -19,6 +19,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from graftpunk.exceptions import (
+    MAX_RETRY_AFTER,
     CommandError,
     HTTPStatusError,
     RateLimitedError,
@@ -32,6 +33,8 @@ from graftpunk.logging import get_logger
 LOG = get_logger(__name__)
 
 _REJECTED_STATUSES = frozenset({401, 403})
+# Leading zeros aside, a delay of more digits than this is over the cap.
+_MAX_RETRY_AFTER_DIGITS = 16
 # The 5xx answers that mean the site is failing for now (RFC 9110 15.6). A 501
 # or 505 says the request will never work, so it keeps the plain wording.
 _SERVER_TROUBLE_STATUSES = frozenset({500, 502, 503, 504})
@@ -55,21 +58,30 @@ def _retry_after_seconds(value: str | None, now: datetime | None = None) -> int 
     """A ``Retry-After`` header as whole seconds to wait, or ``None`` when unusable.
 
     RFC 9110 10.2.3 allows delay-seconds or an HTTP date. Anything else is
-    dropped rather than echoed, since the header is the site's text.
+    dropped rather than echoed, since the header is the site's text, and so is
+    a wait longer than ``MAX_RETRY_AFTER`` (one day): the header's length and
+    value are the site's to choose, and neither may reach the user's terminal
+    as an absurd number or an error.
     """
     if value is None:
         return None
     value = value.strip()
-    if value.isascii() and value.isdigit():
-        return int(value)
     try:
-        when = parsedate_to_datetime(value)
+        if value.isascii() and value.isdigit():
+            # Bounded before int(): past 4300 digits int() raises ValueError,
+            # and anything longer than this is over the cap anyway.
+            if len(value) > _MAX_RETRY_AFTER_DIGITS:
+                return None
+            seconds = int(value)
+        else:
+            when = parsedate_to_datetime(value)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=UTC)
+            delay = (when - (now or datetime.now(UTC))).total_seconds()
+            seconds = max(0, math.ceil(delay))
     except (TypeError, ValueError, IndexError, OverflowError):
         return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=UTC)
-    delay = (when - (now or datetime.now(UTC))).total_seconds()
-    return max(0, math.ceil(delay))
+    return seconds if seconds <= MAX_RETRY_AFTER else None
 
 
 def _normalised_value(value: Any) -> Any:

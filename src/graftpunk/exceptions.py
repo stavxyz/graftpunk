@@ -122,15 +122,24 @@ class HTTPStatusError(CommandError):
         super().__init__(f"{message}: {advice}" if advice else message)
 
 
+# The longest Retry-After wait reported, in seconds (one day). A longer one is
+# treated as unusable: a site asking for days is better read as "a while" than
+# as a number the user cannot act on.
+MAX_RETRY_AFTER = 86400
+
+
 class RateLimitedError(HTTPStatusError):
     """A 429: the site is limiting how often the session may ask.
 
     ``retry_after`` is the wait the site asked for, in whole seconds, read from
     a ``Retry-After`` header given as seconds or as an HTTP date; ``None`` when
-    the response carried no usable one.
+    the response carried no usable one, including a wait over
+    ``MAX_RETRY_AFTER`` (one day) or below zero.
     """
 
     def __init__(self, method: str, path: str, retry_after: int | None) -> None:
+        if retry_after is not None and not 0 <= retry_after <= MAX_RETRY_AFTER:
+            retry_after = None
         self.retry_after = retry_after
         if retry_after is None:
             when = "Wait a while and try again."

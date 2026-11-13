@@ -1614,7 +1614,8 @@ Both normalise a `params` or `data` mapping before sending it:
 - `RateLimitedError` on a 429. Its message says the site is rate limiting
   requests and, when the response carries a `Retry-After` header (seconds or an
   HTTP date), how long to wait; `retry_after` holds that wait in seconds, or
-  `None`. Neither method retries on its own.
+  `None` when there is no usable header. A wait over one day is treated as no
+  usable header. Neither method retries on its own.
 - `SiteServerError` on a 500, 502, 503 or 504. Its message says the site is
   having trouble and to try again later.
 - `HTTPStatusError` on any other 4xx or 5xx, with the message

@@ -87,11 +87,17 @@ def _run(plugin: SitePlugin, response: requests.Response) -> tuple[int, str]:
             "GET /api/orders returned 429: the site is rate limiting requests. "
             "Wait a while and try again.",
         ),
+        (
+            429,
+            {"Retry-After": "9" * 5000},
+            "GET /api/orders returned 429: the site is rate limiting requests. "
+            "Wait a while and try again.",
+        ),
         (503, {}, "GET /api/orders returned 503: the site is having trouble. Try again later."),
         (500, {}, "GET /api/orders returned 500: the site is having trouble. Try again later."),
         (404, {}, "GET /api/orders returned 404"),
     ],
-    ids=["401", "403", "429-retry-after", "429", "503", "500", "404"],
+    ids=["401", "403", "429-retry-after", "429", "429-5000-digits", "503", "500", "404"],
 )
 def test_an_escaped_http_error_prints_the_request_json_advice(
     plugin: SitePlugin, status: int, headers: dict[str, str], message: str

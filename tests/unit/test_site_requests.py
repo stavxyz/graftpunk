@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from typing import Any
 
 import pytest
@@ -169,12 +170,13 @@ class TestStatusAdvice:
         )
 
     def test_429_with_a_retry_after_date_says_how_long_from_now(self) -> None:
-        error = _raised(429, **{"Retry-After": "Fri, 31 Dec 2100 23:59:59 GMT"})
+        when = datetime.now(UTC) + timedelta(hours=3)
+        error = _raised(429, **{"Retry-After": format_datetime(when, usegmt=True)})
         assert isinstance(error, RateLimitedError)
         assert error.retry_after is not None
-        assert error.retry_after > 0
-        assert "Try again in " in error.user_message
-        assert "2100" not in error.user_message
+        assert 3 * 3600 - 60 <= error.retry_after <= 3 * 3600
+        assert error.user_message.endswith("Try again in 3 hours.")
+        assert str(when.year) not in error.user_message
 
     def test_429_with_an_unreadable_retry_after_never_echoes_it(self) -> None:
         error = _raised(429, **{"Retry-After": "soon <script>", "X-Secret": "abc123"})
@@ -233,14 +235,48 @@ class TestRetryAfterSeconds:
             ("1.5", None),
             ("\u0661\u0662", None),
             ("tomorrow", None),
+            ("soon <b>now</b>", None),
+            ("86400", 86400),
+            ("0000000000000086400", None),
+            ("86401", None),
+            ("9" * 96, None),
+            ("9" * 5000, None),
+            ("Sat, 14 Nov 2026 12:00:00 GMT", 86400),
+            ("Sat, 14 Nov 2026 12:00:01 GMT", None),
+            ("Fri, 31 Dec 9999 23:59:59 GMT", None),
+            ("Fri, 13 Nov 2026 12:00:00 +9999", None),
         ],
     )
     def test_parses_seconds_or_an_http_date(self, value: str | None, expected: int | None) -> None:
         assert _retry_after_seconds(value, now=self._NOW) == expected
 
+    @pytest.mark.parametrize("method", ["json", "text"])
+    @pytest.mark.parametrize("value", ["9" * 5000, "9" * 96, "-5", "x" * 70000])
+    def test_any_retry_after_gives_a_clean_rate_limited_error(
+        self, method: str, value: str
+    ) -> None:
+        error = _raised(429, method, **{"Retry-After": value})
+        assert type(error) is RateLimitedError
+        assert error.retry_after is None
+        assert error.user_message == (
+            "GET /x returned 429: the site is rate limiting requests. Wait a while and try again."
+        )
+
+    @pytest.mark.parametrize("seconds", [-1, 86401, 10**30])
+    def test_a_wait_out_of_range_is_reported_as_unknown(self, seconds: int) -> None:
+        error = RateLimitedError("GET", "/x", seconds)
+        assert error.retry_after is None
+        assert error.user_message.endswith("Wait a while and try again.")
+
     @pytest.mark.parametrize(
         ("seconds", "wording"),
-        [(1, "1 second"), (119, "119 seconds"), (120, "2 minutes"), (7201, "3 hours")],
+        [
+            (1, "1 second"),
+            (119, "119 seconds"),
+            (120, "2 minutes"),
+            (7201, "3 hours"),
+            (86400, "24 hours"),
+        ],
     )
     def test_long_waits_read_in_larger_units(self, seconds: int, wording: str) -> None:
         error = RateLimitedError("GET", "/x", seconds)
