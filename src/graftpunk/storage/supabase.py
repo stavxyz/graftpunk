@@ -432,9 +432,7 @@ class SupabaseSessionStorage:
                         storage, self._metadata_path(folder)
                     ):
                         slots[folder] = True
-                    elif any(
-                        self._has_object(storage, f"{folder}/{file}") for file in slot_files
-                    ):
+                    elif any(self._has_object(storage, f"{folder}/{file}") for file in slot_files):
                         slots[folder] = False
         except (HTTPStatusError, StorageApiError) as e:
             LOG.error("failed_to_list_sessions", error=str(e), backend="supabase")
