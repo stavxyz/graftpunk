@@ -383,11 +383,11 @@ class ProjectView:
     src`` (ruff's default ``[".", "src"]`` when unset; a root ``.ruff.toml`` or
     ``ruff.toml`` wins over ``pyproject.toml``, and ``extend`` is followed, as
     in ruff), plus any name the project's own ``[tool.ruff.lint.isort]
-    known-first-party`` (or the legacy ``[tool.ruff.isort]``) declares. ``pysrc.with_import``'s ``first_party=``
-    argument, so ``add_command`` and ``gp plugin upgrade`` place a new import
-    into isort's first-party section exactly when ruff itself would sort it
-    there, whether the plugin lives in a package directory or is a single
-    module file.
+    known-first-party`` (or the legacy ``[tool.ruff.isort]``) declares. It is
+    what ``add_command`` and ``gp plugin upgrade`` pass as
+    ``pysrc.with_import``'s ``first_party=`` argument, so a new import lands in
+    isort's first-party section exactly when ruff itself would sort it there,
+    whether the plugin lives in a package directory or is a single module file.
 
     Design note: ``requirement_set`` is computed by ``read_project`` at read time,
     and both methods read ``self.requirement_set`` instead of the module attribute,
