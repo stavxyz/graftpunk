@@ -3048,3 +3048,85 @@ def test_a_lone_surrogate_logs_to_a_strict_utf8_stderr(
     text = raw.getvalue().decode("utf-8")
     assert "line" in text
     assert "a�b" in text or "a\\ud800b" in text
+
+
+_NUMERIC_SECRET = 1234567
+_NUMERIC_FORMS = [
+    str(_NUMERIC_SECRET),
+    format(_NUMERIC_SECRET, "x"),
+    format(_NUMERIC_SECRET, "X"),
+    format(_NUMERIC_SECRET, "o"),
+    format(_NUMERIC_SECRET, "e"),
+    format(_NUMERIC_SECRET, "E"),
+    format(_NUMERIC_SECRET, "g"),
+    "123456",  # %g's six significant digits
+]
+
+
+@pytest.mark.parametrize("fmt", ["json", "console"])
+class TestNoReversibleNumericForm:
+    """Round 3's retry handed ``%`` the raw number whatever the conversion, so
+    ``%x``, ``%o`` and ``%e`` wrote a numeric secret in hex, octal or exponent
+    form, which the text scrub cannot match. A number is put back only for
+    ``d``, ``i``, ``u``, ``f`` and ``F``."""
+
+    def _log(self, capsys: pytest.CaptureFixture[str], fmt: str, event: str, *args: Any) -> str:
+        from graftpunk.logging import configure_logging, get_logger, log_secrets
+
+        configure_logging(level="DEBUG", json_output=fmt == "json")
+        with log_secrets([str(_NUMERIC_SECRET)]):
+            get_logger("t").warning(event, *args)
+        err = strip_ansi(capsys.readouterr().err)
+        # The timestamp can hold digits by chance: check the rest of the line.
+        return re.sub(r"\d{4}-\d\d-\d\dT[\d:.]+Z", "", err)
+
+    @pytest.mark.parametrize(
+        "conversion", ["x", "X", "o", "e", "E", "g", "G", "c", "#x", "08o", ".3e"]
+    )
+    def test_a_non_decimal_conversion_writes_the_failed_line(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, conversion: str
+    ) -> None:
+        line = self._log(capsys, fmt, f"acct %{conversion}", _NUMERIC_SECRET)
+        for form in _NUMERIC_FORMS:
+            assert form not in line, form
+        assert "formatting failed" in line
+        assert REDACTED in line
+
+    def test_with_secret_bytes_before_it(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        line = self._log(capsys, fmt, "%r %x", str(_NUMERIC_SECRET).encode(), _NUMERIC_SECRET)
+        for form in _NUMERIC_FORMS:
+            assert form not in line, form
+
+    @pytest.mark.parametrize("conversion", ["d", "i", "u", "f", "F", "5d", ".1f"])
+    def test_a_decimal_conversion_writes_the_redacted_number(
+        self, capsys: pytest.CaptureFixture[str], fmt: str, conversion: str
+    ) -> None:
+        line = self._log(capsys, fmt, f"acct %{conversion} end", _NUMERIC_SECRET)
+        assert "formatting failed" not in line
+        assert f"acct {REDACTED}" in line
+        for form in _NUMERIC_FORMS:
+            assert form not in line, form
+
+    def test_a_mapping_writes_the_redacted_number(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        line = self._log(capsys, fmt, "acct %(a)d of %(b)s", {"a": _NUMERIC_SECRET, "b": "x"})
+        assert f"acct {REDACTED} of x" in line
+
+    def test_a_mapping_key_used_by_a_non_decimal_conversion_is_not_put_back(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        line = self._log(capsys, fmt, "acct %(a)d %(a)x", {"a": _NUMERIC_SECRET})
+        for form in _NUMERIC_FORMS:
+            assert form not in line, form
+        assert "formatting failed" in line
+
+    def test_one_decimal_and_one_hex_use_of_the_same_value(
+        self, capsys: pytest.CaptureFixture[str], fmt: str
+    ) -> None:
+        line = self._log(capsys, fmt, "acct %d %x", _NUMERIC_SECRET, _NUMERIC_SECRET)
+        for form in _NUMERIC_FORMS:
+            assert form not in line, form
+        assert "formatting failed" in line

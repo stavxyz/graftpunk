@@ -15,6 +15,7 @@ import fractions
 import logging as stdlib_logging
 import os
 import pathlib
+import re
 import sys
 import threading
 import traceback
@@ -640,10 +641,14 @@ def _unformatted(event: Any, positional: tuple[Any, ...], error: BaseException) 
 
 def _plain_number(raw: Any, scrubbed: Any) -> Any:
     """*raw* as a number carrying the scrubbed text, when the scrub turned it
-    into text (its digits held a secret), else *scrubbed*: ``%d`` and ``%f``
-    then take the plain number, which writes only ASCII digits, so the text
-    scrub of the formatted message finds the secret in it; ``%s`` and ``%r``
-    take the scrubbed text."""
+    into text (its digits held a secret), else *scrubbed*.
+
+    Only for an argument every one of whose conversions is ``d``, ``i``,
+    ``u``, ``f`` or ``F`` (:func:`_numeric_retry`): those write the number's
+    decimal digits, which the text scrub of the formatted message matches.
+    ``%s`` and ``%r`` of it take the scrubbed text. Hex, octal, exponent and
+    character forms (``x``, ``X``, ``o``, ``e``, ``E``, ``g``, ``G``, ``c``)
+    write a form the scrub cannot match, and never get the number."""
     if not isinstance(scrubbed, str) or isinstance(raw, bool):
         return scrubbed
     if isinstance(raw, int):
@@ -653,6 +658,43 @@ def _plain_number(raw: Any, scrubbed: Any) -> Any:
     if type(raw) in (decimal.Decimal, fractions.Fraction):
         return raw
     return scrubbed
+
+
+# One %-conversion: an optional mapping key, flags, width, precision, length
+# modifier, and the conversion character.
+_CONVERSION = re.compile(r"%(?:\(([^)]*)\))?[#0 +\-]*(\*|\d+)?(?:\.(\*|\d+))?[hlL]?([a-zA-Z%])")
+_DECIMAL_CONVERSIONS = frozenset("diufF")
+
+
+def _numeric_retry(
+    event: str, positional: tuple[Any, ...], scrubbed: tuple[Any, ...]
+) -> tuple[Any, ...]:
+    """*scrubbed* with a number put back (:func:`_plain_number`) where every
+    conversion that takes it writes decimal digits: by position, or by name
+    for a single mapping. A ``*`` width or precision takes arguments too, so
+    nothing is put back in a format that has one."""
+    conversions = [m for m in _CONVERSION.finditer(event) if m.group(4) != "%"]
+    if any("*" in (m.group(2) or "", m.group(3) or "") for m in conversions):
+        return scrubbed
+    if len(positional) == 1 and isinstance(positional[0], Mapping) and positional[0]:
+        raw, ready = positional[0], scrubbed[0]
+        if not isinstance(ready, dict):
+            return scrubbed
+        kinds: dict[str, set[str]] = {}
+        for m in conversions:
+            kinds.setdefault(m.group(1) or "", set()).add(m.group(4))
+        restored = dict(ready)
+        for key, used in kinds.items():
+            if used <= _DECIMAL_CONVERSIONS and key in raw and key in ready:
+                restored[key] = _plain_number(raw[key], ready[key])
+        return (restored,)
+    kinds_at = [m.group(4) for m in conversions]
+    return tuple(
+        _plain_number(raw, ready)
+        if index < len(kinds_at) and kinds_at[index] in _DECIMAL_CONVERSIONS
+        else ready
+        for index, (raw, ready) in enumerate(zip(positional, scrubbed, strict=True))
+    )
 
 
 def _formatted(
@@ -665,8 +707,9 @@ def _formatted(
     With *scrub* (inside a secret scope) the message is formatted from the
     scrubbed arguments, so an escaped form of a secret (``%r`` of bytes, ``%a``)
     is never written. If that fails, which a number whose digits held a secret
-    makes it do under ``%d``, such numbers are put back as plain numbers and the
-    message is formatted again. A format that still fails, or fails without a
+    makes it do under ``%d``, such numbers are put back where every conversion
+    of them writes decimal digits (:func:`_numeric_retry`) and the message is
+    formatted again. A format that still fails, or fails without a
     scope, is written by :func:`_unformatted`. The message is scrubbed last in
     every case.
     """
@@ -684,10 +727,11 @@ def _formatted(
         scrubbed = tuple(scrub(value) for value in positional)
     try:
         message = _percent(event, scrubbed)
-    except Exception:  # noqa: BLE001 - try again with plain numbers
-        numbers = tuple(map(_plain_number, positional, scrubbed))
+    except Exception as first:  # noqa: BLE001 - try again with plain numbers
         try:
-            message = _percent(event, numbers)
+            if not isinstance(event, str):
+                raise first
+            message = _percent(event, _numeric_retry(event, positional, scrubbed))
         except Exception as error:  # noqa: BLE001 - a log call must not raise
             message = _unformatted(event, scrubbed, error)
     return (*head, scrub(message))
