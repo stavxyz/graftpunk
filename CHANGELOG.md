@@ -18,7 +18,7 @@ This is a patch release of two login fixes, a correction to the 1.15.0 Upgrading
 ### Changed
 
 - **The README's examples use `mybank.example`** (#211), so the recording walk-through's `--no-session` run is filed under `mybank`, the name graftpunk infers from the host, and every later command names it. The `gp config` example shows a generic `your-secret-tool read` command and says any command that prints the value works, as the plugin developer guide does.
-- **`resolve_run` in `graftpunk.cli.observe_commands` takes no `base_dir` keyword** (#207). It always reads the module's `OBSERVE_BASE_DIR`; the keyword existed only for tests. `setup_observe_session` imports its graftpunk names at module level; `nodriver` and `graftpunk.session` stay deferred because both need the browser extra.
+- **`resolve_run` in `graftpunk.cli.observe_commands` takes no `base_dir` keyword** (#207). It always reads the module's `OBSERVE_BASE_DIR`; the keyword existed only for tests. `setup_observe_session` imports its graftpunk names at module level; `nodriver`, `graftpunk.session` and `graftpunk.observe.capture` stay deferred so the CLI imports without the browser stack (`graftpunk.observe.capture` imports selenium whenever it is installed).
 
 ### Fixed
 

@@ -34,7 +34,6 @@ from graftpunk.dialogs import answer_dialogs_in_new_tabs, close_dialogs_in_new_t
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
-from graftpunk.observe.capture import NodriverCaptureBackend
 from graftpunk.observe.run import make_run_id, save_observe_run
 from graftpunk.observe.storage import ObserveStorage, session_dirname
 
@@ -120,10 +119,13 @@ async def setup_observe_session(
         The set-up :class:`ObserveSession`, or None on failure.
     """
 
-    # Both need the browser extra (graftpunk.session imports requestium and
-    # selenium), and the CLI must import without it (the lean-install CI job).
+    # These stay here because the CLI must import without the browser stack (the
+    # lean-install CI job, test_cli_import_stays_browser_free): nodriver is the
+    # browser extra, graftpunk.session imports requestium and selenium, and
+    # graftpunk.observe.capture imports selenium whenever it is installed.
     import nodriver
 
+    from graftpunk.observe.capture import NodriverCaptureBackend
     from graftpunk.session import inject_cookies_to_nodriver
 
     session = None

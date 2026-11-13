@@ -128,7 +128,7 @@ class TestRunObserveInteractiveSavesOnStop:
                 return_value=(1, 0),
             ) as mock_inject,
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=mock_backend,
             ) as mock_backend_cls,
             patch(
@@ -275,7 +275,7 @@ class TestRunObserveInteractiveSavesOnStop:
                 new_callable=AsyncMock,
             ) as mock_inject,
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=mock_backend,
             ),
             patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=MagicMock()),
@@ -434,7 +434,7 @@ class TestSetupObserveSessionTakesDomSnapshots:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend", return_value=mock_backend
+                "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
             ) as backend_cls,
             patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=mock_storage),
         ):
@@ -473,7 +473,7 @@ class TestSetupObserveSessionTakesDomSnapshots:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend", return_value=mock_backend
+                "graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend
             ) as backend_cls,
             patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=mock_storage),
             patch("graftpunk.cli.observe_browser.answer_dialogs_in_new_tabs", new_tabs),
@@ -522,7 +522,7 @@ class TestSetupObserveSessionSigintIsolation:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=mock_backend,
             ),
             patch(
@@ -585,9 +585,7 @@ class TestSetupObserveSessionSigintIsolation:
 
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
-            patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend", return_value=mock_backend
-            ),
+            patch("graftpunk.observe.capture.NodriverCaptureBackend", return_value=mock_backend),
             patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=mock_storage),
         ):
             await setup_observe_session(
@@ -631,7 +629,7 @@ class TestSetupObserveSessionSigintIsolation:
             with (
                 patch.dict("sys.modules", {"nodriver": mock_nodriver}),
                 patch(
-                    "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                    "graftpunk.observe.capture.NodriverCaptureBackend",
                     return_value=mock_backend,
                 ),
                 patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=mock_storage),
@@ -732,7 +730,7 @@ class TestSetupObserveSessionSigintIsolation:
             with (
                 patch.dict("sys.modules", {"nodriver": mock_nodriver}),
                 patch(
-                    "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                    "graftpunk.observe.capture.NodriverCaptureBackend",
                     return_value=mock_backend,
                 ),
                 patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=mock_storage),
@@ -821,7 +819,7 @@ class TestObserveBrowserHygiene:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=self._capture_backend(),
             ),
             patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
@@ -860,7 +858,7 @@ class TestObserveBrowserHygiene:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=self._capture_backend(),
             ),
             patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
@@ -892,7 +890,7 @@ class TestObserveBrowserHygiene:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=self._capture_backend(),
             ),
             patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
@@ -923,7 +921,7 @@ class TestObserveBrowserHygiene:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=self._capture_backend(),
             ),
             patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
@@ -959,7 +957,7 @@ class TestObserveBrowserHygiene:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=self._capture_backend(),
             ),
             patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
@@ -1046,7 +1044,7 @@ class TestObserveArmsTheSignalHandlers:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.cli.observe_browser.NodriverCaptureBackend",
+                "graftpunk.observe.capture.NodriverCaptureBackend",
                 return_value=hygiene._capture_backend(),
             ),
             patch("graftpunk.cli.observe_browser.ObserveStorage", return_value=storage),
