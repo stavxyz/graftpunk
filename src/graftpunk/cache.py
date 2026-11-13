@@ -1059,9 +1059,9 @@ def clear_session_cache(
     leftovers = list_incomplete_sessions(backend_override=backend_override)
     for name in [*backend.list_sessions(), *leftovers]:
         if not is_slot_name(name):
-            # A slot an older release saved under a name the rules now refuse:
-            # never deleted by a sweep (check_slot_name).
-            LOG.warning("session_not_cleared_invalid_name", name=name)
+            # A name deleting under is unsafe (check_slot_name): no backend
+            # writes one, so it is left alone and logged.
+            LOG.warning("session_not_cleared_unsafe_name", name=name)
             continue
         if backend.delete_session(name):
             removed.append(name)

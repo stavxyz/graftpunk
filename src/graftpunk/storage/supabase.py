@@ -424,7 +424,7 @@ class SupabaseSessionStorage:
         return sessions
 
     def incomplete_sessions(self) -> list[str]:
-        """Slot folders holding files but no ``metadata.json``, named as a session can be.
+        """Slot folders holding files but no ``metadata.json``, under a safe name.
 
         They are not sessions (:meth:`list_sessions` leaves them out), but
         clearing every session removes them too. Costs 1 + N requests, as

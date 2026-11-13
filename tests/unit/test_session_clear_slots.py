@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -14,10 +15,10 @@ from graftpunk import cache as cache_mod
 from graftpunk.cli import plugin_commands
 from graftpunk.cli.session_commands import session_app
 from graftpunk.exceptions import StorageError
-from graftpunk.storage.base import SessionMetadata
+from graftpunk.storage.base import SessionMetadata, metadata_to_dict
 from graftpunk.storage.local import LocalSessionStorage
 
-_BAD_NAMES = ["", ".", "..", "a/b", "../myshop", "myshop/..", "MyShop", "a@b@c"]
+_BAD_NAMES = ["", ".", "..", "a/b", "../myshop", "myshop/..", "a\\b", "my\x00shop", "my\nshop"]
 
 
 def _metadata(name: str) -> SessionMetadata:
@@ -214,27 +215,63 @@ class TestNoDeleteUnderABadName:
             cache_mod.remove_session_objects(name)
 
 
-class TestABadlyNamedDirectoryIsNeverSwept:
-    def test_it_is_not_incomplete_and_clear_all_leaves_it(self, local_backend) -> None:
+class TestALegacyNameStaysClearable:
+    """A slot an older release saved under a name today's rules refuse (#382)."""
+
+    @staticmethod
+    def _legacy(backend, name: str = "Legacy") -> Path:
+        slot = backend.base_dir / name
+        slot.mkdir(parents=True)
+        (slot / "session.pickle").write_bytes(b"x")
+        (slot / "metadata.json").write_text(json.dumps(metadata_to_dict(_metadata(name))))
+        return slot
+
+    def test_it_clears_by_name(self, local_backend) -> None:
+        slot = self._legacy(local_backend)
+
+        result = _clear("Legacy", "--force")
+
+        assert result.exit_code == 0, result.output
+        assert "Legacy/session.pickle" in result.output
+        assert not slot.exists()
+
+    def test_clear_all_includes_it(self, local_backend) -> None:
+        slot = self._legacy(local_backend)
+        local_backend.save_session("myshop", b"data", _metadata("myshop"))
+
+        result = _clear("--all", "--force")
+
+        assert result.exit_code == 0, result.output
+        assert not slot.exists()
+        assert not (local_backend.base_dir / "myshop").exists()
+
+    def test_the_sweep_and_the_backends_include_it(self, local_backend) -> None:
+        slot = self._legacy(local_backend)
         odd = local_backend.base_dir / "My Notes"
-        odd.mkdir(parents=True)
+        odd.mkdir()
         (odd / "keep.txt").write_text("x")
-        half = local_backend.base_dir / "half"
-        half.mkdir()
-        (half / "session.pickle").write_bytes(b"x")
 
-        assert cache_mod.list_incomplete_sessions() == ["half"]
-        assert cache_mod.clear_session_cache() == ["half"]
-        assert (odd / "keep.txt").exists()
+        assert cache_mod.list_incomplete_sessions() == ["My Notes"]
+        assert sorted(cache_mod.clear_session_cache()) == ["Legacy", "My Notes"]
+        assert not slot.exists()
 
-    def test_a_listed_session_with_a_refused_name_is_skipped_by_the_sweep(
-        self, local_backend
+    def test_a_legacy_flat_file_clears_by_name(self, local_backend) -> None:
+        flat = local_backend.base_dir / "OldShop.session.pickle"
+        flat.write_bytes(b"x")
+
+        result = _clear("OldShop", "--force")
+
+        assert result.exit_code == 0, result.output
+        assert not flat.exists()
+
+    def test_a_slot_symlinked_outside_the_sessions_directory_is_refused(
+        self, local_backend, tmp_path: Path
     ) -> None:
-        legacy = local_backend.base_dir / "Legacy"
-        legacy.mkdir(parents=True)
-        (legacy / "session.pickle").write_bytes(b"x")
-        (legacy / "metadata.json").write_text("{}")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("x")
+        (local_backend.base_dir / "myshop").symlink_to(outside, target_is_directory=True)
 
-        assert "Legacy" in cache_mod.list_sessions()
-        assert cache_mod.clear_session_cache() == []
-        assert legacy.exists()
+        with pytest.raises(ValueError, match="outside"):
+            local_backend.remove_session("myshop")
+        assert (outside / "keep.txt").exists()

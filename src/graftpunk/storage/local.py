@@ -432,7 +432,8 @@ class LocalSessionStorage:
         A crash during a save, an older release, or a hand-made copy can
         leave one. They are not sessions (:meth:`list_sessions` leaves them
         out, and loading one fails), but clearing every session removes them
-        too. A directory whose name is no session name is never one.
+        too. A hidden directory, or a name deleting under is unsafe
+        (check_slot_name), is never one.
         """
         if not self.base_dir.exists():
             return []
@@ -441,6 +442,7 @@ class LocalSessionStorage:
                 item.name
                 for item in self.base_dir.iterdir()
                 if item.is_dir()
+                and not item.name.startswith(".")
                 and is_slot_name(item.name)
                 and not ((item / "session.pickle").exists() and (item / "metadata.json").exists())
             )
@@ -456,11 +458,15 @@ class LocalSessionStorage:
         there or the delete failed (logged).
 
         Raises:
-            ValueError: *name* is not a session name (``""``, ``.`` and ``..``
-                would be the sessions directory or its parent).
+            ValueError: deleting under *name* is unsafe
+                (:func:`~graftpunk.storage.base.check_slot_name`), or its slot
+                resolves outside the sessions directory.
         """
         check_slot_name(name)
         session_dir = self.base_dir / name
+        root = self.base_dir.resolve()
+        if session_dir.resolve().parent != root:
+            raise ValueError(f"Session slot {name!r} resolves outside {root}")
 
         if session_dir.is_dir():
             try:

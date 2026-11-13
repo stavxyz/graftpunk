@@ -9,15 +9,21 @@ if TYPE_CHECKING:
 
 
 def check_slot_name(name: str) -> None:
-    """Raise ``ValueError`` unless *name* is a session name graftpunk could have saved.
+    """Raise ``ValueError`` when deleting under the slot *name* is unsafe.
 
-    Every backend calls it before deleting anything under a slot: an empty
-    name, ``.``, ``..``, or a name with a path separator would otherwise reach
-    the sessions directory itself or a bucket's root.
+    Every backend calls it before deleting anything under a slot. Refused: an
+    empty name, ``.``, ``..``, a name holding ``/`` or ``\\``, and one holding
+    NUL or another control character, each of which could reach the sessions
+    directory itself, a parent of it, or a bucket's root. Nothing else is: a
+    name an older release saved and today's session-name rules refuse
+    (``MyShop``) still names its own slot, and it must stay clearable.
     """
-    from graftpunk.session_identity import validate_session_name
-
-    validate_session_name(name)
+    if name in ("", ".", ".."):
+        raise ValueError(f"Not a session slot: {name!r}")
+    if "/" in name or "\\" in name:
+        raise ValueError(f"A session slot name cannot hold a path separator: {name!r}")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise ValueError(f"A session slot name cannot hold a control character: {name!r}")
 
 
 def is_slot_name(name: str) -> bool:
@@ -238,8 +244,8 @@ class SessionStorageBackend(Protocol):
         """Slots holding objects but no complete session, sorted.
 
         :meth:`list_sessions` leaves them out; clearing every session removes
-        them. Only a name that passes :func:`check_slot_name` is one: anything
-        else stored there is not graftpunk's to delete.
+        them. A name deleting under is unsafe (:func:`check_slot_name`) is
+        never one.
         """
         ...
 

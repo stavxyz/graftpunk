@@ -16,7 +16,7 @@ from graftpunk import (
     list_sessions_with_metadata,
     load_session,
 )
-from graftpunk.cache import list_incomplete_sessions, remove_session_objects
+from graftpunk.cache import list_incomplete_sessions, list_sessions, remove_session_objects
 from graftpunk.cli import plugin_commands
 from graftpunk.cli.errors import needs_browser_stack
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
@@ -463,6 +463,15 @@ def _slot_to_clear(
     exact = next((s for s in all_metadata if s["name"] == target), None)
     if exact is not None:
         return target, exact
+    try:
+        listed = target in list_sessions(backend_override=backend_override)
+    except (ValueError, StorageError) as exc:
+        console.print(f"[red]✗ Storage backend error: {escape(str(exc))}[/red]")
+        raise typer.Exit(1) from None
+    if listed:
+        # A session with no readable metadata (a legacy flat file): still its
+        # own slot, under whatever name an older release gave it.
+        return target, {"name": target, "domain": None}
     incomplete = _incomplete_or_exit(backend_override)
     if target in incomplete:
         return target, {"name": target, "domain": _INCOMPLETE}
