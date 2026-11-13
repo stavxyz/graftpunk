@@ -51,6 +51,16 @@ def test_config_show_same_panel(_isolated):
         assert label in result.stdout
 
 
+def test_config_show_names_the_workstation_env_file_beside_the_sessions(_isolated):
+    """Both paths in one panel, so a split between them is visible at a glance (#282)."""
+    result = runner.invoke(app, ["config", "show"])
+    assert result.exit_code == 0
+    rows = (line.strip("│ ").partition(":") for line in result.stdout.splitlines())
+    lines = {label.strip(): value.strip() for label, _, value in rows if value}
+    assert lines["Sessions directory"] == str(_isolated / "sessions")
+    assert lines["Workstation env"] == str(_isolated / "env")
+
+
 def test_config_path(_isolated):
     result = runner.invoke(app, ["config", "path"])
     assert result.exit_code == 0

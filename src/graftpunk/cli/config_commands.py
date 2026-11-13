@@ -42,6 +42,7 @@ def render_settings_panel(target_console: Console) -> None:
     info = f"""
 [dim]Config directory:[/dim]   {escape(str(settings.config_dir))}
 [dim]Sessions directory:[/dim] {escape(str(settings.sessions_dir))}
+[dim]Workstation env:[/dim]    {escape(str(paths.workstation_env_path()))}
 [dim]Storage backend:[/dim]    {storage_display}
 [dim]Session TTL:[/dim]        {settings.session_ttl_hours}h ({settings.session_ttl_hours // 24}d)
 [dim]Log level:[/dim]          {settings.log_level}

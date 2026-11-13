@@ -51,6 +51,8 @@ from graftpunk.storage.base import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from graftpunk.graftpunk_session import GraftpunkSession
     from graftpunk.storage.base import SessionStorageBackend
 
@@ -80,6 +82,10 @@ _EPHEMERAL_HEADERS: frozenset[str] = frozenset({"x-csrf-token"})
 
 # Global session storage backend (lazy-loaded)
 _session_storage_backend: "SessionStorageBackend | None" = None
+# The sessions directory a cached local backend was built for. The config
+# directory is read live (#282), so a GRAFTPUNK_CONFIG_DIR changed after the
+# backend was built must reach the backend too, not only the settings.
+_session_storage_backend_dir: "Path | None" = None
 
 
 _VALID_BACKEND_TYPES = {"local", "supabase", "s3"}
@@ -152,21 +158,28 @@ def _get_session_storage_backend(
     if backend_override is not None:
         return _create_backend(backend_override)
 
-    global _session_storage_backend
-
-    if _session_storage_backend is not None:
-        return _session_storage_backend
+    global _session_storage_backend, _session_storage_backend_dir
 
     settings = get_settings()
+    local = settings.storage_backend == "local"
+    if _session_storage_backend is not None and (
+        not local
+        or _session_storage_backend_dir is None
+        or _session_storage_backend_dir == settings.sessions_dir
+    ):
+        return _session_storage_backend
+
     _session_storage_backend = _create_backend(settings.storage_backend)
+    _session_storage_backend_dir = settings.sessions_dir if local else None
 
     return _session_storage_backend
 
 
 def _reset_session_storage_backend() -> None:
     """Reset the session storage backend (for testing)."""
-    global _session_storage_backend
+    global _session_storage_backend, _session_storage_backend_dir
     _session_storage_backend = None
+    _session_storage_backend_dir = None
 
 
 def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]:

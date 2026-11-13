@@ -473,7 +473,7 @@ gp plugin add-command mybank --from-run <name> --command "statements=GET /api/st
 | Variable | Default | Description |
 |:---------|:--------|:------------|
 | `GRAFTPUNK_STORAGE_BACKEND` | `local` | Storage: `local`, `supabase`, or `s3` |
-| `GRAFTPUNK_CONFIG_DIR` | `~/.config/graftpunk` | Config and encryption key location |
+| `GRAFTPUNK_CONFIG_DIR` | `~/.config/graftpunk` | Config, sessions, plugins, workstation env file and encryption key location. Read from the real environment only (not from a `.env`); empty counts as unset |
 | `GRAFTPUNK_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
 | `GRAFTPUNK_LOG_LEVEL` | `WARNING` | Logging verbosity |
 | `GRAFTPUNK_LOG_FORMAT` | `console` | Log format: `console` or `json` |
