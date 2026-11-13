@@ -1163,6 +1163,30 @@ def _name_corpus() -> list[str]:
         for word in _TOKEN_WORDS
         for spelling in (word, word.capitalize(), word.upper(), f"X-{word.capitalize()}")
     ]
+    corpus += [*_NAMES_SINCE_279, *_HELD_BACK_SINCE_279]
+    prefixes = ["_ga_", "_hjSessionUser_", "AMCV_", ".AspNetCore.Antiforgery.", "ASPSESSIONID"]
+    corpus += [
+        rng.choice(prefixes) + "".join(rng.choices(name_alphabet + "%", k=rng.randint(1, 70)))
+        for _ in range(2_000)
+    ]
+    corpus += [
+        "ctl00_"
+        + "_".join(
+            rng.choices(
+                [
+                    "ContentPlaceHolder1",
+                    "ctl01",
+                    "Login1",
+                    "UserName",
+                    "Zq9XkLmPwR4t7Bv2",
+                    "txtName",
+                    "88812345",
+                ],
+                k=rng.randint(1, 4),
+            )
+        )
+        for _ in range(1_000)
+    ]
     return corpus
 
 
@@ -1191,6 +1215,9 @@ _COPIED_GATE = [
     "_MIN_WORD_BESIDE_DIGITS",
     "_DIGITS_READ_AS_WORDS",
     "_SCALE_DIGITS",
+    "_LEADING_DIGIT_TOKENS",
+    "_NAME_INITIALS",
+    "_FRAMEWORK_PREFIXES",
 ]
 _COPIED_GATE_PATTERNS = [
     "_NAME_CHARS_RE",
@@ -1204,6 +1231,8 @@ _COPIED_GATE_PATTERNS = [
     "_HASH_NAME_RE",
     "_HASH_SIZE_RE",
     "_NAME_PART_RE",
+    "_PREFIXED_SUFFIX_RE",
+    "_WEBFORMS_ID_RE",
 ]
 
 
@@ -1281,5 +1310,66 @@ def test_a_digit_run_between_words_or_in_a_token_reads_as_a_name_in_both_gates(
     ],
 )
 def test_a_digit_run_not_between_words_is_still_held_back(name: str) -> None:
+    assert not printable_name(name)
+    assert not _load_har_facts().printable_name(name)
+
+
+# #279: names a real API, form, or framework uses that the gate counted as values.
+_NAMES_SINCE_279 = (
+    "nbf",
+    "msrp",
+    "txn_id",
+    "invoiceNbr",
+    "jsonapi",
+    "txtQty",
+    "fx",
+    "svc",
+    "a11y",
+    "h264",
+    "e164",
+    "s3Key",
+    "s3Bucket",
+    "txtFName",
+    "txtLName",
+    "ajs_user_id",
+    "ajs_anonymous_id",
+    ".AspNetCore.Identity.Application",
+    ".AspNetCore.Antiforgery.CfDJ8AbCdEf",
+    "_hjSessionUser_Mapleton",
+    "AMCV_6A3F1B2C5E8D9F0A1B2C3D4E%40AdobeOrg",
+    "_ga_ZXQ9KP3L2M",
+    "ASPSESSIONIDQABCDEFG",
+    "ctl00_ContentPlaceHolder1_Login1_UserName",
+    "ctl00_ContentPlaceHolder1_ctl01_ctl02_txtName",
+)
+# Probes the #279 rules must not let through: random text beside a new word or
+# token, a prefix before an id, and values the rules first tried let in.
+_HELD_BACK_SINCE_279 = (
+    "_hjSessionUser_1234567",
+    "_gat_gtag_UA_12345678_1",
+    "_ga_alice.example@mail.example",
+    "AMCV_Zq9XkLmPwR4t7Bv2Hn8Ks3Jd",
+    "ctl00_ContentPlaceHolder1_Zq9XkLmPwR4t7Bv2",
+    "ctl00_Login_88812345",
+    "s3Zq9vKx",
+    "jS3Poun3",
+    "dmommpS3",
+    "CulFX_lv",
+    "eBndimso",
+    "TKayrbpn",
+    "txtQName",
+    "fxZq9vKx",
+    "msrpQz9XvKw",
+)
+
+
+@pytest.mark.parametrize("name", _NAMES_SINCE_279)
+def test_a_name_279_found_held_back_reads_as_a_name_in_both_gates(name: str) -> None:
+    assert printable_name(name)
+    assert _load_har_facts().printable_name(name)
+
+
+@pytest.mark.parametrize("name", _HELD_BACK_SINCE_279)
+def test_a_value_beside_a_279_word_is_still_held_back_in_both_gates(name: str) -> None:
     assert not printable_name(name)
     assert not _load_har_facts().printable_name(name)

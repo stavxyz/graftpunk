@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from graftpunk.har.naming import HTTP_METHODS
+from graftpunk.har.paths import looks_dynamic
 from tests.unit.guide_harness import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "skills" / "graft" / "scripts" / "har-facts.py"
@@ -1247,3 +1248,78 @@ def test_a_printed_url_matches_without_the_flag(tmp_path: Path) -> None:
     assert _lines("request", har, "{}.shop.test")[0] == (
         "(method not shown) https://{}.shop.test/hostcheck"
     )
+
+
+# #279: real names counted as values, and path segments the digest templates.
+
+
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        ("_hjSessionUser_1234567", "_hjSessionUser_{}"),
+        ("_gat_gtag_UA_12345678_1", "_gat_gtag_UA_{}"),
+        ("_ga_ZXQ9KP3L2M", "_ga_ZXQ9KP3L2M"),
+        ("AMCV_6A3F1B2C5E8D9F0A1B2C3D4E%40AdobeOrg", "AMCV_6A3F1B2C5E8D9F0A1B2C3D4E%40AdobeOrg"),
+        ("_ga_alice.example@mail.example", None),
+        ("uid_SAMCOOKIE_X", None),
+    ],
+)
+def test_a_framework_prefix_prints_with_its_id_suffix_as_a_placeholder(
+    name: str, shown: str | None
+) -> None:
+    assert _load_script().shown_name(name) == shown
+
+
+def test_cookies_print_a_framework_prefix_cookie_once_per_prefix() -> None:
+    entry = _entry(
+        "GET",
+        "https://myshop.example/",
+        request_headers=[_h("Cookie", "_hjSession_7654321=1; _hjSession_1234567=2")],
+        response_headers=[_h("Set-Cookie", "_hjSessionUser_1234567=1; Path=/")],
+    )
+    entry["startedDateTime"] = "2026-10-31T10:00:00.000Z"
+    lines = _load_script().cookies([entry])
+    assert lines[0] == "cookie _hjSessionUser_{}"
+    assert lines[-1] == "sent in requests and never set in this recording: _hjSession_{}"
+    assert not any("1234567" in line or "7654321" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("segment", "printed"),
+    [("svc", "svc"), ("eFiling", "eFiling"), ("WebObjects", "WebObjects")],
+)
+def test_route_segments_279_found_held_back_print(segment: str, printed: str) -> None:
+    assert _load_script().templated_path(f"/{segment}/x") == f"/{printed}/x"
+
+
+def test_no_segment_prints_that_the_digests_key_replaces() -> None:
+    """A segment graftpunk's path rule reads as dynamic is never printed; before
+    #279, line2Address printed here and was {id} in the digest's key."""
+    script = _load_script()
+    rng = random.Random(_RNG_SEED)  # noqa: S311 - a fixed sample, not a secret
+    samples = list(_samples().values())
+    corpus = [rng.choice(samples)(rng) for _ in range(20_000)]
+    corpus += ["line2Address", "covid19Status", "added2cart", "name1", "v2", "page2", "s3Key"]
+    printed = [s for s in corpus if script.templated_path(f"/{s}") == f"/{s}"]
+    assert [s for s in printed if looks_dynamic(s)] == []
+    assert script.templated_path("/line2Address") == "/{}"
+    assert script.templated_path("/name1") == "/name1"
+
+
+def test_a_webforms_element_id_prints_as_its_posted_name_does(tmp_path: Path) -> None:
+    page = (
+        '<form method="post" action="/Login.aspx">'
+        '<input name="ctl00$ContentPlaceHolder1$Login1$UserName" '
+        'id="ctl00_ContentPlaceHolder1_Login1_UserName">'
+        '<input id="ctl00_ContentPlaceHolder1_ctl01_ctl02_txtName">'
+        "</form>"
+    )
+    path = tmp_path / "network.har"
+    entry = _entry(
+        "GET", "https://myshop.example/Login.aspx", content={"mimeType": "text/html", "text": page}
+    )
+    path.write_text(json.dumps({"log": {"entries": [entry]}}))
+    lines = _lines("response", str(path), "/Login.aspx")
+    assert "      ctl00$ContentPlaceHolder1$Login1$UserName: text" in lines
+    element_id = "ctl00_ContentPlaceHolder1_ctl01_ctl02_txtName"
+    assert f"      (no name) text, control 2 of the form, id {element_id}" in lines

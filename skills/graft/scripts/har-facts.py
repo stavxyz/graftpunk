@@ -30,21 +30,29 @@ with every word spelled with the consonant pairs English uses (graftpunk's
 capitals only as a known acronym or in a name all in capitals (an acronym of
 three letters or more also passes in lower or capitalised case inside camel
 case, so ``Csrf``, ``xsrfToken``, and ``JwtToken`` pass, and a lone ``X`` may
-stand before a word, as in ``XCsrf``), digits only as a
-run of at most 2 ending a word, and nothing graftpunk's ``holds_an_id`` reads as
-an id. The spelling pairs and rule, and ``holds_an_id``, are copied here (the
-script cannot import graftpunk) and held equal to graftpunk's by tests. A path
-segment must also hold no run of more than three capitals outside a
-listed acronym.
+stand before a word, as in ``XCsrf``, and an ``F``, ``L``, or ``M`` before
+``Name``, as in ``FName``), digits only as a run of at most 2 ending a word or
+in a known token (``sha256``, ``a11y``, ``e164``, ``s3`` starting a name), and
+nothing graftpunk's ``holds_an_id`` reads as an id. The spelling pairs and rule,
+and ``holds_an_id``, are copied here (the script cannot import graftpunk) and
+held equal to graftpunk's by tests. A path segment must also hold no run of
+more than three capitals outside a listed acronym, and be one graftpunk's
+``looks_dynamic`` keeps, so no segment prints that the digest's key replaces.
 
 The fixed framework names pass by exact name: standard, CDN, and bot-manager
 header names (``Upgrade-Insecure-Requests``, ``WWW-Authenticate``, ``cf-ray``,
 ``x-amz-cf-id``), framework cookie names (``.ASPXAUTH``, ``ASP.NET_SessionId``,
 ``__cf_bm``, ``cf_clearance``, ``_abck``, ``bm_sz``, ``_fbp``, ``_gcl_au``),
 ASP.NET WebForms page state (``__VIEWSTATE``, ``__EVENTVALIDATION``), and route
-segments (``graphql``, ``jsonrpc``, ``xmlrpc.php``, ``cgi-bin``, ``2fa``). A shape a
-framework fixes passes when its other pieces pass the gate: a WebForms control
-(``ctl00$MainContent$txtUserName``, ``btnLogin``, ``pwdConfirm``), a Django
+segments (``graphql``, ``jsonrpc``, ``xmlrpc.php``, ``cgi-bin``, ``2fa``,
+``eFiling``). A cookie name a framework builds from a fixed prefix and a per-site
+suffix (``_ga_<container>``, ``_hjSessionUser_<site>``, ``AMCV_<org>``,
+``.AspNetCore.Antiforgery.<app>``, ``ASPSESSIONID<letters>``) passes when
+``holds_an_id`` does not read the suffix as an id, and prints as the prefix and
+``{}`` when it does. A shape a framework fixes passes when its other pieces pass
+the gate: a WebForms control (``ctl00$MainContent$txtUserName``, ``btnLogin``,
+``pwdConfirm``, and its element id ``ctl00_MainContent_txtUserName``, judged as
+the ``$``-joined name is), a Django
 formset field (``<prefix>-<index>-<field>``, the index at most 2 digits) or
 management field (``<prefix>-TOTAL_FORMS`` and the other three), the prefix and
 the field gated and the prefix gated unless it is 1 to 4 lower-case letters
@@ -307,7 +315,10 @@ _ACRONYMS = frozenset(
         "ID IDS URL URI API XML HTML JSON CSRF XSRF UUID IP UI SSO MFA OTP SMS PDF CSV UTC "
         "OS DOB SSN ZIP CVV CVC TOS GDPR HTTP HTTPS JWT SAML AJAX DOM CSS JS ISO VAT SKU "
         # the abbreviations cookie and token names use, some spelled with no vowel
-        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP "
+        "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP NBF "
+        # the vowel-less abbreviations API and form field names and routes use
+        # (invoiceNbr, txn_id, txtQty, msrp, /svc/)
+        "NBR TXN QTY MSRP SVC "
         # the abbreviations header names use (X-Amz-Target, Grpc-Timeout,
         # HX-Request, Ocp-Apim-Trace, Sec-GPC, X-DNS-Prefetch-Control, X-PJAX), cloud
         # SDKs' among them (X-Amz-Sdk-Checksum-Algorithm, X-Amz-Sns-Message-Type,
@@ -356,12 +367,16 @@ _DIGIT_TOKENS = tuple(
     sorted(
         (  # noqa: SIM905 - one compact string on purpose: the set is data
             "argon2id argon2 ed25519 pbkdf2 oauth1 oauth2 base32 base64 utf8 utf16 ipv4 "
-            "ipv6 x509 k8s md5 sha1 sha224 sha256 sha384 sha512 i18n l10n"
+            "ipv6 x509 k8s md5 sha1 sha224 sha256 sha384 sha512 i18n l10n a11y h264 h265 "
+            "e164"
         ).split(),
         key=len,
         reverse=True,
     )
 )
+# Cloud service names with a digit, read as a token only in lower case starting a
+# part (s3Key, s3Bucket): anywhere else two characters match too much random text.
+_LEADING_DIGIT_TOKENS = ("s3", "ec2")
 _MAX_INNER_DIGITS = 2
 _MIN_WORD_BESIDE_DIGITS = 4
 _DIGITS_READ_AS_WORDS = frozenset(("2",))
@@ -378,6 +393,9 @@ def _digit_token_at(part: str, at: int) -> int:
         end = at + len(token)
         if lowered.startswith(token) and (end == len(part) or not part[end].islower()):
             return end
+    for token in () if at else _LEADING_DIGIT_TOKENS:
+        if part.startswith(token) and (len(token) == len(part) or part[len(token)].isupper()):
+            return len(token)
     # A version only starts a part: inside one (jV29) it reads as random text.
     version = None if at else _VERSION_RE.match(lowered)
     if version:
@@ -489,9 +507,9 @@ def _plain_part(part: str) -> bool:
     short = [w for w in words if len(w) <= 3 and w not in _SHORT_WORDS and not _camel_acronym(w)]
     if len(short) > 1:
         return False
-    for word in words:
+    for index, word in enumerate(words):
         lowered = word.lower()
-        if _camel_acronym(word):
+        if _camel_acronym(word) or _initial(words, index):
             continue
         if word.isupper():
             return False
@@ -501,6 +519,16 @@ def _plain_part(part: str) -> bool:
         elif len(word) < 2 or not _spelled(lowered) or not any(ch in _VOWELS for ch in lowered):
             return False
     return True
+
+
+# A first, middle, or last name's initial starting a camel name before Name
+# (txtFName). A lone letter before any capitalised word (eFiling, iPhone) passed
+# more random text when allowed (#279).
+_NAME_INITIALS = frozenset("FLM")
+
+
+def _initial(words: list[str], index: int) -> bool:
+    return not index and len(words) > 1 and words[0] in _NAME_INITIALS and words[1] == "Name"
 
 
 # Hash and MAC names and their standard sizes (sha256, HmacSha512, md5, blake2b),
@@ -582,9 +610,12 @@ _FRAMEWORK_NAMES = frozenset(
         # body field names the rules hold back: Microsoft's login form field and the
         # vowel-less quantity abbreviation
         "loginfmt qty "
+        # a JSON:API query switch, Segment's and ASP.NET Identity's cookie names
+        "jsonapi ajs_user_id ajs_anonymous_id .aspnetcore.identity.application "
         # query parameter names the rules hold back: jQuery's cache-buster, a time
-        # zone, ad click ids, and a JSONP switch
-        "_ tz gclid fbclid dclid jsonp "
+        # zone, ad click ids, a JSONP switch, and a foreign exchange flag (as an
+        # acronym, FX passed random text inside camel case, #279)
+        "_ tz gclid fbclid dclid jsonp fx "
         # more query names the rules hold back: an S3 signature v2 key, Ext JS's
         # cache-buster, a page number, a format switch, Solr's filter query, handler
         # and default field, imgix's format and library, and Mailchimp's campaign
@@ -605,9 +636,41 @@ _FRAMEWORK_NAMES = frozenset(
         "__eventtarget __eventargument __lastfocus __previouspage __requestverificationtoken"
     ).split()
 )
+# Cookie names a framework builds from a fixed prefix and a per-site suffix (an
+# app, site, organisation, or container id), the same for every account: the
+# suffix passes unless holds_an_id reads it as an id. Compared without regard to
+# case.
+_FRAMEWORK_PREFIXES = (
+    ".aspnetcore.antiforgery.",
+    "_hjsessionuser_",
+    "_hjsession_",
+    "amcv_",
+    "amcvs_",
+    "_ga_",
+    "_gat_gtag_ua_",
+    "aspsessionid",
+)
+# The suffix's characters: an Adobe organisation id ends in a percent-encoded @
+# (AMCV_<id>%40AdobeOrg).
+_PREFIXED_SUFFIX_RE = re.compile(r"[A-Za-z0-9_.\-%]{1,64}")
+
+
+def framework_prefix(text: str) -> str:
+    """The fixed framework prefix *text* starts with, as recorded, followed by a
+    suffix of name characters, or ``""``."""
+    lowered = text.lower()
+    for prefix in _FRAMEWORK_PREFIXES:
+        if lowered.startswith(prefix) and _PREFIXED_SUFFIX_RE.fullmatch(text[len(prefix) :]):
+            return text[: len(prefix)]
+    return ""
+
+
 # ASP.NET WebForms: a naming container (ctl00) and a control-type prefix before a
 # name that itself passes the gate (txtUserName, btnLogin, chkRememberMe).
 _WEBFORMS_CONTAINER_RE = re.compile(r"ctl\d{2}")
+# A WebForms element id: the control's name with its containers joined by _
+# where the posted name joins them by $ (ctl00_ContentPlaceHolder1_Login1_UserName).
+_WEBFORMS_ID_RE = re.compile(r"ctl\d{2}_")
 _HUNGARIAN_RE = re.compile(
     r"(txt|btn|chk|ddl|lbl|hdn|pwd|rdo|rbl|cbl|lnk|img|pnl|cbo|cmb|lst|gv|rpt|hl)([A-Z]\w*)"
 )
@@ -630,6 +693,9 @@ def _formset_prefix(prefix: str) -> bool:
 
 def printable_name(text: str) -> bool:
     """The one output gate: whether recorded *text* may be printed as a name."""
+    prefix = framework_prefix(text)
+    if prefix:
+        return not holds_an_id(text[len(prefix) :])
     if not text or len(text) > _MAX_NAME_LEN or not _NAME_CHARS_RE.fullmatch(text):
         return False
     if text.lower() in _FRAMEWORK_NAMES:
@@ -650,6 +716,10 @@ def printable_name(text: str) -> bool:
         part.rstrip("0123456789").isupper() or part.isdigit() for part in parts
     ):
         return False
+    if _WEBFORMS_ID_RE.match(text):
+        # Judged as its posted name is: joined by _, the whole id reads as a
+        # base64 token by its letter-digit switches alone.
+        return not holds_an_id(text.replace("_", "$"))
     return not holds_an_id(text)
 
 
@@ -659,11 +729,15 @@ def _long_capitals(part: str) -> bool:
 
 
 def _printable_segment(segment: str) -> bool:
-    """A path segment prints when it passes the gate and holds no run of capitals
-    longer than an acronym: routes are words, and capitals in one are a code."""
+    """A path segment prints when it passes the gate, holds no run of capitals
+    longer than an acronym (routes are words, and capitals in one are a code), and
+    is one graftpunk's path rule keeps (:func:`looks_dynamic`), so the script
+    never prints a segment the digest's key replaces with a parameter."""
     text = unquote(segment)
     if text.lower() in _ENDPOINT_SEGMENTS:
         return True
+    if looks_dynamic(segment):
+        return False
     page = _PAGE_RE.fullmatch(text)
     if page:
         text = page.group(1)
@@ -672,9 +746,13 @@ def _printable_segment(segment: str) -> bool:
 
 
 # Route segments a framework or protocol fixes, and server pages by extension, the
-# stem of which still goes through the gate (Login.aspx, index.php).
+# stem of which still goes through the gate (Login.aspx, index.php). A lone letter
+# before a word (eFiling) passed random text as a rule of the gate (#279), so
+# such a route is listed.
 _ENDPOINT_SEGMENTS = frozenset(
-    "graphql gql jsonrpc xmlrpc.php cgi-bin 2fa robots.txt favicon.ico sitemap.xml".split()  # noqa: SIM905
+    (  # noqa: SIM905 - one compact string on purpose: the set is data
+        "graphql gql jsonrpc xmlrpc.php cgi-bin 2fa robots.txt favicon.ico sitemap.xml efiling"
+    ).split()
 )
 _PAGE_RE = re.compile(r"(.+)\.(?:aspx|ashx|asmx|php|jsp|do|cfm|html?)", re.I)
 
@@ -901,11 +979,22 @@ def _method(request: dict[str, Any]) -> str:
     return method if method in _HTTP_METHODS else "(method not shown)"
 
 
+def shown_name(name: str) -> str | None:
+    """*name* as the script prints it: whole when it passes the gate, as its fixed
+    framework prefix and ``{}`` when the suffix after that prefix is an id
+    (``_hjSessionUser_{}``), or None when it is counted instead."""
+    if printable_name(name):
+        return name
+    prefix = framework_prefix(name)
+    return f"{prefix}{{}}" if prefix else None
+
+
 def _names(raw: list[str]) -> str:
     """*raw* names, deduplicated, through the gate, with the rest counted."""
     names = list(dict.fromkeys(name for name in raw if name))
-    shown = [name for name in names if printable_name(name)]
-    hidden = len(names) - len(shown)
+    labels = [shown_name(name) for name in names]
+    shown = list(dict.fromkeys(label for label in labels if label is not None))
+    hidden = labels.count(None)
     pieces = [", ".join(shown)] if shown else []
     if hidden:
         pieces.append(_value_names(hidden))
@@ -1312,11 +1401,14 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
     """One block per cookie set, or with *only*, the block of that exact name,
     which the caller already holds and so may print whatever the gate says."""
 
-    def shown(name: str) -> bool:
-        return name == only if only is not None else printable_name(name)
+    def label_of(name: str) -> str | None:
+        if only is not None:
+            return name if name == only else None
+        return shown_name(name)
 
     settings: dict[str, Counter[tuple[str, str]]] = {}
     hidden_set: set[str] = set()
+    shown_set: set[str] = set()
     sent: dict[str, None] = {}
     for entry in entries:
         request, response = _part(entry, "request"), _part(entry, "response")
@@ -1354,20 +1446,24 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
             seen[name] += 1
             if only is not None and name != only:
                 continue
-            if not shown(name):
+            label = label_of(name)
+            if label is None:
                 hidden_set.add(name)
                 continue
-            settings.setdefault(name, Counter())[(where, text)] += 1
+            shown_set.add(name)
+            settings.setdefault(label, Counter())[(where, text)] += 1
         for name, cookies_of_name in array.items():
             for cookie in cookies_of_name[seen[name] :]:
                 if only is not None and name != only:
                     continue
-                if not shown(name):
+                label = label_of(name)
+                if label is None:
                     hidden_set.add(name)
                     continue
+                shown_set.add(name)
                 view = _describe(_array_view(cookie, host, _sent_at(entry)))
                 text = f"response.cookies array only (no Set-Cookie header line): {view}"
-                settings.setdefault(name, Counter())[(where, text)] += 1
+                settings.setdefault(label, Counter())[(where, text)] += 1
     lines: list[str] = []
     for name in sorted(settings):
         lines.append(f"cookie {name}")
@@ -1380,7 +1476,7 @@ def cookies(entries: list[dict[str, Any]], only: str | None = None) -> list[str]
         if not lines and only in sent:
             lines.append(f"cookie {only}: sent in requests and never set in this recording")
         return lines
-    only_sent = [name for name in sent if name not in settings and name not in hidden_set]
+    only_sent = [name for name in sent if name not in shown_set and name not in hidden_set]
     if only_sent:
         lines.append(
             f"sent in requests and never set in this recording: {_names(sorted(only_sent))}"
