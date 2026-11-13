@@ -203,6 +203,21 @@ the rest of that invocation: every write-back keys off the name the load
 resolved, not the name that was typed, so a refresh can never fork into another
 slot (or vanish into one that does not exist).
 
+**Retiring a stale bare slot.** A bare slot written before the first labelled
+login keeps answering a bare-name load, and the load logs
+`session_bare_slot_shadows_labelled` naming the labelled siblings. `gp session
+clear <name>` removes it, in this order:
+
+1. Move every reader that addresses the bare slot by its exact name, outside
+   graftpunk's resolution, to the labelled name (or to `load_session_for_api`,
+   which resolves). A worker that builds `sessions/<name>/session.pickle` itself
+   from a fixed key is such a reader: once the bare slot is gone it finds
+   nothing, and a reader that answers a missing session with an empty cookie
+   header rather than an error is logged out without a sign.
+2. Then clear the bare slot. `gp session clear` asks for confirmation unless
+   `--force` is given, so a clear that runs unattended (cron, a container)
+   needs `gp session clear <name> --force`.
+
 Inside a plugin command handler, `self.get_session()` follows the resolution
 the CLI (or `GraftpunkClient`) already performed for that invocation, so it
 loads the slot the command is pinned to rather than resolving the plugin's bare
