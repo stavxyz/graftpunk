@@ -44,7 +44,7 @@ header names (``Upgrade-Insecure-Requests``, ``WWW-Authenticate``, ``cf-ray``,
 ``x-amz-cf-id``), framework cookie names (``.ASPXAUTH``, ``ASP.NET_SessionId``,
 ``__cf_bm``, ``cf_clearance``, ``_abck``, ``bm_sz``, ``_fbp``, ``_gcl_au``),
 ASP.NET WebForms page state (``__VIEWSTATE``, ``__EVENTVALIDATION``), and route
-segments (``graphql``, ``jsonrpc``, ``xmlrpc.php``, ``cgi-bin``, ``2fa``,
+segments (``graphql``, ``jsonrpc``, ``xmlrpc.php``, ``cgi-bin``,
 ``eFiling``). A cookie name built from a framework's fixed prefix and a per-site
 suffix (``_ga_``, ``_hjSession_``, ``_hjSessionUser_``, ``AMCV_``, ``AMCVS_``,
 ``_gat_gtag_UA_``, ``.AspNetCore.Antiforgery.``, ``ASPSESSIONID``) goes through
@@ -130,27 +130,28 @@ field whose name reads as a password, a secret, a token, a card, or a key is
 listed by name alone. A response body streamed to ``bodies/`` is read only from
 the HAR's own ``bodies/`` directory, never through a link.
 
-``operations`` lists each GraphQL operation the recording's request bodies
-carry (graftpunk's own rule, copied and held equal by a test: a JSON object with a
+``operations`` lists each GraphQL operation the recording's request bodies carry
+(graftpunk's own rule, copied and held equal by a test: a JSON object with a
 ``query`` that reads as a GraphQL document, or an ``operationName`` beside
 ``extensions.persistedQuery``; each element of an array of them): its method,
-templated URL, and name in parentheses (``(anonymous)`` for none), the number of
-calls and how many came in a batch, its kind (``query``, ``mutation``,
-``subscription``, or ``persisted`` for a hash sent without a document), and the
-shapes of its first recorded variables and response, nested keys and types,
-never a value. An operation name prints when it is a GraphQL Name of at most 128
-characters that ``holds_an_id`` does not read as an id; it is an identifier fixed
-in the site's client code, the same for every account, so it does not pass
-through ``printable_name``, and any other name is filed under ``(anonymous)``.
-``operations`` ends with ``shared values (names only)``: each pair of a response
-field and a later request's variable that carried the same value (text of three
-characters or more, never a bool or null), as ``<Operation> <response path> ->
-<Operation> variables.<path>`` with a request count, so the links between
-operations (an id one returns and another takes) show without any value; a key
-that fails the gate is written ``{}``. ``--operation NAME`` narrows
+URL (its path as the digest keys it, with a segment the key keeps and the gate
+holds back written ``{}``), and name in parentheses (``(anonymous)`` for none),
+the number of calls and how many came in a batch, its kind (``query``,
+``mutation``, ``subscription``, or ``persisted`` for a hash sent without a
+document), and the shapes of its first recorded variables and response, nested
+keys and types, never a value. An operation name prints when it is a GraphQL
+Name of at most 128 characters that ``holds_an_id`` does not read as an id; it
+is an identifier fixed in the site's client code, the same for every account, so
+it does not pass through ``printable_name``, and any other name is filed under
+``(anonymous)``. ``operations`` ends with ``shared values (names only)``: each
+pair of a response field and a later request's variable that carried the same
+value (text of three characters or more, never a bool or null), as ``<Operation>
+<response path> -> <Operation> variables.<path>`` with a request count, so the
+links between operations (an id one returns and another takes) show without any
+value; a key that fails the gate is written ``{}``. ``--operation NAME`` narrows
 ``operations``, ``request``, and ``response`` to one operation (``anonymous``
-names the anonymous one), and ``request`` and
-``response`` add the operations an entry carries to its first line.
+names the anonymous one), and ``request`` and ``response`` add the operations an
+entry carries to its first line.
 
 At most 20 matching entries are described; past that, a count prints. Exit 0 when
 something was described, 1 when nothing matched, 2 on a usage error, a HAR that
@@ -319,8 +320,8 @@ _ACRONYMS = frozenset(
         # the abbreviations cookie and token names use, some spelled with no vowel
         "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP NBF "
         # the vowel-less abbreviations API and form field names and routes use
-        # (invoiceNbr, txn_id, txtQty, msrp, /svc/)
-        "NBR TXN QTY MSRP SVC "
+        # (invoiceNbr, txn_id, txtQty, msrp, /svc/), and QL as in GraphQL
+        "NBR TXN QTY MSRP SVC QL "
         # the abbreviations header names use (X-Amz-Target, Grpc-Timeout,
         # HX-Request, Ocp-Apim-Trace, Sec-GPC, X-DNS-Prefetch-Control, X-PJAX), cloud
         # SDKs' among them (X-Amz-Sdk-Checksum-Algorithm, X-Amz-Sns-Message-Type,
@@ -730,15 +731,16 @@ def _long_capitals(part: str) -> bool:
 
 
 def _printable_segment(segment: str) -> bool:
-    """A path segment prints when it passes the gate, holds no run of capitals
-    longer than an acronym (routes are words, and capitals in one are a code), and
-    is one graftpunk's path rule keeps (:func:`looks_dynamic`), so the script
-    never prints a segment the digest's key replaces with a parameter."""
+    """A path segment prints only when graftpunk's path rule keeps it
+    (:func:`looks_dynamic`), so the script never prints a segment the digest's key
+    replaces with a parameter, and then when it is a listed route segment or
+    passes the gate and holds no run of capitals longer than an acronym (routes
+    are words, and capitals in one are a code)."""
+    if looks_dynamic(segment):
+        return False
     text = unquote(segment)
     if text.lower() in _ENDPOINT_SEGMENTS:
         return True
-    if looks_dynamic(segment):
-        return False
     page = _PAGE_RE.fullmatch(text)
     if page:
         text = page.group(1)
@@ -752,7 +754,7 @@ def _printable_segment(segment: str) -> bool:
 # such a route is listed.
 _ENDPOINT_SEGMENTS = frozenset(
     (  # noqa: SIM905 - one compact string on purpose: the set is data
-        "graphql gql jsonrpc xmlrpc.php cgi-bin 2fa robots.txt favicon.ico sitemap.xml efiling"
+        "graphql gql jsonrpc xmlrpc.php cgi-bin robots.txt favicon.ico sitemap.xml efiling"
     ).split()
 )
 _PAGE_RE = re.compile(r"(.+)\.(?:aspx|ashx|asmx|php|jsp|do|cfm|html?)", re.I)
@@ -767,7 +769,8 @@ def _placeholder(segment: str) -> str:
 
 def templated_path(path: str) -> str:
     """*path* with each segment that fails the gate replaced by a placeholder."""
-    segments = path.split("/")
+    # Each segment's ;params are dropped first, as the digest's key drops them.
+    segments = _PATH_PARAMS_RE.sub("", path).split("/")
     out = [seg if not seg or _printable_segment(seg) else _placeholder(seg) for seg in segments]
     return "/".join(out)
 
@@ -2394,7 +2397,7 @@ def template_path(path: str) -> str:
 
 def _operation_url(url: str) -> str:
     """*url* as an operation's line prints it: scheme and host as ``templated_url``
-    prints them, and the path as the digest keys it."""
+    prints them, and the path by :func:`_operation_path`."""
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -2407,7 +2410,27 @@ def _operation_url(url: str) -> str:
         port = parts.port
     except ValueError:
         port = None
-    return f"{scheme}://{host}{f':{port}' if port else ''}{template_path(parts.path)}"
+    return f"{scheme}://{host}{f':{port}' if port else ''}{_operation_path(parts.path)}"
+
+
+def _operation_path(path: str) -> str:
+    """*path* as the digest keys it (:func:`template_path`), with each segment the
+    key keeps that the script's gate holds back (:func:`_printable_segment`)
+    written ``{}``: the key's placeholders and every segment that prints are the
+    digest's own, and nothing prints that a request line would hold back."""
+    key = template_path(path)
+    recorded = _PATH_PARAMS_RE.sub("", path).strip("/").split("/")
+    keyed = key.strip("/").split("/")
+    if len(recorded) != len(keyed):
+        return templated_path(path)
+    shown = [
+        segment if not segment or segment != raw or _printable_segment(raw) else "{}"
+        for raw, segment in zip(recorded, keyed)  # noqa: B905 - Python 3.9 has no strict=
+    ]
+    leading = "/" if key.startswith("/") else ""
+    trailing = "/" if len(key) > 1 and key.endswith("/") else ""
+    body = "/".join(shown)
+    return f"{leading}{body}{trailing}" if body else key
 
 
 # graftpunk.har.digest's scope rule, copied (a test holds the two equal): the
@@ -2552,7 +2575,7 @@ def _operation_label(name: str) -> str:
 
 def operations(entries: list[dict[str, Any]], har_path: Path, wanted: str | None) -> list[str]:
     """One block per GraphQL operation on the run's own hosts (:func:`in_scope_entries`):
-    its request line (the path as the digest keys it), calls, kind, and the
+    its request line (the path as :func:`_operation_path` prints it), calls, kind, and the
     variables' and response's shapes (keys and types, never a value)."""
     entries = in_scope_entries(entries)
     groups: dict[tuple[str, str, str], dict[str, Any]] = {}

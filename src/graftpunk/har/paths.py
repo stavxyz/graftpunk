@@ -928,8 +928,8 @@ _ACRONYMS = frozenset(
         # the abbreviations cookie and token names use, some spelled with no vowel
         "X SID JSID SSID SESS AUTH OIDC NONCE TOTP HOTP TFA JTI PKCE HMAC TKN IDP NBF "
         # the vowel-less abbreviations API and form field names and routes use
-        # (invoiceNbr, txn_id, txtQty, msrp, /svc/)
-        "NBR TXN QTY MSRP SVC "
+        # (invoiceNbr, txn_id, txtQty, msrp, /svc/), and QL as in GraphQL
+        "NBR TXN QTY MSRP SVC QL "
         # the abbreviations header names use (X-Amz-Target, Grpc-Timeout,
         # HX-Request, Ocp-Apim-Trace, Sec-GPC, X-DNS-Prefetch-Control, X-PJAX), cloud
         # SDKs' among them (X-Amz-Sdk-Checksum-Algorithm, X-Amz-Sns-Message-Type,

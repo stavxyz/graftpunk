@@ -51,14 +51,13 @@ header, query, or body value; answer from its output:
 
 - `cookies`: for each cookie a response sets, every response that sets it (by
   method and templated URL, with a count) and that setting's `HttpOnly`,
-  `Secure`, `SameSite`, `Path`, `Domain`, and `expiry` (`session`,
-  `persistent`, or `past` when the response deletes it), read from the raw
-  `Set-Cookie` header and the entry's `response.cookies` array, with a note
-  when they disagree; `unknown` is what the recording does not settle, and
-  `(not shown)` a `Path` carrying a query, a comma, a space, a percent escape,
-  or the like, in
-  the digest's words. A recording made by another tool or an older graftpunk
-  has shown the array lacking `httpOnly` where the header carried it (cause
+  `Secure`, `SameSite`, `Path`, `Domain`, and `expiry` (`session`, `persistent`,
+  or `past` when the response deletes it), read from the raw `Set-Cookie` header
+  and the entry's `response.cookies` array, with a note when they disagree;
+  `unknown` is what the recording does not settle, and `(not shown)` a `Path`
+  carrying a query, a comma, a space, a percent escape, or the like, in the
+  digest's words. A recording made by another tool or an older graftpunk has
+  shown the array lacking `httpOnly` where the header carried it (cause
   unverified), so trust the header's line. It then names the cookies the
   recording only sends. With `--name '<cookie>'` it prints that one cookie's
   block, for a name you already hold; leave it off to list every cookie. It
@@ -75,8 +74,9 @@ header, query, or body value; answer from its output:
   HTML page's title length and its forms, each with its method, templated
   action, and controls by name (or by position) and input type.
 - `operations`: each GraphQL operation on the digest's hosts, keyed as the digest
-  keys it, its calls (and batched ones), kind, nested variable and response keys
-  and types, then which response field fed which later variable, by name.
+  keys it (a segment the gate holds back as `{}`), its calls (and batched ones),
+  kind, nested variable and response keys and types, then which response field
+  fed which later variable, by name.
 
 Names, path segments, subdomains, and content subtypes print only when they pass
 a heuristic gate for field names, which also lets fixed framework names through

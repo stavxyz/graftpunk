@@ -1334,6 +1334,7 @@ _NAMES_SINCE_279 = (
     ".AspNetCore.Identity.Application",
     "ctl00_ContentPlaceHolder1_Login1_UserName",
     "ctl00_ContentPlaceHolder1_ctl01_ctl02_txtName",
+    "GraphQLController",
 )
 # Probes the #279 rules must not let through: random text beside a new word or
 # token, a prefix before an id, and values the rules first tried let in.
@@ -1362,6 +1363,8 @@ _HELD_BACK_SINCE_279 = (
     "txtQName",
     "fxZq9vKx",
     "msrpQz9XvKw",
+    "kqQLzvXw",
+    "QLzqvx",
 )
 
 

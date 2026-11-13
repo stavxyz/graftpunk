@@ -893,7 +893,9 @@ def test_the_gate_fails_values(value: str) -> None:
         ("jsonrpc", "jsonrpc"),
         ("xmlrpc.php", "xmlrpc.php"),
         ("cgi-bin", "cgi-bin"),
-        ("2fa", "2fa"),
+        # The digest's key replaces 2fa (it holds a digit), so the reader does too.
+        ("2fa", "{}"),
+        ("GraphQL", "GraphQL"),
         ("Login.aspx", "Login.aspx"),
         ("index.php", "index.php"),
         ("88812345.aspx", "{id}"),
@@ -1303,6 +1305,7 @@ def test_no_segment_prints_that_the_digests_key_replaces() -> None:
     samples = list(_samples().values())
     corpus = [rng.choice(samples)(rng) for _ in range(20_000)]
     corpus += ["line2Address", "covid19Status", "added2cart", "name1", "v2", "page2", "s3Key"]
+    corpus += sorted(script._ENDPOINT_SEGMENTS)
     printed = [s for s in corpus if script.templated_path(f"/{s}") == f"/{s}"]
     assert [s for s in printed if looks_dynamic(s)] == []
     assert script.templated_path("/line2Address") == "/{}"
