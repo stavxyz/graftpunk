@@ -2560,6 +2560,88 @@ class TestNoDriverBackendLifecycleEdges:
         assert given_up["reason"] == "no answer in time"
 
     @pytest.mark.usefixtures("_armed")
+    def test_a_sync_stop_whose_loop_stopped_after_the_check_ends_chrome_without_it(
+        self, temp_profiles: Path, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        """From a thread with no running loop: the browser's loop reads as running
+        at both checks and then never runs the stop, so the stop gives up at once."""
+        profile = temp_profiles / "uc_sync_stop_stalled"
+        profile.mkdir()
+
+        stalled = asyncio.new_event_loop()
+        checks: list[int] = []
+
+        def is_running() -> bool:
+            checks.append(1)
+            return len(checks) <= 2
+
+        stalled.is_running = is_running  # type: ignore[method-assign]
+        backend = NoDriverBackend()
+        try:
+            with _chrome_like_child(profile, exit_delay=0.3) as child:
+                # Hashable, as the browser registries are sets.
+                browser = type("StandInBrowser", (), {})()
+                TestNoDriverBackendAbandonedLockHolder._give_chrome(browser, child, profile)
+                backend._browser = browser
+                backend._loop = stalled
+                backend._started = True
+                took = _within(15, backend.stop)
+                exited = _exited_now(child)
+        finally:
+            stalled.close()
+
+        assert took < 5
+        assert exited
+        assert not profile.exists()
+        assert backend.is_running is False
+        [given_up] = [
+            e for e in captured_logs if e["event"] == "nodriver_backend_stop_on_loop_given_up"
+        ]
+        assert given_up["reason"] == "the loop stopped"
+        assert given_up["log_level"] == "warning"
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_sync_stop_through_a_blocked_loop_gives_up_at_its_bound(
+        self,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        """The browser's loop thread is stuck in a synchronous call: the stop
+        returns after its bound, never cancelling anything, and Chrome still goes."""
+        from graftpunk.backends import nodriver as nodriver_module
+
+        monkeypatch.setattr(nodriver_module, "_pending_end_wait_s", lambda: 0.5)
+        monkeypatch.setattr(nodriver_module, "_LOOP_JOIN_TIMEOUT_S", 1.0)
+        profile = temp_profiles / "uc_sync_stop_blocked"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        release = threading.Event()
+
+        with _chrome_like_child(profile, exit_delay=0.3) as child:
+            backend.start()
+            assert backend._browser is not None and backend._private_loop is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+            loop_thread = backend._private_loop.thread
+            backend._private_loop.loop.call_soon_threadsafe(release.wait, 30)
+            try:
+                took = _within(15, backend.stop)
+                exited = _exited_now(child)
+            finally:
+                release.set()
+                loop_thread.join(10)
+
+        assert took < 5
+        assert exited
+        assert not profile.exists()
+        assert backend.is_running is False
+        [given_up] = [
+            e for e in captured_logs if e["event"] == "nodriver_backend_stop_on_loop_given_up"
+        ]
+        assert given_up["reason"] == "no answer in time"
+
+    @pytest.mark.usefixtures("_armed")
     def test_a_sync_stop_on_the_private_loop_leaves_that_loop_running_until_chrome_exits(
         self, fake_chrome: FakeChrome, temp_profiles: Path
     ) -> None:
@@ -3498,7 +3580,7 @@ class TestNoDriverBackendTransportClosedOnItsLoop:
         loop.call_soon_threadsafe(loop.set_debug, True)
         backend.start()
 
-        def interrupted(coro: Any) -> Any:
+        def interrupted(coro: Any, **_kwargs: Any) -> Any:
             coro.close()
             raise KeyboardInterrupt
 
@@ -4005,7 +4087,7 @@ class TestNoDriverBackendInterruptedLifecycle:
         backend = NoDriverBackend()
         backend.start()
 
-        def interrupted(coro: Any) -> Any:
+        def interrupted(coro: Any, **_kwargs: Any) -> Any:
             coro.close()
             raise KeyboardInterrupt
 

@@ -763,6 +763,14 @@ async def _finish_on_worker_thread(work: Callable[[], None]) -> None:
     await _through_cancellation(_start_off_loop(work))
 
 
+class _LoopStalledError(TimeoutError):
+    """A timed ``_run_async`` call whose loop stopped before it began the call.
+
+    It is given up on at once: a stopped loop never runs the submission, so
+    waiting out the timeout would only delay the same outcome.
+    """
+
+
 class _PendingEnd:
     """An end of Chrome a stop handed to a worker thread and did not wait for.
 
@@ -1693,13 +1701,15 @@ class NoDriverBackend:
         """Run a coroutine on the browser's event loop and wait for its result.
 
         With ``timeout`` None the wait has no limit, which is what ``start()``
-        and ``stop()`` use: a start sweeps orphaned Chromes and retries its
-        connection, and a stop bounds its own waits. The other synchronous
-        methods pass ``call_timeout`` or ``navigate_timeout``. When the
-        timeout passes, the coroutine is cancelled on the loop and the call
-        raises ``TimeoutError``; the loop keeps running, so the next call
-        works. A coroutine that finishes before the cancel reaches it has not
-        timed out: the call returns its result, or raises its exception.
+        uses: a start sweeps orphaned Chromes and retries its connection.
+        ``stop()`` passes ``_pending_end_wait_s()``, and the other synchronous
+        methods ``call_timeout`` or ``navigate_timeout``. When the timeout
+        passes, the call raises ``TimeoutError`` and the coroutine is left
+        running, never cancelled; the loop keeps running, so the next call
+        works. A call whose loop stopped before it began raises
+        ``_LoopStalledError`` (a ``TimeoutError``) at once. A coroutine that
+        finishes just as the wait gives up has not timed out: the call returns
+        its result, or raises its exception.
         Interrupting the wait (Ctrl-C) cancels the coroutine the same
         way and re-raises. Either way the call waits for the cancellation to
         land: up to ``_LOOP_JOIN_TIMEOUT_S`` for the loop to begin the call,
@@ -1788,7 +1798,7 @@ class NoDriverBackend:
         try:
             # wait() rather than result(timeout): a TimeoutError the coroutine
             # raises itself must not read as the call running out of time.
-            if timeout is None or concurrent.futures.wait((future,), timeout).done:
+            if timeout is None or self._answered_within(future, timeout, started, loop):
                 return future.result()
         except concurrent.futures.CancelledError as exc:
             # The loop cancelled the call: another thread stopped the backend
@@ -1815,7 +1825,37 @@ class NoDriverBackend:
             return outcome["result"]
         if "error" in outcome:
             raise outcome["error"]
+        if not started.is_set() and not loop.is_running():
+            # Never begun, and the loop is not running it: closed here, so
+            # neither coroutine is collected as never awaited.
+            with suppress(RuntimeError, ValueError):
+                wrapper.close()
+            with suppress(RuntimeError, ValueError):
+                coro.close()
+            raise _LoopStalledError(
+                f"NoDriverBackend.{method}: the browser's event loop stopped before it began"
+            )
         raise TimeoutError(f"NoDriverBackend.{method} did not finish within {timeout:g} s")
+
+    @staticmethod
+    def _answered_within(
+        future: "concurrent.futures.Future[Any]",
+        timeout: float,
+        started: threading.Event,
+        loop: asyncio.AbstractEventLoop,
+    ) -> bool:
+        """Whether *future* finished within *timeout*, checking every
+        ``_EXIT_POLL_S`` and giving up early once *loop* has stopped before the
+        call *started*."""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if concurrent.futures.wait((future,), max(0.0, min(_EXIT_POLL_S, remaining))).done:
+                return True
+            if not started.is_set() and not loop.is_running():
+                return False
+            if remaining <= 0:
+                return False
 
     async def _start_async(self, _max_attempts: int = 3) -> None:
         """Async implementation of browser start.
@@ -2529,7 +2569,12 @@ class NoDriverBackend:
         this backend meanwhile waits for that end first (up to
         ``_pending_end_wait_s()``, about 35 s), so two Chromes never share a profile. A stop
         that gave up on a lock holder (below) still waits for Chrome's exit,
-        since it holds the lock until then. An interrupt (Ctrl-C) while the
+        since it holds the lock until then. From a thread with no running
+        loop, the stop through the browser's loop is waited for up to
+        ``_pending_end_wait_s()``, or given up on at once when that loop
+        stopped before it began; Chrome is then ended without the loop, with a
+        ``nodriver_backend_stop_on_loop_given_up`` warning, and the stop on the
+        loop is left to run, never cancelled. An interrupt (Ctrl-C) while the
         stop waits on the loop ends Chrome the same way before it propagates.
 
         A stop called while another thread's ``start()`` is in progress waits
@@ -2654,7 +2699,23 @@ class NoDriverBackend:
                         self._stop_without_waiting(loop)
                     else:
                         try:
-                            self._run_async(self._stop_async())
+                            self._run_async(
+                                self._stop_async(),
+                                timeout=_pending_end_wait_s(),
+                                method="stop()",
+                            )
+                        except TimeoutError as exc:
+                            # The stop through the browser's loop did not
+                            # answer (it is not cancelled), or the loop stopped
+                            # before it began: Chrome is ended without the loop,
+                            # as a handed-off stop does, and stop() returns.
+                            LOG.warning(
+                                "nodriver_backend_stop_on_loop_given_up",
+                                reason="the loop stopped"
+                                if isinstance(exc, _LoopStalledError)
+                                else "no answer in time",
+                            )
+                            self._release_failed_attempt()
                         except BaseException:
                             # Interrupted before or during _stop_async, or the
                             # loop went away: _reset_state() below forgets the
