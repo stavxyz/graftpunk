@@ -2129,6 +2129,55 @@ class TestNoDriverBackendOneEventLoop:
             backend.stop()
 
 
+class TestHandedOffEndBookkeeping:
+    """The module-level waiter set and the pending end's callbacks (#242 review)."""
+
+    def test_the_sweep_survives_the_set_changing_while_it_runs(self) -> None:
+        """Loop threads add and discard waiters while a worker sweeps."""
+        from graftpunk.backends import nodriver as nodriver_module
+
+        class _ChangesTheSet:
+            def __init__(self, other: Any) -> None:
+                self._other = other
+
+            def get_loop(self) -> Any:
+                nodriver_module._LOOP_WAITS.add(self._other)
+                return SimpleNamespace(is_closed=lambda: False)
+
+            def done(self) -> bool:
+                return False
+
+        saved = set(nodriver_module._LOOP_WAITS)
+        nodriver_module._LOOP_WAITS.clear()
+        try:
+            nodriver_module._LOOP_WAITS.add(_ChangesTheSet(object()))  # type: ignore[arg-type]
+            nodriver_module._drop_stranded_waiters()
+        finally:
+            nodriver_module._LOOP_WAITS.clear()
+            nodriver_module._LOOP_WAITS.update(saved)
+
+    def test_a_failing_callback_does_not_fail_the_end(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        from graftpunk.backends.nodriver import _PendingEnd
+
+        ran: list[str] = []
+        pending = _PendingEnd()
+
+        def fails() -> None:
+            raise RuntimeError("callback trouble")
+
+        pending.add_done_callback(fails)
+        pending.add_done_callback(lambda: ran.append("second"))
+        pending.finish()
+
+        assert pending.done.is_set()
+        assert ran == ["second"]
+        assert [e["event"] for e in captured_logs if e["log_level"] == "warning"] == [
+            "nodriver_backend_end_callback_failed"
+        ]
+
+
 class TestNoDriverBackendLifecycleEdges:
     """Stops and starts that cannot go through the browser's loop the usual way."""
 
@@ -2389,6 +2438,42 @@ class TestNoDriverBackendLifecycleEdges:
         assert backend.is_running is False
         assert backend._loop is None
         assert fake_chrome.browsers[0].stopped_on is not None
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_handed_off_stop_whose_loop_stopped_ends_chrome_and_lets_a_start_through(
+        self, fake_chrome: FakeChrome, temp_profiles: Path
+    ) -> None:
+        """The browser's loop stops after the running check, before it begins the
+        stop: the worker sees it stopped, ends Chrome without it, and asyncio.run()
+        returns; a start after it does not wait out the pending-end bound."""
+        profile = temp_profiles / "uc_stop_on_a_stopped_loop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        stopped_loop = asyncio.new_event_loop()
+        took: list[float] = []
+
+        with _chrome_like_child(profile, exit_delay=0.3) as child:
+            backend.start()
+            assert backend._browser is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+
+            async def stop_through_a_stopped_loop() -> None:
+                backend._stop_without_waiting(stopped_loop)
+                backend._reset_state()
+
+            try:
+                took.append(_within(15, lambda: asyncio.run(stop_through_a_stopped_loop())))
+                exited = _exited_now(child)
+                took.append(_within(15, backend.start))
+            finally:
+                stopped_loop.close()
+            backend.stop()
+
+        assert took[0] < 5
+        assert exited
+        assert not profile.exists()
+        assert took[1] < 5
+        assert len(fake_chrome.browsers) == 2
 
     @pytest.mark.usefixtures("_armed")
     def test_a_sync_stop_on_the_private_loop_leaves_that_loop_running_until_chrome_exits(

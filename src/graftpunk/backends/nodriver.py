@@ -62,7 +62,7 @@ from graftpunk.browser_launch import (
     chrome_in_own_session,
     prepare_browser_launch,
 )
-from graftpunk.cdp_wait import answer_within, drop_late_answer
+from graftpunk.cdp_wait import answer_within, drop_late_answer, result_within
 from graftpunk.chrome_orphans import (
     base_browser_args,
     remove_browser_temp_profile,
@@ -784,7 +784,12 @@ class _PendingEnd:
             self.done.set()
             callbacks, self._callbacks = self._callbacks, []
         for callback in callbacks:
-            callback()
+            # A failing callback must not turn an end that finished into a
+            # failed one (finish runs in the end's own finally).
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - logged, and the end stands
+                LOG.warning("nodriver_backend_end_callback_failed", exc_info=True)
 
     def add_done_callback(self, callback: Callable[[], None]) -> None:
         with self._lock:
@@ -793,6 +798,14 @@ class _PendingEnd:
                 return
         callback()
 
+
+# How long a stop handed to the browser's own loop from another running
+# loop may take before its worker ends Chrome without that loop: the loop's
+# turn to begin it (_LOOP_JOIN_TIMEOUT_S), the dialog answerer's close, and
+# the reap's two waits, with room to spare. A stop the loop never begins (it
+# stopped after the check) is given up on as soon as the loop is seen
+# stopped.
+_STOP_ON_LOOP_WAIT_S: float = 20.0
 
 # How long a start waits for a stop's handed-off end of Chrome
 # (_PendingEnd) before it launches anyway: Chrome's exit, up to
@@ -812,7 +825,9 @@ def _drop_stranded_waiters() -> None:
     was destroyed but it is pending" for an end that ran on its worker all
     the same (asyncio has no public way to say a pending task is expected).
     """
-    for waiter in [w for w in _LOOP_WAITS if w.get_loop().is_closed() and not w.done()]:
+    # A snapshot first: loop threads add to and discard from the set while
+    # this runs on a worker thread, and list() copies it in one step.
+    for waiter in [w for w in list(_LOOP_WAITS) if w.get_loop().is_closed() and not w.done()]:
         setattr(waiter, "_log_destroy_pending", False)  # noqa: B010 - private, so no attribute access
         _LOOP_WAITS.discard(waiter)
 
@@ -2238,32 +2253,68 @@ class NoDriverBackend:
         caller's loop for as long as Chrome takes to exit (#242). The browser
         and its loop are detached now; the stop is submitted to the browser's
         loop as it would be, and a worker thread waits for it (never
-        cancelling it), ends Chrome without the loop if the stop failed, and
-        then closes a private loop. A task left on the running loop waits for
-        that worker (``_wait_on_running_loop()``).
+        cancelling it), ends Chrome without the loop if the stop failed, did
+        not answer within ``_STOP_ON_LOOP_WAIT_S``, or never began because the
+        loop stopped after the check, and then closes a private loop. A task
+        left on the running loop waits for that worker
+        (``_wait_on_running_loop()``).
         """
         browser = self._detach_browser()
         private = self._private_loop
         self._private_loop = None
         self._loop = None
         pending = self._pending_end = _PendingEnd()
+        began = threading.Event()
+        given_up = threading.Event()
+
+        async def stop_on_its_loop() -> None:
+            began.set()
+            if given_up.is_set():
+                return
+            assert browser is not None
+            await self._stop_browser_async(browser)
+
         stopping: Any = None
+        submitted = stop_on_its_loop()
         if browser is not None:
             try:
-                stopping = asyncio.run_coroutine_threadsafe(self._stop_browser_async(browser), loop)
+                stopping = asyncio.run_coroutine_threadsafe(submitted, loop)
             except RuntimeError:
                 # The loop closed after the check: end Chrome without it.
                 stopping = None
+        if stopping is None:
+            submitted.close()
+
+        def stopped_on_its_loop() -> bool:
+            """Whether the stop through the loop ended Chrome, waiting for it as above."""
+            if stopping is None:
+                return False
+            deadline = time.monotonic() + _STOP_ON_LOOP_WAIT_S
+            while True:
+                try:
+                    result_within(stopping, _EXIT_POLL_S)
+                    return True
+                except TimeoutError:
+                    stalled = not began.is_set() and (loop.is_closed() or not loop.is_running())
+                    if stalled or time.monotonic() >= deadline:
+                        given_up.set()
+                        if stalled:
+                            # Never begun, and its loop is not running it: closed
+                            # here, so it is not collected as never awaited.
+                            with suppress(RuntimeError, ValueError):
+                                submitted.close()
+                        LOG.warning(
+                            "nodriver_backend_stop_on_loop_given_up",
+                            reason="the loop stopped" if stalled else "no answer in time",
+                        )
+                        return False
+                except BaseException:
+                    return False
 
         def finish() -> None:
             try:
-                if browser is not None:
-                    try:
-                        if stopping is None:
-                            raise RuntimeError("the browser's loop is closed")
-                        stopping.result()
-                    except BaseException:
-                        _end_browser_without_loop(browser)
+                if browser is not None and not stopped_on_its_loop():
+                    _end_browser_without_loop(browser)
             finally:
                 try:
                     if private is not None:
@@ -2286,6 +2337,8 @@ class NoDriverBackend:
         LOG.debug("nodriver_backend_start_waits_for_previous_end")
         if not pending.done.wait(_PENDING_END_WAIT_S):
             LOG.warning("nodriver_backend_previous_end_still_running", waited_s=_PENDING_END_WAIT_S)
+            # Waited once: the next start does not pay for the same end again.
+            self._pending_end = None
 
     async def _await_pending_end(self) -> None:
         """``_wait_for_pending_end()`` without blocking the running loop: the wait
@@ -2303,6 +2356,8 @@ class NoDriverBackend:
             finished = False
         if not finished:
             LOG.warning("nodriver_backend_previous_end_still_running", waited_s=_PENDING_END_WAIT_S)
+            # Waited once: the next start does not pay for the same end again.
+            self._pending_end = None
 
     def _end_without_waiting(self) -> None:
         """``_release_failed_attempt()`` for a synchronous stop on a thread whose loop is running.
@@ -2391,7 +2446,7 @@ class NoDriverBackend:
         # _deregister_browser() raise an unexpected exception (anything
         # outside the (RuntimeError, OSError) handled set). Reaping is
         # most critical exactly on the error paths where Chrome is most
-        # likely to leak — don't let a stop() failure also leak the
+        # likely to leak, so don't let a stop() failure also leak the
         # subprocess.
         try:
             try:
