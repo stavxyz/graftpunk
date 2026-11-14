@@ -2,7 +2,7 @@
 
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from rich.console import Console
@@ -113,7 +113,7 @@ def _sessions_table(rows: list[dict[str, Text | str]], *, narrow: bool) -> Table
         header_style="bold cyan",
         border_style="dim",
     )
-    columns = (
+    columns: tuple[tuple[str, dict[str, Any]], ...] = (
         ("Session", {"style": "cyan", "no_wrap": True}),
         ("Domain", {"style": "white", "overflow": "fold"}),
         ("Account", {"style": "white", "no_wrap": narrow}),
