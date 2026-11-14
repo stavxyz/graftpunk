@@ -1593,17 +1593,30 @@ page a browser would load, `"form"` for a form submission. Those three are the
 built-ins, and a role name can be any string a plugin has registered with
 `graftpunk.register_role(name, headers)`.
 
-The headers captured at login are what Chrome sent to the site's own origin
-(`base_url`'s scheme, host, and port), so only that origin gets them. A request
-to any other origin, such as an `api.` subdomain, another port, or another site,
-gets the registered role instead, as Chrome on the site's page would send it
-there: `Sec-Fetch-Site: same-site` when both share a scheme and a registrable
-domain and `cross-site` otherwise, no `X-Requested-With`, and
+Each role captured at login is taken from a request to the site's own origin
+(`base_url`'s scheme, host, and port) where the login made one, and graftpunk
+records the origin it came from; only that origin gets the captured headers. A
+request to any other origin, such as an `api.` subdomain, another port, or
+another site, gets the role the plugin declared in `header_roles` (which
+`gp http` merges into the session), or else the registered role (a role that
+was only captured sends no role headers there), as Chrome on the site's page
+would send it there: `Sec-Fetch-Site: same-site` when both share a scheme and a
+registrable domain and `cross-site` otherwise,
 `Origin: <base_url's origin>` on a CORS-mode request (the `xhr` role) and on
-every method but GET and HEAD. Headers the caller passes still win. The
-registrable domain comes from a short built-in list of two-label suffixes
-(`co.uk`, `com.au`, and the like), not the full Public Suffix List, so two hosts
-under a private suffix such as `github.io` count as one site.
+every method but GET and HEAD, and no `X-Requested-With` unless the plugin
+declared it. The same rule applies to every redirect hop, so a request
+redirected to another origin loses the captured headers on the way. Headers the
+caller passes still win. The registrable domain comes from a short built-in list
+of two-label suffixes (`co.uk`, `com.au`, and the like), not the full Public
+Suffix List, so two hosts under a private suffix such as `github.io` count as
+one site.
+
+A CSRF token from the plugin's `token_config` goes only to the site it was
+obtained for: `base_url`'s origin, an `api.` subdomain, or another port get it,
+another registrable domain does not, on a first request or a redirect hop.
+graftpunk logs `csrf_token_withheld_cross_site` at warning level, once per token
+and target site, naming the token and the host. To send a token to another site
+on purpose, pass it in `headers=`.
 
 Both normalise a `params` or `data` mapping before sending it:
 
