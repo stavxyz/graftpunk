@@ -5465,6 +5465,11 @@ class TestNoDriverBackendStartAsyncTakesTheLock:
         ] == ["start_async"]
 
 
+_HOLD_BOUND = "graftpunk.backends.nodriver._ABANDONED_HOLD_S"
+# Longer than any _within() watchdog, so a wait for it fails the test.
+_UNREACHABLE_BOUND_S = 60.0
+
+
 class TestNoDriverBackendAbandonedLockHolder:
     """A start_async() or stop_async() that never resumes cannot block other threads (#243)."""
 
@@ -5474,7 +5479,7 @@ class TestNoDriverBackendAbandonedLockHolder:
     def _short_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from graftpunk.browser_launch import CleanupReport
 
-        monkeypatch.setattr("graftpunk.backends.nodriver._ABANDONED_HOLD_S", self.BOUND)
+        monkeypatch.setattr(_HOLD_BOUND, self.BOUND)
         # Armed so the end of Chrome signals the test's own child process.
         monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
         # The orphan sweep and the stale-profile sweep are replaced at their
@@ -5589,6 +5594,12 @@ class TestNoDriverBackendAbandonedLockHolder:
             stranded = self._start_then_strand_a_stop_async(backend, child, profile, monkeypatch)
             try:
                 first = _within(10, start)
+                # The later starts find the hold given up on and must not wait
+                # out the bound again. With a bound they cannot reach here, the
+                # watchdog proves that, where "under 0.5 s" failed whenever the
+                # worker stalled: a gen-2 collection in a full -n 4 run holds
+                # every thread for up to about 0.6 s.
+                monkeypatch.setattr(_HOLD_BOUND, _UNREACHABLE_BOUND_S)
                 again = _within(10, start)
                 from_async = _within(10, start_async)
                 running = backend.is_running
@@ -5599,9 +5610,9 @@ class TestNoDriverBackendAbandonedLockHolder:
                 monkeypatch.delattr(backend, "_stop_async")
                 _within(10, backend.stop)
 
-        assert self.BOUND <= first < self.BOUND + 2
-        assert again < self.BOUND
-        assert from_async < self.BOUND
+        assert self.BOUND <= first < self.BOUND + 5
+        assert again < 5
+        assert from_async < 5
         assert errors[0].startswith(
             "NoDriverBackend.start() gave up waiting for a stop_async() on another thread"
         )
@@ -5673,6 +5684,10 @@ class TestNoDriverBackendAbandonedLockHolder:
         well before the bound, and a later start raises at once."""
         import nodriver
 
+        # A bound nothing here can reach, so only the closed loop can make the
+        # stop give up: with 0.5 s, a worker stall let the bound expire first.
+        monkeypatch.setattr(_HOLD_BOUND, _UNREACHABLE_BOUND_S)
+
         profile = temp_profiles / "uc_closed_loop_start"
         profile.mkdir()
         fake_chrome.hang_get = True
@@ -5718,8 +5733,8 @@ class TestNoDriverBackendAbandonedLockHolder:
                 stranded.finish()
 
         assert not stopper.is_alive()
-        assert gave_up_after < self.BOUND / 2
-        assert elapsed < self.BOUND
+        assert gave_up_after < 5
+        assert elapsed < 5
         assert exited
         assert backend.is_running is False
         assert "the event loop it runs on is closed" in errors[0]
