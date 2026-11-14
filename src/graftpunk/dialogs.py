@@ -11,9 +11,10 @@ holds a popup (and any other page the browser opens itself) before its first
 script until that answerer is in place, so a dialog the popup's first script opens
 is answered. A tab a program opens with ``get(url, new_tab=True)`` is not held: its
 first-script dialog is answered only when the answerer's install reaches Chrome
-before that script runs, a race (#363). :func:`open_tab` opens a tab without that
-race: at ``about:blank``, then the answerer, then the page. A visible browser
-leaves dialogs to the user.
+before that script runs, a race (#363). :func:`open_tab` is meant to open a tab
+without that race: at ``about:blank``, then the answerer, then the page (tested
+against fakes only; unverified in live Chrome). A visible browser leaves dialogs
+to the user.
 """
 
 from __future__ import annotations
@@ -231,8 +232,8 @@ class NewPageAnswerer:
     opens is reported here and accepted. A tab made with ``Target.createTarget``
     (``get(url, new_tab=True)``) is not held, so its first-script dialog is answered
     only when ``Page.enable`` reaches Chrome before that script runs (#363);
-    :func:`open_tab` opens one without that race. The
-    resume is sent whatever the install did, within ``_INSTALL_WAIT_S`` of each
+    :func:`open_tab` is meant to open one without that race (unverified in live
+    Chrome). The resume is sent whatever the install did, within ``_INSTALL_WAIT_S`` of each
     command. The auto-attach asks for page targets only; any other target a Chrome
     attaches all the same is resumed at once and detached. This connection, not
     nodriver's, reads the session id Chrome puts on each event, which nodriver
@@ -636,8 +637,8 @@ async def answer_dialogs_in_new_tabs(browser: Any) -> NewPageAnswerer | None:
     first script on, since Chrome holds it until its answerer is in place, and a tab
     a program opens (``get(url, new_tab=True)``), which Chrome does not hold, so a
     dialog its first script opens is answered only if the install wins that race
-    (#363); :func:`open_tab` opens a tab without the race. See
-    :class:`NewPageAnswerer`.
+    (#363); :func:`open_tab` is meant to open a tab without the race (unverified
+    in live Chrome). See :class:`NewPageAnswerer`.
 
     Returns the browser's answerer: the one an earlier call made, which reconnects
     on its own when Chrome closes its connection, or a new one, which carries the
@@ -680,7 +681,8 @@ async def answer_dialogs_in_new_tabs(browser: Any) -> NewPageAnswerer | None:
 
 async def open_tab(browser: Any, url: str) -> Any:
     """Open *url* in a new tab of nodriver *browser*, so that a dialog the page's
-    first script opens is answered (#363), and return the tab.
+    first script opens is meant to be answered (#363), and return the tab. That it
+    closes the race is tested against fakes only and unverified in live Chrome.
 
     nodriver's ``get(url, new_tab=True)`` makes the tab with ``Target.createTarget``
     at *url*, which Chrome does not hold for the answerer, so that page's first
