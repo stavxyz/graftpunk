@@ -1570,7 +1570,9 @@ class TestNodriverLoginSignalPoll:
         assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "ndurl"
 
     @pytest.mark.asyncio
-    async def test_a_selector_only_login_reports_a_rate_limit_page_at_its_deadline(self) -> None:
+    async def test_a_selector_only_login_reports_a_rate_limit_page_at_its_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The deadline tick reads the page, so a timeout can be blamed on the limiter.
 
         A login whose only signal is a `success` selector gives no rule a reason to
@@ -1578,6 +1580,13 @@ class TestNodriverLoginSignalPoll:
         budget and name the selector for a page the site's rate limiter served.
         """
         from graftpunk.plugins.login_engine import generate_login_method
+
+        # The hard end is half a second past the 50 ms timeout, and a worker stall
+        # that long before the read (a gen-2 collection in a full run) rightly
+        # abandons it; this test is about the deadline tick, not that bound.
+        monkeypatch.setattr(
+            "graftpunk.plugins.login_settle._hard_end", lambda deadline: deadline + 30.0
+        )
 
         tab = _ScriptedNodriverTab(
             success_selector=".dashboard",
