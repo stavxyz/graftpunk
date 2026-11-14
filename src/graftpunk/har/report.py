@@ -183,6 +183,11 @@ def _endpoint_block(endpoint: Endpoint, spellings: Mapping[str, str]) -> list[st
             if unshown_body == 1
             else f"- {unshown_body} body params whose names read as values are not shown"
         )
+    if endpoint.body_kind == "unparsed":
+        lines.append(
+            "- body not parsed: its request declared JSON that does not parse "
+            "(truncated, say), so no body params were read"
+        )
     if endpoint.operation_batched:
         lines.append(
             f"- batched: {endpoint.operation_batched} of {endpoint.count} recording(s) sent it "

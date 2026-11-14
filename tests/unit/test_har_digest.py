@@ -377,6 +377,35 @@ class TestStaticAndThirdPartyExclusion:
         assert hosts == {"www.example.com", "api.example.com"}
         assert result.dropped["third_party"] == 1
 
+    def test_a_bare_apex_under_a_two_label_suffix_scopes_to_itself(self, tmp_path: Path) -> None:
+        """Its parent is the suffix, so the parent rule would make every host
+        under ``co.uk`` a first party (#202)."""
+        entries = [
+            _entry("GET", "https://myshop.co.uk/orders"),
+            _entry("GET", "https://myshop.co.uk/orders/2"),
+            _entry("GET", "https://api.myshop.co.uk/data"),
+            _entry("GET", "https://othershop.co.uk/data"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.primary_host == "myshop.co.uk"
+        hosts = {e.host for e in result.endpoints}
+        assert hosts == {"myshop.co.uk", "api.myshop.co.uk"}
+        assert result.dropped["third_party"] == 1
+
+    @pytest.mark.parametrize(
+        ("primary", "root"),
+        [
+            ("myshop.co.uk", "myshop.co.uk"),
+            ("www.myshop.co.uk", "myshop.co.uk"),
+            ("myshop.com.au:8443", "myshop.com.au:8443"),
+            ("www.myshop.example", "myshop.example"),
+            ("shop.team.example.com", "team.example.com"),
+            ("myshop.example", "myshop.example"),
+        ],
+    )
+    def test_the_scope_root_is_never_a_public_suffix(self, primary: str, root: str) -> None:
+        assert _scope_root(primary) == root
+
     def test_all_hosts_models_every_host(self, tmp_path: Path) -> None:
         entries = [
             _entry("GET", "https://api.myshop.example.com/orders"),
@@ -4337,14 +4366,65 @@ class TestLoginFlowFlag:
         )
         assert endpoint.login_flow is False
 
-    def test_a_login_path_inside_a_collapsed_family_is_flagged(self) -> None:
-        """The high-cardinality collapse can re-template the endpoint the observation
-        belongs to, so templating the observation's path alone would miss it."""
-        family = _flow_endpoint("/account/{account_id}", examples=("/account/login",))
-        (endpoint,) = _with_login_flow(
-            (family,), (_flow_observation("form_page", "GET", "/account/login"),)
+    def test_a_template_that_only_covers_the_login_path_is_not_flagged(self) -> None:
+        """Only the login's own template is the login flow: ``/account/{account_id}``
+        over ``/account/login`` is the account pages, which keep their stub (#202)."""
+        endpoints = (
+            _flow_endpoint("/account/{account_id}", examples=("/account/2024-07",)),
+            _flow_endpoint("/account/login"),
         )
-        assert endpoint.login_flow is True
+        observations = (_flow_observation("form_page", "GET", "/account/login"),)
+        assert [e.login_flow for e in _with_login_flow(endpoints, observations)] == [False, True]
+
+    @staticmethod
+    def _account_pages_and_login(login_path: str) -> list[dict]:
+        """A login form page at *login_path*, its credential post, and nine account
+        pages whose last segment is an id-like value: a collapsible family."""
+        pages = [f"/account/q{n}x{n}" for n in range(_HIGH_CARDINALITY_THRESHOLD + 1)]
+        entries = [
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com{login_path}",
+                content_type="text/html",
+                body=(
+                    '<form action="/session" method="post">'
+                    '<input type="email" name="email"><input type="password" name="password">'
+                    "</form>"
+                ),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        entries += [
+            _entry("GET", f"https://api.myshop.example.com{page}", body='{"id": 1}')
+            for page in pages
+        ]
+        return entries
+
+    @pytest.mark.parametrize(
+        "login_path",
+        ["/account/login", "/account/login2"],
+        ids=["a-word-the-collapse-keeps", "a-segment-the-collapse-would-take"],
+    )
+    def test_a_login_page_beside_a_collapsed_family_leaves_the_family_unflagged(
+        self, tmp_path: Path, login_path: str
+    ) -> None:
+        """The family keeps its stub, and the login page stays an endpoint of its
+        own, even when its segment is one the collapse could have taken (#202)."""
+        entries = self._account_pages_and_login(login_path)
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags == {
+            ("GET", login_path): True,
+            ("POST", "/session"): True,
+            ("GET", "/account/{account_id}"): False,
+        }
+        (family,) = [e for e in result.endpoints if e.template == "/account/{account_id}"]
+        assert family.count == _HIGH_CARDINALITY_THRESHOLD + 1
+        assert login_path not in result.collapsed_templates
 
     def test_an_endpoint_the_login_flow_owns_under_only_one_of_its_methods_is_not_flagged(
         self,
