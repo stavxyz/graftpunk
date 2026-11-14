@@ -734,12 +734,12 @@ class TestReadsAsWords:
     def test_typed_text_reads_as_words_on_every_python(self, text: str) -> None:
         """The rule names no Unicode version: a character newer than the
         interpreter's database, a private-use character, and the controls typed
-        text holds (tab, newline, carriage return) do not make a value bytes. Before
-        round 2 of #303 the first three read as words on 3.14 and not on 3.12."""
+        text holds (tab, newline, carriage return) do not make a value bytes, so the
+        verdict is the same on Python 3.12 and 3.14."""
         assert reads_as_words(quote(text, safe=""))
         assert reads_as_words(text)
 
-    def test_the_exact_percent_encodings_in_the_brief_read_as_words(self) -> None:
+    def test_a_percent_encoded_line_break_reads_as_words(self) -> None:
         assert reads_as_words("line%20one%0Aline%20two")
         assert reads_as_words("running%20shoes%0D%0A")
 
