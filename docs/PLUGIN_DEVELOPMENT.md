@@ -2971,8 +2971,9 @@ held, or held other than in a name-value pair holding nothing; any flagged name,
 for a sidecar written before 1.33.0), when a value
 the sidecar's observe run recorded for a flagged name is in the fixture (only
 where that run is on disk; see `observe_run` above), when a
-sidecar is outside its declared format, or when a fixture, or a directory under
-`tests/fixtures/`, cannot be read. A checked name is matched case-insensitively
+sidecar is outside its declared format, when a fixture, or a directory under
+`tests/fixtures/`, cannot be read, when an entry there is not a regular file
+(a FIFO, a socket or a device), or when a sidecar's fixture is gone. A checked name is matched case-insensitively
 and only as a whole name. Letters, digits, `_` and `-` continue a name. The rest
 of the punctuation an RFC 6265 cookie name can hold (`` . $ ! * ^ ` ~ ``)
 continues it only between two of those, as in `connect.sid`; anywhere else it

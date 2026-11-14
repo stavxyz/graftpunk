@@ -292,6 +292,43 @@ class TestCheckFixturesTree:
         (tmp_path / ".gitkeep").write_text("")
         assert check_fixtures_tree(tmp_path).problems == ()
 
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+    def test_a_fifo_under_the_tree_is_one_line(self, tmp_path: Path) -> None:
+        """A FIFO or other special file was skipped without a word (#218);
+        nothing committed is one."""
+        (tmp_path / "myshop").mkdir()
+        os.mkfifo(tmp_path / "myshop" / "get_orders.json")
+        assert check_fixtures_tree(tmp_path).problems == (
+            "myshop/get_orders.json: not a regular file, so not a fixture. "
+            "Move it out of the fixtures tree.",
+        )
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+    def test_the_sidecar_of_a_fifo_is_not_also_an_orphan(self, tmp_path: Path) -> None:
+        os.mkfifo(tmp_path / "get_orders.json")
+        (tmp_path / "get_orders.json.meta.json").write_text(sidecar_text(_captured(b"x")))
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert problem.startswith("get_orders.json: not a regular file")
+
+    def test_an_orphan_sidecar_is_one_line(self, tmp_path: Path) -> None:
+        """A sidecar whose fixture was deleted stayed in the tree unnoticed (#218)."""
+        kept = _fixture(tmp_path, "myshop/get_orders.json", b"{}", _captured(b"captured"))
+        orphan = _fixture(tmp_path, "myshop/get_cart.json", b"{}", _captured(b"captured"))
+        orphan.unlink()
+        assert kept.exists()
+        assert check_fixtures_tree(tmp_path).problems == (
+            "myshop/get_cart.json.meta.json: a sidecar with no fixture (get_cart.json) "
+            "beside it. Delete it, or restore its fixture.",
+        )
+
+    def test_a_sidecar_beside_a_directory_of_its_fixtures_name_is_an_orphan(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "get_orders.json").mkdir()
+        (tmp_path / "get_orders.json.meta.json").write_text(sidecar_text(_captured(b"x")))
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert problem.startswith("get_orders.json.meta.json: a sidecar with no fixture")
+
     def test_a_fixture_with_no_sidecar_fails_and_says_how_to_make_one(self, tmp_path: Path) -> None:
         _fixture(tmp_path, "get_orders.json", b"{}", None)
         (problem,) = check_fixtures_tree(tmp_path).problems

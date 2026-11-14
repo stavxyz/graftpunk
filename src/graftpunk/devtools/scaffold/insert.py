@@ -29,7 +29,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.errors import DevtoolsRefusal
-from graftpunk.devtools.plugin_project import PluginDefect, PluginView, require_plugin_project
+from graftpunk.devtools.plugin_project import (
+    PluginDefect,
+    PluginView,
+    _probe,
+    require_plugin_project,
+)
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.project import planned_graftpunk_floor
 from graftpunk.devtools.scaffold.pyproject_edit import (
@@ -199,7 +204,9 @@ def _document_to_write(path: Path, source: str, identifier: str) -> bool:
         CommandInsertError: a file whose name differs from *path*'s in case alone is
             there, which a case-insensitive filesystem would overwrite.
     """
-    if not path.parent.is_dir():
+    # _probe, not is_dir(): a pathlib predicate raises under an untraversable
+    # directory before Python 3.14 and returns False from 3.14 (#218).
+    if _probe(path.parent) != "dir":
         return True
     for existing in path.parent.iterdir():
         if existing.name == path.name:

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from graftpunk.devtools.errors import ScaffoldWriteError
 from graftpunk.devtools.scaffold import write
 from graftpunk.devtools.scaffold.project import (
     NotAPluginSuiteError,
@@ -414,3 +416,45 @@ def test_a_pyproject_whose_project_or_entry_points_is_not_a_table_is_not_a_suite
     with pytest.raises(NotAPluginSuiteError):
         write_scaffold(tmp_path, _spec())
     assert (tmp_path / "pyproject.toml").read_text() == text
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+def test_a_target_under_an_untraversable_directory_is_refused_before_any_write(
+    tmp_path: Path,
+) -> None:
+    """Before Python 3.14 pathlib's is_file() raised PermissionError here and the CLI
+    blamed a write it never tried; from 3.14 it answered False and the scaffold
+    planned a new project and failed at its first write. Both now refuse the same
+    way, before anything is written (#218)."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(ScaffoldWriteError) as caught:
+            write_scaffold(locked / "proj", _spec())
+    finally:
+        locked.chmod(0o755)
+    assert caught.value.before_first_write
+    assert str(caught.value) == (
+        f"Could not write {locked / 'proj'}: Permission denied. Nothing was written."
+    )
+    assert list(locked.iterdir()) == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+def test_a_fixtures_directory_that_cannot_be_traversed_keeps_its_placeholder_planned(
+    tmp_path: Path,
+) -> None:
+    """The .gitkeep is dropped only for a directory the probe sees; one it cannot
+    look into stays planned, so the write fails and is undone the same way on
+    every Python version instead of raising from is_dir() before 3.14."""
+    write_scaffold(tmp_path, _spec("myshop"))
+    fixtures = tmp_path / "tests" / "fixtures"
+    fixtures.chmod(0o000)
+    try:
+        with pytest.raises(ScaffoldWriteError) as caught:
+            write_scaffold(tmp_path, _spec("widgets"))
+    finally:
+        fixtures.chmod(0o755)
+    assert not caught.value.before_first_write
+    assert caught.value.unrestored == ()
