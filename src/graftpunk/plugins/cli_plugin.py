@@ -1404,11 +1404,13 @@ class SitePlugin:
         tab = await session.driver.get(f"{self.base_url}/")
         try:
             yield session, tab
-            # Capture current URL before caching (used for domain display)
-            try:
-                session.current_url = getattr(tab, "url", "") or f"{self.base_url}/"
-            except Exception:  # noqa: BLE001
-                session.current_url = f"{self.base_url}/"
+            # Capture current URL before caching: the session's recorded domain
+            # comes from it. nodriver's Tab.url is a copy that may predate the
+            # login's last navigation, so only the page's own answer is used.
+            from graftpunk.plugins.login_settle import page_url_nodriver
+
+            page = await page_url_nodriver(tab)
+            session.current_url = page.url if page.live else f"{self.base_url}/"
             # Success path: transfer cookies and cache
             await session.transfer_nodriver_cookies_to_session()
             # No explicit name/identifier: the operating session scope, set by

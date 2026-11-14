@@ -60,10 +60,13 @@ class LoginVerdict:
             raising (the exception is the reason), or when a hand-written login
             returned False without going through this module.
         url: The page the login ended on, or empty when it could not be read.
+        url_live: False when *url* is nodriver's ``Tab.url`` copy, which may name a
+            page from before the last navigation, because the page did not answer.
     """
 
     reason: str = ""
     url: str = ""
+    url_live: bool = True
 
 
 _VERDICT: ContextVar[LoginVerdict | None] = ContextVar("graftpunk_login_verdict", default=None)
@@ -226,9 +229,20 @@ def _url_signal_holds(*, url: str, pre_submit_url: str, success_url: str) -> boo
     back empty, which nodriver does mid-navigation), and every readable URL differs
     from it, which handed the same loose glob the same false success. With no known
     baseline the URL signal cannot be confirmed at all, so it never holds; the wait
-    says so in its debug trail and in the timeout warning.
+    says so in its debug trail and in the timeout warning. The nodriver login passes
+    an empty baseline too when the page did not answer its URL read
+    (``page_url_nodriver``), since ``Tab.url``'s copy may name an earlier page.
+
+    An empty *url* is no reading of the page at all: the nodriver tick passes one
+    for a URL that is only ``Tab.url``'s copy (see ``_decide_login_tick``), and a
+    glob of ``*`` would otherwise match it.
     """
-    return bool(pre_submit_url) and url != pre_submit_url and fnmatch.fnmatchcase(url, success_url)
+    return (
+        bool(url)
+        and bool(pre_submit_url)
+        and url != pre_submit_url
+        and fnmatch.fnmatchcase(url, success_url)
+    )
 
 
 def _missing_login_signals(
@@ -359,6 +373,7 @@ def _warn_login_signal_timeout(
     success_found: bool | None,
     last_error: str,
     page_read: bool,
+    url_live: bool = True,
 ) -> None:
     """Warn that the configured success signal never appeared before the deadline.
 
@@ -371,9 +386,13 @@ def _warn_login_signal_timeout(
     page no single tick ever saw whole. The deciding tick is the one that failed,
     and the warning says that and carries *last_error* rather than logging an empty
     ``missing``.
+
+    *url_live* False says *url* is nodriver's ``Tab.url`` copy, not the page's
+    answer: it is reported, as ``url_source="tab_url_copy"``, but it is not taken
+    as the URL signal holding, as the poll does not take it either.
     """
     missing = _missing_login_signals(
-        url=url,
+        url=url if url_live else "",
         pre_submit_url=pre_submit_url,
         success_found=success_found,
         success_selector=login_config.success,
@@ -428,8 +447,15 @@ def _warn_login_signal_timeout(
         url=url,
         timeout=timeout,
         hint=hint,
+        url_source=_url_source(url_live),
         **fields,
     )
+
+
+def _url_source(url_live: bool) -> str:
+    """Where a reported URL came from: ``page`` (the browser's answer) or
+    ``tab_url_copy`` (nodriver's ``Tab.url``, which may be stale)."""
+    return "page" if url_live else "tab_url_copy"
 
 
 def _debug_unknown_baseline(
@@ -614,7 +640,8 @@ async def note_login_url_nodriver(tab: Any) -> None:
     :func:`page_url_nodriver`. Makes no request when no verdict is being collected."""
     verdict = _VERDICT.get()
     if verdict is not None:
-        verdict.url = (await page_url_nodriver(tab)).url
+        page = await page_url_nodriver(tab)
+        verdict.url, verdict.url_live = page.url, page.live
 
 
 def driver_url(driver: Any) -> str:
@@ -827,6 +854,8 @@ class _ReadWindow:
         # some tick has either answered or failed and set this.
         self.error = ""
         self.url = ""
+        # Whether ``url`` is the browser's answer rather than ``Tab.url``'s copy.
+        self.url_live = True
         self.success_found: bool | None = None
         # How many ticks could not be read, and the distinct exception type names
         # their reads raised, first seen first: what the unreadable-page warning
@@ -837,6 +866,7 @@ class _ReadWindow:
     def record(self, reading: _TickReading) -> None:
         """Fold one tick's reading into the window."""
         self.url = reading.url
+        self.url_live = reading.url_live
         if reading.url and reading.url_live:
             # A URL is the browser answering, whatever the rest of the tick did. A
             # tick that read one and then failed its document has told the wait the
@@ -892,14 +922,17 @@ def _decide_login_tick(
     reading alone.
 
     A tick that could not be read decides nothing and is pending: the poll is the
-    retry for the mid-navigation window this wait exists for.
+    retry for the mid-navigation window this wait exists for. Nor does a URL the
+    browser did not answer (``url_live`` False: ``Tab.url``'s copy, which may name a
+    page from before the submit): the verdict gets an empty URL, so the URL signal
+    cannot hold on it, while the window keeps it for the warnings.
     """
     window.record(reading)
     if reading.error:
         return _TickDecision(_TICK_PENDING, False)
     verdict = _login_tick_verdict(
         page_text=reading.page_text,
-        url=reading.url,
+        url=reading.url if reading.url_live else "",
         pre_submit_url=pre_submit_url,
         failure_text=failure_text,
         success_selector=login_config.success,
@@ -948,7 +981,8 @@ async def _read_login_tick_nodriver(
     """
     page_url = await page_url_nodriver(tab, within=None)
     url = page_url.url
-    asked = want_page_text(url)
+    # Only the page's own URL may decide anything, this choice included.
+    asked = want_page_text(url if page_url.live else "")
     try:
         page_text = await tab.get_content() if asked else ""
         success_found: bool | None = None
@@ -1120,7 +1154,7 @@ async def _read_login_tick_nodriver_by(
             url,
             None,
             error=error,
-            page_asked=want_page_text(url),
+            page_asked=want_page_text(""),
             error_types=("TimeoutError",),
             url_live=False,
         )
@@ -1186,6 +1220,7 @@ def _warn_login_page_unreadable(
     url: str,
     failed_ticks: int | None = None,
     error_types: Sequence[str] = (),
+    url_live: bool = True,
 ) -> None:
     """Warn that no tick of the wait ever got an answer out of the browser.
 
@@ -1199,7 +1234,8 @@ def _warn_login_page_unreadable(
     fields and the hint. *failed_ticks* and *error_types* (the distinct exception
     type names the reads raised) are added after them, and only when
     *failed_ticks* is given, so a call with the original arguments logs exactly
-    what it always did. They carry counts and type names, never exception text or
+    what it always did; so is ``url_source`` (see :func:`_url_source`), from
+    *url_live*. They carry counts and type names, never exception text or
     page content.
     """
     note_login_failure(f"the page could not be read after the submit ({error})")
@@ -1207,6 +1243,7 @@ def _warn_login_page_unreadable(
     if failed_ticks is not None:
         fields["failed_ticks"] = failed_ticks
         fields["error_types"] = ", ".join(error_types)
+        fields["url_source"] = _url_source(url_live)
     LOG.warning(
         "login_page_unreadable",
         plugin=site_name,
@@ -1308,6 +1345,7 @@ async def _wait_for_login_signal_nodriver(
             url=last.url,
             failed_ticks=last.failed_ticks,
             error_types=last.error_types,
+            url_live=last.url_live,
         )
         return False
     _warn_login_signal_timeout(
@@ -1318,6 +1356,7 @@ async def _wait_for_login_signal_nodriver(
         success_found=last.success_found,
         last_error=last.error,
         page_read=last.page_read,
+        url_live=last.url_live,
     )
     return False
 
@@ -1389,6 +1428,7 @@ def _wait_for_login_signal_selenium(
             url=last.url,
             failed_ticks=last.failed_ticks,
             error_types=last.error_types,
+            url_live=last.url_live,
         )
         return False
     _warn_login_signal_timeout(
@@ -1399,6 +1439,7 @@ def _wait_for_login_signal_selenium(
         success_found=last.success_found,
         last_error=last.error,
         page_read=last.page_read,
+        url_live=last.url_live,
     )
     return False
 
@@ -1453,6 +1494,7 @@ async def _watch_for_failure_nodriver(
             url=last.url,
             failed_ticks=last.failed_ticks,
             error_types=last.error_types,
+            url_live=last.url_live,
         )
         return False
     return _check_login_result(
@@ -1493,6 +1535,7 @@ def _watch_for_failure_selenium(
             url=last.url,
             failed_ticks=last.failed_ticks,
             error_types=last.error_types,
+            url_live=last.url_live,
         )
         return False
     return _check_login_result(

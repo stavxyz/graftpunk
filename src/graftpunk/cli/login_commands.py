@@ -469,7 +469,15 @@ def make_login_body(
 
 def _page_line(verdict: LoginVerdict) -> str:
     """The verdict's continuation line naming the page the login ended on, if known."""
-    return f"\n    Page: {verdict.url}" if verdict.url else ""
+    if not verdict.url:
+        return ""
+    if not verdict.url_live:
+        # nodriver's Tab.url copy: the page did not say where it was.
+        return (
+            f"\n    Page: {verdict.url} (nodriver's last copy of the tab's URL, "
+            "which may be stale: the page did not answer)"
+        )
+    return f"\n    Page: {verdict.url}"
 
 
 def _did_not_complete(site_name: str, verdict: LoginVerdict, *, observed: bool) -> str:

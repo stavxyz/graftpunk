@@ -220,6 +220,15 @@ class _Target(NamedTuple):
     warned: bool  # whether the ambiguity warning has been logged for this selector
 
 
+async def _baseline_url_nodriver(tab: Any) -> str:
+    """The URL a ``success_url`` must move off: the page's own answer, or empty when
+    the page did not answer, since ``Tab.url``'s copy may name an earlier page
+    (``page_url_nodriver``). An empty baseline is the unknown one, on which the URL
+    signal never holds (``_url_signal_holds``)."""
+    page = await page_url_nodriver(tab)
+    return page.url if page.live else ""
+
+
 async def _probe_target_nodriver(tab: Any, selector: str) -> TargetProbe | None:
     """The page's account of *selector*'s matches, or None when it cannot be read."""
     try:
@@ -945,7 +954,7 @@ async def _run_nodriver_steps(
                 warned_success = warned_success or await success_shown_before_submit_nodriver(
                     tab, login_config=plugin.login_config, site_name=plugin.site_name
                 )
-                pre_submit_url = (await page_url_nodriver(tab)).url
+                pre_submit_url = await _baseline_url_nodriver(tab)
                 submit_clicked = True
                 await submit.element.click()
             except PluginError:
@@ -962,7 +971,7 @@ async def _run_nodriver_steps(
 
     login_config = plugin.login_config
     if not submit_clicked:
-        pre_submit_url = (await page_url_nodriver(tab)).url
+        pre_submit_url = await _baseline_url_nodriver(tab)
     # The page settles on its own schedule after the last step: login_settle owns
     # the wait, whichever signals this plugin configured.
     if not await wait_for_login_outcome_nodriver(
@@ -974,9 +983,12 @@ async def _run_nodriver_steps(
     ):
         return False
 
-    # Capture current URL before caching (used for domain display). page_url_nodriver
-    # never raises; an unreadable page leaves the login URL.
-    session.current_url = (await page_url_nodriver(tab)).url or login_target
+    # Capture current URL before caching: the session's recorded domain comes from
+    # it. Only the page's own answer is used; Tab.url's copy may name a page from
+    # before the submit (an identity provider's), so an unanswered read leaves the
+    # login URL.
+    page = await page_url_nodriver(tab)
+    session.current_url = page.url if page.live else login_target
 
     # Extract header roles from captured network requests
     _store_header_roles(session, header_capture, base_url)

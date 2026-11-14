@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from nodriver import cdp
@@ -73,12 +73,14 @@ class _CdpTab(Tab):
         node_ids_fail: bool = True,
         evaluate_error: Exception | None = None,
         page_read: Any = None,
+        tab_url: str = IDP,
+        html_before: str = "<html>Sign in</html>",
     ) -> None:
         info = cdp.target.TargetInfo(
             target_id=cdp.target.TargetID("T"),
             type_="page",
             title="",
-            url=IDP,
+            url=tab_url,
             attached=True,
             can_access_opener=False,
         )
@@ -90,6 +92,7 @@ class _CdpTab(Tab):
         self.node_ids_fail = node_ids_fail
         self.evaluate_error = evaluate_error
         self.page_read = page_read
+        self.html_before = html_before
         self.methods: list[str] = []
         self.expressions: list[str] = []
 
@@ -100,7 +103,7 @@ class _CdpTab(Tab):
         return DASHBOARD if self._landed() else IDP
 
     def _html(self) -> str:
-        return self.html_after if self._landed() else "<html>Sign in</html>"
+        return self.html_after if self._landed() else self.html_before
 
     def _evaluate(self, expression: str) -> Any:
         if self.evaluate_error is not None:
@@ -504,6 +507,204 @@ class TestTheLoginFlowReadsThePage:
         assert verdict.url == DASHBOARD
 
 
+_NEVER = float("inf")
+_CONTEXT_GONE = ProtocolException({"code": -32000, "message": "Execution context was destroyed."})
+
+
+class TestAUrlThePageDidNotAnswerDecidesNothing:
+    """``Tab.url``'s copy is the fallback when ``location.href`` fails, and it may
+    name a page from before the navigation, so it never passes the URL signal."""
+
+    @pytest.mark.parametrize(
+        ("copy", "success_url"),
+        [
+            # The toolkit reviewer's reproduction: the copy is the site's login page.
+            ("https://myshop.example/login", "https://myshop.example/*"),
+            # The second reviewer's: the copy is the site root, before the redirect.
+            ("https://myshop.example/", "https://myshop.example/*"),
+            # A glob that matches any URL, the empty one included.
+            ("https://myshop.example/", "*"),
+        ],
+    )
+    async def test_a_login_still_on_the_identity_provider_does_not_pass(
+        self, copy: str, success_url: str
+    ) -> None:
+        """Every evaluate fails mid-navigation while the DOM reads answer, the page
+        never leaves the identity provider, and Tab.url's copy matches success_url."""
+        tab = _CdpTab(
+            lands_at=_NEVER,
+            node_ids_fail=False,
+            evaluate_error=_CONTEXT_GONE,
+            tab_url=copy,
+            html_before="<html>Signing you in...</html>",
+        )
+
+        with patch.object(login_settle, "LOG") as mock_log:
+            result = await _signal_wait(tab, _config(success_url=success_url, timeout=0.6))
+
+        assert result is False
+        assert tab.url == copy
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == f"success URL pattern '{success_url}'"
+        assert warning["url"] == copy
+        assert warning["url_source"] == "tab_url_copy"
+
+    async def test_a_page_s_own_url_is_reported_as_such(self) -> None:
+        loop = asyncio.get_running_loop()
+        tab = _CdpTab(lands_at=loop.time(), node_ids_fail=False)
+
+        with patch.object(login_settle, "LOG") as mock_log:
+            result = await _signal_wait(tab, _config(success_url="*/account*", timeout=0.6))
+
+        assert result is False
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert (warning["url"], warning["url_source"]) == (DASHBOARD, "page")
+
+    async def test_the_baseline_is_unknown_when_the_page_does_not_answer(self) -> None:
+        """Tab.url's copy names an earlier page of the site, the page before the
+        submit is the login page, and the glob is loose enough to match it: with
+        the copy as the baseline the login page itself would pass."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class Loose(DeclarativeNodriverUrlWithFailure):
+            site_name = "ndloose"
+            session_name = "ndloose"
+            login_config = LoginConfig(
+                steps=[
+                    LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#submit")
+                ],
+                url="/login",
+                failure="Invalid credentials",
+                success_url="*myshop.example*",
+                timeout=0.6,
+                settle=0.0,
+            )
+
+        login_page = "https://myshop.example/login"
+
+        class CopyTab(_ScriptedNodriverTab):
+            url = "https://myshop.example/start"  # an earlier page's copy
+
+            def _href(self) -> Any:
+                answer = super()._href()
+                # The read just before the submit gets no answer; the poll's do.
+                return MagicMock(name="RemoteObject") if self._url_reads == 1 else answer
+
+        tab = CopyTab(urls=(login_page,))
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch.object(login_settle, "LOG"),
+            patch(
+                "graftpunk.plugins.login_engine.wait_for_login_outcome_nodriver",
+                wraps=wait_for_login_outcome_nodriver,
+            ) as wait,
+        ):
+            result = await generate_login_method(Loose())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert wait.call_args.kwargs["pre_submit_url"] == ""
+
+    async def test_the_session_records_the_login_url_when_the_page_does_not_answer(
+        self,
+    ) -> None:
+        """The session's recorded domain comes from its current_url: Tab.url's copy
+        (an identity provider's, here) is not used for it."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class Plugin(SitePlugin):
+            site_name = "ndsel"
+            session_name = "ndsel"
+            help_text = "ND Selector"
+            base_url = "https://myshop.example"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                steps=[
+                    LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#submit")
+                ],
+                url="/login",
+                success=".dashboard",
+                timeout=5.0,
+                settle=0.0,
+            )
+
+        class QuietAfterTab(_ScriptedNodriverTab):
+            url = IDP  # the copy
+
+            def _href(self) -> Any:
+                if self._wait_over:
+                    return MagicMock(name="RemoteObject")
+                return super()._href()
+
+        tab = QuietAfterTab(success_selector=".dashboard", success_from=1, urls=(DASHBOARD,))
+        mock_bs, instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch.object(login_settle, "LOG"),
+        ):
+            result = await generate_login_method(Plugin())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert instance.current_url == "https://myshop.example/login"
+
+    async def test_the_summary_says_when_its_url_is_the_copy(self) -> None:
+        from graftpunk.cli.login_commands import _page_line
+
+        tab = _CdpTab(lands_at=_NEVER, evaluate_error=_CONTEXT_GONE)
+        verdict = LoginVerdict()
+
+        with patch.object(login_settle, "LOG"), recording_login_verdict(verdict):
+            await login_settle.note_login_url_nodriver(tab)
+
+        assert (verdict.url, verdict.url_live) == (IDP, False)
+        line = _page_line(verdict)
+        assert IDP in line
+        assert "may be stale" in line
+        assert "may be stale" not in _page_line(LoginVerdict(url=DASHBOARD))
+
+
+class TestTheHandWrittenLoginSessionReadsThePage:
+    """``SitePlugin.browser_session()``, the escape hatch for a hand-written nodriver
+    login, records the session's URL the same way."""
+
+    @pytest.mark.parametrize(
+        ("evaluate_error", "expected"),
+        [(None, DASHBOARD), (_CONTEXT_GONE, "https://myshop.example/")],
+    )
+    async def test_the_recorded_url_is_the_page_s_or_the_site_root(
+        self, evaluate_error: Exception | None, expected: str
+    ) -> None:
+        class Hand(SitePlugin):
+            site_name = "ndhand"
+            session_name = "ndhand"
+            help_text = "ND Hand"
+            base_url = "https://myshop.example"
+            backend = "nodriver"
+
+        loop = asyncio.get_running_loop()
+        tab = _CdpTab(lands_at=loop.time(), evaluate_error=evaluate_error)
+
+        with (
+            patch("graftpunk.BrowserSession") as mock_bs,
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch.object(login_settle, "LOG"),
+        ):
+            instance = mock_bs.return_value
+            instance.start_async = AsyncMock()
+            instance.driver = MagicMock()
+            instance.driver.get = AsyncMock(return_value=tab)
+            instance.transfer_nodriver_cookies_to_session = AsyncMock()
+            async with Hand().browser_session() as (session, _tab):
+                pass
+
+        assert tab.url == IDP
+        assert session.current_url == expected
+
+
 class TestUnreadableWarningFields:
     def test_the_existing_signature_logs_exactly_the_existing_fields(self) -> None:
         with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
@@ -534,6 +735,15 @@ class TestUnreadableWarningFields:
             )
 
         kwargs = mock_log.warning.call_args[1]
-        assert list(kwargs) == ["plugin", "error", "url", "hint", "failed_ticks", "error_types"]
+        assert list(kwargs) == [
+            "plugin",
+            "error",
+            "url",
+            "hint",
+            "failed_ticks",
+            "error_types",
+            "url_source",
+        ]
+        assert kwargs["url_source"] == "page"
         assert kwargs["failed_ticks"] == 3
         assert kwargs["error_types"] == "ProtocolException, TimeoutError"
