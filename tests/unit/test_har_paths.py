@@ -656,15 +656,15 @@ class TestReadsAsWords:
 
     # (length, high bytes only): the share of 10,000 percent-encoded random values
     # that may read as words. Each ceiling is the share over 100,000 values from
-    # scripts/cookie_value_rates.py (2026-11-13: 0.089% and 0.049% at 8 bytes,
+    # scripts/cookie_value_rates.py (2026-11-13: 0.114% and 0.072% at 8 bytes,
     # none at 16 or 32) plus three standard errors of a 10,000-value sample. Before
     # #303 the decoded non-ASCII letters passed as typed words: 75.6% of any 8
     # random bytes and 58.7% of 8 high bytes read as words.
     _PERCENT_BYTES_CEILINGS = {
-        (8, False): 0.0018,
+        (8, False): 0.0022,
         (16, False): 0.0,
         (32, False): 0.0,
-        (8, True): 0.0012,
+        (8, True): 0.0016,
         (16, True): 0.0,
         (32, True): 0.0,
     }
@@ -703,12 +703,45 @@ class TestReadsAsWords:
         assert reads_as_words(quote(text).replace("%20", "+"))
 
     @pytest.mark.parametrize(
-        "value", ["running%00shoes", "caf%C3", "caf%C3%A9%FF", "shoes%7F", "%EE%80%80shoes"]
+        "value",
+        [
+            "running%00shoes",
+            "caf%C3",
+            "caf%C3%A9%FF",
+            "shoes%7F",
+            "running%1Bshoes",
+            "%C2%85shoes",
+            "\ud800shoes",
+        ],
     )
     def test_a_word_beside_a_raw_byte_does_not(self, value: str) -> None:
-        """A control character, a byte that is not UTF-8 (U+FFFD once decoded),
-        or a private-use character is a byte of a value, not typed text."""
+        """A control character other than a tab, a newline or a carriage return (C0,
+        DEL, or a C1 such as U+0085), a byte that is not UTF-8 (U+FFFD once
+        decoded), or a lone surrogate is a byte of a value, not typed text."""
         assert not reads_as_words(value)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "party \U0001fae9",  # an emoji added in Unicode 16, unassigned on 3.12
+            "\u6771\u4eac \U0002ebf0",  # a CJK character added in Unicode 15.1
+            "apple \uf8ff",  # the private-use Apple logo
+            "line one\nline two",
+            "running shoes\r\n",
+            "salt\tpepper",
+        ],
+    )
+    def test_typed_text_reads_as_words_on_every_python(self, text: str) -> None:
+        """The rule names no Unicode version: a character newer than the
+        interpreter's database, a private-use character, and the controls typed
+        text holds (tab, newline, carriage return) do not make a value bytes. Before
+        round 2 of #303 the first three read as words on 3.14 and not on 3.12."""
+        assert reads_as_words(quote(text, safe=""))
+        assert reads_as_words(text)
+
+    def test_the_exact_percent_encodings_in_the_brief_read_as_words(self) -> None:
+        assert reads_as_words("line%20one%0Aline%20two")
+        assert reads_as_words("running%20shoes%0D%0A")
 
 
 _BASE64 = string.ascii_letters + string.digits + "+/"
