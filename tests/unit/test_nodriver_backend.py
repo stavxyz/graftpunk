@@ -2559,15 +2559,10 @@ class TestNoDriverBackendLifecycleEdges:
         ]
         assert given_up["reason"] == "no answer in time"
 
-    @pytest.mark.usefixtures("_armed")
-    def test_a_sync_stop_whose_loop_stopped_after_the_check_ends_chrome_without_it(
-        self, temp_profiles: Path, captured_logs: list[dict[str, Any]]
-    ) -> None:
-        """From a thread with no running loop: the browser's loop reads as running
-        at both checks and then never runs the stop, so the stop gives up at once."""
-        profile = temp_profiles / "uc_sync_stop_stalled"
-        profile.mkdir()
-
+    @staticmethod
+    def _stops_after_two_checks() -> asyncio.AbstractEventLoop:
+        """A loop that reads as running at the stop's two checks and then never
+        runs anything: stopped between the check and the submit."""
         stalled = asyncio.new_event_loop()
         checks: list[int] = []
 
@@ -2576,6 +2571,26 @@ class TestNoDriverBackendLifecycleEdges:
             return len(checks) <= 2
 
         stalled.is_running = is_running  # type: ignore[method-assign]
+        return stalled
+
+    @pytest.mark.usefixtures("_armed")
+    @pytest.mark.parametrize("owner", ["graftpunk", "caller"])
+    def test_a_sync_stop_whose_loop_stopped_after_the_check_ends_chrome_without_it(
+        self,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+        owner: str,
+    ) -> None:
+        """From a thread with no running loop. graftpunk's private loop only stops
+        on its way to closing, so the stop gives up on it at once; a caller's loop
+        stopped but not closed may run again, so the stop waits out its bound."""
+        from graftpunk.backends import nodriver as nodriver_module
+
+        monkeypatch.setattr(nodriver_module, "_pending_end_wait_s", lambda: 1.0)
+        profile = temp_profiles / f"uc_sync_stop_stalled_{owner}"
+        profile.mkdir()
+        stalled = self._stops_after_two_checks()
         backend = NoDriverBackend()
         try:
             with _chrome_like_child(profile, exit_delay=0.3) as child:
@@ -2584,21 +2599,94 @@ class TestNoDriverBackendLifecycleEdges:
                 TestNoDriverBackendAbandonedLockHolder._give_chrome(browser, child, profile)
                 backend._browser = browser
                 backend._loop = stalled
+                if owner == "graftpunk":
+                    backend._private_loop = SimpleNamespace(loop=stalled, close=lambda: None)  # type: ignore[assignment]
                 backend._started = True
                 took = _within(15, backend.stop)
                 exited = _exited_now(child)
         finally:
+            if owner == "caller":
+                # The caller runs its loop again: the stop left queued there runs
+                # and finds nothing to stop.
+                del stalled.is_running
+                stalled.run_until_complete(asyncio.sleep(0.05))
             stalled.close()
 
-        assert took < 5
         assert exited
         assert not profile.exists()
         assert backend.is_running is False
         [given_up] = [
             e for e in captured_logs if e["event"] == "nodriver_backend_stop_on_loop_given_up"
         ]
-        assert given_up["reason"] == "the loop stopped"
         assert given_up["log_level"] == "warning"
+        if owner == "graftpunk":
+            # Not the 1.0 s bound: only Chrome's 0.3 s exit, without the loop.
+            assert took < 1.0
+            assert given_up["reason"] == "the loop stopped"
+        else:
+            assert 1.0 <= took < 5
+            assert given_up["reason"] == "no answer in time"
+
+    def test_a_timed_call_on_a_callers_stopped_loop_is_answered_when_it_runs_again(
+        self, fake_chrome: FakeChrome
+    ) -> None:
+        """A hand-managed loop that stops with the call queued and runs again within
+        the call's timeout answers it, as in 1.42.8."""
+        loop = asyncio.new_event_loop()
+        backend = NoDriverBackend()
+        loop.run_until_complete(self._start_on_current_loop(backend))
+        queued = threading.Event()
+        results: list[str] = []
+
+        def owner() -> None:
+            # Runs the loop, stops it with the call still queued, then runs it again.
+            def stop_once_queued() -> None:
+                queued.wait(5)
+                time.sleep(0.1)
+                loop.stop()
+
+            loop.call_soon(stop_once_queued)
+            loop.run_forever()
+            time.sleep(0.5)
+            loop.run_until_complete(asyncio.sleep(0.5))
+
+        owner_thread = threading.Thread(target=owner)
+        owner_thread.start()
+        try:
+            time.sleep(0.05)
+
+            def call() -> None:
+                queued.set()
+                results.append(backend.current_url)
+
+            took = _within(15, call)
+        finally:
+            owner_thread.join(10)
+            loop.run_until_complete(backend.stop_async())
+            loop.close()
+
+        assert results and results[0] != ""
+        assert took >= 0.5
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_timeout_the_stop_raises_itself_is_not_taken_for_the_wait_running_out(
+        self,
+        fake_chrome: FakeChrome,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        backend = NoDriverBackend()
+        backend.start()
+
+        async def raises_its_own_timeout() -> None:
+            raise TimeoutError("the stop's own")
+
+        monkeypatch.setattr(backend, "_stop_async", raises_its_own_timeout)
+        backend.stop()
+
+        assert backend.is_running is False
+        events = [e["event"] for e in captured_logs]
+        assert "nodriver_backend_stop_on_loop_given_up" not in events
 
     @pytest.mark.usefixtures("_armed")
     def test_a_sync_stop_through_a_blocked_loop_gives_up_at_its_bound(

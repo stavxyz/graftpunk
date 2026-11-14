@@ -763,11 +763,22 @@ async def _finish_on_worker_thread(work: Callable[[], None]) -> None:
     await _through_cancellation(_start_off_loop(work))
 
 
-class _LoopStalledError(TimeoutError):
-    """A timed ``_run_async`` call whose loop stopped before it began the call.
+class _CallTimedOutError(TimeoutError):
+    """A timed ``_run_async`` wait that ran out: the call did not answer in time.
 
-    It is given up on at once: a stopped loop never runs the submission, so
-    waiting out the timeout would only delay the same outcome.
+    Distinct from a ``TimeoutError`` the call raises itself, which
+    ``_run_async`` re-raises as it is, so a caller can tell the two apart.
+    """
+
+
+class _LoopStalledError(_CallTimedOutError):
+    """A timed ``_run_async`` call whose loop will not run it: the loop closed,
+    or graftpunk's own private loop stopped, before it began the call.
+
+    It is given up on at once, since waiting out the timeout would only delay
+    the same outcome. A caller's loop that is stopped but not closed (a
+    hand-managed one between ``run_until_complete()`` calls) may run again,
+    so a call on it waits out its timeout instead.
     """
 
 
@@ -1704,17 +1715,20 @@ class NoDriverBackend:
         uses: a start sweeps orphaned Chromes and retries its connection.
         ``stop()`` passes ``_pending_end_wait_s()``, and the other synchronous
         methods ``call_timeout`` or ``navigate_timeout``. When the timeout
-        passes, the call raises ``TimeoutError`` and the coroutine is left
-        running, never cancelled; the loop keeps running, so the next call
-        works. A call whose loop stopped before it began raises
-        ``_LoopStalledError`` (a ``TimeoutError``) at once. A coroutine that
+        passes, the call raises ``_CallTimedOutError`` (a ``TimeoutError``)
+        and the coroutine is left running, never cancelled; the loop keeps
+        running, so the next call works. A call the loop will not run (the
+        loop closed, or graftpunk's own private loop stopped, before it began
+        the call) raises ``_LoopStalledError``, a ``_CallTimedOutError``, at
+        once; on a caller's loop that is stopped but not closed the call waits
+        out its timeout, since that loop may run again. A coroutine that
         finishes just as the wait gives up has not timed out: the call returns
-        its result, or raises its exception.
-        Interrupting the wait (Ctrl-C) cancels the coroutine the same
-        way and re-raises. Either way the call waits for the cancellation to
-        land: up to ``_LOOP_JOIN_TIMEOUT_S`` for the loop to begin the call,
-        then up to ``_LOOP_JOIN_TIMEOUT_S`` more for it to finish, so up to
-        twice that in all.
+        its result, or raises its exception, a ``TimeoutError`` of its own
+        included. Interrupting the wait (Ctrl-C) cancels the coroutine and
+        re-raises, after waiting for the cancellation to land: up to
+        ``_LOOP_JOIN_TIMEOUT_S`` for the loop to begin the call, then up to
+        ``_LOOP_JOIN_TIMEOUT_S`` more for it to finish, so up to twice that in
+        all.
 
         Args:
             coro: Coroutine to execute.
@@ -1730,7 +1744,9 @@ class NoDriverBackend:
                 one), if called from the browser's own event loop, which would
                 deadlock waiting on itself, if that loop has stopped, or if the
                 call was cancelled because the loop is shutting down.
-            TimeoutError: If the coroutine did not finish within ``timeout``.
+            TimeoutError: ``_CallTimedOutError`` if the coroutine did not
+                finish within ``timeout``, or ``_LoopStalledError`` if the loop
+                will not run it (above); or the coroutine's own.
         """
         loop = self._loop
         running = _running_loop()
@@ -1751,6 +1767,15 @@ class NoDriverBackend:
 
         started = threading.Event()
         finished = threading.Event()
+        private = self._private_loop
+        own_loop = private is not None and private.loop is loop
+
+        def never_runs() -> bool:
+            """Whether *loop* will not run a submission it has not begun: it is
+            closed, or it is graftpunk's private loop and has stopped (that loop
+            only stops on its way to closing)."""
+            return loop.is_closed() or (own_loop and not loop.is_running())
+
         # How the coroutine itself ended, for a call that finishes after the
         # wait gave up on it: future.cancel() marks the future cancelled at
         # once, even when the coroutine then runs to the end before the
@@ -1798,7 +1823,7 @@ class NoDriverBackend:
         try:
             # wait() rather than result(timeout): a TimeoutError the coroutine
             # raises itself must not read as the call running out of time.
-            if timeout is None or self._answered_within(future, timeout, started, loop):
+            if timeout is None or self._answered_within(future, timeout, started, never_runs):
                 return future.result()
         except concurrent.futures.CancelledError as exc:
             # The loop cancelled the call: another thread stopped the backend
@@ -1825,8 +1850,8 @@ class NoDriverBackend:
             return outcome["result"]
         if "error" in outcome:
             raise outcome["error"]
-        if not started.is_set() and not loop.is_running():
-            # Never begun, and the loop is not running it: closed here, so
+        if not started.is_set() and never_runs():
+            # Never begun, and the loop will not run it: closed here, so
             # neither coroutine is collected as never awaited.
             with suppress(RuntimeError, ValueError):
                 wrapper.close()
@@ -1835,24 +1860,24 @@ class NoDriverBackend:
             raise _LoopStalledError(
                 f"NoDriverBackend.{method}: the browser's event loop stopped before it began"
             )
-        raise TimeoutError(f"NoDriverBackend.{method} did not finish within {timeout:g} s")
+        raise _CallTimedOutError(f"NoDriverBackend.{method} did not finish within {timeout:g} s")
 
     @staticmethod
     def _answered_within(
         future: "concurrent.futures.Future[Any]",
         timeout: float,
         started: threading.Event,
-        loop: asyncio.AbstractEventLoop,
+        never_runs: Callable[[], bool],
     ) -> bool:
         """Whether *future* finished within *timeout*, checking every
-        ``_EXIT_POLL_S`` and giving up early once *loop* has stopped before the
-        call *started*."""
+        ``_EXIT_POLL_S`` and giving up early once the loop will not run a call
+        that has not *started* (*never_runs*)."""
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if concurrent.futures.wait((future,), max(0.0, min(_EXIT_POLL_S, remaining))).done:
                 return True
-            if not started.is_set() and not loop.is_running():
+            if not started.is_set() and never_runs():
                 return False
             if remaining <= 0:
                 return False
@@ -2704,11 +2729,12 @@ class NoDriverBackend:
                                 timeout=_pending_end_wait_s(),
                                 method="stop()",
                             )
-                        except TimeoutError as exc:
-                            # The stop through the browser's loop did not
-                            # answer (it is not cancelled), or the loop stopped
-                            # before it began: Chrome is ended without the loop,
-                            # as a handed-off stop does, and stop() returns.
+                        except _CallTimedOutError as exc:
+                            # The wait for the stop through the browser's loop
+                            # ran out (the stop is not cancelled), or the loop
+                            # will not run it: Chrome is ended without the loop,
+                            # as a handed-off stop does, and stop() returns. A
+                            # TimeoutError the stop raised itself is not this.
                             LOG.warning(
                                 "nodriver_backend_stop_on_loop_given_up",
                                 reason="the loop stopped"
