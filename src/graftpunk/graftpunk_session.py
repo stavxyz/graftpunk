@@ -446,11 +446,14 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         captured name or not), or else the registered one, as a browser on the
         site's page would send it there (``_cross_origin_headers``). A declared
         role whose name is also registered (``xhr``, ``navigation``, ``form``,
-        or a ``register_role`` name) is layered: the registered role as the
-        cross-origin rule adjusts it, with the declared headers merged over it,
-        the declared value winning per header name in any case. Either way:
-        ``Sec-Fetch-Site`` same-site or cross-site, an ``Origin`` where Chrome
-        sends one, and no ``X-Requested-With`` unless the plugin declared it. A
+        or a ``register_role`` name) is layered: the declared headers are
+        merged over the registered role (less its ``X-Requested-With``), the
+        declared value winning per header name in any case, and the
+        cross-origin rule then runs once on the result. Every way:
+        ``Sec-Fetch-Site`` is the computed same-site or cross-site whatever was
+        declared, an ``Origin`` goes where Chrome sends one by the merged
+        ``Sec-Fetch-Mode`` and the method (a declared ``Origin`` wins), and no
+        ``X-Requested-With`` unless the plugin declared it. A
         request to ``gp_base_url``'s origin whose role was captured on another
         origin gets the registered role as it is. On ``gp_base_url``'s origin a
         role in ``_gp_plugin_roles`` is used only when its name is neither
@@ -488,21 +491,22 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
             fetch_site, base_origin = cross
             declared_headers = captured if declared else plugin_role
             registered = get_role_headers(role_name)
-            if registered is not None:
-                adjusted = _cross_origin_headers(
-                    registered,
-                    fetch_site=fetch_site,
-                    origin=base_origin,
-                    method=method,
-                    declared=False,
-                )
-                # A declared built-in name adds to the built-in role's fetch
-                # metadata rather than replacing it: no browser sends an XHR
-                # without Sec-Fetch-*.
-                return _layered(adjusted, declared_headers) if declared_headers else adjusted
-            if declared_headers is not None:
+            if registered is not None or declared_headers is not None:
+                # One path for a built-in, a declared, and a layered role: the
+                # declared headers go over the built-in ones (no browser sends
+                # an XHR without Sec-Fetch-*), less only the built-in
+                # X-Requested-With, and the cross-origin rule then runs once on
+                # the result. Its Sec-Fetch-Site always wins, since a static
+                # declaration cannot know the target's relation to the site; its
+                # Origin follows the merged Sec-Fetch-Mode and method, and a
+                # declared Origin still wins.
+                built_in = {
+                    name: value
+                    for name, value in (registered or {}).items()
+                    if name.lower() != "x-requested-with"
+                }
                 return _cross_origin_headers(
-                    declared_headers,
+                    _layered(built_in, declared_headers or {}),
                     fetch_site=fetch_site,
                     origin=base_origin,
                     method=method,

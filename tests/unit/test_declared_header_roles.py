@@ -234,7 +234,8 @@ class TestDeclaredRolesInCommandsAndTheClient:
         sent = _sent_to(wire, "https://api.myshop.example/v2/export")
         assert [k for k in sent.headers if k.lower() == "accept"] == ["accept"]
         assert sent.headers["Accept"] == "text/csv"
-        assert sent.headers["Sec-Fetch-Site"] == "none"
+        # Sec-Fetch-Site is always the computed relation to the target.
+        assert sent.headers["Sec-Fetch-Site"] == "same-site"
         assert sent.headers["Sec-Fetch-Mode"] == "cors"
 
     def test_a_declared_custom_name_is_sent_as_declared_elsewhere(self) -> None:
@@ -254,3 +255,59 @@ class TestDeclaredRolesInCommandsAndTheClient:
         [unknown] = [e for e in captured_logs if e["event"] == "unknown_role_no_headers_applied"]
         assert unknown["role"] == "nosuch"
         assert unknown["plugin_roles"] == ["api"]
+
+
+# Declarations copied from a recording of the site's own pages.
+_COPIED_ROLES = {
+    "xhr": {"Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-Api-Version": "2"},
+    "navigation": {"Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin"},
+}
+
+
+def _gp_http_sent(role: str, url: str) -> requests.PreparedRequest:
+    """What gp http sends for *role* to *url* with a plugin declaring _COPIED_ROLES."""
+    from types import SimpleNamespace
+
+    from graftpunk.cli.http_commands import _make_request
+
+    session = GraftpunkSession()
+    wire = _Wire()
+    session.mount("https://", wire)
+    plugin = SimpleNamespace(
+        base_url="https://myshop.example",
+        header_roles=_COPIED_ROLES,
+        site_name="declshop",
+        token_config=None,
+    )
+    with (
+        patch(
+            "graftpunk.cli.http_commands.load_session_for_api_resolved",
+            side_effect=echo_loaded_session(session),
+        ),
+        patch("graftpunk.cli.plugin_commands.get_plugin_for_session", return_value=plugin),
+    ):
+        _make_request("GET", url, session_name="declshop", role=role)
+    return _sent_to(wire, url)
+
+
+def _command_sent(role: str, url: str) -> requests.PreparedRequest:
+    session, wire = _applied({"navigation": {"Accept": "text/html"}}, _COPIED_ROLES)
+    session.request_with_role(role, "GET", url)
+    return _sent_to(wire, url)
+
+
+@pytest.mark.parametrize("path", [_command_sent, _gp_http_sent], ids=["command", "gp-http"])
+def test_a_declared_sec_fetch_site_is_replaced_by_the_computed_one(path: Any) -> None:
+    sent = path("xhr", "https://api.myshop.example/v2/orders")
+    assert sent.headers["Sec-Fetch-Site"] == "same-site"
+    assert sent.headers["X-Api-Version"] == "2"
+
+
+@pytest.mark.parametrize("path", [_command_sent, _gp_http_sent], ids=["command", "gp-http"])
+def test_origin_follows_the_merged_fetch_mode(path: Any) -> None:
+    """A declared navigation with Sec-Fetch-Mode: cors is a CORS GET, which Chrome
+    sends with an Origin."""
+    sent = path("navigation", "https://api.myshop.example/v2/page")
+    assert sent.headers["Sec-Fetch-Mode"] == "cors"
+    assert sent.headers["Origin"] == "https://myshop.example"
+    assert sent.headers["Sec-Fetch-Site"] == "same-site"
