@@ -908,82 +908,58 @@ def _least_cpu(work: Callable[[], object], runs: int = 3) -> float:
     return min(times)
 
 
-def _plain_fpdf_table(
-    rows: list[dict[str, str]], out: Path, line_height_factor: float | None = None
-) -> None:
-    """The same table drawn by fpdf2 alone, in the bundled font, with no
-    fitting: what json_to_pdf's own work is measured against. A
-    *line_height_factor* draws the row line height at that multiple of the
-    font size, as the export does for a table it shrinks."""
-    from fpdf import FPDF
-    from fpdf.fonts import FontFace
+def _count_measurements(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count fpdf2's ``multi_cell(dry_run=True)`` calls from now on: a measurement
+    of a cell by fpdf2's own wrapping, which costs two to three times drawing it.
+    The count is the export's cost that a slower or loaded machine cannot change."""
+    import fpdf
 
-    import graftpunk.plugins
+    measured = [0]
+    original = fpdf.FPDF.multi_cell
 
-    fonts = Path(graftpunk.plugins.__file__).parent / "fonts"
-    pdf = FPDF()
-    pdf.add_font("DejaVuSans", fname=fonts / "DejaVuSans.ttf")
-    pdf.add_font("DejaVuSans", style="B", fname=fonts / "DejaVuSans-Bold.ttf")
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    pdf.set_font("DejaVuSans", size=7)
-    columns = list(rows[0])
-    width = (pdf.w - pdf.l_margin - pdf.r_margin) / len(columns)
-    with pdf.table(
-        headings_style=FontFace(emphasis="BOLD", fill_color=(220, 220, 220)),
-        col_widths=(width,) * len(columns),
-        first_row_as_headings=True,
-        line_height=None if line_height_factor is None else line_height_factor * pdf.font_size,
-    ) as table:
-        for row in [dict(zip(columns, columns, strict=True)), *rows]:
-            cells = table.row()
-            for column in columns:
-                cells.cell(row[column])
-    pdf.output(str(out))
+    def counting(self: fpdf.FPDF, *args: object, **kwargs: object) -> object:
+        if kwargs.get("dry_run"):
+            measured[0] += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(fpdf.FPDF, "multi_cell", counting)
+    return measured
 
 
 class TestPdfSpeed:
     """Fitting every cell up front made an ordinary table two to three times
-    slower to export, and a cell of 50,000 combining marks took 100 s."""
+    slower to export, and a cell of 50,000 combining marks took 100 s. The table
+    cases count fpdf2's measurements of a cell instead of timing the export: a
+    wall-clock ratio failed under load (#391 review)."""
 
-    def test_an_ordinary_table_costs_little_more_than_fpdf2_drawing_it(
-        self, tmp_path: Path
+    def test_an_ordinary_table_is_drawn_without_measuring_a_cell(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Cells of up to about 35 lines in 20 columns: within a page, but past
-        # the cheap bound that let round 2 skip measuring a cell.
+        """Cells of up to about 35 lines in 20 columns: within a page, but past the
+        cheap bound that let round 2 skip measuring a cell. Round 2 of #290 fitted
+        every cell up front, 400 measurements for this table; it is now drawn
+        once and nothing is measured."""
         words = "lorem ipsum dolor sit amet "
         rows = [{f"c{c}": (words * 10)[: 140 + c] for c in range(20)} for _ in range(20)]
-        ours: list[float] = []
-        plain: list[float] = []
-        # Interleaved, so a burst of load on a shared CI runner slows both sides;
-        # the least of each, so it slows neither. Round 2's up-front fitting
-        # measured 1.68 times fpdf2 alone; a loaded runner measured 1.41 times
-        # for this release with three runs of each taken one side after the other.
-        for _ in range(5):
-            ours.append(_least_cpu(lambda: json_to_pdf(rows, tmp_path / "ours.pdf"), runs=1))
-            plain.append(_least_cpu(lambda: _plain_fpdf_table(rows, tmp_path / "p.pdf"), runs=1))
-        assert min(ours) <= 1.5 * min(plain) + 0.05, (ours, plain)
+        measured = _count_measurements(monkeypatch)
+        json_to_pdf(rows, tmp_path / "ours.pdf")
+        assert measured[0] == 0
 
-    def test_a_table_that_shrinks_costs_little_more_than_fpdf2_drawing_its_layout(
-        self, tmp_path: Path
+    def test_a_table_that_shrinks_measures_only_rows_near_the_page_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """20 columns of 200 characters of short words are too tall at fpdf2's
-        default line height and fit at 1.5 times the font size. Round 5
-        measured every cell with fpdf2 at two layouts before drawing, 2.4 times
-        fpdf2 drawing the chosen layout; now only rows the estimate puts near
-        the page limit are measured."""
+        default line height and fit at 1.5 times the font size. Round 5 measured
+        every cell with fpdf2 at two layouts before drawing, 1,840 measurements of
+        these 620 cells; only rows the estimate puts near the page limit are
+        measured now, fewer measurements than the table has cells."""
         text = ("abc de " * 40)[:200]
         rows = [{f"c{c}": text for c in range(20)} for _ in range(30)]
+        measured = _count_measurements(monkeypatch)
         json_to_pdf(rows, tmp_path / "ours.pdf")
         assert b" 7.00 Tf" in _pdf_text_bytes((tmp_path / "ours.pdf").read_bytes())
-        ours: list[float] = []
-        plain: list[float] = []
-        for _ in range(5):
-            ours.append(_least_cpu(lambda: json_to_pdf(rows, tmp_path / "ours.pdf"), runs=1))
-            plain.append(
-                _least_cpu(lambda: _plain_fpdf_table(rows, tmp_path / "p.pdf", 1.5), runs=1)
-            )
-        assert min(ours) <= 1.5 * min(plain) + 0.05, (ours, plain)
+        cells = 20 * (len(rows) + 1)
+        assert measured[0] < cells, measured[0]
 
     @pytest.mark.parametrize("filler", ["́", "​"], ids=["combining", "zero-width-space"])
     def test_a_cell_of_characters_with_no_width_fits_in_near_linear_time(
