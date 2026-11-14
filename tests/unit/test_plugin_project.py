@@ -1081,6 +1081,20 @@ def test_only_probe_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat() -> No
     assert violations == []
 
 
+@pytest.mark.parametrize(
+    "module",
+    ["graftpunk.devtools.scaffold.project", "graftpunk.devtools.scaffold.insert"],
+)
+def test_the_scaffold_writers_ask_the_filesystem_through_the_probe(module: str) -> None:
+    """write_scaffold and the command inserter decide from what is at a path too, so
+    they ask plugin_project's ``_probe`` and never a pathlib predicate, whose
+    answer under an untraversable directory differs by Python version (#218)."""
+    import importlib
+
+    source = Path(importlib.import_module(module).__file__ or "").read_text()
+    assert _calls_outside_probe(ast.parse(source)) == []
+
+
 def test_the_probe_guard_bans_every_is_underscore_predicate_and_an_os_path_import() -> None:
     """The guard does not chase names one at a time: any ``is_*`` attribute
     call (``is_fifo``, not just the ones already hit in review), any

@@ -27,8 +27,10 @@ from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.console import err_console
 from graftpunk.devtools.captures import (
     IgnoreFileReadError,
+    can_reach,
     ensure_ignored,
     find_repo_root,
+    is_existing_directory,
     is_tracked,
     write_sidecar,
 )
@@ -381,7 +383,7 @@ def fixtures_cmd(
             soft_wrap=True,
         )
 
-    if not allow_tracked and target_dir.exists():
+    if not allow_tracked and is_existing_directory(target_dir):
         tracked = [p for p in sorted(target_dir.rglob("*")) if p.is_file() and is_tracked(p)]
         if tracked:
             console.print("[red]Refusing to write: these paths are tracked by git:[/red]")
@@ -427,6 +429,12 @@ def fixtures_cmd(
             raise typer.Exit(1) from None
         if added:
             console.print(f"[dim]Added '{escape(relative)}/' to .gitignore[/dim]")
+    elif not can_reach(target_dir):
+        console.print(
+            f"[yellow]Cannot reach {escape(str(target_dir))} to check whether it is in a "
+            "git work tree.[/yellow]",
+            soft_wrap=True,
+        )
     else:
         console.print(
             "[yellow]Not inside a git work tree: nothing protects this directory "
@@ -460,6 +468,14 @@ def fixtures_cmd(
     # and template (fixture_order alone cannot tell those apart from an entry the
     # digest actually kept) never outranks it. The sort is stable. A row is keyed
     # by its GraphQL operation too (#367).
+    # FixtureSession templates a request path by the generic rule alone, so each
+    # file of a family the digest collapsed further records that family, and a
+    # request for any member finds it (#213). Decided per endpoint, from every
+    # member the collapse took in, never from the one entry written: an id-shaped
+    # member (/products/1001) templates generically on its own.
+    families_collapsed = {
+        template for raw, template in run_digest.collapsed_templates.items() if raw != template
+    }
     fixture_types = {
         (method, endpoint.template, endpoint.operation): endpoint.fixture_content_type
         for endpoint in run_digest.endpoints
@@ -554,6 +570,7 @@ def fixtures_cmd(
                 redacted_names=redacted,
                 observe_run=observe_run,
                 graphql_operation=operation or None,
+                endpoint_family=template if template in families_collapsed else None,
             )
         except OSError as exc:
             _refuse_write(file_path, exc)

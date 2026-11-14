@@ -25,7 +25,14 @@ from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.har.graphql import request_operation
 from graftpunk.har.naming import capture_slug, parse_endpoint_key
 from graftpunk.plugins.cli_plugin import CommandContext, PluginConfig
-from graftpunk.testing.sidecar import is_sidecar, load_sidecar, sidecar_path
+from graftpunk.testing.sidecar import (
+    SIDECAR_SUFFIX,
+    SidecarError,
+    family_holds,
+    is_sidecar,
+    load_sidecar,
+    sidecar_path,
+)
 
 __all__ = [
     "FixtureAnswer",
@@ -134,11 +141,16 @@ class FixtureSession(GraftpunkSession):
     :func:`graftpunk.har.naming.capture_slug` names a capture for that
     method and path, the same rule ``gp observe fixtures`` uses to write
     files, so a fixture copied from a capture keeps its name. The fixtures
-    command also applies the digest's high-cardinality collapse, which this
-    lookup does not know: a fixture named for a collapsed family
+    command also applies the digest's high-cardinality collapse, which the
+    path alone does not show: a fixture named for a collapsed family
     (``get_products_{product_id}.json``) answers a request whose segment
-    templates the same way (an id such as ``1``), not a request for one of
-    the recorded slugs. A sidecar
+    templates the same way (an id such as ``1``), and, when no file is named
+    for the request itself, a request for any member of the family
+    (``/products/alpha-widget``), found through the ``endpoint_family`` its
+    sidecar records (schema 6, #213). Of several families that hold the path,
+    the one with the most literal segments wins, then the template in sorted
+    order, then ``.json`` as above; a sidecar that does not load is passed over
+    in that search, and the fixtures check reports it. A sidecar
     ``<filename>.meta.json`` beside a fixture supplies its status and content type
     when present, read through :mod:`graftpunk.testing.sidecar`; without one, the
     status is 200 and the type is guessed from the file's extension. No matching
@@ -239,6 +251,8 @@ class FixtureSession(GraftpunkSession):
             ),
             key=_fixture_preference,
         )
+        if not matches:
+            matches = self._family_fixtures(method, path, name)
         if not matches and operation is not None:
             # Loud, never a 404 or another operation's file: a test of a command
             # sending an operation it has no fixture for must fail (#367).
@@ -253,6 +267,26 @@ class FixtureSession(GraftpunkSession):
             response._content = b""
             return response
         return self._respond_from_file(matches[0], response)
+
+    def _family_fixtures(self, method: str, path: str, operation: str) -> list[Path]:
+        """The fixtures written for a collapsed endpoint family that holds *path*
+        (:func:`graftpunk.testing.sidecar.family_holds`), best first: the file whose
+        name is the family's own stem for *method* and *operation*, beside a sidecar
+        that records the family."""
+        found: list[tuple[tuple[int, str, int, str], Path]] = []
+        for meta in self._fixtures_dir.glob(f"*{glob.escape(SIDECAR_SUFFIX)}"):
+            try:
+                family = load_sidecar(meta).endpoint_family
+            except SidecarError:
+                continue
+            if family is None or not family_holds(family, path):
+                continue
+            fixture = meta.with_name(meta.name.removesuffix(SIDECAR_SUFFIX))
+            if fixture.stem != capture_slug(method, family, operation) or not fixture.is_file():
+                continue
+            literal = sum(1 for segment in family.split("/") if "{" not in segment)
+            found.append(((-literal, family, *_fixture_preference(fixture)), fixture))
+        return [fixture for _, fixture in sorted(found, key=lambda item: item[0])]
 
     def _respond_from_file(self, path: Path, response: requests.Response) -> requests.Response:
         """Answer from *path*; its sidecar, when present, is read through the owner,

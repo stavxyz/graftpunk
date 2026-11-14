@@ -31,7 +31,9 @@ One exception, by design: a payload that holds nothing its current version added
 is written as the earlier version, so a reader of that version keeps reading it.
 The ``--endpoints-json`` projection of a run with no GraphQL operation row is
 schema 1 (:data:`ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS`), and a sidecar naming no
-GraphQL operation is schema 4 (:data:`SIDECAR_SCHEMA_WITHOUT_OPERATION`), #367.
+GraphQL operation is schema 4 (:data:`SIDECAR_SCHEMA_WITHOUT_OPERATION`), #367, or
+schema 5 when it names one and no endpoint family
+(:data:`SIDECAR_SCHEMA_WITHOUT_FAMILY`), #213.
 The version handshake reports such a surface's earlier number, the one every run
 writes (:func:`handshake_schema`), so a caller written for it keeps working, and
 :func:`written_schemas` lists every number a payload of it may carry.
@@ -49,6 +51,7 @@ __all__ = [
     "ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS",
     "INFO_SCHEMA",
     "SIDECAR_SCHEMA",
+    "SIDECAR_SCHEMA_WITHOUT_FAMILY",
     "SIDECAR_SCHEMA_WITHOUT_OPERATION",
     "Surface",
     "UnknownSchemaError",
@@ -65,16 +68,21 @@ Surface = Literal["endpoints", "info", "sidecar"]
 
 ENDPOINTS_SCHEMA: Final = 2
 INFO_SCHEMA: Final = 1
-SIDECAR_SCHEMA: Final = 5
+SIDECAR_SCHEMA: Final = 6
 
 ENDPOINTS_SCHEMA_WITHOUT_OPERATIONS: Final = 1
 """The schema an ``--endpoints-json`` projection with no GraphQL operation row is
 written as: schema 2 adds only ``operation``, so a reader written for schema 1
 keeps reading such a run (#367)."""
 SIDECAR_SCHEMA_WITHOUT_OPERATION: Final = 4
-"""The schema a sidecar naming no GraphQL operation is written as: schema 5 adds
-only ``graphql_operation``, so a fixture of any other request stays readable by a
-graftpunk from 1.35.0 to 1.38.x (#367)."""
+"""The schema a sidecar naming no GraphQL operation and no endpoint family is
+written as: schema 5 adds only ``graphql_operation``, so a fixture of any other
+request stays readable by a graftpunk from 1.35.0 to 1.38.x (#367), and schema 6
+adds only ``endpoint_family`` (#213)."""
+SIDECAR_SCHEMA_WITHOUT_FAMILY: Final = 5
+"""The schema a sidecar naming a GraphQL operation and no endpoint family is
+written as: schema 6 adds only ``endpoint_family``, so a GraphQL fixture stays
+readable by a graftpunk from 1.39.0 to 1.42.7 (#213)."""
 
 _CURRENT: Final[dict[Surface, int]] = {
     "endpoints": ENDPOINTS_SCHEMA,

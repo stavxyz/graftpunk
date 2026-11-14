@@ -3,6 +3,7 @@
 import json
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from graftpunk.cli.session_commands import session_app
@@ -424,35 +425,175 @@ class TestAccountColumn:
         assert "alice@example.com" in result.output
 
 
+def _list_at(width: int, monkeypatch, sessions, *args: str) -> str:  # noqa: ANN001
+    import importlib
+
+    from tests.unit.conftest import _CONSOLE_LOCATIONS
+
+    for module_name, attr in _CONSOLE_LOCATIONS:
+        console_obj = getattr(importlib.import_module(module_name), attr)
+        monkeypatch.setattr(console_obj, "width", width)
+    with patch(
+        "graftpunk.cli.session_commands.list_sessions_with_metadata",
+        return_value=[dict(s) for s in sessions],
+    ):
+        result = runner.invoke(session_app, ["list", *args])
+    assert result.exit_code == 0, result.output
+    return strip_ansi(result.output)
+
+
+def _columns(output: str) -> list[str]:
+    """Each column of the rendered table's body, its cell pieces joined across
+    every line, so a value folded onto several lines reads whole."""
+    body = [
+        line.strip()[1:-1]
+        for line in output.splitlines()
+        if line.strip().startswith("│") and line.strip().endswith("│")
+    ]
+    cells = [line.split("│") for line in body]
+    return ["".join(row[i].strip() for row in cells) for i in range(len(cells[0]))]
+
+
+def _headers(output: str) -> list[str]:
+    line = next(line for line in output.splitlines() if "Session" in line and "┃" in line)
+    return [cell.strip() for cell in line.strip().strip("┃").split("┃")]
+
+
+def _value_lines(output: str, value: str) -> list[str]:
+    """The table body lines that hold *value* whole, as a cell of its own."""
+    return [line for line in output.splitlines() if f"│ {value} " in line]
+
+
 class TestSessionListNarrowTerminal:
-    """The full session name must survive on a real 80-column terminal.
+    """A narrow `gp session list` keeps every column it shows usable (#179):
+    Session and Domain stay whole on one line (a session name is what --session
+    takes), Status is never cut, Account is the column that folds, no value is
+    cut to an ellipsis, and columns are left out in a documented order.
 
     The suite pins consoles wide via the autouse ``_wide_consoles`` fixture
-    (see conftest.py); this test opts back out to the narrow default so the
-    ``no_wrap`` Session column is actually exercised at its intended width.
+    (see conftest.py); these tests set the width they test.
     """
 
-    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
-    def test_session_name_unbroken_at_80_columns(self, mock_list, monkeypatch) -> None:  # noqa: ANN001
-        import importlib
+    _SHORT = (
+        _make_session(
+            name="myshop@alice",
+            domain="myshop.example",
+            account_identifier="alice@myshop.example",
+            storage_location="~/.config/graftpunk/sessions",
+        ),
+        _make_session(name="myshop@bob", status="logged_out", account_identifier="bob@example.com"),
+    )
+    # A short session name and domain beside a long account: giving Account the
+    # spare width first folded the name mid-name.
+    _LONG_ACCOUNT = (
+        _make_session(
+            name="myshop@alice",
+            domain="accounts.myshop.example",
+            account_identifier="firstname.lastname.department@corporate-example.example",
+        ),
+        _make_session(
+            name="myshop@work",
+            domain="example.com",
+            status="logged_out",
+            account_identifier="bob@example.com",
+        ),
+    )
+    _LONG_EVERYTHING = (
+        _make_session(
+            name="anotherlongpluginname@work-account",
+            domain="accounts.longdomain.myshop.example",
+            status="logged_out",
+            account_identifier="firstname.lastname.department@corporate-example.example",
+        ),
+        _make_session(name="myshop@alice", account_identifier="alice@myshop.example"),
+    )
 
-        from tests.unit.conftest import _CONSOLE_LOCATIONS
+    @staticmethod
+    def _assert_usable(output: str, width: int, sessions: tuple[dict, ...]) -> None:
+        assert max(len(line) for line in output.splitlines()) <= width
+        assert "…" not in output
+        headers = _headers(output)
+        assert "Session" in headers and "Account" in headers and "Status" in headers
+        for session in sessions:
+            assert _value_lines(output, session["name"]), session["name"]
+            if "Domain" in headers:
+                assert _value_lines(output, session["domain"]), session["domain"]
+        columns = dict(zip(headers, _columns(output), strict=True))
+        assert columns["Account"] == "".join(s["account_identifier"] for s in sessions)
+        assert columns["Status"] == "".join(
+            "● active" if s["status"] == "active" else "○ logged out" for s in sessions
+        )
 
-        for module_name, attr in _CONSOLE_LOCATIONS:
-            console_obj = getattr(importlib.import_module(module_name), attr)
-            monkeypatch.setattr(console_obj, "width", 80)
+    def test_short_values_keep_domain_and_one_line_accounts_at_100_columns(
+        self,
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        output = _list_at(100, monkeypatch, self._SHORT)
 
-        mock_list.return_value = [
-            _make_session(name="myshop@alice", account_identifier="alice@example.com")
+        self._assert_usable(output, 100, self._SHORT)
+        assert _headers(output) == ["Session", "Domain", "Account", "Status", "Modified"]
+        assert _value_lines(output, "alice@myshop.example")
+        assert "Cookies, Backend and Location are left out at this width" in output
+
+    def test_a_long_account_folds_and_the_short_name_and_domain_do_not_at_100_columns(
+        self,
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        output = _list_at(100, monkeypatch, self._LONG_ACCOUNT)
+
+        self._assert_usable(output, 100, self._LONG_ACCOUNT)
+        assert _headers(output) == ["Session", "Domain", "Account", "Status", "Modified"]
+        assert not _value_lines(output, "firstname.lastname.department@corporate-example.example")
+
+    @pytest.mark.parametrize("sessions", ["_LONG_ACCOUNT", "_LONG_EVERYTHING"])
+    def test_at_80_columns_domain_is_left_out_before_a_name_folds(
+        self,
+        monkeypatch,  # noqa: ANN001
+        sessions: str,
+    ) -> None:
+        data = getattr(self, sessions)
+        output = _list_at(80, monkeypatch, data)
+
+        self._assert_usable(output, 80, data)
+        assert _headers(output) == ["Session", "Account", "Status", "Modified"]
+        assert "Cookies, Backend, Location and Domain are left out at this width" in output
+
+    def test_long_values_at_100_columns(self, monkeypatch) -> None:  # noqa: ANN001
+        output = _list_at(100, monkeypatch, self._LONG_EVERYTHING)
+
+        self._assert_usable(output, 100, self._LONG_EVERYTHING)
+
+    def test_every_column_at_220_columns(self, monkeypatch) -> None:  # noqa: ANN001
+        output = _list_at(220, monkeypatch, self._LONG_EVERYTHING)
+
+        assert _headers(output) == [
+            "Session",
+            "Domain",
+            "Account",
+            "Status",
+            "Cookies",
+            "Last Modified",
+            "Backend",
+            "Location",
         ]
+        for session in self._LONG_EVERYTHING:
+            for key in ("name", "domain", "account_identifier"):
+                assert _value_lines(output, session[key]), session[key]
+        assert "left out at this width" not in output
 
-        result = runner.invoke(session_app, ["list"])
+    def test_wide_keeps_every_column_and_cuts_no_value_at_80_columns(
+        self,
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        output = _list_at(80, monkeypatch, self._SHORT, "--wide")
 
-        assert result.exit_code == 0, result.output
-        output = strip_ansi(result.output)
-        # The Account cell may be truncated with an ellipsis at this width —
-        # only the Session column (no_wrap=True) is asserted on here.
-        assert "myshop@alice" in output
+        assert max(len(line) for line in output.splitlines()) <= 80
+        assert "…" not in output
+        assert "left out at this width" not in output
+        columns = _columns(output)
+        assert len(columns) == 8
+        assert columns[7] == "~/.config/graftpunk/sessions~/.config/graftpunk/sessions"
+        assert columns[2] == "alice@myshop.examplebob@example.com"
 
 
 class TestSessionShowPassThroughValidation:

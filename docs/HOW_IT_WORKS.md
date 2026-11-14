@@ -168,7 +168,13 @@ under `graftpunk.logging.redacted_values`, so their log lines show the
 placeholder.
 `gp myshop login --as work` pins a label. Metadata records the
 identifier (what was typed at login, not server-verified), shown in
-`gp session list`'s Account column.
+`gp session list`'s Account column. When the table does not fit the terminal,
+the list leaves out its Cookies, Backend and Location columns, then Domain and
+Modified when Session and Domain whole still leave Account fewer than 10
+characters (`--wide` keeps every column, folding long values; `gp session show`
+and `--json` carry every field). Session, Domain and Status stay whole on one
+line when the terminal holds the longest session name and domain beside Status, Account is the column that folds onto further lines, and no value is cut
+to an ellipsis.
 
 Which session a command uses is resolved once per invocation:
 `--session` > `GRAFTPUNK_SESSION` > `.gp-session` in the working directory >
@@ -1784,7 +1790,9 @@ A schema 4 sidecar is refused by a graftpunk older than 1.35.0, since the
 loader refuses an unknown schema (`graftpunk.contracts`), and a schema 5 sidecar
 (1.39.0, #367: it adds `graphql_operation`, and only a GraphQL operation's fixture
 gets one; every other sidecar is still written as schema 4) by a graftpunk older
-than 1.39.0.
+than 1.39.0, and a schema 6 sidecar (1.42.8, #213: it adds `endpoint_family`, and
+only a fixture of a family the digest collapsed gets one) by a graftpunk older
+than 1.42.8.
 
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
 fixture that removes prefixed environment variables for the duration of each
@@ -1830,7 +1838,7 @@ Some server-rendered sites re-render their login form shortly after load (jQuery
 
 #### Diagnosing a failed login
 
-`login` reporting a failure means the page did not reach the expected post-login state. The engine logs what it actually detected: the configured `failure` text, a `Too Many Requests` (rate-limit) page on any pass that read the page text (the last pass before the timeout included, so a login that gives up still names a limiter when one answered), or the success signal never appearing before `timeout` (that warning names the missing selector or URL pattern and the URL the page ended on). Read the warning before assuming bad credentials, and if the login really does take longer than `timeout`, raise it. To capture the whole flow, run `gp --observe=full <plugin> login`: it records an observe run under the plugin's session name whether or not the login succeeds, and prints the run directory. `gp observe list` shows it. With the nodriver backend the run holds a screenshot, the page source, a HAR with response bodies, and console logs; with the selenium backend `BrowserSession` owns the capture, which yields the HAR (with request and response bodies, read from the performance log, which ChromeDriver keeps only when observe is on), console logs, and a screenshot only if the login raised. The login's header-role capture reads the same log, so a Selenium login caches header roles only when run with `--observe full`; without it, Chrome keeps no performance log and the login caches none. The nodriver login engine starts its own capture on the tab the login opens and does not hand `observe_mode` to its `BrowserSession`, so the login is recorded once.
+`login` reporting a failure means the page did not reach the expected post-login state. The engine logs what it actually detected: the configured `failure` text, a `Too Many Requests` (rate-limit) page on any pass that read the page text (the last pass before the timeout included, so a login that gives up still names a limiter when one answered), or the success signal never appearing before `timeout` (that warning names the missing selector or URL pattern and the URL the page ended on). Read the warning before assuming bad credentials, and if the login really does take longer than `timeout`, raise it. To capture the whole flow, run `gp --observe=full <plugin> login`: it records an observe run under the plugin's session name whether or not the login succeeds, and prints the run directory. `gp observe list` shows it. With the nodriver backend the run holds a screenshot, the page source, a HAR with response bodies, and console logs; with the selenium backend `BrowserSession` owns the capture, which yields the HAR (with request and response bodies, read from the performance log, which ChromeDriver keeps only when observe is on), console logs, and a screenshot only if the login raised. The login's header-role capture reads the same log, so a Selenium login caches header roles only when run with `--observe full`; without it, Chrome keeps no performance log and the login caches none. The nodriver login engine starts its own capture on the tab the login opens and does not hand `observe_mode` to its `BrowserSession`, so the login is recorded once. With observe off that capture is header-only: it keeps the request headers the header roles come from and asks Chrome for no request or response body, so a page with many assets costs no body fetch per asset.
 
 Redirect chains are recorded one HAR entry per hop, linked by `response.redirectURL`, so a login form whose `POST` answers with a `302` shows up as the `POST` (with its status, `Location`, and its redacted body when CDP inlined it or the request-time fetch described under Capture Backends got it; a body neither gave is lost across the redirect, logged as `redirect_hop_post_data_unavailable`, and marked `request._postDataNotCaptured` on the hop's entry) followed by the request it redirected to.
 

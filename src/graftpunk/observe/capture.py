@@ -1335,7 +1335,8 @@ class SeleniumCaptureBackend:
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
         # False for a capture whose HAR is never written (the login engine's
-        # header-only capture): no request body is kept, fetched or logged about.
+        # header-only capture): no request or response body is kept, fetched or
+        # logged about.
         self._record_request_bodies = record_request_bodies
         self._request_map: dict[str, dict[str, Any]] = {}
         self._console_logs: list[dict[str, Any]] = []
@@ -1504,7 +1505,7 @@ class SeleniumCaptureBackend:
             # Fetch response body
             response = data.get("response", {})
             mime = response.get("mimeType", "")
-            if _body_expected(data, response):
+            if self._record_request_bodies and _body_expected(data, response):
                 try:
                     result = self._driver.execute_cdp_cmd(
                         "Network.getResponseBody", {"requestId": request_id}
@@ -1728,7 +1729,8 @@ class NodriverCaptureBackend:
         # least recently heard from goes first past INTERACTION_ORIGINS.
         self._interactions: dict[tuple[str, str, int | None], deque[_Interaction]] = {}
         # False for a capture whose HAR is never written (the login engine's
-        # header-only capture): no request body is kept, fetched or logged about.
+        # header-only capture): no request or response body is kept, fetched or
+        # logged about (#308).
         self._record_request_bodies = record_request_bodies
         # Set when stop has judged every request body; a request-time fetch that
         # has not started by then marks its entry instead of writing into it.
@@ -2073,7 +2075,10 @@ class NodriverCaptureBackend:
         """Mark each response body stop will not fetch now, so none is left out unsaid.
 
         A body already in the HAR or ``bodies/``, or already marked, is left as is.
+        A header-only capture fetches no body, so it marks none.
         """
+        if not self._record_request_bodies:
+            return
         for request_id, data in self._request_map.items():
             response = data.get("response")
             if (
@@ -2136,7 +2141,7 @@ class NodriverCaptureBackend:
                         data["_post_data_error"] = f"{type(exc).__name__}: {exc}"
 
                 # Skip response body if already eagerly fetched by _on_loading_finished
-                if request_id in self._bodies_fetched:
+                if request_id in self._bodies_fetched or not self._record_request_bodies:
                     continue
 
                 # Fetch response body (fallback for any missed by eager fetch)
@@ -3279,6 +3284,8 @@ class NodriverCaptureBackend:
         try:
             import nodriver.cdp.network as cdp_net
 
+            if not self._record_request_bodies:
+                return
             rid = str(event.request_id)
 
             data = self._request_map.get(rid)
@@ -3365,7 +3372,8 @@ def create_capture_backend(
         bodies_dir: Directory to stream large/binary request and response bodies to
             disk. Without one, such a request body is left out and marked.
         record_request_bodies: False for a capture whose HAR is never written:
-            request bodies are then neither kept, fetched nor logged about.
+            request and response bodies are then neither kept, fetched nor
+            logged about.
         answer_dialogs: For a headless nodriver recording, accept each
             JavaScript dialog through CDP (``NodriverCaptureBackend``). Selenium
             gets its equivalent at driver launch instead

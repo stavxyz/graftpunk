@@ -53,6 +53,7 @@ from graftpunk.testing.recorded import (
 )
 from graftpunk.testing.sidecar import (
     FIXTURES_PLACEHOLDER,
+    SIDECAR_SUFFIX,
     ObserveRun,
     Sidecar,
     SidecarError,
@@ -301,6 +302,10 @@ def _collect_fixtures(
             dirnames[:] = []
             continue
         dirnames[:] = kept_dirnames
+        here: list[Path] = []
+        sidecars: list[str] = []
+        # Entries with a line of their own: a sidecar beside one is not an orphan.
+        reported: set[str] = set()
         for name in filenames:
             if name.startswith("."):
                 continue
@@ -315,17 +320,41 @@ def _collect_fixtures(
             if kind == "unreadable":
                 problems.append(f"{_label(tree, relative_dir)}: cannot be read ({detail[0]}).")
                 break
-            if kind == "other" and detail:
-                # The entry is a symlink whose own target could not be
-                # reached; the directory itself is fine. A sidecar in this
-                # shape is the owning fixture's problem to report, once,
-                # when it is probed for its sidecar below; anything else is
-                # this entry's own line, and the walk continues either way.
-                if not is_sidecar(candidate):
+            if kind == "other":
+                # A sidecar in this shape is the owning fixture's problem to
+                # report, once, when it is probed for its sidecar below; anything
+                # else is this entry's own line, and the walk continues either way.
+                if is_sidecar(candidate):
+                    continue
+                reported.add(name)
+                if detail:
+                    # A symlink whose own target could not be reached; the
+                    # directory itself is fine.
                     problems.append(f"{relative_dir / name}: cannot be read ({detail[0]}).")
+                else:
+                    # A FIFO, socket or device: nothing committed is one (#218).
+                    problems.append(
+                        f"{relative_dir / name}: not a regular file, so not a fixture. "
+                        "Move it out of the fixtures tree."
+                    )
                 continue
-            if kind == "file" and not is_sidecar(candidate):
-                fixtures.append(candidate)
+            if kind == "file":
+                if is_sidecar(candidate):
+                    sidecars.append(name)
+                else:
+                    here.append(candidate)
+        else:
+            # Only for a directory whose every entry was told apart: one the walk
+            # broke off may hold the fixture an orphan's name points at.
+            names = {fixture.name for fixture in here} | reported
+            for name in sidecars:
+                owner = name.removesuffix(SIDECAR_SUFFIX)
+                if owner not in names:
+                    problems.append(
+                        f"{relative_dir / name}: a sidecar with no fixture ({owner}) beside "
+                        "it. Delete it, or restore its fixture."
+                    )
+        fixtures.extend(here)
     return sorted(fixtures), problems
 
 
@@ -344,7 +373,9 @@ def check_fixtures_tree(
     """Check every fixture anywhere under *tree* against its sidecar.
 
     Catches a missing tree, a directory under it that cannot be listed or
-    whose entries cannot be stated, a fixture with no sidecar, a sidecar
+    whose entries cannot be stated, an entry that is not a regular file (a FIFO,
+    a socket or a device), a sidecar with no fixture beside it, a fixture with
+    no sidecar, a sidecar
     outside its declared format (through the owner,
     :mod:`graftpunk.testing.sidecar`), a fixture that cannot be read, a
     fixture that is byte for byte its capture, and a flagged cookie or token

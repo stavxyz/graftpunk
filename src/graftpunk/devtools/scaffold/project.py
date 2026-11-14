@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
-from graftpunk.devtools.errors import DevtoolsRefusal
+from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
 from graftpunk.devtools.plugin_check import suite_tuple_problems
-from graftpunk.devtools.plugin_project import read_project
+from graftpunk.devtools.plugin_project import _probe, read_project
 from graftpunk.devtools.scaffold.policy import (
     CONFTEST_PATH,
     FIXTURES_PLACEHOLDER,
@@ -175,9 +175,25 @@ def _suite_conftest_change(
     return change, changes, unchecked, problems
 
 
+# Every "what is at this path" question in this module goes through _probe, not a
+# pathlib predicate: before Python 3.14 is_dir() and is_file() raise
+# PermissionError under an untraversable directory, and from 3.14 they return
+# False, so the same command would behave differently by version (#218).
 def _existing_pyproject(target_dir: Path) -> Path | None:
+    """*target_dir*'s ``pyproject.toml`` when it is a file, else None.
+
+    Raises:
+        ScaffoldWriteError: A directory above it cannot be traversed, so whether
+            it is a suite cannot be told and nothing can be written there.
+    """
     candidate = target_dir / "pyproject.toml"
-    return candidate if candidate.is_file() else None
+    detail: list[str] = []
+    kind = _probe(candidate, detail)
+    if kind == "unreadable":
+        raise ScaffoldWriteError(
+            target_dir, OSError(None, detail[0] if detail else kind), before_first_write=True
+        )
+    return candidate if kind == "file" else None
 
 
 def _declares_plugin_group(pyproject_text: str, pyproject_path: Path) -> bool:
@@ -228,7 +244,9 @@ def write_scaffold(
         InvalidChangeError: A rendered file fails its own grammar check, or
             the suite's ``pyproject.toml`` or ``.gitignore`` is not UTF-8 text.
             Nothing is written.
-        ScaffoldWriteError: A write failed; every change already applied,
+        ScaffoldWriteError: *target_dir* sits under a directory that cannot be
+            traversed; nothing is written (``before_first_write``). Or a write
+            failed; every change already applied,
             the ``pyproject.toml`` edit included, is undone first where it can
             be, and the error names the file, the OS error, and any path left
             changed (see ``write.py``). A bare ``OSError`` now means a read
@@ -260,7 +278,7 @@ def write_scaffold(
             for relative, content in files.items()
             if not (
                 relative.endswith(f"/{FIXTURES_PLACEHOLDER}")
-                and (target_dir / relative).parent.is_dir()
+                and _probe((target_dir / relative).parent) == "dir"
             )
         }
 
@@ -315,9 +333,10 @@ def write_scaffold(
         # Last in the batch: the ignore line protects files this call writes, so
         # a failed write restores it with everything else.
         gitignore = target_dir / ".gitignore"
-        if gitignore.is_dir():
+        gitignore_kind = _probe(gitignore)
+        if gitignore_kind == "dir":
             raise InvalidChangeError(gitignore, "it is a directory, not a file")
-        before = read_original(gitignore) if gitignore.is_file() else None
+        before = read_original(gitignore) if gitignore_kind == "file" else None
         after = with_ignored(before or "", CAPTURES_DIR)
         if after != (before or ""):
             changes.append(PlannedChange(gitignore, after, original=before))

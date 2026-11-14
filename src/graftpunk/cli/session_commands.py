@@ -1,8 +1,9 @@
 """Session management commands — gp session list/show/clear/export."""
 
 import shlex
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from rich.console import Console
@@ -69,6 +70,175 @@ def _label_of(name: str) -> str:
     return split_session_name(name)[1] or ""
 
 
+# Left out first when the table does not fit the terminal: gp session show and
+# --json carry them, while Account is the column that tells two sessions of one
+# site apart (#179).
+_NARROW_DROPPED = ("Cookies", "Backend", "Location")
+# Left out next, in this order, when Session and Domain whole, Status, Modified
+# and a narrow Account still do not fit: gp session show carries them too.
+_NARROWER_DROPPED = ("Domain", "Last Modified")
+_UNBOUNDED_WIDTH = 100_000
+# The narrowest Account and Modified are made while the terminal has room:
+# wide enough for "2026-11-12", the date half of Modified.
+_NARROW_MIN_WIDTH = 10
+_LONGEST_STATUS = "○ logged out"
+_ORDER = (
+    "Session",
+    "Domain",
+    "Account",
+    "Status",
+    "Cookies",
+    "Last Modified",
+    "Backend",
+    "Location",
+)
+
+
+@dataclass(frozen=True)
+class _NarrowLayout:
+    """A narrow table's columns, each column's content width, and the columns it
+    leaves out, in the order :data:`_NARROW_DROPPED` and
+    :data:`_NARROWER_DROPPED` name them."""
+
+    widths: dict[str, int]
+    dropped: tuple[str, ...]
+
+
+def _session_row(session: dict) -> dict[str, Text | str]:
+    """The cells of one session's row in ``gp session list``, by column."""
+    status = session.get("status", "unknown")
+    if status == "active":
+        status_display = "[green]● active[/green]"
+    elif status == "logged_out":
+        status_display = "[red]○ logged out[/red]"
+    else:
+        status_display = f"[yellow]? {escape(str(status))}[/yellow]"
+
+    modified = session.get("modified_at", "")
+    if modified:
+        modified = modified[:16].replace("T", " ")
+
+    return {
+        "Session": Text(str(session.get("name", ""))),
+        "Domain": _cell(session.get("domain")),
+        "Account": _cell(session.get("account_identifier") or _label_of(session.get("name", ""))),
+        "Status": status_display,
+        "Cookies": Text(str(session.get("cookie_count", 0))),
+        "Last Modified": _cell(modified),
+        "Backend": _cell(session.get("storage_backend")),
+        "Location": _cell(session.get("storage_location")),
+    }
+
+
+def _cell_width(cell: Text | str) -> int:
+    return len(cell) if isinstance(cell, Text) else 1  # the dim dash of an empty cell
+
+
+def _frame(columns: int) -> int:
+    """The characters a table of *columns* columns takes besides their content:
+    a border on each side of each, and one space of padding inside it on each
+    side (Rich's defaults)."""
+    return 3 * columns + 1
+
+
+def _narrow_layout(rows: list[dict[str, Text | str]], width: int) -> _NarrowLayout:
+    """The columns and content widths of a narrow table at terminal *width*,
+    summing to no more than the terminal leaves after the borders and padding, so
+    Rich never shrinks a column to nothing.
+
+    Session and Domain get their longest value, so neither ever folds: a session
+    name is what ``--session`` and ``gp session show`` take. Status gets
+    ``○ logged out`` whole. Modified gets its longest value or
+    :data:`_NARROW_MIN_WIDTH`, whichever is less, and Account the rest, up to its
+    longest value; Account is the column that folds, then Modified, with what is
+    left given to Modified. When Account would get less than
+    :data:`_NARROW_MIN_WIDTH`, Domain and then Modified are left out
+    (:data:`_NARROWER_DROPPED`). Only when Session, Status and the narrowest
+    Account do not fit even then does the session name fold.
+    """
+
+    def natural(name: str) -> int:
+        header = "Modified" if name == "Last Modified" else name
+        return max([len(header)] + [_cell_width(row[name]) for row in rows])
+
+    status = len(_LONGEST_STATUS)
+    for count in range(len(_NARROWER_DROPPED) + 1):
+        dropped = _NARROWER_DROPPED[:count]
+        shown = [name for name in _ORDER if name not in (*_NARROW_DROPPED, *dropped)]
+        budget = width - _frame(len(shown))
+        widths = {name: natural(name) for name in ("Session", "Domain") if name in shown}
+        widths["Status"] = status
+        if "Last Modified" in shown:
+            widths["Last Modified"] = min(natural("Last Modified"), _NARROW_MIN_WIDTH)
+        account = budget - sum(widths.values())
+        if account >= min(natural("Account"), _NARROW_MIN_WIDTH):
+            widths["Account"] = min(account, natural("Account"))
+            if "Last Modified" in shown:
+                spare = budget - sum(widths.values())
+                widths["Last Modified"] += max(
+                    0, min(spare, natural("Last Modified") - widths["Last Modified"])
+                )
+            return _NarrowLayout(widths, (*_NARROW_DROPPED, *dropped))
+    # Even Session, Status and the narrowest Account do not fit: Session folds.
+    budget = width - _frame(3)
+    account = min(natural("Account"), _NARROW_MIN_WIDTH)
+    widths = {
+        "Session": max(1, budget - status - account),
+        "Account": account,
+        "Status": status,
+    }
+    return _NarrowLayout(widths, (*_NARROW_DROPPED, *_NARROWER_DROPPED))
+
+
+def _sessions_table(
+    rows: list[dict[str, Text | str]], *, layout: _NarrowLayout | None = None
+) -> Table:
+    """The ``gp session list`` table. Without *layout* (the table fits, or
+    ``--wide``) it has every column, and a value too long for the terminal folds
+    onto further lines, never cut to an ellipsis. With *layout* (see
+    :func:`_narrow_layout`) it has the layout's columns at the layout's widths."""
+    table = Table(
+        title="Cached Sessions",
+        title_style="bold",
+        header_style="bold cyan",
+        border_style="dim",
+    )
+    columns: dict[str, dict[str, Any]] = {
+        "Session": {"style": "cyan", "overflow": "fold"},
+        "Domain": {"style": "white", "overflow": "fold"},
+        "Account": {"style": "white", "overflow": "fold"},
+        "Status": {"justify": "center"},
+        "Cookies": {"justify": "right", "style": "dim", "overflow": "fold"},
+        "Last Modified": {"style": "dim", "overflow": "fold"},
+        "Backend": {"style": "dim", "overflow": "fold"},
+        "Location": {"style": "dim", "overflow": "fold"},
+    }
+    if layout is None:
+        shown = list(_ORDER)
+        widths: dict[str, int] = {}
+    else:
+        shown = [name for name in _ORDER if name not in layout.dropped]
+        widths = layout.widths
+    for name in shown:
+        options = dict(columns[name])
+        if layout is not None and name in ("Session", "Domain", "Status"):
+            # Sized to their longest value (Session only folds as a last resort).
+            options["no_wrap"] = name != "Session" or widths["Session"] >= max(
+                _cell_width(row["Session"]) for row in rows
+            )
+        # "Last Modified" would fold mid-word in the column a narrow table leaves it.
+        header = "Modified" if layout is not None and name == "Last Modified" else name
+        table.add_column(header, width=widths.get(name), **options)
+    for row in rows:
+        table.add_row(*(row[name] for name in shown))
+    return table
+
+
+def _left_out(dropped: tuple[str, ...]) -> str:
+    names = ["Modified" if name == "Last Modified" else name for name in dropped]
+    return ", ".join(names[:-1]) + " and " + names[-1] if len(names) > 1 else names[0]
+
+
 @session_app.command("list")
 def session_list(
     ctx: typer.Context,
@@ -76,8 +246,22 @@ def session_list(
         bool,
         typer.Option("--json", "-j", help="Output as JSON for scripting"),
     ] = False,
+    wide: Annotated[
+        bool,
+        typer.Option(
+            "--wide",
+            help="Show every column (Cookies, Backend, Location) even when the "
+            "table is wider than the terminal; long values fold onto further lines",
+        ),
+    ] = False,
 ) -> None:
-    """List all cached sessions with status and metadata."""
+    """List all cached sessions with status and metadata.
+
+    When the table is wider than the terminal, Cookies, Backend and Location are
+    left out, then Domain and Modified if Session and Domain whole still leave
+    Account too little room (``--wide`` keeps every column). Session and Domain
+    stay on one line when the terminal holds the longest of each beside Status,
+    Account folds onto further lines, and no value is cut to an ellipsis."""
     backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
     try:
         sessions = list_sessions_with_metadata(backend_override=backend_override)
@@ -103,47 +287,21 @@ def session_list(
         write_raw(json.dumps(sessions, indent=2, default=str) + "\n", console)
         return
 
-    table = Table(
-        title="Cached Sessions",
-        title_style="bold",
-        header_style="bold cyan",
-        border_style="dim",
-    )
-    table.add_column("Session", style="cyan", no_wrap=True)
-    table.add_column("Domain", style="white")
-    table.add_column("Account", style="white")
-    table.add_column("Status", justify="center")
-    table.add_column("Cookies", justify="right", style="dim")
-    table.add_column("Last Modified", style="dim")
-    table.add_column("Backend", style="dim", no_wrap=True)
-    table.add_column("Location", style="dim")
-
-    for session in sessions:
-        status = session.get("status", "unknown")
-        if status == "active":
-            status_display = "[green]● active[/green]"
-        elif status == "logged_out":
-            status_display = "[red]○ logged out[/red]"
-        else:
-            status_display = f"[yellow]? {escape(str(status))}[/yellow]"
-
-        modified = session.get("modified_at", "")
-        if modified:
-            modified = modified[:16].replace("T", " ")
-
-        table.add_row(
-            Text(str(session.get("name", ""))),
-            _cell(session.get("domain")),
-            _cell(session.get("account_identifier") or _label_of(session.get("name", ""))),
-            status_display,
-            Text(str(session.get("cookie_count", 0))),
-            _cell(modified),
-            _cell(session.get("storage_backend")),
-            _cell(session.get("storage_location")),
-        )
-
+    rows = [_session_row(session) for session in sessions]
+    table = _sessions_table(rows)
+    # Measured unbounded: a measure within the terminal is capped at its width.
+    unbounded = console.options.update(max_width=_UNBOUNDED_WIDTH)
+    layout = None
+    if not wide and console.measure(table, options=unbounded).maximum > console.width:
+        layout = _narrow_layout(rows, console.width)
+        table = _sessions_table(rows, layout=layout)
     console.print(table)
     console.print(f"\n[dim]{len(sessions)} session(s) cached[/dim]")
+    if layout is not None:
+        console.print(
+            f"[dim]{_left_out(layout.dropped)} are left out at this width "
+            "(--wide shows them).[/dim]"
+        )
 
 
 @session_app.command("show")

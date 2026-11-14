@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from graftpunk.contracts import SIDECAR_SCHEMA_WITHOUT_OPERATION, current_schema
+from graftpunk.contracts import (
+    SIDECAR_SCHEMA_WITHOUT_FAMILY,
+    SIDECAR_SCHEMA_WITHOUT_OPERATION,
+    current_schema,
+)
 from graftpunk.testing.sidecar import (
     CONTEXT_REASONS,
     FIXTURES_PLACEHOLDER,
@@ -22,6 +26,7 @@ from graftpunk.testing.sidecar import (
     ObserveRun,
     Sidecar,
     SidecarError,
+    family_holds,
     is_sidecar,
     load_sidecar,
     sidecar_path,
@@ -74,12 +79,33 @@ class TestTheFormat:
     def test_every_version_up_to_the_current_one_has_a_key_set(self) -> None:
         assert set(SIDECAR_FIELDS) == set(range(1, current_schema("sidecar") + 1))
 
+    def test_version_five_adds_graphql_operation(self) -> None:
+        assert SIDECAR_FIELDS[5] == SIDECAR_FIELDS[4] | {"graphql_operation"}
+
+    def test_version_six_adds_endpoint_family(self) -> None:
+        assert SIDECAR_FIELDS[6] == SIDECAR_FIELDS[5] | {"endpoint_family"}
+
     def test_the_payload_writes_exactly_the_current_schemas_keys(self) -> None:
+        payload = sidecar_payload(
+            Sidecar(
+                status=200,
+                content_type="application/json",
+                endpoint_family="/products/{product_id}",
+            )
+        )
+        assert set(payload) == SIDECAR_FIELDS[current_schema("sidecar")] | {"schema"}
+        assert payload["schema"] == current_schema("sidecar") == 6
+        assert payload["endpoint_family"] == "/products/{product_id}"
+        assert payload["graphql_operation"] is None
+
+    def test_a_payload_naming_an_operation_and_no_family_writes_schema_5_s_keys(self) -> None:
+        """Schema 6 adds endpoint_family alone, so a GraphQL fixture's sidecar stays
+        one a graftpunk from 1.39.0 to 1.42.7 reads (#213)."""
         payload = sidecar_payload(
             Sidecar(status=200, content_type="application/json", graphql_operation="Cart")
         )
-        assert set(payload) == SIDECAR_FIELDS[current_schema("sidecar")] | {"schema"}
-        assert payload["schema"] == current_schema("sidecar")
+        assert set(payload) == SIDECAR_FIELDS[SIDECAR_SCHEMA_WITHOUT_FAMILY] | {"schema"}
+        assert payload["schema"] == SIDECAR_SCHEMA_WITHOUT_FAMILY == 5
 
     def test_a_payload_naming_no_operation_writes_schema_4_s_keys(self) -> None:
         """Schema 5 adds graphql_operation alone, so any other sidecar stays one a
@@ -582,3 +608,77 @@ def test_the_name_fields_must_be_a_tuple_or_list(kwargs: dict) -> None:
 
 def test_the_placeholder_is_the_gitkeep() -> None:
     assert FIXTURES_PLACEHOLDER == ".gitkeep"
+
+
+class TestEndpointFamily:
+    """Schema 6's endpoint_family: the collapsed family a fixture was written for,
+    so FixtureSession answers any member path from it (#213)."""
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        sidecar = Sidecar(
+            status=200,
+            content_type="application/json",
+            checked_names=(),
+            endpoint_family="/products/{product_id}",
+        )
+        path = _write(tmp_path / "x.json.meta.json", sidecar_payload(sidecar))
+        assert load_sidecar(path) == sidecar
+
+    def test_a_schema_5_sidecar_holding_the_key_is_refused(self, tmp_path: Path) -> None:
+        payload = sidecar_payload(
+            Sidecar(
+                status=200,
+                content_type="application/json",
+                endpoint_family="/products/{product_id}",
+            )
+        )
+        payload["schema"] = 5
+        path = _write(tmp_path / "x.json.meta.json", payload)
+        with pytest.raises(SidecarError, match="keys outside sidecar schema 5: endpoint_family"):
+            load_sidecar(path)
+
+    def test_a_schema_6_sidecar_without_the_key_is_refused(self, tmp_path: Path) -> None:
+        payload = sidecar_payload(
+            Sidecar(status=200, content_type="application/json", graphql_operation="Cart")
+        )
+        payload["schema"] = 6
+        path = _write(tmp_path / "x.json.meta.json", payload)
+        with pytest.raises(SidecarError, match="missing keys: endpoint_family"):
+            load_sidecar(path)
+
+    def test_a_schema_this_graftpunk_does_not_know_is_refused(self, tmp_path: Path) -> None:
+        payload = sidecar_payload(Sidecar(status=200, content_type="application/json"))
+        payload["schema"] = 7
+        path = _write(tmp_path / "x.json.meta.json", payload)
+        with pytest.raises(SidecarError, match="schema 7 is not one this graftpunk reads"):
+            load_sidecar(path)
+
+    @pytest.mark.parametrize(
+        "family",
+        ["products/{product_id}", "/products/alpha", "/products/{id}?x=1", "", "/a b/{id}", 7],
+    )
+    def test_a_value_that_is_not_a_family_template_is_refused(
+        self, tmp_path: Path, family: object
+    ) -> None:
+        payload = sidecar_payload(
+            Sidecar(status=200, content_type="application/json", endpoint_family="/p/{id}")
+        )
+        payload["endpoint_family"] = family
+        path = _write(tmp_path / "x.json.meta.json", payload)
+        with pytest.raises(SidecarError, match="endpoint_family"):
+            load_sidecar(path)
+
+    @pytest.mark.parametrize(
+        ("template", "path", "held"),
+        [
+            ("/products/{product_id}", "/products/alpha-widget", True),
+            ("/products/{product_id}", "/products/1001", True),
+            ("/products/{product_id}", "/products/", False),
+            ("/products/{product_id}", "/products/a/b", False),
+            ("/products/{product_id}", "/items/alpha", False),
+            ("/s/{slug}/items/", "/s/north/items/", True),
+            ("/s/{slug}/items/", "/s/north/items", False),
+        ],
+    )
+    def test_family_holds(self, template: str, path: str, held: bool) -> None:
+        assert family_holds(template, path) is held

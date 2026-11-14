@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import re
+import unicodedata
 from collections.abc import Callable, Iterable
 from urllib.parse import unquote, unquote_plus, urlsplit, urlunsplit
 
@@ -404,6 +405,21 @@ def reads_as_words(value: str) -> bool:
     as words; a session id (``Zq9XkLmPwR4t7Bv2Hn8Ks3Jd``), a mixed-case run
     (``kQzPwM``), ``lot 123456``, and an empty value do not.
 
+    Percent-encoded random bytes do not read as words: a value that decodes to
+    U+FFFD (bytes that are not UTF-8), to a control character other than a tab, a
+    newline or a carriage return (U+0000 to U+001F, U+007F, U+0080 to U+009F), or
+    to a lone surrogate is bytes, not typed text. The rule depends on no Unicode
+    version, so an emoji or a character newer than the interpreter's Unicode
+    database, and a private-use character (U+F8FF), are judged like any other
+    character. Before 1.42.8 the non-ASCII
+    letters such bytes decode to passed as typed words; on 100,000 values per row
+    (``scripts/cookie_value_rates.py``, seed 273, 2026-11-13) the share of
+    percent-encoded random bytes that did not read as words rose from 24.4% to
+    99.89% at 8 bytes, from 26.6% to 100% at 16 and from 71.3% to 100% at 32;
+    of bytes 0x80 to 0xFF alone, from 41.3% to 99.93% at 8, from 14.1% to 100% at
+    16 and from 99.87% to 100% at 32. Percent-encoded UTF-8 words still read as
+    words (``caf%C3%A9``, ``%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0``).
+
     The known limits: a number of 5 digits or fewer reads as words, so do groups
     of digits separated by spaces or ``+`` (``4111 1111 1111 1111``), so does any
     value made of space- or ``+``-separated pieces of 3 or fewer letters and
@@ -418,7 +434,7 @@ def reads_as_words(value: str) -> bool:
     """
     text = unquote_plus(value)
     parts = _VALUE_PART_RE.findall(text)
-    if not parts or holds_an_id(text):
+    if not parts or holds_an_id(text) or _holds_raw_bytes(text):
         return False
     words = text.split()
     if len(words) > 1 or any(ch.isalpha() and not ch.isascii() for ch in text):
@@ -435,6 +451,30 @@ def reads_as_words(value: str) -> bool:
             and all(_typed_word(word) for word in words)
         )
     return all(_plain_value_part(part) for part in parts)
+
+
+# Unicode categories no typed text holds: control characters (C0, DEL and C1,
+# decoded from %00 to %1F, %7F, or a two-byte UTF-8 sequence for U+0080 to
+# U+009F) and lone surrogates. Both sets are fixed by Unicode, so the verdict is
+# the same on every Python. Unassigned (Cn) is left out on purpose: which code
+# points are unassigned follows the interpreter's Unicode database, so an emoji
+# newer than it would read differently on 3.12 and 3.14. Private use (Co) is left
+# out too: U+F8FF is the Apple logo a Mac types with Option-Shift-K.
+_RAW_BYTE_CATEGORIES = frozenset(("Cc", "Cs"))
+# The control characters typed text can hold: a textarea's line break, a tab.
+_TYPED_CONTROLS = frozenset("\t\n\r")
+
+
+def _holds_raw_bytes(text: str) -> bool:
+    """True when *text*, a percent-decoded cookie value, holds what decoding random
+    bytes leaves and typed text never does: U+FFFD, which ``unquote`` puts where
+    the bytes are not UTF-8, or a character in :data:`_RAW_BYTE_CATEGORIES` other
+    than a tab, a newline or a carriage return."""
+    return any(
+        ch == "\ufffd"
+        or (ch not in _TYPED_CONTROLS and unicodedata.category(ch) in _RAW_BYTE_CATEGORIES)
+        for ch in text
+    )
 
 
 _TYPED_SHORT_WORD_LEN = 3

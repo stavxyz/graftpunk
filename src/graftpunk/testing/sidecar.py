@@ -46,6 +46,15 @@ request carried (``graftpunk.har.graphql``), its name or ``(anonymous)``, the sa
 one the fixture's file name holds; null in a hand-made schema 5 sidecar (#367). A
 sidecar of a request that carried no operation is written as schema 4, so a
 graftpunk older than 1.39.0 still reads it.
+From schema 6, ``endpoint_family`` is the template of the collapsed endpoint
+family the fixture was written for, as ``gp observe digest`` prints it
+(``/products/{product_id}``), when that template is not what
+:func:`graftpunk.har.paths.template_path` makes of a recorded path on its own: a
+dozen product pages the digest collapsed by their number, where each page's own
+slug templates to itself. ``graftpunk.testing.FixtureSession`` answers a request
+for any member path of the family from that fixture (#213). Null otherwise, and
+a sidecar with no family is written as schema 5 when it names a GraphQL
+operation, else schema 4, so a graftpunk older than 1.42.8 still reads it.
 A name that holds an account value
 (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``
@@ -77,12 +86,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from graftpunk.contracts import (
+    SIDECAR_SCHEMA_WITHOUT_FAMILY,
     SIDECAR_SCHEMA_WITHOUT_OPERATION,
     UnknownSchemaError,
     current_schema,
     refuse_unknown_schema,
 )
 from graftpunk.exceptions import GraftpunkError
+from graftpunk.har.paths import is_placeholder
 
 __all__ = [
     "CONTEXT_REASONS",
@@ -93,6 +104,7 @@ __all__ = [
     "SIDECAR_SUFFIX",
     "Sidecar",
     "SidecarError",
+    "family_holds",
     "is_sidecar",
     "load_sidecar",
     "sidecar_path",
@@ -166,6 +178,21 @@ SIDECAR_FIELDS: dict[int, frozenset[str]] = {
             "checked_names",
             "observe_run",
             "graphql_operation",
+            "redacted_names",
+        }
+    ),
+    6: frozenset(
+        {
+            "status",
+            "content_type",
+            "body_params",
+            "capture_sha256",
+            "flagged_names",
+            "flagged_reasons",
+            "checked_names",
+            "observe_run",
+            "graphql_operation",
+            "endpoint_family",
             "redacted_names",
         }
     ),
@@ -275,6 +302,10 @@ class Sidecar:
     # The GraphQL operation the captured request carried; None for a sidecar from
     # before schema 5, a request that was not GraphQL, or a hand-made fixture's.
     graphql_operation: str | None = None
+    # The collapsed endpoint family's template the fixture was written for
+    # (/products/{product_id}); None for a sidecar from before schema 6, a fixture
+    # of no collapsed family, or a hand-made fixture's.
+    endpoint_family: str | None = None
 
     def __post_init__(self) -> None:
         """Hold every field to the loader's own type and sign checks, sort and dedupe
@@ -328,6 +359,11 @@ class Sidecar:
                 "graphql_operation must be a non-empty string or None, got "
                 f"{self.graphql_operation!r}"
             )
+        if self.endpoint_family is not None and not _is_family_template(self.endpoint_family):
+            raise SidecarError(
+                "endpoint_family must be a path template that starts with '/' and holds "
+                f"a {{placeholder}} segment, or None, got {self.endpoint_family!r}"
+            )
 
     @property
     def declared(self) -> bool:
@@ -376,6 +412,31 @@ def _checked_reasons(sidecar: Sidecar) -> dict[str, tuple[str, ...]]:
     return checked
 
 
+def _is_family_template(value: object) -> bool:
+    """True when *value* is a path template a family can be: a printable string
+    that starts with ``/``, holds no ``?``, ``#`` or space, and has a
+    ``{placeholder}`` segment."""
+    return (
+        isinstance(value, str)
+        and value.startswith("/")
+        and value.isprintable()
+        and not any(ch in value for ch in "?# ")
+        and any(is_placeholder(segment) for segment in value.split("/"))
+    )
+
+
+def family_holds(template: str, path: str) -> bool:
+    """True when *path*, a request path, is a member of the endpoint family
+    *template*: as many segments, each ``{placeholder}`` segment of *template*
+    standing for any one non-empty segment and every other segment equal."""
+    wanted = template.split("/")
+    given = path.split("/")
+    return len(wanted) == len(given) and all(
+        (bool(part) if is_placeholder(want) else part == want)
+        for want, part in zip(wanted, given, strict=True)
+    )
+
+
 def sidecar_path(fixture: Path) -> Path:
     """Where *fixture*'s sidecar lives: beside it, named ``<fixture name>.meta.json``."""
     return fixture.with_name(fixture.name + SIDECAR_SUFFIX)
@@ -387,8 +448,9 @@ def is_sidecar(path: Path) -> bool:
 
 
 def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
-    """*sidecar* as a JSON object: the current schema when it names a GraphQL
-    operation, else schema 4, which holds every other key.
+    """*sidecar* as a JSON object: the current schema when it names an endpoint
+    family, schema 5 when it names a GraphQL operation and no family, else
+    schema 4, which holds every other key.
 
     Raises:
         SidecarError: *sidecar* has flagged names and no reasons for them (a
@@ -420,11 +482,15 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
             else {"plugin": sidecar.observe_run.plugin, "run": sidecar.observe_run.run}
         ),
         "graphql_operation": sidecar.graphql_operation,
+        "endpoint_family": sidecar.endpoint_family,
         "redacted_names": sidecar.redacted_names,
     }
-    if sidecar.graphql_operation is None:
-        payload["schema"] = SIDECAR_SCHEMA_WITHOUT_OPERATION
-        del payload["graphql_operation"]
+    if sidecar.endpoint_family is None:
+        payload["schema"] = SIDECAR_SCHEMA_WITHOUT_FAMILY
+        del payload["endpoint_family"]
+        if sidecar.graphql_operation is None:
+            payload["schema"] = SIDECAR_SCHEMA_WITHOUT_OPERATION
+            del payload["graphql_operation"]
     return payload
 
 
@@ -479,6 +545,9 @@ def load_sidecar(path: Path) -> Sidecar:
     graphql_operation = (
         _optional_text(data, "graphql_operation", path) if "graphql_operation" in fields else None
     )
+    endpoint_family = (
+        _optional_text(data, "endpoint_family", path) if "endpoint_family" in fields else None
+    )
     for name, why in flagged_reasons.items():
         newer = sorted(r for r in why if _REASON_SINCE.get(r, 0) > version)
         if newer:
@@ -504,6 +573,7 @@ def load_sidecar(path: Path) -> Sidecar:
             checked_names=checked_names,
             observe_run=observe_run,
             graphql_operation=graphql_operation,
+            endpoint_family=endpoint_family,
         )
     except SidecarError as exc:
         raise SidecarError(f"{path}: {exc}") from exc
