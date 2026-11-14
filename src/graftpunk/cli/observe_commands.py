@@ -27,6 +27,7 @@ from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.console import err_console
 from graftpunk.devtools.captures import (
     IgnoreFileReadError,
+    can_reach,
     ensure_ignored,
     find_repo_root,
     is_existing_directory,
@@ -428,6 +429,12 @@ def fixtures_cmd(
             raise typer.Exit(1) from None
         if added:
             console.print(f"[dim]Added '{escape(relative)}/' to .gitignore[/dim]")
+    elif not can_reach(target_dir):
+        console.print(
+            f"[yellow]Cannot reach {escape(str(target_dir))} to check whether it is in a "
+            "git work tree.[/yellow]",
+            soft_wrap=True,
+        )
     else:
         console.print(
             "[yellow]Not inside a git work tree: nothing protects this directory "

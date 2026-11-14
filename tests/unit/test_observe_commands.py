@@ -669,6 +669,10 @@ class TestFixturesCommand:
             locked.chmod(0o700)
         assert not isinstance(result.exception, PermissionError), result.output
         assert result.exit_code != 0
+        output = strip_ansi(result.output).replace("\n", "")
+        # An unreachable directory is not reported as "not in a repository".
+        assert "Cannot reach" in output
+        assert "Not inside a git work tree" not in output
 
     def test_the_sidecar_is_committable_and_records_the_capture(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

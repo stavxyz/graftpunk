@@ -260,8 +260,8 @@ def session_list(
     When the table is wider than the terminal, Cookies, Backend and Location are
     left out, then Domain and Modified if Session and Domain whole still leave
     Account too little room (``--wide`` keeps every column). Session and Domain
-    stay on one line, Account folds onto further lines, and no value is cut to
-    an ellipsis."""
+    stay on one line when the terminal holds the longest of each beside Status,
+    Account folds onto further lines, and no value is cut to an ellipsis."""
     backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
     try:
         sessions = list_sessions_with_metadata(backend_override=backend_override)

@@ -173,7 +173,7 @@ the list leaves out its Cookies, Backend and Location columns, then Domain and
 Modified when Session and Domain whole still leave Account fewer than 10
 characters (`--wide` keeps every column, folding long values; `gp session show`
 and `--json` carry every field). Session, Domain and Status stay whole on one
-line, Account is the column that folds onto further lines, and no value is cut
+line when the terminal holds the longest session name and domain beside Status, Account is the column that folds onto further lines, and no value is cut
 to an ellipsis.
 
 Which session a command uses is resolved once per invocation:

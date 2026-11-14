@@ -73,8 +73,15 @@ def _nearest_existing(start: Path) -> Path | None:
         probe = probe.parent
 
 
+def can_reach(start: Path) -> bool:
+    """Whether *start*, or the nearest ancestor of it that exists, can be
+    reached: False when an untraversable directory stands in the way, which
+    :func:`find_repo_root` reports as ``None`` the same as "not a repository"."""
+    return _nearest_existing(start) is not None
+
+
 def is_existing_directory(path: Path) -> bool:
-    """Whether *path* is a directory that can be listed, asked through
+    """Whether *path* is a directory, asked through
     ``plugin_project._probe``: ``Path.exists()`` raises ``PermissionError``
     under an untraversable directory before Python 3.14 and answers False from
     3.14 (#218), and every version must take the same branch."""
