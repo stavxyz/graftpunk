@@ -26,6 +26,7 @@ from graftpunk.har.parser import cookie_header_pairs
 from graftpunk.har.paths import bare_path, holds_an_id
 from graftpunk.har.selectors import MAX_SELECTOR_LENGTH, MAX_SHOWN_FIELDS, bounded_selector
 from graftpunk.logging import get_logger
+from graftpunk.public_suffix import origin as _origin
 
 try:
     from selenium.common.exceptions import WebDriverException as _WebDriverError
@@ -311,23 +312,6 @@ def _resource_type(event: Any) -> str | None:
     return resource if isinstance(resource, str) else None
 
 
-def _origin(url: Any) -> tuple[str, str, int | None] | None:
-    """*url*'s scheme, host, and port (the default one filled in), or None."""
-    if not isinstance(url, str):
-        return None
-    try:
-        parts = urllib.parse.urlsplit(url)
-        port = parts.port
-    except ValueError:
-        return None
-    scheme = parts.scheme.lower()
-    if not scheme or not parts.hostname:
-        return None
-    if port is None:
-        port = {"http": 80, "https": 443}.get(scheme)
-    return scheme, parts.hostname.lower(), port
-
-
 # Statuses that carry no body by definition: nothing to fetch or store.
 _BODYLESS_STATUSES = frozenset({204, 205, 304})
 
@@ -528,11 +512,23 @@ def _ordered_request_items(
     )
 
 
-def _header_roles_in_order(request_map: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
-    """Header roles extracted in the same chronological order the HAR uses."""
+def _header_roles_in_order(
+    request_map: dict[str, dict[str, Any]], site_url: str | None = None
+) -> dict[str, dict[str, str]]:
+    """Header roles extracted in the same chronological order the HAR uses,
+    preferring requests to *site_url*'s origin (``extract_header_roles``)."""
     from graftpunk.observe.headers import extract_header_roles
 
-    return extract_header_roles(dict(_ordered_request_items(request_map)))
+    return extract_header_roles(dict(_ordered_request_items(request_map)), site_url)
+
+
+def _header_role_origins_in_order(
+    request_map: dict[str, dict[str, Any]], site_url: str | None = None
+) -> dict[str, str]:
+    """The origin each of :func:`_header_roles_in_order`'s roles came from."""
+    from graftpunk.observe.headers import header_role_origins
+
+    return header_role_origins(dict(_ordered_request_items(request_map)), site_url)
 
 
 def _har_entries_in_order(request_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1296,8 +1292,13 @@ class CaptureBackend(Protocol):
         """
         ...
 
-    def get_header_roles(self) -> dict[str, dict[str, str]]:
-        """Return header roles classified from captured requests."""
+    def get_header_roles(self, site_url: str | None = None) -> dict[str, dict[str, str]]:
+        """Return header roles classified from captured requests, each taken
+        from a request to *site_url*'s origin where there is one."""
+        ...
+
+    def get_header_role_origins(self, site_url: str | None = None) -> dict[str, str]:
+        """Return the origin each of :meth:`get_header_roles`'s roles came from."""
         ...
 
     async def take_screenshot(self) -> bytes | None:
@@ -1584,10 +1585,15 @@ class SeleniumCaptureBackend:
         """
         return self._console_logs
 
-    def get_header_roles(self) -> dict[str, dict[str, str]]:
+    def get_header_roles(self, site_url: str | None = None) -> dict[str, dict[str, str]]:
         """Return header roles classified from captured network requests."""
 
-        return _header_roles_in_order(self._request_map)
+        return _header_roles_in_order(self._request_map, site_url)
+
+    def get_header_role_origins(self, site_url: str | None = None) -> dict[str, str]:
+        """Return the origin each of :meth:`get_header_roles`'s roles came from."""
+
+        return _header_role_origins_in_order(self._request_map, site_url)
 
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously (wraps sync method)."""
@@ -1845,10 +1851,15 @@ class NodriverCaptureBackend:
         """
         return self._console_logs
 
-    def get_header_roles(self) -> dict[str, dict[str, str]]:
+    def get_header_roles(self, site_url: str | None = None) -> dict[str, dict[str, str]]:
         """Return header roles classified from captured network requests."""
 
-        return _header_roles_in_order(self._request_map)
+        return _header_roles_in_order(self._request_map, site_url)
+
+    def get_header_role_origins(self, site_url: str | None = None) -> dict[str, str]:
+        """Return the origin each of :meth:`get_header_roles`'s roles came from."""
+
+        return _header_role_origins_in_order(self._request_map, site_url)
 
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously via nodriver.

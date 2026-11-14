@@ -2,7 +2,9 @@
 
 import contextlib
 import re
+from typing import Any
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import pytest
 import requests
@@ -1221,3 +1223,302 @@ class TestCrossOriginRoleHeaders:
         [sent] = wire.sent
         assert sent.headers["X-Shop-Build"] == "2026.11.1"
         assert "Origin" not in sent.headers
+
+
+class _Redirecting(_Wire):
+    """A transport that answers a request to *source* with *status* and a
+    ``Location`` of *target*, and every other request 200."""
+
+    def __init__(self, source: str, target: str, status: int = 307) -> None:
+        super().__init__()
+        self._source = source
+        self._target = target
+        self._status = status
+
+    def send(self, request, **kwargs):  # noqa: ANN001, ANN003, ANN201
+        response = super().send(request, **kwargs)
+        if request.url == self._source:
+            response.status_code = self._status
+            response.headers["Location"] = self._target
+        return response
+
+
+def _redirected(
+    source: str, target: str, *, status: int = 307
+) -> tuple[GraftpunkSession, _Redirecting]:
+    session = GraftpunkSession(header_roles=_CAPTURED, base_url="https://myshop.example")
+    session._gp_csrf_tokens = {"X-CSRF-Token": "tok-1"}
+    wire = _Redirecting(source, target, status)
+    session.mount("https://", wire)
+    session.mount("http://", wire)
+    return session, wire
+
+
+class TestCrossOriginEdges:
+    """Origins as a browser compares them (#228 review)."""
+
+    @pytest.mark.parametrize(
+        ("base_url", "url", "same_origin"),
+        [
+            ("https://myshop.example", "https://myshop.example:443/a", True),
+            ("https://myshop.example:443", "https://myshop.example/a", True),
+            ("https://MyShop.Example", "https://myshop.example/a", True),
+            ("http://myshop.example", "http://myshop.example:80/a", True),
+            ("https://myshop.example", "https://myshop.example./a", False),
+        ],
+        ids=["explicit-default-port", "base-default-port", "case", "http-80", "trailing-dot"],
+    )
+    def test_what_counts_as_the_sites_own_origin(
+        self, base_url: str, url: str, same_origin: bool
+    ) -> None:
+        session, wire = _wired(base_url)
+        session.xhr("GET", url)
+        [sent] = wire.sent
+        assert ("X-Shop-Build" in sent.headers) is same_origin
+
+    def test_an_ipv6_base_origin_is_bracketed_in_origin(self) -> None:
+        session, wire = _wired("https://[2001:db8::1]:8443")
+        session.xhr("POST", "https://[2001:db8::2]/a")
+        [sent] = wire.sent
+        assert sent.headers["Origin"] == "https://[2001:db8::1]:8443"
+        assert sent.headers["Sec-Fetch-Site"] == "cross-site"
+
+    def test_a_unicode_host_and_its_idna_form_are_one_origin(self) -> None:
+        session, wire = _wired("https://bücher.example")
+        session.xhr("GET", "https://xn--bcher-kva.example/a")
+        [sent] = wire.sent
+        assert sent.headers["X-Shop-Build"] == "2026.11.1"
+
+    def test_a_unicode_base_url_sends_an_origin_http_can_carry(self) -> None:
+        session, wire = _wired("https://пример.example")
+        session.xhr("POST", "https://api.xn--e1afmkfd.example/a")
+        [sent] = wire.sent
+        assert sent.headers["Origin"] == "https://xn--e1afmkfd.example"
+        assert sent.headers["Sec-Fetch-Site"] == "same-site"
+        sent.headers["Origin"].encode("latin-1")
+
+    def test_a_declared_role_keeps_its_x_requested_with_cross_origin(self) -> None:
+        session, wire = _wired()
+        session.merge_header_roles(
+            {"api": {"Sec-Fetch-Mode": "cors", "X-Requested-With": "XMLHttpRequest"}}
+        )
+        session.request_with_role("api", "GET", "https://api.myshop.example/v2")
+        [sent] = wire.sent
+        assert sent.headers["X-Requested-With"] == "XMLHttpRequest"
+        assert sent.headers["Origin"] == "https://myshop.example"
+
+
+class TestCsrfTokensStayOnTheirSite:
+    """A CSRF token goes only to the site it was obtained for."""
+
+    @staticmethod
+    def _session(base_url: str = "https://myshop.example") -> tuple[GraftpunkSession, _Wire]:
+        session, wire = _wired(base_url)
+        session._gp_csrf_tokens = {"X-CSRF-Token": "tok-1"}
+        return session, wire
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://myshop.example/cart",
+            "https://api.myshop.example/v2/cart",
+            "https://myshop.example:8443/cart",
+        ],
+        ids=["same-origin", "subdomain", "other-port"],
+    )
+    def test_the_same_site_gets_the_token(self, url: str) -> None:
+        session, wire = self._session()
+        session.xhr("POST", url, json={"a": 1})
+        [sent] = wire.sent
+        assert sent.headers["X-CSRF-Token"] == "tok-1"
+
+    @pytest.mark.parametrize(
+        "url",
+        ["https://pay.othershop.example/charge", "http://myshop.example/cart"],
+        ids=["other-site", "other-scheme"],
+    )
+    def test_another_site_does_not_and_one_warning_names_it(
+        self, url: str, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        session, wire = self._session()
+        session.xhr("POST", url, json={"a": 1})
+        session.xhr("POST", url, json={"a": 2})
+        assert all("X-CSRF-Token" not in sent.headers for sent in wire.sent)
+        warnings = [e for e in captured_logs if e["event"] == "csrf_token_withheld_cross_site"]
+        assert [(w["token"], w["host"], w["log_level"]) for w in warnings] == [
+            ("X-CSRF-Token", urlsplit(url).hostname, "warning")
+        ]
+
+    def test_one_warning_per_target_site(self, captured_logs: list[dict[str, Any]]) -> None:
+        session, _wire = self._session()
+        for url in (
+            "https://a.othershop.example/x",
+            "https://b.othershop.example/x",
+            "https://thirdshop.example/x",
+        ):
+            session.post(url, data={"a": "1"})
+        hosts = [e["host"] for e in captured_logs if e["event"] == "csrf_token_withheld_cross_site"]
+        assert hosts == ["a.othershop.example", "thirdshop.example"]
+
+    def test_a_token_passed_in_headers_still_goes_to_another_site(self) -> None:
+        session, wire = self._session()
+        session.xhr(
+            "POST", "https://pay.othershop.example/charge", headers={"X-CSRF-Token": "mine"}
+        )
+        [sent] = wire.sent
+        assert sent.headers["X-CSRF-Token"] == "mine"
+
+    def test_the_origin_prepare_session_recorded_decides(self) -> None:
+        """Tokens obtained for one site stay there even when gp_base_url names another."""
+        session, wire = self._session("https://othershop.example")
+        session._gp_csrf_origin = "https://myshop.example"
+        session.post("https://othershop.example/x", data={"a": "1"})
+        session.post("https://api.myshop.example/x", data={"a": "1"})
+        assert ["X-CSRF-Token" in sent.headers for sent in wire.sent] == [False, True]
+
+    def test_with_no_origin_known_every_request_gets_the_token(self) -> None:
+        session, wire = self._session("")
+        session.post("https://othershop.example/x", data={"a": "1"})
+        [sent] = wire.sent
+        assert sent.headers["X-CSRF-Token"] == "tok-1"
+
+
+class TestRedirectHops:
+    """Each redirect hop gets the role headers and CSRF tokens for its own URL."""
+
+    def test_a_same_origin_request_redirected_to_another_site_loses_them(self) -> None:
+        session, wire = _redirected(
+            "https://myshop.example/checkout", "https://pay.other.example/x"
+        )
+        session.xhr("POST", "https://myshop.example/checkout", json={"a": 1})
+        first, hop = wire.sent
+        assert first.headers["X-Shop-Build"] == "2026.11.1"
+        assert first.headers["X-CSRF-Token"] == "tok-1"
+        assert hop.url == "https://pay.other.example/x"
+        assert "X-Shop-Build" not in hop.headers
+        assert "X-CSRF-Token" not in hop.headers
+        assert "X-Requested-With" not in hop.headers
+        assert hop.headers["Sec-Fetch-Site"] == "cross-site"
+        assert hop.headers["Origin"] == "https://myshop.example"
+        assert hop.headers["User-Agent"] == "Mozilla/5.0 Test"
+
+    def test_a_redirect_to_another_origin_of_the_same_site_keeps_the_token(self) -> None:
+        session, wire = _redirected(
+            "https://myshop.example/checkout", "https://api.myshop.example/checkout"
+        )
+        session.xhr("POST", "https://myshop.example/checkout", json={"a": 1})
+        _first, hop = wire.sent
+        assert "X-Shop-Build" not in hop.headers
+        assert hop.headers["X-CSRF-Token"] == "tok-1"
+        assert hop.headers["Sec-Fetch-Site"] == "same-site"
+
+    def test_a_redirect_back_to_the_sites_origin_gets_the_captured_role_again(self) -> None:
+        session, wire = _redirected(
+            "https://api.myshop.example/start", "https://myshop.example/done"
+        )
+        session.xhr("GET", "https://api.myshop.example/start")
+        first, hop = wire.sent
+        assert "X-Shop-Build" not in first.headers
+        assert hop.headers["X-Shop-Build"] == "2026.11.1"
+        assert hop.headers["Sec-Fetch-Site"] == "same-origin"
+        assert "Origin" not in hop.headers
+
+    def test_a_caller_header_survives_every_hop(self) -> None:
+        session, wire = _redirected(
+            "https://myshop.example/checkout", "https://pay.other.example/x"
+        )
+        session.xhr(
+            "POST",
+            "https://myshop.example/checkout",
+            headers={"X-Shop-Build": "mine"},
+            json={"a": 1},
+        )
+        _first, hop = wire.sent
+        assert hop.headers["X-Shop-Build"] == "mine"
+
+    def test_a_303_hop_becomes_a_get_with_no_token_and_no_content_type(self) -> None:
+        session, wire = _redirected(
+            "https://myshop.example/order", "https://myshop.example/order/1", status=303
+        )
+        session.form_submit("POST", "https://myshop.example/order", data={"a": "1"})
+        _first, hop = wire.sent
+        assert hop.method == "GET"
+        assert "X-CSRF-Token" not in hop.headers
+        assert "Content-Type" not in hop.headers
+
+    def test_an_auto_detected_role_is_redone_per_hop(self) -> None:
+        session, wire = _redirected(
+            "https://myshop.example/checkout", "https://pay.other.example/x"
+        )
+        session.post("https://myshop.example/checkout", json={"a": 1})
+        _first, hop = wire.sent
+        assert "X-Shop-Build" not in hop.headers
+        assert "X-CSRF-Token" not in hop.headers
+        assert hop.headers["Sec-Fetch-Site"] == "cross-site"
+
+
+class TestGpHttpCrossOrigin:
+    """gp http puts the plugin's base_url on the session, as plugin commands do."""
+
+    def test_a_call_to_another_host_gets_no_captured_header(self) -> None:
+        from types import SimpleNamespace
+
+        from graftpunk.cli.http_commands import _make_request
+        from tests.unit.cli_harness import echo_loaded_session
+
+        session = GraftpunkSession(header_roles=_CAPTURED)
+        wire = _Wire()
+        session.mount("https://", wire)
+        plugin = SimpleNamespace(base_url="https://myshop.example", token_config=None)
+        with (
+            patch(
+                "graftpunk.cli.http_commands.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(session),
+            ),
+            patch("graftpunk.cli.plugin_commands.get_plugin_for_session", return_value=plugin),
+        ):
+            _make_request("GET", "https://api.myshop.example/v2", session_name="myshop", role="xhr")
+        [sent] = wire.sent
+        assert "X-Shop-Build" not in sent.headers
+        assert sent.headers["Sec-Fetch-Site"] == "same-site"
+        assert sent.headers["Origin"] == "https://myshop.example"
+
+
+class TestCapturedRoleOrigins:
+    """A captured role goes as captured only to the origin it was recorded on."""
+
+    @staticmethod
+    def _session(recorded_on: str) -> tuple[GraftpunkSession, _Wire]:
+        session, wire = _wired()
+        session._gp_header_role_origins = {"xhr": recorded_on}
+        return session, wire
+
+    def test_its_own_origin_gets_it_as_captured(self) -> None:
+        session, wire = self._session("https://api.myshop.example")
+        session.xhr("GET", "https://api.myshop.example/v2")
+        [sent] = wire.sent
+        assert sent.headers["X-Shop-Build"] == "2026.11.1"
+        assert sent.headers["Sec-Fetch-Site"] == "same-origin"
+
+    def test_the_sites_origin_gets_the_registered_role_when_it_was_recorded_elsewhere(
+        self,
+    ) -> None:
+        session, wire = self._session("https://api.myshop.example")
+        session.xhr("GET", "https://myshop.example/api/me")
+        [sent] = wire.sent
+        assert "X-Shop-Build" not in sent.headers
+        assert sent.headers["Sec-Fetch-Site"] == "same-origin"
+        assert sent.headers["X-Requested-With"] == "XMLHttpRequest"
+
+    def test_a_third_origin_gets_the_registered_role_adjusted(self) -> None:
+        session, wire = self._session("https://sso.other.example")
+        session.xhr("GET", "https://othershop.example/x")
+        [sent] = wire.sent
+        assert "X-Shop-Build" not in sent.headers
+        assert sent.headers["Sec-Fetch-Site"] == "cross-site"
+
+    def test_a_session_with_no_recorded_origin_keeps_gp_base_urls(self) -> None:
+        session, wire = _wired()
+        session.xhr("GET", "https://myshop.example/a")
+        session.xhr("GET", "https://api.myshop.example/a")
+        assert ["X-Shop-Build" in sent.headers for sent in wire.sent] == [True, False]

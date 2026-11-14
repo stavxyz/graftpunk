@@ -9,16 +9,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Final
-from urllib.parse import urlsplit
 
 import requests
 
 from graftpunk.client_headers import client_sets_header
 from graftpunk.cookies import BrowserCookiesMixin
 from graftpunk.logging import get_logger
-from graftpunk.public_suffix import registrable_domain
-from graftpunk.tokens import _CSRF_TOKENS_ATTR
+from graftpunk.public_suffix import (
+    Origin,
+    origin,
+    registrable_domain,
+    same_site,
+    serialized_origin,
+)
+from graftpunk.tokens import _CSRF_ORIGIN_ATTR, _CSRF_TOKENS_ATTR, _HEADER_ROLE_ORIGINS_ATTR
 
 LOG = get_logger(__name__)
 
@@ -149,49 +155,23 @@ register_role(
 )
 
 
-_DEFAULT_PORTS: Final[dict[str, int]] = {"http": 80, "https": 443}
-
-
-def _origin(url: str) -> tuple[str, str, int | None] | None:
-    """*url*'s origin as (scheme, host, port), lowercased with the default port
-    filled in, or None when *url* names no host (a path, or an empty string)."""
-    try:
-        parts = urlsplit(url)
-        port = parts.port
-    except ValueError:
-        return None
-    host = (parts.hostname or "").rstrip(".")
-    if not host or not parts.scheme:
-        return None
-    scheme = parts.scheme.lower()
-    return scheme, host, port if port is not None else _DEFAULT_PORTS.get(scheme)
-
-
-def _serialized_origin(origin: tuple[str, str, int | None]) -> str:
-    """The ``Origin`` header value a browser sends for *origin*."""
-    scheme, host, port = origin
-    if ":" in host:
-        host = f"[{host}]"
-    if port is None or port == _DEFAULT_PORTS.get(scheme):
-        return f"{scheme}://{host}"
-    return f"{scheme}://{host}:{port}"
-
-
 def _cross_origin_headers(
-    headers: dict[str, str], *, fetch_site: str, origin: str, method: str
+    headers: dict[str, str], *, fetch_site: str, origin: str, method: str, declared: bool
 ) -> dict[str, str]:
     """*headers* (a role's) as a browser sends them to another origin.
 
     ``Sec-Fetch-Site`` becomes *fetch_site* (``same-site`` or ``cross-site``),
-    ``X-Requested-With`` is dropped (jQuery, which sets it, leaves it off a
-    cross-origin request, where it would need a CORS preflight), and
-    ``Origin`` is added the way Chrome adds it: on every CORS-mode request
-    (``Sec-Fetch-Mode: cors``) and on every method but GET and HEAD.
+    and ``Origin`` is added the way Chrome adds it: on every CORS-mode request
+    (``Sec-Fetch-Mode: cors``) and on every method but GET and HEAD. A built-in
+    or registered role also loses ``X-Requested-With`` (jQuery, which sets it,
+    leaves it off a cross-origin request, where it would need a CORS
+    preflight); a role the plugin declared (*declared*) keeps it, since its
+    author chose it, and some APIs check it as their CSRF guard.
     """
     adjusted: dict[str, str] = {}
     for name, value in headers.items():
         lower = name.lower()
-        if lower == "x-requested-with":
+        if lower == "x-requested-with" and not declared:
             continue
         adjusted[name] = fetch_site if lower == "sec-fetch-site" else value
     cors = _case_insensitive_get(adjusted, "Sec-Fetch-Mode") == "cors"
@@ -199,6 +179,33 @@ def _cross_origin_headers(
     if sends_origin and _case_insensitive_get(adjusted, "Origin") is None:
         adjusted["Origin"] = origin
     return adjusted
+
+
+# The attribute a PreparedRequest this session prepared carries, so each
+# redirect hop can redo what the session added for the hop's own URL.
+_HOP_MARKS_ATTR = "_gp_hop_marks"
+
+
+@dataclass(frozen=True)
+class _HopMarks:
+    """What the session added to one prepared request, all names lowercased.
+
+    *role* is the role its headers came from (None when none applied),
+    *caller* the header names the caller set (request ``headers=``, a
+    ``referer``, or a session header the caller changed), which no hop
+    touches, *role_headers* the names the role added, and *csrf* the CSRF
+    token names injected.
+    """
+
+    role: str | None
+    caller: frozenset[str]
+    role_headers: frozenset[str]
+    csrf: frozenset[str]
+
+
+_LOWER_IDENTITY_HEADERS: Final[frozenset[str]] = frozenset(
+    name.lower() for name in _BROWSER_IDENTITY_HEADERS
+)
 
 
 def _case_insensitive_get(mapping: dict[str, str], key: str) -> str | None:
@@ -249,6 +256,11 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         # Roles a plugin declared (merge_header_roles), which, unlike captured
         # ones, are sent to every origin the plugin calls.
         self._gp_declared_roles: set[str] = set()
+        # (token name, target site) pairs a withheld CSRF token was logged for.
+        self._gp_csrf_withheld: set[tuple[str, str]] = set()
+        # request_with_role()'s (role, caller header names) for the
+        # prepare_request() it is about to cause.
+        self._gp_explicit_role: tuple[str, frozenset[str]] | None = None
         self._gp_csrf_tokens: dict[str, str] = {}
         self.gp_default_role: str | None = None
         self.gp_base_url: str = base_url
@@ -299,26 +311,28 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
             declared = self._gp_declared_roles = set()
         return declared
 
+    def _captured_origin(self, role_name: str) -> Origin | None:
+        """The origin *role_name*'s captured headers were recorded on, else
+        ``gp_base_url``'s, else None (a session that knows neither)."""
+        recorded = (getattr(self, _HEADER_ROLE_ORIGINS_ATTR, None) or {}).get(role_name)
+        return origin(recorded or getattr(self, "gp_base_url", "") or "")
+
     def _cross_origin_site(self, url: str | None) -> tuple[str, str] | None:
         """(``Sec-Fetch-Site``, ``Origin``) for a request to *url* from ``gp_base_url``'s
         origin, or None when the request is same-origin or either names no host.
 
-        Sites compare scheme and registrable domain
-        (:func:`graftpunk.public_suffix.registrable_domain`), as Chrome does:
-        ``https://api.myshop.example`` and ``https://myshop.example:8443`` are
-        same-site to ``https://myshop.example``, and ``http://myshop.example``
-        and ``https://cdn.example.net`` are cross-site to it.
+        Origins and sites are compared as Chrome compares them
+        (:mod:`graftpunk.public_suffix`): ``https://api.myshop.example`` and
+        ``https://myshop.example:8443`` are same-site to ``https://myshop.example``,
+        and ``http://myshop.example`` and ``https://cdn.example.net`` are
+        cross-site to it.
         """
-        if not url:
-            return None
-        base = _origin(getattr(self, "gp_base_url", "") or "")
-        target = _origin(url)
+        base = origin(getattr(self, "gp_base_url", "") or "")
+        target = origin(url)
         if base is None or target is None or base == target:
             return None
-        same_site = base[0] == target[0] and (
-            registrable_domain(base[1]) == registrable_domain(target[1])
-        )
-        return ("same-site" if same_site else "cross-site"), _serialized_origin(base)
+        fetch_site = "same-site" if same_site(base, target) else "cross-site"
+        return fetch_site, serialized_origin(base)
 
     def _resolve_referer(self, referer: str) -> str:
         """Resolve a Referer value from a path or full URL.
@@ -356,14 +370,21 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         Checks captured roles first, then falls back to the role registry.
         Logs when falling back or when the role name is unknown.
 
-        Captured headers are what the browser sent to ``gp_base_url``'s
-        origin, so a request to *url* on another origin (another host, port,
-        or scheme) never gets them (#228). It gets a plugin's declared role,
-        or else the registered one, as a browser on the site's page would
-        send it there (``_cross_origin_headers``): ``Sec-Fetch-Site``
-        same-site or cross-site, no ``X-Requested-With``, and an ``Origin``
-        where Chrome sends one. A role that was only captured sends nothing
-        there.
+        A captured role is what Chrome sent to one origin at login: the one
+        ``_gp_header_role_origins`` records (the login prefers requests to the
+        site's own origin, ``graftpunk.observe.headers.extract_header_roles``),
+        or ``gp_base_url``'s for a session captured before that was recorded.
+        Only a request to that origin gets it as captured (#228); any other
+        request, a redirect hop included (``rebuild_auth``), never does. A
+        request to another origin than ``gp_base_url``'s (another host, port,
+        or scheme) gets a plugin's declared role, or else the registered one,
+        as a browser on the site's page would send it there
+        (``_cross_origin_headers``): ``Sec-Fetch-Site`` same-site or
+        cross-site, an ``Origin`` where Chrome sends one, and no
+        ``X-Requested-With`` unless the plugin declared it. A request to
+        ``gp_base_url``'s origin whose role was captured on another origin gets
+        the registered role as it is. A role that was only captured sends
+        nothing where its captured headers do not go.
 
         Args:
             role_name: Role name ("navigation", "xhr", "form", or custom).
@@ -373,13 +394,23 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         Returns:
             Copy of the header dict, or None if role is unknown.
         """
-        cross = self._cross_origin_site(url)
         captured = self._gp_header_roles.get(role_name)
-        if cross is None:
-            if captured is not None:
+        declared = captured is not None and role_name in self._declared_roles()
+        if captured is not None and not declared:
+            target = origin(url)
+            captured_at = self._captured_origin(role_name)
+            if target is None or captured_at is None or target == captured_at:
                 return dict(captured)
+        cross = self._cross_origin_site(url)
+        if cross is None:
+            if declared:
+                assert captured is not None
+                return dict(captured)
+            if captured is not None and get_role_headers(role_name) is None:
+                LOG.debug("captured_role_not_sent_to_another_origin", role=role_name)
+                return {}
         else:
-            fetch_site, origin = cross
+            fetch_site, base_origin = cross
             template = (
                 captured
                 if captured is not None and role_name in self._declared_roles()
@@ -387,7 +418,11 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
             )
             if template is not None:
                 return _cross_origin_headers(
-                    template, fetch_site=fetch_site, origin=origin, method=method
+                    template,
+                    fetch_site=fetch_site,
+                    origin=base_origin,
+                    method=method,
+                    declared=template is captured,
                 )
             if captured is not None:
                 LOG.debug("captured_role_not_sent_cross_origin", role=role_name)
@@ -592,14 +627,22 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         # Caller headers override role headers
         if headers:
             role_headers.update(headers)
+        caller = frozenset(name.lower() for name in headers or {})
+        if referer is not None:
+            caller |= {"referer"}
 
         # Note: self.request() calls prepare_request(), which runs
         # _detect_role() again and may select a different role.
         # However, our explicit headers are passed as request-level
         # headers, which take precedence over session-level role
         # headers in the requests merge logic (see prepare_request's
-        # priority chain).
-        return self.request(method.upper(), url, headers=role_headers, **kwargs)
+        # priority chain). prepare_request() reads the role and the
+        # caller's names from _gp_explicit_role, for the redirect hops.
+        self._gp_explicit_role = (role_name, caller)
+        try:
+            return self.request(method.upper(), url, headers=role_headers, **kwargs)
+        finally:
+            self._gp_explicit_role = None
 
     def _detect_role(self, request: requests.Request) -> str:
         """Auto-detect the appropriate header role for a request.
@@ -654,27 +697,74 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         default_value = self._gp_default_session_headers.get(key)
         return current_value != default_value
 
-    def _inject_csrf_tokens(self, prepared: requests.PreparedRequest) -> None:
-        """Inject CSRF tokens into a prepared request, mutation methods only.
+    def _inject_csrf_tokens(
+        self, prepared: requests.PreparedRequest, caller: frozenset[str] = frozenset()
+    ) -> frozenset[str]:
+        """Inject CSRF tokens into a prepared request, mutation methods only; the
+        names injected, lowercased.
 
         CSRF tokens stored in ``_gp_csrf_tokens`` (set by ``tokens.prepare_session``)
         are added to the request headers only for POST, PUT, PATCH, and DELETE.
         This matches browser behavior: CSRF protection is for state-changing
         operations, not read-only GETs.
 
-        Uses ``setdefault`` so that caller-supplied headers are never overwritten.
+        A token goes only to the site it was obtained for (the origin
+        ``prepare_session`` recorded, else ``gp_base_url``): an ``api.``
+        subdomain or another port of that site gets it, another registrable
+        domain does not, since a browser never attaches one site's token to
+        another site's request on its own. A withheld token is logged at
+        warning level once per token name and target site in this session.
+        With no recorded origin every request gets the tokens, as before.
+
+        Uses ``setdefault`` so that caller-supplied headers are never
+        overwritten; a name in *caller* (a redirect hop's caller headers) is
+        left alone too.
 
         Args:
             prepared: The prepared request to conditionally add tokens to.
+            caller: Header names (lowercased) the caller set.
         """
         csrf_tokens: dict[str, str] = getattr(self, _CSRF_TOKENS_ATTR, {})
         if not csrf_tokens:
-            return
+            return frozenset()
         if (prepared.method or "GET").upper() not in _MUTATION_METHODS:
-            return
+            return frozenset()
         assert prepared.headers is not None, "PreparedRequest.headers is None after preparation"
+        obtained_for = origin(
+            getattr(self, _CSRF_ORIGIN_ATTR, "") or getattr(self, "gp_base_url", "") or ""
+        )
+        target = origin(prepared.url)
+        withheld = (
+            obtained_for is not None and target is not None and not same_site(obtained_for, target)
+        )
+        injected: set[str] = set()
         for name, value in csrf_tokens.items():
-            prepared.headers.setdefault(name, value)
+            if name.lower() in caller or name in prepared.headers:
+                continue
+            if withheld:
+                assert target is not None
+                self._warn_withheld_token(name, target[1])
+                continue
+            prepared.headers[name] = value
+            injected.add(name.lower())
+        return frozenset(injected)
+
+    def _warn_withheld_token(self, name: str, host: str) -> None:
+        """Log, once per token and target site in this session, a CSRF token withheld."""
+        seen = getattr(self, "_gp_csrf_withheld", None)
+        if seen is None:
+            seen = self._gp_csrf_withheld = set()
+        key = (name, registrable_domain(host.rstrip(".")))
+        if key in seen:
+            return
+        seen.add(key)
+        LOG.warning(
+            "csrf_token_withheld_cross_site",
+            token=name,
+            host=host,
+            hint="A CSRF token goes only to the site it was obtained for; pass it in "
+            "headers= to send it to another site on purpose.",
+        )
 
     def prepare_request(self, request: requests.Request, **kwargs: Any) -> requests.PreparedRequest:
         """Prepare a request with auto-detected role headers.
@@ -687,7 +777,11 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         afterward (even on exception) to avoid permanently altering session state.
 
         CSRF tokens (stored separately by ``tokens.prepare_session``) are injected
-        only on mutation methods (POST/PUT/PATCH/DELETE).
+        only on mutation methods (POST/PUT/PATCH/DELETE), and only to the site
+        they were obtained for (``_inject_csrf_tokens``).
+
+        The prepared request carries what this added (``_HopMarks``), so that
+        ``rebuild_auth`` can redo it for each redirect hop's URL.
 
         Args:
             request: The request to prepare.
@@ -697,10 +791,23 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         Returns:
             A PreparedRequest with applied role headers (if configured).
         """
-        if not self._gp_header_roles:
-            prepared = super().prepare_request(request, **kwargs)
-        elif role_headers := self._resolve_role(
-            self._detect_role(request), request.url, request.method or "GET"
+        explicit = getattr(self, "_gp_explicit_role", None)
+        self._gp_explicit_role = None
+        request_names = {name.lower() for name in request.headers or {}}
+        if explicit is not None:
+            role_name: str | None = explicit[0]
+            caller = set(explicit[1])
+            role_added = request_names - caller
+        else:
+            role_name = None
+            caller = set(request_names)
+            role_added = set()
+        user_set = {key.lower() for key in self.headers if self._is_user_set_header(key)}
+        caller |= user_set
+
+        detected = self._detect_role(request) if self._gp_header_roles else None
+        if detected is not None and (
+            role_headers := self._resolve_role(detected, request.url, request.method or "GET")
         ):
             # Apply role headers as session defaults (lowest priority).
             # Priority: request headers (caller-supplied) >
@@ -726,8 +833,67 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
                 # Restore original session headers
                 self.headers.clear()
                 self.headers.update(original_session_headers)
+            role_added |= {key.lower() for key in role_headers} - caller - request_names
+            if role_name is None:
+                role_name = detected
         else:
             prepared = super().prepare_request(request, **kwargs)
 
-        self._inject_csrf_tokens(prepared)
+        csrf = self._inject_csrf_tokens(prepared, frozenset(caller))
+        setattr(
+            prepared,
+            _HOP_MARKS_ATTR,
+            _HopMarks(
+                role=role_name,
+                caller=frozenset(caller),
+                role_headers=frozenset(role_added - _LOWER_IDENTITY_HEADERS),
+                csrf=csrf,
+            ),
+        )
         return prepared
+
+    def rebuild_auth(
+        self, prepared_request: requests.PreparedRequest, response: requests.Response
+    ) -> None:
+        """requests' per-hop redirect hook, also redoing the role headers and CSRF
+        tokens for the hop's URL.
+
+        requests copies each hop from the one before and never calls
+        ``prepare_request`` again, so without this a same-origin request that
+        redirects to another site would carry the captured role headers and the
+        CSRF tokens there. Each hop drops what the session added to the hop
+        before (never a header the caller set), applies the role again for its
+        own URL and method (``_role_headers_for``), and injects the CSRF tokens
+        again by the same-site rule. A ``Content-Type`` the role holds is not
+        added back to a hop requests made bodiless.
+        """
+        super().rebuild_auth(prepared_request, response)
+        marks = getattr(getattr(response, "request", None), _HOP_MARKS_ATTR, None)
+        if not isinstance(marks, _HopMarks):
+            return
+        headers = prepared_request.headers
+        if headers is None:
+            return
+        for name in list(headers):
+            lower = name.lower()
+            if lower not in marks.caller and (lower in marks.role_headers or lower in marks.csrf):
+                del headers[name]
+        method = prepared_request.method or "GET"
+        added: set[str] = set()
+        if marks.role is not None:
+            for name, value in self._role_headers_for(
+                marks.role, prepared_request.url, method
+            ).items():
+                lower = name.lower()
+                if lower in marks.caller or lower in _LOWER_IDENTITY_HEADERS:
+                    continue
+                if lower == "content-type" and prepared_request.body is None:
+                    continue
+                headers[name] = value
+                added.add(lower)
+        csrf = self._inject_csrf_tokens(prepared_request, marks.caller)
+        setattr(
+            prepared_request,
+            _HOP_MARKS_ATTR,
+            _HopMarks(marks.role, marks.caller, frozenset(added), csrf),
+        )

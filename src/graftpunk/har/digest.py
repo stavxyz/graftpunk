@@ -7,7 +7,6 @@ only remaining consumer (plugin tooling spec, 2026-09-11).
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import math
 import re
@@ -81,7 +80,7 @@ from graftpunk.har.selectors import bounded_selector, selector_holds_an_id, sele
 from graftpunk.har.token_pairing import TokenPairing, TokenValueTracker
 from graftpunk.logging import get_logger
 from graftpunk.plugins.login_settle import failure_text_on_lowered_page
-from graftpunk.public_suffix import is_public_suffix
+from graftpunk.public_suffix import is_ip_address, is_public_suffix
 from graftpunk.session_identity import identifier_key, is_identifier_field
 
 LOG = get_logger(__name__)
@@ -786,27 +785,16 @@ def _host_name(host: str) -> str:
     if host.startswith("["):
         end = host.find("]")
         return host[: end + 1] if end != -1 else host
-    if _is_ip(host):
+    if is_ip_address(host):
         return host
     name, colon, port = host.rpartition(":")
     return name if colon and port.isdigit() else host
 
 
-def _is_ip(text: str) -> bool:
-    try:
-        ipaddress.ip_address(text)
-    except ValueError:
-        return False
-    return True
-
-
 def _ip_literal(host: str) -> bool:
     """True when *host*, with or without a port, is an IPv4 or a bracketed IPv6
     address."""
-    name = _host_name(host)
-    if name.startswith("[") and name.endswith("]"):
-        name = name[1:-1]
-    return _is_ip(name)
+    return is_ip_address(_host_name(host))
 
 
 def _primary_host(non_static_hosts: dict[str, int], document_hosts: set[str]) -> str:

@@ -273,11 +273,16 @@ def _make_request(
 
     plugin = get_plugin_for_session(resolved) if resolved else None
 
+    # The site's origin, which decides where the captured role headers and the
+    # CSRF tokens go (GraftpunkSession._resolve_role), as plugin commands set it.
+    base_url = getattr(plugin, "base_url", "") if plugin else ""
+    if base_url and hasattr(session, "gp_base_url"):
+        setattr(session, "gp_base_url", base_url)  # noqa: B010
+
     token_config = getattr(plugin, "token_config", None) if plugin else None
     if token_config is not None:
         from graftpunk.tokens import prepare_session
 
-        base_url = getattr(plugin, "base_url", "")
         prepare_session(session, token_config, base_url)
 
     # Merge plugin-defined header roles into the session so that
