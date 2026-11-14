@@ -42,6 +42,7 @@ from graftpunk.cookies import (
     _is_http_only,
     _without_userinfo,
     cookie_from_browser,
+    domain_from_cookies,
     importing_httpie,
 )
 from graftpunk.exceptions import BrowserError
@@ -763,16 +764,12 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             state["cookies"] = self.cookies if hasattr(self, "cookies") else {}
             state["headers"] = dict(self.headers) if hasattr(self, "headers") else {}
             state["session_name"] = getattr(self, "_session_name", "default")
-            # Capture current_url: prefer explicit attribute, then try browser tab
-            current_url = getattr(self, "current_url", "") or ""
-            if not current_url:
-                try:
-                    browser = self.driver
-                    if browser and hasattr(browser, "targets") and browser.targets:
-                        current_url = getattr(browser.targets[0], "url", "") or ""
-                except Exception as exc:  # noqa: BLE001
-                    LOG.debug("url_capture_failed_during_serialization", error=str(exc))
-            state["current_url"] = current_url
+            # The URL a login recorded, or none. Not the browser's first target:
+            # nodriver's Tab.url is a copy that may predate the last navigation,
+            # and the first target need not be a page (see
+            # graftpunk.plugins.login_settle.page_url_nodriver). A pickle cannot
+            # evaluate, so with no URL the cache takes the domain from the cookies.
+            state["current_url"] = getattr(self, "current_url", "") or ""
             _save_session_riders(self, state)
             return state
 
@@ -901,14 +898,21 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             else Path(env.config.directory) / "sessions" / f"{session_name}.json"
         )
 
-        try:
-            driver_url = self.driver.current_url
-        except (BrowserError, selenium.common.exceptions.WebDriverException) as exc:
-            driver_url = ""
-            LOG.warning("driver_url_unavailable_for_httpie_session", error=str(exc))
+        driver_url = ""
+        # Only a WebDriver has a live current_url: nodriver's Browser has none (an
+        # AttributeError here once its browser was up), and its tabs' Tab.url is a
+        # copy that may be stale.
+        if getattr(self, "_backend_type", "selenium") != "nodriver":
+            try:
+                driver_url = self.driver.current_url
+            except (BrowserError, selenium.common.exceptions.WebDriverException) as exc:
+                LOG.warning("driver_url_unavailable_for_httpie_session", error=str(exc))
         current_url = getattr(self, "current_url", driver_url)
         parsed = urlparse(current_url)
         current_hostname = f"{parsed.scheme}://{parsed.hostname}" if current_url else ""
+        if not current_url and (domain := domain_from_cookies(self.cookies)):
+            # No recorded URL: the domain the cache records from the cookies.
+            current_hostname = f"https://{domain}"
 
         httpie_session = httpie.sessions.get_httpie_session(
             env=env,

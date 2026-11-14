@@ -2181,3 +2181,65 @@ class TestObserveStartHardening:
         assert session.capture is None
         session.observe_redact = ["a", None, "b"]
         assert session.observe_redact == ("a", "b")
+
+
+class TestANodriverSessionRecordsNoStaleUrl:
+    """A nodriver session that records no URL is pickled with none: the browser's
+    first target is nodriver's copy (``Tab.url``), which may predate the last
+    navigation and need not be a page. The domain then comes from the cookies, in
+    the cache's metadata and in the HTTPie export alike."""
+
+    @staticmethod
+    def _session() -> Any:
+        import types
+
+        import requests
+
+        from graftpunk.session import BrowserSession
+
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+        session._backend_type = "nodriver"
+        session._use_stealth = False
+        session._session_name = "myshop"
+        requests.Session.__init__(session)
+        session.cookies.set("sid", "1", domain=".myshop.example")
+        worker = types.SimpleNamespace(type_="service_worker", url="https://cdn.example.net/sw.js")
+        stale_page = types.SimpleNamespace(type_="page", url="https://idp.example.com/sso/login")
+        backend = MagicMock()
+        backend._browser = types.SimpleNamespace(targets=[worker, stale_page])
+        session._backend_instance = backend
+        return session
+
+    def test_the_pickle_records_no_url_and_the_cache_takes_the_cookie_domain(self) -> None:
+        from graftpunk.cache import _extract_session_metadata
+        from graftpunk.session import BrowserSession
+
+        state = self._session().__getstate__()
+        restored = BrowserSession.__new__(BrowserSession)
+        restored.__setstate__(state)
+        metadata = _extract_session_metadata(restored, "myshop")
+
+        assert state["current_url"] == ""
+        assert "current_url" not in metadata
+        assert metadata["domain"] == "myshop.example"
+
+    @pytest.mark.parametrize("browser_up", [True, False])
+    def test_the_httpie_export_binds_the_cookie_domain(
+        self, tmp_path: Path, browser_up: bool
+    ) -> None:
+        """With the browser up, the export used to raise: nodriver's Browser has no
+        current_url. With it gone (a loaded session), it bound no host."""
+        import httpie.sessions
+
+        session = self._session()
+        session.current_url = ""
+        if not browser_up:
+            session._backend_instance = None
+
+        with patch.object(
+            httpie.sessions, "get_httpie_session", wraps=httpie.sessions.get_httpie_session
+        ) as opened:
+            session.save_httpie_session(output=tmp_path / "myshop.json")
+
+        assert opened.call_args.kwargs["url"] == "https://myshop.example"

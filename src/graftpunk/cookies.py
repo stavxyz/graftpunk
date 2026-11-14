@@ -307,6 +307,32 @@ def _browser_cookie_domain(cookie: cookiejar.Cookie) -> str:
     return domain
 
 
+def cookie_domains(cookies: Any) -> list[str]:
+    """The distinct domains of *cookies* (a jar, or any iterable of cookies), sorted:
+    a jar cookie's as :func:`_browser_cookie_domain` gives it, and another cookie
+    object's ``domain`` as it is."""
+    domains: set[str] = set()
+    for cookie in cookies:
+        if isinstance(cookie, cookiejar.Cookie):
+            domains.add(_browser_cookie_domain(cookie))
+        elif hasattr(cookie, "domain"):
+            # A custom session's cookie objects; _browser_cookie_domain reads
+            # attributes only http.cookiejar.Cookie has.
+            domains.add(cookie.domain)
+    return sorted(domains)
+
+
+def domain_from_cookies(cookies: Any) -> str:
+    """The session's domain as its cookies tell it: the first non-empty domain of
+    :func:`cookie_domains`, without a leading dot, or empty when there is none. The
+    one rule the cached session's metadata and the HTTPie export fall back to when
+    the session records no URL."""
+    for domain in cookie_domains(cookies):
+        if domain:
+            return domain.lstrip(".")
+    return ""
+
+
 def _is_http_only(cookie: cookiejar.Cookie) -> bool:
     return cookie.has_nonstandard_attr(_HTTP_ONLY_ATTR)
 
