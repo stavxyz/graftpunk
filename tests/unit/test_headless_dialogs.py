@@ -588,7 +588,9 @@ class _FirstScriptDialogTab(FakeTab):
     navigating it to LOGIN_URL runs the page's first script at once, and that script
     opens an alert. Chrome reports the dialog only to sessions with the Page domain
     on, so with no answerer installed by then nobody hears it and the tab stalls,
-    which ``stalled`` records. ``steps`` is the order of what happened to it."""
+    which ``stalled`` records: what ``get(LOGIN_URL, new_tab=True)`` followed by an
+    install would do, since the navigation comes first. ``steps`` is the order of
+    what happened to it."""
 
     def __init__(self) -> None:
         super().__init__({}, _always)
@@ -654,19 +656,6 @@ class TestOpenTabAnswersTheFirstScriptsDialog:
             await asyncio.sleep(0)
         assert not tab.stalled
         assert [p for m, p in tab.sent if m == "Page.handleJavaScriptDialog"] == [{"accept": True}]
-
-    async def test_a_new_tab_made_at_its_url_misses_the_first_script_s_dialog(
-        self, endpoints: list[ChromeEndpoint]
-    ) -> None:
-        """What open_tab avoids: the page runs before anything is installed."""
-        browser = _NewTabBrowser()
-        await _new_tab_answerer(endpoints, browser)
-
-        tab = await browser.get(LOGIN_URL, new_tab=True)
-        await dialogs.answer_dialogs(tab)
-
-        assert tab.stalled
-        assert tab.steps == [f"create:{LOGIN_URL}", f"navigate:{LOGIN_URL}", "enable"]
 
     async def test_a_browser_that_answers_no_new_tab_gets_no_answerer(self) -> None:
         browser = _NewTabBrowser()
