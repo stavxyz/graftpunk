@@ -1009,6 +1009,21 @@ class DeclarativeNodriverBothSignals(SitePlugin):
 _LOGIN_CREDENTIALS = {"username": "alice", "password": "secret"}  # noqa: S106
 
 
+def _hard_end_out_of_reach(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Move the nodriver wait's hard end 30 s past its deadline.
+
+    It is one poll interval past the deadline, 1 ms under the suite's interval
+    (conftest), so a worker stall across the deadline (a gen-2 collection in a full
+    run holds every thread for up to about 0.6 s) ends the wait before the deadline
+    tick reads the page, as it should. A test about what the reads find, not about
+    that bound, then fails on its own timing. With the end out of reach the wait
+    still ends on its deadline tick.
+    """
+    monkeypatch.setattr(
+        "graftpunk.plugins.login_settle._hard_end", lambda deadline: deadline + 30.0
+    )
+
+
 class TestNodriverLoginSignalPoll:
     """The post-submit wait polls for the configured signal (nodriver)."""
 
@@ -1432,9 +1447,13 @@ class TestNodriverLoginSignalPoll:
         assert tab.events[first_tick - 1] == "sleep"
 
     @pytest.mark.asyncio
-    async def test_both_signals_configured_needs_both(self) -> None:
+    async def test_both_signals_configured_needs_both(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A matching URL is not enough while the configured element never appears."""
         from graftpunk.plugins.login_engine import generate_login_method
+
+        _hard_end_out_of_reach(monkeypatch)
 
         tab = _ScriptedNodriverTab(
             success_selector=".dashboard",
@@ -1581,12 +1600,7 @@ class TestNodriverLoginSignalPoll:
         """
         from graftpunk.plugins.login_engine import generate_login_method
 
-        # The hard end is half a second past the 50 ms timeout, and a worker stall
-        # that long before the read (a gen-2 collection in a full run) rightly
-        # abandons it; this test is about the deadline tick, not that bound.
-        monkeypatch.setattr(
-            "graftpunk.plugins.login_settle._hard_end", lambda deadline: deadline + 30.0
-        )
+        _hard_end_out_of_reach(monkeypatch)
 
         tab = _ScriptedNodriverTab(
             success_selector=".dashboard",
@@ -1611,7 +1625,9 @@ class TestNodriverLoginSignalPoll:
         assert timeouts == []
 
     @pytest.mark.asyncio
-    async def test_a_timeout_with_nothing_missing_names_the_tick_that_failed(self) -> None:
+    async def test_a_timeout_with_nothing_missing_names_the_tick_that_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The element was found on an early tick and the URL moved on a tick that raised.
 
         Both signals then hold on the window without any one tick having seen them
@@ -1619,6 +1635,8 @@ class TestNodriverLoginSignalPoll:
         failed instead of logging an empty `missing`.
         """
         from graftpunk.plugins.login_engine import generate_login_method
+
+        _hard_end_out_of_reach(monkeypatch)
 
         tab = _ScriptedNodriverTab(
             success_selector=".dashboard",
@@ -1663,13 +1681,17 @@ class TestNodriverLoginSignalPoll:
         assert tab.tick == 2
 
     @pytest.mark.asyncio
-    async def test_a_url_that_is_never_readable_is_a_dead_tab_not_a_missing_signal(self) -> None:
+    async def test_a_url_that_is_never_readable_is_a_dead_tab_not_a_missing_signal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A tab that answers neither a URL nor a page has confirmed nothing.
 
         Nothing here can tell the URL signal apart from a dead browser, so the wait
         blames the browser rather than naming a signal it never got to look at.
         """
         from graftpunk.plugins.login_engine import generate_login_method
+
+        _hard_end_out_of_reach(monkeypatch)
 
         tab = _ScriptedNodriverTab(urls=(None,), unreadable_ticks=tuple(range(1000)))
         mock_bs, _instance = _nodriver_session_for(tab)
