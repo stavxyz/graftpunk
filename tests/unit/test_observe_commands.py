@@ -17,15 +17,14 @@ import typer
 from typer.testing import CliRunner
 
 from graftpunk.cli.observe_commands import (  # noqa: F401
+    # digest_cmd and fixtures_cmd: unused directly (exercised through the CLI
+    # below), imported anyway as an existence check that the names are really on
+    # the module.
     digest_cmd,
     fixtures_cmd,
     observe_app,
     resolve_run,
 )
-
-# digest_cmd and fixtures_cmd: unused directly (exercised through the CLI
-# below), imported anyway as an existence check that the names are really on
-# the module.
 from graftpunk.testing import FixtureSession
 from graftpunk.testing.plugin import check_fixtures_tree
 from tests.unit.cli_harness import strip_ansi
@@ -841,6 +840,58 @@ class TestFixturesCommand:
             assert (response.status_code, response.text) == (200, fixture.read_text())
         assert session.get("https://api.myshop.example.com/products/a/b").status_code == 404
         assert session.post("https://api.myshop.example.com/products/alpha").status_code == 404
+
+    @pytest.mark.parametrize("limit", ["1", "2"])
+    def test_a_mixed_family_records_its_family_whichever_member_is_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: str
+    ) -> None:
+        """/products/1001 templates to /products/{product_id} on its own, but it is
+        one member of a family the digest collapsed from slugs. The family is
+        decided per endpoint, so the file written from 1001 records it too, and a
+        slug request answers from that file (#213, round 2)."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+        words += ["golf", "hotel", "india", "juliet", "kilo"]
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/products/1001", body='{"id": "1001"}')
+        ]
+        entries += [
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com/products/{word}-widget-2",
+                body=json.dumps({"id": word}),
+            )
+            for word in words
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "GET /products/{product_id}",
+                "--limit",
+                limit,
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        fixture = out_dir / "get_products_{product_id}.json"
+        assert json.loads(fixture.read_text()) == {"id": "1001"}
+        metas = sorted(out_dir.glob("*.meta.json"))
+        assert len(metas) == int(limit)
+        for meta in metas:
+            sidecar = json.loads(meta.read_text())
+            assert (sidecar["schema"], sidecar["endpoint_family"]) == (6, "/products/{product_id}")
+        response = FixtureSession(out_dir).get(
+            "https://api.myshop.example.com/products/bravo-widget-2"
+        )
+        assert (response.status_code, response.json()) == (200, {"id": "1001"})
 
     def test_a_fixture_the_generic_rule_already_names_records_no_family(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

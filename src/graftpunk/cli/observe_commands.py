@@ -55,7 +55,6 @@ from graftpunk.har.naming import (
     parse_endpoint_key,
 )
 from graftpunk.har.parser import HAREntry, HARParseError, parse_har_file
-from graftpunk.har.paths import template_path
 from graftpunk.har.report import (
     DEFAULT_ENDPOINT_LIMIT,
     render_endpoints_json,
@@ -461,6 +460,14 @@ def fixtures_cmd(
     # and template (fixture_order alone cannot tell those apart from an entry the
     # digest actually kept) never outranks it. The sort is stable. A row is keyed
     # by its GraphQL operation too (#367).
+    # FixtureSession templates a request path by the generic rule alone, so each
+    # file of a family the digest collapsed further records that family, and a
+    # request for any member finds it (#213). Decided per endpoint, from every
+    # member the collapse took in, never from the one entry written: an id-shaped
+    # member (/products/1001) templates generically on its own.
+    families_collapsed = {
+        template for raw, template in run_digest.collapsed_templates.items() if raw != template
+    }
     fixture_types = {
         (method, endpoint.template, endpoint.operation): endpoint.fixture_content_type
         for endpoint in run_digest.endpoints
@@ -555,10 +562,7 @@ def fixtures_cmd(
                 redacted_names=redacted,
                 observe_run=observe_run,
                 graphql_operation=operation or None,
-                # FixtureSession templates a request path by the generic rule alone;
-                # a family the digest collapsed further is recorded so a request
-                # for any member finds this file (#213).
-                endpoint_family=template if template != template_path(path)[0] else None,
+                endpoint_family=template if template in families_collapsed else None,
             )
         except OSError as exc:
             _refuse_write(file_path, exc)
