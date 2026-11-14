@@ -583,6 +583,113 @@ class TestEveryNewPageIsAnsweredFromItsFirstScript:
         assert (answerer.answered, answerer.failed) == (0, 1)
 
 
+class _FirstScriptDialogTab(FakeTab):
+    """A tab made with ``Target.createTarget``, which Chrome does not hold (#363):
+    navigating it to LOGIN_URL runs the page's first script at once, and that script
+    opens an alert. Chrome reports the dialog only to sessions with the Page domain
+    on, so with no answerer installed by then nobody hears it and the tab stalls,
+    which ``stalled`` records. ``steps`` is the order of what happened to it."""
+
+    def __init__(self) -> None:
+        super().__init__({}, _always)
+        self.target = SimpleNamespace(type_="page", target_id="target-2")
+        self.url = "about:blank"
+        self.steps: list[str] = []
+        self.page_enabled = False
+        self.stalled = False
+
+    async def send(self, cmd: Any, **kwargs: Any) -> Any:
+        result = await super().send(cmd, **kwargs)
+        if getattr(cmd, "__name__", "") == "enable" and "enable" not in self.steps:
+            self.page_enabled = True
+            self.steps.append("enable")
+        return result
+
+    async def get(self, url: str) -> Any:
+        self.steps.append(f"navigate:{url}")
+        self.url = url
+        if url == LOGIN_URL:
+            if self.page_enabled:
+                await self.dispatch(_alert())
+            else:
+                self.stalled = True
+        return self
+
+
+class _NewTabBrowser:
+    """A browser whose ``get(url, new_tab=True)`` makes the one new tab at *url*."""
+
+    def __init__(self) -> None:
+        self.websocket_url = ENDPOINT_URL
+        self.tab = _FirstScriptDialogTab()
+        self.targets: list[Any] = []
+        self.calls: list[tuple[str, bool]] = []
+
+    async def get(self, url: str, new_tab: bool = False) -> Any:
+        self.calls.append((url, new_tab))
+        self.targets.append(self.tab)
+        if new_tab:
+            self.tab.steps.append(f"create:{url}")
+            if url != "about:blank":
+                await self.tab.get(url)
+        return self.tab
+
+
+class TestOpenTabAnswersTheFirstScriptsDialog:
+    """:func:`graftpunk.dialogs.open_tab` installs the answer before the page's first
+    script can run, so it does not depend on winning a race (#363)."""
+
+    async def test_the_tab_is_made_blank_answered_and_only_then_navigated(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        browser = _NewTabBrowser()
+        await _new_tab_answerer(endpoints, browser)
+
+        tab = await dialogs.open_tab(browser, LOGIN_URL)
+
+        assert tab is browser.tab
+        assert browser.calls == [("about:blank", True)]
+        assert tab.steps == ["create:about:blank", "enable", f"navigate:{LOGIN_URL}"]
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not tab.stalled
+        assert [p for m, p in tab.sent if m == "Page.handleJavaScriptDialog"] == [{"accept": True}]
+
+    async def test_a_new_tab_made_at_its_url_misses_the_first_script_s_dialog(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        """What open_tab avoids: the page runs before anything is installed."""
+        browser = _NewTabBrowser()
+        await _new_tab_answerer(endpoints, browser)
+
+        tab = await browser.get(LOGIN_URL, new_tab=True)
+        await dialogs.answer_dialogs(tab)
+
+        assert tab.stalled
+        assert tab.steps == [f"create:{LOGIN_URL}", f"navigate:{LOGIN_URL}", "enable"]
+
+    async def test_a_browser_that_answers_no_new_tab_gets_no_answerer(self) -> None:
+        browser = _NewTabBrowser()
+
+        tab = await dialogs.open_tab(browser, "https://myshop.example/")
+
+        assert tab.steps == ["create:about:blank", "navigate:https://myshop.example/"]
+        assert not hasattr(tab, dialogs._TAB_ATTR)
+
+    async def test_a_tab_that_refuses_the_page_domain_is_still_opened(
+        self, endpoints: list[ChromeEndpoint]
+    ) -> None:
+        browser = _NewTabBrowser()
+        browser.tab.refuse.add("Page.enable")
+        await _new_tab_answerer(endpoints, browser)
+
+        with capture_logs() as logs:
+            tab = await dialogs.open_tab(browser, "https://myshop.example/")
+
+        assert tab.steps == ["create:about:blank", "navigate:https://myshop.example/"]
+        assert "nodriver_dialog_answering_unavailable" in _warnings(logs)
+
+
 class TestANewPageAnswererLetsGo:
     async def test_a_closed_target_s_session_is_dropped(
         self, endpoints: list[ChromeEndpoint]
