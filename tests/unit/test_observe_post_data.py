@@ -1046,7 +1046,60 @@ class TestARequestStartingAsStopEnds:
 
 class TestHeaderOnlyCapture:
     """A capture whose HAR is never written (the login engine's header capture)
-    fetches no request body and logs nothing about one."""
+    fetches no request or response body and logs nothing about one."""
+
+    @staticmethod
+    def _many_assets(count: int) -> list[Any]:
+        return [event for n in range(count) for event in _fetch_post(f"7.{n}")]
+
+    @pytest.mark.asyncio
+    async def test_nodriver_asks_for_no_response_body(self) -> None:
+        """#308: with observe off, each finished response cost a getResponseBody
+        round trip, eagerly and again at stop, and the bodies were thrown away."""
+        tab = FakeTab({}, _always)
+
+        with capture_logs() as logs:
+            backend = await _record(tab, self._many_assets(20), record_request_bodies=False)
+
+        assert [method for method, _ in tab.sent if method == "Network.getResponseBody"] == []
+        assert [e["event"] for e in logs if "body" in e["event"]] == []
+        responses = [e["response"] for e in backend.get_har_entries()]
+        assert len(responses) == 20
+        assert all(
+            "_bodyNotCaptured" not in r and r["content"].get("text") is None for r in responses
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_capture_still_fetches_each_response_body_once(self) -> None:
+        tab = FakeTab({}, _always)
+
+        backend = await _record(tab, self._many_assets(20))
+
+        asked = [
+            params["requestId"]
+            for method, params in tab.sent
+            if method == "Network.getResponseBody"
+        ]
+        assert sorted(asked) == sorted(f"7.{n}" for n in range(20))
+        assert all(
+            e["response"]["content"].get("text") == RESPONSE for e in backend.get_har_entries()
+        )
+
+    @pytest.mark.parametrize("recorded", [True, False], ids=["recorded", "header-only"])
+    def test_selenium_asks_for_a_response_body_only_when_recording(self, recorded: bool) -> None:
+        asked: list[str] = []
+
+        def execute(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            asked.append(method)
+            return _refuse_post_data(method, params)
+
+        backend = _selenium_backend(execute, inline="{}", record_request_bodies=recorded)
+        with capture_logs() as logs:
+            backend.stop_capture()
+
+        assert ("Network.getResponseBody" in asked) is recorded
+        if not recorded:
+            assert [e["event"] for e in logs if "body" in e["event"]] == []
 
     @pytest.mark.asyncio
     async def test_nodriver_fetches_and_logs_nothing(self) -> None:
