@@ -1026,3 +1026,198 @@ def _merged(roles: dict[str, dict[str, str]]) -> GraftpunkSession:
     session = GraftpunkSession()
     session.merge_header_roles(roles)
     return session
+
+
+class _Wire(requests.adapters.BaseAdapter):
+    """A transport that records each request it is given and answers 200 with ``{}``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: list[requests.PreparedRequest] = []
+
+    def send(self, request, **kwargs):  # noqa: ANN001, ANN003, ANN201
+        self.sent.append(request)
+        response = requests.Response()
+        response.status_code = 200
+        response.request = request
+        response.url = request.url
+        response.headers["Content-Type"] = "application/json"
+        response._content = b"{}"
+        return response
+
+    def close(self) -> None:
+        pass
+
+
+# What Chrome sent to the site's own origin, recorded at login.
+_CAPTURED = {
+    "xhr": {
+        **_IDENTITY_HEADERS,
+        "Accept": "application/json",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-Shop-Build": "2026.11.1",
+    },
+    "navigation": {
+        **_IDENTITY_HEADERS,
+        "Accept": "text/html",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "X-Shop-Build": "2026.11.1",
+    },
+    "form": {
+        **_IDENTITY_HEADERS,
+        "Accept": "text/html",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "X-Shop-Build": "2026.11.1",
+    },
+}
+
+
+def _wired(base_url: str = "https://myshop.example") -> tuple[GraftpunkSession, _Wire]:
+    session = GraftpunkSession(header_roles=_CAPTURED, base_url=base_url)
+    wire = _Wire()
+    session.mount("https://", wire)
+    session.mount("http://", wire)
+    return session, wire
+
+
+class TestCrossOriginRoleHeaders:
+    """Role headers captured on the site's origin go only to that origin (#228)."""
+
+    def test_the_sites_own_origin_gets_the_captured_role_as_captured(self) -> None:
+        session, wire = _wired()
+        session.xhr("GET", "https://myshop.example/api/orders")
+        [sent] = wire.sent
+        assert sent.headers["Sec-Fetch-Site"] == "same-origin"
+        assert sent.headers["X-Requested-With"] == "XMLHttpRequest"
+        assert sent.headers["X-Shop-Build"] == "2026.11.1"
+        assert "Origin" not in sent.headers
+
+    @pytest.mark.parametrize(
+        ("url", "fetch_site"),
+        [
+            ("https://api.myshop.example/v2/orders", "same-site"),
+            ("https://myshop.example:8443/api/orders", "same-site"),
+            ("https://othershop.example/api/orders", "cross-site"),
+            ("http://myshop.example/api/orders", "cross-site"),
+        ],
+        ids=["subdomain", "other-port", "other-site", "other-scheme"],
+    )
+    def test_another_origin_gets_none_of_the_captured_headers_and_an_origin(
+        self, url: str, fetch_site: str
+    ) -> None:
+        session, wire = _wired()
+        session.xhr("GET", url)
+        [sent] = wire.sent
+        assert "X-Shop-Build" not in sent.headers
+        assert "X-Requested-With" not in sent.headers
+        assert sent.headers["Sec-Fetch-Site"] == fetch_site
+        assert sent.headers["Sec-Fetch-Mode"] == "cors"
+        assert sent.headers["Origin"] == "https://myshop.example"
+        # The browser's identity goes everywhere.
+        assert sent.headers["User-Agent"] == "Mozilla/5.0 Test"
+
+    def test_a_generated_command_calling_another_host_sends_the_cross_origin_headers(
+        self,
+    ) -> None:
+        """The path a generated command takes: SiteRequests with an absolute URL."""
+        from graftpunk.plugins.site_requests import SiteRequests
+
+        session, wire = _wired()
+        SiteRequests(session, "myshop", "https://myshop.example").json(
+            "GET", "https://api.myshop.example/v2/orders"
+        )
+        [sent] = wire.sent
+        assert sent.headers["Sec-Fetch-Site"] == "same-site"
+        assert sent.headers["Origin"] == "https://myshop.example"
+        assert "X-Requested-With" not in sent.headers
+        assert "X-Shop-Build" not in sent.headers
+
+    def test_an_auto_detected_role_is_adjusted_the_same_way(self) -> None:
+        session, wire = _wired()
+        session.get("https://api.myshop.example/v2/orders", headers={"Accept": "application/json"})
+        [sent] = wire.sent
+        assert sent.headers["Sec-Fetch-Site"] == "same-site"
+        assert sent.headers["Origin"] == "https://myshop.example"
+        assert "X-Requested-With" not in sent.headers
+        assert "X-Shop-Build" not in sent.headers
+
+    def test_a_non_default_base_port_is_in_the_origin(self) -> None:
+        session, wire = _wired("https://myshop.example:8443/shop/")
+        session.xhr("GET", "https://api.myshop.example/v2/orders")
+        [sent] = wire.sent
+        assert sent.headers["Origin"] == "https://myshop.example:8443"
+
+    def test_a_cross_origin_get_navigation_sends_no_origin(self) -> None:
+        session, wire = _wired()
+        session.navigate("GET", "https://help.myshop.example/faq")
+        [sent] = wire.sent
+        assert sent.headers["Sec-Fetch-Site"] == "same-site"
+        assert sent.headers["Sec-Fetch-Mode"] == "navigate"
+        assert "Origin" not in sent.headers
+        assert "X-Shop-Build" not in sent.headers
+
+    def test_a_cross_origin_form_post_sends_an_origin(self) -> None:
+        session, wire = _wired()
+        session.form_submit("POST", "https://login.othershop.example/session", data={"a": "1"})
+        [sent] = wire.sent
+        assert sent.headers["Sec-Fetch-Site"] == "cross-site"
+        assert sent.headers["Origin"] == "https://myshop.example"
+
+    @pytest.mark.parametrize(
+        ("base_url", "url", "fetch_site"),
+        [
+            ("https://www.myshop.co.uk", "https://api.myshop.co.uk/v2", "same-site"),
+            ("https://www.myshop.co.uk", "https://othershop.co.uk/v2", "cross-site"),
+        ],
+        ids=["same-registrable-domain", "same-public-suffix-only"],
+    )
+    def test_sites_under_a_two_label_public_suffix(
+        self, base_url: str, url: str, fetch_site: str
+    ) -> None:
+        session, wire = _wired(base_url)
+        session.xhr("GET", url)
+        [sent] = wire.sent
+        assert sent.headers["Sec-Fetch-Site"] == fetch_site
+
+    def test_a_declared_role_goes_to_another_origin_adjusted(self) -> None:
+        session, wire = _wired()
+        session.merge_header_roles(
+            {"api": {"Accept": "application/json", "Sec-Fetch-Mode": "cors", "X-Api-Key": "k1"}}
+        )
+        session.request_with_role("api", "GET", "https://api.myshop.example/v2/orders")
+        [sent] = wire.sent
+        assert sent.headers["X-Api-Key"] == "k1"
+        assert sent.headers["Origin"] == "https://myshop.example"
+
+    def test_a_captured_role_with_no_registered_headers_sends_none_cross_origin(self) -> None:
+        session = GraftpunkSession(
+            header_roles={"checkout": {"X-Shop-Build": "2026.11.1"}},
+            base_url="https://myshop.example",
+        )
+        wire = _Wire()
+        session.mount("https://", wire)
+        session.request_with_role("checkout", "GET", "https://api.myshop.example/v2/cart")
+        [sent] = wire.sent
+        assert "X-Shop-Build" not in sent.headers
+
+    def test_caller_headers_still_win(self) -> None:
+        session, wire = _wired()
+        session.xhr(
+            "GET",
+            "https://api.myshop.example/v2/orders",
+            headers={"Origin": "https://www.myshop.example", "X-Requested-With": "Fetch"},
+        )
+        [sent] = wire.sent
+        assert sent.headers["Origin"] == "https://www.myshop.example"
+        assert sent.headers["X-Requested-With"] == "Fetch"
+
+    def test_without_a_base_url_every_request_counts_as_same_origin(self) -> None:
+        session, wire = _wired("")
+        session.xhr("GET", "https://api.myshop.example/v2/orders")
+        [sent] = wire.sent
+        assert sent.headers["X-Shop-Build"] == "2026.11.1"
+        assert "Origin" not in sent.headers

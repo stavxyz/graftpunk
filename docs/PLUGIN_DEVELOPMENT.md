@@ -1593,6 +1593,18 @@ page a browser would load, `"form"` for a form submission. Those three are the
 built-ins, and a role name can be any string a plugin has registered with
 `graftpunk.register_role(name, headers)`.
 
+The headers captured at login are what Chrome sent to the site's own origin
+(`base_url`'s scheme, host, and port), so only that origin gets them. A request
+to any other origin, such as an `api.` subdomain, another port, or another site,
+gets the registered role instead, as Chrome on the site's page would send it
+there: `Sec-Fetch-Site: same-site` when both share a scheme and a registrable
+domain and `cross-site` otherwise, no `X-Requested-With`, and
+`Origin: <base_url's origin>` on a CORS-mode request (the `xhr` role) and on
+every method but GET and HEAD. Headers the caller passes still win. The
+registrable domain comes from a short built-in list of two-label suffixes
+(`co.uk`, `com.au`, and the like), not the full Public Suffix List, so two hosts
+under a private suffix such as `github.io` count as one site.
+
 Both normalise a `params` or `data` mapping before sending it:
 
 - `True` and `False` go out as `true` and `false`. Python's own `str(True)`

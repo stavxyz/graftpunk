@@ -10,12 +10,14 @@
 from __future__ import annotations
 
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 import requests
 
 from graftpunk.client_headers import client_sets_header
 from graftpunk.cookies import BrowserCookiesMixin
 from graftpunk.logging import get_logger
+from graftpunk.public_suffix import registrable_domain
 from graftpunk.tokens import _CSRF_TOKENS_ATTR
 
 LOG = get_logger(__name__)
@@ -147,6 +149,58 @@ register_role(
 )
 
 
+_DEFAULT_PORTS: Final[dict[str, int]] = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str, int | None] | None:
+    """*url*'s origin as (scheme, host, port), lowercased with the default port
+    filled in, or None when *url* names no host (a path, or an empty string)."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    host = (parts.hostname or "").rstrip(".")
+    if not host or not parts.scheme:
+        return None
+    scheme = parts.scheme.lower()
+    return scheme, host, port if port is not None else _DEFAULT_PORTS.get(scheme)
+
+
+def _serialized_origin(origin: tuple[str, str, int | None]) -> str:
+    """The ``Origin`` header value a browser sends for *origin*."""
+    scheme, host, port = origin
+    if ":" in host:
+        host = f"[{host}]"
+    if port is None or port == _DEFAULT_PORTS.get(scheme):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
+def _cross_origin_headers(
+    headers: dict[str, str], *, fetch_site: str, origin: str, method: str
+) -> dict[str, str]:
+    """*headers* (a role's) as a browser sends them to another origin.
+
+    ``Sec-Fetch-Site`` becomes *fetch_site* (``same-site`` or ``cross-site``),
+    ``X-Requested-With`` is dropped (jQuery, which sets it, leaves it off a
+    cross-origin request, where it would need a CORS preflight), and
+    ``Origin`` is added the way Chrome adds it: on every CORS-mode request
+    (``Sec-Fetch-Mode: cors``) and on every method but GET and HEAD.
+    """
+    adjusted: dict[str, str] = {}
+    for name, value in headers.items():
+        lower = name.lower()
+        if lower == "x-requested-with":
+            continue
+        adjusted[name] = fetch_site if lower == "sec-fetch-site" else value
+    cors = _case_insensitive_get(adjusted, "Sec-Fetch-Mode") == "cors"
+    sends_origin = cors or method.upper() not in ("GET", "HEAD")
+    if sends_origin and _case_insensitive_get(adjusted, "Origin") is None:
+        adjusted["Origin"] = origin
+    return adjusted
+
+
 def _case_insensitive_get(mapping: dict[str, str], key: str) -> str | None:
     """Look up *key* in *mapping* using case-insensitive comparison.
 
@@ -192,6 +246,9 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         self._gp_header_roles: dict[str, dict[str, str]] = (
             dict(header_roles) if header_roles else {}
         )
+        # Roles a plugin declared (merge_header_roles), which, unlike captured
+        # ones, are sent to every origin the plugin calls.
+        self._gp_declared_roles: set[str] = set()
         self._gp_csrf_tokens: dict[str, str] = {}
         self.gp_default_role: str | None = None
         self.gp_base_url: str = base_url
@@ -219,12 +276,49 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         self._gp_header_roles.clear()
 
     def merge_header_roles(self, roles: dict[str, dict[str, str]]) -> None:
-        """Merge additional header roles into this session.
+        """Merge a plugin's declared header roles into this session.
+
+        A declared role is sent to every origin, adjusted for one other than
+        ``gp_base_url``'s, where a captured role is sent only to that origin
+        (``_resolve_role``).
 
         Args:
             roles: Dict mapping role names to header dicts.
         """
         self._gp_header_roles.update(roles)
+        self._declared_roles().update(roles)
+
+    def _declared_roles(self) -> set[str]:
+        """The names ``merge_header_roles()`` merged, set up on first use.
+
+        requests pickles a session through its ``__attrs__`` list, so one
+        restored from a pickle has no set until this makes one.
+        """
+        declared = getattr(self, "_gp_declared_roles", None)
+        if declared is None:
+            declared = self._gp_declared_roles = set()
+        return declared
+
+    def _cross_origin_site(self, url: str | None) -> tuple[str, str] | None:
+        """(``Sec-Fetch-Site``, ``Origin``) for a request to *url* from ``gp_base_url``'s
+        origin, or None when the request is same-origin or either names no host.
+
+        Sites compare scheme and registrable domain
+        (:func:`graftpunk.public_suffix.registrable_domain`), as Chrome does:
+        ``https://api.myshop.example`` and ``https://myshop.example:8443`` are
+        same-site to ``https://myshop.example``, and ``http://myshop.example``
+        and ``https://cdn.example.net`` are cross-site to it.
+        """
+        if not url:
+            return None
+        base = _origin(getattr(self, "gp_base_url", "") or "")
+        target = _origin(url)
+        if base is None or target is None or base == target:
+            return None
+        same_site = base[0] == target[0] and (
+            registrable_domain(base[1]) == registrable_domain(target[1])
+        )
+        return ("same-site" if same_site else "cross-site"), _serialized_origin(base)
 
     def _resolve_referer(self, referer: str) -> str:
         """Resolve a Referer value from a path or full URL.
@@ -254,21 +348,50 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         path = referer if referer.startswith("/") else f"/{referer}"
         return f"{base}{path}"
 
-    def _resolve_role(self, role_name: str) -> dict[str, str] | None:
+    def _resolve_role(
+        self, role_name: str, url: str | None = None, method: str = "GET"
+    ) -> dict[str, str] | None:
         """Resolve a role name to its header dict (captured or registered).
 
         Checks captured roles first, then falls back to the role registry.
         Logs when falling back or when the role name is unknown.
 
+        Captured headers are what the browser sent to ``gp_base_url``'s
+        origin, so a request to *url* on another origin (another host, port,
+        or scheme) never gets them (#228). It gets a plugin's declared role,
+        or else the registered one, as a browser on the site's page would
+        send it there (``_cross_origin_headers``): ``Sec-Fetch-Site``
+        same-site or cross-site, no ``X-Requested-With``, and an ``Origin``
+        where Chrome sends one. A role that was only captured sends nothing
+        there.
+
         Args:
             role_name: Role name ("navigation", "xhr", "form", or custom).
+            url: The request's URL, when known.
+            method: The request's method, for the ``Origin`` rule.
 
         Returns:
             Copy of the header dict, or None if role is unknown.
         """
+        cross = self._cross_origin_site(url)
         captured = self._gp_header_roles.get(role_name)
-        if captured is not None:
-            return dict(captured)
+        if cross is None:
+            if captured is not None:
+                return dict(captured)
+        else:
+            fetch_site, origin = cross
+            template = (
+                captured
+                if captured is not None and role_name in self._declared_roles()
+                else get_role_headers(role_name)
+            )
+            if template is not None:
+                return _cross_origin_headers(
+                    template, fetch_site=fetch_site, origin=origin, method=method
+                )
+            if captured is not None:
+                LOG.debug("captured_role_not_sent_cross_origin", role=role_name)
+                return {}
 
         registered = get_role_headers(role_name)
         if registered is not None:
@@ -287,20 +410,25 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         )
         return None
 
-    def _role_headers_for(self, role_name: str) -> dict[str, str]:
+    def _role_headers_for(
+        self, role_name: str, url: str | None = None, method: str = "GET"
+    ) -> dict[str, str]:
         """Get request-type headers for a role, excluding identity headers.
 
         Returns captured role headers if available, falling back to
-        registered role headers. Browser identity headers (User-Agent,
+        registered role headers, for a request of *method* to *url*
+        (``_resolve_role``). Browser identity headers (User-Agent,
         sec-ch-ua, etc.) are excluded -- they're already on self.headers.
 
         Args:
             role_name: Role name ("navigation", "xhr", "form", or custom).
+            url: The request's URL, when known.
+            method: The request's method.
 
         Returns:
             Dict of request-type headers, or empty dict if role unknown.
         """
-        headers = self._resolve_role(role_name)
+        headers = self._resolve_role(role_name, url, method)
         if headers is None:
             return {}
 
@@ -456,7 +584,7 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         Returns:
             The response object.
         """
-        role_headers = self._role_headers_for(role_name)
+        role_headers = self._role_headers_for(role_name, url, method)
 
         if referer is not None:
             role_headers["Referer"] = self._resolve_referer(referer)
@@ -571,7 +699,9 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         """
         if not self._gp_header_roles:
             prepared = super().prepare_request(request, **kwargs)
-        elif role_headers := self._resolve_role(self._detect_role(request)):
+        elif role_headers := self._resolve_role(
+            self._detect_role(request), request.url, request.method or "GET"
+        ):
             # Apply role headers as session defaults (lowest priority).
             # Priority: request headers (caller-supplied) >
             # user-modified session headers > role > session defaults.
