@@ -895,6 +895,8 @@ class _ScriptedNodriverTab:
                 and self._success_from is not None
                 and self.tick >= self._success_from
             )
+        if "graftpunk:page-read" in expression:
+            return await self._answer_page_read(expression)
         if expression != "document.readyState":
             return json.dumps({"found": True, "value": None})
         self._wait_over = True
@@ -902,6 +904,22 @@ class _ScriptedNodriverTab:
         state = self._at(self._ready_states, self._ready_reads)
         self._ready_reads += 1
         return state
+
+    async def _answer_page_read(self, expression: str) -> str:
+        """The wait's read of the document without node ids (#392), answered from the
+        same script as the node-id reads, so a page this double cannot read one way
+        it cannot read the other way either: an unreadable tick, and a subclass whose
+        ``get_content`` or success query raises (a closed browser), fail here too.
+        A test that wants only the node-id path to fail answers this read itself."""
+        from nodriver.core.connection import ProtocolException
+
+        if self.tick in self._unreadable_ticks:
+            raise ProtocolException("Could not find node with given id")
+        html = None if "html: null" in expression else await self.get_content()
+        found = None
+        if self._success_selector and json.dumps(self._success_selector) in expression:
+            found = await self.query_selector(self._success_selector) is not None
+        return json.dumps({"html": html, "found": found, "rejected": False})
 
 
 def _nodriver_session_for(tab: _ScriptedNodriverTab) -> tuple[MagicMock, MagicMock]:

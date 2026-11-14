@@ -21,7 +21,7 @@ import dataclasses
 import fnmatch
 import json
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
@@ -704,6 +704,9 @@ class _TickReading(NamedTuple):
     success_found: bool | None
     error: str = ""
     page_asked: bool = False
+    # The type names of the exceptions an unreadable tick's reads raised, in the
+    # order raised; empty on a tick that was read.
+    error_types: tuple[str, ...] = ()
 
 
 class _ReadWindow:
@@ -737,6 +740,11 @@ class _ReadWindow:
         self.error = ""
         self.url = ""
         self.success_found: bool | None = None
+        # How many ticks could not be read, and the distinct exception type names
+        # their reads raised, first seen first: what the unreadable-page warning
+        # tells a caller who sees warnings only.
+        self.failed_ticks = 0
+        self.error_types: list[str] = []
 
     def record(self, reading: _TickReading) -> None:
         """Fold one tick's reading into the window."""
@@ -749,6 +757,10 @@ class _ReadWindow:
             self.answered = True
         if reading.error:
             self.error = reading.error
+            self.failed_ticks += 1
+            for name in reading.error_types:
+                if name not in self.error_types:
+                    self.error_types.append(name)
             return
         if reading.page_asked:
             self.page_read = True
@@ -833,6 +845,15 @@ async def _read_login_tick_nodriver(
     is on selenium: when the element query raises, the page is asked whether it
     rejects the selector (``_selector_rejected_nodriver``), and a rejected selector
     ends the login there and then with a ``PluginError`` naming it.
+
+    nodriver's two reads carry a node id from one CDP call to the next
+    (``get_content`` is ``DOM.getDocument`` then ``DOM.getOuterHTML`` by backend
+    node id, ``query_selector`` is ``DOM.getDocument`` then ``DOM.querySelector`` by
+    node id, nodriver 0.50.6), and a document replaced in between answers the second
+    call with "No node found for given backend id". That can happen on every tick of
+    a wait whose login has succeeded (#392), so when either read fails the tick asks
+    the current document directly instead (:func:`_read_page_by_evaluate`), and only
+    a tick both reads fail is unreadable.
     """
     try:
         page_text = await tab.get_content() if want_page_text else ""
@@ -850,15 +871,114 @@ async def _read_login_tick_nodriver(
     except PluginError:
         raise
     except Exception as exc:  # broad by design: an unreadable tick is pending, see above
+        node_error = exc
+    else:
+        return _TickReading(page_text, url, success_found, page_asked=want_page_text)
+
+    try:
+        page_text, success_found = await _read_page_by_evaluate(
+            tab, success_selector=success_selector, want_page_text=want_page_text
+        )
+    except PluginError:
+        raise
+    except Exception as exc:  # broad by design: an unreadable tick is pending, see above
+        error_types = tuple(dict.fromkeys((type(node_error).__name__, type(exc).__name__)))
         LOG.debug(
             "login_tick_read_failed",
             plugin=site_name,
-            error=str(exc),
-            exc_type=type(exc).__name__,
+            error=str(node_error),
+            exc_type=type(node_error).__name__,
+            fallback_error=str(exc),
+            fallback_exc_type=type(exc).__name__,
             backend="nodriver",
         )
-        return _TickReading("", url, None, error=str(exc), page_asked=want_page_text)
+        return _TickReading(
+            "",
+            url,
+            None,
+            error=str(node_error),
+            page_asked=want_page_text,
+            error_types=error_types,
+        )
+    LOG.debug(
+        "login_tick_read_by_evaluate",
+        plugin=site_name,
+        error=str(node_error),
+        exc_type=type(node_error).__name__,
+        backend="nodriver",
+    )
     return _TickReading(page_text, url, success_found, page_asked=want_page_text)
+
+
+class PageReadAnswerError(Exception):
+    """The page answered :func:`_page_read_js` with something other than its JSON
+    record (an ``ExceptionDetails``, nodriver's RemoteObject, a malformed string)."""
+
+
+def _page_read_js(*, success_selector: str, want_page_text: bool) -> str:
+    """A page expression reading the current top document without node ids: a JSON
+    string of ``html`` (the serialized document, or null when not wanted), ``found``
+    (whether *success_selector* matches, or null with no selector) and ``rejected``
+    (whether the browser rejects the selector as malformed, the check
+    :func:`_selector_rejected_js` makes).
+
+    A JSON string because nodriver's ``Tab.evaluate`` hands back a falsy value as
+    the RemoteObject instead of the value (read in nodriver 0.50.6), and a string
+    that is a JSON record is never falsy. The selector reaches the page as a JSON
+    string literal. The comment names the read for the tests' scripted tab.
+    """
+    html = (
+        "document.documentElement ? document.documentElement.outerHTML : ''"
+        if want_page_text
+        else "null"
+    )
+    return (
+        "/* graftpunk:page-read */ (() => { let found = null; let rejected = false; "
+        f"const selector = {json.dumps(success_selector)}; "
+        "if (selector) { try { found = document.querySelector(selector) !== null; } "
+        'catch (e) { if (e instanceof DOMException && e.name === "SyntaxError") '
+        "{ rejected = true; } else { throw e; } } } "
+        f"return JSON.stringify({{html: {html}, found: found, rejected: rejected}}); }})()"
+    )
+
+
+async def _read_page_by_evaluate(
+    tab: Any,  # nodriver.Tab
+    *,
+    success_selector: str,
+    want_page_text: bool,
+) -> tuple[str, bool | None]:
+    """The page text and the success element's presence, read from the current
+    document in one ``Runtime.evaluate``, which carries no node id.
+
+    Raises ``PluginError`` for a selector the browser rejects, as the node-id read
+    does, and :class:`PageReadAnswerError` for an answer that is not the record.
+    The caller bounds the read (``_read_login_tick_nodriver_by``).
+    """
+    answer = await tab.evaluate(
+        _page_read_js(success_selector=success_selector, want_page_text=want_page_text),
+        return_by_value=True,
+    )
+    if not isinstance(answer, str):
+        raise PageReadAnswerError(f"the page read answered {type(answer).__name__}")
+    try:
+        record = json.loads(answer)
+    except ValueError:
+        raise PageReadAnswerError("the page read answered a string that is not JSON") from None
+    if not isinstance(record, dict):
+        raise PageReadAnswerError(f"the page read answered JSON {type(record).__name__}")
+    html = record.get("html")
+    found = record.get("found")
+    rejected = record.get("rejected")
+    if rejected is True and success_selector:
+        raise _invalid_success_selector(success_selector)
+    if (
+        not isinstance(rejected, bool)
+        or (want_page_text and not isinstance(html, str))
+        or (bool(success_selector) and not isinstance(found, bool))
+    ):
+        raise PageReadAnswerError("the page read answered a record of the wrong shape")
+    return (html if want_page_text else ""), (found if success_selector else None)
 
 
 async def _read_login_tick_nodriver_by(
@@ -896,7 +1016,9 @@ async def _read_login_tick_nodriver_by(
             exc_type="TimeoutError",
             backend="nodriver",
         )
-        return _TickReading("", url, None, error=error, page_asked=want_page_text)
+        return _TickReading(
+            "", url, None, error=error, page_asked=want_page_text, error_types=("TimeoutError",)
+        )
 
 
 def _read_login_tick_selenium(
@@ -941,11 +1063,25 @@ def _read_login_tick_selenium(
             exc_type=type(exc).__name__,
             backend="selenium",
         )
-        return _TickReading("", url, None, error=str(exc), page_asked=want_page_text)
+        return _TickReading(
+            "",
+            url,
+            None,
+            error=str(exc),
+            page_asked=want_page_text,
+            error_types=(type(exc).__name__,),
+        )
     return _TickReading(page_text, url, success_found, page_asked=want_page_text)
 
 
-def _warn_login_page_unreadable(*, site_name: str, error: str, url: str) -> None:
+def _warn_login_page_unreadable(
+    *,
+    site_name: str,
+    error: str,
+    url: str,
+    failed_ticks: int | None = None,
+    error_types: Sequence[str] = (),
+) -> None:
     """Warn that no tick of the wait ever got an answer out of the browser.
 
     A login whose page could not be read even once has not been confirmed by
@@ -953,8 +1089,19 @@ def _warn_login_page_unreadable(*, site_name: str, error: str, url: str) -> None
     on the page", which is not a success (tidy round, 2026-09-13). Both the signal
     poll and the grace window end this way, so the reason is the same one either
     of them reports.
+
+    A downstream contract pins this function's name, the event name, the first four
+    fields and the hint. *failed_ticks* and *error_types* (the distinct exception
+    type names the reads raised) are added after them, and only when
+    *failed_ticks* is given, so a call with the original arguments logs exactly
+    what it always did. They carry counts and type names, never exception text or
+    page content.
     """
     note_login_failure(f"the page could not be read after the submit ({error})")
+    fields: dict[str, Any] = {}
+    if failed_ticks is not None:
+        fields["failed_ticks"] = failed_ticks
+        fields["error_types"] = ", ".join(error_types)
     LOG.warning(
         "login_page_unreadable",
         plugin=site_name,
@@ -965,6 +1112,7 @@ def _warn_login_page_unreadable(*, site_name: str, error: str, url: str) -> None
             "login cannot be confirmed. The browser may have closed or navigated "
             "away; run with --observe=full to capture what happened."
         ),
+        **fields,
     )
 
 
@@ -1051,7 +1199,13 @@ async def _wait_for_login_signal_nodriver(
             break
 
     if not last.answered:
-        _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
+        _warn_login_page_unreadable(
+            site_name=site_name,
+            error=last.error,
+            url=last.url,
+            failed_ticks=last.failed_ticks,
+            error_types=last.error_types,
+        )
         return False
     _warn_login_signal_timeout(
         login_config=login_config,
@@ -1126,7 +1280,13 @@ def _wait_for_login_signal_selenium(
             break
 
     if not last.answered:
-        _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
+        _warn_login_page_unreadable(
+            site_name=site_name,
+            error=last.error,
+            url=last.url,
+            failed_ticks=last.failed_ticks,
+            error_types=last.error_types,
+        )
         return False
     _warn_login_signal_timeout(
         login_config=login_config,
@@ -1185,7 +1345,13 @@ async def _watch_for_failure_nodriver(
         if loop.time() >= deadline:
             break
     if not last.page_read:
-        _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
+        _warn_login_page_unreadable(
+            site_name=site_name,
+            error=last.error,
+            url=last.url,
+            failed_ticks=last.failed_ticks,
+            error_types=last.error_types,
+        )
         return False
     return _check_login_result(
         page_text=last.page_text, failure_text=failure_text, site_name=site_name
@@ -1219,7 +1385,13 @@ def _watch_for_failure_selenium(
         if time.monotonic() >= deadline:
             break
     if not last.page_read:
-        _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
+        _warn_login_page_unreadable(
+            site_name=site_name,
+            error=last.error,
+            url=last.url,
+            failed_ticks=last.failed_ticks,
+            error_types=last.error_types,
+        )
         return False
     return _check_login_result(
         page_text=last.page_text, failure_text=failure_text, site_name=site_name
