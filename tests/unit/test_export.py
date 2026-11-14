@@ -929,16 +929,16 @@ def _count_measurements(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 class TestPdfSpeed:
     """Fitting every cell up front made an ordinary table two to three times
     slower to export, and a cell of 50,000 combining marks took 100 s. The table
-    cases count fpdf2's measurements of a cell instead of timing the export: a
-    wall-clock ratio failed under load (#391 review)."""
+    cases count fpdf2's measurements of a cell instead of timing the export, so
+    load on the machine cannot fail them."""
 
     def test_an_ordinary_table_is_drawn_without_measuring_a_cell(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Cells of up to about 35 lines in 20 columns: within a page, but past the
-        cheap bound that let round 2 skip measuring a cell. Round 2 of #290 fitted
-        every cell up front, 400 measurements for this table; it is now drawn
-        once and nothing is measured."""
+        cheap bound that skips measuring a cell. Fitting every cell up front, as
+        a draft of the #290 fix did, makes 400 measurements of this table; it is
+        drawn once and nothing is measured."""
         words = "lorem ipsum dolor sit amet "
         rows = [{f"c{c}": (words * 10)[: 140 + c] for c in range(20)} for _ in range(20)]
         measured = _count_measurements(monkeypatch)
@@ -949,10 +949,11 @@ class TestPdfSpeed:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """20 columns of 200 characters of short words are too tall at fpdf2's
-        default line height and fit at 1.5 times the font size. Round 5 measured
-        every cell with fpdf2 at two layouts before drawing, 1,840 measurements of
-        these 620 cells; only rows the estimate puts near the page limit are
-        measured now, fewer measurements than the table has cells."""
+        default line height and fit at 1.5 times the font size. Measuring every
+        cell with fpdf2 at two layouts before drawing, as a draft of the #290 fix
+        did, makes 1,840 measurements of these 620 cells; only rows the estimate
+        puts near the page limit are measured, fewer measurements than the table
+        has cells."""
         text = ("abc de " * 40)[:200]
         rows = [{f"c{c}": text for c in range(20)} for _ in range(30)]
         measured = _count_measurements(monkeypatch)

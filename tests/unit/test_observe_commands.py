@@ -868,7 +868,7 @@ class TestFixturesCommand:
         """/products/1001 templates to /products/{product_id} on its own, but it is
         one member of a family the digest collapsed from slugs. The family is
         decided per endpoint, so the file written from 1001 records it too, and a
-        slug request answers from that file (#213, round 2)."""
+        slug request answers from that file (#213)."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
