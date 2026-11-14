@@ -1612,13 +1612,20 @@ Suffix List, so two hosts under a private suffix such as `github.io` count as
 one site.
 
 A plugin's `header_roles` (a dict of role name to headers on the plugin class)
-reach every command, the Python client, and `gp http`, with one difference in
-precedence. In a command and in the client a declared role fills in only a name
-the login did not capture, so a captured `xhr` or `navigation` role keeps going
-to the site's own origin as captured. In `gp http` a declared role replaces a
-captured role of the same name, so `--role` picks the plugin's version. Either
-way a declared role goes to every origin, adjusted as above for one that is not
-`base_url`'s.
+reach every command and the Python client, and `gp http`.
+
+In a command and in the client, a request to the plugin's own origin is what it
+was before 1.42.9: the captured roles and the built-in ones as before, and the
+role auto-detected for a plain request only when the login captured roles. A
+declared role changes that in one case: a name that is neither captured nor
+built-in (nor registered with `graftpunk.register_role`), such as `api`, is used
+when a request names it, `ctx.session.request_with_role("api", ...)`, where
+naming it sent no role headers. On any other origin a declared role of the
+requested or detected name is used, whether or not the login captured one of
+that name, ahead of the registered role; the captured headers never go there.
+
+In `gp http` a declared role replaces a captured role of the same name on every
+origin, as before, so `--role` picks the plugin's version.
 
 A CSRF token from the plugin's `token_config` goes only to the site it was
 obtained for: `base_url`'s origin, an `api.` subdomain, or another port get it,
