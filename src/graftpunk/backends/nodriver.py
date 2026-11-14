@@ -2596,8 +2596,10 @@ class NoDriverBackend:
         that gave up on a lock holder (below) still waits for Chrome's exit,
         since it holds the lock until then. From a thread with no running
         loop, the stop through the browser's loop is waited for up to
-        ``_pending_end_wait_s()``, or given up on at once when that loop
-        stopped before it began; Chrome is then ended without the loop, with a
+        ``_pending_end_wait_s()``, or given up on at once when that loop is
+        closed, or is graftpunk's own private loop and stopped, before it began
+        (a caller's loop stopped but not closed is waited out, since it may run
+        again); Chrome is then ended without the loop, with a
         ``nodriver_backend_stop_on_loop_given_up`` warning, and the stop on the
         loop is left to run, never cancelled. An interrupt (Ctrl-C) while the
         stop waits on the loop ends Chrome the same way before it propagates.

@@ -1624,12 +1624,17 @@ naming it sent no role headers. On any other origin a declared role of the
 requested or detected name is used, whether or not the login captured one of
 that name, ahead of the registered role; the captured headers never go there. A
 declared role whose name is a built-in one (`xhr`, `navigation`, `form`, or one
-registered with `graftpunk.register_role`) is layered there: the built-in
-role's headers as the cross-origin rule adjusts them (`Sec-Fetch-Site`,
-`Origin`), with the declared headers merged over them, the declared value
-winning for a header of the same name in any case. A declared `xhr` that holds
-only `X-Api-Version` therefore still goes out with `Sec-Fetch-Mode: cors` and
-an `Origin`. A declared custom name is sent as declared.
+registered with `graftpunk.register_role`) is layered there: the declared
+headers are merged over the built-in role's (less its `X-Requested-With`), the
+declared value winning for a header of the same name in any case. The
+cross-origin rule then runs once on the result, for a declared custom name
+too: `Sec-Fetch-Site` is always the computed `same-site` or `cross-site`,
+whatever the declaration says, since a declaration cannot know the target, and
+an `Origin` goes where Chrome sends one by the merged `Sec-Fetch-Mode` and the
+method (a declared `Origin` wins). A declared `xhr` that holds only
+`X-Api-Version` therefore still goes out with `Sec-Fetch-Mode: cors` and an
+`Origin`, and one copied from the site's own pages with
+`Sec-Fetch-Site: same-origin` goes out `same-site`.
 
 In `gp http` a declared role replaces a captured role of the same name, as
 before, so `--role` picks the plugin's version; on another origin it is layered
