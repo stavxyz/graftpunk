@@ -33,6 +33,7 @@ import requests
 from graftpunk.cache import list_sessions, load_session_for_api_resolved, update_session_cookies
 from graftpunk.cookies import BrowserCookieSession
 from graftpunk.exceptions import GraftpunkError, PluginError
+from graftpunk.graftpunk_session import apply_plugin_context
 from graftpunk.har.naming import to_cli_name
 from graftpunk.logging import get_logger, log_secrets
 from graftpunk.observe import NoOpObservabilityContext
@@ -492,8 +493,9 @@ class GraftpunkClient:
                     self._session, self._session_name = load_session_for_api_resolved(
                         self._session_name, resolve=resolve, key=self._key
                     )
-                    if base_url and hasattr(self._session, "gp_base_url"):
-                        setattr(self._session, "gp_base_url", base_url)  # noqa: B010
+                    apply_plugin_context(
+                        self._session, self._plugin, declared_roles_override_captured=False
+                    )
 
         # The slot THIS invocation operates on, read once: the ctx and the
         # write-back below must agree even if another thread's first use

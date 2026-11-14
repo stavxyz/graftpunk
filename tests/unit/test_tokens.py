@@ -272,6 +272,24 @@ class TestPrepareSession:
         # Token should NOT be in session.headers (method-scoped injection only)
         assert "X-CSRF" not in session.headers
 
+    def test_records_the_site_the_tokens_were_obtained_for(self) -> None:
+        """A GraftpunkSession sends the tokens only to that site."""
+        from graftpunk.graftpunk_session import GraftpunkSession
+
+        session = GraftpunkSession()
+        session.cookies.set("csrftoken", "v1")
+        config = TokenConfig(
+            tokens=(Token(name="X-CSRF", source="cookie", cookie_name="csrftoken"),)
+        )
+
+        prepare_session(session, config, "https://myshop.example")
+
+        assert session._gp_csrf_origin == "https://myshop.example"  # type: ignore[attr-defined]
+        same = session.prepare_request(requests.Request("POST", "https://api.myshop.example/x"))
+        other = session.prepare_request(requests.Request("POST", "https://othershop.example/x"))
+        assert same.headers["X-CSRF"] == "v1"
+        assert "X-CSRF" not in other.headers
+
     def test_uses_cached_token(self) -> None:
         session = requests.Session()
         # Pre-populate cache

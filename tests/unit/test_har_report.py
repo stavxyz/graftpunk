@@ -14,6 +14,7 @@ from graftpunk.har.digest import (
     SHAPE_UNAVAILABLE,
     DigestSource,
     Endpoint,
+    RunDigest,
     ShapeNode,
     digest,
 )
@@ -197,6 +198,52 @@ class TestRenderMarkdown:
         for planted in ("SECRET-ACCT-99", "hunter2superSecret"):
             assert planted not in markdown
             assert planted not in rendered_json
+
+
+class TestUnparsedBody:
+    """A body its request declared JSON that does not parse is ``unparsed`` (#202)."""
+
+    @staticmethod
+    def _posted(tmp_path: Path, mime_type: str, *bodies: str) -> RunDigest:
+        entries = []
+        for body in bodies:
+            entry = _entry("POST", "https://api.myshop.example.com/orders")
+            entry["request"]["postData"] = {"mimeType": mime_type, "text": body}
+            entries.append(entry)
+        return digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+
+    def test_a_truncated_json_post_is_unparsed_and_the_digest_says_so(self, tmp_path: Path) -> None:
+        result = self._posted(tmp_path, "application/json", '{"sku": "widget", "qty')
+        (endpoint,) = result.endpoints
+        assert endpoint.body_kind == "unparsed"
+        assert endpoint.body_params == {}
+        assert "- body not parsed: its request declared JSON" in render_markdown(result)
+        assert json.loads(render_json(result))["endpoints"][0]["body_kind"] == "unparsed"
+
+    def test_a_json_suffix_type_counts_as_declared_json(self, tmp_path: Path) -> None:
+        (endpoint,) = self._posted(tmp_path, "application/vnd.myshop+json", "{oops").endpoints
+        assert endpoint.body_kind == "unparsed"
+
+    @pytest.mark.parametrize(
+        ("mime_type", "body"),
+        [("text/xml", "<order><sku>widget</sku></order>"), ("text/plain", "just words")],
+    )
+    def test_a_body_not_declared_json_stays_none(
+        self, tmp_path: Path, mime_type: str, body: str
+    ) -> None:
+        result = self._posted(tmp_path, mime_type, body)
+        (endpoint,) = result.endpoints
+        assert endpoint.body_kind == "none"
+        assert "body not parsed" not in render_markdown(result)
+
+    @pytest.mark.parametrize("order", ["unparsed-first", "parsed-first"])
+    def test_a_parsed_recording_wins_over_an_unparsed_one(self, tmp_path: Path, order: str) -> None:
+        bodies = ['{"sku": "wid', '{"sku": "widget"}']
+        if order == "parsed-first":
+            bodies.reverse()
+        (endpoint,) = self._posted(tmp_path, "application/json", *bodies).endpoints
+        assert endpoint.body_kind == "json"
+        assert endpoint.body_params == {"sku": "str"}
 
 
 class TestUnavailableShape:

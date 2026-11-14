@@ -465,7 +465,7 @@ class TestOrdering:
         seen: list[str] = []
         with patch(
             "graftpunk.observe.headers.extract_header_roles",
-            side_effect=lambda m: seen.extend(d["url"] for d in m.values()) or {},
+            side_effect=lambda m, *_site: seen.extend(d["url"] for d in m.values()) or {},
         ):
             backend.get_header_roles()
         assert seen == [LOGIN, HOME]

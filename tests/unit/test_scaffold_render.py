@@ -2753,13 +2753,13 @@ _REDIRECTING_CREDENTIAL_POST = LoginObservation(
 )
 
 
-# /account/login is one member of a family the digest collapsed, so the
-# endpoint's final template no longer spells the login path.
+# A family the digest collapsed beside the login page at /account/login, which
+# its template covers; the digest keeps the login page an endpoint of its own.
 _COLLAPSED_ACCOUNT_FAMILY = Endpoint(
     host="myshop.example.com",
     template="/account/{account_id}",
     methods=("GET",),
-    count=11,
+    count=10,
     statuses=(200,),
     content_type="text/html",
     query_params={},
@@ -2767,7 +2767,11 @@ _COLLAPSED_ACCOUNT_FAMILY = Endpoint(
     body_kind="none",
     shape=None,
     custom_headers=(),
-    examples=("/account/login", "/account/2024-07", "/account/2024-08"),
+    examples=("/account/2024-07", "/account/2024-08"),
+)
+
+_ACCOUNT_LOGIN_PAGE_ENDPOINT = dataclasses.replace(
+    _LOGIN_PAGE_ENDPOINT, template="/account/login", examples=("/account/login",)
 )
 
 _COLLAPSED_FORM_PAGE_OBSERVATION = LoginObservation(
@@ -2840,29 +2844,33 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
         assert "def login_2(" in plugin_code
         ast.parse(plugin_code)
 
-    def test_a_login_path_inside_a_collapsed_family_is_still_owned(self) -> None:
-        """The digest's high-cardinality collapse can re-template the endpoint
-        the login observation belongs to; the digest
-        flags it (test_har_digest.py holds that rule), and neither the stub nor
-        its generated test is rendered."""
+    def test_a_collapsed_family_beside_a_login_path_it_covers_keeps_its_stub(self) -> None:
+        """The digest flags the login page only, never the family whose template
+        covers its path (test_har_digest.py holds that rule), so the family gets
+        its stub and its test, and the login page neither (#202)."""
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
             backend="nodriver",
             base_url="https://myshop.example.com",
             digest=_digest(
-                endpoints=(_owned(_COLLAPSED_ACCOUNT_FAMILY), _ORDERS_ENDPOINT),
+                endpoints=(
+                    _owned(_ACCOUNT_LOGIN_PAGE_ENDPOINT),
+                    _COLLAPSED_ACCOUNT_FAMILY,
+                    _ORDERS_ENDPOINT,
+                ),
                 login_forms=(_PASSWORD_LOGIN_FORM,),
                 login=(_COLLAPSED_FORM_PAGE_OBSERVATION,),
             ),
         )
         files = render(spec)
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
-        assert "def account_by_account_id(" not in plugin_code
-        assert plugin_code.count("@command(") == 1
+        assert "def account_by_account_id(" in plugin_code
+        assert "def account_login(" not in plugin_code
+        assert plugin_code.count("@command(") == 2
         ast.parse(plugin_code)
         test_code = files["tests/test_plugin.py"]
-        assert "def test_account_by_account_id(" not in test_code
+        assert "def test_account_by_account_id(" in test_code
         ast.parse(test_code)
 
     def test_the_generator_reads_the_digest_flag(self) -> None:

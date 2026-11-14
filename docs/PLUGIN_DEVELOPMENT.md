@@ -1593,6 +1593,60 @@ page a browser would load, `"form"` for a form submission. Those three are the
 built-ins, and a role name can be any string a plugin has registered with
 `graftpunk.register_role(name, headers)`.
 
+Each role captured at login is taken from a request to the site's own origin
+(`base_url`'s scheme, host, and port) where the login made one, and graftpunk
+records the origin it came from; only that origin gets the captured headers. A
+request to any other origin, such as an `api.` subdomain, another port, or
+another site, gets the role the plugin declared in `header_roles`, or else the
+registered role (a role that was only captured sends no role headers there), as
+Chrome on the site's page
+would send it there: `Sec-Fetch-Site: same-site` when both share a scheme and a
+registrable domain and `cross-site` otherwise,
+`Origin: <base_url's origin>` on a CORS-mode request (the `xhr` role) and on
+every method but GET and HEAD, and no `X-Requested-With` unless the plugin
+declared it. The same rule applies to every redirect hop, so a request
+redirected to another origin loses the captured headers on the way. Headers the
+caller passes still win. The registrable domain comes from a short built-in list
+of two-label suffixes (`co.uk`, `com.au`, and the like), not the full Public
+Suffix List, so two hosts under a private suffix such as `github.io` count as
+one site.
+
+A plugin's `header_roles` (a dict of role name to headers on the plugin class)
+reach every command and the Python client, and `gp http`.
+
+In a command and in the client, a request to the plugin's own origin is what it
+was before 1.42.9: the captured roles and the built-in ones as before, and the
+role auto-detected for a plain request only when the login captured roles. A
+declared role changes that in one case: a name that is neither captured nor
+built-in (nor registered with `graftpunk.register_role`), such as `api`, is used
+when a request names it, `ctx.session.request_with_role("api", ...)`, where
+naming it sent no role headers. On any other origin a declared role of the
+requested or detected name is used, whether or not the login captured one of
+that name, ahead of the registered role; the captured headers never go there. A
+declared role whose name is a built-in one (`xhr`, `navigation`, `form`, or one
+registered with `graftpunk.register_role`) is layered there: the declared
+headers are merged over the built-in role's (less its `X-Requested-With`), the
+declared value winning for a header of the same name in any case. The
+cross-origin rule then runs once on the result, for a declared custom name
+too: `Sec-Fetch-Site` is always the computed `same-site` or `cross-site`,
+whatever the declaration says, since a declaration cannot know the target, and
+an `Origin` goes where Chrome sends one by the merged `Sec-Fetch-Mode` and the
+method (a declared `Origin` wins). A declared `xhr` that holds only
+`X-Api-Version` therefore still goes out with `Sec-Fetch-Mode: cors` and an
+`Origin`, and one copied from the site's own pages with
+`Sec-Fetch-Site: same-origin` goes out `same-site`.
+
+In `gp http` a declared role replaces a captured role of the same name, as
+before, so `--role` picks the plugin's version; on another origin it is layered
+over a built-in role of its name the same way.
+
+A CSRF token from the plugin's `token_config` goes only to the site it was
+obtained for: `base_url`'s origin, an `api.` subdomain, or another port get it,
+another registrable domain does not, on a first request or a redirect hop.
+graftpunk logs `csrf_token_withheld_cross_site` at warning level, once per token
+and target site, naming the token and the host. To send a token to another site
+on purpose, pass it in `headers=`.
+
 Both normalise a `params` or `data` mapping before sending it:
 
 - `True` and `False` go out as `true` and `false`. Python's own `str(True)`

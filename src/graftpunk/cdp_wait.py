@@ -17,6 +17,7 @@ and :func:`shield_call` for a call made inside a task that may be cancelled.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 from collections.abc import Awaitable
 from typing import Any, TypeVar
 
@@ -66,6 +67,28 @@ async def shield_call(awaitable: Awaitable[T]) -> T:
         if not task.done():
             task.add_done_callback(drop_late_answer)
         raise
+
+
+def result_within(future: concurrent.futures.Future[T], seconds: float) -> T:
+    """:func:`answer_within` for a ``concurrent.futures.Future``, from a thread that
+    is not running the call's loop (``asyncio.run_coroutine_threadsafe``'s future).
+
+    Waits up to *seconds* and raises ``TimeoutError`` if the call has not
+    answered by then, without cancelling it: it runs on, and its late outcome is
+    collected and dropped. A caller that polls one future is fine: the collector
+    is added to it once, however many waits time out.
+    """
+    try:
+        return future.result(timeout=seconds)
+    except concurrent.futures.TimeoutError:
+        if not getattr(future, _LATE_ANSWER_DROPPED_ATTR, False):
+            setattr(future, _LATE_ANSWER_DROPPED_ATTR, True)
+            future.add_done_callback(drop_late_answer)
+        raise TimeoutError from None
+
+
+# Marks a future result_within() already gave drop_late_answer.
+_LATE_ANSWER_DROPPED_ATTR = "_gp_late_answer_dropped"
 
 
 def drop_late_answer(future: Any) -> None:

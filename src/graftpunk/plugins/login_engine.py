@@ -697,6 +697,21 @@ def _extract_and_cache_tokens_selenium(
         LOG.info("login_tokens_extracted", count=len(tcache))
 
 
+def _store_header_roles(session: Any, header_capture: Any, base_url: str) -> None:
+    """Put the login's header roles on *session*, with the origin each came from.
+
+    Each role is taken from a request to *base_url*'s origin where the login
+    made one (``graftpunk.observe.headers.extract_header_roles``), and
+    ``GraftpunkSession`` sends a captured role as captured only to the origin
+    it came from (#228).
+    """
+    from graftpunk.tokens import _HEADER_ROLE_ORIGINS_ATTR, _HEADER_ROLES_ATTR
+
+    setattr(session, _HEADER_ROLES_ATTR, header_capture.get_header_roles(site_url=base_url))
+    origins = header_capture.get_header_role_origins(site_url=base_url)
+    setattr(session, _HEADER_ROLE_ORIGINS_ATTR, dict(origins) if isinstance(origins, dict) else {})
+
+
 def generate_login_method(plugin: SitePlugin) -> Any:
     """Generate a login method from declarative plugin attributes.
 
@@ -967,7 +982,7 @@ async def _run_nodriver_steps(
         session.current_url = login_target
 
     # Extract header roles from captured network requests
-    session._gp_header_roles = header_capture.get_header_roles()
+    _store_header_roles(session, header_capture, base_url)
 
     # Transfer cookies and cache
     await session.transfer_nodriver_cookies_to_session()
@@ -1246,7 +1261,7 @@ def _run_selenium_steps(
 
     # Stop capture to parse perf log, then extract roles
     header_capture.stop_capture()
-    session._gp_header_roles = header_capture.get_header_roles()
+    _store_header_roles(session, header_capture, base_url)
 
     # Cache session
     session.transfer_driver_cookies_to_session()

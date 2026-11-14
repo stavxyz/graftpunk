@@ -633,7 +633,13 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
 
 _CACHE_ATTR = "_gp_cached_tokens"
 _CSRF_TOKENS_ATTR = "_gp_csrf_tokens"
+# The base URL prepare_session() obtained the CSRF tokens for: a token goes only
+# to that site (GraftpunkSession._inject_csrf_tokens).
+_CSRF_ORIGIN_ATTR = "_gp_csrf_origin"
 _HEADER_ROLES_ATTR = "_gp_header_roles"
+# The origin each captured header role was recorded on (role -> "https://host"):
+# GraftpunkSession sends a captured role as captured to that origin only.
+_HEADER_ROLE_ORIGINS_ATTR = "_gp_header_role_origins"
 
 # The one registry of attributes that ride a session object beside its cookies
 # and headers. Every place that moves state from one session to another
@@ -643,7 +649,9 @@ _HEADER_ROLES_ATTR = "_gp_header_roles"
 SESSION_RIDER_ATTRS: tuple[str, ...] = (
     _CACHE_ATTR,
     _CSRF_TOKENS_ATTR,
+    _CSRF_ORIGIN_ATTR,
     _HEADER_ROLES_ATTR,
+    _HEADER_ROLE_ORIGINS_ATTR,
     GP_SESSION_NAME_ATTR,
     GP_ACCOUNT_ATTR,
 )
@@ -655,19 +663,22 @@ SESSION_RIDER_ATTRS: tuple[str, ...] = (
 SESSION_RIDER_DEFAULTS: dict[str, Callable[[], Any]] = {
     _CACHE_ATTR: dict,
     _CSRF_TOKENS_ATTR: dict,
+    _CSRF_ORIGIN_ATTR: str,
     _HEADER_ROLES_ATTR: dict,
+    _HEADER_ROLE_ORIGINS_ATTR: dict,
     GP_SESSION_NAME_ATTR: lambda: None,
     GP_ACCOUNT_ATTR: lambda: None,
 }
 
-# Two riders live in memory only, and the pickled subset is DERIVED by
+# Three riders live in memory only, and the pickled subset is DERIVED by
 # excluding them, never hand-listed. CSRF tokens are per-request and go stale
-# the moment a session is put away, so a restored session re-extracts them.
+# the moment a session is put away, so a restored session re-extracts them, and
+# the origin they were obtained for goes with them.
 # The loaded slot name is stamped by the cache at load and save time, so it
 # always describes the key this copy actually came from or went to; pickling it
 # would let a blob cached under a second name carry the first one (#174).
 _MEMORY_ONLY_SESSION_RIDER_ATTRS: frozenset[str] = frozenset(
-    {_CSRF_TOKENS_ATTR, GP_SESSION_NAME_ATTR}
+    {_CSRF_TOKENS_ATTR, _CSRF_ORIGIN_ATTR, GP_SESSION_NAME_ATTR}
 )
 PICKLED_SESSION_RIDER_ATTRS: tuple[str, ...] = tuple(
     attr for attr in SESSION_RIDER_ATTRS if attr not in _MEMORY_ONLY_SESSION_RIDER_ATTRS
@@ -726,6 +737,7 @@ def prepare_session(
     """
     cache: dict[str, CachedToken] = getattr(session, _CACHE_ATTR, {})
     browser_needed: list[Token] = []
+    setattr(session, _CSRF_ORIGIN_ATTR, base_url)
 
     # Phase 1: Try non-browser extraction, collect browser-needed tokens
     for token in token_config.tokens:

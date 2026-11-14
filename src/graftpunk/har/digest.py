@@ -7,7 +7,6 @@ only remaining consumer (plugin tooling spec, 2026-09-11).
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import math
 import re
@@ -81,11 +80,14 @@ from graftpunk.har.selectors import bounded_selector, selector_holds_an_id, sele
 from graftpunk.har.token_pairing import TokenPairing, TokenValueTracker
 from graftpunk.logging import get_logger
 from graftpunk.plugins.login_settle import failure_text_on_lowered_page
+from graftpunk.public_suffix import is_ip_address, is_public_suffix
 from graftpunk.session_identity import identifier_key, is_identifier_field
 
 LOG = get_logger(__name__)
 
-BodyKind = Literal["json", "form", "none"]
+# "unparsed": the request declared a JSON body that does not parse (a
+# truncated post, say), so it had a body but no field names can be read.
+BodyKind = Literal["json", "form", "unparsed", "none"]
 BodyLayout = Literal["json", "text_plain", "multipart", "form", "none"]
 ObservationKind = Literal["form_page", "credential_post", "redirect", "set_cookie", "auth_api"]
 DropReason = Literal["static", "third_party", "error", "other_scheme"]
@@ -747,22 +749,21 @@ class RunDigest:
 def _scope_root(primary_host: str) -> str:
     """The domain whose subtree counts as the site, derived from *primary_host*.
 
-    *primary_host* itself when it has two labels or fewer, otherwise
-    *primary_host* minus its first label: ``shop.team.example.com`` gives
-    ``team.example.com`` and ``www.example.com`` gives ``example.com``. A host
-    is in scope when it equals the root or is a subdomain of it
-    (:func:`_in_scope`).
+    *primary_host* minus its first label (its parent), unless that parent is
+    a public suffix, in which case *primary_host* itself:
+    ``shop.team.example.com`` gives ``team.example.com``, ``www.example.com``
+    gives ``example.com``, and ``example.com`` and ``myshop.co.uk`` are their
+    own roots (:func:`graftpunk.public_suffix.is_public_suffix`, a fixed list
+    of two-label suffixes). A host is in scope when it equals the root or is a
+    subdomain of it (:func:`_in_scope`).
 
-    Taking the last two labels instead needs a public suffix list to be
-    correct, and without one a site under a two-label public suffix (a
+    Taking the last two labels instead needs the full public suffix list to
+    be correct, and without it a site under a two-label public suffix (a
     country-code second-level domain) made every host sharing that suffix a
-    first party. The parent rule needs no list.
-    The residual it accepts: a primary host of the form ``name.<two-label
-    public suffix>`` (``mybank.co.uk``) has three labels, so it scopes to the
-    bare suffix and every host under that suffix counts as first party for
-    that capture. Sites normally record from a ``www`` or ``app`` subdomain,
-    which scopes correctly; a bare apex under such a suffix is the one shape
-    this rule gets wrong.
+    first party. The parent rule needs only the check that the parent is not
+    a suffix (#202). A bare apex under a two-label suffix the list lacks
+    still scopes to that bare suffix, so every host under it counts as first
+    party for that capture.
 
     An IP address (``192.168.1.10``, ``[::1]``, with or without a port) is its
     own root: its dotted parts are not labels, and dropping the first gave
@@ -771,7 +772,10 @@ def _scope_root(primary_host: str) -> str:
     if _ip_literal(primary_host):
         return primary_host
     labels = primary_host.split(".")
-    return primary_host if len(labels) <= 2 else ".".join(labels[1:])
+    if len(labels) <= 2:
+        return primary_host
+    parent = ".".join(labels[1:])
+    return primary_host if is_public_suffix(_host_name(parent)) else parent
 
 
 def _host_name(host: str) -> str:
@@ -781,27 +785,16 @@ def _host_name(host: str) -> str:
     if host.startswith("["):
         end = host.find("]")
         return host[: end + 1] if end != -1 else host
-    if _is_ip(host):
+    if is_ip_address(host):
         return host
     name, colon, port = host.rpartition(":")
     return name if colon and port.isdigit() else host
 
 
-def _is_ip(text: str) -> bool:
-    try:
-        ipaddress.ip_address(text)
-    except ValueError:
-        return False
-    return True
-
-
 def _ip_literal(host: str) -> bool:
     """True when *host*, with or without a port, is an IPv4 or a bracketed IPv6
     address."""
-    name = _host_name(host)
-    if name.startswith("[") and name.endswith("]"):
-        name = name[1:-1]
-    return _is_ip(name)
+    return is_ip_address(_host_name(host))
 
 
 def _primary_host(non_static_hosts: dict[str, int], document_hosts: set[str]) -> str:
@@ -1086,8 +1079,14 @@ def _parse_body_text(
     post_data: str | None, declared: str
 ) -> tuple[dict[str, str], BodyKind, set[str]]:
     """:func:`_parse_body_keys` on a body's text and the media type its request
-    declared (lowered, without parameters; empty when it declared none)."""
-    return _body_types(*_decoded_body(post_data, declared))
+    declared (lowered, without parameters; empty when it declared none).
+
+    A body its request declared JSON that reads as neither JSON nor a form is
+    ``"unparsed"`` rather than ``"none"``: the request plainly had one (#202)."""
+    types, kind, dropped = _body_types(*_decoded_body(post_data, declared))
+    if kind == "none" and post_data and _is_json_media_type(declared):
+        return types, "unparsed", dropped
+    return types, kind, dropped
 
 
 def _body_types(kind: BodyKind, parsed: Any) -> tuple[dict[str, str], BodyKind, set[str]]:
@@ -3057,6 +3056,17 @@ def _count_ids(names: set[str]) -> int:
 _FixtureCandidate = tuple[tuple[int, int], str | None, ShapeNode | None, int, InlineJson | None]
 
 
+def _stronger_body_kind(current: BodyKind, recorded: BodyKind) -> BodyKind:
+    """The body kind an endpoint keeps when one of its recordings reads as
+    *recorded*: a parsed kind (``json``, ``form``) replaces any, the latest
+    winning; ``unparsed`` replaces only ``none``; ``none`` replaces nothing."""
+    if recorded in ("json", "form"):
+        return recorded
+    if recorded == "unparsed" and current == "none":
+        return recorded
+    return current
+
+
 def _is_json_media_type(media_type: str) -> bool:
     """True when *media_type* (already normalised: lower case, no parameters) is a
     JSON type: matches every other JSON check in this module
@@ -3190,8 +3200,7 @@ class _EndpointAccumulator:
                 self.body_omitted += 1
             else:
                 self.body_not_captured += 1
-        if body_kind != "none":
-            self.body_kind = body_kind
+        self.body_kind = _stronger_body_kind(self.body_kind, body_kind)
         if entry.response.body:
             self.bodied = True
         header_names, headers_dropped = _custom_headers(entry)
@@ -3265,8 +3274,11 @@ class _EndpointAccumulator:
         # merged endpoint its request body kind. Its fixture recording (shape
         # included, merged into fixture_candidates above) is decided the same
         # way as any other endpoint's, from the family's combined candidates.
-        if self.body_kind == "none" and acc.body_kind != "none":
-            self.body_kind = acc.body_kind
+        # A parsed kind also beats a first member's unparsed one.
+        if self.body_kind == "none" or (
+            self.body_kind == "unparsed" and acc.body_kind in ("json", "form")
+        ):
+            self.body_kind = _stronger_body_kind(self.body_kind, acc.body_kind)
         for example in acc.examples:
             if example not in self.examples and len(self.examples) < _MAX_ENDPOINT_EXAMPLES:
                 self.examples.append(example)
@@ -3631,8 +3643,14 @@ def _family_key(segments: list[str], position: int) -> tuple[str, ...]:
     return tuple(segment for index, segment in enumerate(segments) if index != position)
 
 
-def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
+def _collapse_high_cardinality(
+    templates: list[str], exempt: frozenset[str] = frozenset()
+) -> dict[str, str]:
     """Map each raw template to its high-cardinality-collapsed form.
+
+    A template in *exempt* (the login flow's, :func:`_login_flow_templates`)
+    still counts toward its family but is never re-templated: the login page
+    stays an endpoint of its own, so the family keeps its stub (#202).
 
     A family is the set of templates of one segment count that agree on every
     segment but one; that one position collapses when it passes both halves of
@@ -3672,6 +3690,8 @@ def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
 
     result: dict[str, str] = {}
     for template in templates:
+        if template in exempt:
+            continue
         stripped = template.strip("/")
         segments = stripped.split("/") if stripped else []
         families_here = collapse_families.get(len(segments), set())
@@ -3700,34 +3720,29 @@ def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
 _LOGIN_FLOW_KINDS: tuple[ObservationKind, ...] = ("form_page", "credential_post")
 
 
-def _template_covers_path(template: str, path: str) -> bool:
-    """True when *path* is one of the paths *template* stands for: the same number
-    of segments, each of the template's either a ``{placeholder}`` or that segment
-    spelled exactly."""
-    template_segments = template.strip("/").split("/") if template.strip("/") else []
-    path_segments = path.strip("/").split("/") if path.strip("/") else []
-    if len(template_segments) != len(path_segments):
-        return False
-    return all(
-        (segment.startswith("{") and segment.endswith("}")) or segment == observed
-        for segment, observed in zip(template_segments, path_segments, strict=True)
+def _login_flow_templates(login: Iterable[LoginObservation]) -> frozenset[str]:
+    """The raw templates of the paths the login flow owns (its form page and
+    credential post), which the high-cardinality collapse leaves alone."""
+    return frozenset(
+        template_path(urlparse(observation.url).path or "/")[0]
+        for observation in login
+        if observation.kind in _LOGIN_FLOW_KINDS and observation.login_flow
     )
 
 
-def _login_flow_pairs(
-    login: tuple[LoginObservation, ...], endpoints: tuple[Endpoint, ...]
-) -> set[tuple[str, str, str]]:
+def _login_flow_pairs(login: tuple[LoginObservation, ...]) -> set[tuple[str, str, str]]:
     """The ``(method, template, operation)`` triples ``login_config`` owns, as
     endpoints are keyed.
 
     The login form's own GET and the credential POST are the login flow. An
-    observation carries the raw path, and the endpoint it belongs to may have
-    been re-templated by the high-cardinality collapse, so each observation
-    claims every endpoint of its method whose final template covers its path,
-    plus its own templated path for a run whose login flow produced no endpoint
-    (moved from ``devtools/scaffold/render.py``). A GraphQL credential post owns
-    its own operations' rows only (``LoginObservation.operations``), so the
-    template's other operations keep their commands (#367).
+    observation carries the raw path and claims its templated path, the
+    template its endpoint is keyed on: ``digest()`` keeps that template out of
+    the high-cardinality collapse (:func:`_login_flow_templates`). An endpoint
+    whose template only covers the path (``/account/{account_id}`` over
+    ``/account/login``) is other pages, and keeps its stub (#202). A GraphQL
+    credential post owns its own operations' rows only
+    (``LoginObservation.operations``), so the template's other operations keep
+    their commands (#367).
     """
     owned: set[tuple[str, str, str]] = set()
     for observation in login:
@@ -3738,9 +3753,6 @@ def _login_flow_pairs(
         template, _ = template_path(path)
         operations = observation.operations or ("",)
         owned.update((method, template, operation) for operation in operations)
-        for endpoint in endpoints:
-            if method in endpoint.methods and _template_covers_path(endpoint.template, path):
-                owned.update((method, endpoint.template, operation) for operation in operations)
     return owned
 
 
@@ -3749,7 +3761,7 @@ def _with_login_flow(
 ) -> tuple[Endpoint, ...]:
     """*endpoints* with ``login_flow`` set on each one that has a method and every
     method of which the login flow owns; an endpoint with no method owns nothing."""
-    owned = _login_flow_pairs(login, endpoints)
+    owned = _login_flow_pairs(login)
     return tuple(
         replace(
             endpoint,
@@ -4428,7 +4440,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             header_steps[name] = min(at, header_steps.get(name, at))
     header_order = tuple(sorted(header_steps, key=lambda name: (header_steps[name], name)))
     collapse_map = _collapse_high_cardinality(
-        [template for _method, template, _operation in accumulators]
+        [template for _method, template, _operation in accumulators],
+        exempt=_login_flow_templates(login),
     )
     merged: dict[tuple[str, str, str], _EndpointAccumulator] = {}
     for (method, raw_template, operation), acc in accumulators.items():

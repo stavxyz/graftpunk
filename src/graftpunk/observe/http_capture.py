@@ -701,6 +701,10 @@ class HttpCaptureBackend:
         """There is no browser console."""
         return []
 
-    def get_header_roles(self) -> dict[str, dict[str, str]]:
+    def get_header_roles(self, site_url: str | None = None) -> dict[str, dict[str, str]]:
+        """Header roles are learned from browser captures only."""
+        return {}
+
+    def get_header_role_origins(self, site_url: str | None = None) -> dict[str, str]:
         """Header roles are learned from browser captures only."""
         return {}
