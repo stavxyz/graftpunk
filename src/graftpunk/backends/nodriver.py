@@ -356,8 +356,8 @@ def _exited_unreaped(pid: int) -> bool | None:
 
     ``waitid`` with ``WNOWAIT`` leaves the exit status for asyncio's child
     watcher. On Linux that watcher reaps from a callback on the browser's
-    loop, which is blocked or closed whenever Chrome is ended without it, so
-    an exited Chrome would keep answering ``kill(pid, 0)``. ``os.waitid`` is
+    loop, which is often blocked, stopped or closed when Chrome is ended
+    without it, so an exited Chrome would keep answering ``kill(pid, 0)``. ``os.waitid`` is
     missing on macOS before Python 3.13, where asyncio reaps from a thread.
     """
     waitid = getattr(os, "waitid", None)
@@ -760,7 +760,32 @@ async def _finish_on_worker_thread(work: Callable[[], None]) -> None:
     before the first await (``_start_off_loop()``), so a loop that stops in
     this iteration does not keep it from running.
     """
-    task = _start_off_loop(work)
+    await _through_cancellation(_start_off_loop(work))
+
+
+# The tasks _wait_on_running_loop() leaves on a loop: the loop keeps only a
+# weak reference to a task. One left on a loop closed without running again
+# stays here, pending, which is quieter than a "Task was destroyed but it is
+# pending" log when it is collected.
+_LOOP_WAITS: set["asyncio.Task[None]"] = set()
+
+
+def _wait_on_running_loop(task: "asyncio.Future[None]") -> None:
+    """Leave a task on the running loop that waits for *task*, from synchronous code.
+
+    The caller returns at once. ``asyncio.run()`` cancels the tasks left at
+    its end and runs the loop until they finish, and this one finishes only
+    once *task* has (``_through_cancellation()``), so the loop keeps
+    running, not blocked, until then: its child watcher can collect
+    Chrome's exit, and Chrome's transport is closed on it.
+    """
+    waiter = asyncio.ensure_future(_through_cancellation(task))
+    _LOOP_WAITS.add(waiter)
+    waiter.add_done_callback(_LOOP_WAITS.discard)
+
+
+async def _through_cancellation(task: "asyncio.Future[None]") -> None:
+    """Wait for *task* without cancelling it; a cancellation meanwhile is raised once it is done."""
     cancelled = False
     while not task.done():
         try:
@@ -1108,6 +1133,9 @@ class NoDriverBackend:
         cancelled task) ends its Chrome the same way before the exception
         propagates; from a coroutine (``start_async()``, ``stop_async()``)
         that end runs on a worker thread, so the caller's loop keeps running.
+        A synchronous ``stop()`` on a thread whose loop is running (inside the
+        browser's own loop, say) does the same and returns without waiting
+        for the end; a task it leaves on that loop waits for it.
         Chrome's subprocess transport is closed on its loop's thread once the
         loop has collected Chrome's exit status, or after a bounded wait. A
         loop closed right after the stop without running again never runs
@@ -2103,13 +2131,23 @@ class NoDriverBackend:
         keeps running and its watcher collects Chrome, and the ``finally`` of
         ``_stop_async_holding_lock()`` schedules that loop's stop afterwards.
         """
+        ending = self._start_release_off_loop()
+        if ending is not None:
+            await _through_cancellation(ending)
+
+    def _start_release_off_loop(self) -> "asyncio.Future[None] | None":
+        """Detach the browser and start ending it on a worker thread; that end, or None.
+
+        The detaching, and the start of the end, happen before this returns,
+        on the running loop's thread: ``_release_failed_attempt_off_loop()``
+        describes the rest.
+        """
         browser = self._detach_browser()
         if browser is None:
-            return
+            return None
         private = self._private_loop
         if private is None or private.loop is asyncio.get_running_loop():
-            await _finish_on_worker_thread(lambda: _end_browser_without_loop(browser))
-            return
+            return _start_off_loop(lambda: _end_browser_without_loop(browser))
         self._private_loop = None
         self._loop = None
 
@@ -2119,7 +2157,24 @@ class NoDriverBackend:
             finally:
                 private.close()
 
-        await _finish_on_worker_thread(end_then_close)
+        return _start_off_loop(end_then_close)
+
+    def _end_without_waiting(self) -> None:
+        """``_release_failed_attempt()`` for a synchronous stop on a thread whose loop is running.
+
+        Waiting there for Chrome to exit would hold that loop for up to about
+        4.5 s (#242). The browser is detached and its end started on a worker
+        thread before this returns, as in ``_release_failed_attempt_off_loop()``,
+        and a task left on the running loop waits for that end
+        (``_wait_on_running_loop()``), so ``asyncio.run()`` does not finish
+        before Chrome has. Never raises.
+        """
+        try:
+            ending = self._start_release_off_loop()
+            if ending is not None:
+                _wait_on_running_loop(ending)
+        except Exception:  # noqa: BLE001 - a stop never raises from its cleanup
+            LOG.warning("nodriver_backend_background_end_failed", exc_info=True)
 
     def _detach_browser(self) -> Any:
         """Forget the browser, leaving both registries, and return it (or None)."""
@@ -2242,9 +2297,14 @@ class NoDriverBackend:
         Chrome is ended without the loop: SIGTERM (the subprocess handle on
         Windows), a wait of up to ``_REAP_TERM_TIMEOUT_S`` for it to exit,
         SIGKILL if it has not, and the temp profile's removal once it has.
-        Inside the loop that blocks the loop for as long as that takes. An
-        interrupt (Ctrl-C) while the stop waits on the loop ends Chrome the
-        same way before it propagates.
+        Called on a thread whose event loop is running (inside the browser's
+        loop, or inside another loop once the browser's has finished), it
+        returns without waiting for that end, which runs on a worker thread,
+        so the running loop is not held while Chrome exits (#242). A task it
+        leaves on that loop waits for the end, so ``asyncio.run()`` returns
+        only once Chrome has exited and its profile is gone, and a private
+        loop is closed only after that. An interrupt (Ctrl-C) while the stop
+        waits on the loop ends Chrome the same way before it propagates.
 
         A stop called while another thread's ``start()`` is in progress waits
         for that start and then stops the browser it launched, since both
@@ -2341,18 +2401,23 @@ class NoDriverBackend:
                     if without_loop or loop is None or loop.is_closed() or not loop.is_running():
                         # Nothing left to run _stop_async on (a caller's loop
                         # that finished), and the browser must not outlive it.
-                        self._release_failed_attempt()
+                        # A loop running on this thread is not held meanwhile.
+                        if running is not None and not without_loop:
+                            self._end_without_waiting()
+                        else:
+                            self._release_failed_attempt()
                     elif running is loop:
-                        # Waiting on the loop from inside it would deadlock.
+                        # Waiting on the loop from inside it would deadlock,
+                        # and waiting for Chrome's exit would hold it (#242).
                         LOG.warning(
                             "nodriver_backend_stop_in_own_loop",
                             hint="In async code, await stop_async() (or use "
-                            "'async with BrowserSession(...)'); Chrome was ended "
-                            "without its event loop, so this stop blocked the "
-                            "loop while Chrome exited and did not reap the "
-                            "subprocess.",
+                            "'async with BrowserSession(...)'); Chrome is ended "
+                            "without its event loop, on a worker thread this "
+                            "stop did not wait for, and its subprocess is not "
+                            "reaped by this stop.",
                         )
-                        self._release_failed_attempt()
+                        self._end_without_waiting()
                     else:
                         try:
                             self._run_async(self._stop_async())

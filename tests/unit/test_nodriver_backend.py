@@ -2195,6 +2195,143 @@ class TestNoDriverBackendLifecycleEdges:
         assert warning["event"] == "nodriver_backend_stop_in_own_loop"
         assert "stop_async" in warning["hint"]
 
+    @pytest.fixture
+    def _armed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Armed so the end of Chrome signals the test's own child process; the
+        launch sweeps are replaced so nothing else is touched."""
+        from graftpunk.browser_launch import CleanupReport
+
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.prepare_browser_launch", lambda: CleanupReport()
+        )
+
+    @pytest.mark.usefixtures("_armed")
+    @pytest.mark.parametrize(
+        "in_the_browsers_loop", [True, False], ids=["the-browsers-loop", "another-running-loop"]
+    )
+    def test_a_sync_stop_inside_a_running_loop_returns_before_chrome_exits(
+        self, fake_chrome: FakeChrome, temp_profiles: Path, in_the_browsers_loop: bool
+    ) -> None:
+        """The loop is not held while Chrome exits, and asyncio.run() still
+        returns only once Chrome has exited and its profile is gone (#242)."""
+        profile = temp_profiles / "uc_stop_in_a_running_loop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        exit_delay = 2.0
+        took: list[float] = []
+        ticks: list[int] = []
+
+        async def start(child: Any) -> None:
+            await self._start_on_current_loop(backend)
+            assert backend._browser is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+
+        async def stop(child: Any) -> None:
+            started = time.monotonic()
+            backend.stop()
+            took.append(time.monotonic() - started)
+
+            async def until_exited() -> None:
+                while not _exited_now(child):
+                    await asyncio.sleep(0.01)
+
+            # The loop runs on while Chrome exits: a 10 ms ticker keeps ticking.
+            ticks.append(await _ticks_during(until_exited()))
+
+        async def start_then_stop_inside(child: Any) -> None:
+            await start(child)
+            await stop(child)
+
+        with _chrome_like_child(profile, exit_delay=exit_delay) as child:
+            if in_the_browsers_loop:
+                asyncio.run(start_then_stop_inside(child))
+            else:
+                # The browser's loop has finished; the stop runs inside another.
+                asyncio.run(start(child))
+                asyncio.run(stop(child))
+            exited = _exited_now(child)
+
+        assert took[0] < exit_delay / 2
+        assert ticks[0] >= 50
+        assert exited
+        assert not profile.exists()
+        assert backend.is_running is False
+        assert backend._loop is None
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_sync_stop_inside_a_loop_closed_right_after_still_ends_chrome_quietly(
+        self, fake_chrome: FakeChrome, temp_profiles: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hand-managed loop closed without running again drops the task that waits
+        for the end, and the end still runs to Chrome's exit and the profile's removal."""
+        import gc
+
+        profile = temp_profiles / "uc_stop_then_close"
+        profile.mkdir()
+        backend = NoDriverBackend()
+
+        async def start_then_stop(child: Any) -> None:
+            await self._start_on_current_loop(backend)
+            assert backend._browser is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+            backend.stop()
+
+        with _chrome_like_child(profile, exit_delay=0.3) as child:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(start_then_stop(child))
+            finally:
+                loop.close()
+            deadline = time.monotonic() + 10
+            while (not _exited_now(child) or profile.exists()) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            exited = _exited_now(child)
+            gc.collect()
+
+        assert exited
+        assert not profile.exists()
+        assert "destroyed but it is pending" not in caplog.text
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_sync_stop_on_the_private_loop_leaves_that_loop_running_until_chrome_exits(
+        self, fake_chrome: FakeChrome, temp_profiles: Path
+    ) -> None:
+        """Its child watcher must outlive Chrome, so the loop ends after Chrome does (#242)."""
+        profile = temp_profiles / "uc_stop_on_private_loop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        exit_delay = 2.0
+
+        async def stop() -> float:
+            started = time.monotonic()
+            backend.stop()
+            return time.monotonic() - started
+
+        with _chrome_like_child(profile, exit_delay=exit_delay) as child:
+            backend.start()
+            assert backend._browser is not None and backend._private_loop is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+            loop_thread = backend._private_loop.thread
+            took = asyncio.run_coroutine_threadsafe(stop(), backend._private_loop.loop).result(10)
+            # Chrome's state is read before the thread's, so a loop that ended
+            # while Chrome still ran is seen ending.
+            loop_ran_while_chrome_ran = True
+            deadline = time.monotonic() + 10
+            while not _exited_now(child) and time.monotonic() < deadline:
+                loop_ran_while_chrome_ran = loop_ran_while_chrome_ran and loop_thread.is_alive()
+                time.sleep(0.01)
+            exited = _exited_now(child)
+            loop_thread.join(10)
+
+        assert took < exit_delay / 2
+        assert loop_ran_while_chrome_ran
+        assert exited
+        assert not loop_thread.is_alive()
+        assert not profile.exists()
+        assert backend.is_running is False
+        assert backend._loop is None
+
     def test_a_failed_start_async_does_not_leave_the_callers_loop_behind(
         self, fake_chrome: FakeChrome
     ) -> None:
