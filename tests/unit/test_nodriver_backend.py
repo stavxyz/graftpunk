@@ -2129,6 +2129,55 @@ class TestNoDriverBackendOneEventLoop:
             backend.stop()
 
 
+class TestHandedOffEndBookkeeping:
+    """The module-level waiter set and the pending end's callbacks (#242 review)."""
+
+    def test_the_sweep_survives_the_set_changing_while_it_runs(self) -> None:
+        """Loop threads add and discard waiters while a worker sweeps."""
+        from graftpunk.backends import nodriver as nodriver_module
+
+        class _ChangesTheSet:
+            def __init__(self, other: Any) -> None:
+                self._other = other
+
+            def get_loop(self) -> Any:
+                nodriver_module._LOOP_WAITS.add(self._other)
+                return SimpleNamespace(is_closed=lambda: False)
+
+            def done(self) -> bool:
+                return False
+
+        saved = set(nodriver_module._LOOP_WAITS)
+        nodriver_module._LOOP_WAITS.clear()
+        try:
+            nodriver_module._LOOP_WAITS.add(_ChangesTheSet(object()))  # type: ignore[arg-type]
+            nodriver_module._drop_stranded_waiters()
+        finally:
+            nodriver_module._LOOP_WAITS.clear()
+            nodriver_module._LOOP_WAITS.update(saved)
+
+    def test_a_failing_callback_does_not_fail_the_end(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        from graftpunk.backends.nodriver import _PendingEnd
+
+        ran: list[str] = []
+        pending = _PendingEnd()
+
+        def fails() -> None:
+            raise RuntimeError("callback trouble")
+
+        pending.add_done_callback(fails)
+        pending.add_done_callback(lambda: ran.append("second"))
+        pending.finish()
+
+        assert pending.done.is_set()
+        assert ran == ["second"]
+        assert [e["event"] for e in captured_logs if e["log_level"] == "warning"] == [
+            "nodriver_backend_end_callback_failed"
+        ]
+
+
 class TestNoDriverBackendLifecycleEdges:
     """Stops and starts that cannot go through the browser's loop the usual way."""
 
@@ -2194,6 +2243,276 @@ class TestNoDriverBackendLifecycleEdges:
         [warning] = [e for e in captured_logs if e["log_level"] == "warning"]
         assert warning["event"] == "nodriver_backend_stop_in_own_loop"
         assert "stop_async" in warning["hint"]
+
+    @pytest.fixture
+    def _armed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Armed so the end of Chrome signals the test's own child process; the
+        launch sweeps are replaced so nothing else is touched."""
+        from graftpunk.browser_launch import CleanupReport
+
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.prepare_browser_launch", lambda: CleanupReport()
+        )
+
+    @pytest.mark.usefixtures("_armed")
+    @pytest.mark.parametrize(
+        "in_the_browsers_loop", [True, False], ids=["the-browsers-loop", "another-running-loop"]
+    )
+    def test_a_sync_stop_inside_a_running_loop_returns_before_chrome_exits(
+        self, fake_chrome: FakeChrome, temp_profiles: Path, in_the_browsers_loop: bool
+    ) -> None:
+        """The loop is not held while Chrome exits, and asyncio.run() still
+        returns only once Chrome has exited and its profile is gone (#242)."""
+        profile = temp_profiles / "uc_stop_in_a_running_loop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        exit_delay = 2.0
+        took: list[float] = []
+        ticks: list[int] = []
+
+        async def start(child: Any) -> None:
+            await self._start_on_current_loop(backend)
+            assert backend._browser is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+
+        async def stop(child: Any) -> None:
+            started = time.monotonic()
+            backend.stop()
+            took.append(time.monotonic() - started)
+
+            async def until_exited() -> None:
+                while not _exited_now(child):
+                    await asyncio.sleep(0.01)
+
+            # The loop runs on while Chrome exits: a 10 ms ticker keeps ticking.
+            ticks.append(await _ticks_during(until_exited()))
+
+        async def start_then_stop_inside(child: Any) -> None:
+            await start(child)
+            await stop(child)
+
+        with _chrome_like_child(profile, exit_delay=exit_delay) as child:
+            if in_the_browsers_loop:
+                asyncio.run(start_then_stop_inside(child))
+            else:
+                # The browser's loop has finished; the stop runs inside another.
+                asyncio.run(start(child))
+                asyncio.run(stop(child))
+            exited = _exited_now(child)
+
+        assert took[0] < exit_delay / 2
+        assert ticks[0] >= 50
+        assert exited
+        assert not profile.exists()
+        assert backend.is_running is False
+        assert backend._loop is None
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_sync_stop_inside_a_loop_closed_right_after_still_ends_chrome_quietly(
+        self, fake_chrome: FakeChrome, temp_profiles: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hand-managed loop closed without running again drops the task that waits
+        for the end, and the end still runs to Chrome's exit and the profile's removal."""
+        import gc
+
+        profile = temp_profiles / "uc_stop_then_close"
+        profile.mkdir()
+        backend = NoDriverBackend()
+
+        async def start_then_stop(child: Any) -> None:
+            await self._start_on_current_loop(backend)
+            assert backend._browser is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+            backend.stop()
+
+        with _chrome_like_child(profile, exit_delay=0.3) as child:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(start_then_stop(child))
+            finally:
+                loop.close()
+            deadline = time.monotonic() + 10
+            while (not _exited_now(child) or profile.exists()) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            exited = _exited_now(child)
+            gc.collect()
+
+        assert exited
+        assert not profile.exists()
+        assert "destroyed but it is pending" not in caplog.text
+        # The waiter its closed loop never ran is not kept once the end is done.
+        from graftpunk.backends.nodriver import _LOOP_WAITS
+
+        deadline = time.monotonic() + 10
+        while [w for w in _LOOP_WAITS if w.get_loop() is loop] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not [w for w in _LOOP_WAITS if w.get_loop() is loop]
+
+    @pytest.mark.usefixtures("_armed")
+    @pytest.mark.parametrize("restart", ["start_async", "start"])
+    def test_a_start_right_after_a_sync_stop_waits_for_the_old_chrome_to_exit(
+        self,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        restart: str,
+    ) -> None:
+        """A stop that did not wait leaves Chrome exiting; the next start waits for
+        it, so two Chromes never share the profile, and the loop keeps running."""
+        import nodriver
+
+        profile = temp_profiles / "uc_restart_after_stop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        exited_at_launch: list[bool] = []
+        ticks: list[int] = []
+        real_start = nodriver.start
+
+        with _chrome_like_child(profile, exit_delay=1.0) as child:
+
+            async def start_recording_the_old_chrome(**kwargs: Any) -> Any:
+                exited_at_launch.append(_exited_now(child))
+                return await real_start(**kwargs)
+
+            async def stop_then_restart() -> None:
+                await self._start_on_current_loop(backend)
+                assert backend._browser is not None
+                TestNoDriverBackendAbandonedLockHolder._give_chrome(
+                    backend._browser, child, profile
+                )
+                monkeypatch.setattr(nodriver, "start", start_recording_the_old_chrome)
+                backend.stop()
+                if restart == "start_async":
+                    ticks.append(await _ticks_during(backend.start_async()))
+                else:
+                    backend.start()
+
+            asyncio.run(stop_then_restart())
+            backend.stop()
+
+        assert exited_at_launch == [True]
+        if restart == "start_async":
+            assert ticks[0] >= 30
+        assert len(fake_chrome.browsers) == 2
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_sync_stop_from_another_running_loop_does_not_hold_it(
+        self, fake_chrome: FakeChrome, temp_profiles: Path
+    ) -> None:
+        """A synchronous start() quit from async code: the stop goes through the
+        browser's own loop while the caller's loop keeps running."""
+        profile = temp_profiles / "uc_stop_from_another_loop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        exit_delay = 2.0
+        took: list[float] = []
+        ticks: list[int] = []
+
+        with _chrome_like_child(profile, exit_delay=exit_delay) as child:
+            backend.start()
+            assert backend._browser is not None and backend._private_loop is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+            loop_thread = backend._private_loop.thread
+
+            async def stop() -> None:
+                started = time.monotonic()
+                backend.stop()
+                took.append(time.monotonic() - started)
+
+                async def until_exited() -> None:
+                    while not _exited_now(child):
+                        await asyncio.sleep(0.01)
+
+                ticks.append(await _ticks_during(until_exited()))
+
+            asyncio.run(stop())
+            exited = _exited_now(child)
+            loop_thread.join(10)
+
+        assert took[0] < exit_delay / 2
+        assert ticks[0] >= 50
+        assert exited
+        assert not profile.exists()
+        assert not loop_thread.is_alive()
+        assert backend.is_running is False
+        assert backend._loop is None
+        assert fake_chrome.browsers[0].stopped_on is not None
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_handed_off_stop_whose_loop_stopped_ends_chrome_and_lets_a_start_through(
+        self, fake_chrome: FakeChrome, temp_profiles: Path
+    ) -> None:
+        """The browser's loop stops after the running check, before it begins the
+        stop: the worker sees it stopped, ends Chrome without it, and asyncio.run()
+        returns; a start after it does not wait out the pending-end bound."""
+        profile = temp_profiles / "uc_stop_on_a_stopped_loop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        stopped_loop = asyncio.new_event_loop()
+        took: list[float] = []
+
+        with _chrome_like_child(profile, exit_delay=0.3) as child:
+            backend.start()
+            assert backend._browser is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+
+            async def stop_through_a_stopped_loop() -> None:
+                backend._stop_without_waiting(stopped_loop)
+                backend._reset_state()
+
+            try:
+                took.append(_within(15, lambda: asyncio.run(stop_through_a_stopped_loop())))
+                exited = _exited_now(child)
+                took.append(_within(15, backend.start))
+            finally:
+                stopped_loop.close()
+            backend.stop()
+
+        assert took[0] < 5
+        assert exited
+        assert not profile.exists()
+        assert took[1] < 5
+        assert len(fake_chrome.browsers) == 2
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_sync_stop_on_the_private_loop_leaves_that_loop_running_until_chrome_exits(
+        self, fake_chrome: FakeChrome, temp_profiles: Path
+    ) -> None:
+        """Its child watcher must outlive Chrome, so the loop ends after Chrome does (#242)."""
+        profile = temp_profiles / "uc_stop_on_private_loop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        exit_delay = 2.0
+
+        async def stop() -> float:
+            started = time.monotonic()
+            backend.stop()
+            return time.monotonic() - started
+
+        with _chrome_like_child(profile, exit_delay=exit_delay) as child:
+            backend.start()
+            assert backend._browser is not None and backend._private_loop is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+            loop_thread = backend._private_loop.thread
+            took = asyncio.run_coroutine_threadsafe(stop(), backend._private_loop.loop).result(10)
+            # Chrome's state is read before the thread's, so a loop that ended
+            # while Chrome still ran is seen ending.
+            loop_ran_while_chrome_ran = True
+            deadline = time.monotonic() + 10
+            while not _exited_now(child) and time.monotonic() < deadline:
+                loop_ran_while_chrome_ran = loop_ran_while_chrome_ran and loop_thread.is_alive()
+                time.sleep(0.01)
+            exited = _exited_now(child)
+            loop_thread.join(10)
+
+        assert took < exit_delay / 2
+        assert loop_ran_while_chrome_ran
+        assert exited
+        assert not loop_thread.is_alive()
+        assert not profile.exists()
+        assert backend.is_running is False
+        assert backend._loop is None
 
     def test_a_failed_start_async_does_not_leave_the_callers_loop_behind(
         self, fake_chrome: FakeChrome
@@ -5328,6 +5647,11 @@ class TestNoDriverBackendStartAsyncTakesTheLock:
         ] == ["start_async"]
 
 
+_HOLD_BOUND = "graftpunk.backends.nodriver._ABANDONED_HOLD_S"
+# Longer than any _within() watchdog, so a wait for it fails the test.
+_UNREACHABLE_BOUND_S = 60.0
+
+
 class TestNoDriverBackendAbandonedLockHolder:
     """A start_async() or stop_async() that never resumes cannot block other threads (#243)."""
 
@@ -5337,7 +5661,7 @@ class TestNoDriverBackendAbandonedLockHolder:
     def _short_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from graftpunk.browser_launch import CleanupReport
 
-        monkeypatch.setattr("graftpunk.backends.nodriver._ABANDONED_HOLD_S", self.BOUND)
+        monkeypatch.setattr(_HOLD_BOUND, self.BOUND)
         # Armed so the end of Chrome signals the test's own child process.
         monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
         # The orphan sweep and the stale-profile sweep are replaced at their
@@ -5452,6 +5776,12 @@ class TestNoDriverBackendAbandonedLockHolder:
             stranded = self._start_then_strand_a_stop_async(backend, child, profile, monkeypatch)
             try:
                 first = _within(10, start)
+                # The later starts find the hold given up on and must not wait
+                # out the bound again. With a bound they cannot reach here, the
+                # watchdog proves that, where "under 0.5 s" failed whenever the
+                # worker stalled: a gen-2 collection in a full -n 4 run holds
+                # every thread for up to about 0.6 s.
+                monkeypatch.setattr(_HOLD_BOUND, _UNREACHABLE_BOUND_S)
                 again = _within(10, start)
                 from_async = _within(10, start_async)
                 running = backend.is_running
@@ -5462,9 +5792,9 @@ class TestNoDriverBackendAbandonedLockHolder:
                 monkeypatch.delattr(backend, "_stop_async")
                 _within(10, backend.stop)
 
-        assert self.BOUND <= first < self.BOUND + 2
-        assert again < self.BOUND
-        assert from_async < self.BOUND
+        assert self.BOUND <= first < self.BOUND + 5
+        assert again < 5
+        assert from_async < 5
         assert errors[0].startswith(
             "NoDriverBackend.start() gave up waiting for a stop_async() on another thread"
         )
@@ -5536,6 +5866,10 @@ class TestNoDriverBackendAbandonedLockHolder:
         well before the bound, and a later start raises at once."""
         import nodriver
 
+        # A bound nothing here can reach, so only the closed loop can make the
+        # stop give up: with 0.5 s, a worker stall let the bound expire first.
+        monkeypatch.setattr(_HOLD_BOUND, _UNREACHABLE_BOUND_S)
+
         profile = temp_profiles / "uc_closed_loop_start"
         profile.mkdir()
         fake_chrome.hang_get = True
@@ -5581,8 +5915,8 @@ class TestNoDriverBackendAbandonedLockHolder:
                 stranded.finish()
 
         assert not stopper.is_alive()
-        assert gave_up_after < self.BOUND / 2
-        assert elapsed < self.BOUND
+        assert gave_up_after < 5
+        assert elapsed < 5
         assert exited
         assert backend.is_running is False
         assert "the event loop it runs on is closed" in errors[0]

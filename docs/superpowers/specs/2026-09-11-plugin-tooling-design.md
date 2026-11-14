@@ -313,6 +313,12 @@ Rules the digest applies:
 > correctly; a bare apex under such a suffix is the one shape this rule gets
 > wrong.
 
+> **Design note (2026-11-14, #202):** the parent rule keeps the primary host
+> itself as the root when its parent is a public suffix, checked against a
+> fixed list of two-label suffixes (`graftpunk.public_suffix`): `mybank.co.uk`
+> now scopes to itself. A bare apex under a two-label suffix the list lacks
+> still scopes to the bare suffix.
+
 > **Design note (2026-09-12, polish round 2):** "most non-static requests" is
 > no longer the whole election. A host that served an HTML document is
 > preferred over one that did not, and the count decides within each group. A

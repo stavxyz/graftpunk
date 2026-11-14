@@ -234,3 +234,29 @@ class TestShieldCall:
         from graftpunk.cdp_wait import shield_call
 
         assert await shield_call(connection.send("now")) == "now"
+
+
+class TestResultWithin:
+    """result_within bounds a wait on a concurrent future without cancelling it."""
+
+    def test_an_answer_in_time_is_returned(self) -> None:
+        import concurrent.futures
+
+        from graftpunk.cdp_wait import result_within
+
+        future: concurrent.futures.Future[int] = concurrent.futures.Future()
+        future.set_result(7)
+        assert result_within(future, 0.1) == 7
+
+    def test_no_answer_in_time_raises_and_leaves_the_call_running(self) -> None:
+        import concurrent.futures
+
+        from graftpunk.cdp_wait import result_within
+
+        future: concurrent.futures.Future[int] = concurrent.futures.Future()
+        with pytest.raises(TimeoutError):
+            result_within(future, 0.05)
+        assert not future.cancelled()
+        # Its late error is collected, so nothing reports it as never retrieved.
+        future.set_exception(RuntimeError("late"))
+        assert future.done()

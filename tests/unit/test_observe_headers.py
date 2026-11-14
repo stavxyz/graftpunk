@@ -247,3 +247,74 @@ def test_backend_get_header_roles_empty():
     backend = SeleniumCaptureBackend.__new__(SeleniumCaptureBackend)
     backend._request_map = {}
     assert backend.get_header_roles() == {}
+
+
+# --- the site's own origin first (#228 review) ---
+
+
+def _cors(url: str, marker: str) -> dict:
+    return {"url": url, "headers": {"sec-fetch-mode": "cors", "X-Marker": marker}}
+
+
+def test_each_role_comes_from_the_sites_own_origin_when_the_login_called_it():
+    from graftpunk.observe.headers import header_role_origins
+
+    request_map = {
+        "1": _cors("https://analytics.other.example/collect", "tracker"),
+        "2": _cors("https://api.myshop.example/session", "subdomain"),
+        "3": _cors("https://myshop.example/api/me", "own"),
+        "4": _cors("https://myshop.example/api/cart", "own-later"),
+    }
+    roles = extract_header_roles(request_map, "https://myshop.example/login")
+    assert roles["xhr"]["X-Marker"] == "own"
+    assert header_role_origins(request_map, "https://myshop.example") == {
+        "xhr": "https://myshop.example"
+    }
+
+
+def test_another_origin_of_the_site_beats_a_third_party():
+    from graftpunk.observe.headers import header_role_origins
+
+    request_map = {
+        "1": _cors("https://sso.other.example/token", "sso"),
+        "2": _cors("https://api.myshop.example/session", "subdomain"),
+    }
+    roles = extract_header_roles(request_map, "https://myshop.example")
+    assert roles["xhr"]["X-Marker"] == "subdomain"
+    assert header_role_origins(request_map, "https://myshop.example") == {
+        "xhr": "https://api.myshop.example"
+    }
+
+
+def test_with_nothing_on_the_site_the_first_request_is_kept_with_its_origin():
+    from graftpunk.observe.headers import header_role_origins
+
+    request_map = {
+        "1": _cors("https://sso.other.example/token", "sso"),
+        "2": _cors("https://cdn.other.example/x", "cdn"),
+    }
+    assert extract_header_roles(request_map, "https://myshop.example")["xhr"]["X-Marker"] == "sso"
+    assert header_role_origins(request_map, "https://myshop.example") == {
+        "xhr": "https://sso.other.example"
+    }
+    assert extract_header_roles(request_map)["xhr"]["X-Marker"] == "sso"
+
+
+def test_the_login_stores_each_roles_origin_on_the_session():
+    from types import SimpleNamespace
+
+    from graftpunk.observe.headers import header_role_origins
+    from graftpunk.plugins.login_engine import _store_header_roles
+
+    request_map = {
+        "1": _cors("https://sso.other.example/token", "sso"),
+        "2": _cors("https://myshop.example/api/me", "own"),
+    }
+    capture = SimpleNamespace(
+        get_header_roles=lambda site_url=None: extract_header_roles(request_map, site_url),
+        get_header_role_origins=lambda site_url=None: header_role_origins(request_map, site_url),
+    )
+    session = SimpleNamespace()
+    _store_header_roles(session, capture, "https://myshop.example")
+    assert session._gp_header_roles["xhr"]["X-Marker"] == "own"
+    assert session._gp_header_role_origins == {"xhr": "https://myshop.example"}
