@@ -38,7 +38,7 @@ _LITERAL_SCHEMA_RE = re.compile(
 class TestCurrentNumbers:
     def test_one_number_per_surface(self) -> None:
         assert current_schema("endpoints") == ENDPOINTS_SCHEMA == 2
-        assert current_schema("sidecar") == SIDECAR_SCHEMA == 5
+        assert current_schema("sidecar") == SIDECAR_SCHEMA == 6
 
     def test_cli_contracts_lists_every_surface_a_caller_reads_through_the_cli(self) -> None:
         assert cli_contracts() == {surface: handshake_schema(surface) for surface in CLI_SURFACES}

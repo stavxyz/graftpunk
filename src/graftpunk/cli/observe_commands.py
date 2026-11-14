@@ -55,6 +55,7 @@ from graftpunk.har.naming import (
     parse_endpoint_key,
 )
 from graftpunk.har.parser import HAREntry, HARParseError, parse_har_file
+from graftpunk.har.paths import template_path
 from graftpunk.har.report import (
     DEFAULT_ENDPOINT_LIMIT,
     render_endpoints_json,
@@ -554,6 +555,10 @@ def fixtures_cmd(
                 redacted_names=redacted,
                 observe_run=observe_run,
                 graphql_operation=operation or None,
+                # FixtureSession templates a request path by the generic rule alone;
+                # a family the digest collapsed further is recorded so a request
+                # for any member finds this file (#213).
+                endpoint_family=template if template != template_path(path)[0] else None,
             )
         except OSError as exc:
             _refuse_write(file_path, exc)

@@ -2834,6 +2834,16 @@ written as schema 4, as before. A graftpunk older than 1.39.0 refuses a schema 5
 sidecar (`sidecar: schema 5 is not one this graftpunk reads`), so a suite pinned
 below 1.39.0 needs its pin raised before it reads a GraphQL fixture's sidecar.
 
+`endpoint_family` (from schema 6, graftpunk 1.42.8) is the template of the
+collapsed endpoint family the fixture was written for, as `gp observe digest`
+prints it (`/products/{product_id}`), when the digest collapsed recorded paths
+that do not template so on their own (`/products/alpha-widget-2`).
+`FixtureSession` answers a request for any member of the family from that
+fixture when no file is named for the request's own path. Only such a fixture
+gets a schema 6 sidecar; every other sidecar is written as schema 5 or 4, as
+before. A graftpunk older than 1.42.8 refuses a schema 6 sidecar, so a suite
+pinned below 1.42.8 needs its pin raised before it reads one.
+
 `flagged_reasons` says why each flagged name is flagged, and the suite's
 problem line repeats it, so you can tell a form-state cookie from a session
 value without the recording: `token_candidate` (the digest found the name as a
@@ -2918,11 +2928,13 @@ The first argument is the recording's name. `--match` takes a
 `"METHOD template"` pair, is required, is repeatable, and accepts a glob in the
 template. The template is the one `gp observe digest` prints, a collapsed family
 included: a dozen product pages the digest shows as `GET /products/{product_id}`
-are matched by that template and written as `get_products_{product_id}.json`.
-`FixtureSession` names a request by the path alone and does not know about the
-collapse, so a test reaches that fixture with an id-shaped value (the generated
-tests pass `"1001"`); a real slug would be looked up as
-`get_products_alpha-widget-2024.json` and answer 404. A family row works
+are matched by that template and written as `get_products_{product_id}.json`,
+and the sidecar records the family (`endpoint_family`, below). `FixtureSession`
+answers a request from the file named for its own path first, so the generated
+tests' id-shaped value (`"1001"`) reaches that fixture by name, and a real slug
+(`/products/alpha-widget-2`), which has no file of its own, is answered from the
+fixture whose sidecar names a family holding it. Before 1.42.8 the sidecar did
+not record the family, and a real slug answered 404. A family row works
 differently: no file is ever named for its template. Its command's generated
 test passes the value one recorded member sent (`search_slug="north-region"`),
 so it reads that member's own fixture, `get_search_north-region_items.json`, and

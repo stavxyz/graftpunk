@@ -13,6 +13,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 import requests
@@ -20,7 +21,12 @@ import requests
 import graftpunk.testing.plugin as plugin_module
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.plugins.cli_plugin import CommandContext
-from graftpunk.testing import FixtureSession, fixture_context, make_context
+from graftpunk.testing import (
+    FixtureNotFoundError,
+    FixtureSession,
+    fixture_context,
+    make_context,
+)
 from graftpunk.testing.plugin import check_fixtures_tree
 from graftpunk.testing.recorded import recorded_values
 from graftpunk.testing.sidecar import (
@@ -29,6 +35,7 @@ from graftpunk.testing.sidecar import (
     Sidecar,
     SidecarError,
     load_sidecar,
+    sidecar_path,
     sidecar_text,
 )
 
@@ -142,6 +149,118 @@ class TestFixtureSession:
                 session.get("https://myshop.example.com/orders")
             except ValueError:
                 pytest.fail("SidecarError was caught by except ValueError")
+
+
+def _family_fixture(tree: Path, name: str, family: str, body: str, **sidecar: Any) -> Path:
+    """A fixture written for the collapsed endpoint family *family*, as gp observe
+    fixtures writes one: the family's own file name and a sidecar naming it."""
+    path = tree / name
+    path.write_text(body)
+    sidecar_path(path).write_text(
+        sidecar_text(
+            Sidecar(
+                status=sidecar.pop("status", 200),
+                content_type=sidecar.pop("content_type", "application/json"),
+                endpoint_family=family,
+                **sidecar,
+            )
+        )
+    )
+    return path
+
+
+class TestFixtureSessionAndACollapsedFamily:
+    """#213: a fixture written under a collapsed template answers a request for a
+    real member of the family, which the generic id rule leaves literal."""
+
+    _URL = "https://myshop.example.com/products/alpha-widget"
+
+    def test_a_real_slug_is_answered_from_the_family_s_fixture(self, tmp_path: Path) -> None:
+        _family_fixture(
+            tmp_path, "get_products_{product_id}.json", "/products/{product_id}", '{"id": 1}'
+        )
+        session = FixtureSession(tmp_path)
+        assert session.get(self._URL).json() == {"id": 1}
+        assert session.get("https://myshop.example.com/products/bravo-widget").json() == {"id": 1}
+
+    def test_the_family_s_sidecar_supplies_the_status(self, tmp_path: Path) -> None:
+        _family_fixture(
+            tmp_path,
+            "get_products_{product_id}.html",
+            "/products/{product_id}",
+            "gone",
+            status=410,
+            content_type="text/html",
+        )
+        response = FixtureSession(tmp_path).get(self._URL)
+        assert (response.status_code, response.headers["Content-Type"]) == (410, "text/html")
+
+    def test_a_file_named_for_the_path_itself_wins(self, tmp_path: Path) -> None:
+        _family_fixture(
+            tmp_path, "get_products_{product_id}.json", "/products/{product_id}", '{"id": 1}'
+        )
+        (tmp_path / "get_products_alpha-widget.json").write_text('{"id": "alpha"}')
+        assert FixtureSession(tmp_path).get(self._URL).json() == {"id": "alpha"}
+
+    def test_the_family_with_more_literal_segments_wins(self, tmp_path: Path) -> None:
+        _family_fixture(tmp_path, "get_{a}_{b}.json", "/{a}/{b}", '"any"')
+        _family_fixture(
+            tmp_path, "get_products_{product_id}.json", "/products/{product_id}", '"products"'
+        )
+        session = FixtureSession(tmp_path)
+        assert session.get(self._URL).json() == "products"
+        assert session.get("https://myshop.example.com/orders/alpha").json() == "any"
+
+    def test_other_methods_lengths_and_repeats_are_not_members(self, tmp_path: Path) -> None:
+        _family_fixture(
+            tmp_path, "get_products_{product_id}.json", "/products/{product_id}", '{"id": 1}'
+        )
+        # A second recorded response of the family: never consulted by name.
+        _family_fixture(
+            tmp_path, "get_products_{product_id}#1.json", "/products/{product_id}", '{"id": 2}'
+        )
+        session = FixtureSession(tmp_path)
+        assert session.post(self._URL).status_code == 404
+        assert session.get(f"{self._URL}/reviews").status_code == 404
+        assert session.get("https://myshop.example.com/products/").status_code == 404
+        assert session.get(self._URL).json() == {"id": 1}
+
+    def test_a_fixture_whose_sidecar_names_no_family_answers_no_member(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "get_products_{product_id}.json").write_text("{}")
+        (tmp_path / "get_products_{product_id}.json.meta.json").write_text(
+            sidecar_text(Sidecar(status=200, content_type="application/json"))
+        )
+        assert FixtureSession(tmp_path).get(self._URL).status_code == 404
+
+    def test_an_unloadable_sidecar_elsewhere_does_not_break_the_search(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "get_orders.json").write_text("{}")
+        (tmp_path / "get_orders.json.meta.json").write_text(json.dumps({"status": 403}))
+        _family_fixture(
+            tmp_path, "get_products_{product_id}.json", "/products/{product_id}", '{"id": 1}'
+        )
+        assert FixtureSession(tmp_path).get(self._URL).json() == {"id": 1}
+
+    def test_a_graphql_operation_s_family_fixture_answers_that_operation(
+        self, tmp_path: Path
+    ) -> None:
+        _family_fixture(
+            tmp_path,
+            "post_shops_{shop_id}_graphql(Cart).json",
+            "/shops/{shop_id}/graphql",
+            '{"data": {}}',
+            graphql_operation="Cart",
+        )
+        session = FixtureSession(tmp_path)
+        url = "https://myshop.example.com/shops/north-shop/graphql"
+        assert session.post(url, json={"query": "query Cart { cart { id } }"}).json() == {
+            "data": {}
+        }
+        with pytest.raises(FixtureNotFoundError):
+            session.post(url, json={"query": "query Orders { orders { id } }"})
 
 
 class TestFixtureContext:

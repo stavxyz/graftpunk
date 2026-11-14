@@ -16,15 +16,17 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-# digest_cmd and fixtures_cmd: unused directly (exercised through the CLI
-# below), imported anyway as an existence check that the names are really on
-# the module.
 from graftpunk.cli.observe_commands import (  # noqa: F401
     digest_cmd,
     fixtures_cmd,
     observe_app,
     resolve_run,
 )
+
+# digest_cmd and fixtures_cmd: unused directly (exercised through the CLI
+# below), imported anyway as an existence check that the names are really on
+# the module.
+from graftpunk.testing import FixtureSession
 from graftpunk.testing.plugin import check_fixtures_tree
 from tests.unit.cli_harness import strip_ansi
 from tests.unit.guide_harness import REPO_ROOT
@@ -791,6 +793,74 @@ class TestFixturesCommand:
         assert result.exit_code == 0, result.output
         written = sorted(p.name for p in out_dir.iterdir() if not p.name.endswith(".meta.json"))
         assert written == ["get_products_{product_id}#1.json", "get_products_{product_id}.json"]
+
+    def test_a_collapsed_family_s_fixture_answers_a_real_slug(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Twelve slugs (alpha-widget-2) template to themselves by the generic rule,
+        and the digest collapses them into GET /products/{product_id}. The sidecar
+        records that family, so a test that asks FixtureSession for a real slug,
+        recorded or not, is answered from the family's fixture (#213)."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+        words += ["golf", "hotel", "india", "juliet", "kilo", "lima"]
+        entries = [
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com/products/{word}-widget-2",
+                body=json.dumps({"id": word}),
+            )
+            for word in words
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "GET /products/{product_id}",
+                "--limit",
+                "1",
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        fixture = out_dir / "get_products_{product_id}.json"
+        assert fixture.is_file(), result.output
+        sidecar = json.loads((out_dir / f"{fixture.name}.meta.json").read_text())
+        assert (sidecar["schema"], sidecar["endpoint_family"]) == (6, "/products/{product_id}")
+
+        session = FixtureSession(out_dir)
+        for slug in ("alpha-widget-2", "lima-widget-2", "zulu-widget"):
+            response = session.get(f"https://api.myshop.example.com/products/{slug}")
+            assert (response.status_code, response.text) == (200, fixture.read_text())
+        assert session.get("https://api.myshop.example.com/products/a/b").status_code == 404
+        assert session.post("https://api.myshop.example.com/products/alpha").status_code == 404
+
+    def test_a_fixture_the_generic_rule_already_names_records_no_family(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """/orders/1001 templates to /orders/{order_id} on its own, so its sidecar
+        names no family and stays schema 4, which a graftpunk older than 1.42.8
+        reads."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        orders = [
+            _entry("GET", f"https://api.myshop.example.com/orders/{i}", body='{"id": 1}')
+            for i in (1001, 1002)
+        ]
+        _write_run(observe_base, "myshop", "run-1", orders)
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir, "--limit", "1")
+        assert result.exit_code == 0, result.output
+        sidecar = json.loads((out_dir / "get_orders_{order_id}.json.meta.json").read_text())
+        assert sidecar["schema"] == 4
+        assert "endpoint_family" not in sidecar
 
     def test_flagged_names_cover_cookies_set_on_a_static_response_and_by_another_host(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

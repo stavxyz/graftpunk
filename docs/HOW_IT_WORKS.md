@@ -1786,7 +1786,9 @@ A schema 4 sidecar is refused by a graftpunk older than 1.35.0, since the
 loader refuses an unknown schema (`graftpunk.contracts`), and a schema 5 sidecar
 (1.39.0, #367: it adds `graphql_operation`, and only a GraphQL operation's fixture
 gets one; every other sidecar is still written as schema 4) by a graftpunk older
-than 1.39.0.
+than 1.39.0, and a schema 6 sidecar (1.42.8, #213: it adds `endpoint_family`, and
+only a fixture of a family the digest collapsed gets one) by a graftpunk older
+than 1.42.8.
 
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
 fixture that removes prefixed environment variables for the duration of each

@@ -621,6 +621,7 @@ def write_sidecar(
     redacted_names: int = 0,
     observe_run: ObserveRun | None = None,
     graphql_operation: str | None = None,
+    endpoint_family: str | None = None,
 ) -> Path:
     """Write *fixture*'s committable sidecar beside it and return its path.
 
@@ -637,7 +638,9 @@ def write_sidecar(
     is not flagged is ignored. *observe_run* is the run the capture came from,
     written as the sidecar's ``observe_run`` (null without it). *graphql_operation*
     is the GraphQL operation the captured request carried, written as the
-    sidecar's ``graphql_operation`` (null without it).
+    sidecar's ``graphql_operation`` (null without it). *endpoint_family* is the
+    collapsed family template the fixture's name holds, written as the sidecar's
+    ``endpoint_family`` (null without it).
     """
     body = fixture.read_bytes()
     names = tuple(flagged_reasons)
@@ -662,6 +665,7 @@ def write_sidecar(
         redacted_names=redacted_names,
         observe_run=observe_run,
         graphql_operation=graphql_operation,
+        endpoint_family=endpoint_family,
     )
     path = sidecar_path(fixture)
     path.write_text(sidecar_text(sidecar), encoding="utf-8")
