@@ -75,13 +75,20 @@ def result_within(future: concurrent.futures.Future[T], seconds: float) -> T:
 
     Waits up to *seconds* and raises ``TimeoutError`` if the call has not
     answered by then, without cancelling it: it runs on, and its late outcome is
-    collected and dropped.
+    collected and dropped. A caller that polls one future is fine: the collector
+    is added to it once, however many waits time out.
     """
     try:
         return future.result(timeout=seconds)
     except concurrent.futures.TimeoutError:
-        future.add_done_callback(drop_late_answer)
+        if not getattr(future, _LATE_ANSWER_DROPPED_ATTR, False):
+            setattr(future, _LATE_ANSWER_DROPPED_ATTR, True)
+            future.add_done_callback(drop_late_answer)
         raise TimeoutError from None
+
+
+# Marks a future result_within() already gave drop_late_answer.
+_LATE_ANSWER_DROPPED_ATTR = "_gp_late_answer_dropped"
 
 
 def drop_late_answer(future: Any) -> None:

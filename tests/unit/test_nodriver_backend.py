@@ -2156,6 +2156,38 @@ class TestHandedOffEndBookkeeping:
             nodriver_module._LOOP_WAITS.clear()
             nodriver_module._LOOP_WAITS.update(saved)
 
+    @pytest.mark.parametrize("stop_on_loop_s", [20.0, 60.0])
+    def test_a_start_waits_as_long_as_the_longest_handed_off_end(
+        self, monkeypatch: pytest.MonkeyPatch, stop_on_loop_s: float
+    ) -> None:
+        """The bound comes from the end's own timeouts, so it covers the wait for
+        the stop on the loop, Chrome's exit, the profile and the loop's join."""
+        from graftpunk.backends import nodriver as nodriver_module
+
+        monkeypatch.setattr(nodriver_module, "_STOP_ON_LOOP_WAIT_S", stop_on_loop_s)
+        waited: list[float] = []
+
+        class _NeverDone:
+            def is_set(self) -> bool:
+                return False
+
+            def wait(self, timeout: float) -> bool:
+                waited.append(timeout)
+                return True
+
+        backend = NoDriverBackend()
+        backend._pending_end = SimpleNamespace(done=_NeverDone())  # type: ignore[assignment]
+        backend._wait_for_pending_end()
+
+        longest_end = (
+            stop_on_loop_s
+            + nodriver_module._REAP_TERM_TIMEOUT_S
+            + nodriver_module._REAP_KILL_TIMEOUT_S
+            + nodriver_module._PROFILE_REMOVE_ATTEMPTS * nodriver_module._PROFILE_REMOVE_RETRY_S
+            + nodriver_module._LOOP_JOIN_TIMEOUT_S
+        )
+        assert waited and waited[0] > longest_end
+
     def test_a_failing_callback_does_not_fail_the_end(
         self, captured_logs: list[dict[str, Any]]
     ) -> None:
@@ -2474,6 +2506,58 @@ class TestNoDriverBackendLifecycleEdges:
         assert not profile.exists()
         assert took[1] < 5
         assert len(fake_chrome.browsers) == 2
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_handed_off_stop_that_hangs_on_its_loop_is_given_up_on_at_its_bound(
+        self,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        """The stop began on the browser's loop and never answers: at the bound the
+        worker ends Chrome without the loop, closes the loop, and asyncio.run()
+        returns; a start after it does not wait."""
+        profile = temp_profiles / "uc_stop_that_hangs"
+        profile.mkdir()
+        monkeypatch.setattr("graftpunk.backends.nodriver._STOP_ON_LOOP_WAIT_S", 0.5)
+
+        async def hangs(_browser: Any) -> None:
+            await asyncio.Event().wait()
+
+        backend = NoDriverBackend()
+        took: list[float] = []
+
+        with _chrome_like_child(profile, exit_delay=0.3) as child:
+            backend.start()
+            assert backend._browser is not None and backend._private_loop is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+            loop_thread = backend._private_loop.thread
+            from graftpunk.backends import nodriver as nodriver_module
+
+            real_close_dialogs = nodriver_module.close_dialogs_in_new_tabs
+            monkeypatch.setattr(nodriver_module, "close_dialogs_in_new_tabs", hangs)
+
+            async def stop() -> None:
+                backend.stop()
+
+            took.append(_within(15, lambda: asyncio.run(stop())))
+            exited = _exited_now(child)
+            loop_thread.join(10)
+            # The next browser's stop answers again.
+            monkeypatch.setattr(nodriver_module, "close_dialogs_in_new_tabs", real_close_dialogs)
+            took.append(_within(15, backend.start))
+            backend.stop()
+
+        assert took[0] < 10
+        assert exited
+        assert not profile.exists()
+        assert not loop_thread.is_alive()
+        assert took[1] < 5
+        [given_up] = [
+            e for e in captured_logs if e["event"] == "nodriver_backend_stop_on_loop_given_up"
+        ]
+        assert given_up["reason"] == "no answer in time"
 
     @pytest.mark.usefixtures("_armed")
     def test_a_sync_stop_on_the_private_loop_leaves_that_loop_running_until_chrome_exits(

@@ -807,11 +807,26 @@ class _PendingEnd:
 # stopped.
 _STOP_ON_LOOP_WAIT_S: float = 20.0
 
-# How long a start waits for a stop's handed-off end of Chrome
-# (_PendingEnd) before it launches anyway: Chrome's exit, up to
-# _REAP_TERM_TIMEOUT_S plus _REAP_KILL_TIMEOUT_S, the profile's removal, and
-# the private loop's join, with room to spare.
-_PENDING_END_WAIT_S: float = 20.0
+
+def _pending_end_wait_s() -> float:
+    """How long a start waits for a stop's handed-off end of Chrome (_PendingEnd)
+    before it launches anyway: the longest such end, read from its own bounds.
+
+    The wait for a stop on the browser's loop (_STOP_ON_LOOP_WAIT_S), then
+    Chrome's exit without the loop (_REAP_TERM_TIMEOUT_S plus
+    _REAP_KILL_TIMEOUT_S), the profile's removal retries, and the private
+    loop's join (_LOOP_JOIN_TIMEOUT_S), with 5 seconds to spare: about 35
+    seconds with the defaults.
+    """
+    return (
+        _STOP_ON_LOOP_WAIT_S
+        + _REAP_TERM_TIMEOUT_S
+        + _REAP_KILL_TIMEOUT_S
+        + _PROFILE_REMOVE_ATTEMPTS * _PROFILE_REMOVE_RETRY_S
+        + _LOOP_JOIN_TIMEOUT_S
+        + 5.0
+    )
+
 
 # The tasks _wait_on_running_loop() leaves on a loop: the loop keeps only a
 # weak reference to a task.
@@ -2329,14 +2344,15 @@ class NoDriverBackend:
 
     def _wait_for_pending_end(self) -> None:
         """Block until the end of Chrome a stop handed off has finished, up to
-        ``_PENDING_END_WAIT_S``; a start calls this under the lock, before it
+        ``_pending_end_wait_s()``; a start calls this under the lock, before it
         launches."""
         pending = self._pending_end
         if pending is None or pending.done.is_set():
             return
         LOG.debug("nodriver_backend_start_waits_for_previous_end")
-        if not pending.done.wait(_PENDING_END_WAIT_S):
-            LOG.warning("nodriver_backend_previous_end_still_running", waited_s=_PENDING_END_WAIT_S)
+        bound = _pending_end_wait_s()
+        if not pending.done.wait(bound):
+            LOG.warning("nodriver_backend_previous_end_still_running", waited_s=bound)
             # Waited once: the next start does not pay for the same end again.
             self._pending_end = None
 
@@ -2348,14 +2364,13 @@ class NoDriverBackend:
         if pending is None or pending.done.is_set():
             return
         LOG.debug("nodriver_backend_start_waits_for_previous_end")
+        bound = _pending_end_wait_s()
         try:
-            finished = await answer_within(
-                asyncio.to_thread(pending.done.wait, _PENDING_END_WAIT_S), _PENDING_END_WAIT_S + 1
-            )
+            finished = await answer_within(asyncio.to_thread(pending.done.wait, bound), bound + 1)
         except TimeoutError:
             finished = False
         if not finished:
-            LOG.warning("nodriver_backend_previous_end_still_running", waited_s=_PENDING_END_WAIT_S)
+            LOG.warning("nodriver_backend_previous_end_still_running", waited_s=bound)
             # Waited once: the next start does not pay for the same end again.
             self._pending_end = None
 
@@ -2512,7 +2527,7 @@ class NoDriverBackend:
         only once Chrome has exited and its profile is gone, and a private
         loop is closed only after that. A ``start()`` or ``start_async()`` on
         this backend meanwhile waits for that end first (up to
-        ``_PENDING_END_WAIT_S``), so two Chromes never share a profile. A stop
+        ``_pending_end_wait_s()``, about 35 s), so two Chromes never share a profile. A stop
         that gave up on a lock holder (below) still waits for Chrome's exit,
         since it holds the lock until then. An interrupt (Ctrl-C) while the
         stop waits on the loop ends Chrome the same way before it propagates.

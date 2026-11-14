@@ -260,3 +260,21 @@ class TestResultWithin:
         # Its late error is collected, so nothing reports it as never retrieved.
         future.set_exception(RuntimeError("late"))
         assert future.done()
+
+    def test_polling_one_future_adds_its_collector_once(self) -> None:
+        import concurrent.futures
+
+        from graftpunk.cdp_wait import result_within
+
+        added: list[Any] = []
+
+        class _Counting(concurrent.futures.Future):  # type: ignore[type-arg]
+            def add_done_callback(self, fn: Any) -> None:
+                added.append(fn)
+                super().add_done_callback(fn)
+
+        future = _Counting()
+        for _ in range(3):
+            with pytest.raises(TimeoutError):
+                result_within(future, 0.01)
+        assert len(added) == 1
