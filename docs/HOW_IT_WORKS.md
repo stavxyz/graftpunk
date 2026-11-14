@@ -327,12 +327,14 @@ resp = session.form_submit(
 ```
 
 Each method:
-1. Starts from the captured role headers for that request type (if available)
-2. Falls back to registered role headers (if the role wasn't captured during login)
+1. Starts from the captured role headers for that request type (if available), when the URL is on `gp_base_url`'s origin
+2. Falls back to registered role headers (if the role wasn't captured during login, or the URL is on another origin)
 3. Browser identity headers are already on `self.headers` from session init
 4. The `referer` kwarg resolves paths against `gp_base_url` (paths like `"/invoice/list"` become full URLs)
 5. Caller-supplied `headers=` override role headers
 6. All other `**kwargs` pass through to `requests.Session.request()`
+
+Captured headers are what Chrome sent to the site's own origin, so a request to another origin (another host, port, or scheme than `gp_base_url`'s) never gets them, whether its role is explicit or auto-detected (#228). It gets the registered role, or a role the plugin declared, as Chrome on the site's page would send it there: `Sec-Fetch-Site: same-site` when both share a scheme and a registrable domain (from the short two-label suffix list in `graftpunk.public_suffix`) and `cross-site` otherwise, no `X-Requested-With`, and `Origin: <gp_base_url's origin>` on a CORS-mode request and on every method but GET and HEAD. Without a `gp_base_url` every request counts as same-origin.
 
 This eliminates the need for plugins to maintain their own header-building infrastructure. A plugin that previously needed 150 lines of request helpers can reduce to one-line calls.
 
