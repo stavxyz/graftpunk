@@ -22,6 +22,7 @@ from json.scanner import make_scanner
 from pathlib import Path
 
 from graftpunk.devtools.captures_rule import with_ignored
+from graftpunk.devtools.plugin_project import _probe
 from graftpunk.har.digest import form_state
 from graftpunk.logging import get_logger
 from graftpunk.testing.decoding import combined_forms, value_forms, whole_name_regex
@@ -47,19 +48,29 @@ class IgnoreFileReadError(OSError):
     ``strerror``, and ``filename``."""
 
 
-def _nearest_existing(start: Path) -> Path:
-    """The closest ancestor of *start* (*start* itself when it exists) that is on disk.
+def _nearest_existing(start: Path) -> Path | None:
+    """The closest ancestor of *start* (*start* itself when it exists) that is on
+    disk, or None when a directory on the way cannot be traversed.
 
     ``git`` needs a directory that exists to run in. The fixtures command's
     default target (``./tests/captures``) does not exist on a first run, and
     running git there raises ``FileNotFoundError``, which read as "not inside a
     git work tree" and let the command write unscrubbed bodies into a repo with
     nothing ignoring them.
+
+    Asked through ``plugin_project._probe``, not ``Path.exists()``, which raises
+    ``PermissionError`` under an untraversable directory before Python 3.14 and
+    answers False from 3.14, so the walk stopped on one version and climbed past
+    the directory on the other (#218). Now it stops on every version.
     """
     probe = start
-    while not probe.exists() and probe != probe.parent:
+    while True:
+        kind = _probe(probe)
+        if kind == "unreadable":
+            return None
+        if kind not in ("absent", "other", "unfollowable") or probe == probe.parent:
+            return probe
         probe = probe.parent
-    return probe
 
 
 def find_repo_root(start: Path) -> Path | None:
@@ -68,13 +79,17 @@ def find_repo_root(start: Path) -> Path | None:
 
     *start* need not exist yet: the search runs from its nearest existing
     ancestor, so a target directory this call is about to create is still
-    resolved against the repository that will contain it.
+    resolved against the repository that will contain it. Under a directory that
+    cannot be traversed it is ``None`` on every Python version.
     """
     argv = ["git", "rev-parse", "--show-toplevel"]
+    directory = _nearest_existing(start)
+    if directory is None:
+        return None
     try:
         result = subprocess.run(  # noqa: S603 - argv is a fixed git invocation, not untrusted input
             argv,
-            cwd=_nearest_existing(start),
+            cwd=directory,
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT_SECONDS,
@@ -126,7 +141,9 @@ def ensure_ignored(repo_root: Path, relative: str) -> bool:
 
 def is_tracked(path: Path) -> bool:
     """True when *path* is tracked by git (``git ls-files --error-unmatch``)."""
-    directory = path.parent if path.parent.exists() else Path.cwd()
+    # _probe, not exists(): exists() raises under an untraversable directory
+    # before Python 3.14 and answers False from 3.14 (#218).
+    directory = path.parent if _probe(path.parent) == "dir" else Path.cwd()
     argv = ["git", "ls-files", "--error-unmatch", str(path)]
     try:
         result = subprocess.run(  # noqa: S603 - argv is a fixed git invocation, not untrusted input

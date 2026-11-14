@@ -10,6 +10,7 @@ import ast
 import hashlib
 import itertools
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -71,6 +72,22 @@ class TestFindRepoRoot:
     ) -> None:
         assert find_repo_root(tmp_path / "tests" / "captures") is None
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_under_an_untraversable_directory_it_is_none_on_every_python(
+        self, tmp_path: Path
+    ) -> None:
+        """Path.exists() raised under it before Python 3.14 (so None) and answered
+        False from 3.14 (so the walk climbed to the repository): the same command
+        decided differently by version (#218)."""
+        _init_repo(tmp_path)
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o000)
+        try:
+            assert find_repo_root(locked / "tests" / "captures") is None
+        finally:
+            locked.chmod(0o755)
+
 
 class TestEnsureIgnored:
     def test_adds_the_line_when_absent(self, tmp_path: Path) -> None:
@@ -106,6 +123,22 @@ class TestIsTracked:
         untracked = tmp_path / "scratch.txt"
         untracked.write_text("hi")
         assert is_tracked(untracked) is False
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_a_path_under_an_untraversable_directory_is_not_tracked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """path.parent.exists() raised PermissionError out of is_tracked before
+        Python 3.14 (#218); it now asks from the working directory, as 3.14 did."""
+        _init_repo(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o000)
+        try:
+            assert is_tracked(locked / "x" / "file.json") is False
+        finally:
+            locked.chmod(0o755)
 
 
 class TestWriteSidecar:

@@ -508,7 +508,7 @@ def _header_only_capture(
     backend_type: str, driver: Any, get_tab: Any, *, headless: bool = False
 ) -> Any:
     """A capture used only for header roles: its HAR is never written, so it keeps,
-    fetches and logs about no request body. A headless one answers JavaScript
+    fetches and logs about no request or response body (#308). A headless one answers JavaScript
     dialogs, as a recorded one does (#320)."""
     from graftpunk.observe.capture import create_capture_backend
 
