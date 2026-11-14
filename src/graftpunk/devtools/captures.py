@@ -73,6 +73,14 @@ def _nearest_existing(start: Path) -> Path | None:
         probe = probe.parent
 
 
+def is_existing_directory(path: Path) -> bool:
+    """Whether *path* is a directory that can be listed, asked through
+    ``plugin_project._probe``: ``Path.exists()`` raises ``PermissionError``
+    under an untraversable directory before Python 3.14 and answers False from
+    3.14 (#218), and every version must take the same branch."""
+    return _probe(path) == "dir"
+
+
 def find_repo_root(start: Path) -> Path | None:
     """The git work tree's root containing *start*, or ``None`` outside one
     (including when ``git`` is not on ``PATH``).

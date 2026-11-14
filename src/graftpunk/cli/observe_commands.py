@@ -29,6 +29,7 @@ from graftpunk.devtools.captures import (
     IgnoreFileReadError,
     ensure_ignored,
     find_repo_root,
+    is_existing_directory,
     is_tracked,
     write_sidecar,
 )
@@ -381,7 +382,7 @@ def fixtures_cmd(
             soft_wrap=True,
         )
 
-    if not allow_tracked and target_dir.exists():
+    if not allow_tracked and is_existing_directory(target_dir):
         tracked = [p for p in sorted(target_dir.rglob("*")) if p.is_file() and is_tracked(p)]
         if tracked:
             console.print("[red]Refusing to write: these paths are tracked by git:[/red]")

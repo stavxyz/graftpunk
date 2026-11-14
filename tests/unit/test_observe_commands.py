@@ -650,6 +650,26 @@ class TestFixturesCommand:
         # The refusal names a real stem, the first one seen, not its folded key.
         assert "Refusing to write get_Users:" in output
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a mode-000 directory")
+    def test_an_out_under_an_untraversable_directory_never_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#218: Path.exists() raised PermissionError here before Python 3.14 and
+        answered False from 3.14; the probe takes the same branch on both."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
+        _write_run(observe_base, "myshop", "run-1", [order])
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0)
+        try:
+            result = _invoke_fixtures(locked / "out")
+        finally:
+            locked.chmod(0o700)
+        assert not isinstance(result.exception, PermissionError), result.output
+        assert result.exit_code != 0
+
     def test_the_sidecar_is_committable_and_records_the_capture(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
