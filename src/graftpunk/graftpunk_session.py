@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -106,6 +107,44 @@ def replayable_roles(roles: dict[str, dict[str, str]]) -> dict[str, dict[str, st
     }
 
 
+def apply_plugin_context(
+    session: Any, plugin: Any, *, declared_roles_override_captured: bool
+) -> None:
+    """Put a plugin's ``base_url`` and its declared ``header_roles`` on *session*.
+
+    The one step plugin commands, the Python client and ``gp http`` share. The
+    ``base_url`` becomes ``gp_base_url``, the origin the cross-origin rules
+    compare with (``GraftpunkSession._resolve_role``). Each declared role is
+    merged with ``merge_header_roles``, so it is sent to every origin, adjusted
+    for one other than the site's. With *declared_roles_override_captured* (``gp
+    http``, as before) a declared role replaces a captured role of the same name;
+    without it (commands and the client) a declared role only fills in a name
+    the login did not capture, and the captured one keeps precedence, so a
+    plugin's same-origin requests do not change. A session that is not a
+    ``GraftpunkSession`` gets neither.
+    """
+    base_url = getattr(plugin, "base_url", "") or ""
+    if base_url and hasattr(session, "gp_base_url"):
+        session.gp_base_url = base_url
+    declared = getattr(plugin, "header_roles", None)
+    if not declared or not hasattr(session, "merge_header_roles"):
+        return
+    captured = getattr(session, "_gp_header_roles", None) or {}
+    plugin_name = getattr(plugin, "site_name", "unknown")
+    if declared_roles_override_captured:
+        for role_name in declared:
+            if role_name in captured:
+                LOG.debug("plugin_role_overwrites_captured", role=role_name, plugin=plugin_name)
+        session.merge_header_roles(dict(declared))
+        return
+    for role_name in declared:
+        if role_name in captured:
+            LOG.debug("captured_role_kept_over_plugin_role", role=role_name, plugin=plugin_name)
+    session.merge_header_roles(
+        {name: headers for name, headers in declared.items() if name not in captured}
+    )
+
+
 def get_role_headers(name: str) -> dict[str, str] | None:
     """Get headers for a registered role.
 
@@ -194,13 +233,17 @@ class _HopMarks:
     *caller* the header names the caller set (request ``headers=``, a
     ``referer``, or a session header the caller changed), which no hop
     touches, *role_headers* the names the role added, and *csrf* the CSRF
-    token names injected.
+    token names injected. *detected* is the role ``_detect_role`` gave the
+    first request (None when the session has no roles), which a hop falls
+    back to when *role* gives it nothing, and *method* that request's method.
     """
 
     role: str | None
     caller: frozenset[str]
     role_headers: frozenset[str]
     csrf: frozenset[str]
+    detected: str | None = None
+    method: str = "GET"
 
 
 _LOWER_IDENTITY_HEADERS: Final[frozenset[str]] = frozenset(
@@ -259,8 +302,8 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         # (token name, target site) pairs a withheld CSRF token was logged for.
         self._gp_csrf_withheld: set[tuple[str, str]] = set()
         # request_with_role()'s (role, caller header names) for the
-        # prepare_request() it is about to cause.
-        self._gp_explicit_role: tuple[str, frozenset[str]] | None = None
+        # prepare_request() it is about to cause, per thread (_role_handoff).
+        self._gp_role_handoff = threading.local()
         self._gp_csrf_tokens: dict[str, str] = {}
         self.gp_default_role: str | None = None
         self.gp_base_url: str = base_url
@@ -637,12 +680,25 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         # headers, which take precedence over session-level role
         # headers in the requests merge logic (see prepare_request's
         # priority chain). prepare_request() reads the role and the
-        # caller's names from _gp_explicit_role, for the redirect hops.
-        self._gp_explicit_role = (role_name, caller)
+        # caller's names from this thread's hand-off, for the redirect hops.
+        handoff = self._role_handoff()
+        handoff.explicit = (role_name, caller)
         try:
             return self.request(method.upper(), url, headers=role_headers, **kwargs)
         finally:
-            self._gp_explicit_role = None
+            handoff.explicit = None
+
+    def _role_handoff(self) -> threading.local:
+        """This thread's slot for request_with_role()'s hand-off to prepare_request().
+
+        Per thread, so one thread's role never reaches another thread's request
+        between the hand-off and the prepare that reads it. Made on first use,
+        since a session restored from a pickle has none.
+        """
+        handoff = getattr(self, "_gp_role_handoff", None)
+        if handoff is None:
+            handoff = self._gp_role_handoff = threading.local()
+        return handoff
 
     def _detect_role(self, request: requests.Request) -> str:
         """Auto-detect the appropriate header role for a request.
@@ -791,8 +847,9 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         Returns:
             A PreparedRequest with applied role headers (if configured).
         """
-        explicit = getattr(self, "_gp_explicit_role", None)
-        self._gp_explicit_role = None
+        handoff = self._role_handoff()
+        explicit = getattr(handoff, "explicit", None)
+        handoff.explicit = None
         request_names = {name.lower() for name in request.headers or {}}
         if explicit is not None:
             role_name: str | None = explicit[0]
@@ -848,6 +905,8 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
                 caller=frozenset(caller),
                 role_headers=frozenset(role_added - _LOWER_IDENTITY_HEADERS),
                 csrf=csrf,
+                detected=detected,
+                method=(request.method or "GET").upper(),
             ),
         )
         return prepared
@@ -864,8 +923,11 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         CSRF tokens there. Each hop drops what the session added to the hop
         before (never a header the caller set), applies the role again for its
         own URL and method (``_role_headers_for``), and injects the CSRF tokens
-        again by the same-site rule. A ``Content-Type`` the role holds is not
-        added back to a hop requests made bodiless.
+        again by the same-site rule. When the role gives the hop nothing (a role
+        only captured, on another origin), the hop gets the role auto-detection
+        would give a fresh request to its URL, and a session default the hop
+        lost and nothing replaced (``Accept``) comes back. A ``Content-Type`` the
+        role holds is not added back to a hop requests made bodiless.
         """
         super().rebuild_auth(prepared_request, response)
         marks = getattr(getattr(response, "request", None), _HOP_MARKS_ATTR, None)
@@ -874,26 +936,51 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         headers = prepared_request.headers
         if headers is None:
             return
+        removed: set[str] = set()
         for name in list(headers):
             lower = name.lower()
             if lower not in marks.caller and (lower in marks.role_headers or lower in marks.csrf):
                 del headers[name]
+                removed.add(lower)
         method = prepared_request.method or "GET"
+        role = marks.role
+        role_headers = self._role_headers_for(role, prepared_request.url, method) if role else {}
+        detected = marks.detected
+        if not role_headers and self._gp_header_roles:
+            detected = self._detect_hop_role(prepared_request, marks)
+            role_headers = self._role_headers_for(detected, prepared_request.url, method)
         added: set[str] = set()
-        if marks.role is not None:
-            for name, value in self._role_headers_for(
-                marks.role, prepared_request.url, method
-            ).items():
-                lower = name.lower()
-                if lower in marks.caller or lower in _LOWER_IDENTITY_HEADERS:
-                    continue
-                if lower == "content-type" and prepared_request.body is None:
-                    continue
+        for name, value in role_headers.items():
+            lower = name.lower()
+            if lower in marks.caller or lower in _LOWER_IDENTITY_HEADERS:
+                continue
+            if lower == "content-type" and prepared_request.body is None:
+                continue
+            headers[name] = value
+            added.add(lower)
+        for name, value in self.headers.items():
+            lower = name.lower()
+            if lower in removed and lower not in added and lower != "content-type":
                 headers[name] = value
-                added.add(lower)
         csrf = self._inject_csrf_tokens(prepared_request, marks.caller)
         setattr(
             prepared_request,
             _HOP_MARKS_ATTR,
-            _HopMarks(marks.role, marks.caller, frozenset(added), csrf),
+            _HopMarks(role, marks.caller, frozenset(added), csrf, detected, method.upper()),
+        )
+
+    def _detect_hop_role(self, hop: requests.PreparedRequest, marks: _HopMarks) -> str:
+        """The role ``_detect_role`` would give a fresh request like redirect *hop*:
+        the first request's when the method is the same, else one read from the
+        hop's method and the headers the caller set (a 303 made it a GET)."""
+        method = (hop.method or "GET").upper()
+        if marks.detected is not None and marks.method == method:
+            return marks.detected
+        caller_headers = {
+            name: value
+            for name, value in (hop.headers or {}).items()
+            if name.lower() in marks.caller
+        }
+        return self._detect_role(
+            requests.Request(method=method, url=hop.url, headers=caller_headers)
         )

@@ -1522,3 +1522,79 @@ class TestCapturedRoleOrigins:
         session.xhr("GET", "https://myshop.example/a")
         session.xhr("GET", "https://api.myshop.example/a")
         assert ["X-Shop-Build" in sent.headers for sent in wire.sent] == [True, False]
+
+
+class TestRedirectHopFallbacks:
+    """A hop the explicit role gives nothing gets what a fresh request would (#228 r2)."""
+
+    def test_a_captured_only_role_redirected_cross_site_gets_the_detected_role(self) -> None:
+        session = GraftpunkSession(
+            header_roles={"checkout": {"Accept": "text/csv", "X-Shop-Build": "2026.11.1"}},
+            base_url="https://myshop.example",
+        )
+        wire = _Redirecting("https://myshop.example/a", "https://other.example/b", status=302)
+        session.mount("https://", wire)
+        session.request_with_role("checkout", "GET", "https://myshop.example/a")
+        first, hop = wire.sent
+        assert first.headers["X-Shop-Build"] == "2026.11.1"
+        assert "X-Shop-Build" not in hop.headers
+        assert hop.headers["Sec-Fetch-Mode"] == "navigate"
+        assert hop.headers["Sec-Fetch-Site"] == "cross-site"
+        assert "text/html" in hop.headers["Accept"]
+
+    def test_a_hop_the_role_adds_nothing_to_gets_the_session_default_back(self) -> None:
+        """No role headers at all for the hop: the session's own Accept returns."""
+        session = GraftpunkSession(
+            header_roles={"checkout": {"Accept": "text/csv"}},
+            base_url="https://myshop.example",
+        )
+        wire = _Redirecting("https://myshop.example/a", "https://other.example/b", status=302)
+        session.mount("https://", wire)
+        with patch("graftpunk.graftpunk_session.get_role_headers", return_value=None):
+            session.request_with_role("checkout", "GET", "https://myshop.example/a")
+        _first, hop = wire.sent
+        assert hop.headers["Accept"] == "*/*"
+
+
+class TestExplicitRolePerThread:
+    """request_with_role()'s role belongs to its own request, not to another thread's."""
+
+    def test_another_threads_plain_request_does_not_take_the_role(self) -> None:
+        import threading
+
+        from graftpunk.graftpunk_session import _HOP_MARKS_ATTR
+
+        session, wire = _wired()
+        real_prepare = session.prepare_request
+        a_preparing = threading.Event()
+        b_done = threading.Event()
+
+        def prepare(request: requests.Request, **kwargs: Any) -> requests.PreparedRequest:
+            if threading.current_thread().name == "A":
+                a_preparing.set()
+                b_done.wait(5)
+            return real_prepare(request, **kwargs)
+
+        session.prepare_request = prepare  # type: ignore[method-assign]
+
+        def a() -> None:
+            session.xhr("GET", "https://myshop.example/a-xhr")
+
+        def b() -> None:
+            a_preparing.wait(5)
+            session.get("https://myshop.example/b-plain")
+            b_done.set()
+
+        threads = [threading.Thread(target=a, name="A"), threading.Thread(target=b, name="B")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+
+        marks = {sent.url: getattr(sent, _HOP_MARKS_ATTR) for sent in wire.sent}
+        plain = marks["https://myshop.example/b-plain"]
+        explicit = marks["https://myshop.example/a-xhr"]
+        assert plain.role == "navigation"
+        assert explicit.role == "xhr"
+        assert "x-requested-with" not in explicit.caller
+        assert "x-requested-with" in explicit.role_headers

@@ -31,6 +31,7 @@ from graftpunk.exceptions import (
     SessionNotFoundError,
     TokenPatternMismatchError,
 )
+from graftpunk.graftpunk_session import apply_plugin_context
 from graftpunk.logging import get_logger, log_secrets
 from graftpunk.observe import ObservabilityContext, build_observe_context
 from graftpunk.observe.run import redact_text
@@ -176,10 +177,9 @@ def run_plugin_command(
             )
         _exit_session_load_failed(plugin, exc)
 
-    # Set gp_base_url for relative Referer resolution
-    base_url = getattr(plugin, "base_url", "")
-    if base_url and hasattr(session, "gp_base_url"):
-        setattr(session, "gp_base_url", base_url)  # noqa: B010
+    # gp_base_url (Referer paths, and the origin the role and CSRF rules
+    # compare with), and the plugin's declared roles where nothing was captured.
+    apply_plugin_context(session, plugin, declared_roles_override_captured=False)
 
     # --- Observability context (CLI-specific) ---
     # CHANGED: root-context lookup uses the injected Typer ctx (same

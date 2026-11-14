@@ -30,6 +30,7 @@ from graftpunk.exceptions import (
     SessionInvalidatedError,
     SessionNotFoundError,
 )
+from graftpunk.graftpunk_session import apply_plugin_context
 from graftpunk.logging import get_logger
 from graftpunk.observe import ObservabilityContext, build_observe_context
 from graftpunk.session_context import resolve_session
@@ -273,30 +274,18 @@ def _make_request(
 
     plugin = get_plugin_for_session(resolved) if resolved else None
 
-    # The site's origin, which decides where the captured role headers and the
-    # CSRF tokens go (GraftpunkSession._resolve_role), as plugin commands set it.
+    # The site's origin and the plugin's declared roles, as plugin commands set
+    # them; here a declared role replaces a captured one of the same name, so
+    # --role can pick the plugin's version.
     base_url = getattr(plugin, "base_url", "") if plugin else ""
-    if base_url and hasattr(session, "gp_base_url"):
-        setattr(session, "gp_base_url", base_url)  # noqa: B010
+    if plugin is not None:
+        apply_plugin_context(session, plugin, declared_roles_override_captured=True)
 
     token_config = getattr(plugin, "token_config", None) if plugin else None
     if token_config is not None:
         from graftpunk.tokens import prepare_session
 
         prepare_session(session, token_config, base_url)
-
-    # Merge plugin-defined header roles into the session so that
-    # --role can reference custom names declared by the plugin.
-    plugin_roles = getattr(plugin, "header_roles", None) if plugin else None
-    if plugin_roles and hasattr(session, "merge_header_roles"):
-        for role_name in plugin_roles:
-            if role_name in getattr(session, "_gp_header_roles", {}):
-                LOG.debug(
-                    "plugin_role_overwrites_captured",
-                    role=role_name,
-                    plugin=getattr(plugin, "site_name", "unknown"),
-                )
-        cast("GraftpunkSession", session).merge_header_roles(plugin_roles)
 
     if on_session is not None:
         on_session(session, resolved)
