@@ -114,14 +114,24 @@ def apply_plugin_context(
 
     The one step plugin commands, the Python client and ``gp http`` share. The
     ``base_url`` becomes ``gp_base_url``, the origin the cross-origin rules
-    compare with (``GraftpunkSession._resolve_role``). Each declared role is
-    merged with ``merge_header_roles``, so it is sent to every origin, adjusted
-    for one other than the site's. With *declared_roles_override_captured* (``gp
-    http``, as before) a declared role replaces a captured role of the same name;
-    without it (commands and the client) a declared role only fills in a name
-    the login did not capture, and the captured one keeps precedence, so a
-    plugin's same-origin requests do not change. A session that is not a
-    ``GraftpunkSession`` gets neither.
+    compare with (``GraftpunkSession._resolve_role``).
+
+    With *declared_roles_override_captured* (``gp http``, as before) each
+    declared role is merged with ``merge_header_roles``: it replaces a captured
+    role of the same name, and goes to every origin, adjusted for one other than
+    the site's.
+
+    Without it (plugin commands and the client) the declared roles are kept in
+    a map of their own (``_gp_plugin_roles``), apart from the captured ones, so
+    that on the plugin's own origin every request is what 1.42.8 sent: the
+    captured and built-in roles as before, and auto-detection still turned on
+    by captured roles alone. There the one addition is a declared role whose
+    name is neither captured nor built-in (or registered), used when a request
+    names it (``request_with_role("api", ...)``), where naming it sent no role
+    headers. On any other origin a declared role of the requested or detected
+    name is used, captured name or not, ahead of the registered one; captured
+    headers still never go there. A session that is not a ``GraftpunkSession``
+    gets neither.
     """
     base_url = getattr(plugin, "base_url", "") or ""
     if base_url and hasattr(session, "gp_base_url"):
@@ -140,9 +150,7 @@ def apply_plugin_context(
     for role_name in declared:
         if role_name in captured:
             LOG.debug("captured_role_kept_over_plugin_role", role=role_name, plugin=plugin_name)
-    session.merge_header_roles(
-        {name: headers for name, headers in declared.items() if name not in captured}
-    )
+    session._gp_plugin_roles = {name: dict(headers) for name, headers in declared.items()}
 
 
 def get_role_headers(name: str) -> dict[str, str] | None:
@@ -299,6 +307,10 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         # Roles a plugin declared (merge_header_roles), which, unlike captured
         # ones, are sent to every origin the plugin calls.
         self._gp_declared_roles: set[str] = set()
+        # A plugin's declared header_roles as plugin commands and the client
+        # apply them (apply_plugin_context): apart from the captured roles, so
+        # they never turn on auto-detection or change a same-origin request.
+        self._gp_plugin_roles: dict[str, dict[str, str]] = {}
         # (token name, target site) pairs a withheld CSRF token was logged for.
         self._gp_csrf_withheld: set[tuple[str, str]] = set()
         # request_with_role()'s (role, caller header names) for the
@@ -420,14 +432,17 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         Only a request to that origin gets it as captured (#228); any other
         request, a redirect hop included (``rebuild_auth``), never does. A
         request to another origin than ``gp_base_url``'s (another host, port,
-        or scheme) gets a plugin's declared role, or else the registered one,
-        as a browser on the site's page would send it there
-        (``_cross_origin_headers``): ``Sec-Fetch-Site`` same-site or
-        cross-site, an ``Origin`` where Chrome sends one, and no
-        ``X-Requested-With`` unless the plugin declared it. A request to
-        ``gp_base_url``'s origin whose role was captured on another origin gets
-        the registered role as it is. A role that was only captured sends
-        nothing where its captured headers do not go.
+        or scheme) gets a plugin's declared role of that name (merged by ``gp
+        http``, or kept in ``_gp_plugin_roles`` by commands and the client,
+        captured name or not), or else the registered one, as a browser on the
+        site's page would send it there (``_cross_origin_headers``):
+        ``Sec-Fetch-Site`` same-site or cross-site, an ``Origin`` where Chrome
+        sends one, and no ``X-Requested-With`` unless the plugin declared it. A
+        request to ``gp_base_url``'s origin whose role was captured on another
+        origin gets the registered role as it is. On ``gp_base_url``'s origin a
+        role in ``_gp_plugin_roles`` is used only when its name is neither
+        captured nor registered. A role that was only captured sends nothing
+        where its captured headers do not go.
 
         Args:
             role_name: Role name ("navigation", "xhr", "form", or custom).
@@ -439,6 +454,7 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         """
         captured = self._gp_header_roles.get(role_name)
         declared = captured is not None and role_name in self._declared_roles()
+        plugin_role = (getattr(self, "_gp_plugin_roles", None) or {}).get(role_name)
         if captured is not None and not declared:
             target = origin(url)
             captured_at = self._captured_origin(role_name)
@@ -452,20 +468,24 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
             if captured is not None and get_role_headers(role_name) is None:
                 LOG.debug("captured_role_not_sent_to_another_origin", role=role_name)
                 return {}
+            if captured is None and plugin_role is not None and get_role_headers(role_name) is None:
+                # A name only the plugin declares, named by the request.
+                return dict(plugin_role)
         else:
             fetch_site, base_origin = cross
-            template = (
-                captured
-                if captured is not None and role_name in self._declared_roles()
-                else get_role_headers(role_name)
-            )
+            if declared:
+                template, is_declared = captured, True
+            elif plugin_role is not None:
+                template, is_declared = plugin_role, True
+            else:
+                template, is_declared = get_role_headers(role_name), False
             if template is not None:
                 return _cross_origin_headers(
                     template,
                     fetch_site=fetch_site,
                     origin=base_origin,
                     method=method,
-                    declared=template is captured,
+                    declared=is_declared,
                 )
             if captured is not None:
                 LOG.debug("captured_role_not_sent_cross_origin", role=role_name)
@@ -484,6 +504,7 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
             "unknown_role_no_headers_applied",
             role=role_name,
             available_roles=list(self._gp_header_roles.keys()),
+            plugin_roles=list(getattr(self, "_gp_plugin_roles", None) or {}),
             registered_roles=list_roles(),
         )
         return None

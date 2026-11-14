@@ -135,3 +135,79 @@ def test_gp_http_lets_a_declared_role_replace_the_captured_one() -> None:
     ):
         _make_request("GET", "https://myshop.example/me", session_name="declshop", role="xhr")
     assert _sent_to(wire, "https://myshop.example/me").headers["X-Shop-Build"] == "declared"
+
+
+def _applied(
+    captured: dict[str, dict[str, str]], declared: dict[str, dict[str, str]]
+) -> tuple[GraftpunkSession, _Wire]:
+    """A session as a plugin command or the client sets it up."""
+    from types import SimpleNamespace
+
+    from graftpunk.graftpunk_session import apply_plugin_context
+
+    session = GraftpunkSession(header_roles={k: dict(v) for k, v in captured.items()})
+    plugin = SimpleNamespace(
+        base_url="https://myshop.example", header_roles=declared, site_name="declshop"
+    )
+    apply_plugin_context(session, plugin, declared_roles_override_captured=False)
+    wire = _Wire()
+    session.mount("https://", wire)
+    return session, wire
+
+
+class TestDeclaredRolesInCommandsAndTheClient:
+    """On the site's own origin a command sends what 1.42.8 sent; elsewhere a
+    declared role of the name is used (refined ruling, round 3)."""
+
+    def test_a_login_that_captured_nothing_still_sends_a_plain_get_unchanged(self) -> None:
+        declared = {"xhr": {"Accept": "application/json", "X-Api-Version": "2"}}
+        session, wire = _applied({}, declared)
+        bare = GraftpunkSession(base_url="https://myshop.example")
+        bare_wire = _Wire()
+        bare.mount("https://", bare_wire)
+        session.get("https://myshop.example/page")
+        bare.get("https://myshop.example/page")
+        [sent], [expected] = wire.sent, bare_wire.sent
+        assert dict(sent.headers) == dict(expected.headers)
+        assert "Sec-Fetch-Mode" not in sent.headers
+
+    def test_a_declared_built_in_name_the_login_did_not_capture(self) -> None:
+        captured = {"navigation": {"Accept": "text/html", "X-Shop-Build": "captured"}}
+        declared = {"xhr": {"Accept": "application/json", "X-Api-Version": "2"}}
+        session, wire = _applied(captured, declared)
+        session.xhr("GET", "https://myshop.example/api/orders")
+        session.xhr("GET", "https://api.myshop.example/v2/orders")
+        own = _sent_to(wire, "https://myshop.example/api/orders")
+        assert own.headers["X-Requested-With"] == "XMLHttpRequest"
+        assert "X-Api-Version" not in own.headers
+        other = _sent_to(wire, "https://api.myshop.example/v2/orders")
+        assert other.headers["X-Api-Version"] == "2"
+        assert other.headers["Accept"] == "application/json"
+        # The declared role has no Sec-Fetch-Mode: cors, so a GET gets no Origin.
+        assert "Origin" not in other.headers
+        assert "X-Requested-With" not in other.headers
+
+    def test_a_declared_role_under_a_captured_name(self) -> None:
+        captured = {"xhr": {"Accept": "application/json", "X-Shop-Build": "captured"}}
+        declared = {"xhr": {"Sec-Fetch-Mode": "cors", "X-Api-Key": "k1"}}
+        session, wire = _applied(captured, declared)
+        session.xhr("GET", "https://myshop.example/me")
+        session.xhr("GET", "https://api.myshop.example/v2/me")
+        own = _sent_to(wire, "https://myshop.example/me")
+        assert own.headers["X-Shop-Build"] == "captured"
+        assert "X-Api-Key" not in own.headers
+        other = _sent_to(wire, "https://api.myshop.example/v2/me")
+        assert other.headers["X-Api-Key"] == "k1"
+        assert "X-Shop-Build" not in other.headers
+        assert other.headers["Origin"] == "https://myshop.example"
+
+    def test_a_custom_name_only_the_plugin_declares_is_used_when_named(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        session, wire = _applied({}, {"api": {"X-Api-Key": "k1"}})
+        session.request_with_role("api", "GET", "https://myshop.example/api")
+        session.request_with_role("nosuch", "GET", "https://myshop.example/other")
+        assert _sent_to(wire, "https://myshop.example/api").headers["X-Api-Key"] == "k1"
+        [unknown] = [e for e in captured_logs if e["event"] == "unknown_role_no_headers_applied"]
+        assert unknown["role"] == "nosuch"
+        assert unknown["plugin_roles"] == ["api"]
