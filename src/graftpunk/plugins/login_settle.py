@@ -8,9 +8,10 @@ the document-readiness wait, and the grace window a login with no success signal
 spends watching for its failure text.
 
 ``login_engine`` drives the wait through ``wait_for_login_outcome_nodriver`` and
-``wait_for_login_outcome_selenium``, and reads the URL a submit was clicked from
-through ``tab_url`` and ``driver_url``, which answer an unreadable URL with an
-empty string rather than raising. Everything else here is internal to the wait.
+``wait_for_login_outcome_selenium``, and reads the page's URL through
+``page_url_nodriver`` (the page's ``location.href``, since nodriver's ``Tab.url``
+is a copy that does not follow a navigation) and ``driver_url``, which never
+raise. Everything else here is internal to the wait.
 """
 
 from __future__ import annotations
@@ -19,13 +20,14 @@ import asyncio
 import contextlib
 import dataclasses
 import fnmatch
+import functools
 import json
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
-from graftpunk.cdp_wait import answer_by
+from graftpunk.cdp_wait import answer_by, answer_within
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 
@@ -278,6 +280,23 @@ def _page_text_decides(
     )
 
 
+def _page_text_decides_for_url(
+    url: str, *, failure_text: str, pre_submit_url: str, success_url: str, last_tick: bool
+) -> bool:
+    """:func:`_page_text_decides` for a *url* the nodriver tick reads itself."""
+    return _page_text_decides(
+        failure_text=failure_text,
+        url=url,
+        pre_submit_url=pre_submit_url,
+        success_url=success_url,
+        last_tick=last_tick,
+    )
+
+
+def _always_page_text(_url: str) -> bool:
+    return True
+
+
 def _login_tick_verdict(
     *,
     page_text: str,
@@ -525,13 +544,77 @@ def _hard_end(deadline: float) -> float:
 
 
 def tab_url(tab: Any) -> str:
-    """The nodriver tab's current URL, or an empty string when it cannot be read."""
+    """nodriver's ``Tab.url``, or an empty string when it cannot be read. It is a copy
+    of the target's info that may be stale (see :func:`page_url_nodriver`), so it is
+    only that function's fallback."""
     try:
         url = tab.url
     except Exception as exc:  # broad by design: the URL is one input to the poll, not the login
         LOG.debug("login_url_read_failed", error=str(exc), backend="nodriver")
         return ""
     return url if isinstance(url, str) else ""
+
+
+# The most a URL read outside the poll (the URL before the submit, the page the
+# login ended on) waits for the page's answer before it settles for ``Tab.url``.
+PAGE_URL_READ_WAIT_S = 5.0
+
+# The page's own URL. The comment names the read for the tests' scripted tab.
+_PAGE_URL_JS = "/* graftpunk:href */ location.href"
+
+
+class PageUrl(NamedTuple):
+    """A nodriver tab's URL and where it came from: ``live`` when the page answered
+    ``location.href``, False when it is ``Tab.url``'s copy, which may be stale."""
+
+    url: str
+    live: bool
+
+
+async def page_url_nodriver(tab: Any, *, within: float | None = PAGE_URL_READ_WAIT_S) -> PageUrl:
+    """The URL of the page *tab* shows now, read from the page (``location.href``,
+    one ``Runtime.evaluate``), or ``Tab.url`` when that read fails, answers anything
+    but a non-empty string, or has not answered *within* seconds (it is then
+    abandoned, never cancelled, :mod:`graftpunk.cdp_wait`). *within* None leaves the
+    bound to a caller that already bounds the whole read (the poll's tick).
+
+    nodriver 0.50.6's ``Tab.url`` is ``Tab.target.url``, a copy of the target's info
+    that only ``Browser.update_targets`` and ``Connection.attach`` replace (nodriver
+    calls them from ``Browser.get``, ``Tab.get``, ``Tab.sleep`` and ``Tab.select``'s
+    retry); the ``Target.targetInfoChanged`` handler that would follow a navigation
+    is registered only on an auto-attached connection, which nodriver's browser and
+    tabs are not. So after a submit the copy keeps the URL from before it, for as
+    long as the login flow reads it (#392). Every URL the nodriver login reads after
+    a navigation comes from here.
+    """
+    try:
+        read = tab.evaluate(_PAGE_URL_JS, return_by_value=True)
+        answer = await (read if within is None else answer_within(read, within))
+    except Exception as exc:  # broad by design: Tab.url is the fallback, see the docstring
+        LOG.debug(
+            "login_page_url_read_failed",
+            error=str(exc),
+            exc_type=type(exc).__name__,
+            backend="nodriver",
+        )
+        return PageUrl(tab_url(tab), False)
+    if isinstance(answer, str) and answer:
+        return PageUrl(answer, True)
+    LOG.debug(
+        "login_page_url_read_failed",
+        error="the page did not answer a URL",
+        exc_type=type(answer).__name__,
+        backend="nodriver",
+    )
+    return PageUrl(tab_url(tab), False)
+
+
+async def note_login_url_nodriver(tab: Any) -> None:
+    """:func:`note_login_url` for a nodriver tab, with the URL from
+    :func:`page_url_nodriver`. Makes no request when no verdict is being collected."""
+    verdict = _VERDICT.get()
+    if verdict is not None:
+        verdict.url = (await page_url_nodriver(tab)).url
 
 
 def driver_url(driver: Any) -> str:
@@ -707,6 +790,10 @@ class _TickReading(NamedTuple):
     # The type names of the exceptions an unreadable tick's reads raised, in the
     # order raised; empty on a tick that was read.
     error_types: tuple[str, ...] = ()
+    # Whether *url* is the browser's answer. False for a nodriver URL that is
+    # ``Tab.url``'s copy (see ``page_url_nodriver``), which a browser that has gone
+    # away still gives.
+    url_live: bool = True
 
 
 class _ReadWindow:
@@ -724,8 +811,9 @@ class _ReadWindow:
     its deadline: did the browser hand back anything at all? A tick that wanted only
     the URL (a ``success_url`` with no failure text to look for) raises no error when
     the browser is gone, because the URL read answers an unreachable tab with an empty
-    string, so "no error" is not proof of life; a URL, an element probe, or a document
-    is (tidy round, 2026-09-13). A URL counts even on a tick that went on to fail, so
+    string or, on nodriver, ``Tab.url``'s stale copy, so "no error" is not proof of
+    life; a URL the browser answered (``url_live``), an element probe, or a document
+    is (tidy round, 2026-09-13). Such a URL counts even on a tick that went on to fail, so
     a browser that answers where it is while its documents fail is reported as a
     missing signal and not as a dead browser.
     """
@@ -749,7 +837,7 @@ class _ReadWindow:
     def record(self, reading: _TickReading) -> None:
         """Fold one tick's reading into the window."""
         self.url = reading.url
-        if reading.url:
+        if reading.url and reading.url_live:
             # A URL is the browser answering, whatever the rest of the tick did. A
             # tick that read one and then failed its document has told the wait the
             # browser is there, which is the question `answered` asks, so the wait
@@ -766,7 +854,11 @@ class _ReadWindow:
             self.page_read = True
             self.page_text = reading.page_text
         self.success_found = reading.success_found
-        if reading.url or reading.page_asked or reading.success_found is not None:
+        if (
+            (reading.url and reading.url_live)
+            or reading.page_asked
+            or reading.success_found is not None
+        ):
             self.answered = True
 
 
@@ -823,20 +915,19 @@ def _decide_login_tick(
 async def _read_login_tick_nodriver(
     tab: Any,  # nodriver.Tab
     *,
-    url: str,
     success_selector: str,
-    want_page_text: bool,
+    want_page_text: Callable[[str], bool],
     site_name: str,
 ) -> _TickReading:
     """One tick's reading of the tab, or a reading carrying the error instead.
 
-    The caller has already read *url*, which every tick needs, and says through
-    *want_page_text* whether the document can decide this tick at all.
+    The tick first reads the page's URL (:func:`page_url_nodriver`), which every
+    tick needs, and asks *want_page_text* with it whether the document can decide
+    this tick at all.
 
-    A ProtocolException means the document node went invalid mid-navigation, which
-    is the window this poll exists for (see ``_select_with_retry``): the tick is
-    unreadable, not failed, so the caller treats it as pending and keeps waiting.
-    A closed browser reaches here as something else again (a websockets error, a
+    A failed read is the window this poll exists for: the tick is unreadable, not
+    failed, so the caller treats it as pending and keeps waiting. A closed browser
+    reaches here as something other than a ProtocolException (a websockets error, a
     connection error), and catching only the protocol error let that one out of
     ``login()`` while the selenium twin failed cleanly, so every read failure is
     treated the same way and named by ``exc_type`` in the trail.
@@ -846,17 +937,20 @@ async def _read_login_tick_nodriver(
     rejects the selector (``_selector_rejected_nodriver``), and a rejected selector
     ends the login there and then with a ``PluginError`` naming it.
 
-    nodriver's two reads carry a node id from one CDP call to the next
+    nodriver's two document reads carry a node id from one CDP call to the next
     (``get_content`` is ``DOM.getDocument`` then ``DOM.getOuterHTML`` by backend
     node id, ``query_selector`` is ``DOM.getDocument`` then ``DOM.querySelector`` by
-    node id, nodriver 0.50.6), and a document replaced in between answers the second
-    call with "No node found for given backend id". That can happen on every tick of
-    a wait whose login has succeeded (#392), so when either read fails the tick asks
-    the current document directly instead (:func:`_read_page_by_evaluate`), and only
-    a tick both reads fail is unreadable.
+    node id, nodriver 0.50.6). In #392 ``get_content`` failed with "No node found
+    for given backend id" on every tick; why is unverified. When either read fails,
+    the tick reads the current document, its URL included, in one
+    ``Runtime.evaluate`` instead (:func:`_read_page_by_evaluate`), and only a tick
+    both reads fail is unreadable.
     """
+    page_url = await page_url_nodriver(tab, within=None)
+    url = page_url.url
+    asked = want_page_text(url)
     try:
-        page_text = await tab.get_content() if want_page_text else ""
+        page_text = await tab.get_content() if asked else ""
         success_found: bool | None = None
         if success_selector:
             # query_selector returns immediately, found or not: the poll is the
@@ -873,12 +967,10 @@ async def _read_login_tick_nodriver(
     except Exception as exc:  # broad by design: an unreadable tick is pending, see above
         node_error = exc
     else:
-        return _TickReading(page_text, url, success_found, page_asked=want_page_text)
+        return _TickReading(page_text, url, success_found, page_asked=asked, url_live=page_url.live)
 
     try:
-        page_text, success_found = await _read_page_by_evaluate(
-            tab, success_selector=success_selector, want_page_text=want_page_text
-        )
+        page = await _read_page_by_evaluate(tab, success_selector=success_selector)
     except PluginError:
         raise
     except Exception as exc:  # broad by design: an unreadable tick is pending, see above
@@ -897,8 +989,9 @@ async def _read_login_tick_nodriver(
             url,
             None,
             error=str(node_error),
-            page_asked=want_page_text,
+            page_asked=asked,
             error_types=error_types,
+            url_live=page_url.live,
         )
     LOG.debug(
         "login_tick_read_by_evaluate",
@@ -907,7 +1000,9 @@ async def _read_login_tick_nodriver(
         exc_type=type(node_error).__name__,
         backend="nodriver",
     )
-    return _TickReading(page_text, url, success_found, page_asked=want_page_text)
+    # The URL and the document of one read: the document always, since the URL it
+    # came with may be one that wants it.
+    return _TickReading(page.html, page.href, page.found, page_asked=True)
 
 
 class PageReadAnswerError(Exception):
@@ -915,11 +1010,19 @@ class PageReadAnswerError(Exception):
     record (an ``ExceptionDetails``, nodriver's RemoteObject, a malformed string)."""
 
 
-def _page_read_js(*, success_selector: str, want_page_text: bool) -> str:
+class _PageRead(NamedTuple):
+    """What one ``Runtime.evaluate`` of the current document answered."""
+
+    html: str
+    href: str
+    found: bool | None
+
+
+def _page_read_js(success_selector: str) -> str:
     """A page expression reading the current top document without node ids: a JSON
-    string of ``html`` (the serialized document, or null when not wanted), ``found``
-    (whether *success_selector* matches, or null with no selector) and ``rejected``
-    (whether the browser rejects the selector as malformed, the check
+    string of ``html`` (the serialized document), ``href`` (its ``location.href``),
+    ``found`` (whether *success_selector* matches, or null with no selector) and
+    ``rejected`` (whether the browser rejects the selector as malformed, the check
     :func:`_selector_rejected_js` makes).
 
     A JSON string because nodriver's ``Tab.evaluate`` hands back a falsy value as
@@ -927,18 +1030,15 @@ def _page_read_js(*, success_selector: str, want_page_text: bool) -> str:
     that is a JSON record is never falsy. The selector reaches the page as a JSON
     string literal. The comment names the read for the tests' scripted tab.
     """
-    html = (
-        "document.documentElement ? document.documentElement.outerHTML : ''"
-        if want_page_text
-        else "null"
-    )
     return (
         "/* graftpunk:page-read */ (() => { let found = null; let rejected = false; "
         f"const selector = {json.dumps(success_selector)}; "
         "if (selector) { try { found = document.querySelector(selector) !== null; } "
         'catch (e) { if (e instanceof DOMException && e.name === "SyntaxError") '
         "{ rejected = true; } else { throw e; } } } "
-        f"return JSON.stringify({{html: {html}, found: found, rejected: rejected}}); }})()"
+        "const html = document.documentElement ? document.documentElement.outerHTML : ''; "
+        "return JSON.stringify({html: html, href: location.href, found: found, "
+        "rejected: rejected}); })()"
     )
 
 
@@ -946,19 +1046,15 @@ async def _read_page_by_evaluate(
     tab: Any,  # nodriver.Tab
     *,
     success_selector: str,
-    want_page_text: bool,
-) -> tuple[str, bool | None]:
-    """The page text and the success element's presence, read from the current
-    document in one ``Runtime.evaluate``, which carries no node id.
+) -> _PageRead:
+    """The page text, the page's URL and the success element's presence, read from
+    the current document in one ``Runtime.evaluate``, which carries no node id.
 
     Raises ``PluginError`` for a selector the browser rejects, as the node-id read
     does, and :class:`PageReadAnswerError` for an answer that is not the record.
     The caller bounds the read (``_read_login_tick_nodriver_by``).
     """
-    answer = await tab.evaluate(
-        _page_read_js(success_selector=success_selector, want_page_text=want_page_text),
-        return_by_value=True,
-    )
+    answer = await tab.evaluate(_page_read_js(success_selector), return_by_value=True)
     if not isinstance(answer, str):
         raise PageReadAnswerError(f"the page read answered {type(answer).__name__}")
     try:
@@ -968,36 +1064,38 @@ async def _read_page_by_evaluate(
     if not isinstance(record, dict):
         raise PageReadAnswerError(f"the page read answered JSON {type(record).__name__}")
     html = record.get("html")
+    href = record.get("href")
     found = record.get("found")
     rejected = record.get("rejected")
     if rejected is True and success_selector:
         raise _invalid_success_selector(success_selector)
     if (
         not isinstance(rejected, bool)
-        or (want_page_text and not isinstance(html, str))
+        or not isinstance(html, str)
+        or not isinstance(href, str)
+        or not href
         or (bool(success_selector) and not isinstance(found, bool))
     ):
         raise PageReadAnswerError("the page read answered a record of the wrong shape")
-    return (html if want_page_text else ""), (found if success_selector else None)
+    return _PageRead(html, href, found if success_selector else None)
 
 
 async def _read_login_tick_nodriver_by(
     tab: Any,  # nodriver.Tab
     *,
     end: float,
-    url: str,
     success_selector: str,
-    want_page_text: bool,
+    want_page_text: Callable[[str], bool],
     site_name: str,
 ) -> _TickReading:
     """:func:`_read_login_tick_nodriver`, abandoned without being cancelled at
     *end* (see ``_hard_end`` and :func:`graftpunk.cdp_wait.answer_by`). A read that
-    is abandoned is an unreadable tick."""
+    is abandoned is an unreadable tick, whose URL is ``Tab.url``'s, which may be
+    stale (:func:`page_url_nodriver`)."""
     try:
         return await answer_by(
             _read_login_tick_nodriver(
                 tab,
-                url=url,
                 success_selector=success_selector,
                 want_page_text=want_page_text,
                 site_name=site_name,
@@ -1016,8 +1114,15 @@ async def _read_login_tick_nodriver_by(
             exc_type="TimeoutError",
             backend="nodriver",
         )
+        url = tab_url(tab)
         return _TickReading(
-            "", url, None, error=error, page_asked=want_page_text, error_types=("TimeoutError",)
+            "",
+            url,
+            None,
+            error=error,
+            page_asked=want_page_text(url),
+            error_types=("TimeoutError",),
+            url_live=False,
         )
 
 
@@ -1159,15 +1264,13 @@ async def _wait_for_login_signal_nodriver(
         # or a slow read on the tick before) is the deadline tick: it reads the page,
         # and nothing follows it.
         last_tick = last_tick or deadline - loop.time() <= 0
-        url = tab_url(tab)
         reading = await _read_login_tick_nodriver_by(
             tab,
             end=end,
-            url=url,
             success_selector=success_selector,
-            want_page_text=_page_text_decides(
+            want_page_text=functools.partial(
+                _page_text_decides_for_url,
                 failure_text=failure_text,
-                url=url,
                 pre_submit_url=pre_submit_url,
                 success_url=success_url,
                 last_tick=last_tick,
@@ -1331,10 +1434,9 @@ async def _watch_for_failure_nodriver(
         reading = await _read_login_tick_nodriver_by(
             tab,
             end=end,
-            url=tab_url(tab),
             success_selector="",
             # The page text is this window's only signal, so it is read every tick.
-            want_page_text=True,
+            want_page_text=_always_page_text,
             site_name=site_name,
         )
         last.record(reading)

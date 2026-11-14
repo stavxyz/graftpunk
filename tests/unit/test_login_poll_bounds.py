@@ -291,6 +291,9 @@ class _TimedTab:
         return object() if asyncio.get_running_loop().time() >= self.success_from else None
 
     async def evaluate(self, expression: str, **kwargs: Any) -> Any:
+        if "graftpunk:href" in expression:
+            # The page's URL, answered at once: the reads under test are the others.
+            return self.url
         assert expression == "document.readyState", expression
         self.readiness_reads += 1
         await asyncio.sleep(self.ready_seconds)
@@ -583,6 +586,10 @@ class _ConnectionTab:
         self.connection = connection
         self.reads = 0
 
+    async def evaluate(self, expression: str, **kwargs: Any) -> Any:
+        assert "graftpunk:href" in expression, expression
+        return self.url
+
     async def get_content(self) -> str:
         self.reads += 1
         return await self.connection.send(
@@ -622,18 +629,16 @@ class TestAnAbandonedReadLeavesTheTabWorking:
             first = await _read_login_tick_nodriver_by(
                 tab,
                 end=loop.time() + 0.1,
-                url=tab.url,
                 success_selector="",
-                want_page_text=True,
+                want_page_text=lambda _url: True,
                 site_name="ndlong",
             )
             await asyncio.sleep(0.5)
             second = await _read_login_tick_nodriver_by(
                 tab,
                 end=loop.time() + 2.0,
-                url=tab.url,
                 success_selector="",
-                want_page_text=True,
+                want_page_text=lambda _url: True,
                 site_name="ndlong",
             )
             return first.error, connection.listener.done(), second.page_text

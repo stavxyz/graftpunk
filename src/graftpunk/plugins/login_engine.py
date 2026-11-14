@@ -33,9 +33,10 @@ from graftpunk.plugins.login_ready import (
 from graftpunk.plugins.login_settle import (
     driver_url,
     note_login_url,
+    note_login_url_nodriver,
+    page_url_nodriver,
     success_shown_before_submit_nodriver,
     success_shown_before_submit_selenium,
-    tab_url,
     wait_for_login_outcome_nodriver,
     wait_for_login_outcome_selenium,
 )
@@ -829,7 +830,7 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                     network=network if network.attach(tab) else None,
                 )
             finally:
-                note_login_url(lambda: tab_url(tab))
+                await note_login_url_nodriver(tab)
                 if observe_storage is not None:
                     from graftpunk.observe.run import save_observe_run
 
@@ -944,7 +945,7 @@ async def _run_nodriver_steps(
                 warned_success = warned_success or await success_shown_before_submit_nodriver(
                     tab, login_config=plugin.login_config, site_name=plugin.site_name
                 )
-                pre_submit_url = tab_url(tab)
+                pre_submit_url = (await page_url_nodriver(tab)).url
                 submit_clicked = True
                 await submit.element.click()
             except PluginError:
@@ -960,6 +961,8 @@ async def _run_nodriver_steps(
             await asyncio.sleep(step.delay)
 
     login_config = plugin.login_config
+    if not submit_clicked:
+        pre_submit_url = (await page_url_nodriver(tab)).url
     # The page settles on its own schedule after the last step: login_settle owns
     # the wait, whichever signals this plugin configured.
     if not await wait_for_login_outcome_nodriver(
@@ -967,19 +970,13 @@ async def _run_nodriver_steps(
         login_config=login_config,
         failure_text=failure_text,
         site_name=plugin.site_name,
-        pre_submit_url=pre_submit_url if submit_clicked else tab_url(tab),
+        pre_submit_url=pre_submit_url,
     ):
         return False
 
-    # Capture current URL before caching (used for domain display)
-    try:
-        if tab and hasattr(tab, "url"):
-            session.current_url = tab.url or login_target
-        else:
-            session.current_url = login_target
-    except Exception as exc:  # broad by design: the URL is display metadata, not the login
-        LOG.debug("login_url_capture_failed", error=str(exc), backend="nodriver")
-        session.current_url = login_target
+    # Capture current URL before caching (used for domain display). page_url_nodriver
+    # never raises; an unreadable page leaves the login URL.
+    session.current_url = (await page_url_nodriver(tab)).url or login_target
 
     # Extract header roles from captured network requests
     _store_header_roles(session, header_capture, base_url)
