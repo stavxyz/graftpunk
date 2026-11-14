@@ -2292,6 +2292,103 @@ class TestNoDriverBackendLifecycleEdges:
         assert exited
         assert not profile.exists()
         assert "destroyed but it is pending" not in caplog.text
+        # The waiter its closed loop never ran is not kept once the end is done.
+        from graftpunk.backends.nodriver import _LOOP_WAITS
+
+        deadline = time.monotonic() + 10
+        while [w for w in _LOOP_WAITS if w.get_loop() is loop] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not [w for w in _LOOP_WAITS if w.get_loop() is loop]
+
+    @pytest.mark.usefixtures("_armed")
+    @pytest.mark.parametrize("restart", ["start_async", "start"])
+    def test_a_start_right_after_a_sync_stop_waits_for_the_old_chrome_to_exit(
+        self,
+        fake_chrome: FakeChrome,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        restart: str,
+    ) -> None:
+        """A stop that did not wait leaves Chrome exiting; the next start waits for
+        it, so two Chromes never share the profile, and the loop keeps running."""
+        import nodriver
+
+        profile = temp_profiles / "uc_restart_after_stop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        exited_at_launch: list[bool] = []
+        ticks: list[int] = []
+        real_start = nodriver.start
+
+        with _chrome_like_child(profile, exit_delay=1.0) as child:
+
+            async def start_recording_the_old_chrome(**kwargs: Any) -> Any:
+                exited_at_launch.append(_exited_now(child))
+                return await real_start(**kwargs)
+
+            async def stop_then_restart() -> None:
+                await self._start_on_current_loop(backend)
+                assert backend._browser is not None
+                TestNoDriverBackendAbandonedLockHolder._give_chrome(
+                    backend._browser, child, profile
+                )
+                monkeypatch.setattr(nodriver, "start", start_recording_the_old_chrome)
+                backend.stop()
+                if restart == "start_async":
+                    ticks.append(await _ticks_during(backend.start_async()))
+                else:
+                    backend.start()
+
+            asyncio.run(stop_then_restart())
+            backend.stop()
+
+        assert exited_at_launch == [True]
+        if restart == "start_async":
+            assert ticks[0] >= 30
+        assert len(fake_chrome.browsers) == 2
+
+    @pytest.mark.usefixtures("_armed")
+    def test_a_sync_stop_from_another_running_loop_does_not_hold_it(
+        self, fake_chrome: FakeChrome, temp_profiles: Path
+    ) -> None:
+        """A synchronous start() quit from async code: the stop goes through the
+        browser's own loop while the caller's loop keeps running."""
+        profile = temp_profiles / "uc_stop_from_another_loop"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        exit_delay = 2.0
+        took: list[float] = []
+        ticks: list[int] = []
+
+        with _chrome_like_child(profile, exit_delay=exit_delay) as child:
+            backend.start()
+            assert backend._browser is not None and backend._private_loop is not None
+            TestNoDriverBackendAbandonedLockHolder._give_chrome(backend._browser, child, profile)
+            loop_thread = backend._private_loop.thread
+
+            async def stop() -> None:
+                started = time.monotonic()
+                backend.stop()
+                took.append(time.monotonic() - started)
+
+                async def until_exited() -> None:
+                    while not _exited_now(child):
+                        await asyncio.sleep(0.01)
+
+                ticks.append(await _ticks_during(until_exited()))
+
+            asyncio.run(stop())
+            exited = _exited_now(child)
+            loop_thread.join(10)
+
+        assert took[0] < exit_delay / 2
+        assert ticks[0] >= 50
+        assert exited
+        assert not profile.exists()
+        assert not loop_thread.is_alive()
+        assert backend.is_running is False
+        assert backend._loop is None
+        assert fake_chrome.browsers[0].stopped_on is not None
 
     @pytest.mark.usefixtures("_armed")
     def test_a_sync_stop_on_the_private_loop_leaves_that_loop_running_until_chrome_exits(
