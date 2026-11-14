@@ -259,6 +259,15 @@ _LOWER_IDENTITY_HEADERS: Final[frozenset[str]] = frozenset(
 )
 
 
+def _layered(base: dict[str, str], over: dict[str, str]) -> dict[str, str]:
+    """*base* with *over* merged on top, a header of *over* replacing one of
+    *base* with the same name in any case."""
+    names = {name.lower() for name in over}
+    merged = {name: value for name, value in base.items() if name.lower() not in names}
+    merged.update(over)
+    return merged
+
+
 def _case_insensitive_get(mapping: dict[str, str], key: str) -> str | None:
     """Look up *key* in *mapping* using case-insensitive comparison.
 
@@ -435,7 +444,11 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         or scheme) gets a plugin's declared role of that name (merged by ``gp
         http``, or kept in ``_gp_plugin_roles`` by commands and the client,
         captured name or not), or else the registered one, as a browser on the
-        site's page would send it there (``_cross_origin_headers``):
+        site's page would send it there (``_cross_origin_headers``). A declared
+        role whose name is also registered (``xhr``, ``navigation``, ``form``,
+        or a ``register_role`` name) is layered: the registered role as the
+        cross-origin rule adjusts it, with the declared headers merged over it,
+        the declared value winning per header name in any case. Either way:
         ``Sec-Fetch-Site`` same-site or cross-site, an ``Origin`` where Chrome
         sends one, and no ``X-Requested-With`` unless the plugin declared it. A
         request to ``gp_base_url``'s origin whose role was captured on another
@@ -473,19 +486,27 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
                 return dict(plugin_role)
         else:
             fetch_site, base_origin = cross
-            if declared:
-                template, is_declared = captured, True
-            elif plugin_role is not None:
-                template, is_declared = plugin_role, True
-            else:
-                template, is_declared = get_role_headers(role_name), False
-            if template is not None:
-                return _cross_origin_headers(
-                    template,
+            declared_headers = captured if declared else plugin_role
+            registered = get_role_headers(role_name)
+            if registered is not None:
+                adjusted = _cross_origin_headers(
+                    registered,
                     fetch_site=fetch_site,
                     origin=base_origin,
                     method=method,
-                    declared=is_declared,
+                    declared=False,
+                )
+                # A declared built-in name adds to the built-in role's fetch
+                # metadata rather than replacing it: no browser sends an XHR
+                # without Sec-Fetch-*.
+                return _layered(adjusted, declared_headers) if declared_headers else adjusted
+            if declared_headers is not None:
+                return _cross_origin_headers(
+                    declared_headers,
+                    fetch_site=fetch_site,
+                    origin=base_origin,
+                    method=method,
+                    declared=True,
                 )
             if captured is not None:
                 LOG.debug("captured_role_not_sent_cross_origin", role=role_name)

@@ -122,6 +122,27 @@ def test_the_python_client_gets_them_the_same_way() -> None:
     _assert_command_requests(wire)
 
 
+def test_gp_http_layers_a_declared_built_in_role_on_another_origin() -> None:
+    from graftpunk.cli.http_commands import _make_request
+
+    session, wire = _session()
+    with (
+        patch(
+            "graftpunk.cli.http_commands.load_session_for_api_resolved",
+            side_effect=echo_loaded_session(session),
+        ),
+        patch("graftpunk.cli.plugin_commands.get_plugin_for_session", return_value=_plugin()),
+    ):
+        _make_request(
+            "GET", "https://api.myshop.example/v2/me", session_name="declshop", role="xhr"
+        )
+    sent = _sent_to(wire, "https://api.myshop.example/v2/me")
+    assert sent.headers["X-Shop-Build"] == "declared"
+    assert sent.headers["Sec-Fetch-Mode"] == "cors"
+    assert sent.headers["Sec-Fetch-Site"] == "same-site"
+    assert sent.headers["Origin"] == "https://myshop.example"
+
+
 def test_gp_http_lets_a_declared_role_replace_the_captured_one() -> None:
     from graftpunk.cli.http_commands import _make_request
 
@@ -181,10 +202,14 @@ class TestDeclaredRolesInCommandsAndTheClient:
         assert own.headers["X-Requested-With"] == "XMLHttpRequest"
         assert "X-Api-Version" not in own.headers
         other = _sent_to(wire, "https://api.myshop.example/v2/orders")
+        # The built-in xhr role as the cross-origin rule adjusts it, with the
+        # declared headers merged over it (the declared Accept wins).
         assert other.headers["X-Api-Version"] == "2"
         assert other.headers["Accept"] == "application/json"
-        # The declared role has no Sec-Fetch-Mode: cors, so a GET gets no Origin.
-        assert "Origin" not in other.headers
+        assert other.headers["Sec-Fetch-Mode"] == "cors"
+        assert other.headers["Sec-Fetch-Dest"] == "empty"
+        assert other.headers["Sec-Fetch-Site"] == "same-site"
+        assert other.headers["Origin"] == "https://myshop.example"
         assert "X-Requested-With" not in other.headers
 
     def test_a_declared_role_under_a_captured_name(self) -> None:
@@ -200,6 +225,24 @@ class TestDeclaredRolesInCommandsAndTheClient:
         assert other.headers["X-Api-Key"] == "k1"
         assert "X-Shop-Build" not in other.headers
         assert other.headers["Origin"] == "https://myshop.example"
+        assert other.headers["Sec-Fetch-Dest"] == "empty"
+
+    def test_a_declared_header_replaces_the_built_in_one_in_any_case(self) -> None:
+        declared = {"xhr": {"accept": "text/csv", "sec-fetch-site": "none"}}
+        session, wire = _applied({}, declared)
+        session.xhr("GET", "https://api.myshop.example/v2/export")
+        sent = _sent_to(wire, "https://api.myshop.example/v2/export")
+        assert [k for k in sent.headers if k.lower() == "accept"] == ["accept"]
+        assert sent.headers["Accept"] == "text/csv"
+        assert sent.headers["Sec-Fetch-Site"] == "none"
+        assert sent.headers["Sec-Fetch-Mode"] == "cors"
+
+    def test_a_declared_custom_name_is_sent_as_declared_elsewhere(self) -> None:
+        session, wire = _applied({}, {"api": {"X-Api-Key": "k1"}})
+        session.request_with_role("api", "GET", "https://api.myshop.example/v2")
+        sent = _sent_to(wire, "https://api.myshop.example/v2")
+        assert sent.headers["X-Api-Key"] == "k1"
+        assert "Sec-Fetch-Mode" not in sent.headers
 
     def test_a_custom_name_only_the_plugin_declares_is_used_when_named(
         self, captured_logs: list[dict[str, Any]]
