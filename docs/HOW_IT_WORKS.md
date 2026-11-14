@@ -169,8 +169,11 @@ placeholder.
 `gp myshop login --as work` pins a label. Metadata records the
 identifier (what was typed at login, not server-verified), shown in
 `gp session list`'s Account column. When the table does not fit the terminal,
-the list leaves out its Cookies, Backend and Location columns (`gp session show`
-and `--json` carry them) and keeps each Account value on one line.
+the list leaves out its Cookies, Backend and Location columns (`--wide` keeps
+them; `gp session show` and `--json` carry them too), keeps Status on one line,
+gives Account its whole width when the terminal has room for it, and folds a
+longer Session, Domain, Account or Modified value onto further lines instead of
+cutting it.
 
 Which session a command uses is resolved once per invocation:
 `--session` > `GRAFTPUNK_SESSION` > `.gp-session` in the working directory >

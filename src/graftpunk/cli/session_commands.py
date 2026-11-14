@@ -74,6 +74,15 @@ def _label_of(name: str) -> str:
 # site apart (#179).
 _NARROW_DROPPED = frozenset(("Cookies", "Backend", "Location"))
 _UNBOUNDED_WIDTH = 100_000
+# A narrow table's five columns: a border on each side of each, and one space of
+# padding inside it on each side (Rich's defaults), take this many characters.
+_NARROW_FRAME = 5 * 3 + 1
+# The narrowest a folding column of a narrow table is made while the terminal has
+# room: wide enough for "2026-11-12", the date half of Modified.
+_NARROW_MIN_WIDTH = 10
+_LONGEST_STATUS = "○ logged out"
+# The folding columns of a narrow table, in the order spare width goes to them.
+_NARROW_FOLDING = ("Account", "Session", "Domain", "Last Modified")
 
 
 def _session_row(session: dict) -> dict[str, Text | str]:
@@ -102,11 +111,46 @@ def _session_row(session: dict) -> dict[str, Text | str]:
     }
 
 
-def _sessions_table(rows: list[dict[str, Text | str]], *, narrow: bool) -> Table:
-    """The ``gp session list`` table; *narrow* leaves out :data:`_NARROW_DROPPED`
-    and keeps Account on one line, so Domain and Last Modified wrap first. A
-    value is folded where it wraps, never cut to an ellipsis, except an Account
-    or Session wider than the terminal leaves room for."""
+def _cell_width(cell: Text | str) -> int:
+    return len(cell) if isinstance(cell, Text) else 1  # the dim dash of an empty cell
+
+
+def _narrow_widths(rows: list[dict[str, Text | str]], width: int) -> dict[str, int]:
+    """The content width of each column of a narrow table at terminal *width*,
+    summing to what the terminal leaves after the borders and padding, so Rich
+    never shrinks a column to nothing. Status gets ``○ logged out`` whole. Each
+    folding column gets its longest value or :data:`_NARROW_MIN_WIDTH`, whichever
+    is less, and what is left goes to Account, then Session, Domain and Modified,
+    each up to its longest value; the rest stays unused rather than padding."""
+    natural = {
+        name: max(
+            [len("Modified" if name == "Last Modified" else name)]
+            + [_cell_width(row[name]) for row in rows]
+        )
+        for name in _NARROW_FOLDING
+    }
+    budget = max(width - _NARROW_FRAME - len(_LONGEST_STATUS), len(_NARROW_FOLDING))
+    floor = max(1, min(_NARROW_MIN_WIDTH, budget // len(_NARROW_FOLDING)))
+    widths = {name: min(natural[name], floor) for name in _NARROW_FOLDING}
+    spare = budget - sum(widths.values())
+    for name in _NARROW_FOLDING:
+        grant = min(spare, natural[name] - widths[name])
+        widths[name] += grant
+        spare -= grant
+    widths["Status"] = len(_LONGEST_STATUS)
+    return widths
+
+
+def _sessions_table(
+    rows: list[dict[str, Text | str]], *, narrow: bool, width: int = _UNBOUNDED_WIDTH
+) -> Table:
+    """The ``gp session list`` table. Wide (the default, and always with
+    ``--wide``), it has every column. *narrow* (the wide table does not fit
+    *width*) leaves out :data:`_NARROW_DROPPED`, keeps Status on one line, sizes
+    the other columns by :func:`_narrow_widths`, which keeps Account whole when
+    the terminal can, and folds a longer Session, Domain, Account or Modified
+    onto further lines: no value is cut to an ellipsis and no column is left
+    empty."""
     table = Table(
         title="Cached Sessions",
         title_style="bold",
@@ -114,10 +158,10 @@ def _sessions_table(rows: list[dict[str, Text | str]], *, narrow: bool) -> Table
         border_style="dim",
     )
     columns: tuple[tuple[str, dict[str, Any]], ...] = (
-        ("Session", {"style": "cyan", "no_wrap": True}),
+        ("Session", {"style": "cyan", "no_wrap": not narrow, "overflow": "fold"}),
         ("Domain", {"style": "white", "overflow": "fold"}),
-        ("Account", {"style": "white", "no_wrap": narrow}),
-        ("Status", {"justify": "center"}),
+        ("Account", {"style": "white", "overflow": "fold"}),
+        ("Status", {"justify": "center", "no_wrap": narrow}),
         ("Cookies", {"justify": "right", "style": "dim"}),
         ("Last Modified", {"style": "dim", "overflow": "fold"}),
         ("Backend", {"style": "dim", "no_wrap": True}),
@@ -126,10 +170,11 @@ def _sessions_table(rows: list[dict[str, Text | str]], *, narrow: bool) -> Table
     shown = [
         (name, options) for name, options in columns if not (narrow and name in _NARROW_DROPPED)
     ]
+    sized = _narrow_widths(rows, width) if narrow else {}
     for name, options in shown:
         # "Last Modified" would fold mid-word in the column a narrow table leaves it.
         header = "Modified" if narrow and name == "Last Modified" else name
-        table.add_column(header, **options)
+        table.add_column(header, width=sized.get(name), **options)
     for row in rows:
         table.add_row(*(row[name] for name, _ in shown))
     return table
@@ -142,8 +187,20 @@ def session_list(
         bool,
         typer.Option("--json", "-j", help="Output as JSON for scripting"),
     ] = False,
+    wide: Annotated[
+        bool,
+        typer.Option(
+            "--wide",
+            help="Show every column (Cookies, Backend, Location) even when the "
+            "table is wider than the terminal",
+        ),
+    ] = False,
 ) -> None:
-    """List all cached sessions with status and metadata."""
+    """List all cached sessions with status and metadata.
+
+    When the table is wider than the terminal, Cookies, Backend and Location are
+    left out (``--wide`` keeps them), and a long Session, Domain, Account or
+    Modified value folds onto further lines instead of being cut."""
     backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
     try:
         sessions = list_sessions_with_metadata(backend_override=backend_override)
@@ -173,15 +230,15 @@ def session_list(
     table = _sessions_table(rows, narrow=False)
     # Measured unbounded: a measure within the terminal is capped at its width.
     unbounded = console.options.update(max_width=_UNBOUNDED_WIDTH)
-    narrow = console.measure(table, options=unbounded).maximum > console.width
+    narrow = not wide and console.measure(table, options=unbounded).maximum > console.width
     if narrow:
-        table = _sessions_table(rows, narrow=True)
+        table = _sessions_table(rows, narrow=True, width=console.width)
     console.print(table)
     console.print(f"\n[dim]{len(sessions)} session(s) cached[/dim]")
     if narrow:
         console.print(
             "[dim]Cookies, Backend and Location are left out at this width "
-            "(see gp session show).[/dim]"
+            "(--wide shows them).[/dim]"
         )
 
 

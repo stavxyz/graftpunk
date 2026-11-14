@@ -3,6 +3,7 @@
 import json
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from graftpunk.cli.session_commands import session_app
@@ -424,65 +425,126 @@ class TestAccountColumn:
         assert "alice@example.com" in result.output
 
 
+def _list_at(width: int, monkeypatch, sessions, *args: str) -> str:  # noqa: ANN001
+    import importlib
+
+    from tests.unit.conftest import _CONSOLE_LOCATIONS
+
+    for module_name, attr in _CONSOLE_LOCATIONS:
+        console_obj = getattr(importlib.import_module(module_name), attr)
+        monkeypatch.setattr(console_obj, "width", width)
+    with patch(
+        "graftpunk.cli.session_commands.list_sessions_with_metadata",
+        return_value=[dict(s) for s in sessions],
+    ):
+        result = runner.invoke(session_app, ["list", *args])
+    assert result.exit_code == 0, result.output
+    return strip_ansi(result.output)
+
+
+def _columns(output: str) -> list[str]:
+    """Each column of the rendered table's body, its cell pieces joined across
+    every line, so a value folded onto several lines reads whole."""
+    body = [
+        line.strip()[1:-1]
+        for line in output.splitlines()
+        if line.strip().startswith("│") and line.strip().endswith("│")
+    ]
+    cells = [line.split("│") for line in body]
+    return ["".join(row[i].strip() for row in cells) for i in range(len(cells[0]))]
+
+
+def _headers(output: str) -> list[str]:
+    line = next(line for line in output.splitlines() if "Session" in line and "┃" in line)
+    return [cell.strip() for cell in line.strip().strip("┃").split("┃")]
+
+
 class TestSessionListNarrowTerminal:
-    """The session name and the Account value survive on a real 80-column terminal
-    (#179).
+    """Every column a narrow `gp session list` keeps stays usable (#179): no column
+    is shrunk to nothing, Status is never cut, and a long value folds onto further
+    lines instead of being cut to an ellipsis.
 
     The suite pins consoles wide via the autouse ``_wide_consoles`` fixture
     (see conftest.py); these tests set the width they test.
     """
 
-    _SESSIONS = (
+    _SHORT = (
         _make_session(
             name="myshop@alice",
             domain="www.myshop.example",
-            account_identifier="alice.longname@myshop.example",
+            account_identifier="alice@myshop.example",
             storage_location="~/.config/graftpunk/sessions",
         ),
         _make_session(name="myshop@bob", status="logged_out", account_identifier="bob@example.com"),
     )
+    _LONG = (
+        _make_session(
+            name="myshop@alice",
+            domain="www.myshop.example",
+            account_identifier="alice.longname@myshop.example",
+        ),
+        _make_session(
+            name="anotherlongpluginname@work-account",
+            domain="accounts.longdomain.myshop.example",
+            status="logged_out",
+            account_identifier="firstname.lastname.department@corporate-example.example",
+        ),
+    )
 
-    @staticmethod
-    def _list_at(width: int, monkeypatch) -> str:  # noqa: ANN001
-        import importlib
-
-        from tests.unit.conftest import _CONSOLE_LOCATIONS
-
-        for module_name, attr in _CONSOLE_LOCATIONS:
-            console_obj = getattr(importlib.import_module(module_name), attr)
-            monkeypatch.setattr(console_obj, "width", width)
-        with patch(
-            "graftpunk.cli.session_commands.list_sessions_with_metadata",
-            return_value=[dict(s) for s in TestSessionListNarrowTerminal._SESSIONS],
-        ):
-            result = runner.invoke(session_app, ["list"])
-        assert result.exit_code == 0, result.output
-        return strip_ansi(result.output)
-
-    def test_session_and_account_unbroken_at_80_columns(self, monkeypatch) -> None:  # noqa: ANN001
-        output = self._list_at(80, monkeypatch)
+    def test_a_short_account_stays_on_one_line_at_80_columns(self, monkeypatch) -> None:  # noqa: ANN001
+        output = _list_at(80, monkeypatch, self._SHORT)
 
         assert max(len(line) for line in output.splitlines()) <= 80
-        for value in (
-            "myshop@alice",
-            "myshop@bob",
-            "alice.longname@myshop.example",
-            "bob@example.com",
-        ):
+        for value in ("alice@myshop.example", "bob@example.com", "myshop@alice"):
             assert value in output
         assert "…" not in output
-        table = output.split("session(s) cached")[0]
-        assert "Location" not in table and "Backend" not in table and "Cookies" not in table
+        assert _headers(output) == ["Session", "Domain", "Account", "Status", "Modified"]
         assert "Cookies, Backend and Location are left out at this width" in output
 
-    def test_every_column_at_220_columns(self, monkeypatch) -> None:  # noqa: ANN001
-        output = self._list_at(220, monkeypatch)
+    @pytest.mark.parametrize("width", [80, 100])
+    def test_long_values_fold_and_every_column_keeps_its_text(
+        self,
+        monkeypatch,  # noqa: ANN001
+        width: int,
+    ) -> None:
+        output = _list_at(width, monkeypatch, self._LONG)
 
-        for header in ("Session", "Domain", "Account", "Status", "Cookies", "Last Modified"):
-            assert header in output
-        assert "Backend" in output and "Location" in output
-        assert "~/.config/graftpunk/sessions" in output
-        assert "alice.longname@myshop.example" in output
+        assert max(len(line) for line in output.splitlines()) <= width
+        assert "…" not in output
+        assert _headers(output) == ["Session", "Domain", "Account", "Status", "Modified"]
+        session, domain, account, status, modified = _columns(output)
+        assert session == "myshop@aliceanotherlongpluginname@work-account"
+        assert domain == "www.myshop.exampleaccounts.longdomain.myshop.example"
+        assert account == (
+            "alice.longname@myshop.examplefirstname.lastname.department@corporate-example.example"
+        )
+        assert status == "● active○ logged out"
+        assert modified == "2026-02-1112:002026-02-1112:00"
+        # Status is never folded: each state is on one line.
+        assert "○ logged out" in output and "● active" in output
+
+    def test_every_column_at_220_columns(self, monkeypatch) -> None:  # noqa: ANN001
+        output = _list_at(220, monkeypatch, self._LONG)
+
+        assert _headers(output) == [
+            "Session",
+            "Domain",
+            "Account",
+            "Status",
+            "Cookies",
+            "Last Modified",
+            "Backend",
+            "Location",
+        ]
+        assert "firstname.lastname.department@corporate-example.example" in output
+        assert "anotherlongpluginname@work-account" in output
+        assert "left out at this width" not in output
+
+    def test_wide_keeps_every_column_at_80_columns(self, monkeypatch) -> None:  # noqa: ANN001
+        output = _list_at(80, monkeypatch, self._SHORT, "--wide")
+
+        table = output.split("session(s) cached")[0]
+        assert "Location" in table or "Locat" in table
         assert "left out at this width" not in output
 
 
