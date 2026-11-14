@@ -168,7 +168,9 @@ under `graftpunk.logging.redacted_values`, so their log lines show the
 placeholder.
 `gp myshop login --as work` pins a label. Metadata records the
 identifier (what was typed at login, not server-verified), shown in
-`gp session list`'s Account column.
+`gp session list`'s Account column. When the table does not fit the terminal,
+the list leaves out its Cookies, Backend and Location columns (`gp session show`
+and `--json` carry them) and keeps each Account value on one line.
 
 Which session a command uses is resolved once per invocation:
 `--session` > `GRAFTPUNK_SESSION` > `.gp-session` in the working directory >

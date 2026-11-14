@@ -425,34 +425,65 @@ class TestAccountColumn:
 
 
 class TestSessionListNarrowTerminal:
-    """The full session name must survive on a real 80-column terminal.
+    """The session name and the Account value survive on a real 80-column terminal
+    (#179).
 
     The suite pins consoles wide via the autouse ``_wide_consoles`` fixture
-    (see conftest.py); this test opts back out to the narrow default so the
-    ``no_wrap`` Session column is actually exercised at its intended width.
+    (see conftest.py); these tests set the width they test.
     """
 
-    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
-    def test_session_name_unbroken_at_80_columns(self, mock_list, monkeypatch) -> None:  # noqa: ANN001
+    _SESSIONS = (
+        _make_session(
+            name="myshop@alice",
+            domain="www.myshop.example",
+            account_identifier="alice.longname@myshop.example",
+            storage_location="~/.config/graftpunk/sessions",
+        ),
+        _make_session(name="myshop@bob", status="logged_out", account_identifier="bob@example.com"),
+    )
+
+    @staticmethod
+    def _list_at(width: int, monkeypatch) -> str:  # noqa: ANN001
         import importlib
 
         from tests.unit.conftest import _CONSOLE_LOCATIONS
 
         for module_name, attr in _CONSOLE_LOCATIONS:
             console_obj = getattr(importlib.import_module(module_name), attr)
-            monkeypatch.setattr(console_obj, "width", 80)
-
-        mock_list.return_value = [
-            _make_session(name="myshop@alice", account_identifier="alice@example.com")
-        ]
-
-        result = runner.invoke(session_app, ["list"])
-
+            monkeypatch.setattr(console_obj, "width", width)
+        with patch(
+            "graftpunk.cli.session_commands.list_sessions_with_metadata",
+            return_value=[dict(s) for s in TestSessionListNarrowTerminal._SESSIONS],
+        ):
+            result = runner.invoke(session_app, ["list"])
         assert result.exit_code == 0, result.output
-        output = strip_ansi(result.output)
-        # The Account cell may be truncated with an ellipsis at this width —
-        # only the Session column (no_wrap=True) is asserted on here.
-        assert "myshop@alice" in output
+        return strip_ansi(result.output)
+
+    def test_session_and_account_unbroken_at_80_columns(self, monkeypatch) -> None:  # noqa: ANN001
+        output = self._list_at(80, monkeypatch)
+
+        assert max(len(line) for line in output.splitlines()) <= 80
+        for value in (
+            "myshop@alice",
+            "myshop@bob",
+            "alice.longname@myshop.example",
+            "bob@example.com",
+        ):
+            assert value in output
+        assert "…" not in output
+        table = output.split("session(s) cached")[0]
+        assert "Location" not in table and "Backend" not in table and "Cookies" not in table
+        assert "Cookies, Backend and Location are left out at this width" in output
+
+    def test_every_column_at_220_columns(self, monkeypatch) -> None:  # noqa: ANN001
+        output = self._list_at(220, monkeypatch)
+
+        for header in ("Session", "Domain", "Account", "Status", "Cookies", "Last Modified"):
+            assert header in output
+        assert "Backend" in output and "Location" in output
+        assert "~/.config/graftpunk/sessions" in output
+        assert "alice.longname@myshop.example" in output
+        assert "left out at this width" not in output
 
 
 class TestSessionShowPassThroughValidation:
