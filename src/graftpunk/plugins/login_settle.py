@@ -511,9 +511,8 @@ def _debug_ignored_timings(*, login_config: LoginConfig, site_name: str, backend
     the grace window and ``settle`` goes unread; ``timeout`` caps each step's
     readiness wait there and, on nodriver, how long a page read still in flight when
     the window ends may take to answer, counted from the submit, while no read has
-    answered. An author who
-    raised ``timeout`` and saw the login give up at the same moment as before needs
-    the trail to say why.
+    answered. An author who raised ``timeout`` and saw the login give up at the same
+    moment as before needs the trail to say why.
     """
     defaults = {f.name: f.default for f in dataclasses.fields(login_config)}
     set_by_plugin = {
@@ -532,7 +531,8 @@ def _debug_ignored_timings(*, login_config: LoginConfig, site_name: str, backend
             "This login configures no success signal, so it watches for its failure "
             "text across the grace window; timeout caps each step's readiness wait "
             "and, on nodriver, how long a page read still in flight when the window "
-            "ends may take to answer, counted from the submit, and settle is unused. Set "
+            "ends may take to answer, counted from the submit, while no read has "
+            "answered, and settle is unused. Set "
             "success or success_url to have the engine wait for a signal."
         ),
         **{name: f"{value:g}s" for name, value in set_by_plugin.items()},
