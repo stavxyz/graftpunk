@@ -31,7 +31,7 @@ from structlog.testing import capture_logs
 from graftpunk.har.digest import is_credential_body, post_account_values
 from graftpunk.observe import capture
 from graftpunk.observe.capture import NodriverCaptureBackend, SeleniumCaptureBackend
-from tests.timing import best_cpu_seconds
+from tests.timing import best_cpu_seconds, gc_paused
 
 SEARCH = "https://myshop.example/api/search"
 LOGIN = "https://myshop.example/login"
@@ -3373,16 +3373,17 @@ class TestLoginInteractionsReviewRound1:
 
         assert MAX_STORED_SELECTOR == 256
         longest = "#" + "a" * 255
-        started = time.perf_counter()
-        stored = await self._stored(
-            tmp_path,
-            [
-                _interaction("click", "#" + "a" * 1_000_000, time_ms=_POST_MS - 900),
-                _interaction("click", "#" + "a" * 256, time_ms=_POST_MS - 850),
-                _interaction("click", longest, time_ms=_POST_MS - 800),
-            ],
-        )
-        assert time.perf_counter() - started < 5
+        with gc_paused():
+            started = time.perf_counter()
+            stored = await self._stored(
+                tmp_path,
+                [
+                    _interaction("click", "#" + "a" * 1_000_000, time_ms=_POST_MS - 900),
+                    _interaction("click", "#" + "a" * 256, time_ms=_POST_MS - 850),
+                    _interaction("click", longest, time_ms=_POST_MS - 800),
+                ],
+            )
+            assert time.perf_counter() - started < 5
         assert [each["selector"] for each in stored] == [None, None, longest]
 
     @pytest.mark.asyncio

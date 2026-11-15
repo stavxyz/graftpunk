@@ -31,7 +31,7 @@ from graftpunk.har.paths import (
     templated_url,
     templates_a_segment,
 )
-from tests.timing import best_cpu_seconds
+from tests.timing import best_cpu_seconds, gc_paused
 from tests.unit.guide_harness import REPO_ROOT
 
 
@@ -897,9 +897,10 @@ class TestReadsAsCasedWords:
         """The camelCase search once tried every split of every run of capitals,
         2 to the power of their number; a long value of letters must still
         return at once."""
-        started = time.perf_counter()
-        assert not reads_as_cased_words(value)
-        assert time.perf_counter() - started < 0.25
+        with gc_paused():
+            started = time.perf_counter()
+            assert not reads_as_cased_words(value)
+            assert time.perf_counter() - started < 0.25
 
 
 class TestTheReportedFormStateShapes:

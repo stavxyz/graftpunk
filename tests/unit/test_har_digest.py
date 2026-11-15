@@ -62,7 +62,7 @@ from graftpunk.har.documents import LoginForm
 from graftpunk.har.parser import LoginInteraction, parse_har_file
 from graftpunk.har.paths import normal_host, reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
-from tests.timing import best_cpu_seconds
+from tests.timing import best_cpu_seconds, gc_paused
 from tests.unit.guide_harness import REPO_ROOT
 from tests.unit.test_har_parser import _load_har_facts
 
@@ -7150,9 +7150,10 @@ class TestWhatDisqualifiesTheCandidate(_OpenerCase):
         entries = self._entries(
             tmp_path, (("click", "#" + "a" * 1_000_000, 5000), *self._OPENED[1:])
         )
-        started = time.perf_counter()
-        (form,) = self._run(tmp_path, entries).login_forms
-        assert time.perf_counter() - started < 5
+        with gc_paused():
+            started = time.perf_counter()
+            (form,) = self._run(tmp_path, entries).login_forms
+            assert time.perf_counter() - started < 5
         assert form.opener_candidate == ""
 
 

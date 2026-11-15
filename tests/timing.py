@@ -4,7 +4,21 @@ from __future__ import annotations
 
 import gc
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+
+
+@contextmanager
+def gc_paused() -> Iterator[None]:
+    """The cyclic collector off inside the block and back as it was afterwards, so a
+    collection pause cannot land inside a timed region."""
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if collecting:
+            gc.enable()
 
 
 def best_cpu_seconds(work: Callable[[], object], runs: int = 3) -> float:
@@ -16,15 +30,10 @@ def best_cpu_seconds(work: Callable[[], object], runs: int = 3) -> float:
     ratio between two sizes. The least of several runs drops the slices another
     xdist worker's load adds.
     """
-    collecting = gc.isenabled()
-    gc.disable()
-    try:
-        best = float("inf")
+    best = float("inf")
+    with gc_paused():
         for _ in range(runs):
             start = time.process_time()
             work()
             best = min(best, time.process_time() - start)
-    finally:
-        if collecting:
-            gc.enable()
     return best
