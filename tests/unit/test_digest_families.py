@@ -15,7 +15,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -44,6 +43,7 @@ from graftpunk.har.report import (
 )
 from graftpunk.testing import FixtureSession
 from graftpunk.testing.sidecar import load_sidecar, sidecar_text
+from tests.timing import best_cpu_seconds
 from tests.unit.cli_harness import strip_ansi
 from tests.unit.test_har_digest import _entry, _write_har
 from tests.unit.test_har_report import _ENDPOINT_V1, _FAMILY_ENDPOINT_V1
@@ -980,17 +980,6 @@ def _entries_with_families(pairs: int) -> list[dict]:
     return entries
 
 
-def _cpu_seconds(work: Callable[[], object]) -> float:
-    """The least CPU time of three runs of *work*: CPU time, never wall clock, and
-    the least of three, so a busy machine slows neither side of a ratio."""
-    times = []
-    for _ in range(3):
-        start = time.process_time()
-        work()
-        times.append(time.process_time() - start)
-    return min(times)
-
-
 def test_family_rows_cost_linear_time(tmp_path: Path) -> None:
     """Eight times the endpoints (and families) within 32 times the CPU time, for
     the digest, the markdown, and the projection together. Ordering family rows
@@ -1010,7 +999,7 @@ def test_family_rows_cost_linear_time(tmp_path: Path) -> None:
 
         return work
 
-    small, large = _cpu_seconds(everything(25)), _cpu_seconds(everything(200))
+    small, large = best_cpu_seconds(everything(25)), best_cpu_seconds(everything(200))
     assert large < 32 * small, (small, large)
 
 

@@ -62,6 +62,7 @@ from graftpunk.har.documents import LoginForm
 from graftpunk.har.parser import LoginInteraction, parse_har_file
 from graftpunk.har.paths import normal_host, reads_as_words
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
+from tests.timing import best_cpu_seconds
 from tests.unit.guide_harness import REPO_ROOT
 from tests.unit.test_har_parser import _load_har_facts
 
@@ -9064,7 +9065,6 @@ def test_a_long_value_in_a_credential_post_is_read_in_linear_time() -> None:
     post_account_values. A findall of the shape retried the run from each of its
     characters, 64 times at this ratio: 200,000 letters took 27.9 s (2026-11-03)."""
     import string
-    import time
 
     from graftpunk.har.digest import post_account_values
 
@@ -9075,12 +9075,9 @@ def test_a_long_value_in_a_credential_post_is_read_in_linear_time() -> None:
         return f"username=ann&password=pw&note={letters}"
 
     def cpu(post: str) -> float:
-        best = float("inf")
-        for _ in range(3):
-            start = time.process_time()
-            post_account_values(post, "application/x-www-form-urlencoded")
-            best = min(best, time.process_time() - start)
-        return best
+        return best_cpu_seconds(
+            lambda: post_account_values(post, "application/x-www-form-urlencoded")
+        )
 
     small, large = body(5_000), body(40_000)
     assert cpu(large) / max(cpu(small), 1e-4) < 24

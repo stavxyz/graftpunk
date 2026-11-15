@@ -5,7 +5,6 @@ with a JSON ``errors[].message`` and no redirect."""
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,7 @@ from graftpunk.har.digest import (
     password_field_names,
 )
 from graftpunk.observe.snapshot import stored_dom_snapshot
+from tests.timing import best_cpu_seconds
 from tests.unit.test_har_digest import _entry, _write_har
 
 _HOST = "https://myshop.example.com"
@@ -391,17 +391,6 @@ def _large_json_body(megabytes: int, *, distinct: bool = False) -> str:
     return json.dumps({"items": rows, "tags": ["a", "b"]})
 
 
-def _cpu_seconds(work: Any) -> float:
-    """The least CPU time of three runs of *work*: CPU time, never wall clock, and
-    the least of three, so a busy machine slows neither side of a ratio."""
-    times = []
-    for _ in range(3):
-        start = time.process_time()
-        work()
-        times.append(time.process_time() - start)
-    return min(times)
-
-
 class TestTheCostOfTheNestedRule:
     """The recorder runs the rule in its CDP request handler for every POST while
     snapshots are on, so the nested read must stay linear in the body: four times
@@ -415,8 +404,8 @@ class TestTheCostOfTheNestedRule:
     def test_a_body_of_shared_names_is_read_in_linear_time(self) -> None:
         small, large = _large_json_body(1), _large_json_body(4)
         assert len(large) >= 4_000_000
-        ratio = _cpu_seconds(lambda: password_field_names(large, _JSON)) / max(
-            _cpu_seconds(lambda: password_field_names(small, _JSON)), 1e-4
+        ratio = best_cpu_seconds(lambda: password_field_names(large, _JSON)) / max(
+            best_cpu_seconds(lambda: password_field_names(small, _JSON)), 1e-4
         )
         assert ratio < 12, ratio
 
@@ -424,8 +413,8 @@ class TestTheCostOfTheNestedRule:
         small = _large_json_body(1, distinct=True)
         large = _large_json_body(4, distinct=True)
         assert len(large) >= 4_000_000
-        ratio = _cpu_seconds(lambda: is_credential_body(large, _JSON)) / max(
-            _cpu_seconds(lambda: is_credential_body(small, _JSON)), 1e-4
+        ratio = best_cpu_seconds(lambda: is_credential_body(large, _JSON)) / max(
+            best_cpu_seconds(lambda: is_credential_body(small, _JSON)), 1e-4
         )
         assert ratio < 12, ratio
 

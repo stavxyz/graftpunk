@@ -31,6 +31,7 @@ from graftpunk.har.paths import (
     templated_url,
     templates_a_segment,
 )
+from tests.timing import best_cpu_seconds
 from tests.unit.guide_harness import REPO_ROOT
 
 
@@ -1021,17 +1022,6 @@ def test_the_har_readers_spelling_rule_is_graftpunks() -> None:
     assert [w for w in words if script._spelled(w) != paths_module._spelled(w)] == []
 
 
-def _cpu_seconds(work: Callable[[], object]) -> float:
-    """The least CPU time of three runs of *work*: CPU time, never wall clock, and
-    the least of three, so a busy machine slows neither side of a ratio."""
-    times = []
-    for _ in range(3):
-        start = time.process_time()
-        work()
-        times.append(time.process_time() - start)
-    return min(times)
-
-
 @pytest.mark.parametrize("rule", ["reads_as_words", "holds_an_id", "har-facts holds_an_id"])
 def test_a_long_run_of_letters_is_judged_in_linear_time(rule: str) -> None:
     """Eight times the letters within 24 times the CPU time (#304). The email
@@ -1045,7 +1035,9 @@ def test_a_long_run_of_letters_is_judged_in_linear_time(rule: str) -> None:
     rng = random.Random(304)  # noqa: S311 - a fixed sample, not a secret
     small = "".join(rng.choices(string.ascii_lowercase, k=5_000))
     large = "".join(rng.choices(string.ascii_lowercase, k=40_000))
-    ratio = _cpu_seconds(lambda: judge(large)) / max(_cpu_seconds(lambda: judge(small)), 1e-4)
+    ratio = best_cpu_seconds(lambda: judge(large)) / max(
+        best_cpu_seconds(lambda: judge(small)), 1e-4
+    )
     assert ratio < 24, ratio
 
 

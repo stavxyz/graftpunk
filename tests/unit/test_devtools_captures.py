@@ -12,7 +12,6 @@ import itertools
 import json
 import os
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +26,7 @@ from graftpunk.devtools.captures import (
 )
 from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
 from graftpunk.testing.sidecar import load_sidecar, sidecar_path
+from tests.timing import best_cpu_seconds
 
 
 def _git(argv: list[str], cwd: Path) -> None:
@@ -624,12 +624,11 @@ class TestCheckedNamesOfValuesUnderTheName:
 
         def cost(n: int) -> float:
             body = head + unit * n + tail
-            best = float("inf")
-            for _ in range(3):
-                start = time.process_time()
+
+            def judged() -> None:
                 assert checked_names_of(values, body) == ()
-                best = min(best, time.process_time() - start)
-            return best
+
+            return best_cpu_seconds(judged)
 
         base, large = cost(small), cost(8 * small)
         assert large / base < 16, (base, large)

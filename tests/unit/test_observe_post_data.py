@@ -31,6 +31,7 @@ from structlog.testing import capture_logs
 from graftpunk.har.digest import is_credential_body, post_account_values
 from graftpunk.observe import capture
 from graftpunk.observe.capture import NodriverCaptureBackend, SeleniumCaptureBackend
+from tests.timing import best_cpu_seconds
 
 SEARCH = "https://myshop.example/api/search"
 LOGIN = "https://myshop.example/login"
@@ -3580,19 +3581,19 @@ class TestRecorderBoundsRound5:
 
     def test_a_long_path_segment_is_an_id_and_costs_no_more(self) -> None:
         """Ten times the segment, not much more time: no scan grows with it."""
-        import time
 
         from graftpunk.observe.capture import _page_path
 
         def timed(n: int) -> float:
-            started = time.perf_counter()
-            # Cut at 1,024 characters first, so the segment is the rest of the path.
-            assert _page_path("https://myshop.example/a/" + "x" * n + "/login") == "/a/{id}"
-            return time.perf_counter() - started
+            def work() -> None:
+                # Cut at 1,024 characters first, so the segment is the rest of the path.
+                assert _page_path("https://myshop.example/a/" + "x" * n + "/login") == "/a/{id}"
+
+            return best_cpu_seconds(work)
 
         timed(10_000)
-        small = min(timed(10_000) for _ in range(3))
-        large = min(timed(100_000) for _ in range(3))
+        small = timed(10_000)
+        large = timed(100_000)
         assert large < max(small * 20, 0.05)
 
     def test_a_path_over_the_cap_is_cut_first(self) -> None:
