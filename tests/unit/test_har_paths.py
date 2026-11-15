@@ -898,9 +898,9 @@ class TestReadsAsCasedWords:
         2 to the power of their number; a long value of letters must still
         return at once."""
         with gc_paused():
-            started = time.perf_counter()
+            started = time.process_time()
             assert not reads_as_cased_words(value)
-            assert time.perf_counter() - started < 0.25
+            assert time.process_time() - started < 0.25
 
 
 class TestTheReportedFormStateShapes:

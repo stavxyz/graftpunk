@@ -82,8 +82,8 @@ class TestLinearMatching:
 
         crafted = "#" + "\\31" * 60 + "!"
         with gc_paused():
-            started = time.perf_counter()
+            started = time.process_time()
             keys = selector_keys(crafted)
-            assert time.perf_counter() - started < 0.5
+            assert time.process_time() - started < 0.5
         assert keys == {("text", crafted)}
         assert selector_keys("#\\31 \\32 3") == {("id", "123")}
