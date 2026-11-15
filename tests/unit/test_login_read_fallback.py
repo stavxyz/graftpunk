@@ -11,9 +11,15 @@ Two things kept a nodriver login from seeing the page it landed on:
   backend id" on every tick; why is unverified, and the fake fails every ``DOM.*``
   call that way.
 
-The wait reads ``location.href`` (``graftpunk.plugins.login_settle.page_url_nodriver``)
-and, when a node-id read fails, the document and its URL in one
-``Runtime.evaluate``.
+The wait reads each tick's URL, success element and document in one
+``Runtime.evaluate`` that carries no node id, and falls back to ``location.href``
+(``graftpunk.plugins.login_settle.page_url_nodriver``) and nodriver's node-id reads
+when that fails.
+
+A browser that answers each command slowly (#395) is judged on the page it shows:
+the tick costs it one round trip, and the no-success-signal wait lets the read in
+flight when its grace ends answer within ``LoginConfig.timeout``. Those tests run
+on a virtual clock (``_run_virtual``), so the delays cost no real time.
 """
 
 from __future__ import annotations
@@ -45,6 +51,7 @@ from tests.unit.test_login_engine import (
     _ScriptedNodriverTab,
     _warning_kwargs,
 )
+from tests.unit.test_login_poll_bounds import _FOREVER, _run_virtual
 
 IDP = "https://idp.example.com/sso/login"
 DASHBOARD = "https://myshop.example/dashboard"
@@ -61,7 +68,8 @@ class _CdpTab(Tab):
     ``lands_at``. Every ``DOM.*`` call fails as in #392 while ``node_ids_fail``;
     every ``Runtime.evaluate`` raises *evaluate_error* when one is set.
     ``Target.getTargetInfo`` reports the page's current URL, which is how nodriver
-    would refresh ``Tab.url``. ``methods`` records the CDP methods sent.
+    would refresh ``Tab.url``. Every command answers *delay* seconds after it is
+    sent. ``methods`` records the CDP methods sent.
     """
 
     def __init__(
@@ -75,6 +83,7 @@ class _CdpTab(Tab):
         page_read: Any = None,
         tab_url: str = IDP,
         html_before: str = "<html>Sign in</html>",
+        delay: float = 0.0,
     ) -> None:
         info = cdp.target.TargetInfo(
             target_id=cdp.target.TargetID("T"),
@@ -93,6 +102,7 @@ class _CdpTab(Tab):
         self.evaluate_error = evaluate_error
         self.page_read = page_read
         self.html_before = html_before
+        self.delay = delay
         self.methods: list[str] = []
         self.expressions: list[str] = []
 
@@ -134,6 +144,8 @@ class _CdpTab(Tab):
         request = next(cdp_obj)
         method = request["method"]
         self.methods.append(method)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if method.startswith("DOM.") and self.node_ids_fail:
             raise ProtocolException(dict(_NO_NODE))
         if method == "DOM.getDocument":
@@ -262,7 +274,9 @@ class TestTheSignalPollReadsThePage:
         assert tab.url == IDP
         assert _warnings(mock_log, "login_signal_timeout") == []
 
-    async def test_a_success_url_login_passes_when_the_node_id_reads_work(self) -> None:
+    async def test_a_tick_is_one_evaluate_when_the_page_answers_it(self) -> None:
+        """#395: the URL, the element and the document come back in one command, and
+        nodriver's node-id reads are never made while the evaluate serves."""
         loop = asyncio.get_running_loop()
         tab = _CdpTab(lands_at=loop.time() + 0.3, node_ids_fail=False)
 
@@ -270,7 +284,40 @@ class TestTheSignalPollReadsThePage:
             result = await _signal_wait(tab, _config(success_url="*/dashboard*"))
 
         assert result is True
+        assert tab.methods
+        assert set(tab.methods) == {"Runtime.evaluate"}
+        assert all("graftpunk:page-read" in e for e in tab.expressions)
+        assert len(tab.expressions) == len(tab.methods)
+
+    async def test_a_success_url_login_passes_on_the_node_id_reads(self) -> None:
+        """The fallback: a page whose one-evaluate read answers no record is read
+        through nodriver's calls."""
+        loop = asyncio.get_running_loop()
+        tab = _CdpTab(lands_at=loop.time() + 0.3, node_ids_fail=False, page_read="not json")
+
+        with patch.object(login_settle, "LOG"):
+            result = await _signal_wait(tab, _config(success_url="*/dashboard*"))
+
+        assert result is True
         assert "DOM.getOuterHTML" in tab.methods
+        assert any("graftpunk:href" in e for e in tab.expressions)
+
+    async def test_a_url_only_tick_reads_the_document_only_at_the_landing_url(self) -> None:
+        """No failure text: the document is asked for only once the URL wants it,
+        in a second evaluate on that tick."""
+        loop = asyncio.get_running_loop()
+        tab = _CdpTab(lands_at=loop.time() + 0.7)
+
+        with patch.object(login_settle, "LOG"):
+            result = await _signal_wait(
+                tab, _config(success_url="*/dashboard*", failure=None, timeout=5.0)
+            )
+
+        assert result is True
+        with_html = [e for e in tab.expressions if "const html = true" in e]
+        assert len(with_html) == 1
+        assert "graftpunk:again" in with_html[0]
+        assert len(tab.expressions) >= 3
 
     async def test_a_success_element_read_without_node_ids_passes(self) -> None:
         loop = asyncio.get_running_loop()
@@ -333,7 +380,9 @@ class TestTheSignalPollReadsThePage:
         assert _warnings(mock_log, "login_signal_timeout") == []
         warning = _warning_kwargs(mock_log, "login_page_unreadable")
         assert warning["failed_ticks"] == 2
-        assert warning["error_types"] == "ProtocolException, ConnectionResetError"
+        # The one-evaluate read fails first, then the node-id read the tick falls
+        # back to, whose error the warning carries.
+        assert warning["error_types"] == "ConnectionResetError, ProtocolException"
         assert "No node found" in warning["error"]
         for field in ("failed_ticks", "error_types"):
             assert "socket text" not in str(warning[field])
@@ -397,7 +446,148 @@ class TestTheGraceWindowReadsThePage:
         assert result is False
         warning = _warning_kwargs(mock_log, "login_page_unreadable")
         assert warning["url"] == DASHBOARD
-        assert warning["error_types"] == "ProtocolException, PageReadAnswerError"
+        assert warning["error_types"] == "PageReadAnswerError, ProtocolException"
+
+
+_SLOW_DELAYS = [0.5, 1.6, 2.5, 4.0]
+_FAILED = "<html>Invalid credentials</html>"
+
+
+def _no_signal_config(**overrides: Any) -> LoginConfig:
+    """The #395 configuration: failure text and no success signal, at the default
+    timeout unless a test sets one."""
+    values: dict[str, Any] = {
+        "steps": [LoginStep(fields={"username": "#user"}, submit="#submit")],
+        "url": "/login",
+        "failure": "Invalid credentials",
+    }
+    values.update(overrides)
+    return LoginConfig(**values)
+
+
+def _slow_outcome(tab_factory: Any, config: LoginConfig) -> tuple[bool, float, MagicMock]:
+    """``wait_for_login_outcome_nodriver`` on a virtual clock: the verdict, the
+    virtual seconds from the submit to the verdict, and the patched LOG."""
+
+    async def wait() -> bool:
+        return await wait_for_login_outcome_nodriver(
+            tab=tab_factory(),
+            login_config=config,
+            failure_text=config.failure or "",
+            site_name="myshop",
+            pre_submit_url=IDP,
+        )
+
+    with patch.object(login_settle, "LOG") as mock_log:
+        result, elapsed = _run_virtual(wait)
+    return result, elapsed, mock_log
+
+
+class TestASlowPageIsJudgedOnWhatItShows:
+    """#395: with every CDP command answering after a fixed delay, a login with no
+    success signal ended in ``login_page_unreadable`` from 1.6 s up in 1.43.0 (two
+    commands a tick, and the read abandoned half a second after the grace). The
+    page's verdict now comes from the first read that answers within
+    ``LoginConfig.timeout`` of the submit."""
+
+    @pytest.mark.parametrize("delay", _SLOW_DELAYS)
+    def test_a_page_without_the_failure_text_passes(self, delay: float) -> None:
+        result, _elapsed, mock_log = _slow_outcome(
+            lambda: _CdpTab(lands_at=0.0, node_ids_fail=False, delay=delay),
+            _no_signal_config(),
+        )
+
+        assert result is True
+        assert mock_log.warning.call_args_list == []
+
+    @pytest.mark.parametrize("delay", _SLOW_DELAYS)
+    def test_a_page_with_the_failure_text_fails_on_it(self, delay: float) -> None:
+        result, _elapsed, mock_log = _slow_outcome(
+            lambda: _CdpTab(lands_at=0.0, node_ids_fail=False, html_after=_FAILED, delay=delay),
+            _no_signal_config(),
+        )
+
+        assert result is False
+        assert _warning_kwargs(mock_log, "login_failure_text_detected")["text"] == (
+            "Invalid credentials"
+        )
+        assert _warnings(mock_log, "login_page_unreadable") == []
+
+    @pytest.mark.parametrize("delay", _SLOW_DELAYS)
+    def test_each_tick_is_one_command(self, delay: float) -> None:
+        tabs: list[_CdpTab] = []
+
+        def make() -> _CdpTab:
+            tabs.append(_CdpTab(lands_at=0.0, node_ids_fail=False, delay=delay))
+            return tabs[-1]
+
+        result, elapsed, _mock_log = _slow_outcome(make, _no_signal_config())
+
+        assert result is True
+        assert set(tabs[0].methods) == {"Runtime.evaluate"}
+        # The ticks run back to back, each one command long, from half a second in.
+        assert len(tabs[0].methods) <= 1 + elapsed / delay
+
+    @pytest.mark.parametrize("timeout", [10.0, 30.0])
+    def test_a_tab_that_never_answers_is_unreadable_at_the_timeout(self, timeout: float) -> None:
+        result, elapsed, mock_log = _slow_outcome(
+            lambda: _CdpTab(lands_at=0.0, node_ids_fail=False, delay=_FOREVER),
+            _no_signal_config(timeout=timeout),
+        )
+
+        assert result is False
+        assert elapsed == pytest.approx(timeout)
+        warning = _warning_kwargs(mock_log, "login_page_unreadable")
+        assert warning["failed_ticks"] == 1
+        assert warning["error_types"] == "TimeoutError"
+        assert "the login's timeout counted from the submit" in warning["error"]
+
+    def test_a_timeout_shorter_than_the_grace_does_not_shorten_it(self) -> None:
+        """The bound is never sooner than the grace's own end, half a second past it."""
+        result, elapsed, mock_log = _slow_outcome(
+            lambda: _CdpTab(lands_at=0.0, node_ids_fail=False, delay=_FOREVER),
+            _no_signal_config(timeout=1.0),
+        )
+
+        assert result is False
+        assert elapsed == pytest.approx(login_settle._NO_SIGNAL_GRACE + 0.5)
+        warning = _warning_kwargs(mock_log, "login_page_unreadable")
+        assert "one poll interval past its timeout" in warning["error"]
+
+    def test_a_read_that_answers_after_the_timeout_is_not_waited_for(self) -> None:
+        """A page slower than the whole budget is unreadable, at the budget."""
+        result, elapsed, mock_log = _slow_outcome(
+            lambda: _CdpTab(lands_at=0.0, node_ids_fail=False, delay=6.0),
+            _no_signal_config(timeout=5.0),
+        )
+
+        assert result is False
+        assert elapsed == pytest.approx(5.0)
+        assert _warning_kwargs(mock_log, "login_page_unreadable")["failed_ticks"] == 1
+
+    @pytest.mark.parametrize("delay", _SLOW_DELAYS)
+    def test_the_success_signal_poll_reads_a_slow_page_in_one_command(self, delay: float) -> None:
+        """Ruling 3 of #395: the signal poll's tick is one command too, so a slow page
+        lands within the timeout it is given."""
+        tabs: list[_CdpTab] = []
+
+        def make() -> _CdpTab:
+            # The page lands on the success URL a second after the submit.
+            lands_at = asyncio.get_running_loop().time() + 1.0
+            tabs.append(_CdpTab(lands_at=lands_at, node_ids_fail=False, delay=delay))
+            return tabs[-1]
+
+        result, _elapsed, mock_log = _slow_outcome(
+            make, _no_signal_config(success_url="*/dashboard*", settle=0.0, timeout=12.0)
+        )
+
+        assert result is True
+        assert mock_log.warning.call_args_list == []
+        polls = [m for m in tabs[0].methods if m != "Runtime.evaluate"]
+        assert polls == []
+        page_reads = [e for e in tabs[0].expressions if "graftpunk:page-read" in e]
+        # Every command but the readiness read is the tick's one page read.
+        assert len(page_reads) == len(tabs[0].methods) - 1
 
 
 class DeclarativeNodriverUrlWithFailure(SitePlugin):

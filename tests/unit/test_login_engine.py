@@ -792,9 +792,11 @@ class TestNodriverLoginValidationPaths:
 class _ScriptedNodriverTab:
     """A nodriver tab that answers the post-submit poll from a script.
 
-    Each read of the page's URL (``location.href``, the ``graftpunk:href``
-    evaluate) is one poll tick, since that is the read the wait makes every tick
-    and before anything else: ``contents`` and ``urls`` are read by tick index
+    Each page read (the ``graftpunk:page-read`` evaluate) is one poll tick, since
+    that is the read the wait makes every tick and before anything else, except the
+    second read of a tick whose URL wanted the document (``graftpunk:again``); the
+    engine's own ``location.href`` reads before the wait's first page read are
+    ticks as well (see ``_href``): ``contents`` and ``urls`` are read by tick index
     and their last entry repeats for every later tick, the success selector starts
     resolving on tick ``success_from`` (never, when it is None), and ``ready_states``
     answers the document-ready wait one read at a time. ``events`` records what the
@@ -814,6 +816,9 @@ class _ScriptedNodriverTab:
         self.events: list[str] = []
         self.tick = 0
         self._url_reads = 0
+        self._ticks = 0
+        self._page_reads = 0
+        self._page_read_failed = False
         self._wait_over = False
         self._success_selector = success_selector
         self._contents = contents
@@ -852,17 +857,24 @@ class _ScriptedNodriverTab:
         """The page's ``location.href``: the scripted URL, which nodriver leaves as
         None while a tab navigates; None answers as nodriver's RemoteObject does.
 
-        This read is what moves the script on: the wait reads the URL once per tick
-        and before anything else, and the engine's own read just before the submit
-        takes the same tick 0 URL (the page the submit was clicked from). Reads
-        after the wait is over, such as the engine capturing the URL for display,
-        leave the script where it stopped.
+        This read moves the script on, as a tick does: the engine's own read just
+        before the submit takes the tick 0 URL (the page the submit was clicked
+        from), and so does the wait's first tick. The exception is a tick's fallback
+        read (``page_url_nodriver`` right after its page read failed), which stays
+        within the tick its page read started. Reads after the wait is over, such as
+        the engine capturing the URL for display, leave the script where it stopped.
         """
         if not self._wait_over:
-            self.tick = max(self._url_reads - 1, 0)
             self._url_reads += 1
+            if not self._page_read_failed:
+                self._start_tick()
         url = self._at(self._urls, self.tick)
         return url if url else MagicMock(name="RemoteObject")
+
+    def _start_tick(self) -> None:
+        if not self._wait_over:
+            self.tick = max(self._ticks - 1, 0)
+            self._ticks += 1
 
     async def get_content(self) -> str:
         from nodriver.core.connection import ProtocolException
@@ -918,20 +930,28 @@ class _ScriptedNodriverTab:
         return state
 
     async def _answer_page_read(self, expression: str) -> str:
-        """The wait's read of the document without node ids (#392), answered from the
-        same script as the node-id reads, so a page this double cannot read one way
-        it cannot read the other way either: an unreadable tick, and a subclass whose
-        ``get_content`` or success query raises (a closed browser), fail here too.
-        A test that wants only the node-id path to fail answers this read itself."""
+        """The wait's read of the page without node ids (#392, #395), answered from
+        the same script as the node-id reads, so a page this double cannot read one
+        way it cannot read the other way either: an unreadable tick, and a subclass
+        whose ``get_content`` or success query raises (a closed browser), fail here
+        too. A test that wants only the node-id path to fail answers this read
+        itself. The document is read, and recorded in ``events``, only when the read
+        asks for it."""
         from nodriver.core.connection import ProtocolException
 
+        if "graftpunk:again" not in expression:
+            self._page_reads += 1
+            self._start_tick()
+        # Until it answers a record the wait takes, as a None URL is not.
+        self._page_read_failed = True
         if self.tick in self._unreadable_ticks:
             raise ProtocolException("Could not find node with given id")
-        html = await self.get_content()
+        html = await self.get_content() if "const html = true" in expression else ""
         found = None
         if self._success_selector and json.dumps(self._success_selector) in expression:
             found = await self.query_selector(self._success_selector) is not None
         href = self._at(self._urls, self.tick)
+        self._page_read_failed = not href
         return json.dumps({"html": html, "href": href, "found": found, "rejected": False})
 
 

@@ -2155,8 +2155,9 @@ hand.
 - `headless`: run the login browser with no window. Defaults to `False`.
 - `timeout`: seconds to wait after the last step for a success or failure
   signal. Defaults to `30.0`. It also caps each step's readiness wait when it
-  is under 5 seconds (see [When a step acts](#when-a-step-acts)). The wait
-  after the last step does not use it when no success signal is configured.
+  is under 5 seconds (see [When a step acts](#when-a-step-acts)). When no
+  success signal is configured, the wait after the last step uses it only to
+  bound a page read still in flight when the three second window ends (nodriver).
 - `settle`: seconds to wait after the success signal and after the document
   finishes loading, before cookies are captured. Defaults to `1.0`. Unused when
   no success signal is configured.
@@ -2306,8 +2307,12 @@ rather than a poll.** There is no signal to wait for, so the engine watches for
 the `failure` text for three seconds and then takes the login at its word. That
 catches an error the site renders a moment after the submit, and it is much
 weaker than a real success signal. Configure one. On that path `settle` is
-not used at all, and `timeout` only caps each step's readiness wait: setting
-either changes nothing after the last step until a success signal exists.
+not used at all, and `timeout` caps each step's readiness wait and, on nodriver,
+how long a page read still in flight when the window ends may take to answer,
+counted from the submit. A browser that is slow to answer is judged on the page
+it shows; one that answers nothing holds the login until `timeout` before it
+fails as unreadable. Setting either changes nothing else after the last step
+until a success signal exists.
 
 ### When a step acts
 
