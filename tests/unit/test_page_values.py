@@ -3,12 +3,12 @@ tokenizer rules, with the same answer on every Python release (#369)."""
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 
 import pytest
 
 from graftpunk.page_values import page_values, skipped_region_mentioning
+from tests.timing import best_cpu_seconds
 
 _REAL = '<input type="hidden" name="csrf" value="realValue12345">'
 _DECOY = '<input type="hidden" name="csrf" value="decoyValue1234">'
@@ -204,13 +204,8 @@ def _seconds(build: Callable[[int], str], n: int) -> float:
     """The least CPU time of five parses of a page of size *n* (a fresh text each
     time, so the cache does not answer). CPU time and the minimum keep a busy
     machine (other xdist workers) from reading as a slow parse."""
-    best = float("inf")
-    for attempt in range(5):
-        page = build(n) + f"<!--{attempt}-->"
-        start = time.process_time()
-        page_values(page)
-        best = min(best, time.process_time() - start)
-    return best
+    pages = iter([build(n) + f"<!--{attempt}-->" for attempt in range(5)])
+    return best_cpu_seconds(lambda: page_values(next(pages)), runs=5)
 
 
 _ROW = '<tr><td class="c">cell &amp; text</td><td><a href="/x?a=1&b=2">link</a></td></tr>\n'

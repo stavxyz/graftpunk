@@ -23,6 +23,7 @@ from graftpunk.observe.snapshot import (
     snapshot_redaction,
     stored_dom_snapshot,
 )
+from tests.timing import best_cpu_seconds
 
 _PASSWORD = "hunter2hunter2"  # noqa: S105 - a test value, not a credential
 _EMAIL = "alice@example.com"
@@ -786,21 +787,7 @@ class TestSanitizerGuards:
 def _snapshot_parse_seconds(html: str) -> float:
     """The parse's CPU time, the best of three with the cyclic collector off: wall
     time on a busy runner, or a collection landing in one run, is not the parse."""
-    import gc
-    import time
-
-    best = float("inf")
-    collecting = gc.isenabled()
-    gc.disable()
-    try:
-        for _ in range(3):
-            started = time.process_time()
-            extract_login_forms(html, source=_SITE, snapshot=True)
-            best = min(best, time.process_time() - started)
-    finally:
-        if collecting:
-            gc.enable()
-    return best
+    return best_cpu_seconds(lambda: extract_login_forms(html, source=_SITE, snapshot=True))
 
 
 def _assert_snapshot_parses_in_linear_time(page: Callable[[int], str]) -> None:
@@ -1756,22 +1743,10 @@ class TestNoNameIsRedacted:
 
 def _sanitize_seconds(html: str, structure_only: bool) -> float:
     """The CPU time of storing *html*, the best of two with the cyclic collector off."""
-    import gc
-    import time
-
     body = "email=alice.smith%40intranet&password=hunter22secret"
-    best = float("inf")
-    collecting = gc.isenabled()
-    gc.disable()
-    try:
-        for _ in range(2):
-            started = time.process_time()
-            stored_dom_snapshot(html, body, _FORM, structure_only=structure_only)
-            best = min(best, time.process_time() - started)
-    finally:
-        if collecting:
-            gc.enable()
-    return best
+    return best_cpu_seconds(
+        lambda: stored_dom_snapshot(html, body, _FORM, structure_only=structure_only), runs=2
+    )
 
 
 @pytest.mark.parametrize("structure_only", [False, True], ids=["default", "structure-only"])

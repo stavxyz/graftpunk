@@ -17,8 +17,6 @@ import json
 import subprocess
 import sys
 import textwrap
-import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +35,7 @@ from graftpunk.har.report import (
     render_markdown,
     summarize_shape,
 )
+from tests.timing import best_cpu_seconds
 from tests.unit.test_har_digest import _entry, _write_har
 from tests.unit.test_har_report import _ENDPOINT_V1, _INLINE_ENDPOINT_V1
 
@@ -388,8 +387,8 @@ class TestTheBounds:
         found = inline_state.inline_json(large_page)
         assert found is not None
         assert found.target == "window.App.props"
-        small = _cpu_seconds(lambda: inline_state.inline_json(small_page))
-        large = _cpu_seconds(lambda: inline_state.inline_json(large_page))
+        small = best_cpu_seconds(lambda: inline_state.inline_json(small_page))
+        large = best_cpu_seconds(lambda: inline_state.inline_json(large_page))
         assert large < 32 * small, (small, large)
 
     def test_cpu_time_grows_linearly_through_markup_and_code(self) -> None:
@@ -422,20 +421,9 @@ class TestTheBounds:
         found = inline_state.inline_json(large_page)
         assert found is not None
         assert found.target == "window.App.props"
-        small = _cpu_seconds(lambda: inline_state.inline_json(small_page))
-        large = _cpu_seconds(lambda: inline_state.inline_json(large_page))
+        small = best_cpu_seconds(lambda: inline_state.inline_json(small_page))
+        large = best_cpu_seconds(lambda: inline_state.inline_json(large_page))
         assert large < 32 * small, (small, large)
-
-
-def _cpu_seconds(work: Callable[[], object]) -> float:
-    """The least CPU time of three runs of *work*: CPU time, never wall clock, and
-    the least of three, so a busy machine slows neither side of a ratio."""
-    times = []
-    for _ in range(3):
-        start = time.process_time()
-        work()
-        times.append(time.process_time() - start)
-    return min(times)
 
 
 class TestNamesAndValues:
@@ -1478,6 +1466,6 @@ class TestTheDecodeBudgetMore:
         found = inline_state.inline_json(large_page)
         assert found is not None
         assert found.target == "window.App.props"
-        small = _cpu_seconds(lambda: inline_state.inline_json(small_page))
-        large = _cpu_seconds(lambda: inline_state.inline_json(large_page))
+        small = best_cpu_seconds(lambda: inline_state.inline_json(small_page))
+        large = best_cpu_seconds(lambda: inline_state.inline_json(large_page))
         assert large < 32 * small, (small, large)

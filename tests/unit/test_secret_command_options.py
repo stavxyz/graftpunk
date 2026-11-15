@@ -20,7 +20,6 @@ import re
 import subprocess
 import sys
 import textwrap
-import time
 import urllib.parse
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -38,6 +37,7 @@ from graftpunk import workstation_env
 from graftpunk.exceptions import CommandError, PluginError
 from graftpunk.observe.run import REDACTED
 from graftpunk.plugins.cli_plugin import PluginParamSpec, SitePlugin, command
+from tests.timing import best_cpu_seconds
 from tests.unit.cli_harness import strip_ansi
 
 # Characters that change under URL-encoding and JSON-escaping, so each wire form differs.
@@ -1995,17 +1995,6 @@ class TestEveryDepthIsScrubbed:
         assert line["value"] == expected
 
 
-def _cpu_seconds(work: Callable[[], object]) -> float:
-    """The least CPU time of three runs of *work*: CPU time, never wall clock, and
-    the least of three, so a busy machine slows neither side of a ratio."""
-    times = []
-    for _ in range(3):
-        start = time.process_time()
-        work()
-        times.append(time.process_time() - start)
-    return min(times)
-
-
 def _with_bottom(depth: int, bottom: str) -> list[Any]:
     """:func:`_shared`, its innermost list also holding a loop: a list that holds
     itself, a dict that holds itself, a value whose ``__structlog__`` returns
@@ -2046,7 +2035,7 @@ def _dropped_line_cost(value: Any) -> float:
         with log_secrets([SCOPE_KEY]):
             log.warning("shared", value=value)
 
-    return _cpu_seconds(work)
+    return best_cpu_seconds(work)
 
 
 @pytest.mark.parametrize("bottom", ["plain", "list cycle", "dict cycle", "structlog itself"])

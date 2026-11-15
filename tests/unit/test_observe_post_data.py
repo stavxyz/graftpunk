@@ -31,6 +31,7 @@ from structlog.testing import capture_logs
 from graftpunk.har.digest import is_credential_body, post_account_values
 from graftpunk.observe import capture
 from graftpunk.observe.capture import NodriverCaptureBackend, SeleniumCaptureBackend
+from tests.timing import best_cpu_seconds, gc_paused
 
 SEARCH = "https://myshop.example/api/search"
 LOGIN = "https://myshop.example/login"
@@ -3372,16 +3373,17 @@ class TestLoginInteractionsReviewRound1:
 
         assert MAX_STORED_SELECTOR == 256
         longest = "#" + "a" * 255
-        started = time.perf_counter()
-        stored = await self._stored(
-            tmp_path,
-            [
-                _interaction("click", "#" + "a" * 1_000_000, time_ms=_POST_MS - 900),
-                _interaction("click", "#" + "a" * 256, time_ms=_POST_MS - 850),
-                _interaction("click", longest, time_ms=_POST_MS - 800),
-            ],
-        )
-        assert time.perf_counter() - started < 5
+        with gc_paused():
+            started = time.perf_counter()
+            stored = await self._stored(
+                tmp_path,
+                [
+                    _interaction("click", "#" + "a" * 1_000_000, time_ms=_POST_MS - 900),
+                    _interaction("click", "#" + "a" * 256, time_ms=_POST_MS - 850),
+                    _interaction("click", longest, time_ms=_POST_MS - 800),
+                ],
+            )
+            assert time.perf_counter() - started < 5
         assert [each["selector"] for each in stored] == [None, None, longest]
 
     @pytest.mark.asyncio
@@ -3580,19 +3582,19 @@ class TestRecorderBoundsRound5:
 
     def test_a_long_path_segment_is_an_id_and_costs_no_more(self) -> None:
         """Ten times the segment, not much more time: no scan grows with it."""
-        import time
 
         from graftpunk.observe.capture import _page_path
 
         def timed(n: int) -> float:
-            started = time.perf_counter()
-            # Cut at 1,024 characters first, so the segment is the rest of the path.
-            assert _page_path("https://myshop.example/a/" + "x" * n + "/login") == "/a/{id}"
-            return time.perf_counter() - started
+            def work() -> None:
+                # Cut at 1,024 characters first, so the segment is the rest of the path.
+                assert _page_path("https://myshop.example/a/" + "x" * n + "/login") == "/a/{id}"
+
+            return best_cpu_seconds(work)
 
         timed(10_000)
-        small = min(timed(10_000) for _ in range(3))
-        large = min(timed(100_000) for _ in range(3))
+        small = timed(10_000)
+        large = timed(100_000)
         assert large < max(small * 20, 0.05)
 
     def test_a_path_over_the_cap_is_cut_first(self) -> None:

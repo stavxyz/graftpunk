@@ -24,6 +24,7 @@ from graftpunk.observe.run import (
     save_observe_run,
 )
 from graftpunk.observe.storage import ObserveStorage
+from tests.timing import best_cpu_seconds
 
 _HOST = "https://myshop.example"
 _EMAIL = "alice@example.com"
@@ -1607,15 +1608,9 @@ class TestOnlyAnEmailAddressIsTakenAsAnIdentifier:
         """Eight times the domain within 24 times the CPU time (#304). The full
         match retried each dot to the end of the value, 64 times at this ratio:
         32,000 characters took 2.8 s (2026-11-03)."""
-        import time
 
         def cpu(value: str) -> float:
-            best = float("inf")
-            for _ in range(3):
-                start = time.process_time()
-                is_email_address(value)
-                best = min(best, time.process_time() - start)
-            return best
+            return best_cpu_seconds(lambda: is_email_address(value))
 
         def dotted(length: int) -> str:
             return "a@" + "b." * (length // 2) + " "
