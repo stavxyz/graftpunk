@@ -2181,3 +2181,110 @@ class TestObserveStartHardening:
         assert session.capture is None
         session.observe_redact = ["a", None, "b"]
         assert session.observe_redact == ("a", "b")
+
+
+class TestANodriverSessionRecordsNoStaleUrl:
+    """A nodriver session that records no URL is pickled with none: the browser's
+    first target is nodriver's copy (``Tab.url``), which may predate the last
+    navigation and need not be a page. The cache then takes the domain from the
+    cookies, and the HTTPie export never reads a URL nodriver's ``Browser`` lacks."""
+
+    @staticmethod
+    def _session(*, named: bool = True, browser_up: bool = True) -> Any:
+        import types
+
+        import requests
+        from nodriver.core.browser import Browser
+
+        from graftpunk.session import BrowserSession
+
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+        session._backend_type = "nodriver"
+        session._use_stealth = False
+        if named:
+            session._session_name = "myshop"
+        requests.Session.__init__(session)
+        session._give_new_jar_the_browser_cookie_policy()
+        session.current_url = ""
+        session.cookies.set("sid", "1", domain=".myshop.example")
+        session.cookies.set("sec", "2", domain=".myshop.example", secure=True)
+        if browser_up:
+            # nodriver 0.50.6's own Browser class, uninitialized: it has no
+            # current_url, no title and no __getattr__, as a running one has not.
+            browser = Browser.__new__(Browser)
+            browser._targets = [
+                types.SimpleNamespace(type_="service_worker", url="https://cdn.example.net/sw.js"),
+                types.SimpleNamespace(type_="page", url="https://idp.example.com/sso/login"),
+            ]
+            backend = MagicMock()
+            backend._browser = browser
+            session._backend_instance = backend
+        else:
+            session._backend_instance = None
+        return session
+
+    def test_the_pickle_records_no_url_and_the_cache_takes_the_cookie_domain(self) -> None:
+        from graftpunk.cache import _extract_session_metadata
+        from graftpunk.session import BrowserSession
+
+        state = self._session().__getstate__()
+        restored = BrowserSession.__new__(BrowserSession)
+        restored.__setstate__(state)
+        metadata = _extract_session_metadata(restored, "myshop")
+
+        assert state["current_url"] == ""
+        assert "current_url" not in metadata
+        assert metadata["domain"] == "myshop.example"
+
+    @pytest.mark.parametrize("browser_up", [True, False])
+    @pytest.mark.parametrize("named", [True, False])
+    def test_the_httpie_export_saves_the_cookies(
+        self, tmp_path: Path, named: bool, browser_up: bool
+    ) -> None:
+        """The export used to raise for a nodriver session: AttributeError with the
+        browser up (nodriver's Browser has no current_url or title), and, unnamed,
+        BrowserError with it gone (the name was read from the driver)."""
+        import json
+
+        session = self._session(named=named, browser_up=browser_up)
+
+        target = session.save_httpie_session(output=tmp_path / "myshop.json")
+
+        saved = {c["name"]: c for c in json.loads(Path(target).read_text())["cookies"]}
+        assert {name: c["value"] for name, c in saved.items()} == {"sid": "1", "sec": "2"}
+        assert {c["domain"] for c in saved.values()} == {".myshop.example"}
+        assert (saved["sid"]["secure"], saved["sec"]["secure"]) == (False, True)
+        assert session.session_name == ("myshop" if named else "myshop.example")
+
+
+class TestTheSeleniumHttpieExportUsesTheDriverUrl:
+    def test_an_empty_recorded_url_falls_back_to_the_driver_s(self, tmp_path: Path) -> None:
+        """__init__ sets current_url to "", which used to hide the driver's URL."""
+        import types
+
+        import httpie.sessions
+        import requests
+
+        from graftpunk.session import BrowserSession
+
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+        session._backend_type = "selenium"
+        session._session_name = "myshop"
+        requests.Session.__init__(session)
+        session.current_url = ""
+        session._webdriver = types.SimpleNamespace(
+            current_url="https://myshop.example/account", title="Account"
+        )
+        opened: list[Any] = []
+        real = httpie.sessions.get_httpie_session
+
+        def keep(*args: Any, **kwargs: Any) -> Any:
+            opened.append(real(*args, **kwargs))
+            return opened[-1]
+
+        with patch.object(httpie.sessions, "get_httpie_session", side_effect=keep):
+            session.save_httpie_session(output=tmp_path / "myshop.json")
+
+        assert opened[0].bound_host == "myshop.example"

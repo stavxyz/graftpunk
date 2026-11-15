@@ -11,8 +11,10 @@ holds a popup (and any other page the browser opens itself) before its first
 script until that answerer is in place, so a dialog the popup's first script opens
 is answered. A tab a program opens with ``get(url, new_tab=True)`` is not held: its
 first-script dialog is answered only when the answerer's install reaches Chrome
-before that script runs, a race (#363). A visible browser leaves dialogs to the
-user.
+before that script runs, a race (#363). :func:`open_tab` is meant to open a tab
+without that race: at ``about:blank``, then the answerer, then the page (tested
+against fakes only; unverified in live Chrome). A visible browser leaves dialogs
+to the user.
 """
 
 from __future__ import annotations
@@ -229,8 +231,9 @@ class NewPageAnswerer:
     only then ``Runtime.runIfWaitingForDebugger``, so a dialog its first script
     opens is reported here and accepted. A tab made with ``Target.createTarget``
     (``get(url, new_tab=True)``) is not held, so its first-script dialog is answered
-    only when ``Page.enable`` reaches Chrome before that script runs (#363). The
-    resume is sent whatever the install did, within ``_INSTALL_WAIT_S`` of each
+    only when ``Page.enable`` reaches Chrome before that script runs (#363);
+    :func:`open_tab` is meant to open one without that race (unverified in live
+    Chrome). The resume is sent whatever the install did, within ``_INSTALL_WAIT_S`` of each
     command. The auto-attach asks for page targets only; any other target a Chrome
     attaches all the same is resumed at once and detached. This connection, not
     nodriver's, reads the session id Chrome puts on each event, which nodriver
@@ -634,7 +637,8 @@ async def answer_dialogs_in_new_tabs(browser: Any) -> NewPageAnswerer | None:
     first script on, since Chrome holds it until its answerer is in place, and a tab
     a program opens (``get(url, new_tab=True)``), which Chrome does not hold, so a
     dialog its first script opens is answered only if the install wins that race
-    (#363). See :class:`NewPageAnswerer`.
+    (#363); :func:`open_tab` is meant to open a tab without the race (unverified
+    in live Chrome). See :class:`NewPageAnswerer`.
 
     Returns the browser's answerer: the one an earlier call made, which reconnects
     on its own when Chrome closes its connection, or a new one, which carries the
@@ -673,6 +677,30 @@ async def answer_dialogs_in_new_tabs(browser: Any) -> NewPageAnswerer | None:
             " stops until it is answered.",
         )
     return answerer
+
+
+async def open_tab(browser: Any, url: str) -> Any:
+    """Open *url* in a new tab of nodriver *browser*, so that a dialog the page's
+    first script opens is meant to be answered (#363), and return the tab. That it
+    closes the race is tested against fakes only and unverified in live Chrome.
+
+    nodriver's ``get(url, new_tab=True)`` makes the tab with ``Target.createTarget``
+    at *url*, which Chrome does not hold for the answerer, so that page's first
+    script can open a dialog before any answerer is in place, and the tab then
+    stalls. This makes the tab at ``about:blank``, installs the tab's own answerer
+    (:func:`answer_dialogs`, whose ``Page.enable`` has had Chrome's reply when it
+    returns), and only then navigates the tab to *url*. A browser that answers no
+    new tab's dialogs (a visible one, or one built with ``answer_dialogs=False``,
+    which never calls :func:`answer_dialogs_in_new_tabs`) gets no answerer, and its
+    tab is opened the same way.
+
+    Like ``Browser.get`` it has no bound of its own; bound it with
+    :func:`graftpunk.cdp_wait.answer_within`, never ``asyncio.wait_for``.
+    """
+    tab = await browser.get("about:blank", new_tab=True)
+    if isinstance(getattr(browser, _BROWSER_ATTR, None), NewPageAnswerer):
+        await answer_dialogs(tab)
+    return await tab.get(url)
 
 
 async def close_dialogs_in_new_tabs(browser: Any) -> None:

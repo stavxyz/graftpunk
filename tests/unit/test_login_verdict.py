@@ -46,6 +46,9 @@ class _StuckPage:
     async def evaluate(self, expression: str, **kwargs: Any) -> Any:
         if expression == "document.readyState":
             return "complete"
+        if "graftpunk:href" in expression:
+            # The page's location.href; nodriver's RemoteObject for no URL.
+            return self.url or MagicMock(name="RemoteObject")
         return json.dumps({"found": True, "value": None})
 
 
@@ -197,6 +200,11 @@ class TestVerdictComesLast:
 
             async def query_selector(self, selector: str) -> Any:
                 raise ConnectionError("browser went away")
+
+            async def evaluate(self, expression: str, **kwargs: Any) -> Any:
+                if "graftpunk:href" in expression or "graftpunk:page-read" in expression:
+                    raise ConnectionError("browser went away")
+                return await super().evaluate(expression, **kwargs)
 
         code = _run_login(_plugin(success=".dashboard", failure="Bad login"), Gone(), monkeypatch)
 

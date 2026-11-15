@@ -792,8 +792,9 @@ class TestNodriverLoginValidationPaths:
 class _ScriptedNodriverTab:
     """A nodriver tab that answers the post-submit poll from a script.
 
-    Each URL read is one poll tick, since that is the read the wait makes every
-    tick and before anything else: ``contents`` and ``urls`` are read by tick index
+    Each read of the page's URL (``location.href``, the ``graftpunk:href``
+    evaluate) is one poll tick, since that is the read the wait makes every tick
+    and before anything else: ``contents`` and ``urls`` are read by tick index
     and their last entry repeats for every later tick, the success selector starts
     resolving on tick ``success_from`` (never, when it is None), and ``ready_states``
     answers the document-ready wait one read at a time. ``events`` records what the
@@ -841,7 +842,15 @@ class _ScriptedNodriverTab:
 
     @property
     def url(self) -> str | None:
-        """The scripted URL, which nodriver leaves as None while a tab navigates.
+        """``Tab.url`` as nodriver 0.50.6 keeps it: a copy of the target's info from
+        the last refresh, which was the navigation to the login page, so the first
+        scripted URL whatever the page does later (see
+        ``graftpunk.plugins.login_settle.page_url_nodriver``)."""
+        return self._urls[0]
+
+    def _href(self) -> Any:
+        """The page's ``location.href``: the scripted URL, which nodriver leaves as
+        None while a tab navigates; None answers as nodriver's RemoteObject does.
 
         This read is what moves the script on: the wait reads the URL once per tick
         and before anything else, and the engine's own read just before the submit
@@ -852,7 +861,8 @@ class _ScriptedNodriverTab:
         if not self._wait_over:
             self.tick = max(self._url_reads - 1, 0)
             self._url_reads += 1
-        return self._at(self._urls, self.tick)
+        url = self._at(self._urls, self.tick)
+        return url if url else MagicMock(name="RemoteObject")
 
     async def get_content(self) -> str:
         from nodriver.core.connection import ProtocolException
@@ -895,6 +905,10 @@ class _ScriptedNodriverTab:
                 and self._success_from is not None
                 and self.tick >= self._success_from
             )
+        if "graftpunk:href" in expression:
+            return self._href()
+        if "graftpunk:page-read" in expression:
+            return await self._answer_page_read(expression)
         if expression != "document.readyState":
             return json.dumps({"found": True, "value": None})
         self._wait_over = True
@@ -902,6 +916,23 @@ class _ScriptedNodriverTab:
         state = self._at(self._ready_states, self._ready_reads)
         self._ready_reads += 1
         return state
+
+    async def _answer_page_read(self, expression: str) -> str:
+        """The wait's read of the document without node ids (#392), answered from the
+        same script as the node-id reads, so a page this double cannot read one way
+        it cannot read the other way either: an unreadable tick, and a subclass whose
+        ``get_content`` or success query raises (a closed browser), fail here too.
+        A test that wants only the node-id path to fail answers this read itself."""
+        from nodriver.core.connection import ProtocolException
+
+        if self.tick in self._unreadable_ticks:
+            raise ProtocolException("Could not find node with given id")
+        html = await self.get_content()
+        found = None
+        if self._success_selector and json.dumps(self._success_selector) in expression:
+            found = await self.query_selector(self._success_selector) is not None
+        href = self._at(self._urls, self.tick)
+        return json.dumps({"html": html, "href": href, "found": found, "rejected": False})
 
 
 def _nodriver_session_for(tab: _ScriptedNodriverTab) -> tuple[MagicMock, MagicMock]:

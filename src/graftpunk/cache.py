@@ -19,7 +19,6 @@ import hashlib
 import io
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from http import cookiejar
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 from urllib.parse import urlparse
 
@@ -192,7 +191,7 @@ def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]
     Returns:
         Dictionary with extracted metadata
     """
-    from graftpunk.cookies import _browser_cookie_domain
+    from graftpunk.cookies import cookie_domains, domain_from_cookies
 
     metadata: dict[str, Any] = {"name": session_name}
     metadata["account_identifier"] = getattr(session, GP_ACCOUNT_ATTR, None)
@@ -209,27 +208,14 @@ def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]
     if cookies:
         cookie_list = list(cookies)
         metadata["cookie_count"] = len(cookie_list)
-        # Get unique domains from cookies
-        domains = set()
-        for cookie in cookie_list:
-            if isinstance(cookie, cookiejar.Cookie):
-                domains.add(_browser_cookie_domain(cookie))
-            elif hasattr(cookie, "domain"):
-                # A custom session's cookie objects; _browser_cookie_domain
-                # reads attributes only http.cookiejar.Cookie has.
-                domains.add(cookie.domain)
-        metadata["cookie_domains"] = sorted(domains)
+        metadata["cookie_domains"] = cookie_domains(cookie_list)
     else:
         metadata["cookie_count"] = 0
         metadata["cookie_domains"] = []
 
     # Fallback: infer domain from cookie domains when current_url is missing
-    if "domain" not in metadata and metadata.get("cookie_domains"):
-        # Use the first non-empty cookie domain, stripping leading dot
-        for cookie_domain in metadata["cookie_domains"]:
-            if cookie_domain:
-                metadata["domain"] = cookie_domain.lstrip(".")
-                break
+    if "domain" not in metadata and cookies and (domain := domain_from_cookies(cookies)):
+        metadata["domain"] = domain
 
     return metadata
 
