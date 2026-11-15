@@ -266,12 +266,19 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
     def session_name(self) -> str:
         """Get the session name based on page title or hostname.
 
+        A nodriver session is named after its cookies' domain instead: nodriver's
+        ``Browser`` has no ``current_url`` or ``title``, and its tabs' ``Tab.url`` is a
+        copy that may be stale (``graftpunk.plugins.login_settle.page_url_nodriver``).
+
         Returns:
             Slugified session name.
         """
         if not hasattr(self, "_session_name"):
-            hostname = urlparse(self.driver.current_url).hostname
-            self._session_name = slugify_lib.slugify(self.driver.title) or hostname or "default"
+            if getattr(self, "_backend_type", "selenium") == "nodriver":
+                self._session_name = domain_from_cookies(self.cookies) or "default"
+            else:
+                hostname = urlparse(self.driver.current_url).hostname
+                self._session_name = slugify_lib.slugify(self.driver.title) or hostname or "default"
             if self._session_name == "default":
                 LOG.warning(
                     "session_name_fallback_to_default",
@@ -907,12 +914,11 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 driver_url = self.driver.current_url
             except (BrowserError, selenium.common.exceptions.WebDriverException) as exc:
                 LOG.warning("driver_url_unavailable_for_httpie_session", error=str(exc))
-        current_url = getattr(self, "current_url", driver_url)
+        # __init__ sets current_url to "", so the driver's URL is the fallback for an
+        # empty one, not only for a missing attribute.
+        current_url = getattr(self, "current_url", "") or driver_url
         parsed = urlparse(current_url)
         current_hostname = f"{parsed.scheme}://{parsed.hostname}" if current_url else ""
-        if not current_url and (domain := domain_from_cookies(self.cookies)):
-            # No recorded URL: the domain the cache records from the cookies.
-            current_hostname = f"https://{domain}"
 
         httpie_session = httpie.sessions.get_httpie_session(
             env=env,
