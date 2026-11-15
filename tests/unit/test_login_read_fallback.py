@@ -50,6 +50,7 @@ from tests.unit.test_login_engine import (
     _nodriver_session_for,
     _ScriptedNodriverTab,
     _warning_kwargs,
+    scripted_tab_ticks,  # noqa: F401  (autouse: tells the scripted tab its ticks)
 )
 from tests.unit.test_login_poll_bounds import _FOREVER, _run_virtual
 
@@ -314,10 +315,14 @@ class TestTheSignalPollReadsThePage:
             )
 
         assert result is True
-        with_html = [e for e in tab.expressions if "const html = true" in e]
+        page_reads = [e for e in tab.expressions if "graftpunk:page-read" in e]
+        with_html = [i for i, e in enumerate(page_reads) if "const html = true" in e]
         assert len(with_html) == 1
-        assert "graftpunk:again" in with_html[0]
-        assert len(tab.expressions) >= 3
+        # The document comes in a second read, right after the URL-only read of the
+        # same tick, and that tick is the last one.
+        assert with_html[0] >= 1
+        assert "const html = false" in page_reads[with_html[0] - 1]
+        assert with_html[0] == len(page_reads) - 1
 
     async def test_a_success_element_read_without_node_ids_passes(self) -> None:
         loop = asyncio.get_running_loop()
@@ -552,7 +557,34 @@ class TestASlowPageIsJudgedOnWhatItShows:
         assert result is False
         assert elapsed == pytest.approx(login_settle._NO_SIGNAL_GRACE + 0.5)
         warning = _warning_kwargs(mock_log, "login_page_unreadable")
-        assert "one poll interval past its timeout" in warning["error"]
+        assert "half a second past its three second window" in warning["error"]
+        assert "timeout" not in warning["error"]
+
+    def test_a_page_that_answered_is_not_held_by_a_later_read(self) -> None:
+        """The extended bound is for a wait with nothing to rule on: once a read has
+        answered the page, a later read that never answers is given up half a second
+        past the window, and the page that answered decides."""
+
+        class _AnswersOnceTab(_CdpTab):
+            async def send(self, cdp_obj: Any, _is_update: bool = False, **kwargs: Any) -> Any:
+                if self.methods:
+                    self.methods.append("unanswered")
+                    await asyncio.sleep(_FOREVER)
+                return await super().send(cdp_obj, _is_update, **kwargs)
+
+        tabs: list[_CdpTab] = []
+
+        def make() -> _CdpTab:
+            tabs.append(_AnswersOnceTab(lands_at=0.0, node_ids_fail=False))
+            return tabs[-1]
+
+        result, elapsed, mock_log = _slow_outcome(make, _no_signal_config())
+
+        assert result is True
+        assert elapsed == pytest.approx(login_settle._NO_SIGNAL_GRACE + 0.5)
+        assert mock_log.warning.call_args_list == []
+        assert tabs[0].methods[0] == "Runtime.evaluate"
+        assert "unanswered" in tabs[0].methods
 
     def test_a_read_that_answers_after_the_timeout_is_not_waited_for(self) -> None:
         """A page slower than the whole budget is unreadable, at the budget."""

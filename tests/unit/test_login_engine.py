@@ -792,11 +792,10 @@ class TestNodriverLoginValidationPaths:
 class _ScriptedNodriverTab:
     """A nodriver tab that answers the post-submit poll from a script.
 
-    Each page read (the ``graftpunk:page-read`` evaluate) is one poll tick, since
-    that is the read the wait makes every tick and before anything else, except the
-    second read of a tick whose URL wanted the document (``graftpunk:again``); the
-    engine's own ``location.href`` reads before the wait's first page read are
-    ticks as well (see ``_href``): ``contents`` and ``urls`` are read by tick index
+    Each call of the wait's tick read (``login_settle._read_login_tick_nodriver``,
+    wrapped by the ``scripted_tab_ticks`` fixture) is one poll tick, and so is each
+    ``location.href`` read the engine makes outside a tick (see ``_href``):
+    ``contents`` and ``urls`` are read by tick index
     and their last entry repeats for every later tick, the success selector starts
     resolving on tick ``success_from`` (never, when it is None), and ``ready_states``
     answers the document-ready wait one read at a time. ``events`` records what the
@@ -817,8 +816,8 @@ class _ScriptedNodriverTab:
         self.tick = 0
         self._url_reads = 0
         self._ticks = 0
-        self._page_reads = 0
-        self._page_read_failed = False
+        # True while the wait's tick read runs (see ``scripted_tab_ticks``).
+        self._in_tick = False
         self._wait_over = False
         self._success_selector = success_selector
         self._contents = contents
@@ -857,16 +856,16 @@ class _ScriptedNodriverTab:
         """The page's ``location.href``: the scripted URL, which nodriver leaves as
         None while a tab navigates; None answers as nodriver's RemoteObject does.
 
-        This read moves the script on, as a tick does: the engine's own read just
-        before the submit takes the tick 0 URL (the page the submit was clicked
-        from), and so does the wait's first tick. The exception is a tick's fallback
-        read (``page_url_nodriver`` right after its page read failed), which stays
-        within the tick its page read started. Reads after the wait is over, such as
-        the engine capturing the URL for display, leave the script where it stopped.
+        A read outside a tick moves the script on, as a tick does: the engine's own
+        read just before the submit takes the tick 0 URL (the page the submit was
+        clicked from), and so does the wait's first tick. A read inside a tick (its
+        fallback, ``page_url_nodriver``) stays within that tick. Reads after the wait
+        is over, such as the engine capturing the URL for display, leave the script
+        where it stopped.
         """
         if not self._wait_over:
             self._url_reads += 1
-            if not self._page_read_failed:
+            if not self._in_tick:
                 self._start_tick()
         url = self._at(self._urls, self.tick)
         return url if url else MagicMock(name="RemoteObject")
@@ -939,11 +938,6 @@ class _ScriptedNodriverTab:
         asks for it."""
         from nodriver.core.connection import ProtocolException
 
-        if "graftpunk:again" not in expression:
-            self._page_reads += 1
-            self._start_tick()
-        # Until it answers a record the wait takes, as a None URL is not.
-        self._page_read_failed = True
         if self.tick in self._unreadable_ticks:
             raise ProtocolException("Could not find node with given id")
         html = await self.get_content() if "const html = true" in expression else ""
@@ -951,8 +945,31 @@ class _ScriptedNodriverTab:
         if self._success_selector and json.dumps(self._success_selector) in expression:
             found = await self.query_selector(self._success_selector) is not None
         href = self._at(self._urls, self.tick)
-        self._page_read_failed = not href
         return json.dumps({"html": html, "href": href, "found": found, "rejected": False})
+
+
+@pytest.fixture(autouse=True)
+def scripted_tab_ticks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tell a ``_ScriptedNodriverTab`` where each poll tick starts, from the engine's
+    own tick read. The tab cannot tell from the reads it gets: a tick may make one
+    page read or two (a URL-only read, then the document), and the deadline tick's
+    first read looks like the second read of the tick before it. Imported by every
+    test module that drives the double, so it is autouse there too."""
+    from graftpunk.plugins import login_settle
+
+    real = login_settle._read_login_tick_nodriver
+
+    async def tick(tab: Any, **kwargs: Any) -> Any:
+        if not isinstance(tab, _ScriptedNodriverTab):
+            return await real(tab, **kwargs)
+        tab._start_tick()
+        tab._in_tick = True
+        try:
+            return await real(tab, **kwargs)
+        finally:
+            tab._in_tick = False
+
+    monkeypatch.setattr(login_settle, "_read_login_tick_nodriver", tick)
 
 
 def _nodriver_session_for(tab: _ScriptedNodriverTab) -> tuple[MagicMock, MagicMock]:
@@ -1935,7 +1952,8 @@ class TestNoSignalGraceWindow:
 
     @pytest.mark.asyncio
     async def test_a_timeout_this_path_cannot_use_is_said_out_loud(self) -> None:
-        """Raising timeout on a signal-less login changes nothing, and the trail says so."""
+        """Raising timeout on a signal-less login does not lengthen the window, and the
+        trail says so."""
         from graftpunk.plugins.login_engine import generate_login_method
 
         class RaisedTimeoutPlugin(SitePlugin):

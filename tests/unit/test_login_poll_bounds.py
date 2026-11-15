@@ -29,6 +29,7 @@ from tests.unit.test_login_engine import (
     _ScriptedSeleniumDriver,
     _selenium_session_for,
     _warning_kwargs,
+    scripted_tab_ticks,  # noqa: F401  (autouse: tells the scripted tab its ticks)
 )
 
 # What nodriver 0.48.1 raises for a failed DOM.querySelector: the CDP error's
@@ -95,9 +96,6 @@ class _SelectorErrorTab(_ScriptedNodriverTab):
             # RemoteObject, which is not True.
             return True if self._rejects else object()
         if "graftpunk:page-read" in expression:
-            self._page_reads += 1
-            self._start_tick()
-            self._page_read_failed = True
             raise ProtocolException(dict(_GENERIC_CDP_ERROR))
         return await super().evaluate(expression, **kwargs)
 

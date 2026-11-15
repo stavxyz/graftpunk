@@ -2157,7 +2157,8 @@ hand.
   signal. Defaults to `30.0`. It also caps each step's readiness wait when it
   is under 5 seconds (see [When a step acts](#when-a-step-acts)). When no
   success signal is configured, the wait after the last step uses it only to
-  bound a page read still in flight when the three second window ends (nodriver).
+  bound a page read still in flight when the three second window ends, while
+  no read has answered (nodriver).
 - `settle`: seconds to wait after the success signal and after the document
   finishes loading, before cookies are captured. Defaults to `1.0`. Unused when
   no success signal is configured.
@@ -2309,10 +2310,12 @@ catches an error the site renders a moment after the submit, and it is much
 weaker than a real success signal. Configure one. On that path `settle` is
 not used at all, and `timeout` caps each step's readiness wait and, on nodriver,
 how long a page read still in flight when the window ends may take to answer,
-counted from the submit. A browser that is slow to answer is judged on the page
-it shows; one that answers nothing holds the login until `timeout` before it
-fails as unreadable. Setting either changes nothing else after the last step
-until a success signal exists.
+counted from the submit, when no read has answered yet. A browser that is slow
+to answer is judged on the page it shows. One whose reads neither answer nor
+fail holds the login until `timeout` (never less than 3.5 seconds) before it
+fails as unreadable; one whose reads fail at once still ends at the three
+seconds. Setting either changes nothing else after the last step until a
+success signal exists.
 
 ### When a step acts
 

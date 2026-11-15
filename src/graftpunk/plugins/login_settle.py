@@ -510,7 +510,8 @@ def _debug_ignored_timings(*, login_config: LoginConfig, site_name: str, backend
     There is nothing to wait for after the last step on that path, so the wait is
     the grace window and ``settle`` goes unread; ``timeout`` caps each step's
     readiness wait there and, on nodriver, how long a page read still in flight when
-    the window ends may take to answer, counted from the submit. An author who
+    the window ends may take to answer, counted from the submit, while no read has
+    answered. An author who
     raised ``timeout`` and saw the login give up at the same moment as before needs
     the trail to say why.
     """
@@ -990,7 +991,7 @@ async def _read_login_tick_nodriver(
             # The record of one read: the URL that wanted the document comes again
             # with it, and decides with it.
             page = await _read_page_by_evaluate(
-                tab, success_selector=success_selector, with_html=True, again=True
+                tab, success_selector=success_selector, with_html=True
             )
             asked = want_page_text(page.href)
     except PluginError:
@@ -1092,7 +1093,7 @@ class _PageRead(NamedTuple):
     found: bool | None
 
 
-def _page_read_js(success_selector: str, *, with_html: bool = True, again: bool = False) -> str:
+def _page_read_js(success_selector: str, *, with_html: bool = True) -> str:
     """A page expression reading the current top document without node ids: a JSON
     string of ``html`` (the serialized document, or empty without *with_html*),
     ``href`` (its ``location.href``),
@@ -1103,15 +1104,10 @@ def _page_read_js(success_selector: str, *, with_html: bool = True, again: bool 
     A JSON string because nodriver's ``Tab.evaluate`` hands back a falsy value as
     the RemoteObject instead of the value (read in nodriver 0.50.6), and a string
     that is a JSON record is never falsy. The selector reaches the page as a JSON
-    string literal. The comment names the read for the tests' scripted tab, and
-    *again* marks the second read of a tick whose URL turned out to want the
-    document (:func:`_read_login_tick_nodriver`).
+    string literal. The comment names the read for the tests' scripted tab.
     """
-    label = "/* graftpunk:page-read */"
-    if again:
-        label += " /* graftpunk:again */"
     return (
-        f"{label} (() => {{ let found = null; let rejected = false; "
+        "/* graftpunk:page-read */ (() => { let found = null; let rejected = false; "
         f"const selector = {json.dumps(success_selector)}; "
         "if (selector) { try { found = document.querySelector(selector) !== null; } "
         'catch (e) { if (e instanceof DOMException && e.name === "SyntaxError") '
@@ -1128,7 +1124,6 @@ async def _read_page_by_evaluate(
     *,
     success_selector: str,
     with_html: bool = True,
-    again: bool = False,
 ) -> _PageRead:
     """The page text (empty without *with_html*), the page's URL and the success
     element's presence, read from the current document in one ``Runtime.evaluate``,
@@ -1139,7 +1134,7 @@ async def _read_page_by_evaluate(
     The caller bounds the read (``_read_login_tick_nodriver_by``).
     """
     answer = await tab.evaluate(
-        _page_read_js(success_selector, with_html=with_html, again=again), return_by_value=True
+        _page_read_js(success_selector, with_html=with_html), return_by_value=True
     )
     if not isinstance(answer, str):
         raise PageReadAnswerError(f"the page read answered {type(answer).__name__}")
@@ -1171,8 +1166,13 @@ _ABANDONED_AT_HARD_END = (
     "the browser did not answer before the login wait's end, one poll "
     "interval past its timeout, so the read was abandoned"
 )
-# The same for the no-success-signal wait, whose last read may answer until
+# The same for the no-success-signal wait, which has no poll timeout: its reads
+# end half a second past its grace window, or, while no read has answered, at
 # LoginConfig.timeout (see ``_watch_for_failure_nodriver``).
+_ABANDONED_AT_GRACE_END = (
+    "the browser did not answer before the login wait's end, half a second past "
+    "its three second window, so the read was abandoned"
+)
 _ABANDONED_AT_TIMEOUT = (
     "the browser did not answer before the login wait's end, the login's timeout "
     "counted from the submit, so the read was abandoned"
@@ -1523,11 +1523,13 @@ async def _watch_for_failure_nodriver(
     the moment either shows, and the verdict and its warnings are the single check
     this path has always taken.
 
-    No read starts after *deadline*, but the read in flight then is waited for until
-    *answer_end* (the submit plus ``LoginConfig.timeout``; with None, or anything
-    sooner, ``_hard_end(deadline)``), so a browser that is alive but slow to answer
-    is judged on the page it shows, as it was before 1.42.6 (#395). The read is
-    abandoned there, never cancelled.
+    No read starts after *deadline*. While no read has answered the page, a read is
+    waited for until *answer_end* (the submit plus ``LoginConfig.timeout``; with
+    None, or anything sooner, ``_hard_end(deadline)``), so a browser that is alive
+    but slow to answer is judged on the page it shows, as it was before 1.42.6
+    (#395). Once a read has answered, the wait has a page to rule on, and a later
+    read is bounded at ``_hard_end(deadline)`` as before. A read is abandoned at its
+    bound, never cancelled.
 
     A window in which no tick could be read at all ends in failure: the page said
     nothing, and an empty page text passed to the verdict would read as "the
@@ -1539,20 +1541,21 @@ async def _watch_for_failure_nodriver(
     """
     loop = asyncio.get_running_loop()
     last = _ReadWindow()
-    end = _hard_end(deadline)
-    abandoned_error = _ABANDONED_AT_HARD_END
-    if answer_end is not None and answer_end > end:
-        end, abandoned_error = answer_end, _ABANDONED_AT_TIMEOUT
+    grace_end = _hard_end(deadline)
+    unanswered_end, unanswered_error = grace_end, _ABANDONED_AT_GRACE_END
+    if answer_end is not None and answer_end > grace_end:
+        unanswered_end, unanswered_error = answer_end, _ABANDONED_AT_TIMEOUT
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
+        answered = last.page_read
         reading = await _read_login_tick_nodriver_by(
             tab,
-            end=end,
+            end=grace_end if answered else unanswered_end,
             success_selector="",
             # The page text is this window's only signal, so it is read every tick.
             want_page_text=_always_page_text,
             site_name=site_name,
-            abandoned_error=abandoned_error,
+            abandoned_error=_ABANDONED_AT_GRACE_END if answered else unanswered_error,
         )
         last.record(reading)
         if not reading.error and _failure_showing(
