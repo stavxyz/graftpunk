@@ -29,6 +29,7 @@ from tests.unit.test_login_engine import (
     _ScriptedSeleniumDriver,
     _selenium_session_for,
     _warning_kwargs,
+    scripted_tab_ticks,  # noqa: F401  (autouse: tells the scripted tab its ticks)
 )
 
 # What nodriver 0.48.1 raises for a failed DOM.querySelector: the CDP error's
@@ -57,7 +58,10 @@ class DeclarativeNodriverLongWait(SitePlugin):
 
 class _SelectorErrorTab(_ScriptedNodriverTab):
     """A tab whose success-element query raises the generic CDP error, and whose page
-    answers the selector check as *rejects*."""
+    answers the selector check as *rejects*. Its page read fails too, as on a page
+    the one-evaluate read cannot serve, so every tick takes the node-id fallback
+    these tests are about; a selector the page read itself reports as rejected is
+    covered in ``test_login_read_fallback``."""
 
     def __init__(self, *, rejects: bool, raise_on_ticks: tuple[int, ...], **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -84,11 +88,15 @@ class _SelectorErrorTab(_ScriptedNodriverTab):
         return element
 
     async def evaluate(self, expression: str, **kwargs: Any) -> Any:
+        from nodriver.core.connection import ProtocolException
+
         if "graftpunk:selector-check" in expression:
             self.selector_checks.append(expression)
             # nodriver hands back a true value as itself and a false one as the
             # RemoteObject, which is not True.
             return True if self._rejects else object()
+        if "graftpunk:page-read" in expression:
+            raise ProtocolException(dict(_GENERIC_CDP_ERROR))
         return await super().evaluate(expression, **kwargs)
 
 
