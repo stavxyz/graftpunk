@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-import time
 from collections.abc import Callable
 
 import lxml.html
@@ -21,6 +20,7 @@ from graftpunk.har.documents import (
     printable_unresolved_roles,
 )
 from graftpunk.observe.snapshot import stored_dom_snapshot
+from tests.timing import best_cpu_seconds
 from tests.unit.test_dom_snapshot import _snapshot_parse_seconds
 
 _LOGIN_PAGE = """
@@ -51,12 +51,7 @@ _MULTI_FORM_PAGE = """
 def _parse_seconds(html: str) -> float:
     """The fastest of three parses of *html*, so one slow scheduling slice on a
     loaded CI runner does not decide the result."""
-    best = float("inf")
-    for _ in range(3):
-        started = time.perf_counter()
-        extract_login_forms(html, source="s")
-        best = min(best, time.perf_counter() - started)
-    return best
+    return best_cpu_seconds(lambda: extract_login_forms(html, source="s"))
 
 
 def _assert_parses_in_linear_time(page: Callable[[int], str]) -> None:

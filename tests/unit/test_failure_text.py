@@ -25,6 +25,7 @@ from graftpunk.observe.failure_text import (
     without_success_page,
 )
 from graftpunk.plugins.login_settle import failure_text_on_page
+from tests.timing import best_cpu_seconds
 
 _BODY = json.dumps({"username": "jsmith", "password": "wrongpass1"})
 _JSON = "application/json"
@@ -425,16 +426,14 @@ class TestCost:
 
     @staticmethod
     def _cpu(pages: Callable[[int], tuple[str, str]], paragraphs: int) -> float:
-        import time
 
         before, after = pages(paragraphs)
         guard = _guard()
-        best = float("inf")
-        for _ in range(3):
-            start = time.process_time()
+
+        def judged() -> None:
             assert failure_candidates([after, after], before, guard) == ("Sign-in failed, sorry.",)
-            best = min(best, time.process_time() - start)
-        return best
+
+        return best_cpu_seconds(judged)
 
     def _ratio(self, pages: Callable[[int], tuple[str, str]]) -> float:
         return self._cpu(pages, 32_000) / self._cpu(pages, 2_000)

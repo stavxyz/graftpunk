@@ -13,6 +13,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from graftpunk.logging import suppress_asyncio_noise
+from tests.timing import best_cpu_seconds
 
 
 class TestSuppressAsyncioNoise:
@@ -770,14 +771,7 @@ def test_redacted_values_ends_nesting_two_thousand_levels_deep(kind: str) -> Non
 
 
 def _rewrite_cost(value: Any) -> float:
-    import time
-
-    best = float("inf")
-    for _ in range(3):
-        start = time.process_time()
-        _redacted_line(value=value)
-        best = min(best, time.process_time() - start)
-    return best
+    return best_cpu_seconds(lambda: _redacted_line(value=value))
 
 
 @pytest.mark.parametrize("bottom", ["plain", "list cycle", "dict cycle"])

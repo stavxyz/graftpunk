@@ -11,7 +11,6 @@ import random
 import shutil
 import string
 import subprocess
-import time
 import tracemalloc
 import uuid
 from collections.abc import Callable
@@ -23,6 +22,7 @@ import pytest
 
 from graftpunk.har.naming import HTTP_METHODS
 from graftpunk.har.paths import looks_dynamic
+from tests.timing import best_cpu_seconds
 from tests.unit.guide_harness import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "skills" / "graft" / "scripts" / "har-facts.py"
@@ -1410,16 +1410,6 @@ def test_a_har_nested_past_the_bound_exits_2_before_it_is_parsed(tmp_path: Path)
         assert "[[[" not in result.stdout + result.stderr
 
 
-def _cpu_seconds(work: Callable[[], object]) -> float:
-    """The least CPU time of three runs of *work*."""
-    times = []
-    for _ in range(3):
-        start = time.process_time()
-        work()
-        times.append(time.process_time() - start)
-    return min(times)
-
-
 @pytest.mark.parametrize("shape", ["deep", "flat", "strings"])
 def test_nesting_is_judged_in_linear_time(shape: str) -> None:
     """Eight times the text within 24 times the CPU time, however it nests."""
@@ -1433,7 +1423,9 @@ def test_nesting_is_judged_in_linear_time(shape: str) -> None:
         return json.dumps(['a\\"b' * 8] * size)
 
     small, large = text(20_000), text(160_000)
-    ratio = _cpu_seconds(lambda: nesting(large)) / max(_cpu_seconds(lambda: nesting(small)), 1e-4)
+    ratio = best_cpu_seconds(lambda: nesting(large)) / max(
+        best_cpu_seconds(lambda: nesting(small)), 1e-4
+    )
     assert ratio < 24, ratio
 
 

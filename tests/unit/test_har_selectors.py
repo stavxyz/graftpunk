@@ -78,9 +78,12 @@ class TestLinearMatching:
         exponentially when the match failed (0.146 s at 13 escapes, about 3x a step)."""
         import time
 
+        from tests.timing import gc_paused
+
         crafted = "#" + "\\31" * 60 + "!"
-        started = time.perf_counter()
-        keys = selector_keys(crafted)
-        assert time.perf_counter() - started < 0.5
+        with gc_paused():
+            started = time.process_time()
+            keys = selector_keys(crafted)
+            assert time.process_time() - started < 0.5
         assert keys == {("text", crafted)}
         assert selector_keys("#\\31 \\32 3") == {("id", "123")}

@@ -8,8 +8,6 @@ alone."""
 
 from __future__ import annotations
 
-import time
-
 import lxml.html
 import pytest
 
@@ -21,6 +19,7 @@ from graftpunk.har.login_signals import (
     success_candidates,
 )
 from graftpunk.observe.snapshot import stored_dom_snapshot
+from tests.timing import best_cpu_seconds
 
 _DOCTYPE = "<!DOCTYPE html>"
 _LOGIN = (
@@ -488,12 +487,7 @@ class TestSuccessCandidates:
         def cost(n: int) -> float:
             before = [page(n).replace("panel-", "other-")] * 3
             after = page(n)
-            best = float("inf")
-            for _ in range(3):
-                start = time.process_time()
-                success_candidates(before, after)
-                best = min(best, time.process_time() - start)
-            return best
+            return best_cpu_seconds(lambda: success_candidates(before, after))
 
         small, large = cost(1500), cost(6000)
         assert large / small < 8, (small, large)

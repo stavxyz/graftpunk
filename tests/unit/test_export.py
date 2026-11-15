@@ -8,7 +8,6 @@ import decimal
 import json
 import random
 import re
-import time
 import zlib
 from collections.abc import Callable
 from pathlib import Path
@@ -36,6 +35,7 @@ from graftpunk.plugins.formatters import (
     XlsxFormatter,
 )
 from graftpunk.plugins.output_config import OutputConfig, ViewConfig
+from tests.timing import best_cpu_seconds
 from tests.unit.cli_harness import strip_ansi
 
 
@@ -897,17 +897,6 @@ def test_the_pdf_export_never_raises_on_fuzzed_input(tmp_path: Path, seed: int) 
         )
 
 
-def _least_cpu(work: Callable[[], object], runs: int = 3) -> float:
-    """The least CPU time of *runs* calls of *work*: CPU time, never wall clock,
-    and the least, so a busy machine slows neither side of a ratio."""
-    times = []
-    for _ in range(runs):
-        start = time.process_time()
-        work()
-        times.append(time.process_time() - start)
-    return min(times)
-
-
 def _count_measurements(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Count fpdf2's ``multi_cell(dry_run=True)`` calls from now on: a measurement
     of a cell by fpdf2's own wrapping, which costs two to three times drawing it.
@@ -969,8 +958,8 @@ class TestPdfSpeed:
         def export(n: int) -> Callable[[], object]:
             return lambda: json_to_pdf([{"a": "a" + filler * n, "b": 1}], tmp_path / f"{n}.pdf")
 
-        small = _least_cpu(export(5000))
-        large = _least_cpu(export(50000))
+        small = best_cpu_seconds(export(5000))
+        large = best_cpu_seconds(export(50000))
         # Ten times the characters: linear is 10x; fpdf2's quadratic line
         # breaking made it about 100x.
         assert large <= 15 * small + 0.2, (small, large)
