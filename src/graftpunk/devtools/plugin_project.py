@@ -25,7 +25,7 @@ import stat
 import tomllib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -1136,13 +1136,17 @@ def _fixtures_dir_parts(node: ast.expr) -> list[str] | None:
     (``Path(__file__).parent``, with ``.resolve()`` or ``.absolute()`` before
     ``.parent`` or not) with ``/`` and string literals, the shape gp plugin new
     writes ``FIXTURES_DIR`` in, or ``None`` for any other expression. A ``.`` part
-    is dropped, and a ``..`` part makes it ``None``, so the root read is never a
-    path outside the tree whatever its spelling: upgrade creates that root, and
-    add-command names files in it."""
+    is dropped, and a ``..`` part or an absolute one (``/srv``, ``C:/srv``, which
+    ``/`` resolves to itself, discarding the left side) makes it ``None``, so the
+    root read is never a path outside the tree whatever its spelling: upgrade
+    creates that root, and add-command names files in it."""
     parts: list[str] = []
     while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         right = node.right
         if not (isinstance(right, ast.Constant) and isinstance(right.value, str)):
+            return None
+        # The Windows reading's anchor covers both spellings: "/srv" and "C:/srv".
+        if PureWindowsPath(right.value).anchor:
             return None
         pieces = [p for p in right.value.split("/") if p and p != "."]
         if ".." in pieces:

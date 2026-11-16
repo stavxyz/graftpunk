@@ -342,6 +342,9 @@ class TestTheDeclaredFixturesDir:
             'FIXTURES_DIR = Path(__file__).parent / "data"\n',
             'FIXTURES_DIR = Path(__file__).parent / "fixtures" / ".." / "data"\n',
             'FIXTURES_DIR = Path(__file__).parent / "fixtures/../../../escaped"\n',
+            # An absolute part discards everything to its left when joined.
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "/srv/shop"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "C:/shop"\n',
         ],
     )
     def test_a_fixtures_dir_it_cannot_read_is_a_finding(self, tmp_path: Path, line: str) -> None:
