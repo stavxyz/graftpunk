@@ -233,6 +233,7 @@ class TestTheView:
             "first_party_packages",
             "member_roots",
             "suite_conftest",
+            "first_root",
         ]
         assert [f.name for f in fields(PluginDefect)] == ["entry_point", "module_path", "message"]
         assert [f.name for f in fields(PluginView)] == [
@@ -752,14 +753,35 @@ class TestFixturesRoots:
     def test_a_first_plugin_generated_before_the_namespaced_layout_reads_as_flat(
         self, tmp_path: Path
     ) -> None:
-        """A project gp plugin new wrote before 1.44.0 has no tests/fixtures/<module>/:
-        its first plugin's fixtures are the tree's own files, and stay so (#201)."""
+        """A project gp plugin new wrote before 1.44.0 declares FIXTURES_DIR as the tree
+        itself: its first plugin's fixtures are the tree's own files, and stay so (#201)."""
         _generate(tmp_path)
-        shutil.rmtree(tmp_path / "tests" / "fixtures" / "myshop")
-        (tmp_path / "tests" / "fixtures" / ".gitkeep").write_text("")
-        (plugin,) = read_project(tmp_path).plugins
+        _flatten_first_plugin(tmp_path)
+        view = read_project(tmp_path)
+        (plugin,) = view.plugins
         assert plugin.fixtures_root == "tests/fixtures/"
         assert not plugin.suite_member
+        assert view.first_root is None
+
+    def test_the_layout_is_the_declared_one_whether_or_not_its_directory_exists(
+        self, tmp_path: Path
+    ) -> None:
+        """A 1.44.0 project whose fixtures directory is missing (removed, or not in a
+        clone) still declares the namespaced layout, and reads as it (#201)."""
+        _generate(tmp_path)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        view = read_project(tmp_path)
+        assert view.plugins[0].fixtures_root == "tests/fixtures/myshop/"
+        assert view.first_root is not None
+        assert view.first_root.present is False
+
+    def test_a_project_declaring_no_fixtures_dir_reads_as_the_tree(self, tmp_path: Path) -> None:
+        """A hand-written project with no FIXTURES_DIR reads as every first plugin did
+        before 1.44.0, even when a directory named for its module exists."""
+        _generate(tmp_path)
+        (tmp_path / "tests" / "test_plugin.py").write_text("def test_x() -> None:\n    pass\n")
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.fixtures_root == "tests/fixtures/"
 
     def test_fixtures_dir_is_the_root_and_the_conftest_tree_contains_it(
         self, tmp_path: Path
@@ -781,6 +803,22 @@ class TestFixturesRoots:
             fixtures_dir = _assigned(tmp_path / "tests" / test_file, "FIXTURES_DIR")
             assert fixtures_dir == tmp_path / view.fixtures_root.rstrip("/")
             assert fixtures_dir.is_relative_to(tree)
+
+
+def _flatten_first_plugin(root: Path) -> None:
+    """Make *root*, a project gp plugin new just wrote, the shape it wrote before
+    1.44.0: the first plugin's fixtures are the tree's own files, and its test module
+    reads the tree."""
+    tree = root / "tests" / "fixtures"
+    shutil.rmtree(tree / "myshop")
+    (tree / ".gitkeep").write_text("")
+    test_module = root / "tests" / "test_plugin.py"
+    namespaced = 'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "myshop"\n'
+    text = test_module.read_text()
+    assert namespaced in text
+    test_module.write_text(
+        text.replace(namespaced, 'FIXTURES_DIR = Path(__file__).parent / "fixtures"\n')
+    )
 
 
 def _assigned(module: Path, name: str) -> Path:
@@ -1502,30 +1540,36 @@ class TestUnfollowableSymlink:
         return member_root
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
-    def test_read_plugin_reads_a_locked_target_root_as_the_namespaced_layout(
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_root_state_reads_a_locked_first_root_as_blocked(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
-        """Only an absent tests/fixtures/<module>/ reads as a project made before
-        1.44.0 (#201); a blocked one is the new layout."""
+        """The first plugin's declared root is read as a member's is (#201): the
+        layout stays the declared one, and the blocked root is a fact check reports."""
         _generate(tmp_path)
         own_root = tmp_path / "tests" / "fixtures" / "myshop"
         shutil.rmtree(own_root)
         locked = _locked_target(tmp_path_factory, own_root, is_dir=True)
         try:
-            (plugin,) = read_project(tmp_path).plugins
+            view = read_project(tmp_path)
         finally:
             locked.chmod(0o755)
-        assert plugin.fixtures_root == "tests/fixtures/myshop/"
+        assert view.plugins[0].fixtures_root == "tests/fixtures/myshop/"
+        assert view.first_root is not None
+        assert (view.first_root.present, view.first_root.blocked) == (
+            False,
+            ("tests/fixtures/myshop", NOT_A_DIRECTORY),
+        )
 
-    def test_read_plugin_reads_a_self_loop_root_as_the_namespaced_layout(
-        self, tmp_path: Path
-    ) -> None:
+    def test_root_state_reads_a_self_loop_first_root_as_blocked(self, tmp_path: Path) -> None:
         _generate(tmp_path)
         own_root = tmp_path / "tests" / "fixtures" / "myshop"
         shutil.rmtree(own_root)
         _loop(own_root)
-        (plugin,) = read_project(tmp_path).plugins
-        assert plugin.fixtures_root == "tests/fixtures/myshop/"
+        view = read_project(tmp_path)
+        assert view.plugins[0].fixtures_root == "tests/fixtures/myshop/"
+        assert view.first_root is not None
+        assert view.first_root.blocked == ("tests/fixtures/myshop", NOT_A_DIRECTORY)
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
     def test_member_roots_reads_a_locked_target_as_blocked(

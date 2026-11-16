@@ -152,7 +152,10 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
                 f"no plugin named {plugin!r} in this project; its plugins: {names}."
             )
         plugin = found
-    roots = [r for r in view.member_roots if plugin is None or r.entry_point == plugin]
+    # The first plugin's own root, when its test module declares one, is created
+    # and refused on as a member's is (#201).
+    own_roots = [*([view.first_root] if view.first_root else []), *view.member_roots]
+    roots = [r for r in own_roots if plugin is None or r.entry_point == plugin]
     blocked: list[tuple[str, str]] = []
     if view.fixtures_tree_blocked is not None:
         blocked.append(view.fixtures_tree_blocked)
@@ -180,7 +183,7 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
         1
         for r in view.missing_requirements()
         if r.key not in fixed and (suite_owner is None or r.path != CONFTEST_PATH)
-    ) + sum(1 for r in view.member_roots if not r.present and r.path not in created_roots)
+    ) + sum(1 for r in own_roots if not r.present and r.path not in created_roots)
     by_path: dict[str, list[ProjectRequirement]] = {}
     for requirement in missing:
         by_path.setdefault(requirement.path, []).append(requirement)
@@ -232,7 +235,9 @@ def upgrade_project(root: Path, *, plugin: str | None = None) -> UpgradeApplied:
         changes.append(PlannedChange(path, content, original=original, validate=validate_python))
     fixtures_tree = root / FIXTURES_TREE
     created_fixtures_tree = not view.fixtures_tree_present
-    if created_fixtures_tree:
+    # A placeholder in a root this call creates puts the tree in git too; the
+    # tree's own is for a project whose first plugin's fixtures are its files.
+    if created_fixtures_tree and not created_roots:
         changes.append(PlannedChange(fixtures_tree / FIXTURES_PLACEHOLDER, ""))
     changes.extend(PlannedChange(root / path / FIXTURES_PLACEHOLDER, "") for path in created_roots)
     floor = None

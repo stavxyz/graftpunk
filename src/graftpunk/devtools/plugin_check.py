@@ -263,11 +263,15 @@ def check_project(root: Path) -> list[Finding]:
         findings.append(Finding(path=path, line=None, message=unreadable_file_message(reason)))
     elif not view.fixtures_tree_present:
         findings.append(Finding(path=FIXTURES_TREE, line=None, message=_FIXTURES_TREE_MISSING))
-    for member in view.member_roots:
+    # The first plugin's own root, when it declares one, is created with the tree,
+    # so it is reported missing only when the tree is there (#201).
+    first = view.first_root
+    own_roots = [*([first] if first is not None else []), *view.member_roots]
+    for member in own_roots:
         if member.blocked is not None:
             path, reason = member.blocked
             findings.append(Finding(path=path, line=None, message=unreadable_file_message(reason)))
-        elif not member.present:
+        elif not member.present and (member is not first or view.fixtures_tree_present):
             message = f"missing; gp plugin upgrade --plugin {member.entry_point} {_CREATES_IT}."
             findings.append(Finding(path=member.path, line=None, message=message))
     findings.extend(

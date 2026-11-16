@@ -379,6 +379,9 @@ class ProjectView:
     shared conftest holds of its fixtures check (``SUITE_MEMBER_FIXTURES``, and
     whether its check is still the standalone whole-tree one), which
     ``gp plugin check`` reports and ``gp plugin upgrade`` fixes (#370).
+    ``first_root`` holds the same facts as a member root for the first plugin's
+    own fixtures root, when its test module declares one (#201), and is
+    ``None`` when its fixtures are the tree's own files.
 
     ``first_party_packages`` is read once here, by the same rule ruff uses to
     decide a module is first party: every top-level directory and ``*.py`` or
@@ -410,6 +413,7 @@ class ProjectView:
     first_party_packages: frozenset[str] = frozenset()
     member_roots: tuple[MemberRoot, ...] = ()
     suite_conftest: SuiteConftestState | None = None
+    first_root: MemberRoot | None = None
 
     def plugin(self, entry_point: str) -> PluginView | PluginDefect | None:
         """The plugin or defect whose entry-point name is *entry_point*, or ``None``:
@@ -624,12 +628,14 @@ def read_project(root: Path) -> ProjectView:
             first_party_packages=first_party_packages,
         )
     project_name = str(data.get("project", {}).get("name", ""))
+    test_files = _test_files(root)
+    modules = [module_name_for(key) for key in entry_points]
     read = [
-        _read_plugin(root, key, value, project_name, len(entry_points))
+        _read_plugin(root, key, value, project_name, modules, test_files)
         for key, value in entry_points.items()
     ]
     plugins = tuple(r for r in read if isinstance(r, PluginView))
-    requirement_set = _requirement_set(plugins, _test_files(root))
+    requirement_set = _requirement_set(plugins, test_files)
     requirements = _requirement_statuses(root, requirement_set)
     return ProjectView(
         directory="plugin",
@@ -643,6 +649,7 @@ def read_project(root: Path) -> ProjectView:
         first_party_packages=first_party_packages,
         member_roots=_member_roots(root, plugins),
         suite_conftest=_suite_conftest(root, plugins),
+        first_root=_first_root(root, plugins),
     )
 
 
@@ -1099,8 +1106,66 @@ def _test_markers(root: Path) -> tuple[tuple[str, int], ...]:
     return tuple(found)
 
 
+def _fixtures_dir_parts(node: ast.expr) -> list[str] | None:
+    """The directory names *node* joins onto ``Path(__file__).parent`` with ``/``
+    and string literals, the shape gp plugin new writes ``FIXTURES_DIR`` in, or
+    ``None`` for any other expression."""
+    parts: list[str] = []
+    while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        right = node.right
+        if not (isinstance(right, ast.Constant) and isinstance(right.value, str)):
+            return None
+        parts.insert(0, right.value)
+        node = node.left
+    is_base = (
+        isinstance(node, ast.Attribute)
+        and node.attr == "parent"
+        and isinstance(node.value, ast.Call)
+        and _last_name(node.value.func) == "Path"
+        and len(node.value.args) == 1
+        and isinstance(node.value.args[0], ast.Name)
+        and node.value.args[0].id == "__file__"
+    )
+    return parts if is_base and parts else None
+
+
+def _declared_fixtures_dir(
+    root: Path, module: str, modules: list[str], test_files: tuple[str, ...]
+) -> str | None:
+    """The directory *module*'s first plugin declares its fixtures in, project-relative
+    with a trailing slash: the first module-level ``FIXTURES_DIR`` of the shape
+    gp plugin new writes (:func:`_fixtures_dir_parts`) in ``tests/test_plugin.py``
+    (the module gp plugin new writes for a project's first plugin), then in each
+    test module :func:`policy.test_module_owner` gives *module* among *modules*.
+    ``None`` when none declares one, or the files cannot be read."""
+    candidates = ["test_plugin.py"] + [
+        name
+        for name in test_files
+        if name != "test_plugin.py" and policy.test_module_owner(name, modules) == module
+    ]
+    for name in candidates:
+        if name not in test_files:
+            continue
+        tree = _parse_requirement_file(root, f"{policy.TESTS_DIR}{name}")
+        if not isinstance(tree, ast.Module):
+            continue
+        for node in tree.body:
+            if (
+                isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "FIXTURES_DIR" for t in node.targets)
+                and (parts := _fixtures_dir_parts(node.value)) is not None
+            ):
+                return policy.TESTS_DIR + "".join(f"{part}/" for part in parts)
+    return None
+
+
 def _read_plugin(
-    root: Path, key: str, value: str, project_name: str, suite_size: int
+    root: Path,
+    key: str,
+    value: str,
+    project_name: str,
+    modules: list[str],
+    test_files: tuple[str, ...],
 ) -> PluginView | PluginDefect:
     module = value.partition(":")[0]
     relative = _module_file(root, module)
@@ -1127,14 +1192,19 @@ def _read_plugin(
         )
     (klass,) = classes
     package = module.split(".")[0]
-    suite_member = suite_size > 1 and _normalised(project_name) != _normalised(package)
+    suite_member = len(modules) > 1 and _normalised(project_name) != _normalised(package)
     # A suite member's fixtures are always in a directory of its own. A first
-    # plugin's are too unless gp plugin new generated it before 1.44.0, when they
-    # were the tree's own files: told apart by whether anything is at that
-    # directory's path (#201). Something that is not a directory there is the new
-    # layout, blocked, which the fixtures check then reports.
-    own_root = policy.fixtures_root(module_name_for(key))
-    flat = not suite_member and _probe(root / own_root) == "absent"
+    # plugin's are wherever its test modules declare them (#201): gp plugin new
+    # has written FIXTURES_DIR as its own directory since 1.44.0 and as the tree
+    # itself before, and a project declaring neither reads as the tree, as every
+    # first plugin did before 1.44.0. Whether the directory exists decides
+    # nothing: an upgrade or a clone can leave it missing.
+    fixtures_root = policy.fixtures_root(module_name_for(key))
+    if not suite_member:
+        declared = _declared_fixtures_dir(root, module_name_for(key), modules, test_files)
+        if declared is None or not declared.startswith(policy.FIXTURES_TREE):
+            declared = policy.FIXTURES_TREE
+        fixtures_root = declared
     aliases, aliases_line = _class_aliases(klass)
     start = min([klass.lineno, *(d.lineno for d in klass.decorator_list)])
     return PluginView(
@@ -1150,7 +1220,7 @@ def _read_plugin(
             for number, line in enumerate(source_lines(text), start=1)
             if GP_FILL_MARKER in line
         ),
-        fixtures_root=policy.FIXTURES_TREE if flat else own_root,
+        fixtures_root=fixtures_root,
         class_names=_class_body_names(klass),
         aliases=aliases,
         aliases_line=aliases_line,
@@ -1409,12 +1479,24 @@ def _member_roots(root: Path, plugins: tuple[PluginView, ...]) -> tuple[MemberRo
     """Each suite member's fixtures root, whether it is a directory, and what blocks
     it, the facts ``fixtures_tree_present`` and ``fixtures_tree_blocked`` hold for the
     tree (#370)."""
-    found: list[MemberRoot] = []
-    for member in _suite_members(plugins):
-        blocked = _blocked_path(root, member.fixtures_root, kind="directory")
-        present = blocked is None and _probe(root / member.fixtures_root) == "dir"
-        found.append(MemberRoot(member.entry_point, member.fixtures_root, present, blocked))
-    return tuple(found)
+    return tuple(_root_state(root, member) for member in _suite_members(plugins))
+
+
+def _first_root(root: Path, plugins: tuple[PluginView, ...]) -> MemberRoot | None:
+    """The first plugin's own fixtures root when it declares one (#201), the facts
+    ``member_roots`` holds for a member's; ``None`` for a first plugin whose
+    fixtures are the tree's own files."""
+    first = next((p for p in plugins if not p.suite_member), None)
+    if first is None or first.fixtures_root == policy.FIXTURES_TREE:
+        return None
+    return _root_state(root, first)
+
+
+def _root_state(root: Path, plugin: PluginView) -> MemberRoot:
+    """*plugin*'s own fixtures root: whether it is a directory, and what blocks it."""
+    blocked = _blocked_path(root, plugin.fixtures_root, kind="directory")
+    present = blocked is None and _probe(root / plugin.fixtures_root) == "dir"
+    return MemberRoot(plugin.entry_point, plugin.fixtures_root, present, blocked)
 
 
 def _suite_conftest(root: Path, plugins: tuple[PluginView, ...]) -> SuiteConftestState | None:

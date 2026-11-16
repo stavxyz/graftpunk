@@ -21,6 +21,7 @@ from graftpunk.devtools.plugin_info import PluginDefectRefusal, info_payload
 from graftpunk.devtools.plugin_project import PluginDefect, ProjectView, read_project
 from graftpunk.devtools.scaffold.policy import PROJECT_REQUIREMENTS
 from graftpunk.har.parser import HARParseError, parse_har_file
+from tests.unit.test_plugin_project import _flatten_first_plugin
 
 runner = CliRunner()
 
@@ -1156,11 +1157,24 @@ class TestAddCommand:
         """A first plugin whose fixtures are the tree's own files (gp plugin new before
         1.44.0) keeps getting fixture paths there (#201)."""
         _new(recorded, "myshop", "orders=GET /api/orders")
-        shutil.rmtree(recorded / "tests" / "fixtures" / "myshop")
-        (recorded / "tests" / "fixtures" / ".gitkeep").write_text("")
+        _flatten_first_plugin(recorded)
         result = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
         assert result.exit_code == 0, result.output
         assert "tests/fixtures/get_api_orders_{order_id}.json" in _plain(result.output)
+
+    def test_a_namespaced_project_upgraded_with_no_fixtures_dir_keeps_its_paths(
+        self, recorded: Path
+    ) -> None:
+        """The review's reproduction (#201): with the fixtures tree removed, upgrade
+        then add-command named a flat path the generated tests never read."""
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        shutil.rmtree(recorded / "tests" / "fixtures")
+        upgraded = runner.invoke(app, ["plugin", "upgrade", "--dir", str(recorded)])
+        assert upgraded.exit_code == 0, upgraded.output
+        assert (recorded / "tests" / "fixtures" / "myshop" / ".gitkeep").is_file()
+        result = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
+        assert result.exit_code == 0, result.output
+        assert "tests/fixtures/myshop/get_api_orders_{order_id}.json" in _plain(result.output)
 
     def test_the_fixture_path_for_a_suite_member(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")
@@ -1591,7 +1605,8 @@ class TestPluginUpgrade:
         assert result.exit_code == 0, result.output
         assert "tests/conftest.py: added FIXTURES_TREE" in _plain(result.output)
         assert "tests/fixtures/: created" in _plain(result.output)
-        assert (tmp_path / "tests" / "fixtures" / ".gitkeep").is_file()
+        assert "tests/fixtures/myshop/: created" in _plain(result.output)
+        assert (tmp_path / "tests" / "fixtures" / "myshop" / ".gitkeep").is_file()
         assert conftest.read_text() != ""
 
 
