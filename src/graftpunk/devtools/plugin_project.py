@@ -1145,8 +1145,10 @@ def _fixtures_dir_parts(node: ast.expr) -> list[str] | None:
         right = node.right
         if not (isinstance(right, ast.Constant) and isinstance(right.value, str)):
             return None
-        # The Windows reading's anchor covers both spellings: "/srv" and "C:/srv".
-        if PureWindowsPath(right.value).anchor:
+        # The Windows reading's anchor covers both spellings: "/srv" and "C:/srv". A
+        # backslash is a separator on Windows only, so "..\\x" climbs there and is one
+        # odd name elsewhere; refusing it keeps the reading the same on every system.
+        if PureWindowsPath(right.value).anchor or "\\" in right.value:
             return None
         pieces = [p for p in right.value.split("/") if p and p != "."]
         if ".." in pieces:

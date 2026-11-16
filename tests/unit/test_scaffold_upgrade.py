@@ -345,6 +345,8 @@ class TestTheDeclaredFixturesDir:
             # An absolute part discards everything to its left when joined.
             'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "/srv/shop"\n',
             'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "C:/shop"\n',
+            # A backslash separates (and so ".." climbs) on Windows only.
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "..\\\\..\\\\escaped"\n',
         ],
     )
     def test_a_fixtures_dir_it_cannot_read_is_a_finding(self, tmp_path: Path, line: str) -> None:
