@@ -20,7 +20,6 @@ from graftpunk.devtools.plugin_project import _probe, read_project
 from graftpunk.devtools.scaffold.policy import (
     CONFTEST_PATH,
     FIXTURES_PLACEHOLDER,
-    FIXTURES_TREE,
     module_name_for,
 )
 from graftpunk.devtools.scaffold.pyproject_edit import (
@@ -146,12 +145,10 @@ def _suite_conftest_change(
         view = read_project(target_dir)
     except DevtoolsRefusal:
         return None
-    owner = next((p for p in view.plugins if p.fixtures_root == FIXTURES_TREE), None)
+    owner = next((p for p in view.plugins if not p.suite_member), None)
     if owner is None:
         return None
-    members = [
-        module_name_for(p.entry_point) for p in view.plugins if p.fixtures_root != FIXTURES_TREE
-    ]
+    members = [module_name_for(p.entry_point) for p in view.plugins if p.suite_member]
     conftest = target_dir / CONFTEST_PATH
     status = view.requirements.get(f"{CONFTEST_PATH}:FIXTURES_TREE")
     if status is not None and status.state == "unreadable":

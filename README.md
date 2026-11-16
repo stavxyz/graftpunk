@@ -434,7 +434,7 @@ yourself](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT
 
 The generated tests read fixtures. Write the recorded bodies out as captures,
 which land in the project's git-ignored `tests/captures/`, then copy each one
-into `tests/fixtures/` with its sidecar and replace every value with an
+into `tests/fixtures/mybank/` with its sidecar and replace every value with an
 invented one
 ([Deriving a fixture from a capture](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#deriving-a-fixture-from-a-capture)):
 

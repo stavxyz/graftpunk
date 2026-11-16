@@ -286,6 +286,9 @@ class PluginView:
     aliases_line: int | None = None
     # The string literal the class assigns to ``session_name``, or ``None``.
     session_name: str | None = None
+    # Whether it is a suite member: every plugin of a suite but its first, which
+    # owns the shared conftest (see the design note after _read_plugin).
+    suite_member: bool = False
 
 
 @dataclass(frozen=True)
@@ -1124,6 +1127,14 @@ def _read_plugin(
         )
     (klass,) = classes
     package = module.split(".")[0]
+    suite_member = suite_size > 1 and _normalised(project_name) != _normalised(package)
+    # A suite member's fixtures are always in a directory of its own. A first
+    # plugin's are too unless gp plugin new generated it before 1.44.0, when they
+    # were the tree's own files: told apart by whether anything is at that
+    # directory's path (#201). Something that is not a directory there is the new
+    # layout, blocked, which the fixtures check then reports.
+    own_root = policy.fixtures_root(module_name_for(key))
+    flat = not suite_member and _probe(root / own_root) == "absent"
     aliases, aliases_line = _class_aliases(klass)
     start = min([klass.lineno, *(d.lineno for d in klass.decorator_list)])
     return PluginView(
@@ -1139,14 +1150,12 @@ def _read_plugin(
             for number, line in enumerate(source_lines(text), start=1)
             if GP_FILL_MARKER in line
         ),
-        fixtures_root=policy.fixtures_root(
-            suite_member=suite_size > 1 and _normalised(project_name) != _normalised(package),
-            module_name=module_name_for(key),
-        ),
+        fixtures_root=policy.FIXTURES_TREE if flat else own_root,
         class_names=_class_body_names(klass),
         aliases=aliases,
         aliases_line=aliases_line,
         session_name=_class_string(klass, "session_name"),
+        suite_member=suite_member,
     )
 
 
@@ -1343,17 +1352,16 @@ def _test_files(root: Path) -> tuple[str, ...]:
 
 
 def _suite_members(plugins: tuple[PluginView, ...]) -> tuple[PluginView, ...]:
-    """The plugins with a fixtures root of their own under the tree: a suite's
-    members, every plugin but the first one ``gp plugin new`` wrote."""
-    return tuple(p for p in plugins if p.fixtures_root != policy.FIXTURES_TREE)
+    """A suite's members: every plugin but the first one ``gp plugin new`` wrote."""
+    return tuple(p for p in plugins if p.suite_member)
 
 
 def _suite_owner(plugins: tuple[PluginView, ...]) -> PluginView | None:
-    """In a suite, the plugin whose fixtures are the tree's own files (the first one
-    ``gp plugin new`` wrote), or ``None``; ``None`` outside a suite."""
+    """In a suite, the plugin whose project it is (the first one ``gp plugin new``
+    wrote, which owns the shared conftest), or ``None``; ``None`` outside a suite."""
     if not _suite_members(plugins):
         return None
-    return next((p for p in plugins if p.fixtures_root == policy.FIXTURES_TREE), None)
+    return next((p for p in plugins if not p.suite_member), None)
 
 
 def _requirement_set(
@@ -1362,9 +1370,9 @@ def _requirement_set(
     """What *plugins*' project must bind, each requirement attributed to the plugin it
     serves: ``policy.PROJECT_REQUIREMENTS`` for a project with no suite member, read
     from ``policy`` on each call. In a suite (#370), the conftest holds
-    ``policy.suite_requirements`` for the plugin whose fixtures root is the tree
-    itself (none when no plugin's is): a check over its fixtures alone, every
-    member's directory skipped. Each member's test modules, by
+    ``policy.suite_requirements`` for its first plugin, the one that is no member
+    (none when every plugin is one): a check over the tree with every member's
+    directory skipped. Each member's test modules, by
     ``policy.test_module_owner`` among *test_files* over every plugin's module name
     (``policy.suite_test_module`` when it has none), each hold its own
     ``policy.member_requirements``; a file the first plugin's name wins is its own."""

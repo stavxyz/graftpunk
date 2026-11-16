@@ -803,7 +803,7 @@ def _new_project(app: typer.Typer, target: Path, *commands: str) -> tuple[str, d
 
 
 def _project_pytest(target: Path) -> str:
-    for meta in (target / "tests" / "fixtures").glob("*.meta.json"):
+    for meta in (target / "tests" / "fixtures" / "myshop").glob("*.meta.json"):
         meta.write_text(sidecar_text(dataclasses.replace(load_sidecar(meta), capture_sha256=None)))
     env = {**os.environ, "PYTHONPATH": str(target / "src")}
     tested = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
@@ -889,7 +889,7 @@ class TestTheGeneratedPlugin:
             "graphql_graphql_2.graphql",
         }
         matches = ("POST /graphql (*)", "POST /graphql", "GET /")
-        _fixtures(app, target / "tests" / "fixtures", *matches)
+        _fixtures(app, target / "tests" / "fixtures" / "myshop", *matches)
         tests = (target / "tests" / "test_plugin.py").read_text()
         assert 'assert ctx.session.requests[-1].operation == "OrdersByCustomer"' in tests
         assert "no test for cart (POST /graphql (Cart))" in tests
@@ -1011,7 +1011,7 @@ class TestTheGeneratedPlugin:
         for value in _ADVERSARIAL_VALUES:
             assert re.search(rf"\b{re.escape(value)}\b", written) is None, value
         _assert_ruff_clean(target)
-        _fixtures(app, target / "tests" / "fixtures", "POST /graphql (*)", "GET /")
+        _fixtures(app, target / "tests" / "fixtures" / "myshop", "POST /graphql (*)", "GET /")
         assert "3 passed" in _project_pytest(target)
 
     def test_one_operation_name_on_two_paths_writes_two_documents(

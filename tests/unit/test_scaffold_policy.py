@@ -27,17 +27,10 @@ def test_the_tree_lies_under_the_tests_directory() -> None:
     assert FIXTURES_TREE.startswith(TESTS_DIR)
 
 
-def test_a_standalone_project_uses_the_tree_itself() -> None:
-    assert fixtures_root(suite_member=False, module_name="myshop") == "tests/fixtures/"
-
-
-def test_a_suite_member_owns_a_directory_under_the_tree() -> None:
-    assert fixtures_root(suite_member=True, module_name="my_shop") == "tests/fixtures/my_shop/"
-
-
-def test_every_root_lies_under_the_tree() -> None:
-    for suite_member in (False, True):
-        assert fixtures_root(suite_member=suite_member, module_name="x").startswith(FIXTURES_TREE)
+def test_every_plugin_owns_a_directory_under_the_tree() -> None:
+    """A new project and a suite member alike (#201)."""
+    assert fixtures_root("my_shop") == "tests/fixtures/my_shop/"
+    assert fixtures_root("x").startswith(FIXTURES_TREE)
 
 
 # Modules that can touch the filesystem. Policy is data, so it imports none of

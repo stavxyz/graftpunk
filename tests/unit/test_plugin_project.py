@@ -249,6 +249,7 @@ class TestTheView:
             "aliases",
             "aliases_line",
             "session_name",
+            "suite_member",
         ]
         assert [f.name for f in fields(CommandView)] == ["method", "span", "keywords", "group"]
 
@@ -299,7 +300,7 @@ class TestTheView:
         text = (tmp_path / plugin.module_path).read_text().splitlines()
         assert plugin.markers
         assert all("GP-FILL" in text[line - 1] for line in plugin.markers)
-        assert plugin.fixtures_root == "tests/fixtures/"
+        assert plugin.fixtures_root == "tests/fixtures/myshop/"
 
     def test_a_form_feed_above_a_marker_does_not_shift_its_reported_line(
         self, tmp_path: Path
@@ -687,9 +688,7 @@ class TestTheView:
 
 
 class TestFixturesRoots:
-    def test_a_suite_gives_its_first_member_the_tree_and_the_next_its_own_root(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_suite_gives_every_plugin_its_own_root(self, tmp_path: Path) -> None:
         _generate(tmp_path, "myshop")
         write_scaffold(
             tmp_path,
@@ -702,7 +701,7 @@ class TestFixturesRoots:
             ),
         )
         roots = {p.site_name: p.fixtures_root for p in read_project(tmp_path).plugins}
-        assert roots == {"myshop": "tests/fixtures/", "widgets": "tests/fixtures/widgets/"}
+        assert roots == {"myshop": "tests/fixtures/myshop/", "widgets": "tests/fixtures/widgets/"}
 
     @pytest.mark.parametrize("second", [False, True])
     def test_the_rule_gives_the_same_answer_from_the_spec_and_from_the_project(
@@ -725,11 +724,7 @@ class TestFixturesRoots:
             name=name, mode=mode, backend="nodriver", base_url="https://myshop.example"
         )
         view = next(p for p in read_project(tmp_path).plugins if p.site_name == name)
-        assert (
-            fixtures_root_for(spec)
-            == view.fixtures_root
-            == fixtures_root(suite_member=second, module_name=module_name_for(name))
-        )
+        assert fixtures_root_for(spec) == view.fixtures_root == fixtures_root(module_name_for(name))
 
     def test_a_hand_written_single_plugin_project_is_not_a_suite_member(
         self, tmp_path: Path
@@ -753,6 +748,18 @@ class TestFixturesRoots:
         )
         (plugin,) = read_project(tmp_path).plugins
         assert plugin.fixtures_root == "tests/fixtures/"
+
+    def test_a_first_plugin_generated_before_the_namespaced_layout_reads_as_flat(
+        self, tmp_path: Path
+    ) -> None:
+        """A project gp plugin new wrote before 1.44.0 has no tests/fixtures/<module>/:
+        its first plugin's fixtures are the tree's own files, and stay so (#201)."""
+        _generate(tmp_path)
+        shutil.rmtree(tmp_path / "tests" / "fixtures" / "myshop")
+        (tmp_path / "tests" / "fixtures" / ".gitkeep").write_text("")
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.fixtures_root == "tests/fixtures/"
+        assert not plugin.suite_member
 
     def test_fixtures_dir_is_the_root_and_the_conftest_tree_contains_it(
         self, tmp_path: Path
@@ -1493,6 +1500,32 @@ class TestUnfollowableSymlink:
         member_root = root / "tests" / "fixtures" / "otherstore"
         shutil.rmtree(member_root)
         return member_root
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_read_plugin_reads_a_locked_target_root_as_the_namespaced_layout(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Only an absent tests/fixtures/<module>/ reads as a project made before
+        1.44.0 (#201); a blocked one is the new layout."""
+        _generate(tmp_path)
+        own_root = tmp_path / "tests" / "fixtures" / "myshop"
+        shutil.rmtree(own_root)
+        locked = _locked_target(tmp_path_factory, own_root, is_dir=True)
+        try:
+            (plugin,) = read_project(tmp_path).plugins
+        finally:
+            locked.chmod(0o755)
+        assert plugin.fixtures_root == "tests/fixtures/myshop/"
+
+    def test_read_plugin_reads_a_self_loop_root_as_the_namespaced_layout(
+        self, tmp_path: Path
+    ) -> None:
+        _generate(tmp_path)
+        own_root = tmp_path / "tests" / "fixtures" / "myshop"
+        shutil.rmtree(own_root)
+        _loop(own_root)
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.fixtures_root == "tests/fixtures/myshop/"
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
     def test_member_roots_reads_a_locked_target_as_blocked(

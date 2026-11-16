@@ -1051,7 +1051,7 @@ pyproject.toml
 src/graftpunk_myshop/__init__.py
 src/graftpunk_myshop/plugin.py
 tests/conftest.py
-tests/fixtures/.gitkeep
+tests/fixtures/myshop/.gitkeep
 tests/test_plugin.py
 ```
 
@@ -1077,10 +1077,13 @@ otherstore = "graftpunk_otherstore.plugin:OtherstorePlugin"
 packages = ["src/graftpunk_myshop", "src/graftpunk_otherstore"]
 ```
 
-Suite mode gives each plugin its own `tests/fixtures/<name>/` directory, because
-fixture filenames are derived from endpoint paths and two plugins in one suite
-can share a path. It does not touch `tests/conftest.py`, which was written for
-the first plugin. The new plugin's test module binds its own environment
+Each plugin gets its own `tests/fixtures/<name>/` directory, in a new project
+and in a suite alike, because fixture filenames are derived from endpoint paths
+and two plugins in one suite can share a path; `<name>` is the plugin's module
+name (`my_shop` for `my-shop`). A project generated before graftpunk 1.44.0 keeps
+its first plugin's fixtures directly in `tests/fixtures/`, and every gp command
+reads it that way for as long as it has no `tests/fixtures/<name>/`. Suite mode
+does not touch `tests/conftest.py`, which was written for the first plugin. The new plugin's test module binds its own environment
 scrubber and fixtures check instead, over its own directory alone
 (see [Keep the developer's own environment out of the tests](#keep-the-developers-own-environment-out-of-the-tests)).
 
@@ -1269,9 +1272,9 @@ The command also prints the fixtures the generated tests will look for:
 
 ```text
 Next: the endpoint tests fail until these fixtures exist:
-  tests/fixtures/get_api_orders.json
-  tests/fixtures/get_api_orders_{order_id}.json
-  tests/fixtures/get_dashboard.html
+  tests/fixtures/myshop/get_api_orders.json
+  tests/fixtures/myshop/get_api_orders_{order_id}.json
+  tests/fixtures/myshop/get_dashboard.html
 Derive each one from a capture of the same name: gp observe fixtures --help
 ```
 
@@ -1311,11 +1314,11 @@ New Project:
   src/graftpunk_myshop/__init__.py
   src/graftpunk_myshop/plugin.py
   tests/conftest.py
-  tests/fixtures/.gitkeep
+  tests/fixtures/myshop/.gitkeep
   tests/test_plugin.py
 Next: the endpoint tests fail until these fixtures exist:
-  tests/fixtures/get_api_orders.json
-  tests/fixtures/get_api_orders_{order_id}.json
+  tests/fixtures/myshop/get_api_orders.json
+  tests/fixtures/myshop/get_api_orders_{order_id}.json
 Derive each one from a capture of the same name: gp observe fixtures --help
 ```
 
@@ -1461,7 +1464,7 @@ the fixture its test should read:
 
 ```text
 Added invoices to src/graftpunk_myshop/plugin.py
-Next: write its test against tests/fixtures/get_api_invoices.json
+Next: write its test against tests/fixtures/myshop/get_api_invoices.json
 ```
 
 It writes no test. Add one to the plugin's test module in the shape of the
@@ -1496,7 +1499,7 @@ and tells you to reinstall the project:
 
 ```text
 Added invoices to src/graftpunk_myshop/plugin.py
-Next: write its test against tests/fixtures/get_api_invoices.json
+Next: write its test against tests/fixtures/myshop/get_api_invoices.json
 pyproject.toml: graftpunk>=1.17.0 (was >=1.15.0); reinstall the project
 ```
 
@@ -2628,7 +2631,7 @@ from graftpunk.testing import fixture_context
 
 from graftpunk_myshop.plugin import MyshopPlugin
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
+FIXTURES_DIR = Path(__file__).parent / "fixtures" / "myshop"
 
 
 def test_orders_lists_every_order() -> None:

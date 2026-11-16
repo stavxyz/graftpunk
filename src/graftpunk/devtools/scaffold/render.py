@@ -2463,10 +2463,9 @@ def _render_conftest(spec: ScaffoldSpec) -> str:
 
 def fixtures_root_for(spec: ScaffoldSpec) -> str:
     """Where *spec*'s generated tests look for fixtures: the policy's rule, from the
-    spec's two facts. Also the directory ``gp plugin new``'s ``Next:`` line names."""
-    return policy.fixtures_root(
-        suite_member=spec.mode == "add_to_suite", module_name=policy.module_name_for(spec.name)
-    )
+    spec's name, in either mode. Also the directory ``gp plugin new``'s ``Next:`` line
+    names."""
+    return policy.fixtures_root(policy.module_name_for(spec.name))
 
 
 def _no_fixture_is_written(endpoint: Endpoint) -> bool:

@@ -7,6 +7,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1147,6 +1148,18 @@ class TestAddCommand:
     def test_the_fixture_path_for_a_standalone_project(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")
         result = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
+        assert "tests/fixtures/myshop/get_api_orders_{order_id}.json" in _plain(result.output)
+
+    def test_the_fixture_path_for_a_project_generated_before_the_namespaced_layout(
+        self, recorded: Path
+    ) -> None:
+        """A first plugin whose fixtures are the tree's own files (gp plugin new before
+        1.44.0) keeps getting fixture paths there (#201)."""
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        shutil.rmtree(recorded / "tests" / "fixtures" / "myshop")
+        (recorded / "tests" / "fixtures" / ".gitkeep").write_text("")
+        result = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
+        assert result.exit_code == 0, result.output
         assert "tests/fixtures/get_api_orders_{order_id}.json" in _plain(result.output)
 
     def test_the_fixture_path_for_a_suite_member(self, recorded: Path) -> None:

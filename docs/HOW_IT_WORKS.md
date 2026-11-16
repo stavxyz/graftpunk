@@ -1479,9 +1479,11 @@ visible.
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
 for answering `ctx.request_json`/`request_text` from a file under
 `tests/fixtures/` instead of the network, named the way `gp observe
-fixtures` names captures. A plugin added to an existing suite gets
-`tests/fixtures/<module>/` of its own, since fixture names are per endpoint
-and two plugins in one suite can share an endpoint path. `gp observe
+fixtures` names captures. Every plugin `gp plugin new` writes gets
+`tests/fixtures/<module>/` of its own, in a new project and in a suite alike,
+since fixture names are per endpoint and two plugins in one suite can share an
+endpoint path (a project's first plugin generated before 1.44.0 keeps its
+fixtures in `tests/fixtures/` itself). `gp observe
 fixtures` writes a `<file>.meta.json` sidecar beside every capture (a `schema`
 number, the status, the content type, the body parameter names, the hash of the
 captured body, every cookie name the recording set or sent except a cookie

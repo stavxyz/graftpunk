@@ -100,7 +100,7 @@ class TestUpgrade:
 
     def test_a_present_fixtures_tree_is_left_alone(self, tmp_path: Path) -> None:
         write_scaffold(tmp_path, _SPEC)
-        placeholder = tmp_path / FIXTURES_TREE / FIXTURES_PLACEHOLDER
+        placeholder = tmp_path / FIXTURES_TREE / "myshop" / FIXTURES_PLACEHOLDER
         before = placeholder.read_bytes()
         applied = upgrade_project(tmp_path)
         assert applied.created_fixtures_tree is False
@@ -241,6 +241,69 @@ class TestUpgrade:
         with pytest.raises(UpgradeRefusedError, match="ruff check --fix"):
             upgrade_project(tmp_path)
         assert conftest.read_text() == odd
+
+
+def _flat_project(tmp_path: Path) -> Path:
+    """A project as gp plugin new wrote it before 1.44.0: the first plugin's
+    fixtures are the tree's own files, and its test module reads the tree."""
+    write_scaffold(tmp_path, _SPEC)
+    tree = tmp_path / "tests" / "fixtures"
+    shutil.rmtree(tree / "myshop")
+    (tree / FIXTURES_PLACEHOLDER).write_text("")
+    test_module = tmp_path / "tests" / "test_plugin.py"
+    text = test_module.read_text()
+    namespaced = 'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "myshop"\n'
+    assert namespaced in text
+    test_module.write_text(
+        text.replace(namespaced, 'FIXTURES_DIR = Path(__file__).parent / "fixtures"\n')
+    )
+    return tmp_path
+
+
+def _tree_files(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+class TestAProjectWithTheFlatLayout:
+    """A project generated before 1.44.0 keeps its flat fixtures layout through
+    check, upgrade, and a suite addition (#201)."""
+
+    def test_upgrade_changes_nothing_and_check_finds_nothing_about_fixtures(
+        self, tmp_path: Path
+    ) -> None:
+        root = _flat_project(tmp_path)
+        before = _tree_files(root)
+        applied = upgrade_project(root)
+        assert not applied.changed
+        assert _tree_files(root) == before
+        assert not [f for f in check_project(root) if "fixtures" in f.path]
+        (plugin,) = read_project(root).plugins
+        assert plugin.fixtures_root == FIXTURES_TREE
+
+    def test_a_member_added_to_it_is_namespaced_and_skipped_by_the_first_plugins_check(
+        self, tmp_path: Path
+    ) -> None:
+        root = _flat_project(tmp_path)
+        result = write_scaffold(
+            root,
+            ScaffoldSpec(
+                name="widgets",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://myshop.example",
+            ),
+        )
+        assert result.mode == "add_to_suite"
+        assert result.conftest_changes
+        roots = {p.entry_point: p.fixtures_root for p in read_project(root).plugins}
+        assert roots == {"myshop": "tests/fixtures/", "widgets": "tests/fixtures/widgets/"}
+        conftest = (root / "tests" / "conftest.py").read_text()
+        assert 'SUITE_MEMBER_FIXTURES = ("widgets",)' in conftest
+        assert not upgrade_project(root).changed
 
 
 _SINGLE_MODULE_PYPROJECT = """\

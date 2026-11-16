@@ -50,21 +50,18 @@ FIXTURES_TREE: Final = f"{TESTS_DIR}fixtures/"
 
 The same in a standalone project and in a suite, and true for every member a
 suite ever gains, which is why a generated conftest can carry it although it
-is written once."""
+is written once. A project's first plugin generated before graftpunk 1.44.0
+keeps its fixtures in the tree itself rather than in :func:`fixtures_root`; the
+project reader tells the two apart on disk (``plugin_project._read_plugin``)."""
 
 
-def fixtures_root(*, suite_member: bool, module_name: str) -> str:
-    """Where one plugin's fixtures live, project-relative, with a trailing slash.
-
-    A standalone project uses the tree itself. A suite member owns a directory
-    under it named for its module, because fixture names come from endpoint paths
-    and two plugins in one suite can share a path.
-    The generator supplies the two facts from its spec; a reader supplies them
-    from the project on disk.
-    """
-    if suite_member:
-        return f"{FIXTURES_TREE}{module_name}/"
-    return FIXTURES_TREE
+def fixtures_root(module_name: str) -> str:
+    """Where a plugin's fixtures live, project-relative, with a trailing slash: a
+    directory under ``FIXTURES_TREE`` named for its module (*module_name*, from
+    :func:`module_name_for`), in a new project and in a suite alike, because fixture
+    names come from endpoint paths and two plugins in one suite can share a path
+    (#201). ``gp plugin new`` writes it for every plugin it generates."""
+    return f"{FIXTURES_TREE}{module_name}/"
 
 
 def path_from_tests(directory: str) -> str:
@@ -201,10 +198,11 @@ def suite_skip_statement(modules: Sequence[str]) -> str:
 
 
 def suite_requirements(owner: str, member_modules: Sequence[str]) -> tuple[ProjectRequirement, ...]:
-    """What a suite's shared conftest must bind for *owner*, the plugin whose
-    fixtures are the tree's own files, with *member_modules* each member's
-    directory: ``FIXTURES_TREE``, ``SUITE_MEMBER_FIXTURES``, and the fixtures check
-    over the tree with every member's directory skipped (#370)."""
+    """What a suite's shared conftest must bind for *owner*, its first plugin, whose
+    fixtures are the tree's files outside every member's directory, with
+    *member_modules* each member's directory: ``FIXTURES_TREE``,
+    ``SUITE_MEMBER_FIXTURES``, and the fixtures check over the tree with every
+    member's directory skipped (#370)."""
     tree, _check = _requirements(CONFTEST_PATH, FIXTURES_TREE, owner)
     skip = ProjectRequirement(
         path=CONFTEST_PATH,
@@ -237,7 +235,7 @@ def member_requirements(entry_point: str, path: str) -> tuple[ProjectRequirement
         imports=(("graftpunk.testing.plugin", "site_env_scrubber"),),
         plugin=entry_point,
     )
-    tree = fixtures_root(suite_member=True, module_name=module)
+    tree = fixtures_root(module)
     return (scrubber, *_requirements(path, tree, entry_point))
 
 

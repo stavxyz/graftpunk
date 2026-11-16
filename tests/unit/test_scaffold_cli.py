@@ -491,7 +491,7 @@ class TestATwoHostRecording:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         target, _ = self._generate(tmp_path, monkeypatch)
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         _write_fixture(
             fixtures_dir, "get_api_orders_{order_id}.json", '{"id": "1001"}', "application/json"
         )
@@ -512,7 +512,7 @@ class TestATwoHostRecording:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         target, _ = self._generate(tmp_path, monkeypatch)
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         _write_fixture(
             fixtures_dir, "get_api_orders_{order_id}.json", '{"id": "1001"}', "application/json"
         )
@@ -704,7 +704,7 @@ class TestNextStepsNamesTheFixtures:
         assert result.exit_code == 0, result.output
         plain_output = strip_ansi(result.output)
         assert "Next:" in plain_output
-        assert "tests/fixtures/get_orders_{order_id}.json" in plain_output
+        assert "tests/fixtures/myshop/get_orders_{order_id}.json" in plain_output
         assert "gp observe fixtures --help" in plain_output
 
     def test_a_project_with_no_endpoint_stubs_says_nothing(self, tmp_path: Path) -> None:
@@ -823,7 +823,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         # a fixture. "1" is what the generated test's own path-param
         # placeholder produces, so the fixture name below is what the
         # request under test actually looks up.
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         (fixtures_dir / "get_orders_{order_id}.json").write_text('{"id": 1}')
 
         # A hand-derived fixture with no capture behind it: its sidecar declares so.
@@ -881,7 +881,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert "def command(" not in plugin_code
         assert "def command_2(" in plugin_code
 
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         (fixtures_dir / "get_command.json").write_text('{"ok": true}')
         (fixtures_dir / "get_command.json.meta.json").write_text(
             sidecar_text(Sidecar(status=200, content_type="application/json"))
@@ -931,10 +931,12 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert result.exit_code == 0, result.output
         assert "quote: str | None = None" in (target / "src/graftpunk_myshop/plugin.py").read_text()
-        (target / "tests" / "fixtures" / "get_orders_{order_id}.json").write_text('{"id": 1}')
-        (target / "tests" / "fixtures" / "get_orders_{order_id}.json.meta.json").write_text(
-            sidecar_text(Sidecar(status=200, content_type="application/json"))
+        (target / "tests" / "fixtures" / "myshop" / "get_orders_{order_id}.json").write_text(
+            '{"id": 1}'
         )
+        (
+            target / "tests" / "fixtures" / "myshop" / "get_orders_{order_id}.json.meta.json"
+        ).write_text(sidecar_text(Sidecar(status=200, content_type="application/json")))
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -983,8 +985,8 @@ class TestGeneratedProjectPassesItsOwnGate:
             ],
         )
         assert result.exit_code == 0, result.output
-        (target / "tests" / "fixtures" / "get_go.html").write_text("")
-        (target / "tests" / "fixtures" / "get_go.html.meta.json").write_text(
+        (target / "tests" / "fixtures" / "myshop" / "get_go.html").write_text("")
+        (target / "tests" / "fixtures" / "myshop" / "get_go.html.meta.json").write_text(
             sidecar_text(Sidecar(status=200, content_type="text/html"))
         )
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
@@ -1019,7 +1021,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         argv = ["plugin", "new", "myshop", "--from-run", "myshop", "--run", "run-1"]
         result = runner.invoke(app, [*argv, "--dir", str(target)])
         assert result.exit_code == 0, result.output
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         result = runner.invoke(
             app, ["observe", "fixtures", "myshop", "--match", match, "--out", str(fixtures_dir)]
         )
@@ -1065,7 +1067,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "get_cart.json").read_text() == '{"n": 1}'
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "get_cart.json"
+        ).read_text() == '{"n": 1}'
 
     def test_a_bodyless_200_endpoint_is_not_in_the_fixtures_list(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1117,7 +1121,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        fixtures = target / "tests" / "fixtures"
+        fixtures = target / "tests" / "fixtures" / "myshop"
         assert (fixtures / "get_ack.json").read_text() == '{"ok": true}'
         assert not (fixtures / "get_ack.html").exists()
         plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
@@ -1186,7 +1190,7 @@ class TestGeneratedProjectPassesItsOwnGate:
             ],
         )
         assert result.exit_code == 0, result.output
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         result = runner.invoke(
             app,
             ["observe", "fixtures", "myshop", "--match", "GET /go", "--out", str(fixtures_dir)],
@@ -1251,8 +1255,8 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert result.exit_code == 0, result.output
         assert f"    {assertion}\n" in (target / "tests" / "test_plugin.py").read_text()
-        (target / "tests" / "fixtures" / "get_ack.json").write_text(body)
-        (target / "tests" / "fixtures" / "get_ack.json.meta.json").write_text(
+        (target / "tests" / "fixtures" / "myshop" / "get_ack.json").write_text(body)
+        (target / "tests" / "fixtures" / "myshop" / "get_ack.json.meta.json").write_text(
             sidecar_text(Sidecar(status=status, content_type="application/json"))
         )
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
@@ -1281,7 +1285,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "post_ack.json").read_text() == '{"ok": true}'
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "post_ack.json"
+        ).read_text() == '{"ok": true}'
         plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
         assert "return ctx.request_json(" in plugin
 
@@ -1307,7 +1313,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "put_cart.html").read_text() == "<p>ok</p>"
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "put_cart.html"
+        ).read_text() == "<p>ok</p>"
         plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
         assert "return ctx.request_text(" in plugin
 
@@ -1322,7 +1330,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "delete_items_{item_id}.json").read_text() == "[]"
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "delete_items_{item_id}.json"
+        ).read_text() == "[]"
         test_code = (target / "tests" / "test_plugin.py").read_text()
         assert "assert result == []" in test_code
 
@@ -1341,7 +1351,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "get_cart.json").read_text() == '{"n": 1}'
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "get_cart.json"
+        ).read_text() == '{"n": 1}'
 
     def test_a_charset_suffixed_json_majority_writes_a_passing_json_test(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1368,7 +1380,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "get_profile.json").read_text() == '{"a": 1}'
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "get_profile.json"
+        ).read_text() == '{"a": 1}'
 
     def test_a_one_to_one_html_and_json_tie_writes_a_passing_json_test(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1382,7 +1396,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "get_ping.json").read_text() == '{"ok": true}'
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "get_ping.json"
+        ).read_text() == '{"ok": true}'
 
     def test_a_project_with_login_and_token_blocks_imports_and_instantiates(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2025,7 +2041,7 @@ class TestPluginNewCommand:
         plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
         assert "def order(" in plugin_code
         assert "def api_orders(" not in plugin_code
-        assert "tests/fixtures/get_api_orders_{order_id}.json" in strip_ansi(result.output)
+        assert "tests/fixtures/myshop/get_api_orders_{order_id}.json" in strip_ansi(result.output)
 
     @pytest.mark.usefixtures("gp_logging")
     @pytest.mark.parametrize(
