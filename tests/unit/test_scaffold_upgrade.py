@@ -322,6 +322,8 @@ class TestTheDeclaredFixturesDir:
             'FIXTURES_DIR = Path(__file__).absolute().parent / "fixtures" / "myshop"\n',
             'FIXTURES_DIR = Path(__file__).parent / "fixtures/myshop"\n',
             'FIXTURES_DIR: Path = Path(__file__).parent / "fixtures" / "myshop"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "./fixtures/myshop"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "." / "fixtures" / "myshop"\n',
         ],
     )
     def test_each_spelling_of_the_namespaced_root_is_read(self, tmp_path: Path, line: str) -> None:
@@ -336,7 +338,10 @@ class TestTheDeclaredFixturesDir:
         "line",
         [
             'FIXTURES_DIR = HERE / "fixtures" / "myshop"\n',
+            'FIXTURES_DIR = HERE / "fixtures"\n',
             'FIXTURES_DIR = Path(__file__).parent / "data"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / ".." / "data"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures/../../../escaped"\n',
         ],
     )
     def test_a_fixtures_dir_it_cannot_read_is_a_finding(self, tmp_path: Path, line: str) -> None:
@@ -350,8 +355,41 @@ class TestTheDeclaredFixturesDir:
         assert plugin.fixtures_dir_unread == ("tests/test_plugin.py", lineno)
         (finding,) = [f for f in check_project(tmp_path) if "FIXTURES_DIR" in f.message]
         assert (finding.path, finding.line) == ("tests/test_plugin.py", lineno)
-        assert "spell FIXTURES_DIR as gp plugin new writes it" in finding.message
-        assert 'Path(__file__).parent / "fixtures" / "myshop"' in finding.message
+        message = " ".join(finding.message.split())
+        assert "spell FIXTURES_DIR as gp plugin new writes it" in message
+        # Both spellings, each with the layout it is for: the flat one for fixtures
+        # left where gp now takes them to be, the namespaced one after a move.
+        assert (
+            'Path(__file__).parent / "fixtures" for fixtures kept in tests/fixtures/ '
+            "(the layout of a project generated before graftpunk 1.44.0)"
+        ) in message
+        assert (
+            'Path(__file__).parent / "fixtures" / "myshop" after moving them into '
+            "tests/fixtures/myshop/"
+        ) in message
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / ".." / ".." / ".." / "escaped"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures/../data"\n',
+        ],
+    )
+    def test_upgrade_creates_nothing_for_a_fixtures_dir_that_climbs_out(
+        self, tmp_path: Path, line: str
+    ) -> None:
+        """A ``..`` part is a binding gp cannot read, so upgrade creates no root for
+        it, inside the project or outside it."""
+        project = tmp_path / "proj"
+        write_scaffold(project, _SPEC)
+        _respell_fixtures_dir(project, line)
+        before = _tree_files(project)
+        beside = sorted(p.name for p in tmp_path.iterdir())
+        assert not upgrade_project(project).changed
+        assert sorted(p.name for p in tmp_path.iterdir()) == beside
+        assert _tree_files(project) == before
+        assert not (tmp_path / "escaped").exists()
+        assert not (project / "tests" / "data").exists()
 
 
 class TestAProjectWithTheFlatLayout:

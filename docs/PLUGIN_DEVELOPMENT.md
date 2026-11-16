@@ -3140,7 +3140,10 @@ UTF-8, cannot be read, or is not a regular file, every `GP-FILL` marker left
 in a plugin module or a test module, a first plugin's missing or blocked
 `tests/fixtures/<module>/` (`gp plugin upgrade` creates a missing one), a
 `FIXTURES_DIR` it cannot read the fixtures directory from (spell FIXTURES_DIR as
-gp plugin new writes it, `Path(__file__).parent / "fixtures" / "<module>"`), any
+gp plugin new writes it: `Path(__file__).parent / "fixtures"` while the
+fixtures are the files of `tests/fixtures/` itself, the layout of a project
+generated before graftpunk 1.44.0, or `Path(__file__).parent / "fixtures" /
+"<module>"` once they are moved into `tests/fixtures/<module>/`), any
 plugin module that does not hold exactly one plugin class, and any project wiring the project lacks (`gp
 plugin upgrade` adds it; in a suite, `gp plugin upgrade --plugin <name>` adds
 that plugin's, creates a member's missing `tests/fixtures/<module>/`, and, when

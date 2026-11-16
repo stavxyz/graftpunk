@@ -63,6 +63,7 @@ from graftpunk.devtools.scaffold.policy import (
     GP_FILL_MARKER,
     SUITE_SKIP_NAME,
     ProjectRequirement,
+    fixtures_root,
     module_name_for,
 )
 from graftpunk.devtools.scaffold.render import validate_plugin_name
@@ -282,8 +283,11 @@ def check_project(root: Path) -> list[Finding]:
             module = module_name_for(plugin.entry_point)
             message = (
                 f"gp cannot read this FIXTURES_DIR, so it takes {plugin.entry_point}'s "
-                f"fixtures to be the files of {FIXTURES_TREE} itself; {_SPELL_FIXTURES_DIR}, "
-                f'Path(__file__).parent / "fixtures" / "{module}".'
+                f"fixtures to be the files of {FIXTURES_TREE} itself; {_SPELL_FIXTURES_DIR}: "
+                f'Path(__file__).parent / "fixtures" for fixtures kept in {FIXTURES_TREE} '
+                f"(the layout of a project generated before graftpunk 1.44.0), or "
+                f'Path(__file__).parent / "fixtures" / "{module}" after moving them into '
+                f"{fixtures_root(module)}."
             )
             findings.append(Finding(path=path, line=line, message=message))
     findings.extend(

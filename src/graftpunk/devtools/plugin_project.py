@@ -1135,13 +1135,19 @@ def _fixtures_dir_parts(node: ast.expr) -> list[str] | None:
     """The directory names *node* joins onto the test module's directory
     (``Path(__file__).parent``, with ``.resolve()`` or ``.absolute()`` before
     ``.parent`` or not) with ``/`` and string literals, the shape gp plugin new
-    writes ``FIXTURES_DIR`` in, or ``None`` for any other expression."""
+    writes ``FIXTURES_DIR`` in, or ``None`` for any other expression. A ``.`` part
+    is dropped, and a ``..`` part makes it ``None``, so the root read is never a
+    path outside the tree whatever its spelling: upgrade creates that root, and
+    add-command names files in it."""
     parts: list[str] = []
     while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         right = node.right
         if not (isinstance(right, ast.Constant) and isinstance(right.value, str)):
             return None
-        parts[:0] = [p for p in right.value.split("/") if p]
+        pieces = [p for p in right.value.split("/") if p and p != "."]
+        if ".." in pieces:
+            return None
+        parts[:0] = pieces
         node = node.left
     is_base = (
         isinstance(node, ast.Attribute)
