@@ -249,21 +249,23 @@ need `driver.get_log()` style diagnostics. Both are described in
 Record a real browser session against the site:
 
 ```bash
-gp observe --no-session interactive https://myshop.example/
+gp observe --session myshop --no-session interactive https://myshop.example/
 ```
 
 `--session` and `--no-session` belong to the `observe` group, so they go before
-the subcommand, and they cannot be used together. `--no-session` opens the
-browser with no cached cookies, which is what you want the first time: you are
-recording the login as well as the flows behind it, and there is no cached
-session to name yet. A `--no-session` recording is filed under the name
-graftpunk infers from the host, the second-to-last label: `myshop` for
-`myshop.example` or `www.myshop.example`, `example` for `myshop.example.com`. `gp
-observe list` prints it. For the host this guide uses, that name is `myshop`, so
-the commands below work as written; for a host whose inferred name differs,
-substitute the one `gp observe list` printed. Once the plugin exists and `gp
-myshop login` has cached a session, `gp observe -s myshop interactive ...`
-records with that session's cookies and files the run under `myshop`.
+the subcommand. `--no-session` opens the browser with no cached cookies, which
+is what you want the first time: you are recording the login as well as the
+flows behind it, and there is no cached session yet. With `--no-session`,
+`--session myshop` loads nothing and only names the recording: the run is filed
+under `myshop`, the name every later step takes (`gp observe digest myshop`,
+`gp plugin new myshop --from-run myshop`). Give the plugin's name, not an
+account's: `--session myshop@alice --no-session` is refused, since the label
+names an account to load. Without `--session`, a `--no-session` recording is
+filed under the name graftpunk infers from the host, the second-to-last label
+(`myshop` for `www.myshop.example`, but `example` for `myshop.example.com`),
+which `gp observe list` prints. Once the plugin exists and `gp myshop login`
+has cached a session, `gp observe -s myshop interactive ...` records with that
+session's cookies and files the run under `myshop` too.
 
 A browser opens at the URL. Log in. Then exercise every flow you listed in
 [Frame](#frame): open each page, page through a list, apply a filter, download
@@ -313,7 +315,7 @@ a password, scrubbed everywhere. The run still holds the session's cookies and t
 your machine and delete it when you are done.
 
 To have the recording suggest the `failure` text, add `--wrong-password-first`
-(`gp observe --no-session interactive https://myshop.example/ --wrong-password-first`).
+(`gp observe --session myshop --no-session interactive https://myshop.example/ --wrong-password-first`).
 Before you log in, submit the login once with the throwaway wrong password the
 command prints (`wrong-` and six random letters and digits; never your real one
 with a typo), wait for the error to show, and press Enter in the terminal; then
@@ -330,7 +332,7 @@ separate, or when a first digest leaves a question you can answer by recording
 one flow on its own with nothing else in the way.
 
 Runs live under `~/.local/share/graftpunk/observe/<name>/<run id>/`, where
-`<name>` is the session when you named one and the name inferred from the host
+`<name>` is the name `--session` gave and the name inferred from the host
 otherwise. A run holds `network.har` plus whatever else that run captured:
 `bodies/` for request and response bodies too large to inline in the HAR or
 not text, `snapshots/` for the page's DOM at each credential post, read by a
@@ -1031,10 +1033,12 @@ The options:
 - `--dir PATH` is the target directory (the working directory by default).
 - `--backend nodriver|selenium` sets the generated `backend` attribute
   (`nodriver` by default).
-- `--new` skips the suite check on `--dir`, so the command writes a new project
-  instead of adding to the suite it finds there. Nothing is overwritten either
-  way, so a `--dir` that already holds a `pyproject.toml` is refused for the
-  conflict: point `--dir` at a directory that has none.
+- `--new` always writes a new project, never a suite member. When `--dir`
+  holds a `pyproject.toml` (a suite's or any other project's), the new project
+  goes in a subdirectory of `--dir` named for the plugin
+  (`gp plugin new thirdstore --dir . --new` writes `thirdstore/pyproject.toml`
+  and the rest under it), and `--dir`'s own files are left alone. Elsewhere it
+  writes in `--dir`, as without it. Nothing is overwritten either way.
 
 ### The two modes
 

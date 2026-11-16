@@ -101,14 +101,43 @@ class TestAddToSuiteMode:
         with pytest.raises(ValueError, match="entry-points"):
             write_scaffold(tmp_path, _spec())
 
-    def test_new_flag_forces_a_new_project_despite_existing_pyproject(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("pyproject", [_SUITE_PYPROJECT, _NON_PLUGIN_PYPROJECT])
+    def test_new_flag_writes_a_new_project_in_a_subdirectory_beside_a_pyproject(
+        self, tmp_path: Path, pyproject: str
+    ) -> None:
+        """--new beside a suite's or another project's pyproject.toml writes a new
+        project in the plugin's own subdirectory, where it refused on the conflict
+        and so could only turn a success into a refusal (#210). The directory's own
+        files are untouched."""
+        (tmp_path / "pyproject.toml").write_text(pyproject)
+        result = write_scaffold(tmp_path, _spec("thirdstore"), force_new=True)
+        assert result.mode == "new_project"
+        project = tmp_path / "thirdstore"
+        assert (project / "pyproject.toml").exists()
+        assert (project / "src" / "graftpunk_thirdstore" / "plugin.py").exists()
+        assert all(path.is_relative_to(project) for path in result.written)
+        assert (tmp_path / "pyproject.toml").read_text() == pyproject
+        assert not (tmp_path / ".gitignore").exists()
+
+    def test_new_flag_in_a_directory_with_no_pyproject_writes_there(self, tmp_path: Path) -> None:
+        result = write_scaffold(tmp_path, _spec(), force_new=True)
+        assert result.mode == "new_project"
+        assert (tmp_path / "pyproject.toml").exists()
+        assert not (tmp_path / "myshop").exists()
+
+    def test_new_flag_still_refuses_an_existing_subdirectory_project(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text(_SUITE_PYPROJECT)
+        write_scaffold(tmp_path, _spec("thirdstore"), force_new=True)
         with pytest.raises(ScaffoldConflictError):
-            # A new-project render also writes pyproject.toml, which already
-            # exists here: --new still refuses on conflict, it just skips the
-            # suite-mode decision, so this proves force_new took the
-            # new-project branch rather than raising the "not a suite" ValueError.
-            write_scaffold(tmp_path, _spec(), force_new=True)
+            write_scaffold(tmp_path, _spec("thirdstore"), force_new=True)
+
+    def test_a_non_plugin_pyproject_refusal_names_the_new_flags_directory(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(_NON_PLUGIN_PYPROJECT)
+        with pytest.raises(NotAPluginSuiteError) as caught:
+            write_scaffold(tmp_path, _spec())
+        assert f"Use --new to start a fresh project in {tmp_path / 'myshop'}" in str(caught.value)
 
     def test_module_name_used_for_package_and_entry_point_target(self, tmp_path: Path) -> None:
         """The entry-point KEY and CLI name keep the raw name; everything

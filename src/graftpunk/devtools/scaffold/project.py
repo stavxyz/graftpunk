@@ -226,8 +226,12 @@ def write_scaffold(
         target_dir: A new project's root, or an existing suite's root.
         spec: What to generate; its ``mode`` is overwritten by this
             function's own decision (new project vs add to suite).
-        force_new: ``--new``: force a new project in *target_dir* even when
-            a suite ``pyproject.toml`` is present.
+        force_new: ``--new``: always a new project, never an addition to a
+            suite. Where *target_dir* holds a ``pyproject.toml`` (a suite's or any
+            other project's), the new project goes in *target_dir*'s subdirectory
+            named for the plugin (``spec.name``), where it used to be refused
+            for the conflict; elsewhere it goes in *target_dir*, as without it
+            (#210). Nothing is overwritten either way.
 
     Raises:
         ScaffoldConflictError: A target path already exists, or the suite's
@@ -252,7 +256,11 @@ def write_scaffold(
             changed (see ``write.py``). A bare ``OSError`` now means a read
             before anything was written failed.
     """
-    existing = None if force_new else _existing_pyproject(target_dir)
+    existing = _existing_pyproject(target_dir)
+    if force_new:
+        if existing is not None:
+            target_dir = target_dir / spec.name
+        existing = None
     # Read once, as bytes: the same text decides the mode and is the original the
     # pyproject.toml edit is planned against and restored to.
     original = read_original(existing) if existing is not None else ""
@@ -261,7 +269,8 @@ def write_scaffold(
             f"{existing} exists but does not declare "
             f'[project.entry-points."{PLUGINS_GROUP}"]. '
             "This does not look like a graftpunk plugin suite. Use --new to start a fresh "
-            "project in a different directory, or add the entry-point group by hand."
+            f"project in {target_dir / spec.name}, --dir to name another directory, or add "
+            "the entry-point group by hand."
         )
 
     mode = "add_to_suite" if existing is not None else "new_project"

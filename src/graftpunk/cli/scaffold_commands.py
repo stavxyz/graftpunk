@@ -137,7 +137,16 @@ def plugin_new(
     ] = None,
     dir_: Annotated[Path, typer.Option("--dir", help="Target directory")] = Path("."),
     backend: Annotated[str, typer.Option("--backend", help="nodriver or selenium")] = "nodriver",
-    new: Annotated[bool, typer.Option("--new", help="Force a new project in --dir")] = False,
+    new: Annotated[
+        bool,
+        typer.Option(
+            "--new",
+            help=(
+                "Write a new project, never a suite member: in --dir/NAME when --dir "
+                "holds a pyproject.toml, else in --dir"
+            ),
+        ),
+    ] = False,
     check_name: Annotated[
         bool,
         typer.Option("--check-name", help="Check NAME the way this command would, write nothing"),

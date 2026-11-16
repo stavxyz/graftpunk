@@ -79,6 +79,28 @@ class TestPluginNewHappyPath:
         assert result.exit_code == 0, result.output
         assert (tmp_path / "src" / "graftpunk_myshop" / "plugin.py").exists()
 
+    def test_new_beside_a_suite_writes_a_project_in_the_plugins_subdirectory(
+        self, tmp_path: Path
+    ) -> None:
+        """The issue's reproduction (#210): --new on a suite's --dir refused with
+        "Refusing to overwrite existing file(s)"; it now writes <dir>/<name>/."""
+        url = ["--url", "https://myshop.example.com"]
+        first = runner.invoke(
+            _build_app(), ["plugin", "new", "myshop", *url, "--dir", str(tmp_path)]
+        )
+        assert first.exit_code == 0, first.output
+        suite_pyproject = (tmp_path / "pyproject.toml").read_text()
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "thirdstore", *url, "--dir", str(tmp_path), "--new"],
+        )
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        assert "New Project:" in output
+        assert str(tmp_path / "thirdstore" / "pyproject.toml") in output
+        assert (tmp_path / "thirdstore" / "src" / "graftpunk_thirdstore" / "plugin.py").exists()
+        assert (tmp_path / "pyproject.toml").read_text() == suite_pyproject
+
     def test_reserved_name_refused_through_the_real_app(self, tmp_path: Path) -> None:
         """Uses the real graftpunk.cli.main.app, whose plugin_app and existing
         groups (observe, session, http, config, keepalive) are all registered
