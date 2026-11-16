@@ -168,8 +168,8 @@ def _spec(result: RunDigest, commands: tuple[CommandSelection, ...] = ()) -> Sca
 def test_a_run_without_inline_state_digests_as_1_31_1_did(tmp_path: Path) -> None:
     """The golden file was written from these runs by graftpunk at da034e21 (main,
     1.31.1 plus #271 part 1), and rewritten when #315 gave the markdown Cookies
-    section and --json each cookie's attributes; every output must match it byte
-    for byte."""
+    section and --json each cookie's attributes and when #201 gave a new project's
+    fixtures a directory of their own; every output must match it byte for byte."""
     golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
     assert golden_outputs(tmp_path) == golden
 

@@ -20,6 +20,8 @@ from graftpunk.observe.capture import (
     _build_har_entry,
     _console_timestamp,
     _merge_headers_ci,
+    _request_headers_match,
+    _same_url,
 )
 
 LOGIN = "https://shop.example.com/login"
@@ -807,6 +809,13 @@ class TestHelpers:
             }
         )
         assert entry["response"]["cookies"] == [{"name": "tok", "value": "a=b=c", "secure": True}]
+
+    def test_an_empty_port_is_the_default_port(self) -> None:
+        """``host:`` means the scheme's default port, as ``normal_host`` reads it (#227)."""
+        assert _same_url("https://shop.example.com:/login", LOGIN)
+        assert not _same_url("https://shop.example.com:8443/login", LOGIN)
+        entry = {"url": "https://shop.example.com:/login", "method": "GET"}
+        assert _request_headers_match({"host": "shop.example.com"}, entry) is True
 
 
 # ---------------------------------------------------------------------------

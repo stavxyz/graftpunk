@@ -413,9 +413,9 @@ Pass `--observe full` to any command to capture what it does: a plugin command's
 
 Record the site, read the recording, scaffold a project from it, then fill in
 the stubs and test them against fixtures. A first capture has no cached session
-to name, so it runs `--no-session` and is filed under the name graftpunk infers
-from the host, its second-to-last label (`mybank` for `mybank.example`), which
-`gp observe list` prints. Each step, with
+to load, so it runs `--no-session`, and `--session mybank` names the run without
+loading anything (without it, the run is filed under the name graftpunk infers
+from the host, which `gp observe list` prints). Each step, with
 the options and the rules, is in
 [Writing a graftpunk plugin](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md):
 [Capture](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#capture),
@@ -423,7 +423,7 @@ the options and the rules, is in
 [Scaffold](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#scaffold).
 
 ```bash
-gp observe --no-session interactive https://mybank.example/dashboard
+gp observe --session mybank --no-session interactive https://mybank.example/dashboard
 gp observe digest mybank
 gp plugin new mybank --from-run mybank
 ```
@@ -434,7 +434,7 @@ yourself](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT
 
 The generated tests read fixtures. Write the recorded bodies out as captures,
 which land in the project's git-ignored `tests/captures/`, then copy each one
-into `tests/fixtures/` with its sidecar and replace every value with an
+into `tests/fixtures/mybank/` with its sidecar and replace every value with an
 invented one
 ([Deriving a fixture from a capture](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#deriving-a-fixture-from-a-capture)):
 

@@ -40,7 +40,7 @@ class MyshopPlugin(SitePlugin):
 
 
 _TEST_MODULE_MARKER = (
-    "\n\n\n# GP-FILL: add a test per command, against a fixture in tests/fixtures/\n"
+    "\n\n\n# GP-FILL: add a test per command, against a fixture in tests/fixtures/myshop/\n"
 )
 
 

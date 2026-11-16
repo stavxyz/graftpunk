@@ -79,6 +79,127 @@ class TestPluginNewHappyPath:
         assert result.exit_code == 0, result.output
         assert (tmp_path / "src" / "graftpunk_myshop" / "plugin.py").exists()
 
+    def test_new_beside_a_suite_is_refused_with_the_command_to_run_instead(
+        self, tmp_path: Path
+    ) -> None:
+        """The issue's reproduction (#210): --new on a suite's --dir, where the
+        command without it adds a member, refused with "Refusing to overwrite
+        existing file(s)". --new is the guard against adding to a suite: it refuses
+        a --dir that holds a pyproject.toml, says so, and names the command with a
+        --dir beside the suite. Nothing is written, and the suite's tests still
+        collect."""
+        suite = tmp_path / "suite"
+        url = ["--url", "https://myshop.example.com"]
+        first = runner.invoke(_build_app(), ["plugin", "new", "myshop", *url, "--dir", str(suite)])
+        assert first.exit_code == 0, first.output
+        before = sorted(p.relative_to(suite) for p in suite.rglob("*"))
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "thirdstore", *url, "--dir", str(suite), "--new"],
+        )
+        assert result.exit_code == 1
+        output = " ".join(strip_ansi(result.output).split())
+        outside = tmp_path.resolve() / "thirdstore"
+        assert "never into a directory that already holds one" in output
+        assert "never adds to a suite" in output
+        assert (
+            "Run instead: gp plugin new thirdstore --url https://myshop.example.com "
+            f"--dir {outside} --new"
+        ) in output
+        assert sorted(p.relative_to(suite) for p in suite.rglob("*")) == before
+        collected = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
+            cwd=suite,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(suite / "src")},
+        )
+        assert collected.returncode == 0, collected.stdout + collected.stderr
+        # The command it names succeeds as given.
+        rerun = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "thirdstore", *url, "--dir", str(outside), "--new"],
+        )
+        assert rerun.exit_code == 0, rerun.output
+
+    def test_the_suggested_dir_is_never_refused_again(self, tmp_path: Path) -> None:
+        """A project whose directory is named for the plugin: the sibling of that
+        name is the directory itself, so the suggestion takes the next free name,
+        and the command it names succeeds as given (#210)."""
+        project = tmp_path / "samename"
+        url = ["--url", "https://myshop.example.com"]
+        first = runner.invoke(
+            _build_app(), ["plugin", "new", "samename", *url, "--dir", str(project)]
+        )
+        assert first.exit_code == 0, first.output
+        result = runner.invoke(
+            _build_app(), ["plugin", "new", "samename", *url, "--dir", str(project), "--new"]
+        )
+        assert result.exit_code == 1
+        output = " ".join(strip_ansi(result.output).split())
+        suggested = tmp_path.resolve() / "samename-2"
+        assert f"--dir {suggested} --new" in output
+        rerun = runner.invoke(
+            _build_app(), ["plugin", "new", "samename", *url, "--dir", str(suggested), "--new"]
+        )
+        assert rerun.exit_code == 0, rerun.output
+
+    @pytest.mark.parametrize("in_the_way", ["file", "busy_dir"])
+    def test_the_suggested_dir_is_one_the_command_can_write(
+        self, tmp_path: Path, in_the_way: str
+    ) -> None:
+        """A sibling of the plugin's name that is a regular file, or a directory
+        holding files, is passed over: the suggestion is a path that does not exist
+        or is empty, and the command it names succeeds as given (#210)."""
+        suite = tmp_path / "suite"
+        url = ["--url", "https://myshop.example.com"]
+        first = runner.invoke(_build_app(), ["plugin", "new", "myshop", *url, "--dir", str(suite)])
+        assert first.exit_code == 0, first.output
+        blocker = tmp_path / "thirdstore"
+        if in_the_way == "file":
+            blocker.write_text("not a directory")
+        else:
+            blocker.mkdir()
+            (blocker / "README.md").write_text("someone else's")
+        result = runner.invoke(
+            _build_app(), ["plugin", "new", "thirdstore", *url, "--dir", str(suite), "--new"]
+        )
+        assert result.exit_code == 1
+        output = " ".join(strip_ansi(result.output).split())
+        suggested = tmp_path.resolve() / "thirdstore-2"
+        assert f"--dir {suggested} --new" in output
+        rerun = runner.invoke(
+            _build_app(), ["plugin", "new", "thirdstore", *url, "--dir", str(suggested), "--new"]
+        )
+        assert rerun.exit_code == 0, rerun.output
+
+    def test_a_project_nested_under_a_suite_leaves_the_suites_collection_its_own(
+        self, tmp_path: Path
+    ) -> None:
+        """--new checks only --dir itself, so a subdirectory of a suite gets a project
+        of its own. The generated testpaths keeps pytest at the suite's root to the
+        suite's own tests, where both projects' tests/test_plugin.py collided."""
+        suite = tmp_path / "suite"
+        url = ["--url", "https://myshop.example.com"]
+        first = runner.invoke(_build_app(), ["plugin", "new", "myshop", *url, "--dir", str(suite)])
+        assert first.exit_code == 0, first.output
+        nested = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "thirdstore", *url, "--dir", str(suite / "thirdstore"), "--new"],
+        )
+        assert nested.exit_code == 0, nested.output
+        assert (suite / "thirdstore" / "tests" / "test_plugin.py").is_file()
+        collected = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
+            cwd=suite,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(suite / "src")},
+        )
+        assert collected.returncode == 0, collected.stdout + collected.stderr
+        ids = [line for line in collected.stdout.splitlines() if "::" in line]
+        assert ids == ["tests/test_plugin.py::test_plugin_instantiates"]
+
     def test_reserved_name_refused_through_the_real_app(self, tmp_path: Path) -> None:
         """Uses the real graftpunk.cli.main.app, whose plugin_app and existing
         groups (observe, session, http, config, keepalive) are all registered
@@ -469,7 +590,7 @@ class TestATwoHostRecording:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         target, _ = self._generate(tmp_path, monkeypatch)
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         _write_fixture(
             fixtures_dir, "get_api_orders_{order_id}.json", '{"id": "1001"}', "application/json"
         )
@@ -490,7 +611,7 @@ class TestATwoHostRecording:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         target, _ = self._generate(tmp_path, monkeypatch)
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         _write_fixture(
             fixtures_dir, "get_api_orders_{order_id}.json", '{"id": "1001"}', "application/json"
         )
@@ -682,7 +803,7 @@ class TestNextStepsNamesTheFixtures:
         assert result.exit_code == 0, result.output
         plain_output = strip_ansi(result.output)
         assert "Next:" in plain_output
-        assert "tests/fixtures/get_orders_{order_id}.json" in plain_output
+        assert "tests/fixtures/myshop/get_orders_{order_id}.json" in plain_output
         assert "gp observe fixtures --help" in plain_output
 
     def test_a_project_with_no_endpoint_stubs_says_nothing(self, tmp_path: Path) -> None:
@@ -801,7 +922,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         # a fixture. "1" is what the generated test's own path-param
         # placeholder produces, so the fixture name below is what the
         # request under test actually looks up.
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         (fixtures_dir / "get_orders_{order_id}.json").write_text('{"id": 1}')
 
         # A hand-derived fixture with no capture behind it: its sidecar declares so.
@@ -859,7 +980,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert "def command(" not in plugin_code
         assert "def command_2(" in plugin_code
 
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         (fixtures_dir / "get_command.json").write_text('{"ok": true}')
         (fixtures_dir / "get_command.json.meta.json").write_text(
             sidecar_text(Sidecar(status=200, content_type="application/json"))
@@ -909,10 +1030,12 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert result.exit_code == 0, result.output
         assert "quote: str | None = None" in (target / "src/graftpunk_myshop/plugin.py").read_text()
-        (target / "tests" / "fixtures" / "get_orders_{order_id}.json").write_text('{"id": 1}')
-        (target / "tests" / "fixtures" / "get_orders_{order_id}.json.meta.json").write_text(
-            sidecar_text(Sidecar(status=200, content_type="application/json"))
+        (target / "tests" / "fixtures" / "myshop" / "get_orders_{order_id}.json").write_text(
+            '{"id": 1}'
         )
+        (
+            target / "tests" / "fixtures" / "myshop" / "get_orders_{order_id}.json.meta.json"
+        ).write_text(sidecar_text(Sidecar(status=200, content_type="application/json")))
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -961,8 +1084,8 @@ class TestGeneratedProjectPassesItsOwnGate:
             ],
         )
         assert result.exit_code == 0, result.output
-        (target / "tests" / "fixtures" / "get_go.html").write_text("")
-        (target / "tests" / "fixtures" / "get_go.html.meta.json").write_text(
+        (target / "tests" / "fixtures" / "myshop" / "get_go.html").write_text("")
+        (target / "tests" / "fixtures" / "myshop" / "get_go.html.meta.json").write_text(
             sidecar_text(Sidecar(status=200, content_type="text/html"))
         )
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
@@ -997,7 +1120,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         argv = ["plugin", "new", "myshop", "--from-run", "myshop", "--run", "run-1"]
         result = runner.invoke(app, [*argv, "--dir", str(target)])
         assert result.exit_code == 0, result.output
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         result = runner.invoke(
             app, ["observe", "fixtures", "myshop", "--match", match, "--out", str(fixtures_dir)]
         )
@@ -1043,7 +1166,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "get_cart.json").read_text() == '{"n": 1}'
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "get_cart.json"
+        ).read_text() == '{"n": 1}'
 
     def test_a_bodyless_200_endpoint_is_not_in_the_fixtures_list(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1095,7 +1220,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        fixtures = target / "tests" / "fixtures"
+        fixtures = target / "tests" / "fixtures" / "myshop"
         assert (fixtures / "get_ack.json").read_text() == '{"ok": true}'
         assert not (fixtures / "get_ack.html").exists()
         plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
@@ -1164,7 +1289,7 @@ class TestGeneratedProjectPassesItsOwnGate:
             ],
         )
         assert result.exit_code == 0, result.output
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         result = runner.invoke(
             app,
             ["observe", "fixtures", "myshop", "--match", "GET /go", "--out", str(fixtures_dir)],
@@ -1229,8 +1354,8 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert result.exit_code == 0, result.output
         assert f"    {assertion}\n" in (target / "tests" / "test_plugin.py").read_text()
-        (target / "tests" / "fixtures" / "get_ack.json").write_text(body)
-        (target / "tests" / "fixtures" / "get_ack.json.meta.json").write_text(
+        (target / "tests" / "fixtures" / "myshop" / "get_ack.json").write_text(body)
+        (target / "tests" / "fixtures" / "myshop" / "get_ack.json.meta.json").write_text(
             sidecar_text(Sidecar(status=status, content_type="application/json"))
         )
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
@@ -1259,7 +1384,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "post_ack.json").read_text() == '{"ok": true}'
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "post_ack.json"
+        ).read_text() == '{"ok": true}'
         plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
         assert "return ctx.request_json(" in plugin
 
@@ -1285,7 +1412,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "put_cart.html").read_text() == "<p>ok</p>"
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "put_cart.html"
+        ).read_text() == "<p>ok</p>"
         plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
         assert "return ctx.request_text(" in plugin
 
@@ -1300,7 +1429,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "delete_items_{item_id}.json").read_text() == "[]"
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "delete_items_{item_id}.json"
+        ).read_text() == "[]"
         test_code = (target / "tests" / "test_plugin.py").read_text()
         assert "assert result == []" in test_code
 
@@ -1319,7 +1450,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "get_cart.json").read_text() == '{"n": 1}'
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "get_cart.json"
+        ).read_text() == '{"n": 1}'
 
     def test_a_charset_suffixed_json_majority_writes_a_passing_json_test(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1346,7 +1479,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "get_profile.json").read_text() == '{"a": 1}'
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "get_profile.json"
+        ).read_text() == '{"a": 1}'
 
     def test_a_one_to_one_html_and_json_tie_writes_a_passing_json_test(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1360,7 +1495,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "get_ping.json").read_text() == '{"ok": true}'
+        assert (
+            target / "tests" / "fixtures" / "myshop" / "get_ping.json"
+        ).read_text() == '{"ok": true}'
 
     def test_a_project_with_login_and_token_blocks_imports_and_instantiates(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2003,7 +2140,7 @@ class TestPluginNewCommand:
         plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
         assert "def order(" in plugin_code
         assert "def api_orders(" not in plugin_code
-        assert "tests/fixtures/get_api_orders_{order_id}.json" in strip_ansi(result.output)
+        assert "tests/fixtures/myshop/get_api_orders_{order_id}.json" in strip_ansi(result.output)
 
     @pytest.mark.usefixtures("gp_logging")
     @pytest.mark.parametrize(

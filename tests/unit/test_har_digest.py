@@ -9082,3 +9082,172 @@ def test_a_long_value_in_a_credential_post_is_read_in_linear_time() -> None:
 
     small, large = body(5_000), body(40_000)
     assert cpu(large) / max(cpu(small), 1e-4) < 24
+
+
+class TestHostModel:
+    """The digest's host model (#227): the scheme an endpoint was recorded under, a
+    subdomain on another port, and an empty port."""
+
+    def test_an_endpoint_records_its_scheme(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://www.myshop.example/", content_type="text/html", body="<p>"),
+            _entry("GET", "http://api.myshop.example/orders"),
+            _entry("GET", "HTTPS://www.myshop.example/account"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        schemes = {e.template: (e.host, e.scheme) for e in result.endpoints}
+        assert schemes["/orders"] == ("api.myshop.example", "http")
+        assert schemes["/account"] == ("www.myshop.example", "https")
+
+    def test_a_command_on_another_host_calls_it_with_its_own_scheme(self, tmp_path: Path) -> None:
+        """base_url is https and the API was recorded over http: the command calls
+        http, where it took base_url's scheme."""
+        entries = [
+            _entry("GET", "https://www.myshop.example/", content_type="text/html", body="<p>"),
+            _entry("GET", "http://api.myshop.example/orders"),
+            _entry("GET", "http://www.myshop.example:443/status"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        plugin_code = render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://www.myshop.example",
+                digest=result,
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+        assert "http://api.myshop.example" in plugin_code
+        assert "https://api.myshop.example" not in plugin_code
+        # Port 443 under http is not base_url's host, which is port 443 under https.
+        assert "http://www.myshop.example:443" in plugin_code
+
+    def test_a_subdomain_on_a_non_default_port_is_in_the_default_scope(
+        self, tmp_path: Path
+    ) -> None:
+        entries = [
+            _entry("GET", "https://www.myshop.example/", content_type="text/html", body="<p>"),
+            _entry("GET", "https://api.myshop.example:8443/orders"),
+            _entry("GET", "https://www.myshop.example:8443/status"),
+            _entry("GET", "https://ads.example.net:8443/data"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        hosts = {e.host for e in result.endpoints}
+        assert hosts == {"www.myshop.example", "api.myshop.example:8443", "www.myshop.example:8443"}
+        assert result.dropped["third_party"] == 1
+
+    @pytest.mark.parametrize(
+        ("host", "root", "in_scope"),
+        [
+            ("api.myshop.example:8443", "myshop.example", True),
+            ("myshop.example:8443", "myshop.example", True),
+            ("api.myshop.example", "myshop.example:8443", True),
+            ("myshop.example.net:8443", "myshop.example", False),
+            ("127.0.0.1:9000", "127.0.0.1:8000", False),
+        ],
+    )
+    def test_the_scope_rule_compares_names_without_ports(
+        self, host: str, root: str, in_scope: bool
+    ) -> None:
+        assert _in_scope(host, root) is in_scope
+
+    @pytest.mark.parametrize(
+        ("scheme", "netloc", "host"),
+        [
+            ("https", "myshop.example:", "myshop.example"),
+            ("http", "user@MyShop.example:", "myshop.example"),
+            ("https", "[::1]:", "[::1]"),
+            ("https", "myshop.example:443", "myshop.example"),
+            ("https", "myshop.example:8443", "myshop.example:8443"),
+        ],
+    )
+    def test_an_empty_port_is_stripped(self, scheme: str, netloc: str, host: str) -> None:
+        assert normal_host(scheme, netloc) == host
+
+    @staticmethod
+    def _upgraded(url: str, *, body: str = '{"items": []}') -> list[dict]:
+        """*url* recorded as the browser reaches it through an upgrade redirect: the
+        http request answered 301, then the https one."""
+        http = url.replace("https://", "http://", 1)
+        hop = _entry("GET", http, status=301, body="", response_headers={"Location": url})
+        return [hop, _entry("GET", url, body=body)]
+
+    def _scaffolded(self, tmp_path: Path, entries: list[dict]) -> tuple[Any, str]:
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        plugin_code = render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://www.myshop.example",
+                digest=result,
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+        return result, plugin_code
+
+    def test_an_upgrade_redirect_recorded_first_does_not_set_the_scheme(
+        self, tmp_path: Path
+    ) -> None:
+        """The http hop an upgrade redirect answered is not the endpoint's scheme: the
+        command calls https, and never sends a request over http first."""
+        page = _entry("GET", "https://www.myshop.example/", content_type="text/html", body="<p>")
+        result, plugin_code = self._scaffolded(
+            tmp_path, [page, *self._upgraded("https://api.myshop.example/orders")]
+        )
+        (orders,) = (e for e in result.endpoints if e.template == "/orders")
+        assert orders.statuses == (200, 301)
+        assert orders.scheme == "https"
+        assert "https://api.myshop.example" in plugin_code
+        assert "http://api.myshop.example" not in plugin_code
+
+    def test_https_wins_when_recordings_disagree(self, tmp_path: Path) -> None:
+        page = _entry("GET", "https://www.myshop.example/", content_type="text/html", body="<p>")
+        entries = [
+            page,
+            _entry("GET", "http://api.myshop.example/orders"),
+            _entry("GET", "https://api.myshop.example/orders"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (orders,) = (e for e in result.endpoints if e.template == "/orders")
+        assert orders.scheme == "https"
+
+    def test_an_http_only_api_stays_http(self, tmp_path: Path) -> None:
+        page = _entry("GET", "https://www.myshop.example/", content_type="text/html", body="<p>")
+        entries = [
+            page,
+            _entry("GET", "http://api.myshop.example/orders"),
+            _entry("GET", "http://api.myshop.example/orders"),
+        ]
+        result, plugin_code = self._scaffolded(tmp_path, entries)
+        (orders,) = (e for e in result.endpoints if e.template == "/orders")
+        assert orders.scheme == "http"
+        assert "http://api.myshop.example" in plugin_code
+
+    def test_a_family_whose_first_member_is_an_upgrade_redirect_is_https(
+        self, tmp_path: Path
+    ) -> None:
+        """Members are grouped by scheme, so a member that took its redirect hop's
+        http could not join the family; the family merges its members' schemes."""
+        page = _entry("GET", "https://www.myshop.example/", content_type="text/html", body="<p>")
+        entries = [
+            page,
+            *self._upgraded("https://api.myshop.example/search/north-region/items/"),
+            _entry(
+                "GET", "https://api.myshop.example/search/south-region/items/", body='{"items": []}'
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        families = [e for e in result.endpoints if e.family_members]
+        assert [(f.template, f.scheme) for f in families] == [
+            ("/search/{search_slug}/items/", "https")
+        ]
+        assert all(e.scheme == "https" for e in result.endpoints if e.host.startswith("api."))
+
+    def test_a_recorded_empty_port_is_not_part_of_the_host(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://myshop.example:/", content_type="text/html", body="<p>"),
+            _entry("GET", "https://myshop.example/orders"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.primary_host == "myshop.example"
+        assert {e.host for e in result.endpoints} == {"myshop.example"}

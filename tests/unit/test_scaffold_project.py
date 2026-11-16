@@ -11,6 +11,7 @@ import pytest
 from graftpunk.devtools.errors import ScaffoldWriteError
 from graftpunk.devtools.scaffold import write
 from graftpunk.devtools.scaffold.project import (
+    NestedProjectError,
     NotAPluginSuiteError,
     ScaffoldConflictError,
     write_scaffold,
@@ -101,14 +102,37 @@ class TestAddToSuiteMode:
         with pytest.raises(ValueError, match="entry-points"):
             write_scaffold(tmp_path, _spec())
 
-    def test_new_flag_forces_a_new_project_despite_existing_pyproject(self, tmp_path: Path) -> None:
-        (tmp_path / "pyproject.toml").write_text(_SUITE_PYPROJECT)
-        with pytest.raises(ScaffoldConflictError):
-            # A new-project render also writes pyproject.toml, which already
-            # exists here: --new still refuses on conflict, it just skips the
-            # suite-mode decision, so this proves force_new took the
-            # new-project branch rather than raising the "not a suite" ValueError.
-            write_scaffold(tmp_path, _spec(), force_new=True)
+    @pytest.mark.parametrize("pyproject", [_SUITE_PYPROJECT, _NON_PLUGIN_PYPROJECT])
+    def test_new_flag_beside_a_pyproject_is_refused_and_names_a_directory_outside(
+        self, tmp_path: Path, pyproject: str
+    ) -> None:
+        """--new refuses a target_dir that holds a pyproject.toml (#210), a suite's
+        or another project's, writes nothing, and names a directory beside it."""
+        suite = tmp_path / "suite"
+        suite.mkdir()
+        (suite / "pyproject.toml").write_text(pyproject)
+        with pytest.raises(NestedProjectError) as caught:
+            write_scaffold(suite, _spec("thirdstore"), force_new=True)
+        assert caught.value.outside == tmp_path.resolve() / "thirdstore"
+        assert str(tmp_path.resolve() / "thirdstore") in str(caught.value)
+        assert [p.name for p in suite.iterdir()] == ["pyproject.toml"]
+        assert (suite / "pyproject.toml").read_text() == pyproject
+
+    def test_new_flag_in_a_directory_with_no_pyproject_writes_there(self, tmp_path: Path) -> None:
+        result = write_scaffold(tmp_path, _spec(), force_new=True)
+        assert result.mode == "new_project"
+        assert (tmp_path / "pyproject.toml").exists()
+        assert not (tmp_path / "myshop").exists()
+
+    def test_a_non_plugin_pyproject_refusal_does_not_send_the_user_to_new(
+        self, tmp_path: Path
+    ) -> None:
+        """--new is refused beside any pyproject.toml, so the refusal points at --dir."""
+        (tmp_path / "pyproject.toml").write_text(_NON_PLUGIN_PYPROJECT)
+        with pytest.raises(NotAPluginSuiteError) as caught:
+            write_scaffold(tmp_path, _spec())
+        assert "--new" not in str(caught.value)
+        assert "Give a --dir outside that project" in str(caught.value)
 
     def test_module_name_used_for_package_and_entry_point_target(self, tmp_path: Path) -> None:
         """The entry-point KEY and CLI name keep the raw name; everything

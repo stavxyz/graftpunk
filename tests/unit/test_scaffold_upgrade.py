@@ -16,6 +16,7 @@ from graftpunk.devtools.scaffold.policy import FIXTURES_PLACEHOLDER, FIXTURES_TR
 from graftpunk.devtools.scaffold.project import write_scaffold
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
 from graftpunk.devtools.scaffold.upgrade import UpgradeRefusedError, upgrade_project
+from tests.unit.test_plugin_project import _flatten_first_plugin
 
 _SPEC = ScaffoldSpec(
     name="myshop", mode="new_project", backend="nodriver", base_url="https://myshop.example"
@@ -87,7 +88,9 @@ class TestUpgrade:
         assert conftest.read_text() == wired
 
     def test_a_missing_fixtures_tree_is_created(self, tmp_path: Path) -> None:
-        write_scaffold(tmp_path, _SPEC)
+        """A project whose first plugin's fixtures are the tree's own files gets the
+        tree back with its placeholder."""
+        _flat_project(tmp_path)
         tree = tmp_path / "tests" / "fixtures"
         shutil.rmtree(tree)
         applied = upgrade_project(tmp_path)
@@ -98,9 +101,47 @@ class TestUpgrade:
         assert placeholder.is_file()
         assert placeholder.read_text() == ""
 
+    def test_a_missing_tree_comes_back_in_the_declared_namespaced_layout(
+        self, tmp_path: Path
+    ) -> None:
+        """A 1.44.0 project with no fixtures directory keeps its layout: upgrade
+        creates tests/fixtures/<module>/, never the tree's own placeholder, and
+        the project still reads namespaced afterwards (#201)."""
+        write_scaffold(tmp_path, _SPEC)
+        tree = tmp_path / "tests" / "fixtures"
+        shutil.rmtree(tree)
+        applied = upgrade_project(tmp_path)
+        assert applied.created_fixtures_tree is True
+        assert applied.created_roots == ("tests/fixtures/myshop/",)
+        assert (tree / "myshop" / FIXTURES_PLACEHOLDER).is_file()
+        assert not (tree / FIXTURES_PLACEHOLDER).exists()
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.fixtures_root == "tests/fixtures/myshop/"
+        assert not upgrade_project(tmp_path).changed
+
+    def test_a_missing_first_root_under_a_present_tree_is_reported_and_created(
+        self, tmp_path: Path
+    ) -> None:
+        write_scaffold(tmp_path, _SPEC)
+        shutil.rmtree(tmp_path / "tests" / "fixtures" / "myshop")
+        (missing,) = [f for f in check_project(tmp_path) if f.path == "tests/fixtures/myshop/"]
+        assert "gp plugin upgrade --plugin myshop" in missing.message
+        applied = upgrade_project(tmp_path)
+        assert applied.created_roots == ("tests/fixtures/myshop/",)
+        assert not [f for f in check_project(tmp_path) if "fixtures" in (f.path or "")]
+
+    def test_a_blocked_first_root_is_reported_and_refused(self, tmp_path: Path) -> None:
+        write_scaffold(tmp_path, _SPEC)
+        own_root = tmp_path / "tests" / "fixtures" / "myshop"
+        shutil.rmtree(own_root)
+        own_root.write_text("x")
+        assert [f.path for f in check_project(tmp_path)].count("tests/fixtures/myshop") == 1
+        with pytest.raises(UpgradeRefusedError, match="tests/fixtures/myshop"):
+            upgrade_project(tmp_path)
+
     def test_a_present_fixtures_tree_is_left_alone(self, tmp_path: Path) -> None:
         write_scaffold(tmp_path, _SPEC)
-        placeholder = tmp_path / FIXTURES_TREE / FIXTURES_PLACEHOLDER
+        placeholder = tmp_path / FIXTURES_TREE / "myshop" / FIXTURES_PLACEHOLDER
         before = placeholder.read_bytes()
         applied = upgrade_project(tmp_path)
         assert applied.created_fixtures_tree is False
@@ -115,7 +156,7 @@ class TestUpgrade:
         assert [r.name for r in applied.requirements] == ["FIXTURES_TREE", "sanitised_fixtures"]
         assert applied.created_fixtures_tree is True
         assert conftest.read_text() == render(_SPEC)["tests/conftest.py"]
-        assert (tmp_path / "tests" / "fixtures" / FIXTURES_PLACEHOLDER).is_file()
+        assert (tmp_path / "tests" / "fixtures" / "myshop" / FIXTURES_PLACEHOLDER).is_file()
 
     def test_a_missing_conftest_is_created(self, tmp_path: Path) -> None:
         conftest = _project(tmp_path, None)
@@ -241,6 +282,157 @@ class TestUpgrade:
         with pytest.raises(UpgradeRefusedError, match="ruff check --fix"):
             upgrade_project(tmp_path)
         assert conftest.read_text() == odd
+
+
+def _flat_project(tmp_path: Path) -> Path:
+    """A project as gp plugin new wrote it before 1.44.0: the first plugin's
+    fixtures are the tree's own files, and its test module reads the tree."""
+    write_scaffold(tmp_path, _SPEC)
+    _flatten_first_plugin(tmp_path)
+    return tmp_path
+
+
+def _tree_files(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+_NAMESPACED = 'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "myshop"\n'
+
+
+def _respell_fixtures_dir(root: Path, line: str) -> None:
+    test_module = root / "tests" / "test_plugin.py"
+    text = test_module.read_text()
+    assert _NAMESPACED in text
+    test_module.write_text(text.replace(_NAMESPACED, line))
+
+
+class TestTheDeclaredFixturesDir:
+    """The first plugin's layout is read from its FIXTURES_DIR, in each spelling of
+    the test module's own directory, and one the reader cannot read is a finding,
+    not a silent fall back to the tree (#201)."""
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "myshop"\n',
+            'FIXTURES_DIR = Path(__file__).absolute().parent / "fixtures" / "myshop"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures/myshop"\n',
+            'FIXTURES_DIR: Path = Path(__file__).parent / "fixtures" / "myshop"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "./fixtures/myshop"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "." / "fixtures" / "myshop"\n',
+        ],
+    )
+    def test_each_spelling_of_the_namespaced_root_is_read(self, tmp_path: Path, line: str) -> None:
+        write_scaffold(tmp_path, _SPEC)
+        _respell_fixtures_dir(tmp_path, line)
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.fixtures_root == "tests/fixtures/myshop/"
+        assert plugin.fixtures_dir_unread is None
+        assert not [f for f in check_project(tmp_path) if "FIXTURES_DIR" in f.message]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'FIXTURES_DIR = HERE / "fixtures" / "myshop"\n',
+            'FIXTURES_DIR = HERE / "fixtures"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "data"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / ".." / "data"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures/../../../escaped"\n',
+            # An absolute part discards everything to its left when joined.
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "/srv/shop"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "C:/shop"\n',
+            # A backslash separates (and so ".." climbs) on Windows only.
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "..\\\\..\\\\escaped"\n',
+        ],
+    )
+    def test_a_fixtures_dir_it_cannot_read_is_a_finding(self, tmp_path: Path, line: str) -> None:
+        write_scaffold(tmp_path, _SPEC)
+        _respell_fixtures_dir(tmp_path, line)
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.fixtures_root == "tests/fixtures/"
+        lineno = (tmp_path / "tests" / "test_plugin.py").read_text().splitlines().index(
+            line.rstrip("\n")
+        ) + 1
+        assert plugin.fixtures_dir_unread == ("tests/test_plugin.py", lineno)
+        (finding,) = [f for f in check_project(tmp_path) if "FIXTURES_DIR" in f.message]
+        assert (finding.path, finding.line) == ("tests/test_plugin.py", lineno)
+        message = " ".join(finding.message.split())
+        assert "spell FIXTURES_DIR as gp plugin new writes it" in message
+        # Both spellings, each with the layout it is for: the flat one for fixtures
+        # left where gp now takes them to be, the namespaced one after a move.
+        assert (
+            'Path(__file__).parent / "fixtures" for fixtures kept in tests/fixtures/ '
+            "(the layout of a project generated before graftpunk 1.44.0)"
+        ) in message
+        assert (
+            'Path(__file__).parent / "fixtures" / "myshop" after moving them into '
+            "tests/fixtures/myshop/"
+        ) in message
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / ".." / ".." / ".." / "escaped"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures/../data"\n',
+        ],
+    )
+    def test_upgrade_creates_nothing_for_a_fixtures_dir_that_climbs_out(
+        self, tmp_path: Path, line: str
+    ) -> None:
+        """A ``..`` part is a binding gp cannot read, so upgrade creates no root for
+        it, inside the project or outside it."""
+        project = tmp_path / "proj"
+        write_scaffold(project, _SPEC)
+        _respell_fixtures_dir(project, line)
+        before = _tree_files(project)
+        beside = sorted(p.name for p in tmp_path.iterdir())
+        assert not upgrade_project(project).changed
+        assert sorted(p.name for p in tmp_path.iterdir()) == beside
+        assert _tree_files(project) == before
+        assert not (tmp_path / "escaped").exists()
+        assert not (project / "tests" / "data").exists()
+
+
+class TestAProjectWithTheFlatLayout:
+    """A project generated before 1.44.0 keeps its flat fixtures layout through
+    check, upgrade, and a suite addition (#201)."""
+
+    def test_upgrade_changes_nothing_and_check_finds_nothing_about_fixtures(
+        self, tmp_path: Path
+    ) -> None:
+        root = _flat_project(tmp_path)
+        before = _tree_files(root)
+        applied = upgrade_project(root)
+        assert not applied.changed
+        assert _tree_files(root) == before
+        assert not [f for f in check_project(root) if "fixtures" in f.path]
+        (plugin,) = read_project(root).plugins
+        assert plugin.fixtures_root == FIXTURES_TREE
+
+    def test_a_member_added_to_it_is_namespaced_and_skipped_by_the_first_plugins_check(
+        self, tmp_path: Path
+    ) -> None:
+        root = _flat_project(tmp_path)
+        result = write_scaffold(
+            root,
+            ScaffoldSpec(
+                name="widgets",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://myshop.example",
+            ),
+        )
+        assert result.mode == "add_to_suite"
+        assert result.conftest_changes
+        roots = {p.entry_point: p.fixtures_root for p in read_project(root).plugins}
+        assert roots == {"myshop": "tests/fixtures/", "widgets": "tests/fixtures/widgets/"}
+        conftest = (root / "tests" / "conftest.py").read_text()
+        assert 'SUITE_MEMBER_FIXTURES = ("widgets",)' in conftest
+        assert not upgrade_project(root).changed
 
 
 _SINGLE_MODULE_PYPROJECT = """\

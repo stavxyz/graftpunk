@@ -1209,14 +1209,48 @@ class TestObserveGoCommand:
         assert mock_go.call_args.args[0] == infer_site_name("https://example.com")
         assert mock_go.call_args.kwargs["session_name"] is None
 
-    def test_session_and_no_session_conflict(self):
-        """observe --session X --no-session should fail."""
-        result = runner.invoke(
-            app, ["observe", "--session", "mysite", "--no-session", "go", "https://example.com"]
-        )
+    def test_session_with_no_session_names_the_run_and_loads_nothing(self, monkeypatch):
+        """observe --session NAME --no-session files the run under NAME and loads no
+        session, whatever GRAFTPUNK_SESSION names (#210)."""
+        monkeypatch.setenv("GRAFTPUNK_SESSION", "othersite")
+        with (
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as mock_go,
+            patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
+            patch(
+                "graftpunk.cli.observe_commands.resolve_session_name_or_exit",
+                side_effect=AssertionError("no session is resolved"),
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                ["observe", "--session", "myshop", "--no-session", "go", "https://myshop.example"],
+            )
+        assert result.exit_code == 0, result.output
+        mock_asyncio.run.assert_called_once()
+        assert mock_go.call_args.args[0] == "myshop"
+        assert mock_go.call_args.kwargs["session_name"] is None
+
+    @pytest.mark.parametrize(
+        ("name", "says"),
+        [
+            ("myshop@alice", "use --session myshop --no-session"),
+            ("my.shop", "cannot contain dots"),
+        ],
+    )
+    def test_an_account_or_an_invalid_name_with_no_session_is_refused(self, name, says):
+        """An account name with --no-session is ambiguous (record as the account, or
+        under the plugin's name?), and the refusal says what to run instead."""
+        with patch(
+            "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+        ) as mock_go:
+            result = runner.invoke(
+                app, ["observe", "--session", name, "--no-session", "go", "https://myshop.example"]
+            )
         assert result.exit_code == 1
-        output = strip_ansi(result.output)
-        assert "Cannot use --session and --no-session" in output
+        assert says in " ".join(strip_ansi(result.output).split())
+        mock_go.assert_not_called()
 
     def test_observe_go_with_session_flag(self):
         """observe go --session should run the capture flow."""
@@ -1331,6 +1365,19 @@ class TestResolveObserveContext:
         with pytest.raises(typer.Exit) as exc_info:
             _resolve_observe_context(ctx, "https://example.com")
         assert exc_info.value.exit_code == 1
+
+    def test_no_session_with_a_name_files_the_run_under_it(self):
+        """--session NAME --no-session: NAME is the namespace, and nothing is loaded."""
+        from graftpunk.cli.observe_commands import _resolve_observe_context
+
+        ctx = MagicMock()
+        ctx.ensure_object.return_value = {
+            "observe_session": "myshop",
+            "observe_no_session": True,
+        }
+        namespace, session_name = _resolve_observe_context(ctx, "https://myshop.example.com/")
+        assert namespace == "myshop"
+        assert session_name is None
 
     def test_no_session_flag_ignores_active_session(self):
         """When --no-session is set, observe_session should be None (not from env)."""

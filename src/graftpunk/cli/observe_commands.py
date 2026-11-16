@@ -68,7 +68,7 @@ from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.storage import run_dir_of, session_dirname
 from graftpunk.plugins import infer_site_name
 from graftpunk.session_context import resolve_session
-from graftpunk.session_identity import split_session_name
+from graftpunk.session_identity import split_session_name, validate_session_name
 from graftpunk.testing.sidecar import ObserveRun, SidecarError
 
 console = Console(emoji=False)
@@ -621,7 +621,14 @@ def observe_callback(
     ctx: typer.Context,
     session: Annotated[
         str | None,
-        typer.Option("--session", "-s", help="Session name to scope observe commands to"),
+        typer.Option(
+            "--session",
+            "-s",
+            help=(
+                "Session name to scope observe commands to; with --no-session, the name "
+                "a recording is filed under"
+            ),
+        ),
     ] = None,
     no_session: Annotated[
         bool,
@@ -629,15 +636,15 @@ def observe_callback(
     ] = False,
 ) -> None:
     """View and manage observability data (HAR, screenshots, logs)."""
-    if no_session and session:
-        console.print("[red]Cannot use --session and --no-session together.[/red]")
-        raise typer.Exit(1)
-
     obj = ctx.ensure_object(dict)
     obj["observe_no_session"] = no_session
 
     if no_session:
-        obj["observe_session"] = None
+        # Only an explicit --session names the run: GRAFTPUNK_SESSION and
+        # `gp session use` name a session to load, which --no-session turns off.
+        if session is not None:
+            _check_run_name(session)
+        obj["observe_session"] = session
     else:
         resolved = resolve_session(session)
         if resolved and session:
@@ -646,6 +653,27 @@ def observe_callback(
     if ctx.invoked_subcommand is None:
         console.print(ctx.get_help())
         raise typer.Exit(0)
+
+
+def _check_run_name(name: str) -> None:
+    """Exit 1 unless *name* can file a ``--no-session`` recording: a session
+    name without an account label (#210). ``myshop@alice`` names an account to load,
+    which ``--no-session`` turns off, so which run it means is ambiguous."""
+    try:
+        validate_session_name(name)
+    except ValueError as exc:
+        console.print(f"[red]--session {escape(name)}: {escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
+    base, label = split_session_name(name)
+    if label is not None:
+        console.print(
+            f"[red]--session {escape(name)} names an account, and --no-session loads "
+            f"none. To file the recording under the plugin's name, use "
+            f"--session {escape(base)} --no-session; to record as that account, "
+            f"drop --no-session.[/red]",
+            soft_wrap=True,
+        )
+        raise typer.Exit(1)
 
 
 @observe_app.command("list")
@@ -783,24 +811,28 @@ def _resolve_observe_context(ctx: typer.Context, url: str) -> tuple[str, str | N
 
     Returns:
         Tuple of (namespace, session_name). ``session_name`` is ``None``
-        when ``--no-session`` is set or no session is available.
+        when ``--no-session`` is set or no session is available. With
+        ``--no-session``, the namespace is ``--session``'s name when one was given
+        and otherwise inferred from *url*.
 
     Raises:
         typer.Exit: If no session is specified and ``--no-session`` is not set.
     """
     obj = ctx.ensure_object(dict)
     no_session = obj.get("observe_no_session", False)
-    session_name: str | None = None if no_session else obj.get("observe_session")
-
-    if session_name:
-        return session_name, session_name
+    session_name: str | None = obj.get("observe_session")
 
     if no_session:
+        if session_name:
+            return session_name, None
         inferred = infer_site_name(url)
         if not inferred:
             LOG.warning("namespace_inference_failed", url=url, fallback="unknown")
             inferred = "unknown"
         return inferred, None
+
+    if session_name:
+        return session_name, session_name
 
     # No session and no --no-session: require a session (original behavior)
     console.print(
@@ -842,7 +874,8 @@ def observe_go(
     Opens a nodriver browser, injects cached session cookies (if available),
     navigates to the URL, and captures screenshots, page source, and HAR data.
 
-    Use --no-session to open the browser without cookies.
+    Use --no-session to open the browser without cookies. The run is then filed
+    under the name inferred from the URL, or under NAME with --session NAME.
     """
     namespace, session_name = _resolve_observe_context(ctx, url)
 
@@ -896,7 +929,8 @@ def observe_interactive(
     Opens a browser, navigates to the URL, and records all network traffic
     while you click around. Press Ctrl+C to stop and save.
 
-    Use --no-session to open the browser without cookies.
+    Use --no-session to open the browser without cookies. The run is then filed
+    under the name inferred from the URL, or under NAME with --session NAME.
     """
     namespace, session_name = _resolve_observe_context(ctx, url)
 

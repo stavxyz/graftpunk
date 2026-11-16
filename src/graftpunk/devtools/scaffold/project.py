@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import itertools
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +21,6 @@ from graftpunk.devtools.plugin_project import _probe, read_project
 from graftpunk.devtools.scaffold.policy import (
     CONFTEST_PATH,
     FIXTURES_PLACEHOLDER,
-    FIXTURES_TREE,
     module_name_for,
 )
 from graftpunk.devtools.scaffold.pyproject_edit import (
@@ -60,6 +60,7 @@ from graftpunk.plugins import PLUGINS_GROUP
 LOG = get_logger(__name__)
 
 __all__ = [
+    "NestedProjectError",
     "NotAPluginSuiteError",
     "ScaffoldConflictError",
     "ScaffoldResult",
@@ -112,6 +113,24 @@ class NotAPluginSuiteError(ValueError):
     """
 
 
+class NestedProjectError(ValueError):
+    """``--new`` was asked for with a *target_dir* that itself holds a
+    ``pyproject.toml``. ``--new`` means a new project and never an addition to a
+    suite, so where the call without it would add to that suite (or refuse a
+    project that is no suite), it refuses (#210). Only *target_dir* is checked, not
+    its ancestors. Nothing is written. ``outside`` is a directory beside that
+    project, named for the plugin, the CLI's suggestion."""
+
+    def __init__(self, pyproject: Path, outside: Path) -> None:
+        super().__init__(
+            f"{pyproject} exists: --new writes a new project, never into a directory "
+            f"that already holds one, and never adds to a suite. Give a --dir outside "
+            f"it, such as {outside}."
+        )
+        self.pyproject = pyproject
+        self.outside = outside
+
+
 @dataclass(frozen=True)
 class ScaffoldResult:
     """What ``write_scaffold`` wrote. In suite mode, ``conftest_changes`` is what it
@@ -146,12 +165,10 @@ def _suite_conftest_change(
         view = read_project(target_dir)
     except DevtoolsRefusal:
         return None
-    owner = next((p for p in view.plugins if p.fixtures_root == FIXTURES_TREE), None)
+    owner = next((p for p in view.plugins if not p.suite_member), None)
     if owner is None:
         return None
-    members = [
-        module_name_for(p.entry_point) for p in view.plugins if p.fixtures_root != FIXTURES_TREE
-    ]
+    members = [module_name_for(p.entry_point) for p in view.plugins if p.suite_member]
     conftest = target_dir / CONFTEST_PATH
     status = view.requirements.get(f"{CONFTEST_PATH}:FIXTURES_TREE")
     if status is not None and status.state == "unreadable":
@@ -196,6 +213,29 @@ def _existing_pyproject(target_dir: Path) -> Path | None:
     return candidate if kind == "file" else None
 
 
+def _free_sibling(target_dir: Path, name: str) -> Path:
+    """A directory beside *target_dir* that ``--new`` can write in: named *name*,
+    or *name* with ``-2``, ``-3``, ... appended, the first that does not exist or is
+    an empty directory, so the command the refusal suggests writes there (#210)."""
+    here = target_dir.resolve()
+    candidates = (here.parent / (name if n == 1 else f"{name}-{n}") for n in itertools.count(1))
+    return next(c for c in candidates if _writable_as_new(c))
+
+
+def _writable_as_new(path: Path) -> bool:
+    """Whether *path* is nothing yet, or an empty directory: where a new project's
+    files conflict with nothing."""
+    kind = _probe(path)
+    if kind == "absent":
+        return True
+    if kind != "dir":
+        return False
+    try:
+        return next(path.iterdir(), None) is None
+    except OSError:
+        return False
+
+
 def _declares_plugin_group(pyproject_text: str, pyproject_path: Path) -> bool:
     """Whether the suite file declares the plugin entry-point group.
 
@@ -226,10 +266,13 @@ def write_scaffold(
         target_dir: A new project's root, or an existing suite's root.
         spec: What to generate; its ``mode`` is overwritten by this
             function's own decision (new project vs add to suite).
-        force_new: ``--new``: force a new project in *target_dir* even when
-            a suite ``pyproject.toml`` is present.
+        force_new: ``--new``: a new project, never an addition to a suite.
+            Refused with :class:`NestedProjectError` where *target_dir* holds a
+            ``pyproject.toml`` (#210).
 
     Raises:
+        NestedProjectError: *force_new* and *target_dir* holds a
+            ``pyproject.toml``. Nothing is written.
         ScaffoldConflictError: A target path already exists, or the suite's
             ``pyproject.toml`` or ``.gitignore`` changed after it was read.
             Nothing is written; the check runs before any file is touched.
@@ -252,7 +295,10 @@ def write_scaffold(
             changed (see ``write.py``). A bare ``OSError`` now means a read
             before anything was written failed.
     """
-    existing = None if force_new else _existing_pyproject(target_dir)
+    existing = _existing_pyproject(target_dir)
+    if force_new and existing is not None:
+        LOG.debug("scaffold_write_refused", reason="nested_project")
+        raise NestedProjectError(existing, _free_sibling(target_dir, spec.name))
     # Read once, as bytes: the same text decides the mode and is the original the
     # pyproject.toml edit is planned against and restored to.
     original = read_original(existing) if existing is not None else ""
@@ -260,8 +306,8 @@ def write_scaffold(
         raise NotAPluginSuiteError(
             f"{existing} exists but does not declare "
             f'[project.entry-points."{PLUGINS_GROUP}"]. '
-            "This does not look like a graftpunk plugin suite. Use --new to start a fresh "
-            "project in a different directory, or add the entry-point group by hand."
+            "This does not look like a graftpunk plugin suite. Give a --dir outside that "
+            "project to start a fresh one, or add the entry-point group by hand."
         )
 
     mode = "add_to_suite" if existing is not None else "new_project"

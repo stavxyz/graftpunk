@@ -156,7 +156,8 @@ def golden_outputs(base: Path) -> dict[str, dict[str, str]]:
 def test_a_run_without_a_family_digests_as_1_31_1_did(tmp_path: Path) -> None:
     """The golden file was written by graftpunk 1.31.1 (main at 9946864b) from these
     runs, and rewritten when #315 gave the markdown Cookies section and --json each
-    cookie's attributes; every output must match it byte for byte."""
+    cookie's attributes and when #201 gave a new project's fixtures a directory of
+    their own; every output must match it byte for byte."""
     golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
     assert golden_outputs(tmp_path) == golden
 
@@ -655,7 +656,7 @@ class TestScaffoldingAFamily:
         assert "def test_region_items() -> None:" in tests
         assert "def test_north() -> None:" in tests
         assert "GP-FILL: no test" not in tests
-        assert fixture_paths(spec) == ["tests/fixtures/get_search_north-region_items.json"]
+        assert fixture_paths(spec) == ["tests/fixtures/myshop/get_search_north-region_items.json"]
 
     @pytest.mark.parametrize("order", list(itertools.permutations(range(3))))
     def test_a_second_literal_on_the_member_gets_the_note_in_any_order(
@@ -727,7 +728,7 @@ class TestScaffoldingAFamily:
     def test_fixture_paths_name_the_fixture_member_s_own_file(self, tmp_path: Path) -> None:
         result = _digest_of(tmp_path, _TWO_REGIONS)
         paths = fixture_paths(_spec(result, CommandSelection("region-items", "GET", _FAMILY)))
-        assert paths == ["tests/fixtures/get_search_north-region_items.json"]
+        assert paths == ["tests/fixtures/myshop/get_search_north-region_items.json"]
 
 
 class TestFixtureSessionIsUnchanged:
@@ -844,8 +845,10 @@ class TestFixturesForAFamily:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "tests/fixtures/get_search_north-region_items.json" in strip_ansi(result.output)
-        self._fixtures(app, target / "tests" / "fixtures", f"GET {_FAMILY}")
+        assert "tests/fixtures/myshop/get_search_north-region_items.json" in strip_ansi(
+            result.output
+        )
+        self._fixtures(app, target / "tests" / "fixtures" / "myshop", f"GET {_FAMILY}")
         assert "2 passed" in _project_pytest(target)
         _assert_ruff_clean(target)
 
@@ -865,7 +868,7 @@ class TestFixturesForAFamily:
         assert result.exit_code == 0, result.output
         tests = (target / "tests" / "test_plugin.py").read_text()
         assert "GP-FILL: no test" not in tests
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         self._fixtures(app, fixtures_dir, f"GET {_FAMILY}")
         assert "3 passed" in _project_pytest(target)
 
@@ -887,7 +890,7 @@ class TestFixturesForAFamily:
         assert not target.exists()
         result = CliRunner().invoke(app, new)
         assert result.exit_code == 0, result.output
-        self._fixtures(app, target / "tests" / "fixtures", "GET /search/*")
+        self._fixtures(app, target / "tests" / "fixtures" / "myshop", "GET /search/*")
         assert "3 passed" in _project_pytest(target)
 
     def test_a_stem_collision_through_a_family_match_is_refused(
@@ -919,7 +922,7 @@ class TestFixturesForAFamily:
         new = ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)]
         result = CliRunner().invoke(app, new)
         assert result.exit_code == 0, result.output
-        fixtures_dir = target / "tests" / "fixtures"
+        fixtures_dir = target / "tests" / "fixtures" / "myshop"
         output = self._fixtures(app, fixtures_dir, "GET /account/*", "GET /account/{account_slug}")
         assert "Refusing" not in output
         assert "No entries matched --match GET /account/{account_slug}." in output
@@ -957,7 +960,9 @@ class TestFixturesForAFamily:
             ],
         )
         assert added.exit_code == 0, added.output
-        assert "tests/fixtures/get_search_north-region_items.json" in strip_ansi(added.output)
+        assert "tests/fixtures/myshop/get_search_north-region_items.json" in strip_ansi(
+            added.output
+        )
         plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
         assert "def region_items(" in plugin
         assert "search_slug: str," in plugin
@@ -1007,7 +1012,7 @@ def _project_pytest(target: Path) -> str:
     """Run the generated project's own pytest on fixtures ``gp observe fixtures``
     wrote into it (their capture hashes cleared, as the existing gates do), and
     return its output; the run must pass."""
-    for meta in (target / "tests" / "fixtures").glob("*.meta.json"):
+    for meta in (target / "tests" / "fixtures" / "myshop").glob("*.meta.json"):
         meta.write_text(sidecar_text(dataclasses.replace(load_sidecar(meta), capture_sha256=None)))
     env = {**os.environ, "PYTHONPATH": str(target / "src")}
     tested = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input

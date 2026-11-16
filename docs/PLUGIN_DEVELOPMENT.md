@@ -249,21 +249,29 @@ need `driver.get_log()` style diagnostics. Both are described in
 Record a real browser session against the site:
 
 ```bash
-gp observe --no-session interactive https://myshop.example/
+gp observe --session myshop --no-session interactive https://myshop.example/
 ```
 
 `--session` and `--no-session` belong to the `observe` group, so they go before
-the subcommand, and they cannot be used together. `--no-session` opens the
-browser with no cached cookies, which is what you want the first time: you are
-recording the login as well as the flows behind it, and there is no cached
-session to name yet. A `--no-session` recording is filed under the name
-graftpunk infers from the host, the second-to-last label: `myshop` for
-`myshop.example` or `www.myshop.example`, `example` for `myshop.example.com`. `gp
-observe list` prints it. For the host this guide uses, that name is `myshop`, so
-the commands below work as written; for a host whose inferred name differs,
-substitute the one `gp observe list` printed. Once the plugin exists and `gp
-myshop login` has cached a session, `gp observe -s myshop interactive ...`
-records with that session's cookies and files the run under `myshop`.
+the subcommand. `--no-session` opens the browser with no cached cookies, which
+is what you want the first time: you are recording the login as well as the
+flows behind it, and there is no cached session yet. With `--no-session`,
+`--session myshop` loads nothing and only names the recording: the run is filed
+under `myshop`, the name every later step takes (`gp observe digest myshop`,
+`gp plugin new myshop --from-run myshop`). Give the plugin's name, not an
+account's: `--session myshop@alice --no-session` is refused, since the label
+names an account to load. Without `--session`, a `--no-session` recording is
+filed under the name graftpunk infers from the host, the second-to-last label
+(`myshop` for `www.myshop.example`, but `example` for `myshop.example.com`),
+which `gp observe list` prints. Once the plugin exists and `gp myshop login`
+has cached a session, `gp observe -s myshop interactive ...` records with that
+session's cookies and files the run under `myshop` too.
+
+Naming a `--no-session` run with `--session` needs graftpunk 1.44.0 or later.
+An earlier release refuses the pair (`Cannot use --session and --no-session
+together.`): there, run `gp observe --no-session interactive
+https://myshop.example/` and use the name `gp observe list` prints wherever this
+guide says `myshop` for the recording.
 
 A browser opens at the URL. Log in. Then exercise every flow you listed in
 [Frame](#frame): open each page, page through a list, apply a filter, download
@@ -313,7 +321,8 @@ a password, scrubbed everywhere. The run still holds the session's cookies and t
 your machine and delete it when you are done.
 
 To have the recording suggest the `failure` text, add `--wrong-password-first`
-(`gp observe --no-session interactive https://myshop.example/ --wrong-password-first`).
+(`gp observe --session myshop --no-session interactive https://myshop.example/ --wrong-password-first`,
+or without `--session myshop` before graftpunk 1.44.0, as above).
 Before you log in, submit the login once with the throwaway wrong password the
 command prints (`wrong-` and six random letters and digits; never your real one
 with a typo), wait for the error to show, and press Enter in the terminal; then
@@ -330,7 +339,7 @@ separate, or when a first digest leaves a question you can answer by recording
 one flow on its own with nothing else in the way.
 
 Runs live under `~/.local/share/graftpunk/observe/<name>/<run id>/`, where
-`<name>` is the session when you named one and the name inferred from the host
+`<name>` is the name `--session` gave and the name inferred from the host
 otherwise. A run holds `network.har` plus whatever else that run captured:
 `bodies/` for request and response bodies too large to inline in the HAR or
 not text, `snapshots/` for the page's DOM at each credential post, read by a
@@ -890,7 +899,8 @@ How to read it:
 **Summary** names the run, the host the digest decided the recording was
 against, and the counts. The `dropped` line is the honest part: `static` counts
 assets and trackers, `third_party` counts requests to hosts outside the primary
-host's domain, `other_scheme` counts non-HTTP entries such as the browser's own
+host's domain (compared by name, so `api.myshop.example:8443` is inside
+`myshop.example`'s domain whatever its port), `other_scheme` counts non-HTTP entries such as the browser's own
 new-tab page, and `error` counts entries the parser could not read. A large
 `third_party` number on a site you know is single-host means the primary host
 was decided wrong; rerun with `--all-hosts` and look again.
@@ -1030,10 +1040,12 @@ The options:
 - `--dir PATH` is the target directory (the working directory by default).
 - `--backend nodriver|selenium` sets the generated `backend` attribute
   (`nodriver` by default).
-- `--new` skips the suite check on `--dir`, so the command writes a new project
-  instead of adding to the suite it finds there. Nothing is overwritten either
-  way, so a `--dir` that already holds a `pyproject.toml` is refused for the
-  conflict: point `--dir` at a directory that has none.
+- `--new` is a guard: a new project, never an addition to a suite. With a
+  `--dir` that itself holds a `pyproject.toml`, where the command without it
+  adds a member to that suite, `--new` refuses, writes nothing, and prints the
+  same command with a `--dir` beside that project to run instead. Only `--dir`
+  itself is checked, so `--new` with a subdirectory of a project writes there.
+  Elsewhere it writes in `--dir`, as without it.
 
 ### The two modes
 
@@ -1046,7 +1058,7 @@ pyproject.toml
 src/graftpunk_myshop/__init__.py
 src/graftpunk_myshop/plugin.py
 tests/conftest.py
-tests/fixtures/.gitkeep
+tests/fixtures/myshop/.gitkeep
 tests/test_plugin.py
 ```
 
@@ -1072,10 +1084,13 @@ otherstore = "graftpunk_otherstore.plugin:OtherstorePlugin"
 packages = ["src/graftpunk_myshop", "src/graftpunk_otherstore"]
 ```
 
-Suite mode gives each plugin its own `tests/fixtures/<name>/` directory, because
-fixture filenames are derived from endpoint paths and two plugins in one suite
-can share a path. It does not touch `tests/conftest.py`, which was written for
-the first plugin. The new plugin's test module binds its own environment
+Each plugin gets its own `tests/fixtures/<name>/` directory, in a new project
+and in a suite alike, because fixture filenames are derived from endpoint paths
+and two plugins in one suite can share a path; `<name>` is the plugin's module
+name (`my_shop` for `my-shop`). A project generated before graftpunk 1.44.0 keeps
+its first plugin's fixtures directly in `tests/fixtures/`, and every gp command
+reads it that way for as long as it has no `tests/fixtures/<name>/`. Suite mode
+does not touch `tests/conftest.py`, which was written for the first plugin. The new plugin's test module binds its own environment
 scrubber and fixtures check instead, over its own directory alone
 (see [Keep the developer's own environment out of the tests](#keep-the-developers-own-environment-out-of-the-tests)).
 
@@ -1264,9 +1279,9 @@ The command also prints the fixtures the generated tests will look for:
 
 ```text
 Next: the endpoint tests fail until these fixtures exist:
-  tests/fixtures/get_api_orders.json
-  tests/fixtures/get_api_orders_{order_id}.json
-  tests/fixtures/get_dashboard.html
+  tests/fixtures/myshop/get_api_orders.json
+  tests/fixtures/myshop/get_api_orders_{order_id}.json
+  tests/fixtures/myshop/get_dashboard.html
 Derive each one from a capture of the same name: gp observe fixtures --help
 ```
 
@@ -1306,11 +1321,11 @@ New Project:
   src/graftpunk_myshop/__init__.py
   src/graftpunk_myshop/plugin.py
   tests/conftest.py
-  tests/fixtures/.gitkeep
+  tests/fixtures/myshop/.gitkeep
   tests/test_plugin.py
 Next: the endpoint tests fail until these fixtures exist:
-  tests/fixtures/get_api_orders.json
-  tests/fixtures/get_api_orders_{order_id}.json
+  tests/fixtures/myshop/get_api_orders.json
+  tests/fixtures/myshop/get_api_orders_{order_id}.json
 Derive each one from a capture of the same name: gp observe fixtures --help
 ```
 
@@ -1456,7 +1471,7 @@ the fixture its test should read:
 
 ```text
 Added invoices to src/graftpunk_myshop/plugin.py
-Next: write its test against tests/fixtures/get_api_invoices.json
+Next: write its test against tests/fixtures/myshop/get_api_invoices.json
 ```
 
 It writes no test. Add one to the plugin's test module in the shape of the
@@ -1473,7 +1488,8 @@ Next: gp observe fixtures writes no fixture for this endpoint; write its test ag
 
 The stub requests the host its endpoint was recorded on, by the rule
 `gp plugin new` follows: a path on the host of the plugin's `base_url`, and an
-absolute URL on any other host, with a line after `Added` naming the command and
+absolute URL on any other host, under the scheme the endpoint was recorded with
+(an API recorded over `http` beside `https` pages is called over `http`), with a line after `Added` naming the command and
 the host it calls, and the plugin's base host when the plugin has a readable
 `base_url`. A plugin has no readable `base_url` when `gp plugin info --json`
 cannot report one as a URL that `gp plugin new --url` would accept: none, one
@@ -1490,7 +1506,7 @@ and tells you to reinstall the project:
 
 ```text
 Added invoices to src/graftpunk_myshop/plugin.py
-Next: write its test against tests/fixtures/get_api_invoices.json
+Next: write its test against tests/fixtures/myshop/get_api_invoices.json
 pyproject.toml: graftpunk>=1.17.0 (was >=1.15.0); reinstall the project
 ```
 
@@ -2622,7 +2638,7 @@ from graftpunk.testing import fixture_context
 
 from graftpunk_myshop.plugin import MyshopPlugin
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
+FIXTURES_DIR = Path(__file__).parent / "fixtures" / "myshop"
 
 
 def test_orders_lists_every_order() -> None:
@@ -3121,8 +3137,14 @@ gp plugin check
 creates it), or one that something blocks (it, or `tests/`, is not a directory
 or cannot be read), a `tests/conftest.py` that does not parse, is not valid
 UTF-8, cannot be read, or is not a regular file, every `GP-FILL` marker left
-in a plugin module or a test module, any plugin module that does not hold
-exactly one plugin class, and any project wiring the project lacks (`gp
+in a plugin module or a test module, a first plugin's missing or blocked
+`tests/fixtures/<module>/` (`gp plugin upgrade` creates a missing one), a
+`FIXTURES_DIR` it cannot read the fixtures directory from (spell FIXTURES_DIR as
+gp plugin new writes it: `Path(__file__).parent / "fixtures"` while the
+fixtures are the files of `tests/fixtures/` itself, the layout of a project
+generated before graftpunk 1.44.0, or `Path(__file__).parent / "fixtures" /
+"<module>"` once they are moved into `tests/fixtures/<module>/`), any
+plugin module that does not hold exactly one plugin class, and any project wiring the project lacks (`gp
 plugin upgrade` adds it; in a suite, `gp plugin upgrade --plugin <name>` adds
 that plugin's, creates a member's missing `tests/fixtures/<module>/`, and, when
 the shared conftest has gp's check, lists the members in its

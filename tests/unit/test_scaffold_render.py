@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 import warnings
 from pathlib import Path
 from typing import Any, Literal
@@ -613,7 +614,7 @@ class TestRenderNewProject:
             "src/graftpunk_myshop/plugin.py",
             "tests/conftest.py",
             "tests/test_plugin.py",
-            "tests/fixtures/.gitkeep",
+            "tests/fixtures/myshop/.gitkeep",
             ".gitignore",
             "README.md",
         }
@@ -629,6 +630,18 @@ class TestRenderNewProject:
         )
         readme = render(spec)["README.md"]
         assert f"Fixtures under `{policy.FIXTURES_TREE}`" in readme
+
+    def test_pyproject_keeps_pytest_to_the_projects_own_tests(self) -> None:
+        """pytest at the project root collects tests/ alone, so a project generated
+        in one of its subdirectories cannot break its collection (#210)."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        data = tomllib.loads(render(spec)["pyproject.toml"])
+        assert data["tool"]["pytest"]["ini_options"] == {"testpaths": ["tests"]}
 
     def test_pyproject_declares_entry_point_and_dependency_floor(self) -> None:
         spec = ScaffoldSpec(
@@ -717,18 +730,22 @@ class TestRenderAddToSuite:
             in gadgets["tests/test_gadgets.py"]
         )
 
-    def test_a_new_project_keeps_the_flat_fixtures_directory(self) -> None:
+    def test_a_new_project_namespaces_its_fixtures_as_a_suite_member_does(self) -> None:
+        """One layout for both modes (#201): a new project's fixtures are under
+        tests/fixtures/<module>/, so a suite it later grows into has no member on
+        the flat path."""
         files = render(
             ScaffoldSpec(
-                name="myshop",
+                name="my-shop",
                 mode="new_project",
                 backend="nodriver",
                 base_url="https://myshop.example.com",
             )
         )
-        assert "tests/fixtures/.gitkeep" in files
+        assert "tests/fixtures/my_shop/.gitkeep" in files
+        assert "tests/fixtures/.gitkeep" not in files
         test_module = files["tests/test_plugin.py"]
-        assert 'FIXTURES_DIR = Path(__file__).parent / "fixtures"\n' in test_module
+        assert 'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "my_shop"\n' in test_module
 
 
 class TestGeneratedLoginHoldsNoAccountValue:
@@ -3545,7 +3562,7 @@ class TestFixturesDirFollowsThePolicy:
         )
         files = render(spec)
         found = self._fixtures_dir(files["tests/test_plugin.py"], tmp_path, "tests/test_plugin.py")
-        expected = fixtures_root(suite_member=False, module_name="myshop")
+        expected = fixtures_root("myshop")
         assert found == tmp_path / expected.rstrip("/")
 
     def test_a_suite_member(self, tmp_path: Path) -> None:
@@ -3561,7 +3578,7 @@ class TestFixturesDirFollowsThePolicy:
         found = self._fixtures_dir(
             files["tests/test_my_shop.py"], tmp_path, "tests/test_my_shop.py"
         )
-        expected = fixtures_root(suite_member=True, module_name="my_shop")
+        expected = fixtures_root("my_shop")
         assert found == tmp_path / expected.rstrip("/")
         assert f"{expected}.gitkeep" in files
 
