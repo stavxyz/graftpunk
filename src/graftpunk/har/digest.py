@@ -511,11 +511,14 @@ class Endpoint:
     # taken out (_graphql_extensions); and the dotted names of what was taken out.
     graphql_extensions: dict[str, Any] = field(default_factory=dict, metadata={INTERNAL: True})
     graphql_held_extensions: tuple[str, ...] = field(default=(), metadata={INTERNAL: True})
-    # The scheme of the first recording, lower-cased (``http`` or ``https``): a
-    # command on another host than ``base_url``'s calls it with this scheme, since
-    # ``base_url``'s need not be the endpoint's. Empty on a hand-built endpoint,
-    # which then takes ``base_url``'s. A lookup for the generator, so render_json
-    # leaves it out.
+    # The scheme its recordings were sent with, lower-cased (``http`` or
+    # ``https``), read from every recording whose response is not a redirect, and
+    # ``https`` when they disagree (_EndpointAccumulator.take_scheme): an http
+    # request an upgrade redirect answered is not the endpoint's scheme. A command
+    # on another host than ``base_url``'s calls it with this scheme, since
+    # ``base_url``'s need not be the endpoint's. Empty on a hand-built endpoint, and
+    # when every recording was a redirect; either then takes ``base_url``'s. A
+    # lookup for the generator, so render_json leaves it out.
     scheme: str = field(default="", metadata={INTERNAL: True})
 
     @property
@@ -3111,9 +3114,9 @@ def _fixture_type_of(
 
 
 class _EndpointAccumulator:
-    def __init__(self, host: str, operation: str = "", *, scheme: str = "") -> None:
+    def __init__(self, host: str, operation: str = "") -> None:
         self.host = host
-        self.scheme = scheme
+        self.scheme = ""
         self.operation = operation
         self.operation_batched = 0
         self.document: str | None = None
@@ -3163,6 +3166,8 @@ class _EndpointAccumulator:
         """Add *entry* to this row. *operations* are the elements of its body that
         carry this row's GraphQL operation (one, or several of one name in a
         batch); empty for a row with no operation."""
+        if entry.response.status not in _REDIRECT_STATUSES:
+            self.take_scheme(urlparse(entry.request.url).scheme.lower())
         text = capture_text(entry.response.body, entry.response.status)
         batched = any(operation.batched for operation in operations)
         if batched:
@@ -3241,10 +3246,17 @@ class _EndpointAccumulator:
                 k: v for k, v in self.extensions.items() if k in sent and sent[k] == v
             }
 
+    def take_scheme(self, scheme: str) -> None:
+        """Fold *scheme*, one recording's (or a member's), into the row's: the first
+        one, unless a later one is ``https``, which wins. Empty changes nothing."""
+        if scheme and (not self.scheme or scheme == "https"):
+            self.scheme = scheme
+
     def absorb(self, acc: _EndpointAccumulator) -> None:
         """Add *acc*'s recordings to this one's: a member joining a family (the
         high-cardinality collapse's, or a family row's). *acc* is read and never
         changed."""
+        self.take_scheme(acc.scheme)
         self.count += acc.count
         self.operation_batched += acc.operation_batched
         if self.document is None:
@@ -4013,9 +4025,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         # host is spelled as the endpoint's (normal_host), so a login observation
         # and the endpoint it belongs to name one host.
         url = _normal_url(bare_url(entry.request.url))
-        parsed = urlparse(url)
-        path = parsed.path or "/"
-        scheme = parsed.scheme.lower()
+        path = urlparse(url).path or "/"
         raw_template, _ = template_path(path)
         operations = entry_operations(entry)
         if operations:
@@ -4024,12 +4034,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # under the plain template (#367).
             for name, group in operation_groups(operations).items():
                 acc = accumulators.setdefault(
-                    (method, raw_template, name), _EndpointAccumulator(host, name, scheme=scheme)
+                    (method, raw_template, name), _EndpointAccumulator(host, name)
                 )
                 acc.record(entry, path, step, entry_index, group)
         else:
             acc = accumulators.setdefault(
-                (method, raw_template, ""), _EndpointAccumulator(host=host, scheme=scheme)
+                (method, raw_template, ""), _EndpointAccumulator(host=host)
             )
             acc.record(entry, path, step, entry_index)
 
@@ -4745,7 +4755,7 @@ def _family_endpoints(
     for method, template, position, name, kept in planned:
         if templates[(method, template)] > 1:
             continue
-        family = _EndpointAccumulator(kept[0].host, scheme=kept[0].scheme)
+        family = _EndpointAccumulator(kept[0].host)
         family.methods.append(method)
         for member in kept:
             family.absorb(accumulators[(method, member.template, "")])
