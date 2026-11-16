@@ -144,6 +144,35 @@ class TestPluginNewHappyPath:
         )
         assert rerun.exit_code == 0, rerun.output
 
+    @pytest.mark.parametrize("in_the_way", ["file", "busy_dir"])
+    def test_the_suggested_dir_is_one_the_command_can_write(
+        self, tmp_path: Path, in_the_way: str
+    ) -> None:
+        """A sibling of the plugin's name that is a regular file, or a directory
+        holding files, is passed over: the suggestion is a path that does not exist
+        or is empty, and the command it names succeeds as given (#210)."""
+        suite = tmp_path / "suite"
+        url = ["--url", "https://myshop.example.com"]
+        first = runner.invoke(_build_app(), ["plugin", "new", "myshop", *url, "--dir", str(suite)])
+        assert first.exit_code == 0, first.output
+        blocker = tmp_path / "thirdstore"
+        if in_the_way == "file":
+            blocker.write_text("not a directory")
+        else:
+            blocker.mkdir()
+            (blocker / "README.md").write_text("someone else's")
+        result = runner.invoke(
+            _build_app(), ["plugin", "new", "thirdstore", *url, "--dir", str(suite), "--new"]
+        )
+        assert result.exit_code == 1
+        output = " ".join(strip_ansi(result.output).split())
+        suggested = tmp_path.resolve() / "thirdstore-2"
+        assert f"--dir {suggested} --new" in output
+        rerun = runner.invoke(
+            _build_app(), ["plugin", "new", "thirdstore", *url, "--dir", str(suggested), "--new"]
+        )
+        assert rerun.exit_code == 0, rerun.output
+
     def test_a_project_nested_under_a_suite_leaves_the_suites_collection_its_own(
         self, tmp_path: Path
     ) -> None:

@@ -214,13 +214,26 @@ def _existing_pyproject(target_dir: Path) -> Path | None:
 
 
 def _free_sibling(target_dir: Path, name: str) -> Path:
-    """A directory beside *target_dir* that ``--new`` would write in: named *name*,
-    or *name* with ``-2``, ``-3``, ... appended, the first that is not *target_dir*
-    itself and holds no ``pyproject.toml``, so the command the refusal suggests is
-    never refused the same way (#210)."""
+    """A directory beside *target_dir* that ``--new`` can write in: named *name*,
+    or *name* with ``-2``, ``-3``, ... appended, the first that does not exist or is
+    an empty directory, so the command the refusal suggests writes there (#210)."""
     here = target_dir.resolve()
     candidates = (here.parent / (name if n == 1 else f"{name}-{n}") for n in itertools.count(1))
-    return next(c for c in candidates if c != here and _probe(c / "pyproject.toml") == "absent")
+    return next(c for c in candidates if _writable_as_new(c))
+
+
+def _writable_as_new(path: Path) -> bool:
+    """Whether *path* is nothing yet, or an empty directory: where a new project's
+    files conflict with nothing."""
+    kind = _probe(path)
+    if kind == "absent":
+        return True
+    if kind != "dir":
+        return False
+    try:
+        return next(path.iterdir(), None) is None
+    except OSError:
+        return False
 
 
 def _declares_plugin_group(pyproject_text: str, pyproject_path: Path) -> bool:
