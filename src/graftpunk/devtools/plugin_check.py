@@ -82,6 +82,7 @@ _SCOPES_IT = "scopes it"
 _WRITE_IT_LITERAL = "write it as a literal tuple of directory names"
 _DOES_NOT_BIND = "does not bind"
 _RENAME_OR_REMOVE = "rename or remove the alias"
+_SPELL_FIXTURES_DIR = "spell FIXTURES_DIR as gp plugin new writes it"
 _ALIASES_NOT_LITERAL = (
     "aliases is not a literal tuple of strings, so gp plugin check cannot check it; "
     "write it as one, such as ('shop',)."
@@ -220,6 +221,7 @@ FINDING_ADVICE: tuple[str, ...] = (
     _SCOPES_IT,
     _WRITE_IT_LITERAL,
     _RENAME_OR_REMOVE,
+    _SPELL_FIXTURES_DIR,
 )
 """Every advice phrase a ``check_project`` finding can carry, for a test to
 check the guide's prose against: not a guarantee that a future reason is
@@ -274,6 +276,16 @@ def check_project(root: Path) -> list[Finding]:
         elif not member.present and (member is not first or view.fixtures_tree_present):
             message = f"missing; gp plugin upgrade --plugin {member.entry_point} {_CREATES_IT}."
             findings.append(Finding(path=member.path, line=None, message=message))
+    for plugin in view.plugins:
+        if plugin.fixtures_dir_unread is not None:
+            path, line = plugin.fixtures_dir_unread
+            module = module_name_for(plugin.entry_point)
+            message = (
+                f"gp cannot read this FIXTURES_DIR, so it takes {plugin.entry_point}'s "
+                f"fixtures to be the files of {FIXTURES_TREE} itself; {_SPELL_FIXTURES_DIR}, "
+                f'Path(__file__).parent / "fixtures" / "{module}".'
+            )
+            findings.append(Finding(path=path, line=line, message=message))
     findings.extend(
         Finding(
             path=plugin.module_path, line=line, message=f"{GP_FILL_MARKER} marker left to fill in."

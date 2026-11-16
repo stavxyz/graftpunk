@@ -289,6 +289,10 @@ class PluginView:
     # Whether it is a suite member: every plugin of a suite but its first, which
     # owns the shared conftest (see the design note after _read_plugin).
     suite_member: bool = False
+    # A first plugin's FIXTURES_DIR binding, as (file, line), when it is not one the
+    # reader can take its fixtures root from; the root is then the tree itself, and
+    # gp plugin check says so (#201).
+    fixtures_dir_unread: tuple[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -1106,38 +1110,58 @@ def _test_markers(root: Path) -> tuple[tuple[str, int], ...]:
     return tuple(found)
 
 
+def _is_path_of_this_file(node: ast.expr) -> bool:
+    """Whether *node* is ``Path(__file__)``, optionally followed by ``.resolve()`` or
+    ``.absolute()``: the test module's own path."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("resolve", "absolute")
+        and not node.args
+        and not node.keywords
+    ):
+        node = node.func.value
+    return (
+        isinstance(node, ast.Call)
+        and _last_name(node.func) == "Path"
+        and len(node.args) == 1
+        and not node.keywords
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "__file__"
+    )
+
+
 def _fixtures_dir_parts(node: ast.expr) -> list[str] | None:
-    """The directory names *node* joins onto ``Path(__file__).parent`` with ``/``
-    and string literals, the shape gp plugin new writes ``FIXTURES_DIR`` in, or
-    ``None`` for any other expression."""
+    """The directory names *node* joins onto the test module's directory
+    (``Path(__file__).parent``, with ``.resolve()`` or ``.absolute()`` before
+    ``.parent`` or not) with ``/`` and string literals, the shape gp plugin new
+    writes ``FIXTURES_DIR`` in, or ``None`` for any other expression."""
     parts: list[str] = []
     while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         right = node.right
         if not (isinstance(right, ast.Constant) and isinstance(right.value, str)):
             return None
-        parts.insert(0, right.value)
+        parts[:0] = [p for p in right.value.split("/") if p]
         node = node.left
     is_base = (
         isinstance(node, ast.Attribute)
         and node.attr == "parent"
-        and isinstance(node.value, ast.Call)
-        and _last_name(node.value.func) == "Path"
-        and len(node.value.args) == 1
-        and isinstance(node.value.args[0], ast.Name)
-        and node.value.args[0].id == "__file__"
+        and _is_path_of_this_file(node.value)
     )
     return parts if is_base and parts else None
 
 
 def _declared_fixtures_dir(
     root: Path, module: str, modules: list[str], test_files: tuple[str, ...]
-) -> str | None:
+) -> tuple[str | None, tuple[str, int] | None]:
     """The directory *module*'s first plugin declares its fixtures in, project-relative
-    with a trailing slash: the first module-level ``FIXTURES_DIR`` of the shape
-    gp plugin new writes (:func:`_fixtures_dir_parts`) in ``tests/test_plugin.py``
-    (the module gp plugin new writes for a project's first plugin), then in each
-    test module :func:`policy.test_module_owner` gives *module* among *modules*.
-    ``None`` when none declares one, or the files cannot be read."""
+    with a trailing slash, from the first module-level ``FIXTURES_DIR`` binding in
+    ``tests/test_plugin.py`` (the module gp plugin new writes for a project's first
+    plugin), then in each test module :func:`policy.test_module_owner` gives
+    *module* among *modules*. Second, that binding's file and line when it is not a
+    directory under ``policy.FIXTURES_TREE`` spelled as :func:`_fixtures_dir_parts`
+    reads, so ``gp plugin check`` can say so; the first is then ``None``, as it is
+    when no readable file binds the name."""
     candidates = ["test_plugin.py"] + [
         name
         for name in test_files
@@ -1146,17 +1170,27 @@ def _declared_fixtures_dir(
     for name in candidates:
         if name not in test_files:
             continue
-        tree = _parse_requirement_file(root, f"{policy.TESTS_DIR}{name}")
+        relative = f"{policy.TESTS_DIR}{name}"
+        tree = _parse_requirement_file(root, relative)
         if not isinstance(tree, ast.Module):
             continue
         for node in tree.body:
-            if (
-                isinstance(node, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == "FIXTURES_DIR" for t in node.targets)
-                and (parts := _fixtures_dir_parts(node.value)) is not None
-            ):
-                return policy.TESTS_DIR + "".join(f"{part}/" for part in parts)
-    return None
+            targets = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+                if isinstance(node, ast.AnnAssign) and node.value is not None
+                else []
+            )
+            if not any(isinstance(t, ast.Name) and t.id == "FIXTURES_DIR" for t in targets):
+                continue
+            value = getattr(node, "value", None)
+            parts = _fixtures_dir_parts(value) if isinstance(value, ast.expr) else None
+            declared = None if parts is None else policy.TESTS_DIR + "".join(f"{p}/" for p in parts)
+            if declared is None or not declared.startswith(policy.FIXTURES_TREE):
+                return None, (relative, node.lineno)
+            return declared, None
+    return None, None
 
 
 def _read_plugin(
@@ -1200,11 +1234,10 @@ def _read_plugin(
     # first plugin did before 1.44.0. Whether the directory exists decides
     # nothing: an upgrade or a clone can leave it missing.
     fixtures_root = policy.fixtures_root(module_name_for(key))
+    unread: tuple[str, int] | None = None
     if not suite_member:
-        declared = _declared_fixtures_dir(root, module_name_for(key), modules, test_files)
-        if declared is None or not declared.startswith(policy.FIXTURES_TREE):
-            declared = policy.FIXTURES_TREE
-        fixtures_root = declared
+        declared, unread = _declared_fixtures_dir(root, module_name_for(key), modules, test_files)
+        fixtures_root = declared or policy.FIXTURES_TREE
     aliases, aliases_line = _class_aliases(klass)
     start = min([klass.lineno, *(d.lineno for d in klass.decorator_list)])
     return PluginView(
@@ -1226,6 +1259,7 @@ def _read_plugin(
         aliases_line=aliases_line,
         session_name=_class_string(klass, "session_name"),
         suite_member=suite_member,
+        fixtures_dir_unread=unread,
     )
 
 

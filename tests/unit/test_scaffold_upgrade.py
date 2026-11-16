@@ -300,6 +300,60 @@ def _tree_files(root: Path) -> dict[str, bytes]:
     }
 
 
+_NAMESPACED = 'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "myshop"\n'
+
+
+def _respell_fixtures_dir(root: Path, line: str) -> None:
+    test_module = root / "tests" / "test_plugin.py"
+    text = test_module.read_text()
+    assert _NAMESPACED in text
+    test_module.write_text(text.replace(_NAMESPACED, line))
+
+
+class TestTheDeclaredFixturesDir:
+    """The first plugin's layout is read from its FIXTURES_DIR, in each spelling of
+    the test module's own directory, and one the reader cannot read is a finding,
+    not a silent fall back to the tree (#201)."""
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "myshop"\n',
+            'FIXTURES_DIR = Path(__file__).absolute().parent / "fixtures" / "myshop"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures/myshop"\n',
+            'FIXTURES_DIR: Path = Path(__file__).parent / "fixtures" / "myshop"\n',
+        ],
+    )
+    def test_each_spelling_of_the_namespaced_root_is_read(self, tmp_path: Path, line: str) -> None:
+        write_scaffold(tmp_path, _SPEC)
+        _respell_fixtures_dir(tmp_path, line)
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.fixtures_root == "tests/fixtures/myshop/"
+        assert plugin.fixtures_dir_unread is None
+        assert not [f for f in check_project(tmp_path) if "FIXTURES_DIR" in f.message]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'FIXTURES_DIR = HERE / "fixtures" / "myshop"\n',
+            'FIXTURES_DIR = Path(__file__).parent / "data"\n',
+        ],
+    )
+    def test_a_fixtures_dir_it_cannot_read_is_a_finding(self, tmp_path: Path, line: str) -> None:
+        write_scaffold(tmp_path, _SPEC)
+        _respell_fixtures_dir(tmp_path, line)
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.fixtures_root == "tests/fixtures/"
+        lineno = (tmp_path / "tests" / "test_plugin.py").read_text().splitlines().index(
+            line.rstrip("\n")
+        ) + 1
+        assert plugin.fixtures_dir_unread == ("tests/test_plugin.py", lineno)
+        (finding,) = [f for f in check_project(tmp_path) if "FIXTURES_DIR" in f.message]
+        assert (finding.path, finding.line) == ("tests/test_plugin.py", lineno)
+        assert "spell FIXTURES_DIR as gp plugin new writes it" in finding.message
+        assert 'Path(__file__).parent / "fixtures" / "myshop"' in finding.message
+
+
 class TestAProjectWithTheFlatLayout:
     """A project generated before 1.44.0 keeps its flat fixtures layout through
     check, upgrade, and a suite addition (#201)."""

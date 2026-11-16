@@ -1040,11 +1040,12 @@ The options:
 - `--dir PATH` is the target directory (the working directory by default).
 - `--backend nodriver|selenium` sets the generated `backend` attribute
   (`nodriver` by default).
-- `--new` writes a new project, never a suite member. A new project is never
-  written inside another project's directory, where its tests would collide
-  with that project's, so `--new` with a `--dir` that holds a `pyproject.toml`
-  is refused, writes nothing, and prints the same command with a `--dir` beside
-  that project to run instead. Elsewhere it writes in `--dir`, as without it.
+- `--new` is a guard: a new project, never an addition to a suite. With a
+  `--dir` that itself holds a `pyproject.toml`, where the command without it
+  adds a member to that suite, `--new` refuses, writes nothing, and prints the
+  same command with a `--dir` beside that project to run instead. Only `--dir`
+  itself is checked, so `--new` with a subdirectory of a project writes there.
+  Elsewhere it writes in `--dir`, as without it.
 
 ### The two modes
 
@@ -3136,8 +3137,11 @@ gp plugin check
 creates it), or one that something blocks (it, or `tests/`, is not a directory
 or cannot be read), a `tests/conftest.py` that does not parse, is not valid
 UTF-8, cannot be read, or is not a regular file, every `GP-FILL` marker left
-in a plugin module or a test module, any plugin module that does not hold
-exactly one plugin class, and any project wiring the project lacks (`gp
+in a plugin module or a test module, a first plugin's missing or blocked
+`tests/fixtures/<module>/` (`gp plugin upgrade` creates a missing one), a
+`FIXTURES_DIR` it cannot read the fixtures directory from (spell FIXTURES_DIR as
+gp plugin new writes it, `Path(__file__).parent / "fixtures" / "<module>"`), any
+plugin module that does not hold exactly one plugin class, and any project wiring the project lacks (`gp
 plugin upgrade` adds it; in a suite, `gp plugin upgrade --plugin <name>` adds
 that plugin's, creates a member's missing `tests/fixtures/<module>/`, and, when
 the shared conftest has gp's check, lists the members in its
