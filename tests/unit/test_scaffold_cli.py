@@ -79,27 +79,46 @@ class TestPluginNewHappyPath:
         assert result.exit_code == 0, result.output
         assert (tmp_path / "src" / "graftpunk_myshop" / "plugin.py").exists()
 
-    def test_new_beside_a_suite_writes_a_project_in_the_plugins_subdirectory(
+    def test_new_beside_a_suite_is_refused_with_the_command_to_run_instead(
         self, tmp_path: Path
     ) -> None:
         """The issue's reproduction (#210): --new on a suite's --dir refused with
-        "Refusing to overwrite existing file(s)"; it now writes <dir>/<name>/."""
+        "Refusing to overwrite existing file(s)". It still refuses, since a project
+        written inside the suite breaks the suite's own pytest collection, but now
+        says why and names the command with a --dir outside the suite. Nothing is
+        written, and the suite's tests still collect."""
+        suite = tmp_path / "suite"
         url = ["--url", "https://myshop.example.com"]
-        first = runner.invoke(
-            _build_app(), ["plugin", "new", "myshop", *url, "--dir", str(tmp_path)]
-        )
+        first = runner.invoke(_build_app(), ["plugin", "new", "myshop", *url, "--dir", str(suite)])
         assert first.exit_code == 0, first.output
-        suite_pyproject = (tmp_path / "pyproject.toml").read_text()
+        before = sorted(p.relative_to(suite) for p in suite.rglob("*"))
         result = runner.invoke(
             _build_app(),
-            ["plugin", "new", "thirdstore", *url, "--dir", str(tmp_path), "--new"],
+            ["plugin", "new", "thirdstore", *url, "--dir", str(suite), "--new"],
         )
-        assert result.exit_code == 0, result.output
-        output = strip_ansi(result.output)
-        assert "New Project:" in output
-        assert str(tmp_path / "thirdstore" / "pyproject.toml") in output
-        assert (tmp_path / "thirdstore" / "src" / "graftpunk_thirdstore" / "plugin.py").exists()
-        assert (tmp_path / "pyproject.toml").read_text() == suite_pyproject
+        assert result.exit_code == 1
+        output = " ".join(strip_ansi(result.output).split())
+        outside = tmp_path.resolve() / "thirdstore"
+        assert "never inside another project's directory" in output
+        assert (
+            "Run instead: gp plugin new thirdstore --url https://myshop.example.com "
+            f"--dir {outside} --new"
+        ) in output
+        assert sorted(p.relative_to(suite) for p in suite.rglob("*")) == before
+        collected = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
+            cwd=suite,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(suite / "src")},
+        )
+        assert collected.returncode == 0, collected.stdout + collected.stderr
+        # The command it names succeeds as given.
+        rerun = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "thirdstore", *url, "--dir", str(outside), "--new"],
+        )
+        assert rerun.exit_code == 0, rerun.output
 
     def test_reserved_name_refused_through_the_real_app(self, tmp_path: Path) -> None:
         """Uses the real graftpunk.cli.main.app, whose plugin_app and existing

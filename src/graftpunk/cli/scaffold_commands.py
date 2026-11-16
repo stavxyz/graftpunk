@@ -14,6 +14,7 @@ the global a function reads when the function is defined in this module.
 from __future__ import annotations
 
 import dataclasses
+import shlex
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -36,6 +37,7 @@ from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.errors import ScaffoldWriteError
 from graftpunk.devtools.scaffold.policy import CONFTEST_PATH
 from graftpunk.devtools.scaffold.project import (
+    NestedProjectError,
     NotAPluginSuiteError,
     ScaffoldConflictError,
     write_scaffold,
@@ -142,8 +144,8 @@ def plugin_new(
         typer.Option(
             "--new",
             help=(
-                "Write a new project, never a suite member: in --dir/NAME when --dir "
-                "holds a pyproject.toml, else in --dir"
+                "Write a new project, never a suite member; refused when --dir holds a "
+                "pyproject.toml"
             ),
         ),
     ] = False,
@@ -262,6 +264,20 @@ def plugin_new(
     except CommandSelectionError as exc:
         LOG.debug("scaffold_refused", reason="bad_command")
         console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
+    except NestedProjectError as exc:
+        # Before the ValueError arm: the refusal names the command to run instead,
+        # this one with a --dir outside the other project.
+        LOG.debug("scaffold_refused", reason="nested_project")
+        argv = ["gp", "plugin", "new", name]
+        argv += ["--url", url] if url else []
+        argv += ["--from-run", from_run] if from_run is not None else []
+        argv += ["--run", run] if run is not None else []
+        argv += [arg for selection in command for arg in ("--command", selection)]
+        argv += ["--backend", backend] if backend != "nodriver" else []
+        argv += ["--dir", str(exc.outside), "--new"]
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        console.print(f"Run instead: {escape(shlex.join(argv))}", soft_wrap=True, highlight=False)
         raise typer.Exit(1) from None
     except NotAPluginSuiteError as exc:
         # Before the ValueError arm below: it is a ValueError subclass, and the

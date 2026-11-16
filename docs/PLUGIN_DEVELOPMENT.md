@@ -267,6 +267,12 @@ which `gp observe list` prints. Once the plugin exists and `gp myshop login`
 has cached a session, `gp observe -s myshop interactive ...` records with that
 session's cookies and files the run under `myshop` too.
 
+Naming a `--no-session` run with `--session` needs graftpunk 1.44.0 or later.
+An earlier release refuses the pair (`Cannot use --session and --no-session
+together.`): there, run `gp observe --no-session interactive
+https://myshop.example/` and use the name `gp observe list` prints wherever this
+guide says `myshop` for the recording.
+
 A browser opens at the URL. Log in. Then exercise every flow you listed in
 [Frame](#frame): open each page, page through a list, apply a filter, download
 an export. The recording is only as good as what you clicked. Press Ctrl+C in
@@ -315,7 +321,8 @@ a password, scrubbed everywhere. The run still holds the session's cookies and t
 your machine and delete it when you are done.
 
 To have the recording suggest the `failure` text, add `--wrong-password-first`
-(`gp observe --session myshop --no-session interactive https://myshop.example/ --wrong-password-first`).
+(`gp observe --session myshop --no-session interactive https://myshop.example/ --wrong-password-first`,
+or without `--session myshop` before graftpunk 1.44.0, as above).
 Before you log in, submit the login once with the throwaway wrong password the
 command prints (`wrong-` and six random letters and digits; never your real one
 with a typo), wait for the error to show, and press Enter in the terminal; then
@@ -1033,12 +1040,11 @@ The options:
 - `--dir PATH` is the target directory (the working directory by default).
 - `--backend nodriver|selenium` sets the generated `backend` attribute
   (`nodriver` by default).
-- `--new` always writes a new project, never a suite member. When `--dir`
-  holds a `pyproject.toml` (a suite's or any other project's), the new project
-  goes in a subdirectory of `--dir` named for the plugin
-  (`gp plugin new thirdstore --dir . --new` writes `thirdstore/pyproject.toml`
-  and the rest under it), and `--dir`'s own files are left alone. Elsewhere it
-  writes in `--dir`, as without it. Nothing is overwritten either way.
+- `--new` writes a new project, never a suite member. A new project is never
+  written inside another project's directory, where its tests would collide
+  with that project's, so `--new` with a `--dir` that holds a `pyproject.toml`
+  is refused, writes nothing, and prints the same command with a `--dir` beside
+  that project to run instead. Elsewhere it writes in `--dir`, as without it.
 
 ### The two modes
 
