@@ -82,11 +82,12 @@ class TestPluginNewHappyPath:
     def test_new_beside_a_suite_is_refused_with_the_command_to_run_instead(
         self, tmp_path: Path
     ) -> None:
-        """The issue's reproduction (#210): --new on a suite's --dir refused with
-        "Refusing to overwrite existing file(s)". It still refuses, since a project
-        written inside the suite breaks the suite's own pytest collection, but now
-        says why and names the command with a --dir outside the suite. Nothing is
-        written, and the suite's tests still collect."""
+        """The issue's reproduction (#210): --new on a suite's --dir, where the
+        command without it adds a member, refused with "Refusing to overwrite
+        existing file(s)". --new is the guard against adding to a suite: it refuses
+        a --dir that holds a pyproject.toml, says so, and names the command with a
+        --dir beside the suite. Nothing is written, and the suite's tests still
+        collect."""
         suite = tmp_path / "suite"
         url = ["--url", "https://myshop.example.com"]
         first = runner.invoke(_build_app(), ["plugin", "new", "myshop", *url, "--dir", str(suite)])
@@ -99,7 +100,8 @@ class TestPluginNewHappyPath:
         assert result.exit_code == 1
         output = " ".join(strip_ansi(result.output).split())
         outside = tmp_path.resolve() / "thirdstore"
-        assert "never inside another project's directory" in output
+        assert "never into a directory that already holds one" in output
+        assert "never adds to a suite" in output
         assert (
             "Run instead: gp plugin new thirdstore --url https://myshop.example.com "
             f"--dir {outside} --new"
@@ -119,6 +121,55 @@ class TestPluginNewHappyPath:
             ["plugin", "new", "thirdstore", *url, "--dir", str(outside), "--new"],
         )
         assert rerun.exit_code == 0, rerun.output
+
+    def test_the_suggested_dir_is_never_refused_again(self, tmp_path: Path) -> None:
+        """A project whose directory is named for the plugin: the sibling of that
+        name is the directory itself, so the suggestion takes the next free name,
+        and the command it names succeeds as given (#210)."""
+        project = tmp_path / "samename"
+        url = ["--url", "https://myshop.example.com"]
+        first = runner.invoke(
+            _build_app(), ["plugin", "new", "samename", *url, "--dir", str(project)]
+        )
+        assert first.exit_code == 0, first.output
+        result = runner.invoke(
+            _build_app(), ["plugin", "new", "samename", *url, "--dir", str(project), "--new"]
+        )
+        assert result.exit_code == 1
+        output = " ".join(strip_ansi(result.output).split())
+        suggested = tmp_path.resolve() / "samename-2"
+        assert f"--dir {suggested} --new" in output
+        rerun = runner.invoke(
+            _build_app(), ["plugin", "new", "samename", *url, "--dir", str(suggested), "--new"]
+        )
+        assert rerun.exit_code == 0, rerun.output
+
+    def test_a_project_nested_under_a_suite_leaves_the_suites_collection_its_own(
+        self, tmp_path: Path
+    ) -> None:
+        """--new checks only --dir itself, so a subdirectory of a suite gets a project
+        of its own. The generated testpaths keeps pytest at the suite's root to the
+        suite's own tests, where both projects' tests/test_plugin.py collided."""
+        suite = tmp_path / "suite"
+        url = ["--url", "https://myshop.example.com"]
+        first = runner.invoke(_build_app(), ["plugin", "new", "myshop", *url, "--dir", str(suite)])
+        assert first.exit_code == 0, first.output
+        nested = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "thirdstore", *url, "--dir", str(suite / "thirdstore"), "--new"],
+        )
+        assert nested.exit_code == 0, nested.output
+        assert (suite / "thirdstore" / "tests" / "test_plugin.py").is_file()
+        collected = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
+            cwd=suite,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(suite / "src")},
+        )
+        assert collected.returncode == 0, collected.stdout + collected.stderr
+        ids = [line for line in collected.stdout.splitlines() if "::" in line]
+        assert ids == ["tests/test_plugin.py::test_plugin_instantiates"]
 
     def test_reserved_name_refused_through_the_real_app(self, tmp_path: Path) -> None:
         """Uses the real graftpunk.cli.main.app, whose plugin_app and existing

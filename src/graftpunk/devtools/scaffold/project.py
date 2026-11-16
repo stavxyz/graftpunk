@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import itertools
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,16 +114,18 @@ class NotAPluginSuiteError(ValueError):
 
 
 class NestedProjectError(ValueError):
-    """``--new`` was asked for in a directory holding a ``pyproject.toml``: a new
-    project there would sit inside that project's tree, where its tests and the
-    other project's collide (both have ``tests/test_plugin.py``) and its files join
-    the other's package and lint scope (#210). Nothing is written. ``outside`` is a
-    directory beside that project, named for the plugin, the CLI's suggestion."""
+    """``--new`` was asked for with a *target_dir* that itself holds a
+    ``pyproject.toml``. ``--new`` means a new project and never an addition to a
+    suite, so where the call without it would add to that suite (or refuse a
+    project that is no suite), it refuses (#210). Only *target_dir* is checked, not
+    its ancestors. Nothing is written. ``outside`` is a directory beside that
+    project, named for the plugin, the CLI's suggestion."""
 
     def __init__(self, pyproject: Path, outside: Path) -> None:
         super().__init__(
-            f"{pyproject} exists: --new writes a new project, and never inside another "
-            f"project's directory. Give a --dir outside it, such as {outside}."
+            f"{pyproject} exists: --new writes a new project, never into a directory "
+            f"that already holds one, and never adds to a suite. Give a --dir outside "
+            f"it, such as {outside}."
         )
         self.pyproject = pyproject
         self.outside = outside
@@ -210,6 +213,16 @@ def _existing_pyproject(target_dir: Path) -> Path | None:
     return candidate if kind == "file" else None
 
 
+def _free_sibling(target_dir: Path, name: str) -> Path:
+    """A directory beside *target_dir* that ``--new`` would write in: named *name*,
+    or *name* with ``-2``, ``-3``, ... appended, the first that is not *target_dir*
+    itself and holds no ``pyproject.toml``, so the command the refusal suggests is
+    never refused the same way (#210)."""
+    here = target_dir.resolve()
+    candidates = (here.parent / (name if n == 1 else f"{name}-{n}") for n in itertools.count(1))
+    return next(c for c in candidates if c != here and _probe(c / "pyproject.toml") == "absent")
+
+
 def _declares_plugin_group(pyproject_text: str, pyproject_path: Path) -> bool:
     """Whether the suite file declares the plugin entry-point group.
 
@@ -272,7 +285,7 @@ def write_scaffold(
     existing = _existing_pyproject(target_dir)
     if force_new and existing is not None:
         LOG.debug("scaffold_write_refused", reason="nested_project")
-        raise NestedProjectError(existing, target_dir.resolve().parent / spec.name)
+        raise NestedProjectError(existing, _free_sibling(target_dir, spec.name))
     # Read once, as bytes: the same text decides the mode and is the original the
     # pyproject.toml edit is planned against and restored to.
     original = read_original(existing) if existing is not None else ""

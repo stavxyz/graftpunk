@@ -2439,6 +2439,12 @@ def _render_pyproject(spec: ScaffoldSpec) -> str:
         "\n"
         "[tool.ruff.lint]\n"
         'select = ["E", "F", "I", "UP", "B"]\n'
+        "\n"
+        # pytest run at the project root collects only the project's own tests, so a
+        # project generated in a subdirectory (a sibling plugin, a --new under a
+        # suite) cannot fail its collection with a second tests/test_plugin.py.
+        "[tool.pytest.ini_options]\n"
+        'testpaths = ["tests"]\n'
     )
 
 

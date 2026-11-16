@@ -106,9 +106,8 @@ class TestAddToSuiteMode:
     def test_new_flag_beside_a_pyproject_is_refused_and_names_a_directory_outside(
         self, tmp_path: Path, pyproject: str
     ) -> None:
-        """--new never writes a project inside another project's tree (#210): beside a
-        suite's or another project's pyproject.toml it refuses, writes nothing, and
-        names a directory beside that project."""
+        """--new refuses a target_dir that holds a pyproject.toml (#210), a suite's
+        or another project's, writes nothing, and names a directory beside it."""
         suite = tmp_path / "suite"
         suite.mkdir()
         (suite / "pyproject.toml").write_text(pyproject)

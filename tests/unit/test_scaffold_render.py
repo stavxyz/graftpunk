@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 import warnings
 from pathlib import Path
 from typing import Any, Literal
@@ -629,6 +630,18 @@ class TestRenderNewProject:
         )
         readme = render(spec)["README.md"]
         assert f"Fixtures under `{policy.FIXTURES_TREE}`" in readme
+
+    def test_pyproject_keeps_pytest_to_the_projects_own_tests(self) -> None:
+        """pytest at the project root collects tests/ alone, so a project generated
+        in one of its subdirectories cannot break its collection (#210)."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        data = tomllib.loads(render(spec)["pyproject.toml"])
+        assert data["tool"]["pytest"]["ini_options"] == {"testpaths": ["tests"]}
 
     def test_pyproject_declares_entry_point_and_dependency_floor(self) -> None:
         spec = ScaffoldSpec(

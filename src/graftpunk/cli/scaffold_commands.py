@@ -144,8 +144,8 @@ def plugin_new(
         typer.Option(
             "--new",
             help=(
-                "Write a new project, never a suite member; refused when --dir holds a "
-                "pyproject.toml"
+                "Write a new project, never add to a suite: refused when --dir itself "
+                "holds a pyproject.toml"
             ),
         ),
     ] = False,
