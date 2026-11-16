@@ -2044,6 +2044,52 @@ in.
 
 **Return value contract:** `login()` should return `True` on success and `False` on failure. The CLI checks for `is False` specifically — returning `None` or other values triggers a warning log but is treated as success for backwards compatibility.
 
+#### A form login over plain HTTP
+
+Many logins are an ordinary form POST: no captcha, no MFA, and no field a script computes. Such a login needs no browser. A `login()` method can post the form with a `requests.Session` and cache that session, and every command, `gp http`, and `GraftpunkClient` then load it as they load a browser login's. Keep the browser (declarative `login_config`, or `browser_session()`) for a site that needs it.
+
+The status code does not say whether the credentials were accepted. A rejected login commonly answers `200` with the form shown again (a Laravel-style app re-renders it), or `302` back to the login page; an accepted one commonly redirects to the app. Decide by where the response ended: the final URL once requests has followed the redirects, or the `Location` header when the POST is sent with `allow_redirects=False`. That is the check the browser login engine makes with `success_url`, made on `response.url` instead of the page.
+
+```python
+from urllib.parse import urljoin, urlsplit
+
+import requests
+
+from graftpunk.plugins import SitePlugin, cache_login_session
+
+LOGIN_PATH = "/login"
+
+
+def signed_in(response: requests.Response) -> bool:
+    """Whether a login form POST was accepted: it ended off the login page without an
+    error status. *response* followed its redirects, or carries the ``Location`` it
+    was sent to when the POST was made with ``allow_redirects=False``."""
+    landed = response.url
+    if response.is_redirect:
+        landed = urljoin(response.url, response.headers["Location"])
+    left_the_form = urlsplit(landed).path.rstrip("/") != LOGIN_PATH
+    return left_the_form and response.status_code < 400
+
+
+class MyShopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+
+    def login(self, credentials: dict[str, str]) -> bool:
+        session = requests.Session()
+        response = session.post(
+            f"{self.base_url}{LOGIN_PATH}",
+            data={"email": credentials["username"], "password": credentials["password"]},
+            timeout=30,
+        )
+        if not signed_in(response):
+            return False
+        cache_login_session(self, session)
+        return True
+```
+
+Replace `LOGIN_PATH`, the form's field names, and any hidden field the form carries (a CSRF token read from a GET of the form first, for example) with your site's. The login page's path is the signal here; a site that sends a rejected login somewhere else (an error page) needs that path checked too. `cache_login_session(self, session)` writes the account-qualified slot `gp myshop login` named, which a plain `cache_session(session, self.session_name)` does not (see above). With no `login_config`, `gp myshop login` prompts for `username` and `password` and passes them in `credentials`. `tests/unit/test_http_login_example.py` runs this example against a fake site.
+
 ### 3. Auto-Generated Login Command
 
 If a plugin has either a `login()` method or declarative login configuration, graftpunk auto-generates a `login` CLI command:
