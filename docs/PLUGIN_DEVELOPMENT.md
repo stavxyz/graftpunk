@@ -890,7 +890,8 @@ How to read it:
 **Summary** names the run, the host the digest decided the recording was
 against, and the counts. The `dropped` line is the honest part: `static` counts
 assets and trackers, `third_party` counts requests to hosts outside the primary
-host's domain, `other_scheme` counts non-HTTP entries such as the browser's own
+host's domain (compared by name, so `api.myshop.example:8443` is inside
+`myshop.example`'s domain whatever its port), `other_scheme` counts non-HTTP entries such as the browser's own
 new-tab page, and `error` counts entries the parser could not read. A large
 `third_party` number on a site you know is single-host means the primary host
 was decided wrong; rerun with `--all-hosts` and look again.
@@ -1473,7 +1474,8 @@ Next: gp observe fixtures writes no fixture for this endpoint; write its test ag
 
 The stub requests the host its endpoint was recorded on, by the rule
 `gp plugin new` follows: a path on the host of the plugin's `base_url`, and an
-absolute URL on any other host, with a line after `Added` naming the command and
+absolute URL on any other host, under the scheme the endpoint was recorded with
+(an API recorded over `http` beside `https` pages is called over `http`), with a line after `Added` naming the command and
 the host it calls, and the plugin's base host when the plugin has a readable
 `base_url`. A plugin has no readable `base_url` when `gp plugin info --json`
 cannot report one as a URL that `gp plugin new --url` would accept: none, one

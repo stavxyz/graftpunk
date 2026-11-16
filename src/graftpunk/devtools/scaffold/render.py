@@ -1345,14 +1345,17 @@ class RequestTarget:
     base_host: str | None
 
 
-def request_target(endpoint_host: str, base_url: str | None) -> RequestTarget:
+def request_target(
+    endpoint_host: str, base_url: str | None, endpoint_scheme: str = ""
+) -> RequestTarget:
     """The one rule for where a generated command's request goes: a path when
     *endpoint_host* is *base_url*'s host (``_on_base_host``), and otherwise an origin
-    of *base_url*'s scheme (the digest records none) and the endpoint's host. When
-    *base_url* has no host, no path resolves, so every endpoint gets an ``https://``
-    origin."""
+    of the endpoint's host and *endpoint_scheme*, the scheme it was recorded under
+    (``Endpoint.scheme``). An endpoint with no recorded scheme (a hand-built one)
+    takes *base_url*'s, and ``https`` when *base_url* has no host, where no path
+    resolves and every endpoint gets an origin."""
     base = _read_base_url(base_url)
-    scheme = "https" if base is None else base.scheme
+    scheme = endpoint_scheme or ("https" if base is None else base.scheme)
     host = normal_host(scheme, endpoint_host)
     origin = None if _on_base_host(scheme, endpoint_host, base) else f"{scheme}://{host}"
     return RequestTarget(origin=origin, host=host, base_host=None if base is None else base.host)
@@ -1384,7 +1387,7 @@ def _target_for(command: PlannedCommand, base_url: str | None) -> RequestTarget:
     ``request_target`` behind ``render_command`` (``gp plugin add-command``),
     ``_render_command_stubs``, and ``other_host_commands`` (``gp plugin new``), so
     the two writers agree by construction."""
-    return request_target(command.endpoint.host, base_url)
+    return request_target(command.endpoint.host, base_url, command.endpoint.scheme)
 
 
 GRAPHQL_HELPER = "_graphql"

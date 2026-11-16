@@ -511,6 +511,12 @@ class Endpoint:
     # taken out (_graphql_extensions); and the dotted names of what was taken out.
     graphql_extensions: dict[str, Any] = field(default_factory=dict, metadata={INTERNAL: True})
     graphql_held_extensions: tuple[str, ...] = field(default=(), metadata={INTERNAL: True})
+    # The scheme of the first recording, lower-cased (``http`` or ``https``): a
+    # command on another host than ``base_url``'s calls it with this scheme, since
+    # ``base_url``'s need not be the endpoint's. Empty on a hand-built endpoint,
+    # which then takes ``base_url``'s. A lookup for the generator, so render_json
+    # leaves it out.
+    scheme: str = field(default="", metadata={INTERNAL: True})
 
     @property
     def key(self) -> str:
@@ -820,14 +826,17 @@ def _primary_host(non_static_hosts: dict[str, int], document_hosts: set[str]) ->
 
 
 def _in_scope(host: str, root: str) -> bool:
-    """True when *host* is *root* or a subdomain of it. An IP address has no
-    subdomains: when either is one, *host* is in scope only when it equals
-    *root*."""
+    """True when *host* is *root* or a subdomain of it, by name: a port on either
+    is not part of the comparison, so ``api.myshop.example:8443`` is in scope under
+    ``myshop.example`` as ``api.myshop.example`` is. An IP address has no
+    subdomains: when either is one, *host* is in scope only when it equals *root*,
+    port and all."""
     if not root:
         return False
     if _ip_literal(root) or _ip_literal(host):
         return host == root
-    return host == root or host.endswith(f".{root}")
+    name, root_name = _host_name(host), _host_name(root)
+    return name == root_name or name.endswith(f".{root_name}")
 
 
 def _is_static(entry: HAREntry) -> bool:
@@ -3102,8 +3111,9 @@ def _fixture_type_of(
 
 
 class _EndpointAccumulator:
-    def __init__(self, host: str, operation: str = "") -> None:
+    def __init__(self, host: str, operation: str = "", *, scheme: str = "") -> None:
         self.host = host
+        self.scheme = scheme
         self.operation = operation
         self.operation_batched = 0
         self.document: str | None = None
@@ -3311,6 +3321,7 @@ class _EndpointAccumulator:
             graphql_extensions=extensions,
             graphql_held_extensions=extensions_held,
             host=self.host,
+            scheme=self.scheme,
             template=template,
             methods=tuple(self.methods),
             count=self.count,
@@ -4002,7 +4013,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         # host is spelled as the endpoint's (normal_host), so a login observation
         # and the endpoint it belongs to name one host.
         url = _normal_url(bare_url(entry.request.url))
-        path = urlparse(url).path or "/"
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+        scheme = parsed.scheme.lower()
         raw_template, _ = template_path(path)
         operations = entry_operations(entry)
         if operations:
@@ -4011,12 +4024,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # under the plain template (#367).
             for name, group in operation_groups(operations).items():
                 acc = accumulators.setdefault(
-                    (method, raw_template, name), _EndpointAccumulator(host, name)
+                    (method, raw_template, name), _EndpointAccumulator(host, name, scheme=scheme)
                 )
                 acc.record(entry, path, step, entry_index, group)
         else:
             acc = accumulators.setdefault(
-                (method, raw_template, ""), _EndpointAccumulator(host=host)
+                (method, raw_template, ""), _EndpointAccumulator(host=host, scheme=scheme)
             )
             acc.record(entry, path, step, entry_index)
 
@@ -4654,6 +4667,7 @@ def _family_groups(
             shared = (
                 endpoint.methods[0],
                 endpoint.host,
+                endpoint.scheme,
                 endpoint.content_type,
                 shape,
                 trailing,
@@ -4681,7 +4695,7 @@ def _family_endpoints(
     """One more endpoint for each family among *endpoints*, sorted by template.
 
     A family is two or more endpoints, none of them part of the login flow, that
-    share their method, host, content type, top-level response shape
+    share their method, host, scheme, content type, top-level response shape
     (:func:`_top_level_shape`), segment count of two or more, and trailing slash, and
     whose templates agree in every segment but one, that one passing
     :func:`_family_eligible` in each. A single segment is no family: every root route
@@ -4731,7 +4745,7 @@ def _family_endpoints(
     for method, template, position, name, kept in planned:
         if templates[(method, template)] > 1:
             continue
-        family = _EndpointAccumulator(kept[0].host)
+        family = _EndpointAccumulator(kept[0].host, scheme=kept[0].scheme)
         family.methods.append(method)
         for member in kept:
             family.absorb(accumulators[(method, member.template, "")])

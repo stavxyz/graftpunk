@@ -23,7 +23,7 @@ from graftpunk._distribution import install_command
 from graftpunk.cdp_wait import answer_within, shield_call
 from graftpunk.dialogs import DialogAnswerer, answer_dialogs, new_tab_dialog_counts
 from graftpunk.har.parser import cookie_header_pairs
-from graftpunk.har.paths import bare_path, holds_an_id
+from graftpunk.har.paths import bare_path, holds_an_id, normal_host
 from graftpunk.har.selectors import MAX_SELECTOR_LENGTH, MAX_SHOWN_FIELDS, bounded_selector
 from graftpunk.logging import get_logger
 from graftpunk.public_suffix import origin as _origin
@@ -848,17 +848,6 @@ def _header_values(headers: Mapping[str, str], name: str) -> list[str]:
     return [v for k, v in headers.items() if k.lower() == wanted and v]
 
 
-def _normalized_netloc(netloc: str, scheme: str) -> str:
-    """Host (lowercased) plus port, with userinfo and the scheme's default port dropped."""
-    host = netloc.rsplit("@", 1)[-1].lower()
-    default = {"http": "80", "https": "443"}.get(scheme.lower())
-    if ":" in host and not host.endswith("]"):
-        name, port = host.rsplit(":", 1)
-        if port == default:
-            return name
-    return host
-
-
 def _same_url(a: str | None, b: str | None, base: str | None = None) -> bool:
     """Compare two URLs (relative ones resolved against ``base``) ignoring host
     case, default ports, userinfo and a trailing slash on the path."""
@@ -869,7 +858,7 @@ def _same_url(a: str | None, b: str | None, base: str | None = None) -> bool:
     pa, pb = urllib.parse.urlsplit(a), urllib.parse.urlsplit(b)
     return (
         pa.scheme.lower() == pb.scheme.lower()
-        and _normalized_netloc(pa.netloc, pa.scheme) == _normalized_netloc(pb.netloc, pb.scheme)
+        and normal_host(pa.scheme, pa.netloc) == normal_host(pb.scheme, pb.netloc)
         and (pa.path.rstrip("/") or "/") == (pb.path.rstrip("/") or "/")
         and pa.query == pb.query
     )
@@ -897,8 +886,7 @@ def _request_headers_match(headers: Mapping[str, str], entry: dict[str, Any]) ->
     authority = lower.get(":authority") or lower.get("host")
     if authority:
         checks.append(
-            _normalized_netloc(authority, parsed.scheme)
-            == _normalized_netloc(parsed.netloc, parsed.scheme)
+            normal_host(parsed.scheme, authority) == normal_host(parsed.scheme, parsed.netloc)
         )
     if not checks:
         return None

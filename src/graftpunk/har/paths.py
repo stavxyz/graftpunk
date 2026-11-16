@@ -80,8 +80,9 @@ _DEFAULT_PORTS = {"http": "80", "https": "443"}
 
 def normal_host(scheme: str, netloc: str) -> str:
     """*netloc* as :func:`bare_host` spells it, in lower case, without the default
-    port of *scheme*: two spellings of one host compare equal."""
-    host = bare_host(netloc).lower()
+    port of *scheme* and without an empty port (``host:``, which means the default
+    one): two spellings of one host compare equal."""
+    host = bare_host(netloc).lower().removesuffix(":")
     port = _DEFAULT_PORTS.get(scheme.lower())
     if port and host.endswith(f":{port}"):
         host = host[: -len(port) - 1]
