@@ -1,6 +1,7 @@
 """Every session reader classifies the stored bytes first, then reads a record
 or a legacy pickle; the API loaders read either without the browser stack."""
 
+import contextlib
 import copyreg
 import json
 import os
@@ -422,3 +423,45 @@ def test_a_named_api_load_logs_contents_it_cannot_use(session_store, captured_lo
     failures = events(captured_logs, "failed_to_load_session")
     assert [(e["name"], e["log_level"]) for e in failures] == [("myshop", "error")]
     assert "items" in failures[0]["error"]
+
+
+@pytest.mark.parametrize("kind", ["browser", "api", "requests"])
+def test_a_record_that_classifies_never_escapes_the_public_loaders_as_another_error(
+    kind, session_store
+):
+    """``_restore_record`` runs the class's ``__setstate__`` on a record's state
+    with nothing around it, so "every public loader reports a stored value no
+    session holds as an expired session" holds only while ``classify`` rejects
+    every record that state cannot restore. Each single-value mutation of a
+    hand-built record that ``classify`` accepts is read by all three public
+    loaders: each returns or raises ``SessionExpiredError``, nothing else."""
+    from graftpunk.session_record import classify
+    from tests.unit.test_session_record import _WRONG_VALUES, _paths, _replaced
+
+    record = json.loads(record_bytes(kind))
+    accepted = []
+    for path in _paths(record):
+        for value in _WRONG_VALUES:
+            payload = json.dumps(_replaced(record, path, value)).encode()
+            with contextlib.suppress(Exception):  # rejected payloads are the classify sweep's
+                classify(payload)
+                accepted.append((path, value, payload))
+    escaped = []
+    for path, value, payload in accepted:
+        store_payload(session_store, payload)
+        for label, load in (
+            ("load_session", lambda: load_session("myshop", key=TEST_KEY)),
+            ("load_session_for_api", lambda: load_session_for_api("myshop", key=TEST_KEY)),
+            (
+                "load_session_for_api_from_bytes",
+                lambda: load_session_for_api_from_bytes(session_store.raw("myshop"), key=TEST_KEY),
+            ),
+        ):
+            try:
+                load()
+            except SessionExpiredError:
+                pass
+            except Exception as exc:  # noqa: BLE001 (collected and reported below)
+                escaped.append(f"{label} {path} = {value!r:.40}: {type(exc).__name__}: {exc}")
+    assert accepted
+    assert escaped == []

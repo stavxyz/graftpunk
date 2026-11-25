@@ -11,7 +11,8 @@
 # that stack. Sessions the full install saves, as a pickle and as a record,
 # are then used from lite against a local server that echoes the Cookie
 # header: plugin commands, gp http, a cookie write-back, copy_session and
-# login. Run from the repository root (it reads tests/fixtures).
+# login; a pickle of an API session or a plain requests.Session is written back
+# and copied on lite. Run from the repository root (it reads tests/fixtures).
 # Used by the "Lite install" job in python-quality.yml and by the release build
 # before anything is published, so both check the same things.
 set -euo pipefail
@@ -262,6 +263,17 @@ for slot in shoppkl shoprec; do
   expect_not_in "gp http with a stored $slot session" "browser automation stack" "$out"
 done
 
+# The ambient session (gp session use writes .gp-session in the working
+# directory; GRAFTPUNK_SESSION overrides it) loads on lite too.
+ambient="$root/ambient-cwd"
+rm -rf "$ambient"
+mkdir -p "$ambient"
+out="$(cd "$ambient" && gp_lite session use shoppkl)" || { printf 'gp session use failed on lite:\n%s\n' "$out" >&2; exit 1; }
+out="$(cd "$ambient" && gp_lite http get "$base/")" || { printf 'gp http with .gp-session failed on lite:\n%s\n' "$out" >&2; exit 1; }
+expect_in "gp http with a session from gp session use" "sid=stored-sid" "$out"
+gp_out_env=$(GRAFTPUNK_SESSION=shoprec gp_lite http get "$base/") || { printf 'gp http with GRAFTPUNK_SESSION failed on lite:\n%s\n' "$gp_out_env" >&2; exit 1; }
+expect_in "gp http with a session from GRAFTPUNK_SESSION" "sid=stored-sid" "$gp_out_env"
+
 [ "$(stored_format refrec)" = "record" ] || { echo "refrec is not stored as a record" >&2; exit 1; }
 gp_out refrec refresh
 expect_in "refresh on a stored record exits 0" "refreshed" "$out"
@@ -289,6 +301,39 @@ after="$(shasum -a 256 "$store/sessions/cpypkl/session.pickle")"
 [ "$before" = "$after" ] || { echo "copy_session changed the source slot" >&2; exit 1; }
 [ ! -e "$store/sessions/cpypkl@alice" ] || { echo "copy_session left a destination slot" >&2; exit 1; }
 echo "copy_session leaves the source slot unchanged OK"
+
+# A pickle of an API session or of a plain requests.Session names no browser
+# class, so lite writes it back and copies it, as a pickle.
+in_store env GRAFTPUNK_SESSION_FORMAT=pickle "$full/python" - <<'PY' > /dev/null
+import requests
+from requests.cookies import create_cookie
+from graftpunk.cache import cache_session
+from graftpunk.graftpunk_session import GraftpunkSession
+
+for cls, tag in ((GraftpunkSession, "api"), (requests.Session, "req")):
+    for slot in (f"{tag}wb", f"{tag}cp"):
+        session = cls()
+        session.cookies.set_cookie(create_cookie("sid", "stored-sid", domain="127.0.0.1"))
+        cache_session(session, slot)
+PY
+for tag in api req; do
+  before="$(shasum -a 256 "$store/sessions/${tag}wb/session.pickle")"
+  in_store "$lite/python" - "$tag" <<'PY'
+import sys
+from graftpunk.cache import copy_session, load_session_for_api, update_session_cookies
+
+tag = sys.argv[1]
+api = load_session_for_api(f"{tag}wb")
+api.cookies.set("sid", "refreshed-sid", domain="127.0.0.1", path="/")
+update_session_cookies(api, f"{tag}wb")
+copy_session(f"{tag}cp", f"{tag}cp@alice", account_identifier="alice")
+print(tag, "pickle: write-back and copy_session on lite OK")
+PY
+  after="$(shasum -a 256 "$store/sessions/${tag}wb/session.pickle")"
+  [ "$before" != "$after" ] || { echo "the $tag pickle was not written back on lite" >&2; exit 1; }
+  [ "$(stored_format "${tag}wb")" = "pickle" ] || { echo "the $tag write-back changed the format" >&2; exit 1; }
+  [ -e "$store/sessions/${tag}cp@alice/session.pickle" ] || { echo "copy_session of the $tag pickle wrote no copy" >&2; exit 1; }
+done
 
 cat > "$store/plugins/loginhint.py" <<PYPLUGIN
 from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin, command
