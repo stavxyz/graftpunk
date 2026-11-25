@@ -194,6 +194,47 @@ def test_a_record_write_back_keeps_cookies_requests_builds(session_store):
     assert [c for c in cookie_dicts(reread) if c["name"] in names] == cookie_dicts(added)
 
 
+@pytest.mark.parametrize("value", ['"\\"', '"a"', '"', 'a"b"c', '"a\\"b"'])
+def test_a_quoted_cookie_value_reads_and_writes_back_as_from_a_pickle(
+    value, session_store, session_format
+):
+    """requests' jar deletes each \\" from a value that starts and ends with a
+    quote whenever a cookie is added through it. A record reads every value as
+    the pickle of the same session does, and a write-back stores what a pickle
+    write-back stores."""
+    from http import cookiejar
+
+    from tests.unit.session_compat_cases import nodriver_session
+
+    def sid(jar) -> list[str]:
+        return [c.value for c in jar if c.name == "sid"]
+
+    seen = {}
+    for fmt in ("pickle", "record"):
+        session_format(fmt)
+        session = nodriver_session(tokens=True)
+        stored = next(c for c in session.cookies if c.name == "sid")
+        session.cookies.clear(stored.domain, stored.path, stored.name)
+        stored.value = value
+        cookiejar.CookieJar.set_cookie(session.cookies, stored)
+        cache.cache_session(session, fmt, key=TEST_KEY)
+        assert session_store.format_of(fmt) == fmt
+        api = load_session_for_api(fmt, key=TEST_KEY)
+        read = {
+            "load_session": sid(load_session(fmt, key=TEST_KEY).cookies),
+            "for_api": sid(api.cookies),
+            "from_bytes": sid(
+                cache.load_session_for_api_from_bytes(session_store.raw(fmt), key=TEST_KEY).cookies
+            ),
+        }
+        update_session_cookies(api, fmt, key=TEST_KEY)
+        assert session_store.format_of(fmt) == fmt
+        written = sid(load_session(fmt, key=TEST_KEY).cookies)
+        seen[fmt] = (read, written)
+    assert seen["pickle"][0] == dict.fromkeys(seen["pickle"][0], [value])
+    assert seen["record"] == seen["pickle"]
+
+
 def test_a_value_a_record_cannot_hold_skips_the_write_back(session_store, captured_logs):
     before = session_store.seed("record")
     api = bare_api_with_new_cookie()

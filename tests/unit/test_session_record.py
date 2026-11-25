@@ -65,8 +65,45 @@ def test_exceptions_still_imports_nothing_from_graftpunk():
     assert_leaf_imports("graftpunk.exceptions", set())
 
 
-def test_record_version_is_one():
-    assert RECORD_VERSION == 1
+# The version-1 layout: (state key, record path, kinds, required) per FIELDS row.
+LAYOUT_AT_VERSION_1 = {
+    ("_backend_type", ("backend_type",), frozenset({"browser"}), True),
+    ("_use_stealth", ("use_stealth",), frozenset({"browser"}), True),
+    ("session_name", ("session_name",), frozenset({"browser"}), True),
+    ("current_url", ("current_url",), frozenset({"browser"}), True),
+    ("headers", ("headers",), frozenset({"browser"}), True),
+    ("headers", ("headers",), frozenset({"api", "requests"}), True),
+    ("cookies", ("cookies",), frozenset({"api", "browser"}), True),
+    ("cookies", ("cookies",), frozenset({"requests"}), True),
+    ("_gp_cached_tokens", ("riders", "cached_tokens"), frozenset({"browser"}), False),
+    ("_gp_header_roles", ("riders", "header_roles"), frozenset({"browser"}), False),
+    ("_gp_header_role_origins", ("riders", "header_role_origins"), frozenset({"browser"}), False),
+    ("_gp_account_identifier", ("riders", "account"), frozenset({"browser"}), False),
+    ("auth", ("auth",), frozenset({"api", "requests"}), True),
+    ("params", ("requests", "params"), frozenset({"api", "requests"}), True),
+    ("verify", ("requests", "verify"), frozenset({"api", "requests"}), True),
+    ("proxies", ("requests", "proxies"), frozenset({"api", "requests"}), True),
+    ("cert", ("requests", "cert"), frozenset({"api", "requests"}), True),
+    ("max_redirects", ("requests", "max_redirects"), frozenset({"api", "requests"}), True),
+    ("trust_env", ("requests", "trust_env"), frozenset({"api", "requests"}), True),
+    ("stream", ("requests", "stream"), frozenset({"api", "requests"}), True),
+}
+
+
+def test_the_record_layout_changes_only_with_the_version():
+    """A release that reads version 1 refuses a key it does not know inside a
+    block it owns (riders, requests) as an invalid record, which its loaders
+    report as an expired session. So a later layout at the same version would
+    log every older host out."""
+    layout = {(f.state_key, f.record_path, f.kinds, f.required) for f in FIELDS}
+    assert (RECORD_VERSION, layout) == (1, LAYOUT_AT_VERSION_1), (
+        "The record layout changed. A new top-level key needs no new RECORD_VERSION "
+        "only if a release that does not know it can ignore it on read, keep it "
+        "unchanged through a write-back, and lose it on a fresh save without harm; "
+        "add it to LAYOUT_AT_VERSION_1. Any other change (a key inside riders or "
+        "requests, a changed meaning or type, a removed key) raises RECORD_VERSION "
+        "and pins the new layout as LAYOUT_AT_VERSION_<n>."
+    )
 
 
 # The real __getstate__ of each class, never a hand-built dict.
@@ -466,6 +503,24 @@ def test_cookies_requests_builds_round_trip_with_all_17_arguments():
     assert cookie_dicts(record_to_state(classify(record))["cookies"]) == cookie_dicts(jar)
 
 
+# Values RequestsCookieJar.set_cookie would change: it deletes every \" from a
+# value that starts and ends with a quote, so a second pass changes "\" again.
+QUOTED_COOKIE_VALUES = ['"\\"', '"a"', '"', 'a"b"c', '"a\\"b"']
+
+
+@pytest.mark.parametrize("value", QUOTED_COOKIE_VALUES)
+def test_a_cookie_value_comes_back_from_the_record_exactly(value):
+    state = nodriver_state()
+    jar = state["cookies"]
+    sid = next(c for c in jar if c.name == "sid")
+    sid.value = value
+    record = state_to_record("browser", state)
+    assert isinstance(record, bytes), record
+    decoded = record_to_state(classify(record))["cookies"]
+    assert {c.name: c.value for c in decoded}["sid"] == value
+    assert cookie_dicts(decoded) == cookie_dicts(jar)
+
+
 def test_a_state_key_with_no_row_is_unrecordable_by_name():
     refused = state_to_record("browser", nodriver_state() | {"_gp_csrf_tokens": {}})
     assert isinstance(refused, Unrecordable)
@@ -523,7 +578,6 @@ def test_a_record_built_by_hand_decodes_for_each_kind():
     for kind in ("browser", "api", "requests"):
         rec = classify(record_bytes(kind))
         assert isinstance(rec, Record)
-        assert rec.version == 1
         assert rec.kind == kind
         assert rec.extra == {}
         assert [c["name"] for c in cookie_dicts(record_to_state(rec)["cookies"])] == ["pref", "sid"]

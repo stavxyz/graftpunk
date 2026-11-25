@@ -182,6 +182,34 @@ def test_a_cookie_jar_of_another_type_is_rebuilt_as_a_requests_jar():
     assert view.stored_state()["cookies"] is jar
 
 
+@pytest.mark.parametrize("value", ['"\\"', '"a"', '"', 'a"b"c', '"a\\"b"'])
+def test_a_rebuilt_jar_keeps_each_cookie_value_exactly(value):
+    source = cookiejar.CookieJar()
+    source.set_cookie(
+        cookiejar.Cookie(
+            0,
+            "sid",
+            value,
+            None,
+            False,
+            "myshop.example",
+            True,
+            False,
+            "/",
+            True,
+            False,
+            None,
+            False,
+            None,
+            None,
+            {},
+        )
+    )
+    state = nodriver_state()
+    state["cookies"] = source
+    assert [c.value for c in StoredSession("browser", state).cookies] == [value]
+
+
 def test_a_view_refuses_deepcopy_and_the_old_pickle_protocols():
     view = StoredSession("browser", nodriver_state())
     with pytest.raises(TypeError):

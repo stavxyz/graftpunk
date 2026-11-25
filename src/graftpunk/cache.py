@@ -336,14 +336,14 @@ def _encode_as(session: Any) -> bytes:
     setting.
 
     Raises:
-        TypeError: *session* is a view with no stored kind, which is never written.
+        TypeError: *session* is a view with no stored kind, which is never
+            written (raised by :meth:`StoredSession.stored_state`).
         ValueError: A view holds a value a record cannot (the message names the key).
     """
     if not isinstance(session, StoredSession):
         return pickle.dumps(session)
-    if session.kind is None:
-        raise TypeError("a stored session with no kind cannot be written")
-    encoded = state_to_record(session.kind, session.stored_state(), session.extra)
+    state = session.stored_state()
+    encoded = state_to_record(session.kind, state, session.extra)
     if isinstance(encoded, Unrecordable):
         raise ValueError(f"cannot write {encoded.key!r} to a record: {encoded.reason}")
     return encoded
@@ -787,10 +787,10 @@ def _load_view(name: str, *, key: bytes | None) -> StoredSession:
     stored, metadata = _read_stored(name, key=key)
     try:
         view = _stored_view(stored, name=name)
+        _finish_loaded(view, name, metadata)
     except SessionExpiredError as exc:
         _log_load_failure(name, exc)
         raise
-    _finish_loaded(view, name, metadata)
     return view
 
 

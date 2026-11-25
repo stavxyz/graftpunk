@@ -8,6 +8,7 @@ session classes and so without selenium, requestium, nodriver or httpie.
 from __future__ import annotations
 
 import copy
+from http import cookiejar
 from typing import Any, NoReturn
 
 from requests.cookies import RequestsCookieJar
@@ -97,7 +98,9 @@ class StoredSession:
             # A legacy pickle may hold another jar type; the view reads the same cookies.
             rebuilt = RequestsCookieJar()
             for cookie in jar:
-                rebuilt.set_cookie(cookie)
+                # The base class's set_cookie keeps the value as stored (see
+                # session_record._decode_cookies).
+                cookiejar.CookieJar.set_cookie(rebuilt, cookie)
             self._write("cookies", rebuilt)
             return rebuilt
         return jar

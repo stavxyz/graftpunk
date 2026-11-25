@@ -42,6 +42,13 @@ from graftpunk.session_riders import (
     CachedToken,
 )
 
+# The record format's version. A release that reads this version refuses an
+# unknown key inside a block it owns, so a reader of it reports a record with
+# one as expired. A new top-level key needs no new version only if a release
+# that does not know it can ignore it on read, keep it unchanged through a
+# write-back, and lose it on a fresh save without harm. Any other change (a
+# key inside an owned block, a changed meaning or type, a removed key) raises
+# the version. tests/unit/test_session_record.py pins the layout of each version.
 RECORD_VERSION = 1
 
 _VERSION_KEY = "graftpunk_session"
@@ -101,7 +108,6 @@ class Record:
     unknown top-level keys, untouched, so a write-back can keep them.
     """
 
-    version: int
     kind: str
     fields: dict[str, Any]
     extra: dict[str, Any]
@@ -284,7 +290,9 @@ def _decode_cookies(policy: Callable[[], cookiejar.CookiePolicy]) -> Callable[[A
             for arg, check in _COOKIE_ARGS.items():
                 if not check(entry[arg]):
                     raise ValueError(f"cookie {entry['name']!r} has an invalid {arg}")
-            jar.set_cookie(cookiejar.Cookie(**entry))
+            # The base class's set_cookie: RequestsCookieJar's deletes each \" from a
+            # quoted value, which would change a value the jar already holds.
+            cookiejar.CookieJar.set_cookie(jar, cookiejar.Cookie(**entry))
         if len(jar) != len(data):
             raise ValueError("a cookie appears twice")
         return jar
@@ -607,7 +615,7 @@ def classify(decrypted: bytes) -> Record | LegacyBytes:
             raise InvalidSessionRecord(f"{where!r}: {exc}") from exc
         fields[row.state_key] = data
     extra = {key: value for key, value in doc.items() if key not in _TABLE_KEYS}
-    return Record(version=version, kind=kind, fields=fields, extra=extra)
+    return Record(kind=kind, fields=fields, extra=extra)
 
 
 def state_to_record(

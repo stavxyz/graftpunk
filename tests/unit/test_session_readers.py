@@ -509,15 +509,36 @@ def test_an_import_error_while_building_the_api_session(session_store, monkeypat
         load_session_for_api_from_bytes(raw, key=TEST_KEY)
 
 
-def test_a_named_api_load_logs_contents_it_cannot_use(session_store, captured_logs):
+# Built in the test: dill cannot pickle these classes while pytest collects.
+_UNUSABLE_CONTENTS = {
+    "headers-not-a-mapping": (lambda: _pickled_as("namespace", {"headers": 5}), "unusable"),
+    "cookies-not-a-jar": (lambda: _pickled_as("namespace", {"cookies": "x"}), "invalid structure"),
+    "no-cookies": (lambda: dill.dumps(types.SimpleNamespace(headers={})), "invalid structure"),
+    "empty-pickle": (lambda: b"", "Failed to deserialize"),
+    "not-a-pickle": (lambda: b"garbage", "Failed to deserialize"),
+    "class-refuses-state": (
+        lambda: dill.dumps(_PickledAs(RaisesWhileRestored, {"raise": TypeError("bad state")})),
+        "Failed to deserialize",
+    ),
+    "invalid-record": (
+        lambda: b'{"graftpunk_session": 1, "kind": "browser"}',
+        "Not a valid session",
+    ),
+}
+
+
+@pytest.mark.parametrize("payload", _UNUSABLE_CONTENTS.values(), ids=_UNUSABLE_CONTENTS)
+def test_a_named_api_load_logs_contents_it_cannot_use_once(payload, session_store, captured_logs):
     from tests.unit.session_compat_cases import events
 
-    store_payload(session_store, _pickled_as("namespace", {"headers": 5}))
-    with pytest.raises(SessionExpiredError, match="'myshop' has unusable cookies/headers"):
-        load_session_for_api("myshop", key=TEST_KEY)
-    failures = events(captured_logs, "failed_to_load_session")
-    assert [(e["name"], e["log_level"]) for e in failures] == [("myshop", "error")]
-    assert "items" in failures[0]["error"]
+    build, message = payload
+    store_payload(session_store, build())
+    for load in readers(session_store)["myshop"][1:]:
+        captured_logs.clear()
+        with pytest.raises(SessionExpiredError, match=message):
+            load()
+        failures = events(captured_logs, "failed_to_load_session")
+        assert [(e["name"], e["log_level"]) for e in failures] == [("myshop", "error")]
 
 
 @pytest.mark.parametrize("kind", ["browser", "api", "requests"])
