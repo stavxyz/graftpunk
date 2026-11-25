@@ -727,3 +727,19 @@ this section governs.
     `load_session` of kind `api` returns a working object for both formats.
 21. **`InvalidSessionRecord` is internal to the codec.** Public loaders report
     an invalid record as `SessionExpiredError`.
+22. **The browser-free fixture is not a compat case.** It moves to
+    `tests/fixtures/session_compat/legacy/` and its existing tests keep
+    reading it; its token cache holds a string, not a `CachedToken`.
+23. **What a write-back writes follows the type of the object it loaded**:
+    a `StoredSession` is written as a record, a real object as a pickle. The
+    write-back encoder takes no format argument and the write-back loader
+    returns the object alone, replacing the `keep` argument and the returned
+    format described above.
+24. **The view exports its state as `stored_state()`** and refuses the pickle
+    protocol, so it can never be written as a pickle naming its own class.
+25. **The cookie policy predicate is private** (`_policy_is_default`),
+    amending point 8.
+26. **`GraftpunkSession`'s extra attributes have one owner**, a private method
+    that `__init__` and `__setstate__` both call, amending point 20.
+27. **Each compat fixture carries the `metadata.json` its release wrote**, so
+    a test lays a fixture out exactly as that release stored it.
