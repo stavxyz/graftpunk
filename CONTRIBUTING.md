@@ -204,6 +204,10 @@ python scripts/session_compat.py write --store DIR --name myshop [--format recor
 # fixture exactly as a release does? Exit 0 prints "no differences"; exit 1
 # prints each value that differs.
 python scripts/session_compat.py compare --graftpunk 1.44.0
+# What does each public reader do with each kind of stored value no session
+# can use, on a release and on this checkout? Prints every outcome; "!" marks
+# one that differs. Exits 0.
+python scripts/session_compat.py bad-payloads --graftpunk 1.44.0
 ```
 
 `compare` loads every fixture under `tests/fixtures/session_compat/<version>/`
@@ -223,10 +227,21 @@ loader, a write-back or the stored format, against the last release; the
 reports differences by design (that release gives API sessions another
 cookie policy and has fewer riders).
 
+`bad-payloads` builds each payload in `BAD_PAYLOADS` (an empty or unreadable
+pickle, a class that refuses its state, cookies that are not a jar, a missing
+class or module, a class that raises while restored, and invalid and newer
+records) with each side's own graftpunk, and reads it with `load_session`, the
+three API loaders, `copy_session` and `update_session_cookies`. Each line gives
+what each side returned or raised and the warning and error log lines it
+wrote. Run it after any change to a loader's error handling, against the last
+release, and make the CHANGELOG's Upgrading notes name every line marked `!`.
+
 The `old-reader` job in `.github/workflows/python-quality.yml` runs `write` and
 `read` for 1.21.0, 1.44.0 and the newest release: the default setting must
-write what each of them loads, tokens included, and a record must be reported
-expired (exit 3, `SessionExpiredError`) with the stored bytes unchanged.
+write what each of them loads, tokens included. For 1.21.0 and 1.44.0 a record
+must also be reported expired (exit 3, `SessionExpiredError`) with the stored
+bytes unchanged; the newest release reads records, so that step is skipped
+for it.
 
 What it checks: `generate` stores one session per case with a released
 graftpunk, so the fixtures are what that release wrote, and
@@ -242,6 +257,16 @@ any change to the stored session format, to the session record
 (`src/graftpunk/session_record.py`), or to `BrowserSession.__getstate__`, and
 add a directory under `tests/fixtures/session_compat/` when a release changes
 what a session saves. The fixtures are never regenerated in place.
+
+A change to the record layout (`FIELDS` in `src/graftpunk/session_record.py`)
+follows one rule, because a release refuses a key it does not know inside a
+block it owns and reports that record as an expired session. A new top-level
+key needs no new `RECORD_VERSION` only if a release that does not know it can
+ignore it on read, keep it unchanged through a write-back, and lose it on a
+fresh save without harm. Any other change (a key inside `riders` or
+`requests`, a changed meaning or type, a removed key) raises `RECORD_VERSION`.
+`test_the_record_layout_changes_only_with_the_version` pins the layout of each
+version and fails until the change follows the rule.
 `tests/fixtures/session_compat/legacy/` keeps the browser-free load fixture
 (`load_session_for_api_from_bytes`, used under Pyodide and Cloudflare
 Workers). See [`tests/fixtures/session_compat/README.md`](tests/fixtures/session_compat/README.md)

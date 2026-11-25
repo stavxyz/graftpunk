@@ -484,7 +484,7 @@ gp plugin add-command mybank --from-run mybank --command "statements=GET /api/st
 | `GRAFTPUNK_STORAGE_BACKEND` | `local` | Storage: `local`, `supabase`, or `s3` |
 | `GRAFTPUNK_CONFIG_DIR` | `~/.config/graftpunk` | Config, sessions, plugins, workstation env file and encryption key location. Read from the real environment only (not from a `.env`); empty counts as unset |
 | `GRAFTPUNK_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
-| `GRAFTPUNK_SESSION_FORMAT` | `pickle` | Format of a newly saved session: `pickle` or `record` (JSON, loads without the browser packages). A session that cannot be a record is saved as a pickle with a warning |
+| `GRAFTPUNK_SESSION_FORMAT` | `pickle` | Format of a newly saved session: `pickle` or `record` (JSON: reading it constructs no class the stored bytes name, and graftpunk-lite writes a browser session's record back, which it cannot do for its pickle). A session that cannot be a record is saved as a pickle with a warning |
 | `GRAFTPUNK_LOG_LEVEL` | `WARNING` | Logging verbosity |
 | `GRAFTPUNK_LOG_FORMAT` | `console` | Log format: `console` or `json` |
 | `GRAFTPUNK_BROWSER_EXECUTABLE_PATH` | _(system Chrome)_ | Path to a Chrome/Chromium binary for the `nodriver` backend (e.g. Chrome-for-Testing on machines/CI without a system Chrome install) |

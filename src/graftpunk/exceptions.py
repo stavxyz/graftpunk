@@ -28,8 +28,10 @@ class SessionExpiredError(GraftpunkError):
 class NewerSessionRecord(GraftpunkError):  # noqa: N818 - the stored format's names
     """A stored session record has a version newer than this release reads.
 
-    Never reported as an expired session, and never written over: the newer
-    release that wrote it can still read it.
+    Never reported as an expired session, and never written over by a
+    write-back (``update_session_cookies``, ``copy_session``): the newer
+    release that wrote it can still read it. A fresh save, such as a login,
+    replaces it as it replaces any stored session.
     """
 
     def __init__(self, version: int) -> None:
