@@ -257,3 +257,51 @@ def test_the_release_is_pinned_to_the_locked_versions(tmp_path):
     for name in ("requests", "dill", "urllib3"):
         assert any(line.startswith(f"{name}=={locked[name]}") for line in constraints), name
     assert not any(line.startswith(("graftpunk==", "-e")) for line in constraints)
+
+
+def _bad_payload_lines(out: str) -> dict[tuple[str, str], str]:
+    lines = {}
+    for line in out.splitlines()[:-1]:
+        _mark, case, reader, _rest = line.split(" ", 3)
+        lines[case, reader.rstrip(":")] = line
+    return lines
+
+
+def test_bad_payloads_reads_every_case_with_every_reader(capfd):
+    status = session_compat.bad_payloads("working-tree", TEST_KEY, release_python=sys.executable)
+    out = capfd.readouterr().out
+    total = len(session_compat.BAD_PAYLOADS) * len(session_compat.BAD_PAYLOAD_READERS)
+    assert status == 0
+    assert out.splitlines()[-1] == f"0 of {total} outcomes differ from graftpunk working-tree"
+    lines = _bad_payload_lines(out)
+    assert len(lines) == total
+    assert all(line.startswith("= ") for line in lines.values())
+    tree = {key: line.split(" | working tree: ", 1)[1] for key, line in lines.items()}
+    assert tree["empty", "load_session"] == (
+        "raises SessionExpiredError [error failed_to_load_session]"
+    )
+    assert tree["cookies_not_a_jar", "load_session"] == "returns BrowserSession"
+    assert tree["cookies_not_a_jar", "load_session_for_api_from_bytes"] == (
+        "raises SessionExpiredError"
+    )
+    assert tree["raises_graftpunk_error", "load_session_for_api"] == "raises BrowserError"
+    assert tree["newer_record", "update_session_cookies"] == (
+        "returns [warning session_save_skipped_load_failed]"
+    )
+
+
+def test_bad_payloads_marks_an_outcome_that_differs(tmp_path, capfd):
+    change = (
+        "results['payloads']['empty']['load_session'] = {'outcome': 'raises EOFError', 'logs': []}"
+    )
+    status = session_compat.bad_payloads(
+        "1.0.0", TEST_KEY, release_python=_release_that_reads_differently(tmp_path, change)
+    )
+    out = capfd.readouterr().out
+    assert status == 0
+    differing = [line for line in out.splitlines() if line.startswith("! ")]
+    assert differing == [
+        "! empty load_session: 1.0.0: raises EOFError | working tree: "
+        "raises SessionExpiredError [error failed_to_load_session]"
+    ]
+    assert out.splitlines()[-1].startswith("1 of ")

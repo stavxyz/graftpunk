@@ -41,7 +41,18 @@ versions of the dependencies the two share (``--no-pin`` installs the newest),
 so only graftpunk differs. It prints each side's versions, then each value
 that differs and exits 1, or one ``no differences`` line and exits 0.
 
-``generate``, ``read`` and ``compare`` run the release in a venv made with
+``bad-payloads`` asks what each public reader (``load_session``, the three
+API loaders, ``copy_session`` and ``update_session_cookies``) does with each
+kind of stored value no session can use (an empty or unreadable pickle, a
+class that refuses its state, cookies that are not a jar, an invalid record,
+and others in ``BAD_PAYLOADS``), on a release and on the code under test. Each
+side builds the payloads with its own graftpunk and stores them in its own
+scratch store. It prints, per payload and reader, what each side returned or
+raised and the warning and error log lines it wrote, marks with ``!`` each
+line whose sides differ, and exits 0. Run it after any change to a loader's
+error handling, and compare its ``!`` lines with the CHANGELOG's notes.
+
+``generate``, ``read``, ``compare`` and ``bad-payloads`` run the release in a venv made with
 ``uv venv`` under a temporary directory, never the repository's ``.venv``,
 with ``GRAFTPUNK_CONFIG_DIR`` pointed at a store in the run's staging
 directory, at ``--store`` or at a scratch store, and the key written to
@@ -66,6 +77,7 @@ Usage:
     python scripts/session_compat.py read --graftpunk VERSION --store DIR --name NAME [--key FILE]
     python scripts/session_compat.py compare --graftpunk VERSION [--fixtures DIR] [--key FILE]
         [--no-pin]
+    python scripts/session_compat.py bad-payloads --graftpunk VERSION [--key FILE] [--no-pin]
 """
 
 from __future__ import annotations
@@ -287,6 +299,40 @@ def _locked_constraints(tmp: Path) -> Path:
     return constraints
 
 
+def _run_both(
+    version: str,
+    child_args: list[str],
+    key: bytes,
+    *,
+    pin: bool,
+    release_python: str | None,
+    python: str | None,
+) -> dict[str, dict[str, Any]]:
+    """Run one child command under release *version* and under the code under
+    test, each with its own scratch store; return each side's JSON result.
+
+    The command gets ``--out FILE`` appended and writes its result there.
+    """
+    results: dict[str, dict[str, Any]] = {}
+    with tempfile.TemporaryDirectory(prefix="session-compat-") as tmp:
+        if release_python is None:
+            constraints = _locked_constraints(Path(tmp)) if pin else None
+            release_python = str(_venv(Path(tmp), version, constraints))
+        children = (("release", release_python), ("tree", python or sys.executable))
+        for label, child in children:
+            run_dir = Path(tmp) / label
+            run_dir.mkdir()
+            store, out = run_dir / "store", run_dir / "results.json"
+            _install_key(store, key)
+            args = [*child_args, "--out", str(out)]
+            status = run_child(child, args, store, run_dir, fixed_hash_seed=True)
+            if status != 0:
+                step = child_args[0].lstrip("_")
+                raise CompatError(f"the {step} steps failed under the {label} (exit {status})")
+            results[label] = json.loads(out.read_text())
+    return results
+
+
 def compare(
     version: str,
     fixtures: Path,
@@ -306,22 +352,14 @@ def compare(
     fixtures = fixtures.resolve()  # the children run in temp directories
     if not any(_fixture_dirs(fixtures)):
         raise CompatError(f"--fixtures {fixtures} holds no <version>/ directories")
-    results: dict[str, dict[str, Any]] = {}
-    with tempfile.TemporaryDirectory(prefix="session-compat-") as tmp:
-        if release_python is None:
-            constraints = _locked_constraints(Path(tmp)) if pin else None
-            release_python = str(_venv(Path(tmp), version, constraints))
-        children = (("release", release_python), ("tree", python or sys.executable))
-        for label, child in children:
-            run_dir = Path(tmp) / label
-            run_dir.mkdir()
-            store, out = run_dir / "store", run_dir / "results.json"
-            _install_key(store, key)
-            args = ["_compare", "--fixtures", str(fixtures), "--out", str(out)]
-            status = run_child(child, args, store, run_dir, fixed_hash_seed=True)
-            if status != 0:
-                raise CompatError(f"the compare steps failed under the {label} (exit {status})")
-            results[label] = json.loads(out.read_text())
+    results = _run_both(
+        version,
+        ["_compare", "--fixtures", str(fixtures)],
+        key,
+        pin=pin,
+        release_python=release_python,
+        python=python,
+    )
     for label, result in results.items():
         versions = ", ".join(f"{n} {v}" for n, v in sorted(result["environment"].items()))
         print(f"{label}: {versions}")
@@ -677,6 +715,202 @@ def child_compare(fixtures: Path, out: Path) -> None:
     out.write_text(json.dumps(report, indent=1, sort_keys=True, default=repr))
 
 
+# --- bad payloads: what each public reader does with a stored value no
+# session can use ------------------------------------------------------------
+
+BAD_PAYLOADS = (
+    "empty",
+    "not_a_pickle",
+    "no_cookies",
+    "cookies_not_a_jar",
+    "class_refuses_state",
+    "headers_not_copyable",
+    "roles_not_a_mapping",
+    "missing_class",
+    "missing_module",
+    "raises_import_error",
+    "raises_graftpunk_error",
+    "invalid_record",
+    "newer_record",
+)
+BAD_PAYLOAD_READERS = (
+    "load_session",
+    "load_session_for_api",
+    "load_session_for_api_resolved",
+    "load_session_for_api_from_bytes",
+    "copy_session",
+    "update_session_cookies",
+)
+
+
+class _Restored:
+    """Pickles as *cls* holding *state*, so a payload can name a real session
+    class with a state no session of it holds."""
+
+    def __init__(self, cls: Any, state: Any) -> None:
+        self.cls, self.state = cls, state
+
+    def __reduce_ex__(self, protocol: Any) -> Any:
+        import copyreg
+
+        return (copyreg._reconstructor, (self.cls, object, None), self.state)
+
+
+class _Runs:
+    """Pickles as a call of ``exec`` on *source*, which runs while it is read."""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+
+    def __reduce_ex__(self, protocol: Any) -> Any:
+        import builtins
+
+        return (builtins.exec, (self.source,))
+
+
+def _bad_payload(case: str) -> bytes:
+    import dill
+    import requests
+
+    from graftpunk.session import BrowserSession
+
+    def browser(**over: Any) -> bytes:
+        return dill.dumps(_Restored(BrowserSession, {**_nodriver().__getstate__(), **over}))
+
+    builders = {
+        "empty": lambda: b"",
+        "not_a_pickle": lambda: b"not a pickle",
+        "no_cookies": lambda: dill.dumps(__import__("types").SimpleNamespace(headers={})),
+        "cookies_not_a_jar": lambda: browser(cookies="not a jar"),
+        "class_refuses_state": lambda: browser(headers=5),
+        "headers_not_copyable": lambda: dill.dumps(
+            _Restored(requests.Session, {**requests.Session().__getstate__(), "headers": 5})
+        ),
+        "roles_not_a_mapping": lambda: browser(_gp_header_roles=["xhr"]),
+        # Protocol 2: GLOBAL, EMPTY_TUPLE, NEWOBJ, STOP.
+        "missing_class": lambda: b"\x80\x02cbuiltins\nno_such_class\n)\x81.",
+        "missing_module": lambda: b"\x80\x02cno_such_module_for_compat\nThing\n)\x81.",
+        "raises_import_error": lambda: dill.dumps(_Runs("raise ImportError('compat probe')")),
+        "raises_graftpunk_error": lambda: dill.dumps(
+            _Runs("from graftpunk.exceptions import BrowserError\nraise BrowserError('compat')")
+        ),
+        "invalid_record": lambda: b'{"graftpunk_session": 1, "kind": "browser"}',
+        "newer_record": lambda: b'{"graftpunk_session": 2, "kind": "browser"}',
+    }
+    return builders[case]()
+
+
+def _put_plain(sessions: Path, key: bytes, name: str, plain: bytes) -> bytes:
+    """Store *plain* under *name* with metadata whose checksum matches it."""
+    import hashlib
+
+    import requests
+    from cryptography.fernet import Fernet
+
+    from graftpunk import cache
+
+    cache.cache_session(requests.Session(), name)
+    encrypted = Fernet(key).encrypt(plain)
+    slot = sessions / name
+    _write(slot, "session.pickle", encrypted)
+    metadata = json.loads((slot / "metadata.json").read_text())
+    metadata["checksum"] = hashlib.sha256(plain).hexdigest()
+    _write(slot, "metadata.json", json.dumps(metadata).encode())
+    return encrypted
+
+
+def _outcome(step: Any) -> dict[str, Any]:
+    """What *step* returned or raised, and the log lines a user can see: every
+    warning or error, and any event named ``failed...`` at any level."""
+    import structlog
+    from structlog.testing import capture_logs
+
+    structlog.reset_defaults()
+    with capture_logs() as logs:
+        try:
+            result = step()
+            outcome = "returns" if result is None else f"returns {type(result).__name__}"
+        except Exception as exc:  # noqa: BLE001 (the exception is the result)
+            outcome = f"raises {type(exc).__name__}"
+    shown = [
+        f"{entry['log_level']} {entry['event']}"
+        for entry in logs
+        if entry["log_level"] in ("warning", "error", "critical")
+        or str(entry["event"]).startswith("failed")
+    ]
+    return {"outcome": outcome, "logs": shown}
+
+
+def _bad_payload_steps(name: str, encrypted: bytes, key: bytes) -> dict[str, Any]:
+    import requests
+
+    from graftpunk import cache
+
+    return {
+        "load_session": lambda: cache.load_session(name),
+        "load_session_for_api": lambda: cache.load_session_for_api(name, resolve=False),
+        "load_session_for_api_resolved": lambda: cache.load_session_for_api_resolved(
+            name, resolve=False
+        ),
+        "load_session_for_api_from_bytes": lambda: cache.load_session_for_api_from_bytes(
+            encrypted, key=key
+        ),
+        "copy_session": lambda: cache.copy_session(name, f"{name}-copy", account_identifier=None),
+        "update_session_cookies": lambda: cache.update_session_cookies(requests.Session(), name),
+    }
+
+
+def child_bad_payloads(out: Path) -> None:
+    config_dir = Path(os.environ["GRAFTPUNK_CONFIG_DIR"])
+    sessions = config_dir / "sessions"
+    key = (config_dir / ".session_key").read_bytes().strip()
+    results: dict[str, Any] = {}
+    for case in BAD_PAYLOADS:
+        name = case.replace("_", "-")
+        # The release's own logging goes to stdout by default; keep it apart.
+        with contextlib.redirect_stdout(sys.stderr):
+            encrypted = _put_plain(sessions, key, name, _bad_payload(case))
+            steps = _bad_payload_steps(name, encrypted, key)
+            results[case] = {reader: _outcome(steps[reader]) for reader in BAD_PAYLOAD_READERS}
+            stored = (sessions / name / "session.pickle").read_bytes()
+            results[case]["update_session_cookies"]["store_unchanged"] = stored == encrypted
+    out.write_text(json.dumps({"payloads": results}, indent=1, sort_keys=True))
+
+
+def _shown(result: dict[str, Any]) -> str:
+    logs = f" [{', '.join(result['logs'])}]" if result["logs"] else ""
+    kept = "" if result.get("store_unchanged", True) else " (store changed)"
+    return f"{result['outcome']}{logs}{kept}"
+
+
+def bad_payloads(
+    version: str,
+    key: bytes,
+    *,
+    pin: bool = True,
+    release_python: str | None = None,
+    python: str | None = None,
+) -> int:
+    """Read each of :data:`BAD_PAYLOADS` with each public reader, under release
+    *version* and under the code under test; print one line per payload and
+    reader, marking each one whose outcome or log lines differ. Exits 0: the
+    differences are the report, and some are intended."""
+    results = _run_both(
+        version, ["_bad_payloads"], key, pin=pin, release_python=release_python, python=python
+    )
+    release, tree = (results[side]["payloads"] for side in ("release", "tree"))
+    differ = 0
+    for case in BAD_PAYLOADS:
+        for reader in BAD_PAYLOAD_READERS:
+            old, new = _shown(release[case][reader]), _shown(tree[case][reader])
+            mark = "=" if old == new else "!"
+            differ += old != new
+            print(f"{mark} {case} {reader}: {version}: {old} | working tree: {new}")
+    total = len(BAD_PAYLOADS) * len(BAD_PAYLOAD_READERS)
+    print(f"{differ} of {total} outcomes differ from graftpunk {version}")
+    return 0
+
+
 # --- command line -----------------------------------------------------------
 
 
@@ -721,6 +955,19 @@ def _parser() -> argparse.ArgumentParser:
         action="store_false",
         help="install the release with the newest dependencies instead of uv.lock's",
     )
+    bad = sub.add_parser(
+        "bad-payloads",
+        help="read each kind of unusable stored value with each public reader, with a "
+        "release and with the code under test; print every outcome, marking differences",
+    )
+    bad.add_argument("--graftpunk", required=True, metavar="VERSION")
+    bad.add_argument("--key", type=Path, default=DEFAULT_KEY, metavar="FILE")
+    bad.add_argument(
+        "--no-pin",
+        dest="pin",
+        action="store_false",
+        help="install the release with the newest dependencies instead of uv.lock's",
+    )
     # The child half, run by the commands above inside the release's venv.
     child_gen = sub.add_parser("_generate")
     child_gen.add_argument("--out", required=True, type=Path)
@@ -731,6 +978,8 @@ def _parser() -> argparse.ArgumentParser:
     child_cmp = sub.add_parser("_compare")
     child_cmp.add_argument("--fixtures", required=True, type=Path)
     child_cmp.add_argument("--out", required=True, type=Path)
+    child_bad = sub.add_parser("_bad_payloads")
+    child_bad.add_argument("--out", required=True, type=Path)
     return parser
 
 
@@ -747,6 +996,11 @@ def main(argv: list[str] | None = None) -> int:
             return read(args.graftpunk, args.store, args.name, args.key.read_bytes())
         if args.command == "compare":
             return compare(args.graftpunk, args.fixtures, args.key.read_bytes(), pin=args.pin)
+        if args.command == "bad-payloads":
+            return bad_payloads(args.graftpunk, args.key.read_bytes(), pin=args.pin)
+        if args.command == "_bad_payloads":
+            child_bad_payloads(args.out)
+            return 0
         if args.command == "_generate":
             child_generate(args.out)
             return 0

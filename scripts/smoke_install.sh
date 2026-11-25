@@ -3,9 +3,10 @@
 #
 # The lite-install contract, checked against built wheels: each wheel goes into
 # its own clean venv under VENV_ROOT (a temporary directory, removed afterwards,
-# when VENV_ROOT is not given; VENV_ROOT/lite, VENV_ROOT/full and
-# VENV_ROOT/lite-config are recreated on every run); graftpunk-lite (no extras)
-# must import, keep a working gp CLI (gp version, gp session list and
+# when VENV_ROOT is not given; VENV_ROOT/lite, VENV_ROOT/full,
+# VENV_ROOT/lite-config, VENV_ROOT/store-config, VENV_ROOT/ambient-cwd and
+# VENV_ROOT/echo-port are deleted and recreated on every run); graftpunk-lite
+# (no extras) must import, keep a working gp CLI (gp version, gp session list and
 # gp plugins), load a cached session browser-free and name its own extra in a
 # missing-browser error, all without the browser stack, and graftpunk must have
 # that stack. Sessions the full install saves, as a pickle and as a record,
@@ -290,10 +291,13 @@ expect_in "refresh on a stored pickle skips the save" "session_save_skipped_load
 before="$(shasum -a 256 "$store/sessions/cpypkl/session.pickle")"
 in_store "$lite/python" - <<'PY'
 from graftpunk.cache import copy_session
+from graftpunk.exceptions import RealSessionClassUnavailable
+
 try:
     copy_session("cpypkl", "cpypkl@alice", account_identifier="alice")
-except ImportError as exc:
-    print("copy_session on a stored pickle raises ImportError OK")
+except RealSessionClassUnavailable as exc:
+    assert "graftpunk-lite[browser]" in str(exc), str(exc)
+    print("copy_session on a stored pickle raises RealSessionClassUnavailable OK")
 else:
     raise AssertionError("copy_session on a stored pickle did not raise on lite")
 PY
@@ -317,7 +321,6 @@ for cls, tag in ((GraftpunkSession, "api"), (requests.Session, "req")):
         cache_session(session, slot)
 PY
 for tag in api req; do
-  before="$(shasum -a 256 "$store/sessions/${tag}wb/session.pickle")"
   in_store "$lite/python" - "$tag" <<'PY'
 import sys
 from graftpunk.cache import copy_session, load_session_for_api, update_session_cookies
@@ -326,11 +329,13 @@ tag = sys.argv[1]
 api = load_session_for_api(f"{tag}wb")
 api.cookies.set("sid", "refreshed-sid", domain="127.0.0.1", path="/")
 update_session_cookies(api, f"{tag}wb")
+stored = {c.name: c.value for c in load_session_for_api(f"{tag}wb").cookies}
+assert stored.get("sid") == "refreshed-sid", f"the {tag} pickle write-back stored {stored}"
 copy_session(f"{tag}cp", f"{tag}cp@alice", account_identifier="alice")
+copied = {c.name: c.value for c in load_session_for_api(f"{tag}cp@alice").cookies}
+assert copied.get("sid") == "stored-sid", f"the {tag} pickle copy holds {copied}"
 print(tag, "pickle: write-back and copy_session on lite OK")
 PY
-  after="$(shasum -a 256 "$store/sessions/${tag}wb/session.pickle")"
-  [ "$before" != "$after" ] || { echo "the $tag pickle was not written back on lite" >&2; exit 1; }
   [ "$(stored_format "${tag}wb")" = "pickle" ] || { echo "the $tag write-back changed the format" >&2; exit 1; }
   [ -e "$store/sessions/${tag}cp@alice/session.pickle" ] || { echo "copy_session of the $tag pickle wrote no copy" >&2; exit 1; }
 done
