@@ -759,3 +759,21 @@ this section governs.
 32. **A stored value no session can hold reads as an expired session** from
     every public loader, legacy pickle or record. A graftpunk error or an
     `ImportError` raised during a load propagates as itself.
+33. **Changes from the whole-branch review.** These amend the text above
+    wherever it differs, including points 10, 23 and 32:
+    - `SessionFormat`, `StoredSessionLike`, `StoredSession.writable`,
+      `Record.format` and `LegacyBytes.format` were removed, because nothing
+      read them. The setting's values are the plain strings `pickle` and
+      `record`, and a view is writable when it has a kind.
+    - A record holding `NaN`, an infinite number (including one written as
+      an overflowing float such as `1e400`), or nesting deeper than 100
+      levels is invalid on read and unrecordable on write.
+    - Cookies made by requests' own helpers are recordable.
+    - The named API loaders let a graftpunk error or an `ImportError` raised
+      by a pickled class propagate as itself, as 1.44.0 did.
+      `load_session_for_api_from_bytes` reports every failure after
+      decryption as an expired session, as 1.44.0 did.
+    - The API read path logs the classes it stubbed at debug level
+      (`session_classes_stubbed`).
+    - `scripts/session_compat.py compare` checks that the default setting
+      reads and writes back every fixture as a named release does.
