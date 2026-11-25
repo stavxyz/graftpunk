@@ -771,7 +771,7 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     The one builder of an API session: every API loader hands it a
     :class:`~graftpunk.session_view.StoredSession` of the stored session.
     """
-    from graftpunk.client_headers import client_sets_header
+    from graftpunk.client_headers import is_library_default
     from graftpunk.cookies import use_browser_cookie_policy
     from graftpunk.graftpunk_session import GraftpunkSession, replayable_roles
     from graftpunk.session_riders import _HEADER_ROLES_ATTR, SESSION_RIDER_ATTRS
@@ -789,24 +789,19 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
         LOG.debug("copied_cookies_from_session", cookie_count=len(source.cookies))
 
     if hasattr(source, "headers"):
-        # Copy headers from browser session, but skip requests-library defaults
-        # that would clobber browser identity headers extracted from roles.
-        # The pickled BrowserSession (a requests.Session) carries default headers
-        # like User-Agent: python-requests/2.x — copying them overwrites the
-        # Chrome UA that _apply_browser_identity() set during GraftpunkSession init.
+        # Copy headers from the saved session, but skip the HTTP library's own
+        # defaults, whichever requests version saved them: a saved
+        # User-Agent: python-requests/2.x would overwrite the browser UA that
+        # _apply_browser_identity() set during GraftpunkSession init (#52, #399),
+        # and a session before 1.41.0 can carry Chrome's Accept-Encoding (#370).
         # Also skip ephemeral security headers (e.g. X-CSRF-TOKEN from WAFs like
         # Akamai Bot Manager) that are per-request and would cause stale-blob
         # rejections if replayed.
-        _requests_defaults = requests.utils.default_headers()
         for key, value in source.headers.items():
-            if key in _requests_defaults and _requests_defaults[key] == value:
+            if is_library_default(key, value):
                 continue
             if key.lower() in _EPHEMERAL_HEADERS:
                 LOG.debug("skipped_ephemeral_header", header=key)
-                continue
-            if client_sets_header(key):
-                # A session saved before 1.41.0 can carry Chrome's Accept-Encoding,
-                # which identity extraction put on its headers (#370).
                 continue
             api_session.headers[key] = value
         LOG.debug("copied_headers_from_session")
