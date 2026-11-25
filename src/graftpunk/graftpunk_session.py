@@ -25,7 +25,7 @@ from graftpunk.public_suffix import (
     same_site,
     serialized_origin,
 )
-from graftpunk.tokens import _CSRF_ORIGIN_ATTR, _CSRF_TOKENS_ATTR, _HEADER_ROLE_ORIGINS_ATTR
+from graftpunk.session_riders import _CSRF_ORIGIN_ATTR, _CSRF_TOKENS_ATTR, _HEADER_ROLE_ORIGINS_ATTR
 
 LOG = get_logger(__name__)
 

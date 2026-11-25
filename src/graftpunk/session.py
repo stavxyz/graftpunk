@@ -50,7 +50,7 @@ from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.capture import create_capture_backend
 from graftpunk.observe.storage import ObserveStorage, session_dirname
-from graftpunk.tokens import PICKLED_SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
+from graftpunk.session_riders import PICKLED_SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
 
 if TYPE_CHECKING:
     from graftpunk.observe.run import Redaction
@@ -62,7 +62,7 @@ def _save_session_riders(session: Any, state: dict[str, Any]) -> None:
     """Copy the session's rider attributes into a pickle *state* dict.
 
     The riders are declared once in
-    :data:`graftpunk.tokens.SESSION_RIDER_ATTRS`, and the subset that belongs
+    :data:`graftpunk.session_riders.SESSION_RIDER_ATTRS`, and the subset that belongs
     in a pickle is derived from it by excluding
     ``_MEMORY_ONLY_SESSION_RIDER_ATTRS``; both backend branches of
     ``__getstate__`` go through here so neither can forget one (#151). A rider
@@ -105,7 +105,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         >>> session.transfer_driver_cookies_to_session()
     """
 
-    # Rider attributes (graftpunk.tokens.SESSION_RIDER_ATTRS): set by the
+    # Rider attributes (graftpunk.session_riders.SESSION_RIDER_ATTRS): set by the
     # capture/token machinery, by the cache, and by __setstate__, declared here
     # so they are part of the class's shape rather than materializing out of a
     # setattr. The last two are memory-only and never reach a pickle.

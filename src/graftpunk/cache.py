@@ -251,7 +251,7 @@ def _stamp_session_slot(session: Any, name: str) -> None:
     The stamp is the one thing that lets a bare-name write-back find the slot a
     bare-name load resolved to (:func:`update_session_cookies`, #174). It is a
     memory-only rider (``_MEMORY_ONLY_SESSION_RIDER_ATTRS`` in
-    :mod:`graftpunk.tokens`): every loader that has a key, and the saver, set it
+    :mod:`graftpunk.session_riders`): every loader that has a key, and the saver, set it
     from the key it just used, so it never outlives the key it describes. The
     bytes loader (:func:`load_session_for_api_from_bytes`) has no key and leaves
     the session unstamped.
@@ -538,7 +538,7 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     from graftpunk.client_headers import client_sets_header
     from graftpunk.cookies import use_browser_cookie_policy
     from graftpunk.graftpunk_session import GraftpunkSession, replayable_roles
-    from graftpunk.tokens import _HEADER_ROLES_ATTR, SESSION_RIDER_ATTRS
+    from graftpunk.session_riders import _HEADER_ROLES_ATTR, SESSION_RIDER_ATTRS
 
     # Roles a capture before 1.41.0 saved can hold headers the client sets itself
     # (#370); the rider loop below leaves this attribute to the constructor.
@@ -596,7 +596,7 @@ class _Stub:
     cookies/headers and the pickled riders (``PICKLED_SESSION_RIDER_ATTRS``)
     are plain data in ``BrowserSession.__getstate__``, so they land directly on
     the stub. NOTE: that subset deliberately excludes the memory-only riders
-    (``_MEMORY_ONLY_SESSION_RIDER_ATTRS`` in :mod:`graftpunk.tokens`), which
+    (``_MEMORY_ONLY_SESSION_RIDER_ATTRS`` in :mod:`graftpunk.session_riders`), which
     are therefore absent from the pickle entirely: the stub cannot and does not
     surface them.
     """
@@ -1052,7 +1052,7 @@ def update_session_cookies(
         return
 
     try:
-        from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
+        from graftpunk.session_riders import _CACHE_ATTR, _CSRF_TOKENS_ATTR
 
         original.cookies.update(api_session.cookies)
         # Persist token cache and CSRF tokens from working session
