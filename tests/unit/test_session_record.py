@@ -446,7 +446,7 @@ def test_classify_takes_a_record_nested_to_the_limit_and_refuses_one_deeper():
         classify(record_bytes(extra={"x": nested(MAX_DEPTH)}))
 
 
-@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1e400", "-1e400"])
 def test_classify_refuses_a_non_finite_number(literal):
     payload = record_bytes()[:-1] + b', "x": ' + literal.encode() + b"}"
     with pytest.raises(InvalidSessionRecord, match=literal):

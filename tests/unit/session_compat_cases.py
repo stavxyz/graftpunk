@@ -315,7 +315,13 @@ def records_json_could_not_have_written() -> dict[str, bytes]:
         record["requests"]["params"] = params
         return json.dumps(record).encode()
 
+    def literal(payload: bytes, text: str) -> bytes:
+        # json.dumps writes no such literal, so a placeholder is replaced.
+        return payload.replace(b'"__literal__"', text.encode())
+
     return {
+        "overflow-top-level": literal(record_bytes(extra={"x": "__literal__"}), "1e400"),
+        "overflow-in-params": literal(api({"a": "__literal__"}), "-1e400"),
         "nan-top-level": record_bytes(extra={"x": float("nan")}),
         "infinity-in-params": api({"a": float("inf")}),
         "minus-infinity-in-params": api({"a": float("-inf")}),

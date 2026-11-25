@@ -502,6 +502,15 @@ def _refuse_constant(name: str) -> Any:
     raise ValueError(f"{name} is not a JSON number")
 
 
+def _finite_float(text: str) -> float:
+    # A literal too large for a float (1e400) parses to infinity without
+    # passing through parse_constant.
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"{text} is not a finite number")
+    return value
+
+
 def _fields_of(kind: str) -> tuple[Field, ...]:
     return tuple(f for f in FIELDS if kind in f.kinds)
 
@@ -549,7 +558,8 @@ def classify(decrypted: bytes) -> Record | LegacyBytes:
     :class:`NewerSessionRecord` for a record version above
     :data:`RECORD_VERSION`, and :class:`InvalidSessionRecord` for a payload
     that starts as a record and is not a valid one, including one holding
-    ``NaN`` or ``Infinity`` or nested more than :data:`MAX_DEPTH` deep.
+    ``NaN``, ``Infinity`` or a number too large for a float, or nested more
+    than :data:`MAX_DEPTH` deep.
     """
     # Neither byte is a pickle opcode, so neither can start a pickle; JSON
     # that starts with "[" is refused as a record rather than unpickled.
@@ -557,7 +567,7 @@ def classify(decrypted: bytes) -> Record | LegacyBytes:
         return LegacyBytes(decrypted)
     try:
         # NaN and Infinity are not JSON, and the writer never stores them.
-        doc = json.loads(decrypted, parse_constant=_refuse_constant)
+        doc = json.loads(decrypted, parse_constant=_refuse_constant, parse_float=_finite_float)
     except (ValueError, RecursionError) as exc:
         raise InvalidSessionRecord(f"not JSON ({exc})") from exc
     if type(doc) is not dict:
