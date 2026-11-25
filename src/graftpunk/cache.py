@@ -765,7 +765,7 @@ def _load_view(name: str, *, key: bytes | None) -> StoredSession:
 
 def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     """Build a browser-free GraftpunkSession from a session-like object
-    (the module's SessionLike Protocol — cookies + headers), copying header
+    (the module's SessionLike Protocol: cookies + headers), copying header
     roles and token caches when present.
 
     The one builder of an API session: every API loader hands it a
@@ -933,7 +933,7 @@ def load_session_for_api_resolved(
     and lists nothing, so it does not warn.
 
     Whatever slot is loaded is the operating name for every write-back of that
-    invocation: pass the returned name — never the requested one — to
+    invocation: pass the returned name (never the requested one) to
     :func:`update_session_cookies`, which uses its argument literally (#182).
     The returned session also carries that name as a memory-only rider, so a
     write-back keyed off the bare base name follows it to the same slot (#174);
@@ -951,7 +951,7 @@ def load_session_for_api_resolved(
             graftpunk's key file or vault; None uses the configured key.
 
     Returns:
-        ``(session, loaded_name)`` — the API session, and the cache key it was
+        ``(session, loaded_name)``: the API session, and the cache key it was
         loaded from (equal to *name* on an exact hit).
 
     Raises:
@@ -1083,12 +1083,12 @@ def load_session_for_api_from_bytes(
 
     Args:
         encrypted: the Fernet-encrypted stored session (a record or a pickle).
-        key: optional raw Fernet key. When given, decrypt with it directly —
+        key: optional raw Fernet key. When given, decrypt with it directly,
             for environments where graftpunk's key file/vault does not exist
             (a Worker holding the key as a secret). When None, use the normal
             `decrypt_data` key sources.
 
-    Security note: integrity and authenticity come SOLELY from the Fernet key —
+    Security note: integrity and authenticity come SOLELY from the Fernet key:
     a valid MAC is the only thing standing between these bytes and the
     unpickler a legacy pickle goes through, which resolves whatever classes the
     payload names (see :mod:`graftpunk.session_legacy`). The structure check is a shape guard,

@@ -6,9 +6,14 @@ from collections.abc import Callable
 
 import dill
 import pytest
+import requests
 
 from graftpunk.cache import load_session_for_api, load_session_for_api_from_bytes
-from graftpunk.client_headers import is_library_default
+from graftpunk.client_headers import (
+    _LIBRARY_DEFAULT_ACCEPT,
+    _LIBRARY_DEFAULT_USER_AGENT_PREFIX,
+    is_library_default,
+)
 from graftpunk.graftpunk_session import GraftpunkSession
 from tests.unit.session_compat_cases import (
     TEST_KEY,
@@ -95,3 +100,25 @@ def test_a_header_a_plugin_saved_on_purpose_is_restored(build, session_store):
 )
 def test_is_library_default(name, value, expected):
     assert is_library_default(name, value) is expected
+
+
+def test_the_library_default_constants_match_the_installed_requests():
+    defaults = requests.utils.default_headers()
+    assert defaults["User-Agent"].startswith(_LIBRARY_DEFAULT_USER_AGENT_PREFIX)
+    assert defaults["Accept"] == _LIBRARY_DEFAULT_ACCEPT
+
+
+@pytest.mark.parametrize("name", ["User-Agent", "Accept"])
+def test_a_non_string_header_value_is_not_a_library_default(name):
+    assert is_library_default(name, b"python-requests/0.0.1") is False
+    assert is_library_default(name, None) is False
+
+
+@pytest.mark.parametrize("name", ["User-Agent", "Accept"])
+def test_a_legacy_pickle_with_a_bytes_header_value_loads_and_keeps_it(name, session_store):
+    session = nodriver_session(tokens=True)
+    session.headers.clear()
+    session.headers[name] = b"python-requests/0.0.1"
+    session_store.seed_plain(dill.dumps(session))
+    api = load_session_for_api("myshop", key=TEST_KEY)
+    assert api.headers[name] == b"python-requests/0.0.1"

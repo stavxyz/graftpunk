@@ -50,6 +50,9 @@ def is_library_default(name: str, value: str) -> bool:
     """
     if client_sets_header(name):
         return True
+    if not isinstance(value, str):
+        # A pickle can hold any object as a header value; none is a default.
+        return False
     lowered = name.strip().lower()
     if lowered == "user-agent":
         return value.startswith(_LIBRARY_DEFAULT_USER_AGENT_PREFIX)
