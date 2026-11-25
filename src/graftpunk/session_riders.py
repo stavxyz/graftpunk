@@ -16,8 +16,6 @@ from typing import Any
 from graftpunk.session_identity import GP_ACCOUNT_ATTR, GP_SESSION_NAME_ATTR
 
 
-# Pickled as ``graftpunk.tokens.CachedToken``: the class moved here, but stored
-# sessions (and releases that read them) name the old path.
 @dataclass(frozen=True)
 class CachedToken:
     """An extracted token value with TTL."""
@@ -39,6 +37,8 @@ class CachedToken:
         return (time.time() - self.extracted_at) > self.ttl
 
 
+# The class lives here but pickles as ``graftpunk.tokens.CachedToken``: stored
+# sessions, and the releases that read them, name the old path.
 CachedToken.__module__ = "graftpunk.tokens"
 
 _CACHE_ATTR = "_gp_cached_tokens"

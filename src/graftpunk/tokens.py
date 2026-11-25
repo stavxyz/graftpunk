@@ -29,8 +29,9 @@ from graftpunk.logging import get_logger
 from graftpunk.page_values import PageValueKind, page_values, skipped_region_mentioning
 
 # isort: off
-# Part of the stored session format: a pickle names `graftpunk.tokens.CachedToken`, and
-# `plugins/login_engine.py` imports these names from here. Guarded by test_session_format_modules.
+# Re-exported for two reasons: a pickle names `graftpunk.tokens.CachedToken`, and
+# `plugins/login_engine.py` and programs outside graftpunk import these names from
+# here. Guarded by test_session_format_modules.
 from graftpunk.session_riders import (
     _CACHE_ATTR as _CACHE_ATTR,
     _CSRF_ORIGIN_ATTR as _CSRF_ORIGIN_ATTR,
