@@ -1080,6 +1080,10 @@ class TestUpdateSessionCookies:
         (failed,) = events(captured_logs, "session_save_failed")
         assert failed["error"] == "disk full"
         assert failed["reason"] == "OSError"
+        # The error-level event cache_session logged for this failure in 1.44.0.
+        (error,) = events(captured_logs, "failed_to_cache_session")
+        assert error["name"] == "myshop"
+        assert error["error"] == "disk full"
         assert session_store.raw("myshop") == before
 
     @pytest.mark.parametrize("fmt", ["pickle", "record"])
@@ -1102,7 +1106,10 @@ class TestUpdateSessionCookies:
         assert getattr(load_session("myshop", key=TEST_KEY), _CACHE_ATTR) == token_cache
         assert session_store.metadata("myshop").account_rule == 2
 
-    def test_update_session_cookies_persists_csrf_tokens(self, session_store, monkeypatch) -> None:
+    @pytest.mark.parametrize("fmt", ["pickle", "record"])
+    def test_update_session_cookies_persists_csrf_tokens(
+        self, fmt, session_store, monkeypatch
+    ) -> None:
         """CSRF tokens reach the session the write-back saves; they are
         memory-only, so the stored bytes never hold them."""
         import requests
@@ -1111,7 +1118,7 @@ class TestUpdateSessionCookies:
         from graftpunk.tokens import _CSRF_TOKENS_ATTR
         from tests.unit.session_compat_cases import TEST_KEY
 
-        session_store.seed("pickle")
+        session_store.seed(fmt)
         api_session = requests.Session()
         csrf_tokens = {"X-CSRF": "secret123"}
         setattr(api_session, _CSRF_TOKENS_ATTR, csrf_tokens)
@@ -1131,3 +1138,45 @@ class TestUpdateSessionCookies:
         assert result == csrf_tokens
         # Must be a copy to prevent aliasing between sessions
         assert result is not csrf_tokens
+        plain = session_store.plain("myshop")
+        assert session_store.format_of("myshop") == fmt
+        assert b"secret123" not in plain
+        assert b"_gp_csrf_tokens" not in plain
+
+    def test_a_write_back_to_an_invalid_name_is_refused(self, session_store, captured_logs) -> None:
+        """The name check cache_session gave a write-back through 1.44.0 still
+        runs: a slot read under a name graftpunk would not create is not
+        written."""
+        import requests
+
+        from tests.unit.session_compat_cases import TEST_KEY, events
+
+        before = session_store.seed("pickle", "My_Shop")
+        api_session = requests.Session()
+        api_session.cookies.set("new_cookie", "new_value", domain=".myshop.example")
+        update_session_cookies(api_session, "My_Shop", key=TEST_KEY)  # Should not raise
+
+        (failed,) = events(captured_logs, "session_save_failed")
+        assert failed["reason"] == "ValueError"
+        assert session_store.raw("My_Shop") == before
+        assert not events(captured_logs, "caching_session")
+
+    @pytest.mark.parametrize("fmt", ["pickle", "record"])
+    def test_a_write_back_logs_the_events_cache_session_logged(
+        self, fmt, session_store, captured_logs
+    ) -> None:
+        """The info events a write-back logged through cache_session in 1.44.0."""
+        import requests
+
+        from tests.unit.session_compat_cases import TEST_KEY, events
+
+        session_store.seed(fmt)
+        update_session_cookies(requests.Session(), "myshop", key=TEST_KEY)
+
+        (caching,) = events(captured_logs, "caching_session")
+        assert caching["name"] == "myshop"
+        assert caching["backend"] == "local"
+        (wrote,) = events(captured_logs, "wrote_session_to_backend")
+        assert wrote["name"] == "myshop"
+        assert "myshop" in wrote["location"]
+        assert len(events(captured_logs, "session_cookies_updated")) == 1

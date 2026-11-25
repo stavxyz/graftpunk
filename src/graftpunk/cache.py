@@ -1235,18 +1235,28 @@ def update_session_cookies(
         # (session.py's __getstate__/__setstate__); a plain requests.Session
         # does not (it pickles via its __attrs__ whitelist). Fall back to the
         # identifier already returned by this load's metadata (stored_metadata,
-        # from the same backend read — no extra backend call) so identity
+        # from the same backend read, with no extra backend call) so identity
         # survives this refresh either way.
         # A slot under the current account rule already took its account from
         # the metadata at load (#293).
         if getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier:
             setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
-        # A record is written back as a record and a pickle as a pickle,
-        # whatever the format setting. A value a record cannot hold raises
-        # here, before anything is written.
-        payload = _encode_as(original)
-        _store(target, payload, original, account_rule=stored_metadata.account_rule, key=key)
+        # The guard and events cache_session gave this save through 1.44.0.
+        validate_session_name(target)
+        LOG.info("caching_session", name=target, backend=get_settings().storage_backend)
+        try:
+            # A record is written back as a record and a pickle as a pickle,
+            # whatever the format setting. A value a record cannot hold raises
+            # here, before anything is written.
+            payload = _encode_as(original)
+            location = _store(
+                target, payload, original, account_rule=stored_metadata.account_rule, key=key
+            )
+        except (pickle.PickleError, RuntimeError, OSError) as exc:
+            LOG.error("failed_to_cache_session", name=target, error=str(exc))
+            raise
         _recheck_bare_slot_after_write(target)
+        LOG.info("wrote_session_to_backend", name=target, location=location)
         LOG.info("session_cookies_updated", session_name=target)
     except Exception as exc:  # noqa: BLE001 (best-effort save)
         LOG.warning(
