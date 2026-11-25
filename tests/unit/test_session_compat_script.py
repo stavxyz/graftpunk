@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from graftpunk.encryption import decrypt_data
 from tests.unit.session_compat_cases import EXPECTED_KIND, TEST_KEY
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "session_compat.py"
@@ -115,3 +116,25 @@ def test_read_refuses_to_replace_a_different_key(session_store):
             "working-tree", session_store.root, "myshop", other, python=sys.executable
         )
     assert (session_store.root / ".session_key").read_bytes() == TEST_KEY
+
+
+@pytest.mark.parametrize("fmt", ["pickle", "record"])
+def test_write_stores_the_tokens_session_in_the_requested_format(tmp_path, capfd, fmt):
+    store = tmp_path / "store"
+    session_compat.write(store, "myshop", fmt, TEST_KEY, python=sys.executable)
+    status = session_compat.read("working-tree", store, "myshop", TEST_KEY, python=sys.executable)
+    assert status == 0
+    assert capfd.readouterr().out.splitlines() == ["cookies: pref sid", "tokens: bearer csrf"]
+    plain = decrypt_data(
+        (store / "sessions" / "myshop" / "session.pickle").read_bytes(), key=TEST_KEY
+    )
+    assert plain.startswith(b"{") is (fmt == "record")
+
+
+def test_write_refuses_a_slot_that_exists(session_store):
+    before = session_store.seed("pickle")
+    with pytest.raises(session_compat.CompatError, match="refusing to replace"):
+        session_compat.write(
+            session_store.root, "myshop", "record", TEST_KEY, python=sys.executable
+        )
+    assert session_store.raw("myshop") == before

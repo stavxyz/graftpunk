@@ -17,7 +17,15 @@ named session for API use. It exits 0 and prints ``cookies: <sorted names>``
 and ``tokens: <sorted cached token names>`` when it can, and exits 3 and prints
 the exception's class name when the load raises.
 
-Both run the release in a venv made with ``uv venv`` under a temporary
+``write`` is the other half of that check: it has the code under test (the
+Python that runs this script, with graftpunk installed) cache the ``tokens``
+session, a nodriver session with two cached tokens and header roles, into
+``--store`` as a pickle (the default setting) or a record
+(``GRAFTPUNK_SESSION_FORMAT=record``). It refuses a store that already holds a
+slot of that name, and leaves the key file it installed in the store so that
+``read`` can use it.
+
+``generate`` and ``read`` run the release in a venv made with ``uv venv`` under a temporary
 directory, never the repository's ``.venv``, with ``GRAFTPUNK_CONFIG_DIR``
 pointed at a store in the run's staging directory or at ``--store``, and the
 key written to ``<config_dir>/.session_key``, because 1.21.0's
@@ -37,6 +45,7 @@ Run it before any change to the stored session format or to
 
 Usage:
     python scripts/session_compat.py generate --graftpunk VERSION --out DIR [--key FILE]
+    python scripts/session_compat.py write --store DIR --name NAME [--format pickle|record]
     python scripts/session_compat.py read --graftpunk VERSION --store DIR --name NAME [--key FILE]
 """
 
@@ -129,9 +138,10 @@ def _venv(tmp: Path, version: str) -> Path:
     return venv / "bin" / "python"
 
 
-def _child_env(config_dir: Path, home: Path) -> dict[str, str]:
+def _child_env(config_dir: Path, home: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
     # A minimal environment: no developer settings, no real home directory.
     return {
+        **(extra or {}),
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(home),
         "GRAFTPUNK_CONFIG_DIR": str(config_dir),
@@ -152,7 +162,13 @@ def _install_key(config_dir: Path, key: bytes) -> None:
     key_file.chmod(0o600)
 
 
-def run_child(python: str, args: list[str], config_dir: Path, cwd: Path) -> int:
+def run_child(
+    python: str,
+    args: list[str],
+    config_dir: Path,
+    cwd: Path,
+    extra_env: dict[str, str] | None = None,
+) -> int:
     """Run this file's child half under *python*; return its exit status."""
     home = cwd / "home"
     home.mkdir(exist_ok=True)
@@ -161,7 +177,7 @@ def run_child(python: str, args: list[str], config_dir: Path, cwd: Path) -> int:
     # .env file is read.
     cmd = [python, "-I", str(Path(__file__).resolve()), *args]
     return subprocess.run(  # noqa: S603
-        cmd, env=_child_env(config_dir, home), cwd=cwd, check=False
+        cmd, env=_child_env(config_dir, home, extra_env), cwd=cwd, check=False
     ).returncode
 
 
@@ -187,6 +203,24 @@ def generate(version: str, out: Path, key: bytes, *, python: str | None = None) 
     finally:
         if staging.exists():
             shutil.rmtree(staging)
+
+
+def write(store: Path, name: str, fmt: str, key: bytes, *, python: str | None = None) -> None:
+    """Cache the ``tokens`` session as *name* in *store*, as a pickle or a record."""
+    store = store.resolve()  # the child runs in a temp directory
+    if (store / "sessions" / name).exists():
+        raise CompatError(f"{store / 'sessions' / name} exists; refusing to replace it")
+    _install_key(store, key)
+    with tempfile.TemporaryDirectory(prefix="session-compat-") as tmp:
+        status = run_child(
+            python or sys.executable,
+            ["_write", "--name", name],
+            store,
+            Path(tmp),
+            {"GRAFTPUNK_SESSION_FORMAT": fmt},
+        )
+    if status != 0:
+        raise CompatError(f"writing {name} failed (exit {status})")
 
 
 def read(version: str, store: Path, name: str, key: bytes, *, python: str | None = None) -> int:
@@ -389,6 +423,13 @@ def child_generate(out: Path) -> None:
         print(f"{case}: {expected['class']}")
 
 
+def child_write(name: str) -> None:
+    from graftpunk.cache import cache_session
+
+    with contextlib.redirect_stdout(sys.stderr):
+        cache_session(_nodriver(tokens=True), name)
+
+
 def child_read(name: str) -> int:
     with contextlib.redirect_stdout(sys.stderr):
         try:
@@ -419,6 +460,15 @@ def _parser() -> argparse.ArgumentParser:
     gen.add_argument("--graftpunk", required=True, metavar="VERSION")
     gen.add_argument("--out", required=True, type=Path, metavar="DIR")
     gen.add_argument("--key", type=Path, default=DEFAULT_KEY, metavar="FILE")
+    wr = sub.add_parser(
+        "write",
+        help="cache the tokens session into --store with the code under test "
+        "(installs the key at <store>/.session_key and leaves it there)",
+    )
+    wr.add_argument("--store", required=True, type=Path, metavar="DIR")
+    wr.add_argument("--name", required=True)
+    wr.add_argument("--format", choices=("pickle", "record"), default="pickle")
+    wr.add_argument("--key", type=Path, default=DEFAULT_KEY, metavar="FILE")
     rd = sub.add_parser(
         "read",
         help="load --name from --store with a release (writes the key to "
@@ -431,6 +481,8 @@ def _parser() -> argparse.ArgumentParser:
     # The child half, run by the two above inside the release's venv.
     child_gen = sub.add_parser("_generate")
     child_gen.add_argument("--out", required=True, type=Path)
+    child_wr = sub.add_parser("_write")
+    child_wr.add_argument("--name", required=True)
     child_rd = sub.add_parser("_read")
     child_rd.add_argument("--name", required=True)
     return parser
@@ -442,10 +494,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "generate":
             generate(args.graftpunk, args.out, args.key.read_bytes())
             return 0
+        if args.command == "write":
+            write(args.store, args.name, args.format, args.key.read_bytes())
+            return 0
         if args.command == "read":
             return read(args.graftpunk, args.store, args.name, args.key.read_bytes())
         if args.command == "_generate":
             child_generate(args.out)
+            return 0
+        if args.command == "_write":
+            child_write(args.name)
             return 0
         return child_read(args.name)
     except CompatError as exc:

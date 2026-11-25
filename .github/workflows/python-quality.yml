@@ -172,3 +172,76 @@ jobs:
       - name: Install each wheel into its own clean venv and check the lite contract
         # The release build runs the same script before it publishes.
         run: scripts/smoke_install.sh dist/lite/graftpunk_lite-*.whl dist/full/graftpunk-*.whl
+
+  # A released graftpunk must still read what this branch writes by default.
+  # Upgrading is a choice; downgrading is not always one (a pinned plugin, a
+  # lockfile, a second machine sharing the session store), so the default
+  # setting must keep writing sessions the older releases load, tokens
+  # included. A session stored as a record (GRAFTPUNK_SESSION_FORMAT=record) is
+  # the opt-in: a release from before records reports it expired and leaves
+  # the stored bytes alone, which the Upgrading note says and this job checks.
+  # The checkout is shallow on purpose: nothing here reads git history. 1.21.0
+  # is the oldest release the compat fixtures cover. "latest" is the newest
+  # release on PyPI and is only asked to read the default; once a release can
+  # read records, the expired-record check does not apply to it.
+  old-reader:
+    needs: filter-paths
+    if: needs.filter-paths.outputs.python_changed == 'true'
+    name: Old reader - graftpunk ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["1.21.0", "1.44.0", "latest"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Resolve the release to read with
+        run: |
+          version="${{ matrix.version }}"
+          if [ "$version" = latest ]; then
+            version="$(uv run --no-project --with graftpunk python -c \
+              'import importlib.metadata as m; print(m.version("graftpunk"))')"
+          fi
+          echo "READER_VERSION=$version" >> "$GITHUB_ENV"
+          echo "reading with graftpunk $version"
+
+      - name: The default setting writes what the release reads, tokens included
+        run: |
+          store="$RUNNER_TEMP/old-reader-pickle"
+          uv run --no-sync python scripts/session_compat.py write --store "$store" --name myshop
+          out="$(uv run --no-sync python scripts/session_compat.py read \
+            --graftpunk "$READER_VERSION" --store "$store" --name myshop)"
+          echo "$out"
+          printf '%s\n' "$out" | grep -Fx 'cookies: pref sid'
+          printf '%s\n' "$out" | grep -Fx 'tokens: bearer csrf'
+
+      - name: A record is reported expired and left alone
+        if: matrix.version != 'latest'
+        run: |
+          store="$RUNNER_TEMP/old-reader-record"
+          uv run --no-sync python scripts/session_compat.py write \
+            --store "$store" --name myshop --format record
+          before="$(find "$store/sessions" -type f -exec shasum -a 256 {} + | sort -k2)"
+          status=0
+          out="$(uv run --no-sync python scripts/session_compat.py read \
+            --graftpunk "$READER_VERSION" --store "$store" --name myshop)" || status=$?
+          echo "exit $status: $out"
+          [ "$status" = 3 ]
+          [ "$out" = SessionExpiredError ]
+          after="$(find "$store/sessions" -type f -exec shasum -a 256 {} + | sort -k2)"
+          [ "$before" = "$after" ]

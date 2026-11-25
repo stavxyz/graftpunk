@@ -197,7 +197,14 @@ python scripts/session_compat.py generate --graftpunk 1.44.0 --out "$(mktemp -d)
 # Can a release load a session this checkout stored? Exit 0 prints its cookies
 # and tokens; exit 3 prints the exception it raised.
 python scripts/session_compat.py read --graftpunk 1.44.0 --store DIR --name myshop
+# Write that session with this checkout first (pickle is the default setting).
+python scripts/session_compat.py write --store DIR --name myshop [--format record]
 ```
+
+The `old-reader` job in `.github/workflows/python-quality.yml` runs `write` and
+`read` for 1.21.0, 1.44.0 and the newest release: the default setting must
+write what each of them loads, tokens included, and a record must be reported
+expired (exit 3, `SessionExpiredError`) with the stored bytes unchanged.
 
 Run it before any change to the stored session format or to
 `BrowserSession.__getstate__`, and add a directory when a release changes what
