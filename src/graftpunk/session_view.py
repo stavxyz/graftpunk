@@ -1,0 +1,155 @@
+"""A saved session as a plain object, for callers that need no browser.
+
+:class:`StoredSession` holds a stored session's state dict and answers the
+attribute reads and writes the API loaders make on a session, without the
+session classes and so without selenium, requestium, nodriver or httpie.
+:class:`StoredSessionLike` is the shape both it and a real session satisfy.
+"""
+
+from __future__ import annotations
+
+from typing import Any, NoReturn, Protocol
+
+from requests.cookies import RequestsCookieJar
+from requests.structures import CaseInsensitiveDict
+
+from graftpunk.session_record import FIELDS, Record, record_to_state
+from graftpunk.session_riders import SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
+
+
+class StoredSessionLike(Protocol):
+    """What a loader reads and sets on a session, real or stored.
+
+    The rider attributes are listed by their registered names
+    (:data:`graftpunk.session_riders.SESSION_RIDER_ATTRS`).
+    """
+
+    cookies: Any
+    headers: Any
+    session_name: str
+    current_url: str
+    _gp_cached_tokens: dict[str, Any]
+    _gp_csrf_tokens: dict[str, Any]
+    _gp_csrf_origin: str
+    _gp_header_roles: dict[str, Any]
+    _gp_header_role_origins: dict[str, Any]
+    _gp_session_name: str | None
+    _gp_account_identifier: str | None
+
+
+_RIDERS = frozenset(SESSION_RIDER_ATTRS)
+
+
+class StoredSession:
+    """A stored session's state, readable and settable like a session object.
+
+    *kind* is the stored kind (``browser``, ``api`` or ``requests``), or None
+    for a legacy pickle of a subclass or another type: such a view can be read
+    and never written (:attr:`writable`). A value set on an attribute the table
+    stores for the kind goes into the state; any other value is kept in memory
+    for this view only and is absent from :meth:`stored_state`.
+    """
+
+    kind: str | None
+    extra: dict[str, Any]
+
+    def __init__(
+        self, kind: str | None, state: dict[str, Any], extra: dict[str, Any] | None = None
+    ) -> None:
+        self.kind = kind
+        self.extra = dict(extra or {})
+        self._state = dict(state)
+        self._memory: dict[str, Any] = {}
+
+    @classmethod
+    def from_record(cls, record: Record) -> StoredSession:
+        """The view of a validated record, carrying its unknown top-level keys."""
+        return cls(record.kind, record_to_state(record), record.extra)
+
+    @property
+    def writable(self) -> bool:
+        """Whether the view has a kind, and so can be written back."""
+        return self.kind is not None
+
+    def _stored_keys(self) -> frozenset[str]:
+        return frozenset(row.state_key for row in FIELDS if self.kind in row.kinds)
+
+    def _read(self, key: str, default: Any) -> Any:
+        if key in self._memory:
+            return self._memory[key]
+        if key in self._state:
+            return self._state[key]
+        # An absent value is made once and kept, so an in-place change to it
+        # (a rider dict) is seen by the next read.
+        self._memory[key] = default()
+        return self._memory[key]
+
+    def _write(self, key: str, value: Any) -> None:
+        if key in self._stored_keys():
+            self._state[key] = value
+            self._memory.pop(key, None)
+        else:
+            self._memory[key] = value
+
+    def stored_state(self) -> dict[str, Any]:
+        """The keys of the state the table lists for the kind, no defaults added."""
+        if self.kind is None:
+            raise TypeError("a session with no stored kind cannot be written")
+        keys = self._stored_keys()
+        return {key: value for key, value in self._state.items() if key in keys}
+
+    @property
+    def cookies(self) -> RequestsCookieJar:
+        jar = self._read("cookies", RequestsCookieJar)
+        if not isinstance(jar, RequestsCookieJar):
+            # A legacy pickle may hold another jar type; the view reads the same cookies.
+            rebuilt = RequestsCookieJar()
+            for cookie in jar:
+                rebuilt.set_cookie(cookie)
+            self._write("cookies", rebuilt)
+            return rebuilt
+        return jar
+
+    @cookies.setter
+    def cookies(self, value: Any) -> None:
+        self._write("cookies", value)
+
+    @property
+    def headers(self) -> Any:
+        return self._read("headers", CaseInsensitiveDict)
+
+    @headers.setter
+    def headers(self, value: Any) -> None:
+        self._write("headers", value)
+
+    @property
+    def session_name(self) -> str:
+        return self._read("session_name", str)
+
+    @session_name.setter
+    def session_name(self, value: str) -> None:
+        self._write("session_name", value)
+
+    @property
+    def current_url(self) -> str:
+        return self._read("current_url", str)
+
+    @current_url.setter
+    def current_url(self, value: str) -> None:
+        self._write("current_url", value)
+
+    def __getattr__(self, name: str) -> Any:
+        # Called only when normal lookup fails: the registered riders.
+        if name in _RIDERS:
+            return self._read(name, SESSION_RIDER_DEFAULTS[name])
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _RIDERS:
+            self._write(name, value)
+        else:
+            object.__setattr__(self, name, value)
+
+    def __reduce_ex__(self, protocol: Any) -> NoReturn:
+        # A pickle naming this class is a class path no older release can read.
+        raise TypeError("a StoredSession is never pickled or copied; use stored_state()")
