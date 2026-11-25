@@ -67,9 +67,11 @@ The owner's condition: nothing that works today may break.
   (whether they do is UNVERIFIED). An older release sees only "bytes that
   decrypt and then fail to unpickle", which `load_session` reports as
   `SessionExpiredError`.
-- `load_session()` is public and returns a `BrowserSession`; `gp session
-  export`, `gp observe --session` and `update_session_cookies` use the whole
-  object. That contract stays: it needs the browser packages, as it does now.
+- `load_session()` is public and returns the cached object (a `BrowserSession`
+  for a browser login); `gp session export` and `gp observe --session` call it,
+  and `update_session_cookies` and `copy_session` use the whole object through
+  `_load_session_with_metadata`. That contract stays: for a browser session it
+  needs the browser packages, as it does now.
 - The `_warn_login_page_unreadable` contract and everything else in the login
   engine are untouched.
 - Public repo: placeholders only in tests and docs.
@@ -87,9 +89,86 @@ The owner's condition: nothing that works today may break.
    until used.** The class inherits from `requestium.Session`, so this is a
    rewrite of that class, and the stored bytes stay tied to it.
 
+## One declaration of what a session stores
+
+Every class graftpunk saves already reduces itself to a plain state dict:
+`BrowserSession.__getstate__` (nodriver and selenium branches), and requests'
+own `__getstate__` for `GraftpunkSession` and a plain `requests.Session`
+(its `__attrs__` list). `__setstate__` on each class restores from that dict.
+The pickle is that dict plus the class name. The record is that dict as JSON.
+Nothing else in this design lists session fields by hand.
+
+A new module, `graftpunk/session_record.py`, owns the format. It is a leaf:
+a unit test imports it in a fresh interpreter and asserts that the only
+`graftpunk` modules loaded are on a short allowlist (`graftpunk.session_record`,
+`graftpunk.session_identity`, `graftpunk.cookies`, `graftpunk.exceptions`,
+`graftpunk.logging`, and what those import today) and that no `selenium`,
+`requestium`, `nodriver` or `httpie` module is loaded. The rider registry
+(`SESSION_RIDER_ATTRS`, `SESSION_RIDER_DEFAULTS`, the memory-only set and
+`PICKLED_SESSION_RIDER_ATTRS`) moves from `graftpunk.tokens`, which imports
+the browser-launch helpers, to `graftpunk.session_identity`, which already
+holds `GP_ACCOUNT_ATTR` and `GP_SESSION_NAME_ATTR`; `tokens` re-exports the
+names so existing imports keep working. `cache.py` stays the storage and
+orchestration layer and calls into the new module, which holds:
+
+- **The field declaration.** One table. Each row names a state key as
+  `__getstate__` writes it (`_backend_type`, `_use_stealth`, `session_name`,
+  `current_url`, `headers`, `cookies`, `params`, `verify`, `proxies`, `cert`,
+  `max_redirects`, `trust_env`, `stream`, `webdriver_path`, `default_timeout`,
+  `_last_requests_url`, and each name in `PICKLED_SESSION_RIDER_ATTRS`), the
+  record key it is stored under, and its codec (plain
+  JSON value, header pairs, cookie list, cached-token map). A second set of
+  rows marks the pickle-only keys (`auth`, `hooks`, `adapters`,
+  `webdriver_options`, `_driver_initializer`, `_driver`) with the test that
+  says the value is at its default.
+- **`state_to_record(kind, state)`**: the only builder. It walks the state
+  dict against the table. A key the table stores is encoded. A pickle-only key
+  at its default is dropped. A pickle-only key away from its default, or any
+  key the table does not know, makes the session unrecordable: the function
+  returns the reason and the caller writes a legacy pickle with one warning
+  naming the key. Unknown state therefore fails toward keeping it.
+- **`record_to_state(record)`**: the inverse, producing the state dict
+  `__setstate__` already accepts.
+- **The legacy codec**, `state_from_pickle(decrypted)`: reads the state dict
+  out of a pickle any release wrote. It unpickles with the three session
+  classes always replaced by a state-capturing placeholder (the existing
+  `_Stub`, whose `__setstate__` stores the dict), whether or not the real
+  classes are importable, so it sees one shape on every install and never
+  reads an attribute through a property. (A real selenium `BrowserSession`
+  raises `BrowserError` from `.session_name` when it has no driver; a real
+  nodriver one keeps the name as `_session_name`; the state dict has
+  `session_name` in every case.) Classes inside the state that cannot be
+  imported are stubbed as today. This code owns the historical key names and
+  is otherwise frozen.
+
+- **The kind map**, in both directions, keyed by fully qualified class name
+  (`graftpunk.session.BrowserSession`, `graftpunk.graftpunk_session.
+  GraftpunkSession`, `requests.sessions.Session`) and compared against
+  `type(session).__module__` and `__qualname__`, so classifying a session
+  imports nothing. The class itself is imported only by `load_session` for a
+  record of kind `browser`.
+- **`StoredSession`**, a small typed view of a state dict: `kind`, `cookies`
+  (a jar), `headers`, the riders, and the backend settings, with
+  `__getstate__()` returning the state dict. It exposes the attributes the
+  write-backs touch on a real session (`cookies`, each rider attribute, and
+  `_session_name`) under the same names. `record_to_state` and
+  `state_from_pickle` results are wrapped in it; the raw dict crosses a module
+  boundary only at `__setstate__`.
+- **`encode_session(session)`**: the only writer. Session (a real object or a
+  `StoredSession`) in, payload bytes out. The format setting, the kind lookup,
+  `state_to_record`, the fall back to the legacy pickle and its one warning
+  all live inside it. Release 2's default flip and the 2.0 removal of the
+  legacy writer are each one edit, here.
+
+A test builds a fully populated live session of each kind, calls its
+`__getstate__()`, and fails if any key is neither stored nor pickle-only in
+the table. A field added to `BrowserSession.__getstate__` later cannot reach a
+release without a row.
+
 ## The record
 
-The decrypted payload is UTF-8 JSON, one object:
+The decrypted payload is UTF-8 JSON, one object. Key names are illustrative;
+the table fixes them:
 
 ```json
 {
@@ -100,6 +179,7 @@ The decrypted payload is UTF-8 JSON, one object:
   "session_name": "myshop",
   "current_url": "https://myshop.example/account",
   "headers": [["User-Agent", "..."], ["Accept", "*/*"]],
+  "cookie_policy": "browser",
   "cookies": [
     {"version": 0, "name": "sid", "value": "...", "port": null,
      "port_specified": false, "domain": ".myshop.example",
@@ -125,18 +205,23 @@ The decrypted payload is UTF-8 JSON, one object:
 - `kind` says which class was saved, because `cache_session` is public and
   takes more than a `BrowserSession`: `browser` (`BrowserSession`), `api`
   (`GraftpunkSession`) and `requests` (a plain `requests.Session`, which
-  docs/HOW_IT_WORKS.md's plain-HTTP login saves). `backend_type`,
-  `use_stealth` and the `selenium` block are present only for `browser`. An
-  object of any other type is saved in the legacy pickle format with a warning
-  naming its type, as it is saved today.
+  docs/HOW_IT_WORKS.md's plain-HTTP login saves). The match is on the exact
+  type through the kind map above, never `isinstance`: a subclass of
+  any of the three, and an object of any other type, is saved as a legacy
+  pickle with a warning naming its type, so it loads back as the class it was.
 - `cookies` carries every `http.cookiejar.Cookie` constructor argument, so a
-  jar rebuilt from it equals the original cookie for cookie.
+  jar rebuilt from it equals the original cookie for cookie. `cookie_policy`
+  is `browser` (graftpunk's `BrowserCookiePolicy`) or `default` (the standard
+  library's policy with default settings); a jar with any other policy makes
+  the session unrecordable, by the rule above.
 - `headers` is a list of pairs, so order and case survive.
-- `riders` holds exactly the attributes in `PICKLED_SESSION_RIDER_ATTRS`
-  (`graftpunk.tokens`); the memory-only riders stay out, as they are out of the
-  pickle today. The key names above are illustrative; the builder maps each
-  attribute to one stable key and tests the mapping against that tuple, so a
-  rider added later cannot be forgotten.
+- `riders` holds the state keys in `PICKLED_SESSION_RIDER_ATTRS`; the
+  memory-only riders stay out, as they are out of the pickle today. An `api`
+  or `requests` session's state has none (requests' `__attrs__` carries no
+  riders), so its record has none. That is today's behaviour kept on purpose:
+  a saved `GraftpunkSession` loses its header roles and token cache in the
+  pickle too, and `update_session_cookies` restores only the account, from
+  the metadata.
 - A reader ignores keys it does not know and refuses a `graftpunk_session`
   version higher than it supports, with an error that names the version and
   says to upgrade graftpunk. It never reports such a session as expired.
@@ -146,56 +231,54 @@ The decrypted payload is UTF-8 JSON, one object:
 
 ### What the record cannot hold
 
-The selenium and plain-requests save paths also pickle `auth`, `hooks` and
-`adapters` (requests' `__attrs__`), and the selenium path `webdriver_options`
-and `_driver_initializer`. These can be arbitrary objects or callables. Rule:
-a session whose `auth` is not `None` or a `(user, password)` pair, whose
-`hooks` differ from requests' defaults, whose mounted `adapters` are not the
-two default `HTTPAdapter`s with default settings, or whose `webdriver_options`
-or `_driver_initializer` are not their defaults, is saved in the legacy pickle
-format, with one warning naming the attribute. The legacy writer stays `dill`
-(`cache.py` imports it as `pickle`), since hooks and initializers can be
-lambdas. That keeps such a session
-working exactly as today, at the price of keeping the legacy writer until a
+`auth`, `hooks` and `adapters` (requests' `__attrs__`, so present for all
+three kinds), and for selenium `webdriver_options` and `_driver_initializer`,
+can be arbitrary objects or callables. They are the pickle-only rows of the
+table: `auth` other than `None` or a `(user, password)` pair, `hooks` other
+than requests' defaults, `adapters` other than the two default `HTTPAdapter`s
+with default settings, and `webdriver_options` or `_driver_initializer` away
+from their defaults each keep the session in the legacy pickle format, with
+one warning naming the key. The legacy writer stays `dill` (`cache.py` imports
+it as `pickle`), since hooks and initializers can be lambdas. Such a session
+works exactly as today, at the price of keeping the legacy writer until a
 major release. Which selenium sessions hit this in practice is UNVERIFIED; the
-builder measures it against the repo's selenium tests and example plugins and
-reports the count. (Builder's call: if `webdriver_options` proves to be plain
-arguments in every case found, hold it in the record instead.)
+builder measures it against the compat fixtures and reports the count.
+(Builder's call: if `webdriver_options` proves to be plain arguments in every
+case found, give it a stored row instead.)
 
 ## Reading
 
-One function in `cache.py` turns decrypted bytes into a `SessionRecord`
-(a frozen dataclass of plain values):
+Decrypted bytes become a state dict in one place: `record_to_state` for a
+record, `state_from_pickle` for a legacy pickle. Both loaders start there.
 
-- From a record: parse and validate the JSON.
-- From a legacy pickle: `_BrowserFreeUnpickler` as today, then lift the
-  object's plain state into the same `SessionRecord`. On graftpunk-lite the
-  object is a placeholder holding the pickled state; on a full install the
-  unpickler imports the real class and the object is a real `BrowserSession`
-  or `requests.Session`, so the lift reads the same fields from either. This is
-  the only remaining use of the placeholder unpickler.
-
-Every loader goes through it:
-
-- `load_session_for_api`, `load_session_for_api_resolved` and
-  `load_session_for_api_from_bytes` build a `GraftpunkSession` from the
-  `SessionRecord`. For a record none of them imports `graftpunk.session`; for
-  a legacy pickle they import it only where it is installed. Either way they
-  work on graftpunk-lite. `load_session_for_api` stops calling `load_session`.
-- `load_session` returns the class the session was saved as. A legacy pickle
-  is always unpickled whole with the real classes, exactly as today, so no
-  state a pickle holds is ever lost on load. A record of kind `browser`
-  becomes a `BrowserSession` (a classmethod that sets the same state
-  `__setstate__` sets; needs the browser packages and raises the install hint
-  on lite, as today); kind `api` becomes a `GraftpunkSession` and kind
-  `requests` a `requests.Session`, neither of which needs a browser package,
-  so a plain-HTTP login's session keeps loading on lite as it does today.
+- **API loaders.** `load_session_for_api`, `load_session_for_api_resolved` and
+  `load_session_for_api_from_bytes` build a `GraftpunkSession` from a
+  `StoredSession` through one builder: the existing `_api_session_from_session`
+  (`cache.py`), which already depends only on the `SessionLike` protocol the
+  view satisfies. It stays the only owner of the
+  header filtering (requests' defaults, ephemeral and client-set headers,
+  `replayable_roles`) and of applying the browser cookie policy. None of the
+  three imports `graftpunk.session`, for either format, so they work on
+  graftpunk-lite. `load_session_for_api` stops calling `load_session`.
+- **`load_session`** returns the object that was saved. A legacy pickle is
+  unpickled whole with the real classes, exactly as today, so no state a
+  pickle holds is ever lost on load. A record is restored through the class's
+  own `__setstate__`: `obj = cls.__new__(cls); obj.__setstate__(
+  record_to_state(record))`, with `cls` chosen by `kind`. There is no second
+  copy of the restore logic, and no header filtering here: `load_session`
+  hands back what was saved, as it does today. Kind `browser` needs the
+  browser packages and raises the install hint on lite, as today; kinds `api`
+  and `requests` need none, so a plain-HTTP login's session keeps loading on
+  lite.
 - `gp session show`, `gp session list` read metadata only and do not change.
 
 ## Writing, and the staged rollout
 
-`cache_session` takes its format from one setting,
-`GRAFTPUNK_SESSION_FORMAT`, values `pickle` and `record`.
+The format comes from one setting, `GRAFTPUNK_SESSION_FORMAT`, values
+`pickle` and `record`, read in one place: `encode_session`. `cache_session`
+and `copy_session` both call it for the payload (today `copy_session` repeats
+`cache_session`'s pickle, checksum and encrypt lines; that duplication is
+removed, not grown).
 
 - **Release 1 (1.45.0): reads both, writes `pickle` by default.** Nothing an
   older reader sees changes. Setting `record` opts a store in. This release is
@@ -208,30 +291,50 @@ Every loader goes through it:
   sessions as expired.
 - The legacy writer and reader are removed no earlier than 2.0.
 
-`update_session_cookies` and the copy and rename paths write a session back in
-the format the configured setting names; under the default of release 1 that is
-`pickle`, so a store is never flipped by a write-back. Under `record`:
+### Write-backs
 
-- A session stored as a record is loaded through `SessionRecord`, updated and
-  written as a record. This works on graftpunk-lite.
-- A session stored as a legacy pickle is, on a full install, unpickled whole,
-  updated, and saved through `cache_session`, where the rule in "What the
-  record cannot hold" decides record or pickle. On graftpunk-lite the real
-  classes are absent, so whether the pickle holds state a record would drop
-  cannot be known: the write-back is skipped with a warning that says the
-  session is in the old format and is rewritten by the next login or by a
-  write-back from a full install. That is today's outcome on lite, stated
-  instead of logged as a failure.
+`update_session_cookies` and `copy_session` (which `session_migration` uses to
+rename a slot) each load a stored session, change it, and save it. Each keeps
+exactly one mutation, written against an object, as today: cookies, the rider
+attributes, `_session_name`, and the account. What changes is only which
+object the loaded bytes become:
+
+- A record, or a legacy pickle `state_to_record` accepts: a `StoredSession`,
+  on every install. The mutation runs on it, `encode_session` writes it, and
+  `cache_session` reads its metadata from it as from any session. This works
+  on graftpunk-lite.
+- A legacy pickle `state_to_record` refuses (a pickle-only key away from its
+  default, or a class inside the state that could not be imported): the real
+  object, unpickled whole, as today, and written back as a pickle. This needs
+  the real classes.
+
+Under release 1's default (`pickle`) a `StoredSession` cannot be written as a
+pickle an older release can read, so both write-backs take the second path for
+every session, which is today's code path unchanged.
+
+Where the real classes are needed and absent (graftpunk-lite), the two paths
+keep their own contracts:
+
+- `update_session_cookies` is best-effort by contract. It skips the
+  write-back with a warning that names the reason and says the next login or a
+  write-back from a full install rewrites the session.
+- `copy_session` promises a verified copy or an exception, and
+  `session_migration` deletes the source on success. It raises, as it raises
+  `ImportError` on lite today, and the source slot is kept.
 
 ## graftpunk-lite (#245, session half)
 
 With the loaders above, a plugin command that uses its session works on
-graftpunk-lite for both formats. The existing lite guard that prints the
-install hint for "a plugin command that uses its session" is removed for the
-load path and kept for `login` and the other browser-driving commands. The
-README's lite paragraph and `scripts/smoke_install.sh` (the lite contract
-check the release workflow runs) are updated to the new contract: on lite, an
-API command with a stored session runs; `login` prints the hint.
+graftpunk-lite for both formats. The install hint on a session load comes
+today from two handlers that convert a missing browser module: plugin commands
+(`src/graftpunk/cli/plugin_runtime.py`) and `gp http` with a cached session
+(`src/graftpunk/cli/http_commands.py`). Neither fires any longer for a record
+or a legacy pickle the API loaders can read. The hint stays for `login`,
+`gp observe` and `gp session export`. Both README passages that describe the
+lite contract (the lite paragraph and the `load_session_for_api` note) and
+`scripts/smoke_install.sh` (the lite contract check the release workflow
+runs) are updated: on lite, an API command or `gp http` with a stored session
+runs; `login` prints the hint.
 
 ## Proving nothing breaks
 
@@ -244,22 +347,33 @@ to the builder.
    synthetic sessions (placeholder hosts, a test key): a nodriver session, a
    selenium session, a plain `requests.Session` and a `GraftpunkSession`, one
    with cached tokens and header roles, one with an account label, one with a
-   custom adapter mounted (must stay a pickle), and one legacy flat-file
-   session with no checksum. The nodriver, requests and api sessions need no
-   browser. The selenium session is generated on a developer machine, once per
-   version, by one headless Chrome launch with `--use-mock-keychain
-   --password-store=basic` (constructing the object without a browser would
-   not produce the `webdriver_options` and `_driver_initializer` a real login
-   saves, which are the values in question); CI only reads the committed
-   fixtures. If a release cannot be launched that way, its selenium fixture is
-   omitted and the fact is recorded in the fixtures' README. Fixtures
-   generated from 1.21.0 (the HTTPie cookie-policy era), 1.40.1, 1.43.1 and
-   1.44.0 are committed under `tests/fixtures/session_compat/`. A test loads
-   every one through every loader and compares cookies (every attribute),
-   headers, roles, tokens and account against a JSON expectation written by
-   the generator.
-2. **Round trip.** For each fixture: load, save as a record, load again; the
-   two `SessionRecord`s are equal. Same through `update_session_cookies`.
+   custom adapter mounted and one that is a subclass of `GraftpunkSession`
+   (both must stay pickles and load back as what they were). No listed release
+   writes the legacy flat-file layout, so the generator writes that fixture
+   itself: the encrypted pickle of a released version's session placed at
+   `<name>.session.pickle` with no `metadata.json`, the layout
+   `LocalSessionStorage._load_legacy_session` reads. The nodriver, requests
+   and api sessions need no browser. The selenium session is generated on a
+   developer machine, once per version, by one headless Chrome launch with
+   `--use-mock-keychain --password-store=basic` (constructing the object
+   without a browser would not produce the `webdriver_options` and
+   `_driver_initializer` a real login saves, which are the values in
+   question); CI only reads the committed fixtures. If a release cannot be
+   launched that way, its selenium fixture is omitted and the fact is recorded
+   in the fixtures' README. Fixtures generated from 1.21.0 (the HTTPie
+   cookie-policy era), 1.40.1, 1.43.1 and 1.44.0 are committed under
+   `tests/fixtures/session_compat/`. A test loads every one through every
+   loader and compares cookies (every attribute), headers, roles, tokens and
+   account against a JSON expectation written by the generator. The script
+   absorbs `scripts/gen_browserfree_fixture.py`: that script's fixture
+   (`tests/fixtures/browserfree_session.enc`) becomes one of the compat
+   fixtures, and its entries in `tests/fixtures/README.md` and CONTRIBUTING.md
+   point at the new script.
+2. **Round trip.** For each recordable fixture: state dict from the pickle,
+   `state_to_record`, `record_to_state`; the two state dicts are equal. Then
+   load, save as a record, load again through `load_session` and through the
+   API loaders, and compare as in item 1. Same through
+   `update_session_cookies` and `copy_session`.
 3. **Old reader, new writer.** `scripts/session_compat.py read --graftpunk
    VERSION --store DIR` runs a released version against a store written by the
    branch. A CI job runs it with 1.44.0 against a store written with the
@@ -269,11 +383,16 @@ to the builder.
    fact.
 4. **Lite.** `scripts/smoke_install.sh` gains: on a lite venv, a YAML plugin
    command with a stored session (both formats) returns its response against a
-   local fake server.
+   local fake server; with `GRAFTPUNK_SESSION_FORMAT=record`, a command that
+   refreshes a cookie writes it back and the next run reads it; and
+   `copy_session` on a pickle it cannot record raises and leaves the source.
 5. **No code on load.** A record whose JSON carries a string that would be a
    pickle opcode sequence, and a pickle crafted to call a marker function, are
    each fed to the record reader: the first is data, the second is never
    unpickled when the first byte is `{`.
+6. **The declaration holds.** The two tests named above: every key a live
+   session's `__getstate__()` emits has a row, and importing
+   `graftpunk.session_record` loads no browser module.
 
 `scripts/session_compat.py` is documented in CONTRIBUTING.md (what it checks,
 when to run it: before any change to the stored format or to
@@ -281,10 +400,9 @@ when to run it: before any change to the stored format or to
 
 ## Left to the builder
 
-- Module layout (`SessionRecord` in `cache.py` or a new `session_record.py`),
-  names of private helpers, and test file layout.
-- The exact JSON key for each rider and the validation error wording.
-- Whether `webdriver_options` can live in the record (see above).
+- Names of private helpers and test file layout.
+- The exact JSON key for each row and the validation error wording.
+- Whether `webdriver_options` gets a stored row (see above).
 
 ## Open risks
 
@@ -293,5 +411,14 @@ when to run it: before any change to the stored format or to
   compat fixtures are what settle it; if a selenium session cannot round-trip,
   selenium sessions stay on pickle in release 1 and the design is revisited
   before release 2.
+- UNVERIFIED: whether a selenium `BrowserSession` restored from a pickle can
+  be pickled again today. `__getstate__` reads `self.session_name`, which
+  reaches the driver when `_session_name` is absent, and a restored session
+  has no driver. If it cannot, today's selenium write-back already fails and
+  is only logged; the compat fixtures show it, and the fix (restore
+  `_session_name` in `__setstate__`) ships with release 1. The same
+  `__getstate__` reads `self.driver.current_url`; whether that tries to start
+  a driver on a restored session is part of the same check, since
+  `encode_session` and the completeness test call `__getstate__()` directly.
 - UNVERIFIED: how many independent consumers share a store across versions.
   The staged rollout assumes at least one does.
