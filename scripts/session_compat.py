@@ -20,13 +20,15 @@ the exception's class name when the load raises.
 ``write`` is the other half of that check: it has the code under test (the
 Python that runs this script, with graftpunk installed) cache the ``tokens``
 session, a nodriver session with two cached tokens and header roles, into
-``--store`` as a pickle (the default setting) or a record
-(``GRAFTPUNK_SESSION_FORMAT=record``). It refuses a store that already holds a
-slot of that name, and leaves the key file it installed in the store so that
-``read`` can use it.
+``--store``. Without ``--format`` the child runs with
+``GRAFTPUNK_SESSION_FORMAT`` unset, so it writes what the code's own default
+setting writes (a caller's value is not passed on); ``--format pickle`` or
+``--format record`` sets it. It refuses a store that already holds a slot of
+that name, and leaves the key file it installed in the store so that ``read``
+can use it.
 
-``generate`` and ``read`` run the release in a venv made with ``uv venv`` under a temporary
-directory, never the repository's ``.venv``, with ``GRAFTPUNK_CONFIG_DIR``
+``generate`` and ``read`` run the release in a venv made with ``uv venv`` under
+a temporary directory, never the repository's ``.venv``, with ``GRAFTPUNK_CONFIG_DIR``
 pointed at a store in the run's staging directory or at ``--store``, and the
 key written to ``<config_dir>/.session_key``, because 1.21.0's
 ``cache_session`` and ``load_session_for_api`` take no ``key=``. No browser is
@@ -205,8 +207,11 @@ def generate(version: str, out: Path, key: bytes, *, python: str | None = None) 
             shutil.rmtree(staging)
 
 
-def write(store: Path, name: str, fmt: str, key: bytes, *, python: str | None = None) -> None:
-    """Cache the ``tokens`` session as *name* in *store*, as a pickle or a record."""
+def write(
+    store: Path, name: str, fmt: str | None, key: bytes, *, python: str | None = None
+) -> None:
+    """Cache the ``tokens`` session as *name* in *store*. *fmt* None leaves the
+    format setting unset, so the code's own default decides."""
     store = store.resolve()  # the child runs in a temp directory
     if (store / "sessions" / name).exists():
         raise CompatError(f"{store / 'sessions' / name} exists; refusing to replace it")
@@ -217,7 +222,7 @@ def write(store: Path, name: str, fmt: str, key: bytes, *, python: str | None = 
             ["_write", "--name", name],
             store,
             Path(tmp),
-            {"GRAFTPUNK_SESSION_FORMAT": fmt},
+            {"GRAFTPUNK_SESSION_FORMAT": fmt} if fmt else None,
         )
     if status != 0:
         raise CompatError(f"writing {name} failed (exit {status})")
@@ -467,7 +472,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     wr.add_argument("--store", required=True, type=Path, metavar="DIR")
     wr.add_argument("--name", required=True)
-    wr.add_argument("--format", choices=("pickle", "record"), default="pickle")
+    wr.add_argument("--format", choices=("pickle", "record"), default=None)
     wr.add_argument("--key", type=Path, default=DEFAULT_KEY, metavar="FILE")
     rd = sub.add_parser(
         "read",

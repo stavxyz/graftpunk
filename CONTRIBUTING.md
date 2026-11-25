@@ -197,7 +197,8 @@ python scripts/session_compat.py generate --graftpunk 1.44.0 --out "$(mktemp -d)
 # Can a release load a session this checkout stored? Exit 0 prints its cookies
 # and tokens; exit 3 prints the exception it raised.
 python scripts/session_compat.py read --graftpunk 1.44.0 --store DIR --name myshop
-# Write that session with this checkout first (pickle is the default setting).
+# Write that session with this checkout first. Without --format the setting
+# is left unset, so the checkout's own default decides.
 python scripts/session_compat.py write --store DIR --name myshop [--format record]
 ```
 

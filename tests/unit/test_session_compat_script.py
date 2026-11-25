@@ -138,3 +138,15 @@ def test_write_refuses_a_slot_that_exists(session_store):
             session_store.root, "myshop", "record", TEST_KEY, python=sys.executable
         )
     assert session_store.raw("myshop") == before
+
+
+def test_write_without_a_format_leaves_the_setting_unset_whatever_the_caller_has(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("GRAFTPUNK_SESSION_FORMAT", "record")
+    store = tmp_path / "store"
+    session_compat.write(store, "myshop", None, TEST_KEY, python=sys.executable)
+    plain = decrypt_data(
+        (store / "sessions" / "myshop" / "session.pickle").read_bytes(), key=TEST_KEY
+    )
+    assert not plain.startswith(b"{")

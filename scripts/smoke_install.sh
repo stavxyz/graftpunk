@@ -8,9 +8,10 @@
 # must import, keep a working gp CLI (gp version, gp session list and
 # gp plugins), load a cached session browser-free and name its own extra in a
 # missing-browser error, all without the browser stack, and graftpunk must have
-# that stack. Sessions the full install saves, as a pickle and as a record, are
-# then used from lite against a local server that echoes the Cookie header:
-# plugin commands, gp http, a cookie write-back, copy_session and login. Run from the repository root (it reads tests/fixtures).
+# that stack. Sessions the full install saves, as a pickle and as a record,
+# are then used from lite against a local server that echoes the Cookie
+# header: plugin commands, gp http, a cookie write-back, copy_session and
+# login. Run from the repository root (it reads tests/fixtures).
 # Used by the "Lite install" job in python-quality.yml and by the release build
 # before anything is published, so both check the same things.
 set -euo pipefail
@@ -131,7 +132,8 @@ store="$root/store-config"
 rm -rf "$store"
 mkdir -p "$store/plugins"
 in_store() {
-  GRAFTPUNK_CONFIG_DIR="$store" GRAFTPUNK_STORAGE_BACKEND=local NO_COLOR=1 "$@"
+  env -u GRAFTPUNK_SESSION_FORMAT GRAFTPUNK_CONFIG_DIR="$store" \
+    GRAFTPUNK_STORAGE_BACKEND=local NO_COLOR=1 "$@"
 }
 port_file="$root/echo-port"
 rm -f "$port_file"
@@ -240,26 +242,36 @@ expect_not_in() {  # expect_not_in LABEL NEEDLE OUTPUT
   esac
 }
 gp_lite() { in_store "$lite/gp" "$@" 2>&1; }
+# gp_out ARGS...: run gp on lite, leave its output in $out, and fail with the
+# output shown when it exits non-zero.
+gp_out() {
+  local status=0
+  out="$(gp_lite "$@")" || status=$?
+  if [ "$status" != 0 ]; then
+    printf 'FAIL: gp %s exited %s:\n%s\n' "$*" "$status" "$out" >&2
+    exit 1
+  fi
+}
 
 for slot in shoppkl shoprec; do
-  out="$(gp_lite "$slot" echo)"
+  gp_out "$slot" echo
   expect_in "plugin command with a stored $slot session" "sid=stored-sid" "$out"
   expect_not_in "plugin command with a stored $slot session" "browser automation stack" "$out"
-  out="$(gp_lite http get --session "$slot" "$base/")"
+  gp_out http get --session "$slot" "$base/"
   expect_in "gp http with a stored $slot session" "sid=stored-sid" "$out"
   expect_not_in "gp http with a stored $slot session" "browser automation stack" "$out"
 done
 
 [ "$(stored_format refrec)" = "record" ] || { echo "refrec is not stored as a record" >&2; exit 1; }
-out="$(gp_lite refrec refresh)"
+gp_out refrec refresh
 expect_in "refresh on a stored record exits 0" "refreshed" "$out"
 [ "$(stored_format refrec)" = "record" ] || { echo "refresh rewrote the record as a pickle" >&2; exit 1; }
 echo "write-back of a stored record stays a record OK"
-out="$(gp_lite refrec show)"
+gp_out refrec show
 expect_in "the next run sends the refreshed cookie" "sid=refreshed-sid" "$out"
 
 [ "$(stored_format refpkl)" = "pickle" ] || { echo "refpkl is not stored as a pickle" >&2; exit 1; }
-out="$(gp_lite refpkl refresh)"
+gp_out refpkl refresh
 expect_in "refresh on a stored pickle skips the save" "session_save_skipped_load_failed" "$out"
 [ "$(stored_format refpkl)" = "pickle" ] || { echo "the skipped save changed the pickle" >&2; exit 1; }
 

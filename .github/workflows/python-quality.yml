@@ -194,6 +194,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # "latest" is the same release as 1.44.0 until the next one ships, so
+        # that case runs twice for now; it is here to catch the first release
+        # that cannot read the default.
         version: ["1.21.0", "1.44.0", "latest"]
     steps:
       - name: Checkout repository
