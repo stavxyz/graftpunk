@@ -216,7 +216,8 @@ once with the release and once with this checkout, both with
 this checkout's `uv.lock` versions of the dependencies the two share, so only
 graftpunk differs (`--no-pin` installs the newest instead); the first two
 lines of output name the graftpunk, requests, urllib3 and dill versions each
-side ran. Run it after any change to a
+side ran. If a release's own dependency ranges exclude a locked version, the
+install fails with uv's error and exit 2; run it with `--no-pin` then. Run it after any change to a
 loader, a write-back or the stored format, against the last release; the
 `old-reader` job runs it for 1.44.0 and the newest release. Against 1.21.0 it
 reports differences by design (that release gives API sessions another

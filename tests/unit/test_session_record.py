@@ -42,6 +42,7 @@ from tests.unit.session_compat_cases import (
     cookie_dicts,
     decrypt,
     iter_cases,
+    newer_records_this_version_would_refuse,
     nodriver_session,
     nodriver_state,
     record_bytes,
@@ -646,3 +647,20 @@ def test_every_malformed_value_is_an_invalid_record_or_decodes(kind):
             except Exception as exc:  # noqa: BLE001 - collected and reported below
                 escaped.append(f"{path} = {value!r:.40}: {type(exc).__name__}: {exc}")
     assert escaped == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    newer_records_this_version_would_refuse().values(),
+    ids=newer_records_this_version_would_refuse().keys(),
+)
+def test_a_newer_record_is_refused_by_version_whatever_it_holds(payload):
+    with pytest.raises(NewerSessionRecord):
+        classify(payload)
+
+
+def test_a_newer_record_too_deep_to_parse_is_invalid():
+    """With no readable version marker there is nothing to call newer."""
+    payload = b'{"graftpunk_session": 2, "x": ' + b"[" * 100_000 + b"]" * 100_000 + b"}"
+    with pytest.raises(InvalidSessionRecord, match="not JSON"):
+        classify(payload)

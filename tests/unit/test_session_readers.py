@@ -40,6 +40,7 @@ from tests.unit.session_compat_cases import (
     cookie_dicts,
     decrypt,
     encrypt,
+    newer_records_this_version_would_refuse,
     nodriver_state,
     record_bytes,
     records_json_could_not_have_written,
@@ -278,6 +279,21 @@ def test_a_record_graftpunk_could_not_have_written_reads_as_an_expired_session(
     for name, fns in readers(session_store).items():
         for fn in fns:
             with pytest.raises(SessionExpiredError, match=re.escape(f"'{name}'")):
+                fn()
+
+
+@pytest.mark.parametrize(
+    "plain",
+    newer_records_this_version_would_refuse().values(),
+    ids=newer_records_this_version_would_refuse().keys(),
+)
+def test_a_newer_record_this_version_would_refuse_is_newer_to_every_reader(plain, session_store):
+    """A later format may allow what this one refuses, so the version decides
+    first, and no reader reports such a record as expired."""
+    store_payload(session_store, plain)
+    for fns in readers(session_store).values():
+        for fn in fns:
+            with pytest.raises(NewerSessionRecord):
                 fn()
 
 

@@ -306,6 +306,22 @@ def nested(depth: int) -> dict:
     return node
 
 
+def newer_records_this_version_would_refuse() -> dict[str, bytes]:
+    """Version 2 records holding what a version 1 record may not: a later
+    format may allow it, so a reader must answer by the version first."""
+
+    def literal(text: str) -> bytes:
+        payload = record_bytes(version=2, extra={"x": "__literal__"})
+        return payload.replace(b'"__literal__"', text.encode())
+
+    return {
+        "newer-nan": literal("NaN"),
+        "newer-infinity": literal("Infinity"),
+        "newer-overflow": literal("1e400"),
+        "newer-deep": record_bytes(version=2, extra={"x": nested(600)}),
+    }
+
+
 def records_json_could_not_have_written() -> dict[str, bytes]:
     """Hand-built records that ``json.loads`` parses and graftpunk's writer
     never produces: a non-finite number, or nesting deeper than a reader walks."""

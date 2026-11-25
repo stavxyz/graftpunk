@@ -559,26 +559,34 @@ def classify(decrypted: bytes) -> Record | LegacyBytes:
     :data:`RECORD_VERSION`, and :class:`InvalidSessionRecord` for a payload
     that starts as a record and is not a valid one, including one holding
     ``NaN``, ``Infinity`` or a number too large for a float, or nested more
-    than :data:`MAX_DEPTH` deep.
+    than :data:`MAX_DEPTH` deep. The version is read first, so a newer record
+    is :class:`NewerSessionRecord` whatever it holds, if it parses at all.
     """
     # Neither byte is a pickle opcode, so neither can start a pickle; JSON
     # that starts with "[" is refused as a record rather than unpickled.
     if decrypted[:1] not in (b"{", b"["):
         return LegacyBytes(decrypted)
     try:
-        # NaN and Infinity are not JSON, and the writer never stores them.
-        doc = json.loads(decrypted, parse_constant=_refuse_constant, parse_float=_finite_float)
+        # Read leniently first: the version decides which rules apply, and a
+        # later format may allow what this one refuses below.
+        doc = json.loads(decrypted)
     except (ValueError, RecursionError) as exc:
         raise InvalidSessionRecord(f"not JSON ({exc})") from exc
     if type(doc) is not dict:
         raise InvalidSessionRecord("not a JSON object")
-    if _deeper_than(doc, MAX_DEPTH):
-        raise InvalidSessionRecord(f"nested more than {MAX_DEPTH} deep")
     version = doc.get(_VERSION_KEY)
     if type(version) is not int:
         raise InvalidSessionRecord(f"{_VERSION_KEY!r} is not an integer version")
     if version > RECORD_VERSION:
         raise NewerSessionRecord(version)
+    try:
+        # NaN, Infinity and numbers too large for a float are not JSON, and
+        # the writer never stores them.
+        json.loads(decrypted, parse_constant=_refuse_constant, parse_float=_finite_float)
+    except ValueError as exc:
+        raise InvalidSessionRecord(f"not JSON ({exc})") from exc
+    if _deeper_than(doc, MAX_DEPTH):
+        raise InvalidSessionRecord(f"nested more than {MAX_DEPTH} deep")
     if version < 1:
         raise InvalidSessionRecord(f"version {version} is not a record version")
     kind = doc.get(_KIND_KEY)
