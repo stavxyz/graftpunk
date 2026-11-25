@@ -106,7 +106,13 @@ def test_each_fixture_is_recordable_or_not_as_declared(case):
 
 def test_unrecordable_fixtures_per_version():
     # The count the commit body reports: adapter, selenium and subclass in each.
-    counts = Counter(c.version for c in iter_cases() if not RECORDABLE[c.case])
+    def recordable(case: Any) -> bool:
+        legacy = state_from_pickle(decrypt(case))
+        return legacy.kind is not None and isinstance(
+            state_to_record(legacy.kind, legacy.state), bytes
+        )
+
+    counts = Counter(c.version for c in iter_cases() if not recordable(c))
     assert counts == dict.fromkeys(VERSIONS, 3)
 
 
@@ -157,6 +163,16 @@ def test_what_a_record_cannot_hold_is_refused_by_name(case, key):
 def test_each_default_predicate_holds_for_the_installed_libraries(cls):
     state = cls().__getstate__()
     assert all(p.at_default(state[p.state_key]) for p in PICKLE_ONLY if p.state_key in state)
+
+
+def test_a_retry_without_other_is_at_default():
+    # urllib3 before 1.26 (requests 2.28.0 allows 1.21.1 and later) has no
+    # Retry.other; checked against urllib3 1.25.11 on 2026-11-25.
+    state = requests.Session().__getstate__()
+    for adapter in state["adapters"].values():
+        fields = {k: v for k, v in vars(adapter.max_retries).items() if k != "other"}
+        adapter.max_retries = type("Retry", (), fields)()
+    assert isinstance(state_to_record("requests", state), bytes)
 
 
 @pytest.mark.parametrize("row", PICKLE_ONLY, ids=lambda p: p.state_key)
@@ -235,6 +251,27 @@ def _record_dict(**changes: Any) -> bytes:
     return json.dumps(record).encode()
 
 
+def _with_huge_int(place: Callable[[dict[str, Any]], dict[str, Any]], key: str) -> bytes:
+    # An integer too large for a float (10**400), which json.loads reads as an int.
+    record = json.loads(record_bytes())
+    place(record)[key] = "HUGE"
+    payload = json.dumps(record).encode()
+    assert payload.count(b'"HUGE"') == 1
+    return payload.replace(b'"HUGE"', b"1" + b"0" * 400)
+
+
+def _huge_cookie_expires() -> bytes:
+    return _with_huge_int(lambda r: r["cookies"][0], "expires")
+
+
+def _huge_token_ttl() -> bytes:
+    return _with_huge_int(lambda r: r["riders"]["cached_tokens"]["csrf"], "ttl")
+
+
+def _huge_token_extracted_at() -> bytes:
+    return _with_huge_int(lambda r: r["riders"]["cached_tokens"]["csrf"], "extracted_at")
+
+
 def _cookie_without_name() -> bytes:
     record = json.loads(record_bytes())
     del record["cookies"][0]["name"]
@@ -261,6 +298,11 @@ def _cookie_without_name() -> bytes:
         _record_dict(riders={"unknown_rider": 1}),
         _record_dict(auth=None),
         record_bytes("requests", drop=("requests",)),
+        _record_dict(kind=["browser"]),
+        _record_dict(kind={"browser": 1}),
+        _huge_cookie_expires(),
+        _huge_token_ttl(),
+        _huge_token_extracted_at(),
     ],
     ids=[
         "array",
@@ -280,6 +322,11 @@ def _cookie_without_name() -> bytes:
         "unknown-rider",
         "key-of-another-kind",
         "requests-without-requests-block",
+        "kind-array",
+        "kind-object",
+        "huge-cookie-expires",
+        "huge-token-ttl",
+        "huge-token-extracted-at",
     ],
 )
 def test_json_that_is_not_a_record_is_invalid(payload):
@@ -485,3 +532,65 @@ def test_record_to_state_gives_fresh_objects_each_call():
 )
 def test_kind_of_matches_the_exact_class(session, kind):
     assert kind_of(session) == kind
+
+
+# Values of every JSON type, plus an integer too large for a float.
+_WRONG_VALUES: tuple[Any, ...] = (
+    None,
+    True,
+    0,
+    -1,
+    10**400,
+    1.5,
+    "",
+    "x",
+    [],
+    ["a"],
+    [["a", "b", "c"]],
+    {},
+    {"a": 1},
+    {"a": {"b": []}},
+)
+
+
+def _paths(node: Any, path: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    found = [path] if path else []
+    if isinstance(node, dict):
+        children = list(node.items())
+    elif isinstance(node, list):
+        children = list(enumerate(node))
+    else:
+        children = []
+    for key, child in children:
+        found += _paths(child, (*path, key))
+    return found
+
+
+def _replaced(record: Any, path: tuple[Any, ...], value: Any) -> Any:
+    changed = json.loads(json.dumps(record))
+    node = changed
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+    return changed
+
+
+@pytest.mark.parametrize("kind", ["browser", "api", "requests"])
+def test_every_malformed_value_is_an_invalid_record_or_decodes(kind):
+    # Each node of a hand-built record, replaced by each value above: classify
+    # raises InvalidSessionRecord or gives a record that record_to_state decodes.
+    record = json.loads(record_bytes(kind))
+    escaped = []
+    for path in _paths(record):
+        for value in _WRONG_VALUES:
+            payload = json.dumps(_replaced(record, path, value)).encode()
+            try:
+                record_to_state(classify(payload))
+            except InvalidSessionRecord:
+                pass
+            except NewerSessionRecord:
+                if path != ("graftpunk_session",):
+                    escaped.append(f"{path} = {value!r:.40}: NewerSessionRecord")
+            except Exception as exc:  # noqa: BLE001 - collected and reported below
+                escaped.append(f"{path} = {value!r:.40}: {type(exc).__name__}: {exc}")
+    assert escaped == []

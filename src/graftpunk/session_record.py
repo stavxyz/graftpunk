@@ -162,7 +162,12 @@ def _is_optional_str(v: Any) -> bool:
 
 
 def _is_number(v: Any) -> bool:
-    return type(v) in (int, float) and math.isfinite(v)
+    if type(v) not in (int, float):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:  # an int too large for a float, which JSON can hold
+        return False
 
 
 def _is_str_map(v: Any, values: Callable[[Any], bool] = _is_str) -> bool:
@@ -431,7 +436,9 @@ def _adapter_at_default(adapter: Any) -> bool:
         and retries.connect is None
         and retries.redirect is None
         and retries.status is None
-        and retries.other is None
+        # Retry.other is new in urllib3 1.26; requests 2.28.0 allows 1.21.1
+        # and later, and urllib3 1.25.11 has no such attribute.
+        and getattr(retries, "other", None) is None
         and retries.backoff_factor == 0
         and not retries.status_forcelist
     )
@@ -508,8 +515,8 @@ def classify(decrypted: bytes) -> Record | LegacyBytes:
     """Tell a stored record from a legacy pickle, and validate a record whole.
 
     A payload whose first byte is ``{`` is a record (``[``, a JSON array, is
-    an invalid one); anything else is returned
-    as :class:`LegacyBytes` and never unpickled here. Raises
+    an invalid one); anything else is returned as :class:`LegacyBytes` and
+    never unpickled here. Raises
     :class:`NewerSessionRecord` for a record version above
     :data:`RECORD_VERSION`, and :class:`InvalidSessionRecord` for a payload
     that starts as a record and is not a valid one.
@@ -532,7 +539,7 @@ def classify(decrypted: bytes) -> Record | LegacyBytes:
     if version < 1:
         raise InvalidSessionRecord(f"version {version} is not a record version")
     kind = doc.get(_KIND_KEY)
-    if kind not in _KINDS:
+    if type(kind) is not str or kind not in _KINDS:
         raise InvalidSessionRecord(f"{kind!r} is not a session kind")
     _check_layout(doc, kind)
     fields = {}
@@ -545,7 +552,7 @@ def classify(decrypted: bytes) -> Record | LegacyBytes:
             continue
         try:
             row.decode(data)
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, OverflowError) as exc:
             raise InvalidSessionRecord(f"{where!r}: {exc}") from exc
         fields[row.state_key] = data
     extra = {key: value for key, value in doc.items() if key not in _TABLE_KEYS}
@@ -577,7 +584,7 @@ def state_to_record(
                 # What a reader will get: refuses NaN, infinity and non-JSON
                 # values, and anything classify would reject.
                 rows[key].decode(json.loads(json.dumps(data, allow_nan=False)))
-            except (ValueError, TypeError) as exc:
+            except (ValueError, TypeError, OverflowError) as exc:
                 return Unrecordable(key, f"a record cannot hold it: {exc}")
             encoded[key] = data
         elif key in pickle_only:
