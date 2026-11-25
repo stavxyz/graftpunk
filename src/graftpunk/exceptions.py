@@ -25,6 +25,41 @@ class SessionExpiredError(GraftpunkError):
     """
 
 
+class NewerSessionRecord(GraftpunkError):  # noqa: N818 - the stored format's names
+    """A stored session record has a version newer than this release reads.
+
+    Never reported as an expired session, and never written over: the newer
+    release that wrote it can still read it.
+    """
+
+    def __init__(self, version: int) -> None:
+        self.version = version
+        super().__init__(
+            f"This session was stored as session record version {version}, which this "
+            "release of graftpunk cannot read. Upgrade graftpunk to load it."
+        )
+
+
+class InvalidSessionRecord(GraftpunkError):  # noqa: N818 - the stored format's names
+    """Stored bytes start as a session record but are not a valid one.
+
+    Internal to the record codec: the public loaders report it as
+    :class:`SessionExpiredError`, as they report a corrupt pickle.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"Not a valid session record: {reason}")
+
+
+class RealSessionClassUnavailable(ImportError):  # noqa: N818 - the stored format's names
+    """The class a stored session needs to load as itself cannot be imported.
+
+    An ``ImportError``, so code that caught the ``ImportError`` a missing
+    browser stack raised before keeps catching it.
+    """
+
+
 class SessionNotFoundError(GraftpunkError):
     """Raised when no cached session can be found for the requested key."""
 
