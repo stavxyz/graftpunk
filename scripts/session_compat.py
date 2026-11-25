@@ -35,8 +35,11 @@ each with its own scratch store: for each fixture under ``--fixtures``,
 write-back (``update_session_cookies`` after adding one cookie), recording the
 API sessions' cookies, cookie policy, headers and riders, the sha256 of the
 decrypted payload the write-back stored, and the class ``load_session``
-returns after it. It prints each value that differs and exits 1, or prints
-one ``no differences`` line and exits 0.
+returns after it, and the versions of graftpunk, requests, urllib3 and dill
+each side ran. The release is installed with the working tree's ``uv.lock``
+versions of the dependencies the two share (``--no-pin`` installs the newest),
+so only graftpunk differs. It prints each side's versions, then each value
+that differs and exits 1, or one ``no differences`` line and exits 0.
 
 ``generate``, ``read`` and ``compare`` run the release in a venv made with
 ``uv venv`` under a temporary directory, never the repository's ``.venv``,
@@ -62,6 +65,7 @@ Usage:
     python scripts/session_compat.py write --store DIR --name NAME [--format pickle|record]
     python scripts/session_compat.py read --graftpunk VERSION --store DIR --name NAME [--key FILE]
     python scripts/session_compat.py compare --graftpunk VERSION [--fixtures DIR] [--key FILE]
+        [--no-pin]
 """
 
 from __future__ import annotations
@@ -141,12 +145,13 @@ def check_out_dir(out: Path) -> None:
         raise CompatError(f"--out {out} exists and is not an empty directory; refusing to write")
 
 
-def _venv(tmp: Path, version: str) -> Path:
+def _venv(tmp: Path, version: str, constraints: Path | None = None) -> Path:
     venv = tmp / "venv"
+    pinned = ["--constraint", str(constraints)] if constraints else []
     steps = (
         ["uv", "venv", "-q", str(venv), "-p", CHILD_PYTHON],
         ["uv", "pip", "install", "-q", "--python", str(venv / "bin" / "python"),
-         f"graftpunk=={version}"],
+         *pinned, f"graftpunk=={version}"],
     )  # fmt: skip
     for cmd in steps:
         done = subprocess.run(cmd, capture_output=True, text=True, check=False)  # noqa: S603
@@ -270,25 +275,43 @@ def read(version: str, store: Path, name: str, key: bytes, *, python: str | None
             key_file.unlink(missing_ok=True)
 
 
+def _locked_constraints(tmp: Path) -> Path:
+    """The working tree's locked dependency versions, as a constraints file."""
+    cmd = ["uv", "export", "--frozen", "--no-hashes", "--no-emit-project", "--all-extras",
+           "--project", str(REPO_ROOT)]  # fmt: skip
+    done = subprocess.run(cmd, capture_output=True, text=True, check=False)  # noqa: S603
+    if done.returncode != 0:
+        raise CompatError(f"{' '.join(cmd)} failed:\n{done.stderr.strip()}")
+    constraints = tmp / "constraints.txt"
+    constraints.write_text(done.stdout)
+    return constraints
+
+
 def compare(
     version: str,
     fixtures: Path,
     key: bytes,
     *,
+    pin: bool = True,
     release_python: str | None = None,
     python: str | None = None,
 ) -> int:
     """Run the compare steps with release *version* and with the code under
-    test (*python*, default this interpreter); print what differs."""
+    test (*python*, default this interpreter); print what differs.
+
+    With *pin* the release is installed under the working tree's ``uv.lock``
+    versions of every dependency the two share, so only graftpunk differs: a
+    newer ``requests`` or ``dill`` changes headers and pickled bytes.
+    """
     fixtures = fixtures.resolve()  # the children run in temp directories
     if not any(_fixture_dirs(fixtures)):
         raise CompatError(f"--fixtures {fixtures} holds no <version>/ directories")
     results: dict[str, dict[str, Any]] = {}
     with tempfile.TemporaryDirectory(prefix="session-compat-") as tmp:
-        children = (
-            ("release", release_python or str(_venv(Path(tmp), version))),
-            ("tree", python or sys.executable),
-        )
+        if release_python is None:
+            constraints = _locked_constraints(Path(tmp)) if pin else None
+            release_python = str(_venv(Path(tmp), version, constraints))
+        children = (("release", release_python), ("tree", python or sys.executable))
         for label, child in children:
             run_dir = Path(tmp) / label
             run_dir.mkdir()
@@ -299,13 +322,20 @@ def compare(
             if status != 0:
                 raise CompatError(f"the compare steps failed under the {label} (exit {status})")
             results[label] = json.loads(out.read_text())
+    for label, result in results.items():
+        versions = ", ".join(f"{n} {v}" for n, v in sorted(result["environment"].items()))
+        print(f"{label}: {versions}")
+    # graftpunk's own version differs by design; every other library is compared.
+    for result in results.values():
+        result["environment"].pop("graftpunk")
     lines = differences(results["release"], results["tree"], old_label=version)
     for line in lines:
         print(line)
     if lines:
         print(f"{len(lines)} values differ from graftpunk {version}")
         return COMPARE_DIFFERS
-    print(f"no differences from graftpunk {version}: {len(results['tree'])} fixtures")
+    count = len(results["tree"]["fixtures"])
+    print(f"no differences from graftpunk {version}: {count} fixtures")
     return 0
 
 
@@ -622,7 +652,13 @@ def _compare_steps(sessions: Path, key: bytes, name: str, encrypted: bytes) -> d
     }
 
 
+# The libraries whose version changes what the compare steps record.
+_COMPARED_LIBRARIES = ("graftpunk", "requests", "urllib3", "dill")
+
+
 def child_compare(fixtures: Path, out: Path) -> None:
+    import importlib.metadata
+
     config_dir = Path(os.environ["GRAFTPUNK_CONFIG_DIR"])
     sessions = config_dir / "sessions"
     key = (config_dir / ".session_key").read_bytes().strip()
@@ -636,7 +672,9 @@ def child_compare(fixtures: Path, out: Path) -> None:
                 results[f"{version_dir.name}/{case}"] = _compare_steps(
                     sessions, key, name, encrypted
                 )
-    out.write_text(json.dumps(results, indent=1, sort_keys=True, default=repr))
+    environment = {n: importlib.metadata.version(n) for n in _COMPARED_LIBRARIES}
+    report = {"environment": environment, "fixtures": results}
+    out.write_text(json.dumps(report, indent=1, sort_keys=True, default=repr))
 
 
 # --- command line -----------------------------------------------------------
@@ -677,6 +715,12 @@ def _parser() -> argparse.ArgumentParser:
     cmp.add_argument("--graftpunk", required=True, metavar="VERSION")
     cmp.add_argument("--fixtures", type=Path, default=DEFAULT_FIXTURES, metavar="DIR")
     cmp.add_argument("--key", type=Path, default=DEFAULT_KEY, metavar="FILE")
+    cmp.add_argument(
+        "--no-pin",
+        dest="pin",
+        action="store_false",
+        help="install the release with the newest dependencies instead of uv.lock's",
+    )
     # The child half, run by the commands above inside the release's venv.
     child_gen = sub.add_parser("_generate")
     child_gen.add_argument("--out", required=True, type=Path)
@@ -702,7 +746,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "read":
             return read(args.graftpunk, args.store, args.name, args.key.read_bytes())
         if args.command == "compare":
-            return compare(args.graftpunk, args.fixtures, args.key.read_bytes())
+            return compare(args.graftpunk, args.fixtures, args.key.read_bytes(), pin=args.pin)
         if args.command == "_generate":
             child_generate(args.out)
             return 0

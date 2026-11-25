@@ -212,7 +212,11 @@ back with `update_session_cookies` after adding a cookie, and records the API
 sessions' cookies, policy, headers and riders, the sha256 of the payload the
 write-back stored, and the class `load_session` then returns. It does this
 once with the release and once with this checkout, both with
-`PYTHONHASHSEED=0`, and prints the differences. Run it after any change to a
+`PYTHONHASHSEED=0`, and prints the differences. The release is installed with
+this checkout's `uv.lock` versions of the dependencies the two share, so only
+graftpunk differs (`--no-pin` installs the newest instead); the first two
+lines of output name the graftpunk, requests, urllib3 and dill versions each
+side ran. Run it after any change to a
 loader, a write-back or the stored format, against the last release; the
 `old-reader` job runs it for 1.44.0 and the newest release. Against 1.21.0 it
 reports differences by design (that release gives API sessions another

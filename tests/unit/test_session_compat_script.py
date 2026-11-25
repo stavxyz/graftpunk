@@ -167,13 +167,19 @@ def test_compare_finds_no_difference_between_two_runs_of_the_same_code(tmp_path,
     status = session_compat.compare(
         "working-tree", _two_fixtures(tmp_path), TEST_KEY, release_python=sys.executable
     )
+    out = capfd.readouterr().out.splitlines()
     assert status == 0
-    assert capfd.readouterr().out.splitlines() == [
-        "no differences from graftpunk working-tree: 2 fixtures"
-    ]
+    assert out[0].startswith("release: dill ")
+    assert out[1] == "tree: " + out[0].split(": ", 1)[1]
+    assert out[2:] == ["no differences from graftpunk working-tree: 2 fixtures"]
 
 
-def _release_that_reads_differently(tmp_path) -> str:
+_NAMED_RAISES = (
+    "results['fixtures']['1.44.0/nodriver']['named'] = {'raised': 'SessionExpiredError'}"
+)
+
+
+def _release_that_reads_differently(tmp_path, change: str = _NAMED_RAISES) -> str:
     """A stand-in release: runs the child, then changes one recorded value."""
     fake = tmp_path / "fake-release"
     fake.write_text(
@@ -184,7 +190,7 @@ def _release_that_reads_differently(tmp_path) -> str:
         "subprocess.run([sys.executable, *args], check=True)\n"
         "out = Path(args[args.index('--out') + 1])\n"
         "results = json.loads(out.read_text())\n"
-        "results['1.44.0/nodriver']['named'] = {'raised': 'SessionExpiredError'}\n"
+        f"{change}\n"
         "out.write_text(json.dumps(results))\n"
     )
     fake.chmod(0o755)
@@ -200,12 +206,10 @@ def test_compare_prints_each_differing_value_and_exits_1(tmp_path, capfd):
     )
     out = capfd.readouterr().out.splitlines()
     assert status == session_compat.COMPARE_DIFFERS
-    assert out[-1] == f"{len(out) - 1} values differ from graftpunk 9.9.9"
-    assert (
-        '1.44.0/nodriver/named/raised: graftpunk 9.9.9 "SessionExpiredError" | '
-        + ("working tree <absent>")
-        in out
-    )
+    # Two version lines, the differing values, and the count.
+    assert out[-1] == f"{len(out) - 3} values differ from graftpunk 9.9.9"
+    expected = 'fixtures/1.44.0/nodriver/named/raised: graftpunk 9.9.9 "SessionExpiredError"'
+    assert f"{expected} | working tree <absent>" in out
     assert not [line for line in out if "flatfile" in line]
 
 
@@ -223,3 +227,33 @@ def test_differences_names_the_path_of_each_changed_or_missing_value():
         "gone/k: graftpunk 1.44.0 1 | working tree <absent>",
     ]
     assert session_compat.differences(old, old, old_label="1.44.0") == []
+
+
+def test_compare_reports_a_dependency_version_that_differs(tmp_path, capfd):
+    """graftpunk's own version is printed and not compared; another library's is."""
+    change = (
+        "results['environment']['requests'] = '0.0.1'; "
+        "results['environment']['graftpunk'] = '9.9.9'"
+    )
+    status = session_compat.compare(
+        "9.9.9",
+        _two_fixtures(tmp_path),
+        TEST_KEY,
+        release_python=_release_that_reads_differently(tmp_path, change),
+    )
+    out = capfd.readouterr().out.splitlines()
+    assert status == session_compat.COMPARE_DIFFERS
+    assert "graftpunk 9.9.9" in out[0]
+    assert len(out) == 4
+    assert out[2].startswith('environment/requests: graftpunk 9.9.9 "0.0.1" | working tree "')
+
+
+def test_the_release_is_pinned_to_the_locked_versions(tmp_path):
+    import tomllib
+
+    lock = tomllib.loads((session_compat.REPO_ROOT / "uv.lock").read_text())
+    locked = {p["name"]: p["version"] for p in lock["package"]}
+    constraints = session_compat._locked_constraints(tmp_path).read_text().splitlines()
+    for name in ("requests", "dill", "urllib3"):
+        assert any(line.startswith(f"{name}=={locked[name]}") for line in constraints), name
+    assert not any(line.startswith(("graftpunk==", "-e")) for line in constraints)
