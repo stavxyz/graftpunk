@@ -752,3 +752,10 @@ this section governs.
     unrecordable, and a record missing one is invalid.
 30. **The adapter default check also reads requests' `DEFAULT_POOLBLOCK`**,
     beside `DEFAULT_POOLSIZE`.
+31. **`GraftpunkSession.__init__` calls the shared helper before it applies
+    the browser identity** and retakes the header snapshot afterwards,
+    because the helper resets the header roles the identity reads. A fresh
+    session ends in the same state as before. This amends points 20 and 26.
+32. **A stored value no session can hold reads as an expired session** from
+    every public loader, legacy pickle or record. A graftpunk error or an
+    `ImportError` raised during a load propagates as itself.
