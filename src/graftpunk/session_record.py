@@ -253,8 +253,11 @@ _COOKIE_ARGS: dict[str, Callable[[Any], bool]] = {
     "expires": lambda v: v is None or _is_number(v),
     "discard": _is_bool,
     "comment": _is_optional_str,
-    "comment_url": _is_optional_str,
-    "rest": lambda v: _is_str_map(v, _is_optional_str),
+    # requests.cookies.morsel_to_cookie (what RequestsCookieJar.set does with
+    # a Morsel) sets comment_url to a bool and HttpOnly in rest to a bool or
+    # "", and a response or plugin can add such a cookie before a write-back.
+    "comment_url": lambda v: _is_optional_str(v) or _is_bool(v),
+    "rest": lambda v: _is_str_map(v, lambda x: _is_optional_str(x) or _is_bool(x)),
     "rfc2109": _is_bool,
 }
 

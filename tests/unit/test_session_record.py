@@ -453,6 +453,18 @@ def test_classify_refuses_a_non_finite_number(literal):
         classify(payload)
 
 
+def test_cookies_requests_builds_round_trip_with_all_17_arguments():
+    from tests.unit.session_compat_cases import cookies_requests_builds
+
+    jar = requests.cookies.RequestsCookieJar()
+    for cookie in cookies_requests_builds():
+        jar.set_cookie(cookie)
+    state = requests.Session().__getstate__() | {"cookies": jar}
+    record = state_to_record("requests", state)
+    assert isinstance(record, bytes), record
+    assert cookie_dicts(record_to_state(classify(record))["cookies"]) == cookie_dicts(jar)
+
+
 def test_a_state_key_with_no_row_is_unrecordable_by_name():
     refused = state_to_record("browser", nodriver_state() | {"_gp_csrf_tokens": {}})
     assert isinstance(refused, Unrecordable)

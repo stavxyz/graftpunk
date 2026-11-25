@@ -272,6 +272,32 @@ def record_bytes(
     return json.dumps(record).encode()
 
 
+def cookies_requests_builds() -> list[Any]:
+    """Cookies as requests' own builders make them: ``morsel_to_cookie`` (what
+    ``RequestsCookieJar.set`` does with a ``Morsel``) gives a bool
+    ``comment_url`` and a bool or empty-string ``HttpOnly`` in ``rest``;
+    ``create_cookie`` and ``RequestsCookieJar.set`` give ``{"HttpOnly": None}``."""
+    from http.cookies import SimpleCookie
+
+    from requests.cookies import create_cookie, morsel_to_cookie
+
+    full = SimpleCookie()
+    full.load(
+        "m-full=9; Version=1; Comment=hello; HttpOnly; Secure; Path=/; "
+        "Domain=.myshop.example; Max-Age=60"
+    )
+    bare = SimpleCookie()
+    bare.load("m-bare=1")
+    jar = RequestsCookieJar()
+    jar.set("jar-set", "2", domain=".myshop.example")
+    return [
+        morsel_to_cookie(full["m-full"]),
+        morsel_to_cookie(bare["m-bare"]),
+        create_cookie("created", "3", domain=".myshop.example"),
+        *jar,
+    ]
+
+
 def nested(depth: int) -> dict:
     """A JSON object *depth* objects deep, built without recursion."""
     node: dict = {}

@@ -175,6 +175,25 @@ def test_copy_of_an_api_record_gives_it_no_session_name(session_store):
     assert session_store.metadata("myshop@alice").account_identifier == "alice"
 
 
+def test_a_record_write_back_keeps_cookies_requests_builds(session_store):
+    """A response or a plugin adds cookies to the API session through requests'
+    own builders; the record written back carries each of them unchanged."""
+    from tests.unit.session_compat_cases import cookies_requests_builds
+
+    session_store.seed("record")
+    api = load_session_for_api("myshop", key=TEST_KEY)
+    added = cookies_requests_builds()
+    for cookie in added:
+        api.cookies.set_cookie(cookie)
+
+    update_session_cookies(api, "myshop", key=TEST_KEY)
+
+    assert session_store.format_of("myshop") == "record"
+    names = {cookie.name for cookie in added}
+    reread = load_session_for_api("myshop", key=TEST_KEY).cookies
+    assert [c for c in cookie_dicts(reread) if c["name"] in names] == cookie_dicts(added)
+
+
 def test_a_value_a_record_cannot_hold_skips_the_write_back(session_store, captured_logs):
     before = session_store.seed("record")
     api = bare_api_with_new_cookie()
