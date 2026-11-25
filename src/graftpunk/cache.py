@@ -340,7 +340,7 @@ def _encode_as(session: Any) -> bytes:
     """
     if not isinstance(session, StoredSession):
         return pickle.dumps(session)
-    if not session.writable or session.kind is None:
+    if session.kind is None:
         raise TypeError("a stored session with no kind cannot be written")
     encoded = state_to_record(session.kind, session.stored_state(), session.extra)
     if isinstance(encoded, Unrecordable):

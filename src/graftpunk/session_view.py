@@ -3,40 +3,18 @@
 :class:`StoredSession` holds a stored session's state dict and answers the
 attribute reads and writes the API loaders make on a session, without the
 session classes and so without selenium, requestium, nodriver or httpie.
-:class:`StoredSessionLike` is the shape both it and a real session satisfy.
 """
 
 from __future__ import annotations
 
 import copy
-from typing import Any, NoReturn, Protocol
+from typing import Any, NoReturn
 
 from requests.cookies import RequestsCookieJar
 from requests.structures import CaseInsensitiveDict
 
 from graftpunk.session_record import FIELDS, Record, record_to_state
 from graftpunk.session_riders import SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
-
-
-class StoredSessionLike(Protocol):
-    """What a loader reads and sets on a session, real or stored.
-
-    The rider attributes are listed by their registered names
-    (:data:`graftpunk.session_riders.SESSION_RIDER_ATTRS`).
-    """
-
-    cookies: Any
-    headers: Any
-    session_name: str
-    current_url: str
-    _gp_cached_tokens: dict[str, Any]
-    _gp_csrf_tokens: dict[str, Any]
-    _gp_csrf_origin: str
-    _gp_header_roles: dict[str, Any]
-    _gp_header_role_origins: dict[str, Any]
-    _gp_session_name: str | None
-    _gp_account_identifier: str | None
-
 
 _RIDERS = frozenset(SESSION_RIDER_ATTRS)
 
@@ -46,9 +24,10 @@ class StoredSession:
 
     *kind* is the stored kind (``browser``, ``api`` or ``requests``), or None
     for a legacy pickle of a subclass or another type: such a view can be read
-    and never written (:attr:`writable`). A value set on an attribute the table
-    stores for the kind goes into the state; any other value is kept in memory
-    for this view only and is absent from :meth:`stored_state`.
+    and never written (:meth:`stored_state` refuses it). A value set on an
+    attribute the table stores for the kind goes into the state; any other
+    value is kept in memory for this view only and is absent from
+    :meth:`stored_state`.
 
     The view takes ownership of the *state* and *extra* dicts it is given: it
     keeps them without copying, writes to *state* when a stored attribute is
@@ -76,11 +55,6 @@ class StoredSession:
     def from_record(cls, record: Record) -> StoredSession:
         """The view of a validated record, carrying its unknown top-level keys."""
         return cls(record.kind, record_to_state(record), copy.deepcopy(record.extra))
-
-    @property
-    def writable(self) -> bool:
-        """Whether the view has a kind, and so can be written back."""
-        return self.kind is not None
 
     def _stored_keys(self) -> frozenset[str]:
         return frozenset(row.state_key for row in FIELDS if self.kind in row.kinds)

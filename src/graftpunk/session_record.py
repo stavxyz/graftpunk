@@ -23,9 +23,9 @@ import json
 import math
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http import cookiejar
-from typing import Any, Literal
+from typing import Any
 
 import requests.adapters
 from requests.cookies import RequestsCookieJar
@@ -41,8 +41,6 @@ from graftpunk.session_riders import (
     SESSION_CLASS_PATHS,
     CachedToken,
 )
-
-SessionFormat = Literal["pickle", "record"]
 
 RECORD_VERSION = 1
 
@@ -107,7 +105,6 @@ class Record:
     kind: str
     fields: dict[str, Any]
     extra: dict[str, Any]
-    format: SessionFormat = field(default="record", init=False)
 
 
 @dataclass(frozen=True)
@@ -115,7 +112,6 @@ class LegacyBytes:
     """Stored bytes that are not a record: a legacy pickle, not yet unpickled."""
 
     data: bytes
-    format: SessionFormat = field(default="pickle", init=False)
 
 
 @dataclass(frozen=True)

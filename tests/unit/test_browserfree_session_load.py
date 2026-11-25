@@ -42,62 +42,12 @@ def test_api_session_from_source_copies_state():
     assert getattr(api, _CSRF_TOKENS_ATTR) == {"form": "csrf123"}
 
 
-# --- Direct find_class mechanism tests -------------------------------------
+# --- A class pickled by reference whose module is gone ----------------------
 #
-# NOTE: an earlier version of this test built a "genuinely unimportable
-# class" by rewriting a local class's __module__/__qualname__ and
-# round-tripping it through dill. That does not exercise the stub path at
-# all: dill pickles a class whose module cannot be resolved BY VALUE (it
-# embeds the full class definition in the pickle stream), so on load the
-# object is reconstructed directly and find_class's except-branch is never
-# hit. The test passed without ever touching the placeholder — false confidence.
-# The tests below exercise find_class and the placeholder
-# (session_legacy._Capture) directly and deterministically,
-# plus one true by-reference round-trip (test 4) that does hit the fallback.
-# The genuine production case — a real graftpunk.session.BrowserSession
-# pickled by reference, then loaded with the browser stack absent — is
-# covered end-to-end by Task 5's A4 fixture.
-
-
-def test_find_class_stubs_genuinely_unimportable_module():
-    unpickler = session_legacy._Unpickler(io.BytesIO(b""))
-    stub_cls = unpickler.find_class("graftpunk._nonexistent_pyodide_module", "BrowserSession")
-    assert isinstance(stub_cls, type)
-    assert issubclass(stub_cls, session_legacy._Capture)
-
-
-def test_find_class_passes_through_importable_class():
-    unpickler = session_legacy._Unpickler(io.BytesIO(b""))
-    resolved = unpickler.find_class("requests.cookies", "RequestsCookieJar")
-    assert resolved is requests.cookies.RequestsCookieJar
-
-
-def test_stub_setstate_restores_dict_state():
-    stub_cls = type("StubDictState", (session_legacy._Capture,), {})
-    stub = stub_cls()
-    jar = requests.cookies.RequestsCookieJar()
-    jar.set("User", "dummyuser", domain="example.com")
-    stub.__setstate__({"cookies": jar, "headers": {"User-Agent": "Chrome/999"}})
-    assert stub.__dict__["cookies"] is jar
-    assert stub.__dict__["headers"] == {"User-Agent": "Chrome/999"}
-
-
-def test_stub_setstate_restores_dict_and_slotstate_tuple():
-    stub_cls = type("StubTupleState", (session_legacy._Capture,), {})
-    stub = stub_cls()
-    stub.__setstate__(({"cookies": "c"}, {"headers": "h"}))
-    assert stub.cookies == "c"
-    assert stub.headers == "h"
-
-
-def test_stub_setstate_rejects_unknown_state_shape():
-    stub_cls = type("StubBadState", (session_legacy._Capture,), {})
-    stub = stub_cls()
-    with pytest.raises(TypeError):
-        stub.__setstate__("not a dict or tuple")
-
-
-# --- By-reference round-trip that actually hits the stub fallback ----------
+# dill pickles a class whose module cannot be resolved BY VALUE (it embeds the
+# class definition in the pickle), so a class must be pickled while its module
+# is importable and read after the module is gone for the read to stub it.
+# The placeholder's own state handling is tested in test_session_legacy.py.
 
 
 class _ThrowawayBrowserSessionLike:
@@ -114,7 +64,7 @@ class _ThrowawayBrowserSessionLike:
         self.__dict__.update(state)
 
 
-def test_deserialize_browserfree_stub_roundtrip_by_reference():
+def test_state_from_pickle_stubs_a_class_pickled_by_reference():
     module_name = "graftpunk_test_throwaway_browser_module"
     module = types.ModuleType(module_name)
     _ThrowawayBrowserSessionLike.__module__ = module_name

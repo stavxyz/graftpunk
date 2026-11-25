@@ -4,7 +4,6 @@ codec refuses is still saved, as a pickle."""
 import dataclasses
 import inspect
 import json
-import typing
 
 import pytest
 import requests
@@ -23,9 +22,7 @@ from graftpunk.cache import (
     load_session_for_api_resolved,
     update_session_cookies,
 )
-from graftpunk.config import GraftpunkSettings
 from graftpunk.graftpunk_session import GraftpunkSession
-from graftpunk.session_record import SessionFormat
 from graftpunk.session_view import StoredSession
 from tests.unit.session_compat_cases import (
     TEST_KEY,
@@ -166,12 +163,6 @@ def test_a_mistyped_format_fails_naming_the_choices(session_store, session_forma
         cache_session(nodriver_session(), "myshop", key=TEST_KEY)
     # Checked on disk: reading the settings back would raise again.
     assert not any(session_store.root.rglob("myshop*"))
-
-
-def test_the_setting_and_the_codec_name_the_same_formats():
-    assert typing.get_args(GraftpunkSettings.model_fields["session_format"].annotation) == (
-        typing.get_args(SessionFormat)
-    )
 
 
 def test_encode_as_follows_the_type_of_what_it_is_given(session_format):

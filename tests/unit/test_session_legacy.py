@@ -10,7 +10,12 @@ import dill
 import pytest
 
 from graftpunk import session_riders
-from graftpunk.session_legacy import FROZEN_CLASS_PATHS, NoSessionStateError, state_from_pickle
+from graftpunk.session_legacy import (
+    FROZEN_CLASS_PATHS,
+    NoSessionStateError,
+    _Capture,
+    state_from_pickle,
+)
 from tests.unit.session_compat_cases import (
     EXPECTED_KIND,
     assert_leaf_imports,
@@ -120,6 +125,18 @@ def test_a_class_that_cannot_be_imported_is_stubbed_and_reported(monkeypatch):
     legacy = state_from_pickle(payload)
     assert legacy.unresolved == ("absent_pkg_for_legacy_test.Thing",)
     assert legacy.kind is None and legacy.state == {"cookies": [1]}
+
+
+def test_the_placeholder_takes_the_dict_and_slot_state_pickle_gives_a_slots_class():
+    placeholder = type("WithSlots", (_Capture,), {})()
+    placeholder.__setstate__(({"cookies": "c"}, {"headers": "h"}))
+    assert (placeholder.cookies, placeholder.headers) == ("c", "h")
+
+
+def test_the_placeholder_refuses_a_state_it_would_drop():
+    placeholder = type("Refuses", (_Capture,), {})()
+    with pytest.raises(TypeError, match="cannot restore pickle state"):
+        placeholder.__setstate__("not a dict or tuple")
 
 
 @pytest.mark.parametrize("version", ["1.21.0", "1.40.1", "1.43.1", "1.44.0"])

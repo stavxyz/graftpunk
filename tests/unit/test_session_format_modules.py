@@ -46,6 +46,22 @@ def test_tokens_still_exports_every_moved_name():
         assert getattr(graftpunk.tokens, name) is getattr(graftpunk.session_riders, name)
 
 
+def test_tokens_still_exports_the_identity_names_it_imported_in_1_44_0():
+    import graftpunk.session_identity
+
+    for name in ("GP_ACCOUNT_ATTR", "GP_SESSION_NAME_ATTR"):
+        assert getattr(graftpunk.tokens, name) is getattr(graftpunk.session_identity, name)
+
+
+def test_the_loader_exceptions_of_the_record_format_are_exported_from_the_package():
+    import graftpunk
+    import graftpunk.exceptions
+
+    for name in ("NewerSessionRecord", "RealSessionClassUnavailable"):
+        assert name in graftpunk.__all__
+        assert getattr(graftpunk, name) is getattr(graftpunk.exceptions, name)
+
+
 def test_session_class_paths_name_the_three_kinds():
     assert dict(graftpunk.session_riders.SESSION_CLASS_PATHS) == {
         ("graftpunk.session", "BrowserSession"): "browser",

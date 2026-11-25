@@ -522,7 +522,6 @@ def test_a_record_built_by_hand_decodes_for_each_kind():
     for kind in ("browser", "api", "requests"):
         rec = classify(record_bytes(kind))
         assert isinstance(rec, Record)
-        assert rec.format == "record"
         assert rec.version == 1
         assert rec.kind == kind
         assert rec.extra == {}
@@ -555,7 +554,6 @@ def test_a_pickle_is_never_unpickled_by_classify(tmp_path):
     payload = dill.dumps(RunsOnUnpickle(marker))
     result = classify(payload)
     assert isinstance(result, LegacyBytes)
-    assert result.format == "pickle"
     assert result.data == payload
     assert not marker.exists()
 

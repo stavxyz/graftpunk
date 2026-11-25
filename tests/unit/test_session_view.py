@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import pickle
-import typing
 from http import cookiejar
 
 import dill
@@ -19,7 +18,7 @@ from graftpunk.session_riders import (
     SESSION_RIDER_ATTRS,
     SESSION_RIDER_DEFAULTS,
 )
-from graftpunk.session_view import StoredSession, StoredSessionLike
+from graftpunk.session_view import StoredSession
 from tests.unit.session_compat_cases import (
     assert_leaf_imports,
     case_id,
@@ -56,10 +55,6 @@ def test_the_view_gives_back_the_stored_keys_of_its_state(case):
     assert set(view.stored_state()) == set(legacy.state) & stored
 
 
-def test_the_protocol_names_every_registered_rider():
-    assert set(SESSION_RIDER_ATTRS) <= set(typing.get_type_hints(StoredSessionLike))
-
-
 def test_setting_a_name_on_a_kind_with_no_name_writes_no_name():
     view = StoredSession("requests", requests.Session().__getstate__())
     view.session_name = "x"
@@ -77,7 +72,6 @@ def test_a_memory_only_rider_can_be_set_and_is_not_stored():
 def test_a_view_with_no_kind_can_be_read_but_not_written():
     view = StoredSession(None, state_from_pickle(decrypt(case_named("1.44.0", "subclass"))).state)
     assert cookie_dicts(view.cookies)
-    assert view.writable is False
     with pytest.raises(TypeError):
         view.stored_state()
 
@@ -116,7 +110,7 @@ def test_a_view_built_from_a_record_reads_its_cookies_and_extra():
     view = StoredSession.from_record(record)
     assert view.kind == "browser"
     assert view.extra == {"future_key": 1}
-    assert view.writable is True
+    assert view.stored_state()
     assert type(view.cookies) is requests.cookies.RequestsCookieJar
     assert cookie_dicts(view.cookies)
 

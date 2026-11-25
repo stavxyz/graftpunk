@@ -31,7 +31,12 @@ from graftpunk.page_values import PageValueKind, page_values, skipped_region_men
 # isort: off
 # Re-exported for two reasons: a pickle names `graftpunk.tokens.CachedToken`, and
 # `plugins/login_engine.py` and programs outside graftpunk import these names from
-# here. Guarded by test_session_format_modules.
+# here (the two identity names were importable here through 1.44.0). Guarded by
+# test_session_format_modules.
+from graftpunk.session_identity import (
+    GP_ACCOUNT_ATTR as GP_ACCOUNT_ATTR,
+    GP_SESSION_NAME_ATTR as GP_SESSION_NAME_ATTR,
+)
 from graftpunk.session_riders import (
     _CACHE_ATTR as _CACHE_ATTR,
     _CSRF_ORIGIN_ATTR as _CSRF_ORIGIN_ATTR,
