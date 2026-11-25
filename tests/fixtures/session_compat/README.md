@@ -9,7 +9,9 @@ else.
 ## `<version>/`
 
 One directory per released graftpunk version (1.21.0, 1.40.1, 1.43.1 and
-1.44.0), written by that release from PyPI:
+1.44.0), written by that release from PyPI. Each was made with the command
+below; it now refuses that directory, because it holds files, so a run of it
+for a check goes to a new one (`--out "$(mktemp -d)/1.44.0"`):
 
 ```bash
 python scripts/session_compat.py generate --graftpunk 1.44.0 --out tests/fixtures/session_compat/1.44.0

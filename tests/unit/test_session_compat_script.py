@@ -7,6 +7,7 @@ still runs on today's code.
 
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -46,6 +47,48 @@ def test_generate_refuses_a_directory_that_holds_files(tmp_path):
         session_compat.generate("working-tree", out, TEST_KEY, python=sys.executable)
     assert [p.name for p in out.iterdir()] == ["nodriver.enc"]
     assert (out / "nodriver.enc").read_bytes() == b"frozen"
+
+
+def _failing_child() -> str:
+    false = shutil.which("false")
+    assert false is not None
+    return false  # ignores its arguments and exits 1, as a crashed child would
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["new", "empty"])
+def test_a_failed_generate_leaves_nothing_and_a_rerun_works(tmp_path, existing):
+    parent = tmp_path / "fixtures"
+    parent.mkdir()
+    out = parent / "1.44.0"
+    if existing:
+        out.mkdir()
+    with pytest.raises(session_compat.CompatError, match="failed"):
+        session_compat.generate("working-tree", out, TEST_KEY, python=_failing_child())
+    assert [p.name for p in parent.iterdir()] == (["1.44.0"] if existing else [])
+    assert not existing or list(out.iterdir()) == []
+    session_compat.generate("working-tree", out, TEST_KEY, python=sys.executable)
+    assert [p.name for p in parent.iterdir()] == ["1.44.0"]
+    assert (out / "nodriver.enc").exists()
+
+
+def test_read_removes_the_key_it_wrote(session_store, capfd):
+    session_store.seed("pickle")
+    (session_store.root / ".session_key").unlink()
+    status = session_compat.read(
+        "working-tree", session_store.root, "myshop", TEST_KEY, python=sys.executable
+    )
+    assert status == 0
+    assert capfd.readouterr().out.splitlines()[0] == "cookies: pref sid"
+    assert not (session_store.root / ".session_key").exists()
+
+
+def test_read_keeps_a_key_it_did_not_write(session_store, capfd):
+    session_store.seed("pickle")
+    session_compat.read(
+        "working-tree", session_store.root, "myshop", TEST_KEY, python=sys.executable
+    )
+    capfd.readouterr()
+    assert (session_store.root / ".session_key").read_bytes() == TEST_KEY
 
 
 def test_read_reports_cookies_and_tokens(session_store, capfd):

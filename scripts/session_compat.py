@@ -19,11 +19,18 @@ the exception's class name when the load raises.
 
 Both run the release in a venv made with ``uv venv`` under a temporary
 directory, never the repository's ``.venv``, with ``GRAFTPUNK_CONFIG_DIR``
-pointed at a directory under ``--out`` (removed afterwards) or at ``--store``,
-and the key written to ``<config_dir>/.session_key``, because 1.21.0's
+pointed at a store in the run's staging directory or at ``--store``, and the
+key written to ``<config_dir>/.session_key``, because 1.21.0's
 ``cache_session`` and ``load_session_for_api`` take no ``key=``. No browser is
 started: the selenium case is built with ``requestium.Session.__init__``, which
 starts no driver.
+
+What each writes: ``generate`` refuses an ``--out`` that holds files, writes
+into a staging directory beside it and renames that to ``--out`` only on
+success, so a failed run leaves nothing. ``read`` writes ``--key`` to
+``<store>/.session_key`` when the store has no key file, and removes it on
+exit; it refuses a store whose key file holds a different key. The release
+itself may change the store as any load does (it tightens file modes).
 
 Run it before any change to the stored session format or to
 ``BrowserSession.__getstate__``, and when a release is added to the fixtures.
@@ -161,29 +168,41 @@ def run_child(python: str, args: list[str], config_dir: Path, cwd: Path) -> int:
 def generate(version: str, out: Path, key: bytes, *, python: str | None = None) -> None:
     out = out.resolve()  # the child runs in a temp directory
     check_out_dir(out)
-    out.mkdir(parents=True, exist_ok=True)
-    store = out / STORE_DIRNAME
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # The child writes into a staging directory beside --out, renamed into
+    # place only on success: a failed run leaves nothing, and a rerun works.
+    staging = Path(tempfile.mkdtemp(prefix=f".{out.name}.", dir=out.parent))
     try:
+        store = staging / STORE_DIRNAME
         with tempfile.TemporaryDirectory(prefix="session-compat-") as tmp:
             child = python or str(_venv(Path(tmp), version))
             _install_key(store, key)
-            status = run_child(child, ["_generate", "--out", str(out)], store, Path(tmp))
+            status = run_child(child, ["_generate", "--out", str(staging)], store, Path(tmp))
             if status != 0:
                 raise CompatError(f"generating with graftpunk {version} failed (exit {status})")
+        shutil.rmtree(store)
+        if out.exists():
+            out.rmdir()  # empty, by check_out_dir
+        staging.rename(out)
     finally:
-        # Only the store this run created; check_out_dir guaranteed it was new.
-        if store.exists() and _inside(store, out):
-            shutil.rmtree(store)
+        if staging.exists():
+            shutil.rmtree(staging)
 
 
 def read(version: str, store: Path, name: str, key: bytes, *, python: str | None = None) -> int:
     store = store.resolve()  # the child runs in a temp directory
     if not store.is_dir():
         raise CompatError(f"--store {store} is not a directory")
-    with tempfile.TemporaryDirectory(prefix="session-compat-") as tmp:
-        child = python or str(_venv(Path(tmp), version))
-        _install_key(store, key)
-        return run_child(child, ["_read", "--name", name], store, Path(tmp))
+    key_file = store / ".session_key"
+    created_key = not key_file.exists()
+    try:
+        with tempfile.TemporaryDirectory(prefix="session-compat-") as tmp:
+            child = python or str(_venv(Path(tmp), version))
+            _install_key(store, key)
+            return run_child(child, ["_read", "--name", name], store, Path(tmp))
+    finally:
+        if created_key:
+            key_file.unlink(missing_ok=True)
 
 
 # --- child side: runs in the release's venv as __main__ ---------------------
@@ -400,7 +419,11 @@ def _parser() -> argparse.ArgumentParser:
     gen.add_argument("--graftpunk", required=True, metavar="VERSION")
     gen.add_argument("--out", required=True, type=Path, metavar="DIR")
     gen.add_argument("--key", type=Path, default=DEFAULT_KEY, metavar="FILE")
-    rd = sub.add_parser("read", help="load --name from --store with a release")
+    rd = sub.add_parser(
+        "read",
+        help="load --name from --store with a release (writes the key to "
+        "<store>/.session_key if absent, removed on exit)",
+    )
     rd.add_argument("--graftpunk", required=True, metavar="VERSION")
     rd.add_argument("--store", required=True, type=Path, metavar="DIR")
     rd.add_argument("--name", required=True)

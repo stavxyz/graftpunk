@@ -190,8 +190,10 @@ through every loader. `scripts/session_compat.py` makes them and checks the
 other direction:
 
 ```bash
-# Cache every case with a release (installed from PyPI into a scratch venv)
-python scripts/session_compat.py generate --graftpunk 1.44.0 --out tests/fixtures/session_compat/1.44.0
+# Cache every case with a release (installed from PyPI into a scratch venv).
+# --out must not hold files; a new release's fixtures go to
+# tests/fixtures/session_compat/<version>.
+python scripts/session_compat.py generate --graftpunk 1.44.0 --out "$(mktemp -d)/1.44.0"
 # Can a release load a session this checkout stored? Exit 0 prints its cookies
 # and tokens; exit 3 prints the exception it raised.
 python scripts/session_compat.py read --graftpunk 1.44.0 --store DIR --name myshop
