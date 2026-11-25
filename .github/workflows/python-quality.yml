@@ -217,8 +217,11 @@ jobs:
         run: |
           version="${{ matrix.version }}"
           if [ "$version" = latest ]; then
-            version="$(uv run --no-project --with graftpunk python -c \
-              'import importlib.metadata as m; print(m.version("graftpunk"))')"
+            # Ask PyPI. Resolving it with `uv run --with graftpunk` answers with
+            # this checkout's own version, because the project's environment
+            # already satisfies the requirement.
+            version="$(curl -fsS https://pypi.org/pypi/graftpunk/json | python3 -c \
+              'import json, sys; print(json.load(sys.stdin)["info"]["version"])')"
           fi
           echo "READER_VERSION=$version" >> "$GITHUB_ENV"
           echo "reading with graftpunk $version"
