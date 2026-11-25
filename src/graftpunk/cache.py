@@ -1,4 +1,5 @@
-"""Session caching and persistence using dill (enhanced pickle).
+"""Session caching and persistence: a session is stored as a dill pickle or,
+under ``GRAFTPUNK_SESSION_FORMAT=record``, as a JSON session record.
 
 This module provides session storage functionality with pluggable backends:
 - Local filesystem (default): ~/.config/graftpunk/sessions/
@@ -401,12 +402,19 @@ def cache_session(
     - "supabase": Supabase Storage bucket (file-pair pattern)
     - "s3": S3-compatible storage bucket (file-pair pattern)
 
+    ``GRAFTPUNK_SESSION_FORMAT`` picks the format. Under ``pickle`` (the
+    default) the session is stored as a pickle. Under ``record`` it is stored
+    as a session record when the record can hold it, and otherwise as a
+    pickle with one ``session_not_recordable`` warning; the setting never
+    makes a save fail.
+
     Args:
         session: Session object to cache (must be picklable).
         session_name: Optional session name. If not provided, tries to get from session.
-        account_rule: The account-label rule to record. A write-back passes the
-            slot's recorded value, so a slot graftpunk 1.24.0 named stays
-            recognisable as one (#293).
+        account_rule: The account-label rule to record. graftpunk's own
+            write-backs (:func:`update_session_cookies`, :func:`copy_session`)
+            do not call this function; they keep the slot's recorded rule, so a
+            slot graftpunk 1.24.0 named stays recognisable as one (#293).
         key: Optional raw Fernet key to encrypt with, for a host without
             graftpunk's key file or vault (see :func:`encrypt_data`). When
             None, the configured key is used. Read the session back with the
@@ -456,8 +464,10 @@ def load_session(
     - "s3": S3-compatible storage (file-pair pattern)
 
     Security Notes:
-        This function deserializes pickle data. Pickle can execute arbitrary
-        code during deserialization.
+        A session stored as a pickle is deserialized with dill, which can
+        execute arbitrary code. A session stored as a record is parsed as JSON
+        and restored through the class its kind names, so loading it executes
+        nothing the stored bytes name.
 
         Threat Model:
         - Sessions are encrypted with Fernet (AES-128-CBC + HMAC)
@@ -1035,9 +1045,12 @@ def load_session_for_api(
     without launching a browser. If the cached session has header
     roles (captured during login), they are applied automatically.
 
-    No browser is started and no browser package is imported: the stored
+    No browser is started and no browser package is needed: the stored
     session is read as plain state, whether it was stored as a record or as a
     pickle, so this works on graftpunk-lite without its ``[browser]`` extra.
+    On a full install, reading a pickle may import a module it names when that
+    module is installed (selenium and requestium for a selenium session,
+    httpie for one saved by 1.21.0); reading a record imports none.
 
     A thin wrapper over :func:`load_session_for_api_resolved`, which owns the
     bare-name pin contract in full: since #176 ``gp <site> login`` writes

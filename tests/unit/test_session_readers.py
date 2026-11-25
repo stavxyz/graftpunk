@@ -98,6 +98,18 @@ def test_an_api_load_does_not_import_graftpunk_session(fmt, session_store):
     assert not modules & {"selenium", "requestium", "nodriver", "httpie"}
 
 
+def test_an_api_load_of_a_selenium_pickle_imports_what_it_names_when_installed(session_store):
+    """Why the docs say an API load *needs* no browser package rather than
+    that it imports none: on a full install the pickle's own classes resolve.
+    On graftpunk-lite they are stubbed (test_an_api_load_needs_no_browser_stack)."""
+    from tests.unit.session_compat_cases import case_named
+
+    session_store.put_case(case_named("1.44.0", "selenium"))
+    modules = modules_after_api_load_in_subprocess(session_store)
+    assert "graftpunk.session" not in modules
+    assert {"selenium", "requestium"} <= modules
+
+
 @pytest.mark.parametrize("cls", [GraftpunkSession, requests.Session])
 def test_load_session_of_a_record_returns_the_class_that_was_saved(cls, session_store):
     record = state_to_record(kind_of(cls()), cls().__getstate__())
