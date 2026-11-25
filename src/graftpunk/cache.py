@@ -46,7 +46,15 @@ from graftpunk.session_identity import (
     validate_session_name,  # public re-export
 )
 from graftpunk.session_legacy import state_from_pickle
-from graftpunk.session_record import LegacyBytes, Record, classify, record_to_state
+from graftpunk.session_record import (
+    LegacyBytes,
+    Record,
+    Unrecordable,
+    classify,
+    kind_of,
+    record_to_state,
+    state_to_record,
+)
 from graftpunk.session_riders import SESSION_CLASS_PATHS
 from graftpunk.session_view import StoredSession
 from graftpunk.storage.base import (
@@ -280,6 +288,95 @@ def _stamp_session_slot(session: Any, name: str) -> None:
         )
 
 
+def _encode_fresh(session: Any, *, name: str | None = None) -> bytes:
+    """The bytes a fresh save of *session* stores, in the configured format.
+
+    Under ``record`` a session the codec cannot hold is still saved, as a
+    pickle, with one ``session_not_recordable`` warning; the setting never
+    makes a save fail.
+    """
+    if get_settings().session_format == "record":
+        kind = kind_of(session)
+        if kind is None:
+            cls = type(session)
+            refusal: Unrecordable | bytes = Unrecordable(
+                "type", f"{cls.__module__}.{cls.__qualname__} is not a stored session class"
+            )
+        else:
+            refusal = state_to_record(kind, session.__getstate__())
+        if isinstance(refusal, bytes):
+            return refusal
+        LOG.warning(
+            "session_not_recordable",
+            name=name,
+            key=refusal.key,
+            reason=refusal.reason,
+            hint="the session is saved as a pickle instead",
+        )
+    return pickle.dumps(session)
+
+
+def _encode_as(session: Any) -> bytes:
+    """The bytes for re-saving *session* in the format it was loaded from.
+
+    A :class:`StoredSession` was loaded from a record and is written as one; any
+    other object was unpickled whole and is written as a pickle. Reads no
+    setting.
+
+    Raises:
+        TypeError: *session* is a view with no stored kind, which is never written.
+        ValueError: A view holds a value a record cannot (the message names the key).
+    """
+    if not isinstance(session, StoredSession):
+        return pickle.dumps(session)
+    if not session.writable:
+        raise TypeError("a stored session with no kind cannot be written")
+    assert session.kind is not None
+    encoded = state_to_record(session.kind, session.stored_state(), session.extra)
+    if isinstance(encoded, Unrecordable):
+        raise ValueError(f"cannot write {encoded.key!r} to a record: {encoded.reason}")
+    return encoded
+
+
+def _store(
+    name: str,
+    payload: bytes,
+    session: Any,
+    *,
+    account_rule: int | None,
+    key: bytes | None,
+    metadata: SessionMetadata | None = None,
+) -> str:
+    """Checksum, encrypt and save *payload* under *name*; return the location.
+
+    With no *metadata*, new metadata is built from *session* (new times,
+    status ``active``). A given *metadata* is saved as it is, with only its
+    checksum replaced.
+    """
+    checksum = hashlib.sha256(payload).hexdigest()
+    encrypted = encrypt_data(payload, key=key)
+    if metadata is None:
+        raw = _extract_session_metadata(session, name)
+        now = datetime.now(UTC)
+        metadata = SessionMetadata(
+            name=name,
+            checksum=checksum,
+            created_at=now,
+            modified_at=now,
+            expires_at=now + timedelta(hours=get_settings().session_ttl_hours),
+            domain=raw.get("domain"),
+            current_url=raw.get("current_url"),
+            cookie_count=raw.get("cookie_count", 0),
+            cookie_domains=raw.get("cookie_domains", []),
+            status="active",
+            account_identifier=raw.get("account_identifier"),
+            account_rule=account_rule,
+        )
+    else:
+        metadata = replace(metadata, checksum=checksum)
+    return _get_session_storage_backend().save_session(name, encrypted, metadata)
+
+
 def cache_session(
     session: T,
     session_name: str | None = None,
@@ -318,41 +415,15 @@ def cache_session(
 
     validate_session_name(session_name)
 
-    backend = _get_session_storage_backend()
     settings = get_settings()
 
     try:
-        # Pickle and encrypt session data
         LOG.info("caching_session", name=session_name, backend=settings.storage_backend)
-        pickled_data = pickle.dumps(session)
-        checksum = hashlib.sha256(pickled_data).hexdigest()
-        encrypted_data = encrypt_data(pickled_data, key=key)
-
-        # Extract metadata from session
-        raw_metadata = _extract_session_metadata(session, session_name)
-        now = datetime.now(UTC)
-
-        # Build SessionMetadata object with configurable TTL
-        metadata = SessionMetadata(
-            name=session_name,
-            checksum=checksum,
-            created_at=now,
-            modified_at=now,
-            expires_at=now + timedelta(hours=settings.session_ttl_hours),
-            domain=raw_metadata.get("domain"),
-            current_url=raw_metadata.get("current_url"),
-            cookie_count=raw_metadata.get("cookie_count", 0),
-            cookie_domains=raw_metadata.get("cookie_domains", []),
-            status="active",
-            account_identifier=raw_metadata.get("account_identifier"),
-            account_rule=account_rule,
-        )
-
-        # Save to backend
-        location = backend.save_session(session_name, encrypted_data, metadata)
+        payload = _encode_fresh(session, name=session_name)
+        location = _store(session_name, payload, session, account_rule=account_rule, key=key)
         # Stamp the in-memory object with the slot it now lives in, so a later
         # write-back through this object knows where it belongs (#174). Set
-        # after the pickle above on purpose: the name describes this copy, not
+        # after the payload above on purpose: the name describes this copy, not
         # the bytes, and the blob must stay free of it.
         _stamp_session_slot(session, session_name)
         _recheck_bare_slot_after_write(session_name)

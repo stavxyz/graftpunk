@@ -159,13 +159,7 @@ def test_a_restored_graftpunk_session_snapshots_its_restored_headers():
 
 @pytest.mark.parametrize(
     "fmt",
-    [
-        "pickle",
-        pytest.param(
-            "record",
-            marks=pytest.mark.xfail(strict=True, reason="cache_session writes records in Task 7"),
-        ),
-    ],
+    ["pickle", "record"],
 )
 def test_a_loaded_graftpunk_session_can_send_a_request(
     fmt, session_store, session_format, echo_server

@@ -50,6 +50,7 @@ def render_settings_panel(target_console: Console) -> None:
 [dim]Workstation env:[/dim]    {env_display}
 [dim]Storage backend:[/dim]    {storage_display}
 [dim]Session TTL:[/dim]        {settings.session_ttl_hours}h ({settings.session_ttl_hours // 24}d)
+[dim]Session format:[/dim]     {settings.session_format}
 [dim]Log level:[/dim]          {settings.log_level}
 [dim]Log format:[/dim]         {settings.log_format}"""
 
