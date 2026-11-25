@@ -708,12 +708,16 @@ def _check_structure(session: Any, name: str) -> None:
 
 def _api_session_of(source: Any, name: str) -> "GraftpunkSession":
     """:func:`_api_session_from_session`, reporting contents it cannot use as
-    an expired session rather than whatever they raised."""
+    an expired session rather than whatever they raised. An ``ImportError``
+    propagates from a named load and is an expired session from bytes, as in
+    1.44.0."""
     try:
         return _api_session_from_session(source)
-    except ImportError:
+    except ImportError as exc:
         # A module the builder imports is missing: an install problem.
-        raise
+        if name != _BYTES_LABEL:
+            raise
+        raise SessionExpiredError(f"Session bytes have unusable cookies/headers: {exc}") from exc
     except Exception as exc:  # noqa: BLE001 (structurally present but malformed contents)
         if name == _BYTES_LABEL:
             raise SessionExpiredError(
@@ -748,7 +752,10 @@ def _stored_view(stored: Record | LegacyBytes, *, name: str) -> StoredSession:
         SessionExpiredError: The pickle does not unpickle, or holds no
             cookies and headers.
         ImportError, GraftpunkError: Raised by a class the pickle names while
-            it is restored, as :func:`load_session` lets them propagate.
+            it is restored, from a named load only, as :func:`load_session`
+            lets them propagate. From bytes (*name* is ``_BYTES_LABEL``) they
+            are ``SessionExpiredError``, as in 1.44.0, whose bytes loader
+            reported every failure after decryption that way.
     """
     if isinstance(stored, Record):
         return StoredSession.from_record(stored)
@@ -756,12 +763,14 @@ def _stored_view(stored: Record | LegacyBytes, *, name: str) -> StoredSession:
         legacy = state_from_pickle(stored.data)
     except NoSessionStateError as exc:
         raise _invalid_structure(name) from exc
-    except (ImportError, GraftpunkError):
+    except (ImportError, GraftpunkError) as exc:
         # find_class stubs a module that is not installed, so an ImportError
         # here came from code the payload ran: an install problem, as a
         # graftpunk error already says what is wrong. Neither is a session to
-        # clear.
-        raise
+        # clear, so a named load raises them as load_session does.
+        if name != _BYTES_LABEL:
+            raise
+        raise SessionExpiredError(f"Failed to deserialize session '{name}': {exc}") from exc
     except Exception as exc:  # noqa: BLE001 (any unpickling failure is an unusable session)
         raise SessionExpiredError(f"Failed to deserialize session '{name}': {exc}") from exc
     if legacy.unresolved:
@@ -1129,9 +1138,13 @@ def load_session_for_api_from_bytes(
             operator/config problem (fix the key) while "this session is
             unusable" prompts a re-login, and conflating them sends the caller
             down the wrong path.
-        SessionExpiredError: if the decrypted payload cannot be deserialized, is
-            an invalid record, or lacks the expected session structure.
-        NewerSessionRecord: the session was stored by a newer release.
+        SessionExpiredError: if the decrypted payload cannot be deserialized
+            (including a graftpunk error or an ``ImportError`` a pickled class
+            raises), is an invalid record, or lacks the expected session
+            structure, or the API session cannot be built from it (including
+            an ``ImportError`` while building it).
+        NewerSessionRecord: the session was stored by a newer release; never
+            reported as expired.
     """
     # EncryptionError from decrypt_data intentionally propagates (see Raises).
     decrypted = decrypt_data(encrypted, key=key)

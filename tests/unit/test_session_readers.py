@@ -437,18 +437,34 @@ def api_readers(session_store):
     return [*readers(session_store)["myshop"][1:], *readers(session_store)[_BYTES_LABEL]]
 
 
-@pytest.mark.parametrize(
+_CLASS_ERRORS = pytest.mark.parametrize(
     "error",
     [BrowserError("the browser this session needs is gone"), ImportError("no module named x")],
     ids=["graftpunk-error", "import-error"],
 )
-def test_an_error_a_pickled_class_raises_reaches_the_api_loaders_as_itself(error, session_store):
-    """As ``load_session`` and 1.44.0's API loaders did: an install problem or
-    a graftpunk error is never reported as a session to clear."""
+
+
+@_CLASS_ERRORS
+def test_an_error_a_pickled_class_raises_reaches_the_named_api_loaders_as_itself(
+    error, session_store
+):
+    """As in 1.44.0, where both went through ``load_session``: an install
+    problem or a graftpunk error is not reported as a session to clear."""
     store_payload(session_store, dill.dumps(_PickledAs(RaisesWhileRestored, {"raise": error})))
-    for fn in api_readers(session_store):
+    for fn in readers(session_store)["myshop"][1:]:
         with pytest.raises(type(error), match=re.escape(str(error))):
             fn()
+
+
+@_CLASS_ERRORS
+def test_an_error_a_pickled_class_raises_is_an_expired_session_from_bytes(error, session_store):
+    """As in 1.44.0: every failure after decryption is ``SessionExpiredError``,
+    the one error a caller holding bytes is documented to handle."""
+    store_payload(session_store, dill.dumps(_PickledAs(RaisesWhileRestored, {"raise": error})))
+    with pytest.raises(SessionExpiredError, match="^Failed to deserialize session") as exc:
+        load_session_for_api_from_bytes(session_store.raw("myshop"), key=TEST_KEY)
+    assert type(exc.value.__cause__) is type(error)
+    assert str(error) in str(exc.value)
 
 
 def test_a_type_error_a_pickled_class_raises_is_a_failed_deserialization(session_store):
@@ -463,18 +479,18 @@ def test_a_type_error_a_pickled_class_raises_is_a_failed_deserialization(session
         assert "bad state" in str(exc.value)
 
 
-def test_an_import_error_while_building_the_api_session_propagates(session_store, monkeypatch):
-    """A module the builder imports is missing: an install problem, never an
-    expired session."""
+def test_an_import_error_while_building_the_api_session(session_store, monkeypatch):
+    """A module the builder imports is missing. As in 1.44.0: the named
+    loaders raise it as itself, an install problem; ``from_bytes`` reports it
+    as ``SessionExpiredError``."""
     session_store.seed("record")
     raw = session_store.raw("myshop")
     monkeypatch.setitem(sys.modules, "graftpunk.client_headers", None)
-    for fn in [
-        lambda: load_session_for_api("myshop", key=TEST_KEY),
-        lambda: load_session_for_api_from_bytes(raw, key=TEST_KEY),
-    ]:
+    for fn in readers(session_store)["myshop"][1:]:
         with pytest.raises(ImportError, match=re.escape("graftpunk.client_headers")):
             fn()
+    with pytest.raises(SessionExpiredError, match="^Session bytes have unusable cookies/headers"):
+        load_session_for_api_from_bytes(raw, key=TEST_KEY)
 
 
 def test_a_named_api_load_logs_contents_it_cannot_use(session_store, captured_logs):
