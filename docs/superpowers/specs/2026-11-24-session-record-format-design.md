@@ -713,3 +713,17 @@ this section governs.
     `reason` and `hint` fields. No new event name replaces it.
 17. **The login-engine "not edited" check is a one-time command** in the
     release task and the PR, not a permanent test.
+18. **The view's `__getstate__()` returns the stored keys present in its
+    state**, replacing the "same keys as the real object" test above. A real
+    `BrowserSession.__getstate__` adds every pickled rider at its default, and
+    a state written by an older release lacks riders that release did not
+    have; the view does not invent them.
+19. **The compat fixtures store the headers a release saved**, not the headers
+    an API load keeps, which is the loader's policy and may change.
+20. **A `GraftpunkSession` restored from its own state can send requests.**
+    Today one rebuilt by `__setstate__` lacks `_gp_default_session_headers`
+    and fails on its first request. `GraftpunkSession` gains a `__setstate__`
+    that fills what `__init__` sets beyond requests' own attributes, so
+    `load_session` of kind `api` returns a working object for both formats.
+21. **`InvalidSessionRecord` is internal to the codec.** Public loaders report
+    an invalid record as `SessionExpiredError`.

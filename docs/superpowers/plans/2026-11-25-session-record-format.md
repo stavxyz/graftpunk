@@ -18,7 +18,7 @@ type: plan
 
 - Nothing that works on 1.44.0 may break. A pickle written by this branch under the default setting must load on 1.44.0, tokens included.
 - Frozen pickled class paths: `graftpunk.session.BrowserSession`, `graftpunk.graftpunk_session.GraftpunkSession`, `graftpunk.tokens.CachedToken`. The cookie policy pickles as `http.cookiejar.DefaultCookiePolicy`.
-- Public signatures unchanged from 1.44.0: `cache_session`, `load_session`, `load_session_for_api`, `load_session_for_api_resolved`, `load_session_for_api_from_bytes(encrypted, *, key=None)`, `update_session_cookies(api_session, session_name, *, key=None)`, `copy_session(source, dest, *, account_identifier, key=None)`. Task 7 pins each with `inspect.signature` against text copied from `git show v1.44.0:src/graftpunk/cache.py`.
+- Public signatures unchanged from 1.44.0: `cache_session`, `load_session`, `load_session_for_api`, `load_session_for_api_resolved`, `load_session_for_api_from_bytes(encrypted, *, key=None)`, `update_session_cookies(api_session, session_name, *, key=None)`, `copy_session(source, dest, *, account_identifier, key=None)`. Task 7 pins each by comparing `str(inspect.signature(fn))` with the string v1.44.0 prints for it (in a scratch venv with `graftpunk==1.44.0`: `python -c 'import inspect, graftpunk.cache as c; print(inspect.signature(c.<fn>))'`).
 - Existing log event names keep their names and fields; new fields are additive.
 - `graftpunk.exceptions` keeps importing nothing from graftpunk. New exception types are defined there.
 - The four leaf modules import no session class and none of `selenium`, `requestium`, `nodriver`, `httpie`. Allowed graftpunk imports: `session_riders`: `session_identity`. `session_legacy`: `session_riders`. `session_record`: `session_riders`, `cookies`, `exceptions`, `logging`. `session_view`: `session_record`, `session_riders`, `cookies`.
@@ -39,7 +39,9 @@ Decisions this plan makes where the spec left a choice or where the code forced 
 5. **The cookie jar's policy check is the cookie codec's refusal**, through a new public `graftpunk.cookies.policy_is_default(policy)`.
 6. **`record_to_state` returns the full state `__setstate__` needs**: each pickle-only key the kind has is put back by the row's `default` factory, because `requests.Session.__setstate__` sets only the keys it is given.
 7. **`_load_for_write_back` takes an already classified result**, not raw bytes, because the shared read step classifies first.
-8. **Whether a fixture is recordable is asserted in the codec's test**, not stored in the fixture files, which describe frozen releases and never change.
+8. **Whether a fixture is recordable is asserted in the codec's test**, not stored in the fixture files, which describe frozen releases and never change. For the same reason the fixture files store the headers a release saved, not the headers an API load keeps, which is the loader's policy.
+9. **A `GraftpunkSession` restored from its own state can send requests after this work.** Today one rebuilt by `__setstate__` (from a pickle) lacks `_gp_default_session_headers` and raises `AttributeError` on its first request, because requests' `__getstate__` covers only `__attrs__`. `load_session` of kind `api` returns such an object for both formats, so Task 6 gives `GraftpunkSession` a `__setstate__` that fills what `__init__` sets beyond requests' own attributes. Cost if wrong: one method on `GraftpunkSession`; pickles and records are unchanged.
+10. **The view's `__getstate__()` returns the stored keys present in its state.** A real `BrowserSession.__getstate__` adds every pickled rider at its default, so the two are not compared key for key; a 1.21.0 state has no `_gp_header_role_origins` and the view does not invent it.
 
 ## Shared test helpers
 
@@ -48,7 +50,7 @@ Task 1 creates these; later tasks use them by these names and add no others that
 In `tests/unit/session_compat_cases.py`:
 
 - `TEST_KEY: bytes` (the shared fixture key). `CompatCase`: `version`, `case`, `encrypted: bytes`, `key: bytes`, `expected: dict`.
-- `iter_cases() -> list[CompatCase]`; `cases(*, kinds: tuple[str, ...] | None = None, recordable: bool | None = None) -> list[CompatCase]` (kind and recordability come from `EXPECTED_KIND` and `RECORDABLE`, two dicts in this module keyed by case name); `case_named(version: str, case: str) -> CompatCase`; `case_id(case) -> str` for `ids=`.
+- `iter_cases() -> list[CompatCase]` (every case under the four version directories; it does not include `tests/fixtures/session_compat/legacy/`, which only its existing tests read); `cases(*, kinds: tuple[str, ...] | None = None, recordable: bool | None = None) -> list[CompatCase]` (kind and recordability come from `EXPECTED_KIND` and `RECORDABLE`, two dicts in this module keyed by case name); `case_named(version: str, case: str) -> CompatCase`; `case_id(case) -> str` for `ids=`.
 - `decrypt(case: CompatCase) -> bytes`; `encrypt(plain: bytes, key: bytes = TEST_KEY) -> bytes`.
 - `cookie_dicts(jar) -> list[dict]` (all 17 `Cookie` constructor arguments, sorted by name); `token_dicts(session) -> dict[str, dict]`.
 - `nodriver_state(*, tokens: bool = False) -> dict[str, Any]` (a nodriver `__getstate__`-shaped dict with the fixture cookies and headers); `nodriver_session(*, tokens: bool = False)` (a `BrowserSession` built with `__new__` and `__setstate__(nodriver_state(...))`, no browser).
@@ -59,9 +61,9 @@ In `tests/unit/session_compat_cases.py`:
 
 Fixtures in `tests/unit/conftest.py`:
 
-- `session_store`: built on the existing `fresh_backend` fixture (which points the config directory at a temp path and resets `cache.py`'s backend singleton), with `TEST_KEY` written to the key file. Methods: `seed(fmt: str, name: str = "myshop", *, extra: dict | None = None, account: str | None = None) -> bytes` (saves a nodriver session with tokens in that format and returns the raw stored bytes); `seed_plain(plain: bytes, name: str = "myshop") -> bytes` (stores `encrypt(plain)` with matching metadata); `put_case(case: CompatCase, name: str = "myshop") -> None` (lays the fixture out as its version wrote it); `raw(name) -> bytes`; `plain(name) -> bytes` (decrypted); `format_of(name) -> str` (`"record"` if `plain(name)` starts with `{`, else `"pickle"`); `metadata(name) -> SessionMetadata`; `cookie_names(name) -> set[str]`.
+- `session_store`: built on the existing `fresh_backend` fixture (which points the config directory at a temp path and resets `cache.py`'s backend singleton), with `TEST_KEY` written to the key file. Methods: `seed(fmt: str, name: str = "myshop", *, extra: dict | None = None, account: str | None = None) -> bytes` (saves a nodriver session with tokens in that format and returns the raw stored bytes); `seed_plain(plain: bytes, name: str = "myshop") -> bytes` (stores `encrypt(plain)` with matching metadata); `put_case(case: CompatCase, name: str = "myshop") -> None` (lays the fixture out as its version wrote it); `raw(name) -> bytes`; `plain(name) -> bytes` (decrypted); `format_of(name) -> str` (`"record"` if `plain(name)` starts with `{`, else `"pickle"`); `metadata(name) -> SessionMetadata`; `cookie_names(name) -> set[str]`; and the attribute `root: Path` (the temp config directory).
 - `session_format`: a factory; `session_format("record")` sets `GRAFTPUNK_SESSION_FORMAT`, calls `graftpunk.config.reset_settings()`, and resets again on teardown. Every test that sets the format uses it.
-- `no_browser_stack`: makes `graftpunk.session`, `selenium`, `requestium`, `nodriver` and `httpie` unimportable for the test (entries set to `None` in `sys.modules`, restored on teardown).
+- `no_browser_stack`: a context manager factory, used as `with no_browser_stack():` inside the test after any seeding. Inside the block it removes `graftpunk.session` from `sys.modules` and sets `selenium`, `requestium`, `nodriver` and `httpie` to `None` there, so importing `graftpunk.session` fails on `requestium` with a `ModuleNotFoundError` that `_distribution.missing_browser_module` recognises, as on graftpunk-lite. It restores `sys.modules` on exit.
 - `echo_server`: a local HTTP server on a free port that answers 200 with the request's `Cookie` header as the body; `echo_server.url`.
 
 ## Review Focus
@@ -85,7 +87,7 @@ The safety net comes first: fixtures written by real releases, and a test that p
 - Create: `tests/fixtures/session_compat/key`, `tests/fixtures/session_compat/README.md`, `tests/fixtures/session_compat/<version>/<case>.enc` and `<case>.expected.json`
 - Create: `tests/unit/session_compat_cases.py`; modify `tests/unit/conftest.py` (the fixtures under "Shared test helpers")
 - Create: `tests/unit/test_session_compat.py`
-- Move: `tests/fixtures/browserfree_session.{enc,key}` to `tests/fixtures/session_compat/legacy/` (it keeps its own key; add `browserfree_session.expected.json`); update its readers `scripts/smoke_install.sh`, `tests/unit/test_browserfree_session_load.py`, `tests/unit/test_lite_cli_hints.py`, `tests/unit/test_cookies.py`
+- Move: `tests/fixtures/browserfree_session.{enc,key}` to `tests/fixtures/session_compat/legacy/` (it keeps its own key and its existing tests; it is not a compat case, because its token cache holds a string, not a `CachedToken`); update its readers `scripts/smoke_install.sh`, `tests/unit/test_browserfree_session_load.py`, `tests/unit/test_lite_cli_hints.py`, `tests/unit/test_cookies.py`
 - Delete: `scripts/gen_browserfree_fixture.py`; modify `tests/fixtures/README.md` and `CONTRIBUTING.md` to point at the new script
 
 **Interfaces:**
@@ -98,7 +100,7 @@ The safety net comes first: fixtures written by real releases, and a test that p
   - `selenium` (browser): built without a browser, per Ruling 2.
   - `subclass` (no kind): a subclass of `GraftpunkSession` defined in the generator's `__main__`, which dill embeds by value; the expectation records `__main__.<name>`.
   - `flatfile` (browser): the `nodriver` pickle placed at `<name>.session.pickle` with no `metadata.json`, the layout `LocalSessionStorage._load_legacy_session` reads. No listed release writes it, so the generator places it.
-- Produces: `<case>.expected.json` with keys `cookies` (as `cookie_dicts`), `api_headers` (the headers an API load keeps: the saved headers minus any equal to `requests.utils.default_headers()`, minus `X-CSRF-Token`, minus the client-set headers in `graftpunk.client_headers`), `header_roles`, `cached_tokens`, `account`, `class` (qualified name). These describe a frozen release and are never rewritten.
+- Produces: `<case>.expected.json` with keys `cookies` (as `cookie_dicts`), `headers` (the saved headers as pairs), `header_roles`, `cached_tokens`, `account`, `class` (qualified name). These describe a frozen release and are never rewritten.
 - Produces: `RECORDABLE` in `session_compat_cases.py`: true for `nodriver`, `requests`, `api`, `tokens`, `account`, `flatfile`; false for `adapter`, `selenium`, `subclass`.
 
 - [ ] **Step 1: Write `scripts/session_compat.py generate`.** Placeholder data for every case: cookies `sid` (domain `.myshop.example`, secure, `expires=1790000000`) and `pref` (`expires=None`, value `café`, `rest={"HttpOnly": None}`); headers `User-Agent: compat/1`, `Accept: */*`, `X-Compat: 1`. A usage line; a refusal to write outside `--out`.
@@ -113,7 +115,7 @@ ALL = iter_cases()
 def test_a_released_versions_session_loads_for_api_from_bytes(case):
     api = load_session_for_api_from_bytes(case.encrypted, key=case.key)
     assert cookie_dicts(api.cookies) == case.expected["cookies"]
-    assert {k: v for k, v in api.headers.items() if k in dict(case.expected["api_headers"])} == dict(case.expected["api_headers"])
+    assert api.headers["X-Compat"] == "1"      # a saved header no loader filter drops
     assert getattr(api, "_gp_header_roles", {}) == case.expected["header_roles"]
     assert token_dicts(api) == case.expected["cached_tokens"]
 
@@ -182,7 +184,7 @@ def test_tokens_still_exports_every_moved_name():
 **Interfaces:**
 - Produces: `FROZEN_CLASS_PATHS: Mapping[tuple[str, str], object]`, built with no literals of its own: each key of `session_riders.SESSION_CLASS_PATHS` mapped to the capture placeholder, plus `(CachedToken.__module__, CachedToken.__qualname__)` mapped to `session_riders.CachedToken`.
 - Produces: `state_from_pickle(decrypted: bytes) -> LegacyState`, a frozen dataclass: `kind: str | None` (from `SESSION_CLASS_PATHS`; `None` for any other class, a subclass included), `class_path: str`, `state: dict[str, Any]`, `unresolved: tuple[str, ...]` (class paths stubbed because they could not be imported).
-- The capture placeholder stores the state dict given to `__setstate__` and accepts the `(dict, slotstate)` tuple `cache._Stub` accepts today. It needs no attribute fallback: a selenium pickle's `_driver_initializer` is dill's `MethodType(requestium.requestium_session.Session._start_chrome_browser, <session>)`, whose function resolves through `find_class` (stubbed when requestium is absent) and whose instance is the memoized placeholder.
+- The capture placeholder stores the state dict given to `__setstate__` and accepts the `(dict, slotstate)` tuple `cache._Stub` accepts today. It needs no attribute fallback: a selenium pickle's `_driver_initializer` is a `functools.partial` of `MethodType(requestium.requestium_session.Session._start_chrome_browser, <session>)` with keywords `{"headless": ...}`, whose function resolves through `find_class` (stubbed when requestium is absent) and whose instance is the memoized placeholder.
 - Imports from graftpunk only `graftpunk.session_riders`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -253,7 +255,8 @@ def test_session_record_is_a_leaf():
 def test_exceptions_still_imports_nothing_from_graftpunk():
     assert_leaf_imports("graftpunk.exceptions", set())
 
-LIVE = [("browser", nodriver_state(tokens=True)), ("api", GraftpunkSession().__getstate__()), ("requests", requests.Session().__getstate__())]
+LIVE = [("browser", nodriver_session(tokens=True).__getstate__()),   # the real BrowserSession.__getstate__, never a hand-built dict
+        ("api", GraftpunkSession().__getstate__()), ("requests", requests.Session().__getstate__())]
 
 @pytest.mark.parametrize("kind,state", LIVE, ids=[k for k, _ in LIVE])
 def test_every_key_getstate_emits_has_a_row(kind, state):
@@ -285,10 +288,9 @@ def test_each_default_predicate_holds_for_the_installed_libraries(cls):
     state = cls().__getstate__()
     assert all(p.at_default(state[p.state_key]) for p in PICKLE_ONLY if p.state_key in state)
 
-@pytest.mark.parametrize("kind,cls", [("api", GraftpunkSession), ("requests", requests.Session)])
-def test_a_restored_state_makes_a_working_session(kind, cls, echo_server):
-    obj = cls.__new__(cls)
-    obj.__setstate__(record_to_state(classify(state_to_record(kind, cls().__getstate__()))))
+def test_a_restored_requests_state_makes_a_working_session(echo_server):
+    obj = requests.Session.__new__(requests.Session)
+    obj.__setstate__(record_to_state(classify(state_to_record("requests", requests.Session().__getstate__()))))
     assert obj.get(echo_server.url).status_code == 200      # needs adapters and hooks back
 
 def test_a_newer_record_is_refused_by_version():
@@ -339,7 +341,7 @@ def test_a_record_holding_pickle_bytes_as_a_string_is_data():
 The fixture cookies already cover `expires=None`, a non-ASCII value and a `rest` entry, so `test_state_survives_the_record` exercises them.
 
 - [ ] **Step 2: Run** to see `No module named 'graftpunk.session_record'`.
-- [ ] **Step 3: Implement.** `classify` tests the first byte for `{`. `json.dumps(..., allow_nan=False)`; a `ValueError` or `TypeError` from an encoder becomes `Unrecordable(key=state_key)`. The `at_default` predicates are structural, as the spec lists them: `hooks` is a mapping whose only key is `response` with an empty value; `adapters` has exactly the prefixes `https://` and `http://`, each of type name `HTTPAdapter` from `requests.adapters`, with zero-retry `max_retries` and `requests.adapters.DEFAULT_POOLSIZE` pool sizes. The cookie encoder refuses a jar for which `policy_is_default` is false.
+- [ ] **Step 3: Implement.** `classify` tests the first byte for `{`. `state_to_record` checks the selenium backend (Ruling 1) before it walks the keys, so a selenium state is refused on `_backend_type` and not on its first key without a row. `json.dumps(..., allow_nan=False)`; a `ValueError` or `TypeError` from an encoder becomes `Unrecordable(key=state_key)`. The `at_default` predicates are structural, as the spec lists them: `hooks` is a mapping whose only key is `response` with an empty value; `adapters` has exactly the prefixes `https://` and `http://`, each of type name `HTTPAdapter` from `requests.adapters`, with zero-retry `max_retries` and `requests.adapters.DEFAULT_POOLSIZE` pool sizes. The cookie encoder refuses a jar for which `policy_is_default` is false.
 - [ ] **Step 4: Run** the tests. Expected: PASS. Put the count of unrecordable fixtures per version in the commit body.
 - [ ] **Step 5: Gate, then commit** `feat: the session record: one field table, and the codec built from it`.
 
@@ -372,6 +374,9 @@ def test_the_view_gives_back_the_stored_keys_of_its_state(case):
     stored = {f.state_key for f in FIELDS if legacy.kind in f.kinds}
     assert set(StoredSession(legacy.kind, legacy.state).__getstate__()) == set(legacy.state) & stored
 
+def test_the_protocol_names_every_registered_rider():
+    assert set(SESSION_RIDER_ATTRS) <= set(typing.get_type_hints(StoredSessionLike))
+
 def test_setting_a_name_on_a_kind_with_no_name_writes_no_name():
     view = StoredSession("requests", requests.Session().__getstate__()); view.session_name = "x"
     assert "session_name" not in view.__getstate__()
@@ -394,7 +399,7 @@ def test_a_view_with_no_kind_can_be_read_but_not_written():
 ### Task 6: Readers go through `classify`
 
 **Files:**
-- Modify: `src/graftpunk/cache.py` (`load_session`, `_load_session_with_metadata`, the three API loaders; `_Stub`, `_BrowserFreeUnpickler` and `_deserialize_browserfree` removed)
+- Modify: `src/graftpunk/cache.py` (`load_session`, `_load_session_with_metadata`, the three API loaders; `_Stub`, `_BrowserFreeUnpickler` and `_deserialize_browserfree` removed); `src/graftpunk/graftpunk_session.py` (`GraftpunkSession.__setstate__`, Ruling 9)
 - Modify existing tests that reach the removed names or patch `load_session` to feed the API loaders. No assertion is weakened; each test keeps what it asserted.
   - `tests/unit/test_browserfree_session_load.py`: its uses of `cache._BrowserFreeUnpickler`, `cache._Stub` and `cache._deserialize_browserfree` move onto `session_legacy.state_from_pickle` and its placeholder.
   - `tests/unit/test_cookies.py`: the `cache._Stub` base near line 302 becomes the `session_legacy` placeholder.
@@ -409,7 +414,8 @@ def test_a_view_with_no_kind_can_be_read_but_not_written():
 - `_finish_loaded(session: Any, name: str, metadata: SessionMetadata) -> None`: the three things `_load_session_with_metadata` does to a loaded object today, applied alike to a real object and a `StoredSession`: the `cookies` and `headers` structure check, `_stamp_session_slot(session, name)`, and the account fallback (metadata under `ACCOUNT_RULE` sets `GP_ACCOUNT_ATTR`).
 - `_stored_view(stored: Record | LegacyBytes) -> StoredSession`: `StoredSession.from_record` for a record; for legacy bytes, `StoredSession(legacy.kind, legacy.state)` from `state_from_pickle`.
 - `_api_session_from_session(source)` is unchanged in signature and stays the only builder of a `GraftpunkSession`.
-- `load_session_for_api_from_bytes` has no session name: it passes `name="session"` to `_classified`.
+- `load_session_for_api_from_bytes` has no session name and no metadata: it passes `name=_BYTES_LABEL` (a module constant, `"<bytes>"`) to `_classified`, and of `_finish_loaded` it runs only the structure check, leaving the session unstamped as today.
+- `GraftpunkSession.__setstate__(state)`: `super().__setstate__(state)`, then every attribute `__init__` sets beyond requests' own is set to its `__init__` default when the state did not supply it (read `__init__` for the list; `_gp_default_session_headers` is the one `prepare_request` needs).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -439,8 +445,14 @@ def test_load_session_of_a_record_returns_the_class_that_was_saved(cls, session_
 
 def test_load_session_of_a_browser_record_without_the_browser_stack_gives_the_install_hint(session_store, no_browser_stack):
     session_store.seed_plain(record_bytes())
-    with pytest.raises(RealSessionClassUnavailable) as exc: load_session("myshop", key=TEST_KEY)
+    with no_browser_stack(), pytest.raises(RealSessionClassUnavailable) as exc:
+        load_session("myshop", key=TEST_KEY)
     assert missing_browser_module(exc.value)
+
+@pytest.mark.parametrize("fmt", ["pickle", "record"])
+def test_a_loaded_graftpunk_session_can_send_a_request(fmt, session_store, session_format, echo_server):
+    session_format(fmt); cache_session(GraftpunkSession(), "myshop", key=TEST_KEY)   # the record case passes from Task 7 on; mark it xfail(strict=True) until then
+    assert load_session("myshop", key=TEST_KEY).get(echo_server.url).status_code == 200
 
 def test_an_api_load_keeps_the_account_from_the_metadata(session_store):
     session_store.seed("record", "myshop@alice", account="alice")
@@ -450,13 +462,13 @@ def readers(session_store):
     return {"myshop": [lambda: load_session("myshop", key=TEST_KEY),
                        lambda: load_session_for_api("myshop", key=TEST_KEY),
                        lambda: load_session_for_api_resolved("myshop", key=TEST_KEY)],
-            "session": [lambda: load_session_for_api_from_bytes(session_store.raw("myshop"), key=TEST_KEY)]}
+            _BYTES_LABEL: [lambda: load_session_for_api_from_bytes(session_store.raw("myshop"), key=TEST_KEY)]}
 
 def test_an_invalid_record_reads_as_an_expired_session(session_store):
     session_store.seed_plain(record_bytes(drop=("kind",)))
     for name, fns in readers(session_store).items():
         for fn in fns:
-            with pytest.raises(SessionExpiredError, match=name): fn()
+            with pytest.raises(SessionExpiredError, match=re.escape(name)): fn()
 
 def test_a_version_2_record_is_refused_by_every_reader(session_store):
     session_store.seed_plain(record_bytes(version=2))
@@ -506,7 +518,7 @@ def test_a_subclass_is_pickled_and_the_warning_names_its_type(session_store, ses
 def test_a_mistyped_format_fails_naming_the_choices(session_store, session_format):
     with pytest.raises(ValidationError, match="pickle.*record"):
         session_format("json"); cache_session(nodriver_session(), "myshop", key=TEST_KEY)
-    assert "myshop" not in list_sessions()
+    assert not any(session_store.root.rglob("myshop*"))     # checked on disk: reading settings would raise again
 
 def test_the_setting_and_the_codec_name_the_same_formats():
     assert typing.get_args(GraftpunkSettings.model_fields["session_format"].annotation) == typing.get_args(SessionFormat)
@@ -523,15 +535,15 @@ def test_public_signatures_are_unchanged(fn, text):
 `session_format("json")` may raise at the fixture call or at first use; the `with` block covers both.
 
 - [ ] **Step 2: Run** to see them fail.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** the new tests plus `test_session_compat.py` and `test_cache.py`. Expected: PASS.
+- [ ] **Step 3: Implement.** Remove the `xfail` from Task 6's record case of `test_a_loaded_graftpunk_session_can_send_a_request`.
+- [ ] **Step 4: Run** the new tests plus `test_session_compat.py`, `test_session_readers.py` and `test_cache.py`. Expected: PASS.
 - [ ] **Step 5: Gate, then commit** `feat: GRAFTPUNK_SESSION_FORMAT=record writes a session as a record; the default is unchanged`.
 
 ### Task 8: Write-backs keep the format they read
 
 **Files:**
 - Modify: `src/graftpunk/cache.py` (`update_session_cookies`, `copy_session`)
-- Modify: `tests/unit/test_cache.py`: the five `update_session_cookies` tests (near lines 1030 to 1140) that patch `graftpunk.cache._load_session_with_metadata` and `graftpunk.cache.cache_session`. Each seeds `session_store` and asserts on what is stored afterwards, keeping what it asserted: cookies merged, token cache and CSRF copies, the account rule carried, and load and save failures swallowed with their existing warnings. Where a test asserted `cache_session` was called with given arguments, it asserts the stored metadata and bytes those arguments produce.
+- Modify: `tests/unit/test_cache.py`: the five `update_session_cookies` tests (lines 1031 to 1140) that patch `graftpunk.cache._load_session_with_metadata`, four of them also `graftpunk.cache.cache_session`. Each seeds `session_store` and asserts on what is stored afterwards, keeping what it asserted: cookies merged, token cache and CSRF copies, the account rule carried, and load and save failures swallowed with their existing warnings. Where a test asserted `cache_session` was called with given arguments, it asserts the stored metadata and bytes those arguments produce.
 - Test: `tests/unit/test_session_write_backs.py`; existing `tests/unit/test_account_label_migration.py`, `tests/unit/test_api_session_resolution.py` and `tests/unit/test_encryption.py` stay green unedited
 
 **Interfaces:**
@@ -572,13 +584,27 @@ def test_a_record_that_cannot_be_read_is_left_byte_for_byte(plain, reason, error
     assert session_store.raw("myshop") == before
 
 def test_without_the_browser_stack_a_record_write_back_works_and_a_pickle_one_is_skipped(session_store, captured_logs, no_browser_stack):
-    session_store.seed("record"); update_session_cookies(api_with_new_cookie(), "myshop", key=TEST_KEY)
+    session_store.seed("record"); before = session_store.seed("pickle", "other")
+    api = requests.Session(); api.cookies.set("new", "1", domain=".myshop.example")
+    with no_browser_stack():
+        update_session_cookies(api, "myshop", key=TEST_KEY)
+        update_session_cookies(api, "other", key=TEST_KEY)
+        with pytest.raises(ImportError): copy_session("other", "other@alice", account_identifier="alice", key=TEST_KEY)
     assert "new" in session_store.cookie_names("myshop")
-    before = session_store.seed("pickle", "other"); api = requests.Session(); api.cookies.set("new", "1", domain=".myshop.example")
-    update_session_cookies(api, "other", key=TEST_KEY)
     (event,) = events(captured_logs, "session_save_skipped_load_failed")
     assert session_store.raw("other") == before and event["reason"] == "RealSessionClassUnavailable" and "next login" in event["hint"]
-    with pytest.raises(ImportError): copy_session("other", "other@alice", account_identifier="alice", key=TEST_KEY)
+
+@pytest.mark.parametrize("case", cases(recordable=True), ids=case_id)
+def test_a_fixture_stored_as_a_record_reads_and_writes_back_like_its_pickle(case, session_store):
+    legacy = state_from_pickle(decrypt(case)); session_store.seed_plain(state_to_record(legacy.kind, legacy.state))
+    def check():
+        assert cookie_dicts(load_session("myshop", key=TEST_KEY).cookies) == case.expected["cookies"]
+        for api in (load_session_for_api("myshop", key=TEST_KEY), load_session_for_api_resolved("myshop", key=TEST_KEY)[0]):
+            assert cookie_dicts(api.cookies) == case.expected["cookies"] and token_dicts(api) == case.expected["cached_tokens"]
+    check()
+    update_session_cookies(load_session_for_api("myshop", key=TEST_KEY), "myshop", key=TEST_KEY); check()
+    copy_session("myshop", "myshop@alice", account_identifier="alice", key=TEST_KEY)
+    assert session_store.format_of("myshop@alice") == "record"
 
 def test_copy_renames_a_browser_record_and_keeps_its_times(session_store):
     session_store.seed("record"); created = session_store.metadata("myshop").created_at
@@ -586,8 +612,6 @@ def test_copy_renames_a_browser_record_and_keeps_its_times(session_store):
     assert json.loads(session_store.plain("myshop@alice"))["session_name"] == "myshop@alice"
     assert session_store.metadata("myshop@alice").created_at == created
 ```
-
-`session_store.seed("pickle", ...)` in the no-browser test runs before `no_browser_stack` takes effect; order the fixtures so the seed happens first, or seed from a committed fixture with `put_case`.
 
 - [ ] **Step 2: Run** to see them fail.
 - [ ] **Step 3: Implement** each write-back as: `_read_stored`, `_load_for_write_back`, its existing mutation, `_encode_as(session, fmt)`, `_store`. Neither calls the public `cache_session`.
@@ -623,6 +647,6 @@ def test_copy_renames_a_browser_record_and_keeps_its_times(session_store):
 - Modify: `CHANGELOG.md`, `pyproject.toml`, `uv.lock`, `docs/HOW_IT_WORKS.md` (`### Caching`, `### Loading` and `### Storage Backends` under `## Session Management`), `CONTRIBUTING.md` (what `scripts/session_compat.py` checks, and to run `generate` before any change to the stored format or `BrowserSession.__getstate__`), `.claude-plugin/plugin.json` only if `scripts/check-skill-version.sh d0511e6c` asks for it
 - Comment on issue #245: the session half shipped; the plugin-packaging half stays open and needs its own short design.
 
-- [ ] **Step 1: Write the 1.45.0 CHANGELOG section.** Added: `GRAFTPUNK_SESSION_FORMAT`, the record format, API loads and plugin commands on graftpunk-lite, `scripts/session_compat.py`. Changed: `load_session_for_api` no longer needs the browser packages. Upgrading, in this order: (1) nothing changes unless you set `GRAFTPUNK_SESSION_FORMAT=record`; (2) before any host writes records, every graftpunk that reads the same store must be 1.45.0 or later, because an older one reports a record as an expired session (it does not delete it); (3) a session becomes a record at its next login on a host that sets `record`, and a write-back never converts one; (4) selenium-backend sessions, and sessions with a custom adapter, hooks, a custom cookie policy or a subclass, stay pickles, with the warning `session_not_recordable`; (5) the new names: the warning `session_not_recordable`, the `reason` and `hint` fields on `session_save_skipped_load_failed`, and the errors `NewerSessionRecord`, `InvalidSessionRecord` and `RealSessionClassUnavailable` (an `ImportError`).
+- [ ] **Step 1: Write the 1.45.0 CHANGELOG section.** Added: `GRAFTPUNK_SESSION_FORMAT`, the record format, API loads and plugin commands on graftpunk-lite, `scripts/session_compat.py`. Changed: `load_session_for_api` no longer needs the browser packages. Upgrading, in this order: (1) nothing changes unless you set `GRAFTPUNK_SESSION_FORMAT=record`; (2) before any host writes records, every graftpunk that reads the same store must be 1.45.0 or later, because an older one reports a record as an expired session (it does not delete it); (3) a session becomes a record at its next login on a host that sets `record`, and a write-back never converts one; (4) selenium-backend sessions, and sessions with a custom adapter, hooks, a custom cookie policy or a subclass, stay pickles, with the warning `session_not_recordable`; (5) the new names: the warning `session_not_recordable`, the `reason` and `hint` fields on `session_save_skipped_load_failed`, and the errors `NewerSessionRecord` and `RealSessionClassUnavailable` (an `ImportError`). `InvalidSessionRecord` is internal to the codec: public loaders report an invalid record as `SessionExpiredError`, so the notes do not list it. Fixed: a `GraftpunkSession` loaded with `load_session` can send requests.
 - [ ] **Step 2: Run** `git diff --name-only d0511e6c -- src/graftpunk/plugins/login_engine.py src/graftpunk/plugins/login_settle.py` (expected: no output), `scripts/check-skill-version.sh d0511e6c`, the full gate once more with `--cov=src/graftpunk`, and the changed test files under 3.11 and 3.14.
 - [ ] **Step 3: Commit** `release: 1.45.0`, push, and open the PR with the verification commands and their output, the per-version unrecordable counts, the note that selenium fixtures are synthetic, and "Refs #245". Do not merge.
