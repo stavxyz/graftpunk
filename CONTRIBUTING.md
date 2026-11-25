@@ -184,12 +184,26 @@ pytest tests/ -k "test_encryption" -v
 
 ### Committed fixtures
 
-`tests/fixtures/browserfree_session.{enc,key}` guard the browser-free
-session-load path (`load_session_for_api_from_bytes`, used under Pyodide /
-Cloudflare Workers). If you change `BrowserSession`'s pickled state, regenerate
-them with `python scripts/gen_browserfree_fixture.py` — see
-[`tests/fixtures/README.md`](tests/fixtures/README.md) for why the fixture has
-to be pickled by reference and what that guards.
+`tests/fixtures/session_compat/<version>/` holds sessions saved by released
+graftpunk versions, and `tests/unit/test_session_compat.py` loads each one
+through every loader. `scripts/session_compat.py` makes them and checks the
+other direction:
+
+```bash
+# Cache every case with a release (installed from PyPI into a scratch venv)
+python scripts/session_compat.py generate --graftpunk 1.44.0 --out tests/fixtures/session_compat/1.44.0
+# Can a release load a session this checkout stored? Exit 0 prints its cookies
+# and tokens; exit 3 prints the exception it raised.
+python scripts/session_compat.py read --graftpunk 1.44.0 --store DIR --name myshop
+```
+
+Run it before any change to the stored session format or to
+`BrowserSession.__getstate__`, and add a directory when a release changes what
+a session saves. The fixtures are never regenerated in place.
+`tests/fixtures/session_compat/legacy/` keeps the browser-free load fixture
+(`load_session_for_api_from_bytes`, used under Pyodide and Cloudflare
+Workers). See [`tests/fixtures/session_compat/README.md`](tests/fixtures/session_compat/README.md)
+for what each fixture holds and why the legacy one is pickled by reference.
 
 ### graftpunk-lite must stay browser-free
 

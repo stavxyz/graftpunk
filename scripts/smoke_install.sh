@@ -91,7 +91,7 @@ echo "== browser-free session load (A4 fixture round-trip)"
 "$lite/python" - <<'PY'
 import pathlib
 from graftpunk import load_session_for_api_from_bytes
-fix = pathlib.Path("tests/fixtures")
+fix = pathlib.Path("tests/fixtures/session_compat/legacy")
 enc = (fix / "browserfree_session.enc").read_bytes()
 key = (fix / "browserfree_session.key").read_bytes().strip()
 api = load_session_for_api_from_bytes(enc, key=key)

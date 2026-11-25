@@ -14,7 +14,7 @@ from graftpunk.exceptions import EncryptionError, SessionExpiredError
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
 
-_FIX = pathlib.Path(__file__).parent.parent / "fixtures"
+_FIX = pathlib.Path(__file__).parent.parent / "fixtures" / "session_compat" / "legacy"
 
 
 def _fake_source():
@@ -273,7 +273,7 @@ def test_unknown_attribute_still_raises_attribute_error():
 def test_a4_fixture_decodes_browser_free(monkeypatch):
     """Whack-once guard: a real committed BrowserSession pickle (pickled BY
     REFERENCE to graftpunk.session.BrowserSession, see
-    scripts/gen_browserfree_fixture.py) must keep decoding through the
+    tests/fixtures/session_compat/README.md) must keep decoding through the
     browser-free path (cookies/headers/roles/tokens) as graftpunk/deps evolve.
 
     The CI/dev env used to run this suite has the full browser stack
@@ -377,10 +377,11 @@ def test_from_bytes_malformed_cookies_raises_session_expired():
 
 def test_a_session_saved_before_1_41_0_replays_no_header_the_client_sets_itself():
     """A BrowserSession pickled the way 1.40.1 saves it (by reference, through
-    __getstate__'s nodriver branch, as scripts/gen_browserfree_fixture.py builds
-    one), holding the role an older capture kept and the Accept-Encoding older
-    identity extraction put on its headers (#370). The restored session sends the
-    client's own Accept-Encoding, no Priority, and keeps the rest."""
+    __getstate__'s nodriver branch, as the legacy fixture in
+    tests/fixtures/session_compat/legacy/ was built), holding the role an older
+    capture kept and the Accept-Encoding older identity extraction put on its
+    headers (#370). The restored session sends the client's own
+    Accept-Encoding, no Priority, and keeps the rest."""
     from cryptography.fernet import Fernet
 
     from graftpunk.session import BrowserSession

@@ -1,0 +1,17 @@
+{
+  "name": "myshop",
+  "checksum": "9662def743b3c1601deda4c1f3f946a8b6e290a80e60a4b313517faef8a25810",
+  "created_at": "2026-11-25T09:44:22.383720+00:00",
+  "modified_at": "2026-11-25T09:44:22.383720+00:00",
+  "expires_at": "2126-11-01T09:44:22.383720+00:00",
+  "domain": "myshop.example",
+  "current_url": null,
+  "cookie_count": 2,
+  "cookie_domains": [
+    ".myshop.example"
+  ],
+  "status": "active",
+  "storage_backend": "local",
+  "storage_location": "~/.config/graftpunk/sessions",
+  "account_identifier": null
+}

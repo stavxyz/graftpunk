@@ -1,18 +1,27 @@
 """Shared test helpers for unit tests."""
 
 import asyncio
+import contextlib
 import functools
+import hashlib
+import http.server
 import importlib
+import json
 import os
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, NoReturn
 
+import dill
 import pytest
+from cryptography.fernet import Fernet
 
 # A module that imports a factory by name keeps whatever is bound when it is
 # first imported, so graftpunk.session must be imported before any test patches
@@ -661,3 +670,195 @@ def release_nodriver_loops(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
     for backend in created:
         backend._release_loop()
+
+
+# --- stored-session fixtures (tests/unit/session_compat_cases.py) -----------
+
+
+class SessionStore:
+    """A local session store in a test's config directory, written without
+    ``cache_session``, so a test controls exactly which bytes are stored."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.sessions = root / "sessions"
+
+    def _slot(self, name: str) -> Path:
+        return self.sessions / name
+
+    def _flat(self, name: str) -> Path:
+        return self.sessions / f"{name}.session.pickle"
+
+    def seed(
+        self,
+        fmt: str,
+        name: str = "myshop",
+        *,
+        extra: dict | None = None,
+        account: str | None = None,
+    ) -> bytes:
+        """Store a nodriver session with tokens in *fmt* (``record`` or
+        ``pickle``); return the raw stored bytes."""
+        from tests.unit.session_compat_cases import nodriver_session, record_bytes
+
+        if fmt == "record":
+            return self.seed_plain(record_bytes(extra=extra, account=account), name)
+        if fmt != "pickle" or extra is not None:
+            raise ValueError(f"cannot seed format {fmt!r} with extra={extra!r}")
+        session = nodriver_session(tokens=True)
+        session._gp_account_identifier = account
+        return self.seed_plain(dill.dumps(session), name)
+
+    def seed_plain(self, plain: bytes, name: str = "myshop") -> bytes:
+        """Store ``encrypt(plain)`` under *name* with metadata built from
+        *plain* as ``cache_session`` builds it; return the raw stored bytes."""
+        from graftpunk.cache import _get_session_storage_backend
+        from graftpunk.config import get_settings
+        from graftpunk.session_identity import ACCOUNT_RULE
+        from graftpunk.storage.base import SessionMetadata
+        from tests.unit.session_compat_cases import encrypt
+
+        domains, names, account = _payload_facts(plain)
+        now = datetime.now(UTC)
+        metadata = SessionMetadata(
+            name=name,
+            checksum=hashlib.sha256(plain).hexdigest(),
+            created_at=now,
+            modified_at=now,
+            expires_at=now + timedelta(hours=get_settings().session_ttl_hours),
+            domain=domains[0].lstrip(".") if domains else None,
+            current_url=None,
+            cookie_count=len(names),
+            cookie_domains=domains,
+            status="active",
+            account_identifier=account,
+            account_rule=ACCOUNT_RULE,
+        )
+        _get_session_storage_backend().save_session(name, encrypt(plain), metadata)
+        return self.raw(name)
+
+    def put_case(self, case: Any, name: str = "myshop") -> None:
+        """Lay *case* out as its release wrote it: its payload beside its own
+        metadata.json with only ``name`` replaced, or, for a case with no
+        metadata, the flat-file layout."""
+        self.sessions.mkdir(parents=True, exist_ok=True)
+        if case.metadata is None:
+            self._flat(name).write_bytes(case.encrypted)
+            return
+        slot = self._slot(name)
+        slot.mkdir(exist_ok=True)
+        (slot / "session.pickle").write_bytes(case.encrypted)
+        (slot / "metadata.json").write_text(json.dumps({**case.metadata, "name": name}, indent=2))
+
+    def raw(self, name: str) -> bytes:
+        pickle_path = self._slot(name) / "session.pickle"
+        return (pickle_path if pickle_path.exists() else self._flat(name)).read_bytes()
+
+    def plain(self, name: str) -> bytes:
+        from tests.unit.session_compat_cases import TEST_KEY
+
+        return Fernet(TEST_KEY).decrypt(self.raw(name))
+
+    def format_of(self, name: str) -> str:
+        return "record" if self.plain(name).startswith(b"{") else "pickle"
+
+    def metadata(self, name: str) -> Any:
+        from graftpunk.cache import _get_session_storage_backend
+
+        metadata = _get_session_storage_backend().get_session_metadata(name)
+        assert metadata is not None, f"no metadata for {name}"
+        return metadata
+
+    def cookie_names(self, name: str) -> set[str]:
+        return set(_payload_facts(self.plain(name))[1])
+
+
+def _payload_facts(plain: bytes) -> tuple[list[str], list[str], str | None]:
+    """(sorted cookie domains, cookie names, account) of a decrypted payload."""
+    if plain.startswith(b"{"):
+        record = json.loads(plain)
+        cookies = [(c["name"], c["domain"]) for c in record.get("cookies", [])]
+        account = (record.get("riders") or {}).get("account")
+    else:
+        session = dill.loads(plain)  # noqa: S301 (a payload the test itself stored)
+        cookies = [(c.name, c.domain) for c in session.cookies]
+        account = getattr(session, "_gp_account_identifier", None)
+    return sorted({d for _, d in cookies}), [n for n, _ in cookies], account
+
+
+@pytest.fixture()
+def session_store(fresh_backend: None, tmp_path: Path) -> Iterator[SessionStore]:
+    """A :class:`SessionStore` in this test's config directory (``fresh_backend``
+    points it there), with the shared fixture key ``TEST_KEY`` as its key file."""
+    from graftpunk.encryption import reset_encryption_key_cache
+    from tests.unit.session_compat_cases import TEST_KEY
+
+    (tmp_path / ".session_key").write_bytes(TEST_KEY)
+    reset_encryption_key_cache()
+    yield SessionStore(tmp_path)
+    reset_encryption_key_cache()
+
+
+@pytest.fixture()
+def session_format(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[str], None]]:
+    """``session_format("record")`` sets GRAFTPUNK_SESSION_FORMAT for the test."""
+    from graftpunk.config import reset_settings
+
+    def set_format(value: str) -> None:
+        monkeypatch.setenv("GRAFTPUNK_SESSION_FORMAT", value)
+        reset_settings()
+
+    yield set_format
+    monkeypatch.delenv("GRAFTPUNK_SESSION_FORMAT", raising=False)
+    reset_settings()
+
+
+@pytest.fixture()
+def no_browser_stack() -> Callable[[], contextlib.AbstractContextManager[None]]:
+    """``with no_browser_stack():`` makes the browser stack unimportable, as on
+    graftpunk-lite: ``graftpunk.session`` leaves ``sys.modules`` and the
+    browser modules become ``None`` there, so importing ``graftpunk.session``
+    fails on ``requestium``. ``sys.modules`` is restored on exit."""
+    from tests.unit.session_compat_cases import BROWSER_MODULES
+
+    @contextlib.contextmanager
+    def absent() -> Iterator[None]:
+        saved = dict(sys.modules)
+        sys.modules.pop("graftpunk.session", None)
+        for module in BROWSER_MODULES:
+            sys.modules[module] = None  # type: ignore[assignment]
+        try:
+            yield
+        finally:
+            for module in set(sys.modules) - set(saved):
+                del sys.modules[module]
+            sys.modules.update(saved)
+
+    return absent
+
+
+class _EchoCookies(http.server.BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 (the http.server hook name)
+        body = (self.headers.get("Cookie") or "").encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 (the hook's name)
+        pass
+
+
+@pytest.fixture()
+def echo_server() -> Iterator[SimpleNamespace]:
+    """A local HTTP server answering 200 with the request's Cookie header as
+    the body, at ``echo_server.url``."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _EchoCookies)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield SimpleNamespace(url=f"http://127.0.0.1:{server.server_address[1]}")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

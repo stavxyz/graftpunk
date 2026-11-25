@@ -41,7 +41,7 @@ from graftpunk.graftpunk_session import GraftpunkSession
 from tests.unit.cli_harness import strip_ansi
 from tests.unit.test_lite_cli_hints import _cache_fixture_session
 
-_FIX = pathlib.Path(__file__).parent.parent / "fixtures"
+_FIX = pathlib.Path(__file__).parent.parent / "fixtures" / "session_compat" / "legacy"
 
 
 def test_the_secure_hosts_are_the_ones_chrome_was_measured_on() -> None:

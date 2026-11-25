@@ -31,7 +31,7 @@ from tests.unit.test_cache import _setup_local_env
 runner = CliRunner()
 
 _REPO = Path(__file__).parent.parent.parent
-_FIX = _REPO / "tests" / "fixtures"
+_FIX = _REPO / "tests" / "fixtures" / "session_compat" / "legacy"
 
 # graftpunk modules that import the browser stack when they load.
 _BROWSER_BOUND = ("graftpunk.session", "graftpunk.stealth", "graftpunk.cli.plugin_runtime")
