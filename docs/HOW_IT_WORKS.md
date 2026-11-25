@@ -117,10 +117,21 @@ cache_session(session, "mysite")
 ```
 
 This:
-1. Serializes the session with `dill` (preserves cookies, headers, browser state)
+1. Serializes the session: with `dill` by default (preserves cookies, headers, browser state), or as a JSON record when `GRAFTPUNK_SESSION_FORMAT=record` (see below)
 2. Computes a SHA256 checksum
 3. Encrypts with Fernet (AES-128-CBC + HMAC-SHA256)
 4. Stores encrypted data + metadata via the storage backend
+
+#### Session formats
+
+`GRAFTPUNK_SESSION_FORMAT` chooses the format of a freshly saved session (a login, or a program's own `cache_session`):
+
+- `pickle` (the default) writes the `dill` pickle of the live session object that every release has written. Any graftpunk can read it.
+- `record` writes the session as one UTF-8 JSON object, encrypted and checksummed as the pickle is. It holds the kind of session (`browser`, `api`, or `requests`), its cookies, headers, header roles, cached tokens and account, and a version number. Reading a record imports no browser package and constructs no class named by the stored bytes. A graftpunk older than 1.45.0 reports a record as an expired session (and leaves it in place), so set `record` only once every graftpunk that reads the same store is 1.45.0 or later.
+
+A session that cannot be a record is saved as a pickle, with a `session_not_recordable` warning that names the key and the reason: a selenium-backend session, and a session with a custom adapter, hooks, a custom cookie policy, or a subclass of the session classes. The setting never makes a save fail.
+
+A session changes format only through a fresh save. A write-back (`update_session_cookies`, and `copy_session` when it renames a slot) writes the format it read, whatever the setting says: a record stays a record, with any top-level key this release does not know kept, and a pickle stays a pickle. A record whose version is newer than the running release reads is refused with `NewerSessionRecord` and never written over.
 
 Sessions have a configurable TTL (`GRAFTPUNK_SESSION_TTL_HOURS`). Metadata tracks domain, cookie count, cookie domains, status, and the `account_identifier` recorded at login (see Multi-Account Sessions).
 
@@ -259,7 +270,7 @@ from graftpunk.cache import load_session_for_api
 session = load_session_for_api("mysite")  # returns GraftpunkSession
 ```
 
-This extracts cookies and headers from the cached `BrowserSession` into a `GraftpunkSession` (a `requests.Session` subclass) suitable for API calls. A bare base name like `"mysite"` is tried as an exact key first and, only if nothing is cached under it, falls back to resolving it against the single cached account for that base (or raises `AmbiguousSessionError` naming the candidates when several are cached) — so a consumer holding a bare name keeps working after a labelled `gp mysite login`. The listing that resolution needs happens only on that miss path.
+This extracts cookies and headers from the stored session into a `GraftpunkSession` (a `requests.Session` subclass) suitable for API calls. The stored bytes are read as plain state, whether they are a record or a pickle, so no browser package is imported and the call works on graftpunk-lite. (`load_session` is different: it returns the object that was saved, so it needs the browser packages for a browser session.) A bare base name like `"mysite"` is tried as an exact key first and, only if nothing is cached under it, falls back to resolving it against the single cached account for that base (or raises `AmbiguousSessionError` naming the candidates when several are cached) — so a consumer holding a bare name keeps working after a labelled `gp mysite login`. The listing that resolution needs happens only on that miss path.
 
 If you write the session back afterwards, load it through the variant that tells you which slot answered:
 
@@ -281,11 +292,11 @@ from graftpunk import load_session_for_api_from_bytes
 api = load_session_for_api_from_bytes(r2_object_bytes, key=worker_secret_key)
 ```
 
-Deserialization here never imports the browser stack: an unpickler stubs out classes it cannot import (`graftpunk.session.BrowserSession` and friends) and keeps the plain state (cookies, headers, header roles, and cached tokens). That is what makes the lite install (`graftpunk-lite`, which has no browser stack) usable under Pyodide. It is the only browser-free loader. On graftpunk-lite, `gp version`, `gp session list`, `gp session show`, `gp config`, `gp plugins`, `gp http` with `--no-session`, a plugin command that needs no session, and `load_session_for_api_from_bytes` work. Everything that loads a cached session from the session store (`load_session_for_api`, `gp http` with a session from `--session`, `gp session use` or `GRAFTPUNK_SESSION`, a plugin command that uses its session, and `gp session export`) and every command that drives a browser (recording with `gp observe`, and a plugin's `login` command) need `graftpunk-lite[browser]` or `graftpunk`; without it, those commands print the install command and exit 1. The session-store loaders go through `load_session`, which reconstructs the real cached object.
+Deserialization here never imports the browser stack. A record is read as JSON. A pickle is read by an unpickler that stubs out classes it cannot import (`graftpunk.session.BrowserSession` and friends) and keeps the plain state (cookies, headers, header roles, and cached tokens). That is what makes the lite install (`graftpunk-lite`, which has no browser stack) usable under Pyodide. The store loaders (`load_session_for_api` and `load_session_for_api_resolved`) read the same way, so on graftpunk-lite `gp version`, `gp session list`, `gp session show`, `gp config`, `gp plugins`, `gp http` (with or without a stored session), a plugin command (with or without its stored session), `load_session_for_api`, and `load_session_for_api_from_bytes` work. A plugin command that refreshes cookies or tokens saves them back from lite when the session is stored as a record; for a pickle the save is skipped with a `session_save_skipped_load_failed` warning and the command still exits 0, because writing a pickle back needs the browser classes. `copy_session` of a stored pickle raises `ImportError` on lite and leaves the source slot as it was. Commands that drive a browser or need the browser session object (recording with `gp observe`, `gp session export`, and a plugin's `login` command) need `graftpunk-lite[browser]` or `graftpunk`; without it, they print the install command and exit 1.
 
-Errors are deliberately distinguishable: `EncryptionError` means the bytes could not be decrypted with that key (malformed, wrong, or rotated — an operator/config problem), while `SessionExpiredError` means the payload decrypted but is not a usable session (log in again).
+Errors are deliberately distinguishable: `EncryptionError` means the bytes could not be decrypted with that key (malformed, wrong, or rotated — an operator/config problem), while `SessionExpiredError` means the payload decrypted but is not a usable session (log in again). A stored value no session can hold, such as cookies that are not a jar, is also `SessionExpiredError` from every public loader. `NewerSessionRecord` means a newer release stored the session as a record this one cannot read: upgrade graftpunk, and do not clear the session.
 
-**Trust boundary:** the Fernet key is the *only* thing gating what reaches the unpickler, and unpickling can execute code. The post-load structure check is a shape guard, not a safety control. Never pass a blob and a key that come from different trust domains.
+**Trust boundary:** a record is data, and reading one executes nothing. For a legacy pickle, the Fernet key is the *only* thing gating what reaches the unpickler, and unpickling can execute code. The post-load structure check is a shape guard, not a safety control. Never pass a blob and a key that come from different trust domains.
 
 ### GraftpunkSession and Browser Header Replay
 
@@ -403,7 +414,7 @@ Controlled by `GRAFTPUNK_STORAGE_BACKEND`:
 - `"supabase"` — Cloud storage via Supabase
 - `"s3"`: S3-compatible storage (AWS S3, Cloudflare R2, MinIO)
 
-Each backend keeps a session in a slot named after it (`<name>/` locally and on Supabase, `sessions/<name>/` on S3) holding `session.pickle` and `metadata.json`. A slot is a session only while its `metadata.json` exists (locally, its `session.pickle` too). Anything else stored under the name, such as a hand-made backup copy, never makes it a session, so it is never listed, never a candidate when resolving accounts, and never the cause of an `AmbiguousSessionError` ([#382](https://github.com/stavxyz/graftpunk/issues/382)). Clearing a session deletes everything under its slot and prints each key or path it deleted.
+Each backend keeps a session in a slot named after it (`<name>/` locally and on Supabase, `sessions/<name>/` on S3) holding `session.pickle` and `metadata.json`. The file is named `session.pickle` whichever format the session is stored in: the backends store the encrypted bytes and do not read them, and the format is told by the decrypted payload (a record starts with `{`, which no pickle does). A slot is a session only while its `metadata.json` exists (locally, its `session.pickle` too). Anything else stored under the name, such as a hand-made backup copy, never makes it a session, so it is never listed, never a candidate when resolving accounts, and never the cause of an `AmbiguousSessionError` ([#382](https://github.com/stavxyz/graftpunk/issues/382)). Clearing a session deletes everything under its slot and prints each key or path it deleted.
 
 What `gp session clear --all` (and `clear_session_cache()`) deletes: every session, and every incomplete slot. An incomplete slot is a folder, prefix or directory that is not a complete session but holds `session.pickle`, `metadata.json`, or a file whose name starts with either (`metadata.json.pre-test2`): directly inside it on S3 and Supabase, and at any depth locally, so what a clear that failed partway left in a subdirectory can be cleared once the cause is fixed; `--all` lists it as "incomplete, not a full session", and `gp session clear <name>` removes it too. Nothing else is deleted: another tool's folder at a Supabase bucket root, another prefix under `sessions/` on S3, or a directory of your own in the local sessions directory (`old-backups/`) is never listed and never touched.
 

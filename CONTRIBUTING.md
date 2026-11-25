@@ -206,9 +206,20 @@ The `old-reader` job in `.github/workflows/python-quality.yml` runs `write` and
 write what each of them loads, tokens included, and a record must be reported
 expired (exit 3, `SessionExpiredError`) with the stored bytes unchanged.
 
-Run it before any change to the stored session format or to
-`BrowserSession.__getstate__`, and add a directory when a release changes what
-a session saves. The fixtures are never regenerated in place.
+What it checks: `generate` stores one session per case with a released
+graftpunk, so the fixtures are what that release wrote, and
+`tests/unit/test_session_compat.py` loads each one through every loader with
+this checkout. `write` stores the `tokens` session with this checkout, and
+`read` loads it with a release, which proves the other direction: a session
+stored under the default setting (`pickle`) must load on 1.21.0 and 1.44.0 with
+its cookies and tokens, and a record (`write --format record`) must be refused
+as `SessionExpiredError` with the stored bytes unchanged.
+
+Run `generate` (to a scratch directory) and the `write` and `read` pair before
+any change to the stored session format, to the session record
+(`src/graftpunk/session_record.py`), or to `BrowserSession.__getstate__`, and
+add a directory under `tests/fixtures/session_compat/` when a release changes
+what a session saves. The fixtures are never regenerated in place.
 `tests/fixtures/session_compat/legacy/` keeps the browser-free load fixture
 (`load_session_for_api_from_bytes`, used under Pyodide and Cloudflare
 Workers). See [`tests/fixtures/session_compat/README.md`](tests/fixtures/session_compat/README.md)
