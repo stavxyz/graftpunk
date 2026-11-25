@@ -96,6 +96,11 @@ _EPHEMERAL_HEADERS: frozenset[str] = frozenset({"x-csrf-token"})
 # The name errors give the session load_session_for_api_from_bytes reads, which has none.
 _BYTES_LABEL = "<bytes>"
 
+# What a write-back skipped for want of the browser stack tells the user.
+_WRITE_BACK_REWRITE_HINT = (
+    "the next login, or a write-back from a full install, rewrites the session"
+)
+
 
 # Global session storage backend (lazy-loaded)
 _session_storage_backend: "SessionStorageBackend | None" = None
@@ -478,21 +483,10 @@ def load_session(
         MissingEncryptionKeyError: No key was given and the configured backend
             has no key file to read (see :func:`graftpunk.encryption.get_encryption_key`).
     """
-    return _load_session_with_metadata(name, backend_override=backend_override, key=key)[0]
-
-
-def _load_session_with_metadata(
-    name: str, backend_override: str | None = None, *, key: bytes | None = None
-) -> tuple[SessionLike, SessionMetadata]:
-    """:func:`load_session`, also returning the ``SessionMetadata`` read with it.
-
-    For callers that need both (``update_session_cookies`` recovers
-    ``account_identifier`` from it), so they make no second metadata read.
-    """
     stored, metadata = _read_stored(name, key=key, backend_override=backend_override)
     session = _restore(stored, name=name)
     _finish_loaded(session, name, metadata)
-    return session, metadata
+    return session
 
 
 def _read_stored(
@@ -586,6 +580,22 @@ def _restore(stored: Record | LegacyBytes, *, name: str) -> Any:
     """The object that was saved: a record restored as its class, a pickle unpickled whole."""
     if isinstance(stored, Record):
         return _restore_record(stored, name=name)
+    return _unpickle_whole(stored, name=name)
+
+
+def _load_for_write_back(stored: Record | LegacyBytes, *, name: str) -> Any:
+    """The object a write-back changes and saves again: a record as a
+    :class:`StoredSession`, which needs no session class and is written back as
+    a record with its unknown keys, and a legacy pickle unpickled whole, which
+    is written back as a pickle (:func:`_encode_as`). Reads no setting.
+
+    Raises:
+        RealSessionClassUnavailable: A legacy pickle needs the browser stack,
+            which is not installed.
+        SessionExpiredError: A legacy pickle that does not unpickle.
+    """
+    if isinstance(stored, Record):
+        return StoredSession.from_record(stored)
     return _unpickle_whole(stored, name=name)
 
 
@@ -1148,8 +1158,12 @@ def update_session_cookies(
     """Persist an API session's cookies and token cache back to the session cache.
 
     Loads the original cached session (preserving browser metadata),
-    updates its cookies and token cache from the API session, and saves it back.
-    This is best-effort — failures are logged but do not raise.
+    updates its cookies and token cache from the API session, and saves it back
+    in the format it was stored in, whatever ``GRAFTPUNK_SESSION_FORMAT`` says:
+    a record stays a record with its unknown keys (and needs no browser stack),
+    and a pickle stays a pickle. This is best-effort: failures are logged
+    (``session_save_skipped_load_failed`` or ``session_save_failed``, each with
+    a ``reason``) but do not raise.
 
     *session_name* is tried LITERALLY first, and a slot cached under it wins
     outright, including a bare ``mysite`` slot. Only when that name has no slot
@@ -1184,7 +1198,7 @@ def update_session_cookies(
     target = session_name
     try:
         try:
-            original, stored_metadata = _load_session_with_metadata(session_name, key=key)
+            stored, stored_metadata = _read_stored(session_name, key=key)
         except SessionNotFoundError:
             # The literal name answers first, so an existing slot is never
             # passed over; only its absence lets the session's own stamp name
@@ -1192,13 +1206,22 @@ def update_session_cookies(
             target = _write_back_target(api_session, session_name)
             if target == session_name:
                 raise
-            original, stored_metadata = _load_session_with_metadata(target, key=key)
-    except Exception as exc:  # noqa: BLE001 — best-effort save
+            stored, stored_metadata = _read_stored(target, key=key)
+        original = _load_for_write_back(stored, name=target)
+        _finish_loaded(original, target, stored_metadata)
+    except Exception as exc:  # noqa: BLE001 (best-effort save)
+        hint = (
+            {"hint": _WRITE_BACK_REWRITE_HINT}
+            if isinstance(exc, RealSessionClassUnavailable)
+            else {}
+        )
         LOG.warning(
             "session_save_skipped_load_failed",
             session_name=target,
             requested=session_name,
             error=str(exc),
+            reason=type(exc).__name__,
+            **hint,
         )
         return
 
@@ -1223,14 +1246,20 @@ def update_session_cookies(
         # the metadata at load (#293).
         if getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier:
             setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
-        cache_session(original, target, account_rule=stored_metadata.account_rule, key=key)
+        # A record is written back as a record and a pickle as a pickle,
+        # whatever the format setting. A value a record cannot hold raises
+        # here, before anything is written.
+        payload = _encode_as(original)
+        _store(target, payload, original, account_rule=stored_metadata.account_rule, key=key)
+        _recheck_bare_slot_after_write(target)
         LOG.info("session_cookies_updated", session_name=target)
-    except Exception as exc:  # noqa: BLE001 — best-effort save
+    except Exception as exc:  # noqa: BLE001 (best-effort save)
         LOG.warning(
             "session_save_failed",
             session_name=target,
             requested=session_name,
             error=str(exc),
+            reason=type(exc).__name__,
         )
 
 
@@ -1365,9 +1394,11 @@ def copy_session(
 ) -> None:
     """Copy the session cached under *source* to *dest*, recording *account_identifier*.
 
-    The session is unpickled and pickled again, so the names and identifier it
-    carries inside its pickle are replaced too: ``BrowserSession`` keeps its
-    session name and account identifier there. Created, modified and expiry
+    The session is read and written again in the format it is stored in (a
+    record stays a record, unknown keys included, and needs no browser stack;
+    a pickle stays a pickle), so the name and identifier it carries inside are
+    replaced too: a browser session keeps its session name and account
+    identifier there. Created, modified and expiry
     times and status are kept, since it is the same session under another
     name; the metadata records the current account rule. The copy is read back
     and its checksum compared before this returns, so a caller may delete
@@ -1382,27 +1413,34 @@ def copy_session(
         SessionNotFoundError: Nothing is cached under *source*.
         SessionExpiredError: *source* is expired or cannot be read, or the copy
             did not read back as written.
-        ImportError: *source* needs the browser stack, which is not installed.
+        NewerSessionRecord: *source* was stored by a newer release.
+        ImportError: *source* is a pickle that needs the browser stack, which
+            is not installed (``RealSessionClassUnavailable``).
         MissingEncryptionKeyError: No key was given and there is none to read.
         Exception: Whatever the backend raises when saving *dest*.
     """
     validate_session_name(dest)
     backend = _get_session_storage_backend()
-    session, metadata = _load_session_with_metadata(source, key=key)
+    stored, metadata = _read_stored(source, key=key)
+    session = _load_for_write_back(stored, name=source)
+    _finish_loaded(session, source, metadata)
     setattr(session, GP_ACCOUNT_ATTR, account_identifier)
-    if hasattr(session, "_session_name"):
-        setattr(session, "_session_name", dest)  # noqa: B010 (the name a BrowserSession pickles)
+    # A kind whose stored state holds no name gains none: there the attribute
+    # stays on this object and is not written.
+    session.session_name = dest
     _stamp_session_slot(session, dest)
-    pickled_data = pickle.dumps(session)
-    checksum = hashlib.sha256(pickled_data).hexdigest()
-    copied = replace(
-        metadata,
-        name=dest,
-        checksum=checksum,
-        account_identifier=account_identifier,
+    payload = _encode_as(session)
+    checksum = hashlib.sha256(payload).hexdigest()
+    _store(
+        dest,
+        payload,
+        session,
         account_rule=ACCOUNT_RULE,
+        key=key,
+        metadata=replace(
+            metadata, name=dest, account_identifier=account_identifier, account_rule=ACCOUNT_RULE
+        ),
     )
-    backend.save_session(dest, encrypt_data(pickled_data, key=key), copied)
     _recheck_bare_slot_after_write(dest)
     stored_data, stored_metadata = backend.load_session(dest)
     if (
