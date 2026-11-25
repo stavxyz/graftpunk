@@ -476,10 +476,7 @@ def load_session(
         MissingEncryptionKeyError: No key was given and the configured backend
             has no key file to read (see :func:`graftpunk.encryption.get_encryption_key`).
     """
-    stored, metadata = _read_stored(name, key=key, backend_override=backend_override)
-    session = _restore(stored, name=name)
-    _finish_loaded(session, name, metadata)
-    return session
+    return _load_session_with_metadata(name, backend_override=backend_override, key=key)[0]
 
 
 def _load_session_with_metadata(
@@ -600,7 +597,7 @@ def _real_class_unavailable(name: str, exc: ImportError) -> RealSessionClassUnav
         f"stack, which is not installed. Install it with: "
         f"{install_command('browser')}\n"
         f"(To read cookies/headers from a session WITHOUT the browser stack, use "
-        f"load_session_for_api_from_bytes.)\n"
+        f"load_session_for_api or load_session_for_api_from_bytes.)\n"
         f"(underlying import failure: {exc})"
     )
 
@@ -617,7 +614,8 @@ def _unpickle_whole(legacy: LegacyBytes, *, name: str) -> Any:
             installed (the browser stack on graftpunk-lite); the
             ``ModuleNotFoundError`` is its cause, where
             ``_distribution.missing_browser_module`` finds it.
-        SessionExpiredError: The bytes do not unpickle.
+        SessionExpiredError: The bytes do not unpickle, or a class's
+            ``__setstate__`` refuses the state they hold.
     """
     try:
         # Fernet authenticated these bytes; the key is the trust boundary.
@@ -627,7 +625,11 @@ def _unpickle_whole(legacy: LegacyBytes, *, name: str) -> Any:
         # browser stack; without this the failure escapes raw as
         # "No module named 'httpie'".
         raise _real_class_unavailable(name, exc) from exc
-    except (pickle.UnpicklingError, RuntimeError) as exc:
+    except ImportError:
+        # A class or name missing from a module that is installed: version
+        # skew, whose traceback is the useful report, not a session to clear.
+        raise
+    except Exception as exc:  # noqa: BLE001 (a state its class refuses is an unusable session)
         _log_load_failure(name, exc)
         raise SessionExpiredError(f"Failed to load session '{name}': {exc}") from exc
 
@@ -653,15 +655,38 @@ def _restore_record(record: Record, *, name: str) -> Any:
 
 
 def _invalid_structure(name: str) -> SessionExpiredError:
+    if name == _BYTES_LABEL:
+        # The caller holds bytes, not a store slot it could clear.
+        return SessionExpiredError(
+            "Session bytes have invalid structure: they hold no usable cookies and headers."
+        )
     return SessionExpiredError(
         f"Session '{name}' has invalid structure. Run 'gp clear' and re-login."
     )
 
 
 def _check_structure(session: Any, name: str) -> None:
-    """Refuse a loaded object without the cookies and headers every session has."""
-    if not hasattr(session, "cookies") or not hasattr(session, "headers"):
-        raise _invalid_structure(name)
+    """Refuse a loaded object without readable cookies and headers.
+
+    Reading is the check: a view's ``cookies`` rebuilds a jar from what the
+    state holds, so a value that is not one fails here with whatever it
+    raises, not only ``AttributeError``.
+    """
+    try:
+        session.cookies  # noqa: B018
+        session.headers  # noqa: B018
+    except Exception as exc:  # noqa: BLE001 (any failure to read them is invalid structure)
+        raise _invalid_structure(name) from exc
+
+
+def _api_session_of(source: Any, name: str) -> "GraftpunkSession":
+    """:func:`_api_session_from_session`, reporting contents it cannot use as
+    an expired session rather than whatever they raised."""
+    try:
+        return _api_session_from_session(source)
+    except Exception as exc:  # noqa: BLE001 (structurally present but malformed contents)
+        what = "Session bytes have" if name == _BYTES_LABEL else f"Session '{name}' has"
+        raise SessionExpiredError(f"{what} unusable cookies/headers: {exc}") from exc
 
 
 def _finish_loaded(session: Any, name: str, metadata: SessionMetadata) -> None:
@@ -957,7 +982,7 @@ def load_session_for_api_resolved(
         _warn_if_bare_slot_shadows_labelled(name)
 
     header_roles = getattr(browser_session, "_gp_header_roles", {})
-    api_session = _api_session_from_session(browser_session)
+    api_session = _api_session_of(browser_session, loaded_name)
     # The copy inherits the source's stamp through SESSION_RIDER_ATTRS, so this
     # is belt and braces: it stamps the copy anyway, for a source object that
     # refused the stamp (_stamp_session_slot is advisory and swallows that).
@@ -1073,10 +1098,7 @@ def load_session_for_api_from_bytes(
     # No name and no metadata, so none of _finish_loaded: the session stays unstamped.
     _check_structure(source, _BYTES_LABEL)
 
-    try:
-        return _api_session_from_session(source)
-    except Exception as exc:  # noqa: BLE001 — structurally present but malformed contents
-        raise SessionExpiredError(f"Session bytes have unusable cookies/headers: {exc}") from exc
+    return _api_session_of(source, _BYTES_LABEL)
 
 
 def _write_back_target(api_session: requests.Session, session_name: str) -> str:

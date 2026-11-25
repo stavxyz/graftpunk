@@ -1,12 +1,15 @@
 """Every session reader classifies the stored bytes first, then reads a record
 or a legacy pickle; the API loaders read either without the browser stack."""
 
+import copyreg
 import json
 import os
 import re
 import subprocess
 import sys
+import types
 
+import dill
 import pytest
 import requests
 
@@ -35,6 +38,7 @@ from tests.unit.session_compat_cases import (
     cookie_dicts,
     decrypt,
     encrypt,
+    nodriver_state,
     record_bytes,
     token_dicts,
 )
@@ -268,7 +272,86 @@ def test_a_pickle_of_something_without_session_state_has_invalid_structure(sessi
     import dill
 
     store_payload(session_store, dill.dumps({"not": "a session"}))
+    for fn in readers(session_store)["myshop"]:
+        with pytest.raises(SessionExpiredError, match=re.escape("'myshop' has invalid structure")):
+            fn()
+    with pytest.raises(SessionExpiredError, match="^Session bytes have invalid structure") as exc:
+        readers(session_store)[_BYTES_LABEL][0]()
+    # A caller holding bytes has no store to clear.
+    assert "gp clear" not in str(exc.value)
+
+
+class _PickledAs:
+    """Pickles as *cls*, with *state* handed to ``cls.__setstate__`` on load,
+    so a test can store a real session class holding a value no session sets."""
+
+    def __init__(self, cls, state):
+        self.cls, self.state = cls, state
+
+    def __reduce_ex__(self, protocol):
+        return (copyreg._reconstructor, (self.cls, object, None), self.state)
+
+
+def _pickled_as(shape, over):
+    if shape == "namespace":
+        state = {"cookies": requests.cookies.RequestsCookieJar(), "headers": {}, **over}
+        return dill.dumps(types.SimpleNamespace(**state))
+    if shape == "BrowserSession":
+        from graftpunk.session import BrowserSession
+
+        return dill.dumps(_PickledAs(BrowserSession, {**nodriver_state(), **over}))
+    cls = {"requests.Session": requests.Session, "GraftpunkSession": GraftpunkSession}[shape]
+    return dill.dumps(_PickledAs(cls, {**requests.Session().__getstate__(), **over}))
+
+
+_BAD_VALUES = {
+    "cookies-int": {"cookies": 5},
+    "cookies-none": {"cookies": None},
+    "cookies-str": {"cookies": "not-a-jar"},
+    "cookies-list-of-int": {"cookies": [1]},
+    "headers-int": {"headers": 5},
+    "headers-none": {"headers": None},
+    "headers-list": {"headers": [1]},
+    "roles-int": {"_gp_header_roles": 5},
+    "roles-of-int": {"_gp_header_roles": {"xhr": 5}},
+}
+_SHAPES = ("namespace", "BrowserSession", "requests.Session", "GraftpunkSession")
+
+
+@pytest.mark.parametrize("bad", sorted(_BAD_VALUES))
+@pytest.mark.parametrize("shape", _SHAPES)
+def test_a_pickle_holding_a_value_no_session_has_reads_as_an_expired_session(
+    shape, bad, session_store
+):
+    """No reader leaks a TypeError or AttributeError from inside a session it
+    could not use: the API loaders report it as expired, and ``load_session``
+    either returns what was saved or reports it as expired."""
+    store_payload(session_store, _pickled_as(shape, _BAD_VALUES[bad]))
+    load_session_reader, *api_readers = readers(session_store)["myshop"]
+    for fn in [*api_readers, *readers(session_store)[_BYTES_LABEL]]:
+        with pytest.raises(SessionExpiredError):
+            fn()
+    try:
+        load_session_reader()
+    except SessionExpiredError as exc:
+        assert "'myshop'" in str(exc)
+
+
+@pytest.mark.parametrize(
+    "over",
+    [{"cookies": 5}, {"cookies": None}, {"headers": 5}, {"headers": None}, {"headers": {"a": 1}}],
+    ids=["cookies-int", "cookies-none", "headers-int", "headers-none", "headers-object"],
+)
+def test_a_record_holding_a_value_no_session_has_reads_as_an_expired_session(over, session_store):
+    store_payload(session_store, json.dumps({**json.loads(record_bytes()), **over}).encode())
     for name, fns in readers(session_store).items():
         for fn in fns:
-            with pytest.raises(SessionExpiredError, match=re.escape(f"'{name}' has invalid")):
+            with pytest.raises(SessionExpiredError, match=re.escape(f"'{name}'")):
                 fn()
+
+
+def test_the_install_hint_names_both_browser_free_loaders(session_store, no_browser_stack):
+    session_store.seed("pickle")
+    with no_browser_stack(), pytest.raises(RealSessionClassUnavailable) as exc:
+        load_session("myshop", key=TEST_KEY)
+    assert "load_session_for_api or load_session_for_api_from_bytes" in str(exc.value)

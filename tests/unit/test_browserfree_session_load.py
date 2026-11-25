@@ -363,14 +363,15 @@ def test_from_bytes_object_without_session_shape_raises_session_expired():
         cache.load_session_for_api_from_bytes(blob, key=key)
 
 
-def test_from_bytes_malformed_cookies_raises_session_expired():
+@pytest.mark.parametrize("cookies", ["not-a-jar", 5, None])
+def test_from_bytes_malformed_cookies_raises_session_expired(cookies):
     """Structurally present but unusable contents must still honour the
     documented SessionExpiredError contract rather than leaking an
     AttributeError from deep inside session construction."""
     from cryptography.fernet import Fernet
 
     key = Fernet.generate_key()
-    broken = types.SimpleNamespace(cookies="not-a-jar", headers="not-a-mapping")
+    broken = types.SimpleNamespace(cookies=cookies, headers="not-a-mapping")
     blob = Fernet(key).encrypt(dill.dumps(broken))
     with pytest.raises(SessionExpiredError):
         cache.load_session_for_api_from_bytes(blob, key=key)
