@@ -694,3 +694,22 @@ this section governs.
 11. **A legacy pickle of a subclass or another type** has no kind. The API
     loaders read it through a `StoredSession` with `kind=None`, which can be
     read and never written.
+12. **Selenium compat fixtures are built without a browser**, replacing item 1
+    of "Proving nothing breaks" on this point. `requestium.Session.__init__`
+    starts no driver, so a `BrowserSession` built with it has the real pickle
+    shape (requestium's own initializer partial, empty options), which is what
+    the loaders must read. What a real login's options hold matters only when
+    selenium records are designed, and they are deferred (amendment 1). No
+    live Chrome is launched for this work.
+13. **`_load_for_write_back` takes an already classified result**, not raw
+    bytes, because the shared read step classifies first.
+14. **"Constructs nothing to compare with" is about comparison.**
+    `record_to_state` does construct default values (a fresh `HTTPAdapter` on
+    each prefix) to hand `__setstate__` a complete state.
+15. **Whether a fixture is recordable is asserted in the codec's test**, not
+    stored in the fixture files, which describe frozen releases.
+16. **`update_session_cookies` keeps its existing warning**,
+    `session_save_skipped_load_failed`, for a write-back it skips, with added
+    `reason` and `hint` fields. No new event name replaces it.
+17. **The login-engine "not edited" check is a one-time command** in the
+    release task and the PR, not a permanent test.
