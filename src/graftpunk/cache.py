@@ -30,6 +30,7 @@ from graftpunk.config import get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data, resolve_key
 from graftpunk.exceptions import (
     EncryptionError,
+    GraftpunkError,
     InvalidSessionRecord,
     RealSessionClassUnavailable,
     SessionExpiredError,
@@ -626,9 +627,11 @@ def _unpickle_whole(legacy: LegacyBytes, *, name: str) -> Any:
         # browser stack; without this the failure escapes raw as
         # "No module named 'httpie'".
         raise _real_class_unavailable(name, exc) from exc
-    except ImportError:
-        # A class or name missing from a module that is installed: version
-        # skew, whose traceback is the useful report, not a session to clear.
+    except (ImportError, GraftpunkError):
+        # Any other import failure is an install problem, and a graftpunk
+        # error a class's __setstate__ raises already says what is wrong;
+        # neither is a session to clear. (A class missing from a module that
+        # imports raises AttributeError, and is reported below with its text.)
         raise
     except Exception as exc:  # noqa: BLE001 (a state its class refuses is an unusable session)
         _log_load_failure(name, exc)
@@ -685,9 +688,16 @@ def _api_session_of(source: Any, name: str) -> "GraftpunkSession":
     an expired session rather than whatever they raised."""
     try:
         return _api_session_from_session(source)
+    except ImportError:
+        # A module the builder imports is missing: an install problem.
+        raise
     except Exception as exc:  # noqa: BLE001 (structurally present but malformed contents)
-        what = "Session bytes have" if name == _BYTES_LABEL else f"Session '{name}' has"
-        raise SessionExpiredError(f"{what} unusable cookies/headers: {exc}") from exc
+        if name == _BYTES_LABEL:
+            raise SessionExpiredError(
+                f"Session bytes have unusable cookies/headers: {exc}"
+            ) from exc
+        _log_load_failure(name, exc)
+        raise SessionExpiredError(f"Session '{name}' has unusable cookies/headers: {exc}") from exc
 
 
 def _finish_loaded(session: Any, name: str, metadata: SessionMetadata) -> None:

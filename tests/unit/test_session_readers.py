@@ -23,6 +23,7 @@ from graftpunk.cache import (
     load_session_for_api_resolved,
 )
 from graftpunk.exceptions import (
+    BrowserError,
     NewerSessionRecord,
     RealSessionClassUnavailable,
     SessionExpiredError,
@@ -355,3 +356,69 @@ def test_the_install_hint_names_both_browser_free_loaders(session_store, no_brow
     with no_browser_stack(), pytest.raises(RealSessionClassUnavailable) as exc:
         load_session("myshop", key=TEST_KEY)
     assert "load_session_for_api or load_session_for_api_from_bytes" in str(exc.value)
+
+
+def test_a_class_missing_from_its_installed_module_reads_as_an_expired_session(
+    session_store, monkeypatch
+):
+    """``pickle`` raises ``AttributeError`` for it, not ``ImportError``; the
+    message keeps what it said, so the missing name is visible."""
+    module = types.ModuleType("graftpunk_test_vanishing_module")
+
+    class Vanishing:
+        pass
+
+    Vanishing.__module__ = module.__name__
+    Vanishing.__qualname__ = "Vanishing"
+    module.Vanishing = Vanishing
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    saved = Vanishing()
+    saved.cookies = requests.cookies.RequestsCookieJar()
+    saved.headers = {}
+    store_payload(session_store, dill.dumps(saved))
+    del module.Vanishing
+
+    with pytest.raises(SessionExpiredError, match="Failed to load session 'myshop': ") as exc:
+        load_session("myshop", key=TEST_KEY)
+    assert "Vanishing" in str(exc.value)
+    assert isinstance(exc.value.__cause__, AttributeError)
+
+
+class RefusesItsState:
+    """A class whose ``__setstate__`` raises a graftpunk error of its own."""
+
+    def __setstate__(self, state):
+        raise BrowserError("the browser this session needs is gone")
+
+
+def test_a_graftpunk_error_from_a_classs_setstate_propagates_as_itself(session_store):
+    store_payload(session_store, dill.dumps(_PickledAs(RefusesItsState, {"cookies": {}})))
+    with pytest.raises(BrowserError, match="the browser this session needs is gone"):
+        load_session("myshop", key=TEST_KEY)
+
+
+def test_an_import_error_while_building_the_api_session_propagates(session_store, monkeypatch):
+    """A module the builder imports is missing: an install problem, never an
+    expired session."""
+    session_store.seed("record")
+    raw = session_store.raw("myshop")
+    monkeypatch.setitem(sys.modules, "graftpunk.client_headers", None)
+    for fn in [
+        lambda: load_session_for_api("myshop", key=TEST_KEY),
+        lambda: load_session_for_api_from_bytes(raw, key=TEST_KEY),
+    ]:
+        with pytest.raises(ImportError) as exc:
+            fn()
+        assert not isinstance(exc.value, SessionExpiredError)
+        assert "graftpunk.client_headers" in str(exc.value)
+
+
+def test_a_named_api_load_logs_contents_it_cannot_use(session_store, captured_logs):
+    from tests.unit.session_compat_cases import events
+
+    store_payload(session_store, _pickled_as("namespace", {"headers": 5}))
+    with pytest.raises(SessionExpiredError, match="'myshop' has unusable cookies/headers"):
+        load_session_for_api("myshop", key=TEST_KEY)
+    failures = events(captured_logs, "failed_to_load_session")
+    assert [(e["name"], e["log_level"]) for e in failures] == [("myshop", "error")]
+    assert "items" in failures[0]["error"]
