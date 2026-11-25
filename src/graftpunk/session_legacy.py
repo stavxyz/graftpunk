@@ -74,10 +74,11 @@ class _Unpickler(dill.Unpickler):
     def _placeholder(self, module: str, name: str) -> type:
         # One subclass per path, so the instance reports the class it replaces.
         key = (module, name)
-        if key not in self._placeholders:
-            self._placeholders[key] = type(name, (_Capture,), {"__module__": module})
-            self._placeholders[key].__qualname__ = name
-        return self._placeholders[key]
+        placeholder = self._placeholders.get(key)
+        if placeholder is None:
+            namespace = {"__module__": module, "__qualname__": name}
+            placeholder = self._placeholders[key] = type(name, (_Capture,), namespace)
+        return placeholder
 
     def find_class(self, module: str, name: str) -> Any:
         frozen = FROZEN_CLASS_PATHS.get((module, name))
@@ -98,9 +99,9 @@ def state_from_pickle(decrypted: bytes) -> LegacyState:
     """Return the state dict of the session pickled in *decrypted*.
 
     ``pickle.UnpicklingError`` propagates for bytes that are not a pickle. A
-    top-level object the placeholder did not capture (a pickled ``dict`` or
-    ``types.SimpleNamespace``) gives ``kind=None`` and its ``vars()``; one with
-    no ``__dict__`` raises ``TypeError``.
+    top-level object the placeholder did not capture (a
+    ``types.SimpleNamespace``, say) gives ``kind=None`` and its ``vars()``; one
+    with no ``__dict__`` (a ``dict`` or a ``list``) raises ``TypeError``.
     """
     unpickler = _Unpickler(io.BytesIO(decrypted))
     obj = unpickler.load()

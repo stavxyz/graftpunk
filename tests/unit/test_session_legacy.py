@@ -121,3 +121,32 @@ def test_a_class_that_cannot_be_imported_is_stubbed_and_reported(monkeypatch):
     legacy = state_from_pickle(payload)
     assert legacy.unresolved == ("absent_pkg_for_legacy_test.Thing",)
     assert legacy.kind is None and legacy.state == {"cookies": [1]}
+
+
+@pytest.mark.parametrize("version", ["1.21.0", "1.40.1", "1.43.1", "1.44.0"])
+def test_a_selenium_pickle_reads_where_the_browser_stack_cannot_import(version, tmp_path):
+    case = case_named(version, "selenium")
+    payload = tmp_path / "payload.pickle"
+    payload.write_bytes(decrypt(case))
+    script = (
+        "import json, sys\n"
+        "class Block:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name.split('.')[0] in ('requestium', 'selenium', 'webdriver_manager'):\n"
+        "            raise ModuleNotFoundError(f'No module named {name!r}', name=name)\n"
+        "sys.meta_path.insert(0, Block())\n"
+        "import graftpunk.session_legacy as legacy\n"
+        "from tests.unit.session_compat_cases import cookie_dicts\n"
+        f"got = legacy.state_from_pickle(open({str(payload)!r}, 'rb').read())\n"
+        "print(json.dumps({'kind': got.kind, 'unresolved': got.unresolved,\n"
+        "    'cookies': cookie_dicts(got.state['cookies']),\n"
+        "    'headers': [list(i) for i in got.state['headers'].items()]}))\n"
+    )
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
+    out = json.loads(done.stdout)
+    assert out["kind"] == "browser"
+    assert out["cookies"] == case.expected["cookies"]
+    assert out["headers"] == case.expected["headers"]
+    assert any(p.startswith("requestium.") for p in out["unresolved"]), out["unresolved"]
