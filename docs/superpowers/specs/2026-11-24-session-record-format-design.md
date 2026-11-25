@@ -650,3 +650,47 @@ when to run it: before any change to the stored format or to
   `__setstate__` change is planned.
 - UNVERIFIED: how many independent consumers share a store across versions.
   The staged rollout assumes at least one does.
+
+## Amendments from plan validation
+
+Added 2026-11-25, after the `validated:` block above was written; that block
+describes the text above this section. Checking the implementation plan
+against the code settled these points. Where one differs from the text above,
+this section governs.
+
+1. **Selenium-backend sessions stay pickles in release 1**, by the open-risk
+   clause above. A record would have to rebuild `_driver_initializer`, a
+   `functools.partial` of the session's own bound method, on restore. The
+   selenium rows, predicates and the `selenium` block of the record are not
+   built in release 1. Selenium pickles still load through every loader.
+2. **The three session class paths live in `session_riders`**
+   (`SESSION_CLASS_PATHS`), so `session_record` and `session_legacy` each
+   import them without importing the other. `kind_of` stays in
+   `session_record`.
+3. **The new exception types are defined in `graftpunk.exceptions`**
+   (`NewerSessionRecord`, `InvalidSessionRecord`,
+   `RealSessionClassUnavailable`), which keeps importing nothing from
+   graftpunk. A re-export from there of names defined in the codec would be an
+   import cycle.
+4. **`classify` validates the whole record**, and one private function in
+   `cache.py` maps an invalid record to `SessionExpiredError`, for readers and
+   write-backs alike.
+5. **`record_to_state` returns the full state `__setstate__` needs**: each
+   pickle-only key the kind has is put back at its default, because
+   `requests.Session.__setstate__` sets only the keys it is given.
+6. **The shared save step takes the metadata to write.** `copy_session` passes
+   the source's metadata so created, modified and expiry times and status are
+   kept, as its contract says; a fresh save builds new metadata as today.
+7. **The loaded-object steps are shared.** The structure check, the slot stamp
+   and the account fallback from the metadata, which today run inside
+   `_load_session_with_metadata`, apply to a `StoredSession` as to a real
+   object, so API loads keep them once they stop calling `load_session`.
+8. **The cookie jar's policy check is the cookie codec's refusal**, through a
+   public `graftpunk.cookies.policy_is_default`, not a separate table row.
+9. **`login_engine.py` keeps importing the moved rider names from
+   `graftpunk.tokens`**, so the login engine is not edited.
+10. **`classify`'s results each carry `format: SessionFormat`**, which is how
+    the one format type covers its result.
+11. **A legacy pickle of a subclass or another type** has no kind. The API
+    loaders read it through a `StoredSession` with `kind=None`, which can be
+    read and never written.
