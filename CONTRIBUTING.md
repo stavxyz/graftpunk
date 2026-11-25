@@ -200,7 +200,23 @@ python scripts/session_compat.py read --graftpunk 1.44.0 --store DIR --name mysh
 # Write that session with this checkout first. Without --format the setting
 # is left unset, so the checkout's own default decides.
 python scripts/session_compat.py write --store DIR --name myshop [--format record]
+# Does this checkout, with the setting unset, read and write back every
+# fixture exactly as a release does? Exit 0 prints "no differences"; exit 1
+# prints each value that differs.
+python scripts/session_compat.py compare --graftpunk 1.44.0
 ```
+
+`compare` loads every fixture under `tests/fixtures/session_compat/<version>/`
+with `load_session_for_api_from_bytes` and `load_session_for_api`, writes each
+back with `update_session_cookies` after adding a cookie, and records the API
+sessions' cookies, policy, headers and riders, the sha256 of the payload the
+write-back stored, and the class `load_session` then returns. It does this
+once with the release and once with this checkout, both with
+`PYTHONHASHSEED=0`, and prints the differences. Run it after any change to a
+loader, a write-back or the stored format, against the last release; the
+`old-reader` job runs it for 1.44.0 and the newest release. Against 1.21.0 it
+reports differences by design (that release gives API sessions another
+cookie policy and has fewer riders).
 
 The `old-reader` job in `.github/workflows/python-quality.yml` runs `write` and
 `read` for 1.21.0, 1.44.0 and the newest release: the default setting must

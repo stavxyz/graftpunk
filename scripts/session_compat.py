@@ -27,13 +27,25 @@ setting writes (a caller's value is not passed on); ``--format pickle`` or
 that name, and leaves the key file it installed in the store so that ``read``
 can use it.
 
-``generate`` and ``read`` run the release in a venv made with ``uv venv`` under
-a temporary directory, never the repository's ``.venv``, with ``GRAFTPUNK_CONFIG_DIR``
-pointed at a store in the run's staging directory or at ``--store``, and the
-key written to ``<config_dir>/.session_key``, because 1.21.0's
-``cache_session`` and ``load_session_for_api`` take no ``key=``. No browser is
-started: the selenium case is built with ``requestium.Session.__init__``, which
-starts no driver.
+``compare`` asks whether the code under test, with the format setting
+unset, reads and writes back every committed fixture exactly as a release does.
+It runs the same steps in two children, the release and the code under test,
+each with its own scratch store: for each fixture under ``--fixtures``,
+``load_session_for_api_from_bytes``, ``load_session_for_api``, and a
+write-back (``update_session_cookies`` after adding one cookie), recording the
+API sessions' cookies, cookie policy, headers and riders, the sha256 of the
+decrypted payload the write-back stored, and the class ``load_session``
+returns after it. It prints each value that differs and exits 1, or prints
+one ``no differences`` line and exits 0.
+
+``generate``, ``read`` and ``compare`` run the release in a venv made with
+``uv venv`` under a temporary directory, never the repository's ``.venv``,
+with ``GRAFTPUNK_CONFIG_DIR`` pointed at a store in the run's staging
+directory, at ``--store`` or at a scratch store, and the key written to
+``<config_dir>/.session_key``, because 1.21.0's ``cache_session`` and
+``load_session_for_api`` take no ``key=``. No browser is started: the
+selenium case is built with ``requestium.Session.__init__``, which starts no
+driver.
 
 What each writes: ``generate`` refuses an ``--out`` that holds files, writes
 into a staging directory beside it and renames that to ``--out`` only on
@@ -49,6 +61,7 @@ Usage:
     python scripts/session_compat.py generate --graftpunk VERSION --out DIR [--key FILE]
     python scripts/session_compat.py write --store DIR --name NAME [--format pickle|record]
     python scripts/session_compat.py read --graftpunk VERSION --store DIR --name NAME [--key FILE]
+    python scripts/session_compat.py compare --graftpunk VERSION [--fixtures DIR] [--key FILE]
 """
 
 from __future__ import annotations
@@ -65,13 +78,15 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_KEY = REPO_ROOT / "tests" / "fixtures" / "session_compat" / "key"
+DEFAULT_FIXTURES = REPO_ROOT / "tests" / "fixtures" / "session_compat"
+DEFAULT_KEY = DEFAULT_FIXTURES / "key"
 CHILD_PYTHON = "3.12"
 # The child's own config directory under --out, removed when it is done.
 STORE_DIRNAME = ".store"
 # A century, so a committed fixture's metadata.json never expires.
 TTL_HOURS = 24 * 365 * 100
 READ_FAILED = 3
+COMPARE_DIFFERS = 1
 PLACEHOLDER_CONFIG_DIR = "~/.config/graftpunk"
 
 CASES = (
@@ -170,17 +185,28 @@ def run_child(
     config_dir: Path,
     cwd: Path,
     extra_env: dict[str, str] | None = None,
+    *,
+    fixed_hash_seed: bool = False,
 ) -> int:
-    """Run this file's child half under *python*; return its exit status."""
+    """Run this file's child half under *python*; return its exit status.
+
+    *fixed_hash_seed* runs it with ``PYTHONHASHSEED=0``, so two children
+    pickle a set in the same order and their payloads can be compared byte
+    for byte.
+    """
     home = cwd / "home"
     home.mkdir(exist_ok=True)
     # -I: the child imports graftpunk from its own venv, never from this
     # checkout, and reads no PYTHON* variables. cwd is a temp directory so no
-    # .env file is read.
-    cmd = [python, "-I", str(Path(__file__).resolve()), *args]
-    return subprocess.run(  # noqa: S603
-        cmd, env=_child_env(config_dir, home, extra_env), cwd=cwd, check=False
-    ).returncode
+    # .env file is read. -I also ignores PYTHONHASHSEED, so a fixed seed uses
+    # -s -P instead (no user site, no script directory on sys.path), and the
+    # environment _child_env builds passes no other PYTHON* variable.
+    flags = ["-s", "-P"] if fixed_hash_seed else ["-I"]
+    env = _child_env(config_dir, home, extra_env)
+    if fixed_hash_seed:
+        env["PYTHONHASHSEED"] = "0"
+    cmd = [python, *flags, str(Path(__file__).resolve()), *args]
+    return subprocess.run(cmd, env=env, cwd=cwd, check=False).returncode  # noqa: S603
 
 
 def generate(version: str, out: Path, key: bytes, *, python: str | None = None) -> None:
@@ -242,6 +268,72 @@ def read(version: str, store: Path, name: str, key: bytes, *, python: str | None
     finally:
         if created_key:
             key_file.unlink(missing_ok=True)
+
+
+def compare(
+    version: str,
+    fixtures: Path,
+    key: bytes,
+    *,
+    release_python: str | None = None,
+    python: str | None = None,
+) -> int:
+    """Run the compare steps with release *version* and with the code under
+    test (*python*, default this interpreter); print what differs."""
+    fixtures = fixtures.resolve()  # the children run in temp directories
+    if not any(_fixture_dirs(fixtures)):
+        raise CompatError(f"--fixtures {fixtures} holds no <version>/ directories")
+    results: dict[str, dict[str, Any]] = {}
+    with tempfile.TemporaryDirectory(prefix="session-compat-") as tmp:
+        children = (
+            ("release", release_python or str(_venv(Path(tmp), version))),
+            ("tree", python or sys.executable),
+        )
+        for label, child in children:
+            run_dir = Path(tmp) / label
+            run_dir.mkdir()
+            store, out = run_dir / "store", run_dir / "results.json"
+            _install_key(store, key)
+            args = ["_compare", "--fixtures", str(fixtures), "--out", str(out)]
+            status = run_child(child, args, store, run_dir, fixed_hash_seed=True)
+            if status != 0:
+                raise CompatError(f"the compare steps failed under the {label} (exit {status})")
+            results[label] = json.loads(out.read_text())
+    lines = differences(results["release"], results["tree"], old_label=version)
+    for line in lines:
+        print(line)
+    if lines:
+        print(f"{len(lines)} values differ from graftpunk {version}")
+        return COMPARE_DIFFERS
+    print(f"no differences from graftpunk {version}: {len(results['tree'])} fixtures")
+    return 0
+
+
+def _flatten(value: Any, path: str = "") -> dict[str, Any]:
+    if isinstance(value, dict) and value:
+        flat: dict[str, Any] = {}
+        for key in value:
+            flat |= _flatten(value[key], f"{path}/{key}" if path else str(key))
+        return flat
+    return {path: value}
+
+
+def differences(old: dict[str, Any], new: dict[str, Any], *, old_label: str) -> list[str]:
+    """One line per value that differs between two compare results."""
+    flat_old, flat_new = _flatten(old), _flatten(new)
+    missing = object()
+    lines = []
+    for path in sorted(flat_old.keys() | flat_new.keys()):
+        a, b = flat_old.get(path, missing), flat_new.get(path, missing)
+        if a != b:
+            shown = ["<absent>" if v is missing else json.dumps(v)[:200] for v in (a, b)]
+            lines.append(f"{path}: graftpunk {old_label} {shown[0]} | working tree {shown[1]}")
+    return lines
+
+
+def _fixture_dirs(fixtures: Path) -> list[Path]:
+    # Release directories only: legacy/ is not a compat case.
+    return sorted(p for p in fixtures.iterdir() if p.is_dir() and p.name[:1].isdigit())
 
 
 # --- child side: runs in the release's venv as __main__ ---------------------
@@ -453,6 +545,100 @@ def child_read(name: str) -> int:
     return 0
 
 
+_RIDERS = (
+    "_gp_cached_tokens",
+    "_gp_csrf_tokens",
+    "_gp_csrf_origin",
+    "_gp_header_roles",
+    "_gp_header_role_origins",
+    "_gp_session_name",
+    "_gp_account_identifier",
+)
+
+
+def _api_dump(api: Any) -> dict[str, Any]:
+    return {
+        "type": type(api).__qualname__,
+        "policy": type(api.cookies._policy).__qualname__,
+        "cookies": sorted(
+            (_cookie_dict(c) for c in api.cookies),
+            key=lambda c: (c["domain"], c["path"], c["name"]),
+        ),
+        "headers": list(api.headers.items()),
+        "riders": {attr: repr(getattr(api, attr, "<absent>")) for attr in _RIDERS},
+        "default_role": repr(getattr(api, "gp_default_role", "<absent>")),
+    }
+
+
+def _attempt(step: Any) -> Any:
+    try:
+        return step()
+    except Exception as exc:  # noqa: BLE001 (the exception is the result)
+        return {"raised": type(exc).__name__, "message": str(exc)[:200]}
+
+
+def _put(sessions: Path, version_dir: Path, case: str, name: str) -> bytes:
+    """Lay a fixture out as its release stored it, under slot *name*."""
+    encrypted = (version_dir / f"{case}.enc").read_bytes()
+    metadata_file = version_dir / f"{case}.metadata.json"
+    sessions.mkdir(exist_ok=True)
+    if not metadata_file.exists():  # the flat-file layout
+        _write(sessions, f"{name}.session.pickle", encrypted)
+        return encrypted
+    slot = sessions / name
+    slot.mkdir()
+    _write(slot, "session.pickle", encrypted)
+    metadata = json.loads(metadata_file.read_text())
+    _write(slot, "metadata.json", json.dumps({**metadata, "name": name}).encode())
+    return encrypted
+
+
+def _compare_steps(sessions: Path, key: bytes, name: str, encrypted: bytes) -> dict[str, Any]:
+    import hashlib
+
+    from cryptography.fernet import Fernet
+
+    from graftpunk import cache
+
+    def write_back() -> dict[str, Any]:
+        api = cache.load_session_for_api(name, resolve=False)
+        api.cookies.set("probe", "1", domain="probe.myshop.example", path="/")
+        cache.update_session_cookies(api, name)
+        slot = sessions / name / "session.pickle"
+        stored = slot if slot.exists() else sessions / f"{name}.session.pickle"
+        plain = Fernet(key).decrypt(stored.read_bytes())
+        return {
+            "sha256": hashlib.sha256(plain).hexdigest(),
+            "api_after": _api_dump(cache.load_session_for_api(name, resolve=False)),
+            "load_session": _attempt(lambda: type(cache.load_session(name)).__qualname__),
+        }
+
+    return {
+        "from_bytes": _attempt(
+            lambda: _api_dump(cache.load_session_for_api_from_bytes(encrypted, key=key))
+        ),
+        "named": _attempt(lambda: _api_dump(cache.load_session_for_api(name, resolve=False))),
+        "write_back": _attempt(write_back),
+    }
+
+
+def child_compare(fixtures: Path, out: Path) -> None:
+    config_dir = Path(os.environ["GRAFTPUNK_CONFIG_DIR"])
+    sessions = config_dir / "sessions"
+    key = (config_dir / ".session_key").read_bytes().strip()
+    results: dict[str, Any] = {}
+    for version_dir in _fixture_dirs(fixtures):
+        for case in sorted(p.stem for p in version_dir.glob("*.enc")):
+            name = f"{version_dir.name.replace('.', '-')}-{case}"
+            # The release's own logging goes to stdout by default; keep it apart.
+            with contextlib.redirect_stdout(sys.stderr):
+                encrypted = _put(sessions, version_dir, case, name)
+                results[f"{version_dir.name}/{case}"] = _compare_steps(
+                    sessions, key, name, encrypted
+                )
+    out.write_text(json.dumps(results, indent=1, sort_keys=True, default=repr))
+
+
 # --- command line -----------------------------------------------------------
 
 
@@ -483,13 +669,24 @@ def _parser() -> argparse.ArgumentParser:
     rd.add_argument("--store", required=True, type=Path, metavar="DIR")
     rd.add_argument("--name", required=True)
     rd.add_argument("--key", type=Path, default=DEFAULT_KEY, metavar="FILE")
-    # The child half, run by the two above inside the release's venv.
+    cmp = sub.add_parser(
+        "compare",
+        help="read and write back every fixture with a release and with the code "
+        "under test, setting unset; print what differs (exit 1) or nothing (exit 0)",
+    )
+    cmp.add_argument("--graftpunk", required=True, metavar="VERSION")
+    cmp.add_argument("--fixtures", type=Path, default=DEFAULT_FIXTURES, metavar="DIR")
+    cmp.add_argument("--key", type=Path, default=DEFAULT_KEY, metavar="FILE")
+    # The child half, run by the commands above inside the release's venv.
     child_gen = sub.add_parser("_generate")
     child_gen.add_argument("--out", required=True, type=Path)
     child_wr = sub.add_parser("_write")
     child_wr.add_argument("--name", required=True)
     child_rd = sub.add_parser("_read")
     child_rd.add_argument("--name", required=True)
+    child_cmp = sub.add_parser("_compare")
+    child_cmp.add_argument("--fixtures", required=True, type=Path)
+    child_cmp.add_argument("--out", required=True, type=Path)
     return parser
 
 
@@ -504,11 +701,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "read":
             return read(args.graftpunk, args.store, args.name, args.key.read_bytes())
+        if args.command == "compare":
+            return compare(args.graftpunk, args.fixtures, args.key.read_bytes())
         if args.command == "_generate":
             child_generate(args.out)
             return 0
         if args.command == "_write":
             child_write(args.name)
+            return 0
+        if args.command == "_compare":
+            child_compare(args.fixtures, args.out)
             return 0
         return child_read(args.name)
     except CompatError as exc:

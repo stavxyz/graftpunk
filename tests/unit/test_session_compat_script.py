@@ -150,3 +150,76 @@ def test_write_without_a_format_leaves_the_setting_unset_whatever_the_caller_has
         (store / "sessions" / "myshop" / "session.pickle").read_bytes(), key=TEST_KEY
     )
     assert not plain.startswith(b"{")
+
+
+def _two_fixtures(tmp_path):
+    """One release directory with a slot case and the flat-file case."""
+    fixtures = tmp_path / "fixtures"
+    release = fixtures / "1.44.0"
+    release.mkdir(parents=True)
+    for name in ("nodriver.enc", "nodriver.metadata.json", "flatfile.enc"):
+        shutil.copy(session_compat.DEFAULT_FIXTURES / "1.44.0" / name, release / name)
+    (fixtures / "legacy").mkdir()  # not a release directory: never read
+    return fixtures
+
+
+def test_compare_finds_no_difference_between_two_runs_of_the_same_code(tmp_path, capfd):
+    status = session_compat.compare(
+        "working-tree", _two_fixtures(tmp_path), TEST_KEY, release_python=sys.executable
+    )
+    assert status == 0
+    assert capfd.readouterr().out.splitlines() == [
+        "no differences from graftpunk working-tree: 2 fixtures"
+    ]
+
+
+def _release_that_reads_differently(tmp_path) -> str:
+    """A stand-in release: runs the child, then changes one recorded value."""
+    fake = tmp_path / "fake-release"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import json, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "subprocess.run([sys.executable, *args], check=True)\n"
+        "out = Path(args[args.index('--out') + 1])\n"
+        "results = json.loads(out.read_text())\n"
+        "results['1.44.0/nodriver']['named'] = {'raised': 'SessionExpiredError'}\n"
+        "out.write_text(json.dumps(results))\n"
+    )
+    fake.chmod(0o755)
+    return str(fake)
+
+
+def test_compare_prints_each_differing_value_and_exits_1(tmp_path, capfd):
+    status = session_compat.compare(
+        "9.9.9",
+        _two_fixtures(tmp_path),
+        TEST_KEY,
+        release_python=_release_that_reads_differently(tmp_path),
+    )
+    out = capfd.readouterr().out.splitlines()
+    assert status == session_compat.COMPARE_DIFFERS
+    assert out[-1] == f"{len(out) - 1} values differ from graftpunk 9.9.9"
+    assert (
+        '1.44.0/nodriver/named/raised: graftpunk 9.9.9 "SessionExpiredError" | '
+        + ("working tree <absent>")
+        in out
+    )
+    assert not [line for line in out if "flatfile" in line]
+
+
+def test_compare_refuses_a_directory_with_no_release_fixtures(tmp_path):
+    (tmp_path / "legacy").mkdir()
+    with pytest.raises(session_compat.CompatError, match="holds no <version>/ directories"):
+        session_compat.compare("1.44.0", tmp_path, TEST_KEY, release_python=sys.executable)
+
+
+def test_differences_names_the_path_of_each_changed_or_missing_value():
+    old = {"a/x": {"named": {"type": "S", "n": 1}}, "gone": {"k": 1}}
+    new = {"a/x": {"named": {"type": "S", "n": 2}}}
+    assert session_compat.differences(old, new, old_label="1.44.0") == [
+        "a/x/named/n: graftpunk 1.44.0 1 | working tree 2",
+        "gone/k: graftpunk 1.44.0 1 | working tree <absent>",
+    ]
+    assert session_compat.differences(old, old, old_label="1.44.0") == []

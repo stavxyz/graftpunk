@@ -224,17 +224,21 @@ jobs:
           echo "reading with graftpunk $version"
 
       - name: The default setting writes what the release reads, tokens included
+        shell: bash
         run: |
           store="$RUNNER_TEMP/old-reader-pickle"
           uv run --no-sync python scripts/session_compat.py write --store "$store" --name myshop
+          status=0
           out="$(uv run --no-sync python scripts/session_compat.py read \
-            --graftpunk "$READER_VERSION" --store "$store" --name myshop)"
-          echo "$out"
+            --graftpunk "$READER_VERSION" --store "$store" --name myshop)" || status=$?
+          echo "exit $status: $out"
+          [ "$status" = 0 ]
           printf '%s\n' "$out" | grep -Fx 'cookies: pref sid'
           printf '%s\n' "$out" | grep -Fx 'tokens: bearer csrf'
 
       - name: A record is reported expired and left alone
         if: matrix.version != 'latest'
+        shell: bash
         run: |
           store="$RUNNER_TEMP/old-reader-record"
           uv run --no-sync python scripts/session_compat.py write \
@@ -248,3 +252,10 @@ jobs:
           [ "$out" = SessionExpiredError ]
           after="$(find "$store/sessions" -type f -exec shasum -a 256 {} + | sort -k2)"
           [ "$before" = "$after" ]
+
+      # 1.21.0 gives API sessions another cookie policy and lacks riders added
+      # since, so its results differ by design (148 values on 2026-11-25).
+      - name: The default setting reads and writes back every fixture as the release does
+        if: matrix.version != '1.21.0'
+        shell: bash
+        run: uv run --no-sync python scripts/session_compat.py compare --graftpunk "$READER_VERSION"
