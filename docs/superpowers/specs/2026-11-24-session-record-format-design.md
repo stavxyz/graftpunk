@@ -1,18 +1,5 @@
 ---
 type: spec
-validated:
-  sha: 1d1eb24df37a7c130a51ae2d993f1f0219057380
-  date: 2026-11-25T08:05:12Z
-  reviewers: [fact-check, solid-hygiene]
-  findings:
-    critical: 1
-    important: 4
-    medium: 4
-    low: 3
-    nitpick: 0
-  net_negative_raised: 2
-  net_negative_addressed: 2
-  net_negative_remaining: 0
 ---
 
 # Sessions stored as plain data: design
@@ -50,9 +37,10 @@ The owner's condition: nothing that works today may break.
    cookies, headers, header roles, cached tokens and account identity.
 3. A plugin command that uses its saved session runs on graftpunk-lite without
    `[browser]`. Saving refreshed cookies and tokens back from lite works for a
-   store that writes records; under release 1's default (`pickle`) it stays as
-   it is today (the write-back fails and is logged), because a pickle an older
-   release can read cannot be written without the browser classes.
+   session stored as a record; for one stored as a pickle it stays as it is
+   today (the write-back is skipped and logged), because a pickle cannot be
+   written back without the browser classes. A session becomes a record at its
+   next login on a host that sets `record`.
 4. No release reads a store written by a newer release and fails silently or
    destroys the session.
 
@@ -125,7 +113,12 @@ Two new leaf modules, both browser-free:
   `GP_SESSION_NAME_ATTR` and `GP_ACCOUNT_ATTR`, which stay where they are, in
   `graftpunk.session_identity` (it imports only `slugify` and
   `graftpunk.exceptions`); `session_riders` imports those two from it and
-  nothing else from graftpunk. `session_identity` is not changed.
+  nothing else from graftpunk. `session_identity` is not changed. graftpunk's
+  own modules (`session.py`, `cache.py`, `graftpunk_session.py` and the rest)
+  import the moved names from `session_riders`. The `tokens` re-export then
+  has one reason to exist: programs outside graftpunk that import from it, and
+  the pickled path of `CachedToken` below. A comment on it says it is part of
+  the stored format, and the class-path test is its guard.
 - `graftpunk/session_record.py` holds the codec, described below. It imports
   from graftpunk only `graftpunk.session_riders`, `graftpunk.cookies`,
   `graftpunk.exceptions` and `graftpunk.logging`.
@@ -177,8 +170,9 @@ object to load for a write-back, how a live session is renamed) lives in
   `_last_requests_url`, and each name in `PICKLED_SESSION_RIDER_ATTRS`), the
   record key it is stored under, and its codec (plain
   JSON value, header pairs, cookie list, cached-token map). A second set of
-  rows marks the pickle-only keys (`auth`, `hooks`, `adapters`,
-  `webdriver_options`, `_driver_initializer`, `_driver`), each with a
+  rows marks the pickle-only values (`auth`, `hooks`, `adapters`,
+  `webdriver_options`, `_driver_initializer`, `_driver`, and the cookie jar's
+  policy, which rides inside `cookies`), each with a
   structural predicate on the value that says it is at its default (see "What
   the record cannot hold"). Each row also names the kinds it applies to, so
   the per-kind key set is read from the table and stated nowhere else.
@@ -215,7 +209,10 @@ object to load for a write-back, how a live session is renamed) lives in
   `session_name`, `current_url`, and each rider attribute. Its
   `__getstate__()` emits the keys the table lists for its kind; it carries no
   per-kind rule of its own. It also holds the record's unknown top-level keys,
-  untouched (see the extension rule under "The record"). A test builds a view
+  untouched, and is the only thing that does (see the extension rule under
+  "The record"). A `StoredSession` is only ever built from a record or, for
+  the API loaders, from a legacy pickle's state; it is only ever written as a
+  record. A test builds a view
   and the real object from the same record and asserts
   `_extract_session_metadata` returns the same for both and the two
   `__getstate__()` results have the same keys. `record_to_state` and
@@ -276,10 +273,11 @@ the table fixes them:
   `api` get graftpunk's browser cookie policy, which every loader already
   applies after unpickling; `requests` gets the standard library's). A pickle
   never names a graftpunk policy class either: HEAD pickles the policy as the
-  standard library's, and 1.21.0 pickled HTTPie's. A jar whose policy is a
-  program's own subclass, or carries non-default settings (the arguments
-  `BrowserCookiePolicy.__reduce__` passes), is a pickle-only value like any
-  other and keeps the session a pickle.
+  standard library's, and 1.21.0 pickled HTTPie's. The jar's policy has its
+  own pickle-only row in the table, so this rule is read from the same place
+  as the others: a policy that is a program's own subclass, or carries
+  non-default settings (the arguments `BrowserCookiePolicy.__reduce__`
+  passes), keeps the session a pickle.
 - `headers` is a list of pairs, so order and case survive.
 - `riders` holds the state keys in `PICKLED_SESSION_RIDER_ATTRS`; the
   memory-only riders stay out, as they are out of the pickle today. An `api`
@@ -288,21 +286,23 @@ the table fixes them:
   a saved `GraftpunkSession` loses its header roles and token cache in the
   pickle too, and `update_session_cookies` restores only the account, from
   the metadata.
-- **The extension rule, one rule for every later change.** A release may add
-  a top-level key without raising `graftpunk_session` only if an older reader
-  can ignore it safely; anything else raises the version. A reader ignores
-  top-level keys it does not know but never drops them: `StoredSession`
-  carries them, `load_session` puts them on the restored object under one
-  memory-only attribute, and `encode_session` writes them back unchanged.
-  So an older host that refreshes a cookie rewrites the record with the newer
-  release's keys intact. A reader refuses a `graftpunk_session` version higher
-  than it supports, with an error that names the version and says to upgrade
-  graftpunk; it never reports such a session as expired and never writes over
-  it in a write-back. A test writes back a record holding an extra top-level
-  key through `update_session_cookies` and `copy_session`, and through
-  `load_session` followed by `cache_session`, and asserts the key survives
-  each; another asserts a version-2 record is refused by all three readers and
-  left byte for byte unchanged by both write-backs.
+- **The extension rule, one rule for every later change.** A reader refuses
+  a `graftpunk_session` version higher than it supports, with an error that
+  names the version and says to upgrade graftpunk; it never reports such a
+  session as expired, and a write-back never writes over it. A release may add
+  a top-level key without raising the version only if all three hold for an
+  older release that does not know the key: it can ignore the key when
+  reading; it can keep the key unchanged while rewriting cookies and tokens
+  beside it; and losing the key on a fresh save is harmless. Anything else
+  raises the version. Unknown keys are kept in exactly one place, the
+  write-back path: a write-back reads a record into a `StoredSession`, which
+  holds them, and writes them back unchanged. A fresh save (a login, or a
+  program that calls `load_session` and then `cache_session`) writes a new
+  record with only the keys the writer knows; live session objects carry no
+  storage-format state. A test writes back a record holding an extra top-level
+  key through `update_session_cookies` and `copy_session` and asserts the key
+  survives both; another asserts a version-2 record is refused by all three
+  readers and left byte for byte unchanged by both write-backs.
 - Format detection is by the first decrypted byte: `{` is a record, anything
   else is a legacy pickle (pickle protocol 2 and later starts with `0x80`).
   `classify` owns it.
@@ -339,11 +339,15 @@ key. The legacy writer stays `dill` (`cache.py` imports it as `pickle`), since
 hooks and initializers can be lambdas. Such a session works exactly as today,
 at the price of keeping the legacy writer.
 
-A test pins each predicate against the installed libraries: the state of a
-fresh `requests.Session()`, a fresh `GraftpunkSession`, and each committed
-selenium fixture passes every predicate, so a requests or requestium release
-that changes a default fails CI instead of silently turning every session
-unrecordable. Whether a selenium pickle's `_driver_initializer` (a partial of
+A test pins each predicate against the installed libraries, so a requests or
+requestium release that changes a default fails CI instead of silently turning
+every session unrecordable: the state of a fresh `requests.Session()` and a
+fresh `GraftpunkSession` passes every predicate; where requestium is
+installed, a fresh `requestium.Session()` (which starts no browser until its
+driver is first used) has an empty `webdriver_options` and a
+`_driver_initializer` that passes the predicate, and
+`requestium.Session._start_chrome_browser` exists under that name; and each
+committed selenium fixture passes too. Whether a selenium pickle's `_driver_initializer` (a partial of
 a bound method of the session being unpickled) survives the state-capturing
 unpickle on graftpunk-lite is UNVERIFIED; if it does not, selenium pickles are
 unrecordable on lite and recordable on a full install, which the rule above
@@ -380,36 +384,50 @@ bytes become a state dict in one place: `record_to_state` for a record,
 
 ## Writing, and the staged rollout
 
-The format comes from one setting, a `GraftpunkSettings` field,
-`session_format` (`GRAFTPUNK_SESSION_FORMAT`, values `pickle` and `record`).
-Three functions in `cache.py` are the policy layer. The first two are the
-only readers of the setting:
+The format of a fresh save comes from one setting, a `GraftpunkSettings`
+field, `session_format` (`GRAFTPUNK_SESSION_FORMAT`, values `pickle` and
+`record`). A write-back never consults it: it writes the format it read. Two
+functions in `cache.py` are the policy layer:
 
-- **`encode_session(session)`**: the only writer. Session (a real object or a
-  `StoredSession`) in, payload bytes out. It reads the setting, calls the
-  codec's `state_to_record`, and falls back to the legacy pickle with its one
-  warning. `cache_session` and `copy_session` both call it for the payload
-  (today `copy_session` repeats `cache_session`'s pickle, checksum and encrypt
-  lines; that duplication is removed, not grown).
+- **`encode_session(session, keep=None)`**: the only writer, and the only
+  reader of the setting. Session in, payload bytes out.
+  - `keep=None` is a fresh save (`cache_session` from a login or a program).
+    The setting decides: under `record` it calls the codec's `state_to_record`
+    and falls back to the legacy pickle with its one warning; under `pickle`
+    it writes the legacy pickle.
+  - `keep="record"` or `keep="pickle"` is a write-back, which passes the
+    format `classify` reported for the bytes it read. A `StoredSession` is
+    always written as a record and a real object read from a pickle is always
+    written as a pickle; `encode_session` raises `TypeError` for any other
+    pairing, so the rule does not rest on two functions agreeing.
+
+  `cache_session` and `copy_session` both call it for the payload (today
+  `copy_session` repeats `cache_session`'s pickle, checksum and encrypt lines;
+  that duplication is removed, not grown).
 - **`load_for_write_back(decrypted)`**: the only place that decides which
-  object stored bytes become before they are changed and re-saved. It returns
-  a `StoredSession` when the format is `record` and the bytes are a record or
-  a pickle `state_to_record` accepts; otherwise the real object, unpickled
-  whole. When the real classes are needed and absent it raises
-  `RealSessionClassUnavailable`, a subclass of `ImportError` carrying the
-  reason. It calls `classify` before anything else, so a record of a newer
-  version is refused before any change is made.
-- **`rename_session(session, name)`**: the one operation that sets a session's
-  slot name on either a real object or a `StoredSession`. `copy_session` calls
-  it in place of its `hasattr(session, "_session_name")` probe. It lives here,
-  not in the codec, because it knows how live classes hold their name.
+  object stored bytes become before they are changed and re-saved. It reads no
+  setting and makes no recordability check; it decides from the bytes alone.
+  It calls `classify` first, so a record of a newer version is refused before
+  any change is made. A record becomes a `StoredSession`. A legacy pickle
+  becomes the real object, unpickled whole, as today; when the real classes
+  are absent it raises `RealSessionClassUnavailable`, a subclass of
+  `ImportError` carrying the reason. It returns the session together with the
+  format it read, which the caller hands to `encode_session` as `keep`.
+
+So a store moves from pickles to records only through fresh saves on hosts
+that set `record`; sessions are re-saved at every login, so that is one login
+cycle per session. No write-back ever converts a session, in either
+direction: a host on the default setting that refreshes a cookie in a record
+writes a record, with its unknown keys intact, and a host set to `record` that
+refreshes a cookie in a pickle writes a pickle.
 
 Release 2's default flip is one edit, to the setting's default, and any later
-change to the legacy writer is confined to the first two; the codec does
+change to the legacy writer is confined to `encode_session`; the codec does
 not change for either.
 
 - **Release 1 (1.45.0): reads both, writes `pickle` by default.** Nothing an
-  older reader sees changes. Setting `record` opts a store in. This release is
+  older reader sees changes. Setting `record` opts a writer in: that host's
+  fresh saves become records. This release is
   the floor: every environment that shares a store must run it or later before
   any of them writes records.
 - **Release 2 (a later minor, not before the owner says the known consumers
@@ -429,23 +447,25 @@ rename a slot) each load a stored session, change it, and save it. Neither
 reads the format setting or asks whether the bytes are recordable. Each does
 three things:
 
-1. `session = load_for_write_back(decrypted)`.
-2. Its one mutation, written against `StoredSessionLike`, as today: cookies,
-   the rider attributes, the account, and for `copy_session` the slot name
-   through `rename_session`.
-3. Save through `encode_session` (`update_session_cookies` by way of
-   `cache_session`, which also reads the metadata from the session).
+1. `session, fmt = load_for_write_back(decrypted)`.
+2. Its one mutation, written against `StoredSessionLike`, as today.
+   `update_session_cookies` updates the cookies, the token cache and the
+   account. `copy_session` sets the account and the slot name; it sets the
+   name through the public `session_name` attribute, which `BrowserSession`
+   (its property setter) and `StoredSession` both have, in place of today's
+   `hasattr(session, "_session_name")` probe. A kind whose state holds no name
+   does not gain one: only the table's keys for that kind are written.
+3. Save through `encode_session(session, keep=fmt)`
+   (`update_session_cookies` by way of `cache_session`, which also reads the
+   metadata from the session).
 
-What `load_for_write_back` returns, for reference:
+Which path a write-back takes, for reference:
 
-- Format `record`, and the bytes are a record or a legacy pickle
-  `state_to_record` accepts: a `StoredSession`. No real class is needed, so
-  this works on graftpunk-lite.
-- Otherwise (format `pickle`, which is release 1's default, or a legacy pickle
-  with pickle-only state): the real object, unpickled whole. This is today's
-  code path unchanged, and it needs the real classes. A `StoredSession` is
-  never written as a pickle, because a pickle an older release can read has to
-  name the real class.
+- The stored bytes are a record: a `StoredSession`, written back as a record.
+  No real class is needed, so this works on graftpunk-lite.
+- The stored bytes are a legacy pickle: the real object, unpickled whole, and
+  written back as a pickle. This is today's code path unchanged, and it needs
+  the real classes.
 
 The only difference between the two callers is what they do with
 `RealSessionClassUnavailable`, and that difference is their existing
@@ -523,9 +543,16 @@ to the builder.
    fact.
 4. **Lite.** `scripts/smoke_install.sh` gains: on a lite venv, a YAML plugin
    command with a stored session (both formats) returns its response against a
-   local fake server; with `GRAFTPUNK_SESSION_FORMAT=record`, a command that
-   refreshes a cookie writes it back and the next run reads it; and
-   `copy_session` on a pickle it cannot record raises and leaves the source.
+   local fake server; a command that refreshes a cookie in a session stored
+   as a record writes it back as a record, with no setting, and the next run
+   reads it; the same refresh on a session stored as a pickle is skipped with
+   the warning; and `copy_session` on a stored pickle raises and leaves the
+   source.
+4a. **Write-backs keep the format.** On a full install, for each setting
+   value: a write-back of a stored record yields a record and a write-back of
+   a stored pickle yields a pickle, through both `update_session_cookies` and
+   `copy_session`; and `encode_session` raises `TypeError` for a
+   `StoredSession` with `keep="pickle"`.
 5. **No code on load.** A record whose JSON carries a string that would be a
    pickle opcode sequence, and a pickle crafted to call a marker function, are
    each fed to the record reader: the first is data, the second is never
