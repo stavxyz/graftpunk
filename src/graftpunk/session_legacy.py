@@ -1,11 +1,13 @@
 """Read a saved session's state dict out of a legacy pickle.
 
 Every release up to 1.44.0 stores a session as a dill pickle of the session
-object. This module unpickles such a payload without importing the session
-classes (and so without selenium, requestium, nodriver or httpie): the three
-session classes are replaced by a placeholder that keeps the state dict given
-to ``__setstate__``, and any other class that cannot be imported is stubbed the
-same way and reported in ``unresolved``.
+object. This module unpickles such a payload without importing a session
+class: the three session classes are replaced by a placeholder that keeps the
+state dict given to ``__setstate__``. Any other class the payload names is
+imported when it is installed (a selenium pickle names selenium and requestium
+classes, a 1.21.0 pickle names HTTPie's cookie policy), and stubbed the same
+way and reported in ``unresolved`` when it is not, so reading one needs no
+browser package.
 
 This is not a security boundary. ``find_class`` still resolves any importable
 name, so a hostile payload can run code exactly as the stdlib unpickler would;
@@ -57,12 +59,17 @@ FROZEN_CLASS_PATHS: Mapping[tuple[str, str], object] = {
 
 @dataclass(frozen=True)
 class LegacyState:
-    """The state dict of a pickled session and what it was pickled as."""
+    """The state dict of a pickled session, the kind it was pickled as, and
+    the classes the payload names that were stubbed because they are not
+    installed."""
 
     kind: str | None
-    class_path: str
     state: dict[str, Any]
     unresolved: tuple[str, ...]
+
+
+class NoSessionStateError(TypeError):
+    """The pickled top-level object has no state dict (a ``dict``, a ``list``)."""
 
 
 class _Unpickler(dill.Unpickler):
@@ -101,7 +108,9 @@ def state_from_pickle(decrypted: bytes) -> LegacyState:
     ``pickle.UnpicklingError`` propagates for bytes that are not a pickle. A
     top-level object the placeholder did not capture (a
     ``types.SimpleNamespace``, say) gives ``kind=None`` and its ``vars()``; one
-    with no ``__dict__`` (a ``dict`` or a ``list``) raises ``TypeError``.
+    with no ``__dict__`` (a ``dict`` or a ``list``) raises
+    :class:`NoSessionStateError`. Whatever a class the payload names raises while
+    it is restored propagates as it is.
     """
     unpickler = _Unpickler(io.BytesIO(decrypted))
     obj = unpickler.load()
@@ -109,10 +118,9 @@ def state_from_pickle(decrypted: bytes) -> LegacyState:
     try:
         state = dict(vars(obj))
     except TypeError:
-        raise TypeError(f"a pickled {cls.__name__} holds no session state") from None
+        raise NoSessionStateError(f"a pickled {cls.__name__} holds no session state") from None
     return LegacyState(
         kind=SESSION_CLASS_PATHS.get((cls.__module__, cls.__qualname__)),
-        class_path=f"{cls.__module__}.{cls.__qualname__}",
         state=state,
         unresolved=tuple(unpickler.unresolved),
     )

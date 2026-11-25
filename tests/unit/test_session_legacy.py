@@ -10,7 +10,7 @@ import dill
 import pytest
 
 from graftpunk import session_riders
-from graftpunk.session_legacy import FROZEN_CLASS_PATHS, state_from_pickle
+from graftpunk.session_legacy import FROZEN_CLASS_PATHS, NoSessionStateError, state_from_pickle
 from tests.unit.session_compat_cases import (
     EXPECTED_KIND,
     assert_leaf_imports,
@@ -61,18 +61,17 @@ def test_api_and_requests_states_hold_no_name(case):
 def test_kind_follows_the_saved_class(case):
     legacy = state_from_pickle(decrypt(case))
     assert legacy.kind == EXPECTED_KIND[case.case]
-    assert "." in legacy.class_path
 
 
-def test_a_subclass_has_no_kind_and_reports_its_path():
+def test_a_subclass_has_no_kind():
     legacy = state_from_pickle(decrypt(case_named("1.44.0", "subclass")))
-    assert legacy.kind is None and legacy.class_path.startswith("__main__.")
+    assert legacy.kind is None
 
 
 def test_a_pickled_namespace_gives_its_attributes_and_a_pickled_list_is_refused():
     legacy = state_from_pickle(dill.dumps(types.SimpleNamespace(cookies=1, headers=2)))
     assert legacy.state == {"cookies": 1, "headers": 2} and legacy.kind is None
-    with pytest.raises(TypeError):
+    with pytest.raises(NoSessionStateError):
         state_from_pickle(dill.dumps([1, 2]))
     with pytest.raises(pickle.UnpicklingError):
         state_from_pickle(b"this is not a pickle at all")

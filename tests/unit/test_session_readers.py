@@ -398,6 +398,43 @@ def test_a_graftpunk_error_from_a_classs_setstate_propagates_as_itself(session_s
         load_session("myshop", key=TEST_KEY)
 
 
+class RaisesWhileRestored:
+    """A class whose ``__setstate__`` raises the exception its state names."""
+
+    def __setstate__(self, state):
+        raise state["raise"]
+
+
+def api_readers(session_store):
+    return [*readers(session_store)["myshop"][1:], *readers(session_store)[_BYTES_LABEL]]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [BrowserError("the browser this session needs is gone"), ImportError("no module named x")],
+    ids=["graftpunk-error", "import-error"],
+)
+def test_an_error_a_pickled_class_raises_reaches_the_api_loaders_as_itself(error, session_store):
+    """As ``load_session`` and 1.44.0's API loaders did: an install problem or
+    a graftpunk error is never reported as a session to clear."""
+    store_payload(session_store, dill.dumps(_PickledAs(RaisesWhileRestored, {"raise": error})))
+    for fn in api_readers(session_store):
+        with pytest.raises(type(error), match=re.escape(str(error))):
+            fn()
+
+
+def test_a_type_error_a_pickled_class_raises_is_a_failed_deserialization(session_store):
+    """Only a top-level object with no state is "invalid structure"; a class
+    that refuses its state is a pickle that did not deserialize."""
+    payload = dill.dumps(_PickledAs(RaisesWhileRestored, {"raise": TypeError("bad state")}))
+    store_payload(session_store, payload)
+    for fn in api_readers(session_store):
+        with pytest.raises(SessionExpiredError, match="Failed to deserialize session") as exc:
+            fn()
+        assert "invalid structure" not in str(exc.value)
+        assert "bad state" in str(exc.value)
+
+
 def test_an_import_error_while_building_the_api_session_propagates(session_store, monkeypatch):
     """A module the builder imports is missing: an install problem, never an
     expired session."""
@@ -408,10 +445,8 @@ def test_an_import_error_while_building_the_api_session_propagates(session_store
         lambda: load_session_for_api("myshop", key=TEST_KEY),
         lambda: load_session_for_api_from_bytes(raw, key=TEST_KEY),
     ]:
-        with pytest.raises(ImportError) as exc:
+        with pytest.raises(ImportError, match=re.escape("graftpunk.client_headers")):
             fn()
-        assert not isinstance(exc.value, SessionExpiredError)
-        assert "graftpunk.client_headers" in str(exc.value)
 
 
 def test_a_named_api_load_logs_contents_it_cannot_use(session_store, captured_logs):
@@ -465,3 +500,28 @@ def test_a_record_that_classifies_never_escapes_the_public_loaders_as_another_er
                 escaped.append(f"{label} {path} = {value!r:.40}: {type(exc).__name__}: {exc}")
     assert accepted
     assert escaped == []
+
+
+def test_an_api_load_names_the_classes_it_stubbed_once_at_debug(
+    session_store, captured_logs, monkeypatch
+):
+    """A load that behaves oddly can be traced to a class that was not installed."""
+    from tests.unit.session_compat_cases import events
+
+    module = types.ModuleType("graftpunk_test_absent_policy_module")
+    exec("class Policy:\n    pass\n", module.__dict__)  # noqa: S102
+    module.Policy.__module__ = module.__name__
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    saved = types.SimpleNamespace(
+        cookies=requests.cookies.RequestsCookieJar(), headers={}, policy=module.Policy()
+    )
+    payload = dill.dumps(saved)
+    monkeypatch.delitem(sys.modules, module.__name__)
+    store_payload(session_store, payload)
+
+    load_session_for_api("myshop", key=TEST_KEY)
+
+    stubbed = events(captured_logs, "session_classes_stubbed")
+    assert [(e["log_level"], e["name"], e["classes"]) for e in stubbed] == [
+        ("debug", "myshop", ["graftpunk_test_absent_policy_module.Policy"])
+    ]

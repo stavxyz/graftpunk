@@ -46,7 +46,7 @@ from graftpunk.session_identity import (
     split_session_name,
     validate_session_name,  # public re-export
 )
-from graftpunk.session_legacy import state_from_pickle
+from graftpunk.session_legacy import NoSessionStateError, state_from_pickle
 from graftpunk.session_record import (
     LegacyBytes,
     Record,
@@ -734,16 +734,25 @@ def _stored_view(stored: Record | LegacyBytes, *, name: str) -> StoredSession:
     Raises:
         SessionExpiredError: The pickle does not unpickle, or holds no
             cookies and headers.
+        ImportError, GraftpunkError: Raised by a class the pickle names while
+            it is restored, as :func:`load_session` lets them propagate.
     """
     if isinstance(stored, Record):
         return StoredSession.from_record(stored)
     try:
         legacy = state_from_pickle(stored.data)
-    except TypeError as exc:
-        # A top-level object with no state dict (a pickled dict or list).
+    except NoSessionStateError as exc:
         raise _invalid_structure(name) from exc
+    except (ImportError, GraftpunkError):
+        # find_class stubs a module that is not installed, so an ImportError
+        # here came from code the payload ran: an install problem, as a
+        # graftpunk error already says what is wrong. Neither is a session to
+        # clear.
+        raise
     except Exception as exc:  # noqa: BLE001 (any unpickling failure is an unusable session)
         raise SessionExpiredError(f"Failed to deserialize session '{name}': {exc}") from exc
+    if legacy.unresolved:
+        LOG.debug("session_classes_stubbed", name=name, classes=list(legacy.unresolved))
     if "cookies" not in legacy.state or "headers" not in legacy.state:
         # A view reads an absent key as a default, so _check_structure would
         # pass it; the state itself is what lacks them.
