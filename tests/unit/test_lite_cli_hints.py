@@ -177,36 +177,37 @@ def test_plugin_login_without_the_browser_stack_prints_the_install_hint(
 
 
 @pytest.mark.usefixtures("_no_ambient_session")
-def test_plugin_command_with_a_cached_session_prints_the_install_hint(
+def test_plugin_command_with_a_cached_session_runs_without_the_browser_stack(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Loading a stored session for API use imports no browser package."""
     _cache_fixture_session(tmp_path, monkeypatch)
     _without_browser_stack(monkeypatch)
 
     result = invoke_plugin_app(_shop_plugin("nodriver"), ["myshop", "items"])
 
     output = _flat(result.output)
-    assert result.exit_code == 1, output
-    assert "myshop items needs the browser automation stack" in output, output
-    assert _distribution.install_commands("browser") in output, output
+    assert result.exit_code == 0, output
+    assert '"ok": true' in output, output
+    assert "needs the browser automation stack" not in output, output
     assert "Traceback" not in output, output
 
 
 @pytest.mark.usefixtures("_no_ambient_session")
-def test_http_with_a_cached_session_prints_the_install_hint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_http_with_a_cached_session_runs_without_the_browser_stack(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, echo_server
 ) -> None:
     from graftpunk.cli.main import app
 
     _cache_fixture_session(tmp_path, monkeypatch)
     _without_browser_stack(monkeypatch)
 
-    result = runner.invoke(app, ["http", "get", "--session", "myshop", "https://example.com"])
+    result = runner.invoke(app, ["http", "get", "--session", "myshop", echo_server.url])
 
     output = _flat(result.output)
-    assert result.exit_code == 1, output
-    assert "gp http get with a cached session needs the browser automation stack" in output
-    assert _distribution.install_commands("browser") in output, output
+    assert result.exit_code == 0, output
+    assert "HTTP 200" in output, output
+    assert "needs the browser automation stack" not in output, output
     assert "Traceback" not in output, output
 
 
@@ -532,12 +533,14 @@ try:
     graftpunk.client.get_plugin = lambda name: _shop_plugin("nodriver")
     with graftpunk.client.GraftpunkClient("myshop") as client:
         result = client.items()
+    loaded_by_the_client = "graftpunk.session" in sys.modules
+    import graftpunk.session  # noqa: F401 (its first import, under the StringIO)
     captured_stdout_kept = sys.stdout is captured
 finally:
     sys.stdout = real_stdout
 print(json.dumps({
     "data": result.data,
-    "session_loaded": "graftpunk.session" in sys.modules,
+    "session_loaded_by_the_client": loaded_by_the_client,
     "captured_stdout_kept": captured_stdout_kept,
 }))
 """
@@ -549,9 +552,10 @@ def test_the_client_runs_a_command_when_stdout_has_no_file_descriptor(
     """#250: GraftpunkClient loading a cached session under ``sys.stdout =
     io.StringIO()`` returns the command's result.
 
-    Loading the session makes the first import of graftpunk.session, which
-    imported httpie (whose curses.setupterm() needs sys.stdout.fileno()) until
-    #253. A fresh interpreter makes that import happen under the StringIO.
+    The first import of graftpunk.session imported httpie (whose
+    curses.setupterm() needs sys.stdout.fileno()) until #253. Loading a
+    session for API use no longer imports it, so the script makes that first
+    import itself, under the StringIO, in a fresh interpreter.
     """
     _cache_fixture_session(tmp_path, monkeypatch)
     monkeypatch.delenv("FORCE_COLOR", raising=False)
@@ -570,6 +574,6 @@ def test_the_client_runs_a_command_when_stdout_has_no_file_descriptor(
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout.splitlines()[-1]) == {
         "data": {"ok": True},
-        "session_loaded": True,
+        "session_loaded_by_the_client": False,
         "captured_stdout_kept": True,
     }, result.stdout

@@ -14,6 +14,8 @@ the bare name the caller typed silently drops it (#182).
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import requests
 
@@ -167,16 +169,16 @@ def test_exact_labelled_name_does_not_list_sessions(fresh_backend, monkeypatch) 
 
 
 def test_expired_session_on_the_exact_key_propagates_without_listing(
-    fresh_backend,  # noqa: ANN001
+    session_store,  # noqa: ANN001
     monkeypatch,  # noqa: ANN001
 ) -> None:
     """A non-not-found failure is the answer, not a reason to go looking."""
+    session_store.seed("pickle")
+    # A checksum the stored bytes do not match: the load fails its integrity check.
+    metadata_file = session_store.root / "sessions" / "myshop" / "metadata.json"
+    metadata = json.loads(metadata_file.read_text())
+    metadata_file.write_text(json.dumps({**metadata, "checksum": "0" * 64}))
     calls = _count_listings(monkeypatch)
-
-    def _expired(name: str, **_kwargs):  # noqa: ANN003, ANN202
-        raise SessionExpiredError(f"Session '{name}' failed integrity check.")
-
-    monkeypatch.setattr(cache_mod, "load_session", _expired)
 
     with pytest.raises(SessionExpiredError, match="integrity check"):
         load_session_for_api("myshop")

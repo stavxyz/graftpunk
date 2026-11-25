@@ -16,7 +16,7 @@ Thread Safety:
 
 import contextlib
 import hashlib
-import io
+import importlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
@@ -30,6 +30,8 @@ from graftpunk.config import get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data, resolve_key
 from graftpunk.exceptions import (
     EncryptionError,
+    InvalidSessionRecord,
+    RealSessionClassUnavailable,
     SessionExpiredError,
     SessionNotFoundError,
     StorageError,
@@ -43,6 +45,10 @@ from graftpunk.session_identity import (
     split_session_name,
     validate_session_name,  # public re-export
 )
+from graftpunk.session_legacy import state_from_pickle
+from graftpunk.session_record import LegacyBytes, Record, classify, record_to_state
+from graftpunk.session_riders import SESSION_CLASS_PATHS
+from graftpunk.session_view import StoredSession
 from graftpunk.storage.base import (
     SessionMetadata,
     check_slot_name,
@@ -77,6 +83,9 @@ T = TypeVar("T")
 # to API sessions.  These are per-request tokens (e.g. WAF sensor blobs) that
 # would cause stale-blob rejections if replayed.
 _EPHEMERAL_HEADERS: frozenset[str] = frozenset({"x-csrf-token"})
+
+# The name errors give the session load_session_for_api_from_bytes reads, which has none.
+_BYTES_LABEL = "<bytes>"
 
 
 # Global session storage backend (lazy-loaded)
@@ -389,39 +398,44 @@ def load_session(
     Raises:
         SessionNotFoundError: If session file doesn't exist.
         SessionExpiredError: If session cannot be decrypted or has invalid structure.
+        NewerSessionRecord: The session was stored by a newer release.
+        RealSessionClassUnavailable: The class the session was saved as cannot
+            be imported (a browser session on graftpunk-lite without
+            ``[browser]``); an ``ImportError`` carrying the install hint.
         MissingEncryptionKeyError: No key was given and the configured backend
             has no key file to read (see :func:`graftpunk.encryption.get_encryption_key`).
     """
-    session, _metadata = _load_session_with_metadata(
-        name, backend_override=backend_override, key=key
-    )
+    stored, metadata = _read_stored(name, key=key, backend_override=backend_override)
+    session = _restore(stored, name=name)
+    _finish_loaded(session, name, metadata)
     return session
 
 
 def _load_session_with_metadata(
     name: str, backend_override: str | None = None, *, key: bytes | None = None
 ) -> tuple[SessionLike, SessionMetadata]:
-    """Load a cached session together with the SessionMetadata already fetched
-    during that same backend read.
+    """:func:`load_session`, also returning the ``SessionMetadata`` read with it.
 
-    ``load_session`` delegates here and discards the metadata half; callers
-    that need both (e.g. ``update_session_cookies``, which must recover
-    ``account_identifier`` when the unpickled session dropped it) call this
-    directly instead of pairing ``load_session`` with a second metadata read.
+    For callers that need both (``update_session_cookies`` recovers
+    ``account_identifier`` from it), so they make no second metadata read.
+    """
+    stored, metadata = _read_stored(name, key=key, backend_override=backend_override)
+    session = _restore(stored, name=name)
+    _finish_loaded(session, name, metadata)
+    return session, metadata
 
-    Args:
-        name: Session name to load.
-        backend_override: If set, use this backend type instead of the default.
-        key: Optional raw Fernet key; None uses the configured key.
 
-    Returns:
-        The deserialized session and the ``SessionMetadata`` read in the same
-        backend round-trip.
+def _read_stored(
+    name: str, *, key: bytes | None, backend_override: str | None = None
+) -> tuple[Record | LegacyBytes, SessionMetadata]:
+    """The session stored under *name*, decrypted, checksum-checked and
+    classified, with the ``SessionMetadata`` read in the same backend round-trip.
 
     Raises:
         SessionNotFoundError: No session is stored under *name*.
-        SessionExpiredError: The session is expired, cannot be decrypted, or
-            fails its checksum/deserialization.
+        SessionExpiredError: The session cannot be decrypted, fails its
+            checksum, or is an invalid record.
+        NewerSessionRecord: The session is a record of a newer version.
         MissingEncryptionKeyError: No key was given and there is none to read.
         EncryptionError: The key cannot be obtained (Vault unreachable, the
             supabase package or settings missing) or is malformed. Both are
@@ -432,99 +446,204 @@ def _load_session_with_metadata(
     settings = get_settings()
 
     try:
-        # Load encrypted data from backend
         encrypted_data, metadata = backend.load_session(name)
-
-        # Obtain and check the key outside the conversion below: a key that is
-        # missing, unreachable or malformed is fixed by providing a good one,
-        # never by clearing the session (on a shared bucket, every host's).
-        # Only a key that fails to decrypt these bytes means the session is
-        # unreadable.
-        fernet_key = resolve_key(key)
-        try:
-            decrypted_data = decrypt_data(encrypted_data, key=fernet_key)
-        except EncryptionError as exc:
-            LOG.error("session_decryption_failed", name=name, backend=settings.storage_backend)
-            raise SessionExpiredError(
-                f"Session '{name}' cannot be decrypted. The session file may be corrupted "
-                "or the encryption key has changed. Please run 'graftpunk clear' and re-login."
-            ) from exc
-
-        # Verify checksum (required for new sessions, skipped for legacy)
-        # Legacy sessions (loaded from flat file structure) have empty checksum
-        if metadata.checksum:
-            actual_checksum = hashlib.sha256(decrypted_data).hexdigest()
-            if actual_checksum != metadata.checksum:
-                LOG.error("session_checksum_mismatch", name=name, backend=settings.storage_backend)
-                raise SessionExpiredError(
-                    f"Session '{name}' failed integrity check. Run 'gp clear' and re-login."
-                )
-        else:
-            # Legacy session without checksum - log warning but allow loading
-            LOG.warning(
-                "session_checksum_missing_legacy",
-                name=name,
-                hint="Consider re-saving session to add checksum",
-            )
-
-        # Unpickle (encrypted data has already been validated via Fernet MAC).
-        # NOTE: this deliberately uses the plain unpickler, not
-        # _deserialize_browserfree: load_session returns the REAL cached object,
-        # which update_session_cookies mutates and re-pickles. Stubbing the class
-        # here would let graftpunk-lite without [browser] silently re-save the
-        # session as a stub type and lose its browser state. Callers that only
-        # need cookies/headers should use load_session_for_api_from_bytes, which
-        # is browser-free by design.
-        session = pickle.loads(decrypted_data)  # noqa: S301
-
-        # Runtime validation: verify unpickled object has expected attributes
-        if not hasattr(session, "cookies") or not hasattr(session, "headers"):
-            raise SessionExpiredError(
-                f"Session '{name}' has invalid structure. Run 'gp clear' and re-login."
-            )
-
-        # The slot this object came out of, for any write-back that follows
-        # (#174). Set here rather than in the pickle so it can never be stale.
-        _stamp_session_slot(session, name)
-        # Metadata recorded under the current rule is the authority on the
-        # account: a login may have replaced a 1.24.0 record there without
-        # touching the pickle (set_session_account). Taking it here means any
-        # save of this copy writes the replaced value, and the pickle loses the
-        # old one (#293).
-        if metadata.account_rule == ACCOUNT_RULE:
-            with contextlib.suppress(Exception):
-                setattr(session, GP_ACCOUNT_ATTR, metadata.account_identifier)
-
-        LOG.info("successfully_loaded_session", name=name, backend=settings.storage_backend)
-        return session, metadata
-
-    except (SessionNotFoundError, SessionExpiredError, EncryptionError):
-        raise
-    except ModuleNotFoundError as exc:
-        # A cached BrowserSession pickle names graftpunk.session, which imports
-        # the browser stack. On graftpunk-lite without [browser] that raises
-        # ModuleNotFoundError from inside pickle.loads — which is neither an
-        # UnpicklingError nor a RuntimeError, so without this it escaped raw as
-        # "No module named 'httpie'". Info, not error: the ImportError below
-        # carries the same facts, and the CLI turns it into the install hint,
-        # so an error line here would only repeat it above that hint.
-        LOG.info("failed_to_load_session_missing_browser_stack", name=name, error=str(exc))
-        raise ImportError(
-            f"Loading the cached session '{name}' requires the browser automation "
-            f"stack, which is not installed. Install it with: "
-            f"{install_command('browser')}\n"
-            f"(To read cookies/headers from a session WITHOUT the browser stack, use "
-            f"load_session_for_api_from_bytes.)\n"
-            f"(underlying import failure: {exc})"
-        ) from exc
-    except (pickle.UnpicklingError, RuntimeError) as exc:
-        LOG.error(
-            "failed_to_load_session",
-            name=name,
-            error=str(exc),
-            backend=settings.storage_backend,
-        )
+    except RuntimeError as exc:
+        _log_load_failure(name, exc)
         raise SessionExpiredError(f"Failed to load session '{name}': {exc}") from exc
+
+    # Obtain and check the key outside the conversion below: a key that is
+    # missing, unreachable or malformed is fixed by providing a good one,
+    # never by clearing the session (on a shared bucket, every host's).
+    # Only a key that fails to decrypt these bytes means the session is
+    # unreadable.
+    fernet_key = resolve_key(key)
+    try:
+        decrypted_data = decrypt_data(encrypted_data, key=fernet_key)
+    except EncryptionError as exc:
+        LOG.error("session_decryption_failed", name=name, backend=settings.storage_backend)
+        raise SessionExpiredError(
+            f"Session '{name}' cannot be decrypted. The session file may be corrupted "
+            "or the encryption key has changed. Please run 'graftpunk clear' and re-login."
+        ) from exc
+
+    # Verify checksum (required for new sessions, skipped for legacy)
+    # Legacy sessions (loaded from flat file structure) have empty checksum
+    if metadata.checksum:
+        actual_checksum = hashlib.sha256(decrypted_data).hexdigest()
+        if actual_checksum != metadata.checksum:
+            LOG.error("session_checksum_mismatch", name=name, backend=settings.storage_backend)
+            raise SessionExpiredError(
+                f"Session '{name}' failed integrity check. Run 'gp clear' and re-login."
+            )
+    else:
+        # Legacy session without checksum - log warning but allow loading
+        LOG.warning(
+            "session_checksum_missing_legacy",
+            name=name,
+            hint="Consider re-saving session to add checksum",
+        )
+
+    try:
+        return _classified(decrypted_data, name=name), metadata
+    except SessionExpiredError as exc:
+        _log_load_failure(name, exc)
+        raise
+
+
+def _log_load_failure(name: str, exc: BaseException) -> None:
+    # Only for a load from the store: the bytes loader has no backend to name,
+    # and its failures have never been logged, only raised.
+    LOG.error(
+        "failed_to_load_session",
+        name=name,
+        error=str(exc),
+        backend=get_settings().storage_backend,
+    )
+
+
+def _classified(decrypted: bytes, *, name: str) -> Record | LegacyBytes:
+    """:func:`classify`, reporting an invalid record as an expired session, as
+    a corrupt pickle is. ``NewerSessionRecord`` propagates: the release that
+    wrote the record can still read it, so it must not be cleared as expired.
+    """
+    try:
+        return classify(decrypted)
+    except InvalidSessionRecord as exc:
+        raise SessionExpiredError(f"Failed to load session '{name}': {exc}") from exc
+
+
+def _restore(stored: Record | LegacyBytes, *, name: str) -> Any:
+    """The object that was saved: a record restored as its class, a pickle unpickled whole."""
+    if isinstance(stored, Record):
+        return _restore_record(stored, name=name)
+    return _unpickle_whole(stored, name=name)
+
+
+def _real_class_unavailable(name: str, exc: ImportError) -> RealSessionClassUnavailable:
+    # Info, not error: the exception carries the same facts, and the CLI turns
+    # it into the install hint, so an error line here would only repeat it
+    # above that hint.
+    LOG.info("failed_to_load_session_missing_browser_stack", name=name, error=str(exc))
+    return RealSessionClassUnavailable(
+        f"Loading the cached session '{name}' requires the browser automation "
+        f"stack, which is not installed. Install it with: "
+        f"{install_command('browser')}\n"
+        f"(To read cookies/headers from a session WITHOUT the browser stack, use "
+        f"load_session_for_api_from_bytes.)\n"
+        f"(underlying import failure: {exc})"
+    )
+
+
+def _unpickle_whole(legacy: LegacyBytes, *, name: str) -> Any:
+    """Unpickle a legacy session with its real classes, so no state it holds is lost.
+
+    Deliberately the plain unpickler, not the placeholder one: the object is
+    handed back to be changed and saved again (``update_session_cookies``),
+    and a placeholder saved back would lose the session's browser state.
+
+    Raises:
+        RealSessionClassUnavailable: A module the pickle names is not
+            installed (the browser stack on graftpunk-lite); the
+            ``ModuleNotFoundError`` is its cause, where
+            ``_distribution.missing_browser_module`` finds it.
+        SessionExpiredError: The bytes do not unpickle.
+    """
+    try:
+        # Fernet authenticated these bytes; the key is the trust boundary.
+        return pickle.loads(legacy.data)  # noqa: S301
+    except ModuleNotFoundError as exc:
+        # A BrowserSession pickle names graftpunk.session, which imports the
+        # browser stack; without this the failure escapes raw as
+        # "No module named 'httpie'".
+        raise _real_class_unavailable(name, exc) from exc
+    except (pickle.UnpicklingError, RuntimeError) as exc:
+        _log_load_failure(name, exc)
+        raise SessionExpiredError(f"Failed to load session '{name}': {exc}") from exc
+
+
+def _restore_record(record: Record, *, name: str) -> Any:
+    """*record* restored as the class its kind names, through that class's own
+    ``__setstate__``, so the restore logic exists once.
+
+    Raises:
+        RealSessionClassUnavailable: The class cannot be imported (kind
+            ``browser`` on graftpunk-lite); the import failure is its cause.
+    """
+    module, qualname = next(
+        path for path, kind in SESSION_CLASS_PATHS.items() if kind == record.kind
+    )
+    try:
+        cls = getattr(importlib.import_module(module), qualname)
+    except ImportError as exc:
+        raise _real_class_unavailable(name, exc) from exc
+    obj = cls.__new__(cls)
+    obj.__setstate__(record_to_state(record))
+    return obj
+
+
+def _invalid_structure(name: str) -> SessionExpiredError:
+    return SessionExpiredError(
+        f"Session '{name}' has invalid structure. Run 'gp clear' and re-login."
+    )
+
+
+def _check_structure(session: Any, name: str) -> None:
+    """Refuse a loaded object without the cookies and headers every session has."""
+    if not hasattr(session, "cookies") or not hasattr(session, "headers"):
+        raise _invalid_structure(name)
+
+
+def _finish_loaded(session: Any, name: str, metadata: SessionMetadata) -> None:
+    """What a load from the store does to the object it read, real or a view."""
+    _check_structure(session, name)
+    # The slot this object came out of, for any write-back that follows
+    # (#174). Set here rather than in the stored bytes so it can never be stale.
+    _stamp_session_slot(session, name)
+    # Metadata recorded under the current rule is the authority on the
+    # account: a login may have replaced a 1.24.0 record there without
+    # touching the stored session (set_session_account). Taking it here means
+    # any save of this copy writes the replaced value, and the stored session
+    # loses the old one (#293).
+    if metadata.account_rule == ACCOUNT_RULE:
+        with contextlib.suppress(Exception):
+            setattr(session, GP_ACCOUNT_ATTR, metadata.account_identifier)
+    LOG.info("successfully_loaded_session", name=name, backend=get_settings().storage_backend)
+
+
+def _stored_view(stored: Record | LegacyBytes, *, name: str) -> StoredSession:
+    """A stored session as a view: a record's state, or the state dict a legacy
+    pickle holds, read without importing the session classes.
+
+    Raises:
+        SessionExpiredError: The pickle does not unpickle, or holds no
+            cookies and headers.
+    """
+    if isinstance(stored, Record):
+        return StoredSession.from_record(stored)
+    try:
+        legacy = state_from_pickle(stored.data)
+    except TypeError as exc:
+        # A top-level object with no state dict (a pickled dict or list).
+        raise _invalid_structure(name) from exc
+    except Exception as exc:  # noqa: BLE001 (any unpickling failure is an unusable session)
+        raise SessionExpiredError(f"Failed to deserialize session '{name}': {exc}") from exc
+    if "cookies" not in legacy.state or "headers" not in legacy.state:
+        # A view reads an absent key as a default, so _check_structure would
+        # pass it; the state itself is what lacks them.
+        raise _invalid_structure(name)
+    return StoredSession(legacy.kind, legacy.state)
+
+
+def _load_view(name: str, *, key: bytes | None) -> StoredSession:
+    """The session stored under *name* as a view, with the loaded-object steps applied."""
+    stored, metadata = _read_stored(name, key=key)
+    try:
+        view = _stored_view(stored, name=name)
+    except SessionExpiredError as exc:
+        _log_load_failure(name, exc)
+        raise
+    _finish_loaded(view, name, metadata)
+    return view
 
 
 def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
@@ -532,8 +651,8 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     (the module's SessionLike Protocol — cookies + headers), copying header
     roles and token caches when present.
 
-    Shared by load_session_for_api (from a cached BrowserSession) and
-    load_session_for_api_from_bytes (from a browser-free deserialize).
+    The one builder of an API session: every API loader hands it a
+    :class:`~graftpunk.session_view.StoredSession` of the stored session.
     """
     from graftpunk.client_headers import client_sets_header
     from graftpunk.cookies import use_browser_cookie_policy
@@ -587,67 +706,6 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
         LOG.debug("copied_session_rider", attr=attr)
 
     return api_session
-
-
-class _Stub:
-    """Placeholder for a class the browser-free path cannot import (the browser
-    stack is absent). Unpickling restores state via __setstate__ below.
-
-    cookies/headers and the pickled riders (``PICKLED_SESSION_RIDER_ATTRS``)
-    are plain data in ``BrowserSession.__getstate__``, so they land directly on
-    the stub. NOTE: that subset deliberately excludes the memory-only riders
-    (``_MEMORY_ONLY_SESSION_RIDER_ATTRS`` in :mod:`graftpunk.session_riders`), which
-    are therefore absent from the pickle entirely: the stub cannot and does not
-    surface them.
-    """
-
-    def __setstate__(self, state: object) -> None:
-        # pickle/dill deliver either a dict, or a (dict, slotstate) 2-tuple for
-        # __slots__-bearing classes. Handle both; fail loud on any other shape
-        # rather than silently discarding state.
-        if isinstance(state, tuple) and len(state) == 2:
-            dict_state, slot_state = state
-            if dict_state:
-                self.__dict__.update(dict_state)
-            for key, value in (slot_state or {}).items():
-                setattr(self, key, value)
-        elif isinstance(state, dict):
-            self.__dict__.update(state)
-        else:
-            raise TypeError(f"_Stub cannot restore pickle state of type {type(state)!r}")
-
-
-class _BrowserFreeUnpickler(pickle.Unpickler):  # pickle is dill (see top import)
-    """Unpickler that stubs classes it cannot import BECAUSE the browser stack is
-    absent (graftpunk.session.BrowserSession -> requestium/selenium/httpie), so a
-    cached session's plain state deserializes browser-free.
-
-    Only import-family errors are converted to stubs. Any OTHER resolution error
-    (a genuinely broken module, a renamed-but-present symbol) propagates — it
-    must not be silently masked into a stub, which the A4 fixture could never
-    catch (stubbing still lands the plain __dict__ and the test keeps passing).
-
-    THIS IS NOT A SECURITY BOUNDARY. Despite the name, it imposes no restriction
-    on what a payload may construct: ``super().find_class`` resolves any
-    importable module/attribute, so a hostile pickle can still execute code
-    (``__reduce__`` -> ``os.system``) exactly as the stdlib unpickler would.
-    "Stub" here means "tolerate classes that are ABSENT", not "reject classes
-    that are dangerous". The only thing preventing a forged payload from ever
-    reaching this class is Fernet's authenticated encryption — i.e. possession
-    of the key. Callers must treat the key as the trust boundary and never
-    unpickle a blob from one trust domain with a key from another.
-    """
-
-    def find_class(self, module: str, name: str) -> type:
-        try:
-            return super().find_class(module, name)
-        except ImportError:
-            return type(name, (_Stub,), {})
-
-
-def _deserialize_browserfree(decrypted: bytes) -> object:
-    """Deserialize decrypted session bytes without importing the browser stack."""
-    return _BrowserFreeUnpickler(io.BytesIO(decrypted)).load()
 
 
 def no_account_cached_message(name: str) -> str:
@@ -793,16 +851,15 @@ def load_session_for_api_resolved(
         AmbiguousSessionError: Nothing is cached under *name* exactly and more
             than one cached session shares its base; the error names every
             candidate.
-        SessionExpiredError: The session cannot be unpickled.
-        ImportError: The browser stack needed to reconstruct the cached object
-            is not installed (see :func:`load_session_for_api`).
+        SessionExpiredError: The stored session cannot be decrypted or read.
+        NewerSessionRecord: The session was stored by a newer release.
     """
     validate_session_name(name)
 
     miss: SessionNotFoundError | None = None
     loaded_name = name
     try:
-        browser_session = load_session(name, key=key)
+        browser_session = _load_view(name, key=key)
     except SessionNotFoundError as exc:
         if not resolve:
             # INFO, not WARNING: this is invisible under the library's
@@ -823,7 +880,7 @@ def load_session_for_api_resolved(
             LOG.info("session_not_found_for_api", name=name, resolve=True)
             raise SessionNotFoundError(no_account_cached_message(name)) from miss
         LOG.info("api_session_resolved_account", requested=name, resolved=resolved)
-        browser_session = load_session(resolved, key=key)
+        browser_session = _load_view(resolved, key=key)
         loaded_name = resolved
     elif resolve and split_session_name(name)[1] is None:
         _warn_if_bare_slot_shadows_labelled(name)
@@ -854,12 +911,9 @@ def load_session_for_api(
     without launching a browser. If the cached session has header
     roles (captured during login), they are applied automatically.
 
-    No browser *process* is started — but this does go through
-    :func:`load_session`, which reconstructs the real cached object and so needs
-    the browser *package* importable (on graftpunk-lite, its ``[browser]`` extra).
-    For a browser-free load (under Pyodide or Cloudflare Workers, for example),
-    use :func:`load_session_for_api_from_bytes`, which stubs the browser classes
-    instead of importing them.
+    No browser is started and no browser package is imported: the stored
+    session is read as plain state, whether it was stored as a record or as a
+    pickle, so this works on graftpunk-lite without its ``[browser]`` extra.
 
     A thin wrapper over :func:`load_session_for_api_resolved`, which owns the
     bare-name pin contract in full: since #176 ``gp <site> login`` writes
@@ -898,9 +952,8 @@ def load_session_for_api(
         AmbiguousSessionError: Nothing is cached under *name* exactly and more
             than one cached session shares its base; the error names every
             candidate.
-        SessionExpiredError: If session cannot be unpickled.
-        ImportError: If the browser stack needed to reconstruct the cached
-            object is not installed (see note above).
+        SessionExpiredError: The stored session cannot be decrypted or read.
+        NewerSessionRecord: The session was stored by a newer release.
     """
     api_session, _loaded_name = load_session_for_api_resolved(name, resolve=resolve, key=key)
     return api_session
@@ -917,7 +970,7 @@ def load_session_for_api_from_bytes(
     and extracts cookies/headers/roles/tokens into a GraftpunkSession.
 
     Args:
-        encrypted: the Fernet(pickle(...)) blob.
+        encrypted: the Fernet-encrypted stored session (a record or a pickle).
         key: optional raw Fernet key. When given, decrypt with it directly —
             for environments where graftpunk's key file/vault does not exist
             (a Worker holding the key as a secret). When None, use the normal
@@ -925,8 +978,8 @@ def load_session_for_api_from_bytes(
 
     Security note: integrity and authenticity come SOLELY from the Fernet key —
     a valid MAC is the only thing standing between these bytes and the
-    unpickler, which resolves whatever classes the payload names (see
-    :class:`_BrowserFreeUnpickler`). The structure check below is a shape guard,
+    unpickler a legacy pickle goes through, which resolves whatever classes the
+    payload names (see :mod:`graftpunk.session_legacy`). The structure check is a shape guard,
     NOT a safety control: it runs after unpickling, so it cannot prevent code a
     forged payload would already have executed. Never call this with a blob and
     a key from different trust domains, and treat the key as the security
@@ -939,21 +992,15 @@ def load_session_for_api_from_bytes(
             operator/config problem (fix the key) while "this session is
             unusable" prompts a re-login, and conflating them sends the caller
             down the wrong path.
-        SessionExpiredError: if the decrypted payload cannot be deserialized, or
-            the recovered object lacks the expected session structure.
+        SessionExpiredError: if the decrypted payload cannot be deserialized, is
+            an invalid record, or lacks the expected session structure.
+        NewerSessionRecord: the session was stored by a newer release.
     """
     # EncryptionError from decrypt_data intentionally propagates (see Raises).
     decrypted = decrypt_data(encrypted, key=key)
-    try:
-        source = _deserialize_browserfree(decrypted)
-    except Exception as exc:  # noqa: BLE001 — any deserialization failure is an unusable session
-        raise SessionExpiredError(f"Failed to deserialize session bytes: {exc}") from exc
-
-    # isinstance against the runtime-checkable protocol does the same shape check
-    # as two hasattr calls while also narrowing `object` for the type checker on
-    # the _api_session_from_session(source: SessionLike) call below.
-    if not isinstance(source, SessionLike):
-        raise SessionExpiredError("Session bytes have invalid structure.")
+    source = _stored_view(_classified(decrypted, name=_BYTES_LABEL), name=_BYTES_LABEL)
+    # No name and no metadata, so none of _finish_loaded: the session stays unstamped.
+    _check_structure(source, _BYTES_LABEL)
 
     try:
         return _api_session_from_session(source)

@@ -300,7 +300,7 @@ def test_an_old_browser_session_state_restores_with_the_browser_policy(
 def test_a_stubbed_httpie_policy_is_replaced() -> None:
     """On graftpunk-lite without HTTPie the browser-free unpickler stands a stub
     in for HTTPieCookiePolicy; it has none of a policy's methods."""
-    stub = type("HTTPieCookiePolicy", (cache._Stub,), {})()
+    stub = type("HTTPieCookiePolicy", (session_legacy._Capture,), {})()
     jar = requests.cookies.RequestsCookieJar()
     jar._policy = stub
 
