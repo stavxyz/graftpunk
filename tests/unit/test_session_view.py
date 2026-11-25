@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import pickle
 import typing
+from http import cookiejar
 
 import dill
 import pytest
@@ -124,3 +126,72 @@ def test_what_a_view_stores_is_a_record_the_codec_accepts():
     payload = state_to_record("browser", view.stored_state(), view.extra)
     assert isinstance(payload, bytes)
     assert isinstance(classify(payload), Record)
+
+
+def test_a_default_edited_in_place_is_stored_and_an_untouched_one_is_not():
+    state = nodriver_state()
+    state.pop("_gp_header_role_origins", None)
+    state.pop("_gp_header_roles", None)
+    view = StoredSession("browser", state)
+    view._gp_header_role_origins["a"] = "https://myshop.example"
+    assert view._gp_header_roles == {}
+    stored = view.stored_state()
+    assert stored["_gp_header_role_origins"] == {"a": "https://myshop.example"}
+    assert "_gp_header_roles" not in stored
+
+
+def test_the_view_takes_ownership_of_the_state_and_extra_it_is_given():
+    state, extra = nodriver_state(), {"future_key": 1}
+    view = StoredSession("browser", state, extra)
+    view.current_url = "https://myshop.example/next"
+    assert state["current_url"] == "https://myshop.example/next"
+    assert view.extra is extra
+
+
+def test_a_view_from_a_record_does_not_share_the_records_extra():
+    record = classify(record_bytes("browser", extra={"future_key": {"n": 1}}))
+    assert isinstance(record, Record)
+    view = StoredSession.from_record(record)
+    view.extra["future_key"]["n"] = 2
+    assert record.extra == {"future_key": {"n": 1}}
+
+
+def test_a_cookie_jar_of_another_type_is_rebuilt_as_a_requests_jar():
+    source = cookiejar.CookieJar()
+    source.set_cookie(
+        cookiejar.Cookie(
+            0,
+            "sid",
+            "v",
+            None,
+            False,
+            "myshop.example",
+            True,
+            False,
+            "/",
+            True,
+            False,
+            None,
+            False,
+            None,
+            None,
+            {},
+        )
+    )
+    state = nodriver_state()
+    state["cookies"] = source
+    view = StoredSession("browser", state)
+    jar = view.cookies
+    assert type(jar) is requests.cookies.RequestsCookieJar
+    assert jar.get("sid") == "v"
+    assert view.cookies is jar
+    assert view.stored_state()["cookies"] is jar
+
+
+def test_a_view_refuses_deepcopy_and_the_old_pickle_protocols():
+    view = StoredSession("browser", nodriver_state())
+    with pytest.raises(TypeError):
+        copy.deepcopy(view)
+    for protocol in (0, 1):
+        with pytest.raises(TypeError):
+            pickle.dumps(view, protocol=protocol)

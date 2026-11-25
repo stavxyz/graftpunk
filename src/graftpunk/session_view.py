@@ -8,6 +8,7 @@ session classes and so without selenium, requestium, nodriver or httpie.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, NoReturn, Protocol
 
 from requests.cookies import RequestsCookieJar
@@ -48,6 +49,14 @@ class StoredSession:
     and never written (:attr:`writable`). A value set on an attribute the table
     stores for the kind goes into the state; any other value is kept in memory
     for this view only and is absent from :meth:`stored_state`.
+
+    The view takes ownership of the *state* and *extra* dicts it is given: it
+    keeps them without copying, writes to *state* when a stored attribute is
+    set, and the caller must not use them afterwards.
+
+    A stored key missing from the state reads as a default made on first read.
+    :meth:`stored_state` leaves it out while it is empty, so a key nobody
+    touched is not invented, and includes it once it has been edited in place.
     """
 
     kind: str | None
@@ -57,14 +66,16 @@ class StoredSession:
         self, kind: str | None, state: dict[str, Any], extra: dict[str, Any] | None = None
     ) -> None:
         self.kind = kind
-        self.extra = dict(extra or {})
-        self._state = dict(state)
+        self.extra = extra if extra is not None else {}
+        self._state = state
         self._memory: dict[str, Any] = {}
+        # Keys in _memory that are defaults made on read, not values set.
+        self._made: set[str] = set()
 
     @classmethod
     def from_record(cls, record: Record) -> StoredSession:
         """The view of a validated record, carrying its unknown top-level keys."""
-        return cls(record.kind, record_to_state(record), record.extra)
+        return cls(record.kind, record_to_state(record), copy.deepcopy(record.extra))
 
     @property
     def writable(self) -> bool:
@@ -82,9 +93,11 @@ class StoredSession:
         # An absent value is made once and kept, so an in-place change to it
         # (a rider dict) is seen by the next read.
         self._memory[key] = default()
+        self._made.add(key)
         return self._memory[key]
 
     def _write(self, key: str, value: Any) -> None:
+        self._made.discard(key)
         if key in self._stored_keys():
             self._state[key] = value
             self._memory.pop(key, None)
@@ -96,7 +109,12 @@ class StoredSession:
         if self.kind is None:
             raise TypeError("a session with no stored kind cannot be written")
         keys = self._stored_keys()
-        return {key: value for key, value in self._state.items() if key in keys}
+        stored = {key: value for key, value in self._state.items() if key in keys}
+        for key in self._made & keys:
+            # A default made on read is stored only once it holds something.
+            if self._memory[key]:
+                stored[key] = self._memory[key]
+        return stored
 
     @property
     def cookies(self) -> RequestsCookieJar:
