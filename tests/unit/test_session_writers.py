@@ -223,15 +223,26 @@ def selenium_session():
 
 @pytest.mark.parametrize("setting", ["pickle", "record"])
 def test_a_selenium_save_reads_the_driver_once_under_either_setting(
-    setting, session_store, session_format, captured_logs
+    setting, session_store, session_format, captured_logs, monkeypatch
 ):
     """Selenium's ``__getstate__`` asks the driver for its URL, a WebDriver
     round trip with a live browser; the record setting decides "stays a
     pickle" without it, so the save asks once, as the pickle setting does."""
+    from graftpunk.exceptions import BrowserError
+    from graftpunk.session import BrowserSession
+
+    reads = []
+
+    def driver(self):
+        reads.append(self)
+        raise BrowserError("no driver in this test")
+
+    # Counted on the class: a session's own driver is what the save reads.
+    monkeypatch.setattr(BrowserSession, "driver", property(driver))
     session_format(setting)
     cache_session(selenium_session(), "myshop", key=TEST_KEY)
     assert session_store.format_of("myshop") == "pickle"
-    assert len(events(captured_logs, "driver_current_url_unavailable_during_serialization")) == 1
+    assert len(reads) == 1
     assert len(events(captured_logs, "session_not_recordable")) == (setting == "record")
 
 
