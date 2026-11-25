@@ -659,8 +659,24 @@ def test_a_newer_record_is_refused_by_version_whatever_it_holds(payload):
         classify(payload)
 
 
-def test_a_newer_record_too_deep_to_parse_is_invalid():
-    """With no readable version marker there is nothing to call newer."""
-    payload = b'{"graftpunk_session": 2, "x": ' + b"[" * 100_000 + b"]" * 100_000 + b"}"
+def test_a_newer_record_too_deep_to_parse_is_invalid(monkeypatch):
+    """With no readable version marker there is nothing to call newer.
+
+    Whether a given depth overflows the JSON parser depends on the interpreter
+    (CPython 3.14 on Linux parses 100,000 levels), so the parser's failure is
+    injected here.
+    """
+
+    def too_deep(*_args, **_kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr("graftpunk.session_record.json.loads", too_deep)
     with pytest.raises(InvalidSessionRecord, match="not JSON"):
+        classify(b'{"graftpunk_session": 2, "x": [[1]]}')
+
+
+def test_a_newer_record_nested_deeper_than_the_parser_allows_is_newer_or_invalid():
+    """The real parser on this interpreter gives one of the two, never a raw error."""
+    payload = b'{"graftpunk_session": 2, "x": ' + b"[" * 100_000 + b"]" * 100_000 + b"}"
+    with pytest.raises((NewerSessionRecord, InvalidSessionRecord)):
         classify(payload)
