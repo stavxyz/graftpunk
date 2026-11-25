@@ -213,3 +213,179 @@ def test_store_with_given_metadata_keeps_its_times_and_replaces_the_checksum(ses
 )
 def test_public_signatures_are_unchanged(fn, text):
     assert str(inspect.signature(fn)) == text
+
+
+def selenium_session():
+    """A selenium-backend session built without a browser (as the compat fixtures are)."""
+    import requestium
+
+    from graftpunk.session import BrowserSession
+
+    session = BrowserSession.__new__(BrowserSession)
+    requestium.Session.__init__(session)  # starts no driver
+    session._backend_type = "selenium"
+    session._use_stealth = True
+    session._session_name = "myshop"
+    return session
+
+
+def _nan_extracted_at():
+    session = nodriver_session(tokens=True)
+    tokens = session._gp_cached_tokens
+    first = next(iter(tokens))
+    tokens[first] = dataclasses.replace(tokens[first], extracted_at=float("nan"))
+    return session
+
+
+def _bytes_header():
+    session = nodriver_session()
+    session.headers["X-Raw"] = b"raw"
+    return session
+
+
+@pytest.mark.parametrize(
+    ("build", "key"),
+    [
+        (_nan_extracted_at, "_gp_cached_tokens"),
+        (_bytes_header, "headers"),
+        (selenium_session, "_backend_type"),
+    ],
+    ids=["nan-extracted-at", "bytes-header", "selenium"],
+)
+def test_a_session_json_cannot_hold_is_pickled_with_one_warning_and_loads_back(
+    build, key, session_store, session_format, captured_logs
+):
+    session_format("record")
+    cache_session(build(), "myshop", key=TEST_KEY)
+    assert session_store.format_of("myshop") == "pickle"
+    (event,) = events(captured_logs, "session_not_recordable")
+    assert event["key"] == key
+    assert load_session("myshop", key=TEST_KEY).cookies is not None
+
+
+def _set(attr, value):
+    def build():
+        session = nodriver_session(tokens=True)
+        setattr(session, attr, value)
+        return session
+
+    return build
+
+
+def _on(factory, mutate):
+    def build():
+        session = factory()
+        mutate(session)
+        return session
+
+    return build
+
+
+def _cookie(**kwargs):
+    return requests.cookies.create_cookie(domain="x.example", **kwargs)
+
+
+def _add_cookie(*, then, attr="value", **kwargs):
+    """Add a cookie, then replace its value with *then* (the jar refuses odd values up front)."""
+
+    def mutate(session):
+        cookie = _cookie(**kwargs)
+        session.cookies.set_cookie(cookie)
+        setattr(cookie, attr, then)
+
+    return mutate
+
+
+class _Mine(GraftpunkSession):
+    pass
+
+
+def _with_extra_attribute():
+    session = nodriver_session()
+    session.something_else = {"a": 1}
+    return session
+
+
+def _attr(name, value):
+    return lambda s: setattr(s, name, value)
+
+
+ODD_SESSIONS = {
+    "cookies-a-dict": _set("cookies", {"a": "b"}),
+    "cookies-none": _set("cookies", None),
+    "headers-none": _set("headers", None),
+    "headers-int-key": _set("headers", {1: 2}),
+    "headers-int-value": _set("headers", {"X": 3}),
+    "tokens-a-list": _set("_gp_cached_tokens", []),
+    "tokens-str-values": _set("_gp_cached_tokens", {"t": "not a token"}),
+    "tokens-none": _set("_gp_cached_tokens", None),
+    "csrf-tokens-list": _set("_gp_csrf_tokens", ["x"]),
+    "csrf-tokens-object": _set("_gp_csrf_tokens", {"a": object()}),
+    "csrf-origin-int": _set("_gp_csrf_origin", 5),
+    "header-roles-str": _set("_gp_header_roles", "x"),
+    "header-roles-object": _set("_gp_header_roles", {"a": {"b": object()}}),
+    "header-role-origins-list": _set("_gp_header_role_origins", [1]),
+    "slot-name-int": _set("_gp_session_name", 5),
+    "account-int": _set("_gp_account_identifier", 5),
+    "session-name-none": _set("session_name", None),
+    "current-url-int": _set("current_url", 5),
+    "stealth-str": _set("_use_stealth", "yes"),
+    "extra-attribute": _with_extra_attribute,
+    "subclass": lambda: _Mine(),
+    "api-auth-tuple": _on(GraftpunkSession, _attr("auth", ("u", "p"))),
+    "api-auth-callable": _on(GraftpunkSession, _attr("auth", len)),
+    "api-proxies": _on(GraftpunkSession, _attr("proxies", {"https": "http://p.example"})),
+    "api-verify-false": _on(GraftpunkSession, _attr("verify", False)),
+    "api-verify-path": _on(GraftpunkSession, _attr("verify", "ca-bundle.pem")),
+    "api-cert-tuple": _on(GraftpunkSession, _attr("cert", ("a", "b"))),
+    "api-params": _on(GraftpunkSession, _attr("params", {"a": "b"})),
+    "api-max-redirects": _on(GraftpunkSession, _attr("max_redirects", 3)),
+    "api-trust-env-none": _on(GraftpunkSession, _attr("trust_env", None)),
+    "api-stream-str": _on(GraftpunkSession, _attr("stream", "x")),
+    "api-hooks-callable": _on(GraftpunkSession, lambda s: s.hooks["response"].append(len)),
+    "api-hooks-key": _on(GraftpunkSession, lambda s: s.hooks.update(extra=[])),
+    "api-adapter-object": _on(GraftpunkSession, lambda s: s.mount("https://x.example", object())),
+    "api-adapter-retries": _on(
+        GraftpunkSession, lambda s: s.mount("https://", HTTPAdapter(max_retries=3))
+    ),
+    "api-cookies-none": _on(GraftpunkSession, _attr("cookies", None)),
+    "api-headers-bytes": _on(GraftpunkSession, lambda s: s.headers.update({"X": b"b"})),
+    "api-headers-int-value": _on(GraftpunkSession, lambda s: s.headers.update({"X": 1})),
+    "requests-auth": _on(requests.Session, _attr("auth", ("u", "p"))),
+    "requests-proxies": _on(requests.Session, _attr("proxies", {"a": None})),
+    "requests-adapter": _on(
+        requests.Session, lambda s: s.mount("https://", HTTPAdapter(pool_maxsize=3))
+    ),
+    "requests-hooks-none": _on(requests.Session, _attr("hooks", None)),
+    "requests-cookie-bytes-value": _on(
+        requests.Session, _add_cookie(name="a", value="x", then=b"x")
+    ),
+    "requests-cookie-nan-expires": _on(
+        requests.Session,
+        _add_cookie(name="a", value="x", expires=1, then=float("nan"), attr="expires"),
+    ),
+    "requests-cookie-rest-object": _on(
+        requests.Session,
+        lambda s: s.cookies.set_cookie(_cookie(name="a", value="x", rest={"k": object()})),
+    ),
+}
+
+
+@pytest.mark.parametrize("build", ODD_SESSIONS.values(), ids=ODD_SESSIONS.keys())
+def test_the_record_setting_never_makes_a_save_fail(build, session_store, session_format):
+    """Each odd session is saved as a record or as a pickle, and raises nothing
+    that the same save raises with the setting unset."""
+    odd = build()
+    try:
+        cache_session(odd, "unset", key=TEST_KEY)
+    except Exception as exc:  # noqa: BLE001 (the baseline this test compares with)
+        baseline = type(exc)
+    else:
+        baseline = None
+    session_format("record")
+    if baseline is not None:
+        with pytest.raises(baseline):
+            cache_session(build(), "odd", key=TEST_KEY)
+        return
+    cache_session(build(), "odd", key=TEST_KEY)
+    assert session_store.format_of("odd") in ("record", "pickle")

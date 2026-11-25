@@ -303,6 +303,8 @@ def _encode_fresh(session: Any, *, name: str | None = None) -> bytes:
                 "type", f"{cls.__module__}.{cls.__qualname__} is not a stored session class"
             )
         else:
+            # pickle.dumps below calls __getstate__ again: a pickle cannot be
+            # built from a state dict this side of the object's own reduce.
             refusal = state_to_record(kind, session.__getstate__())
         if isinstance(refusal, bytes):
             return refusal
@@ -329,9 +331,8 @@ def _encode_as(session: Any) -> bytes:
     """
     if not isinstance(session, StoredSession):
         return pickle.dumps(session)
-    if not session.writable:
+    if not session.writable or session.kind is None:
         raise TypeError("a stored session with no kind cannot be written")
-    assert session.kind is not None
     encoded = state_to_record(session.kind, session.stored_state(), session.extra)
     if isinstance(encoded, Unrecordable):
         raise ValueError(f"cannot write {encoded.key!r} to a record: {encoded.reason}")
