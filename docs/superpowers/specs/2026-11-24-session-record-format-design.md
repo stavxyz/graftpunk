@@ -743,3 +743,12 @@ this section governs.
     that `__init__` and `__setstate__` both call, amending point 20.
 27. **Each compat fixture carries the `metadata.json` its release wrote**, so
     a test lays a fixture out exactly as that release stored it.
+28. **Stored bytes that start with `[` are classified as JSON too**, and
+    then refused as an invalid record. No pickle opcode is `{` or `[`, so a
+    pickle can start with neither.
+29. **A field-table row says whether its key is required.** The four rider
+    rows are optional, because a state written by an older release may lack
+    one and the codec does not invent it. A state missing a required key is
+    unrecordable, and a record missing one is invalid.
+30. **The adapter default check also reads requests' `DEFAULT_POOLBLOCK`**,
+    beside `DEFAULT_POOLSIZE`.
