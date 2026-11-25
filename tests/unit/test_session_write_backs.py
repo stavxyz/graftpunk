@@ -29,6 +29,7 @@ from tests.unit.session_compat_cases import (
     events,
     nodriver_state,
     record_bytes,
+    records_json_could_not_have_written,
     token_dicts,
 )
 
@@ -77,8 +78,12 @@ def test_unknown_keys_survive_both_write_backs(setting, session_store, session_f
     [
         (record_bytes(version=2), "NewerSessionRecord", NewerSessionRecord),
         (record_bytes(drop=("kind",)), "SessionExpiredError", SessionExpiredError),
+        *(
+            (plain, "SessionExpiredError", SessionExpiredError)
+            for plain in records_json_could_not_have_written().values()
+        ),
     ],
-    ids=["newer", "invalid"],
+    ids=["newer", "invalid", *records_json_could_not_have_written()],
 )
 def test_a_record_that_cannot_be_read_is_left_byte_for_byte(
     plain, reason, error, session_store, captured_logs

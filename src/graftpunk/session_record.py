@@ -54,6 +54,12 @@ _HTTP: frozenset[str] = frozenset({"api", "requests"})
 
 _SELENIUM_REASON = "selenium sessions are stored as pickles in this release"
 
+# How many objects and arrays deep a record may nest. Readers walk a record
+# recursively (copy.deepcopy, comparisons), and a fixed limit far below the
+# interpreter's recursion limit makes "too deep" the same answer wherever the
+# call is made from.
+MAX_DEPTH = 100
+
 
 @dataclass(frozen=True)
 class Field:
@@ -473,6 +479,30 @@ PICKLE_ONLY: tuple[PickleOnly, ...] = (
 )
 
 
+def _deeper_than(data: Any, limit: int) -> bool:
+    """Whether JSON *data* nests objects and arrays more than *limit* deep.
+
+    Iterative, so it answers for data too deep to walk recursively.
+    """
+    stack = [(data, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if type(node) is dict:
+            children: Any = node.values()
+        elif type(node) is list:
+            children = node
+        else:
+            continue
+        if depth > limit:
+            return True
+        stack.extend((child, depth + 1) for child in children)
+    return False
+
+
+def _refuse_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not a JSON number")
+
+
 def _fields_of(kind: str) -> tuple[Field, ...]:
     return tuple(f for f in FIELDS if kind in f.kinds)
 
@@ -519,18 +549,22 @@ def classify(decrypted: bytes) -> Record | LegacyBytes:
     never unpickled here. Raises
     :class:`NewerSessionRecord` for a record version above
     :data:`RECORD_VERSION`, and :class:`InvalidSessionRecord` for a payload
-    that starts as a record and is not a valid one.
+    that starts as a record and is not a valid one, including one holding
+    ``NaN`` or ``Infinity`` or nested more than :data:`MAX_DEPTH` deep.
     """
     # Neither byte is a pickle opcode, so neither can start a pickle; JSON
     # that starts with "[" is refused as a record rather than unpickled.
     if decrypted[:1] not in (b"{", b"["):
         return LegacyBytes(decrypted)
     try:
-        doc = json.loads(decrypted)
+        # NaN and Infinity are not JSON, and the writer never stores them.
+        doc = json.loads(decrypted, parse_constant=_refuse_constant)
     except (ValueError, RecursionError) as exc:
         raise InvalidSessionRecord(f"not JSON ({exc})") from exc
     if type(doc) is not dict:
         raise InvalidSessionRecord("not a JSON object")
+    if _deeper_than(doc, MAX_DEPTH):
+        raise InvalidSessionRecord(f"nested more than {MAX_DEPTH} deep")
     version = doc.get(_VERSION_KEY)
     if type(version) is not int:
         raise InvalidSessionRecord(f"{_VERSION_KEY!r} is not an integer version")
@@ -565,8 +599,10 @@ def state_to_record(
     """Encode a session's state dict as a record, or say which key prevents it.
 
     *extra* is written back as top-level keys unchanged (a write-back's
-    :attr:`Record.extra`). Raises ``ValueError`` for an unknown *kind* or an
-    *extra* key the table owns, both caller errors.
+    :attr:`Record.extra`). A value :func:`classify` would refuse (a
+    non-finite number, nesting more than :data:`MAX_DEPTH` deep) is
+    unrecordable. Raises ``ValueError`` for an unknown *kind* or an *extra*
+    key the table owns, both caller errors.
     """
     if kind not in _KINDS:
         raise ValueError(f"unknown session kind {kind!r}")
@@ -581,10 +617,13 @@ def state_to_record(
         if key in rows:
             try:
                 data = rows[key].encode(value)
+                # A field sits at most two levels below the record's top.
+                if _deeper_than(data, MAX_DEPTH - 2):
+                    raise ValueError(f"it nests more than {MAX_DEPTH} deep")
                 # What a reader will get: refuses NaN, infinity and non-JSON
                 # values, and anything classify would reject.
                 rows[key].decode(json.loads(json.dumps(data, allow_nan=False)))
-            except (ValueError, TypeError, OverflowError) as exc:
+            except (ValueError, TypeError, OverflowError, RecursionError) as exc:
                 return Unrecordable(key, f"a record cannot hold it: {exc}")
             encoded[key] = data
         elif key in pickle_only:
@@ -604,7 +643,14 @@ def state_to_record(
             node = node.setdefault(block, {})
         node[leaf] = encoded[row.state_key]
     doc |= extra or {}
-    return json.dumps(doc, allow_nan=False).encode()
+    if _deeper_than(doc, MAX_DEPTH):
+        return Unrecordable("extra", f"a record cannot hold it: it nests over {MAX_DEPTH} deep")
+    try:
+        return json.dumps(doc, allow_nan=False).encode()
+    except ValueError as exc:
+        # Only an extra key can hold a non-finite number here: every field
+        # was read back above.
+        return Unrecordable("extra", f"a record cannot hold it: {exc}")
 
 
 def record_to_state(record: Record) -> dict[str, Any]:

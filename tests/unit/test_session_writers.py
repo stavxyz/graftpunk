@@ -30,6 +30,7 @@ from graftpunk.session_view import StoredSession
 from tests.unit.session_compat_cases import (
     TEST_KEY,
     events,
+    nested,
     nodriver_session,
     nodriver_state,
 )
@@ -237,6 +238,19 @@ def _nan_extracted_at():
     return session
 
 
+def _on(factory, mutate):
+    def build():
+        session = factory()
+        mutate(session)
+        return session
+
+    return build
+
+
+def _attr(name, value):
+    return lambda s: setattr(s, name, value)
+
+
 def _bytes_header():
     session = nodriver_session()
     session.headers["X-Raw"] = b"raw"
@@ -249,8 +263,11 @@ def _bytes_header():
         (_nan_extracted_at, "_gp_cached_tokens"),
         (_bytes_header, "headers"),
         (selenium_session, "_backend_type"),
+        (_on(GraftpunkSession, _attr("params", {"a": float("nan")})), "params"),
+        # Deeper than a record holds, and shallow enough for dill to pickle.
+        (_on(GraftpunkSession, _attr("params", nested(120))), "params"),
     ],
-    ids=["nan-extracted-at", "bytes-header", "selenium"],
+    ids=["nan-extracted-at", "bytes-header", "selenium", "nan-param", "deep-params"],
 )
 def test_a_session_json_cannot_hold_is_pickled_with_one_warning_and_loads_back(
     build, key, session_store, session_format, captured_logs
@@ -267,15 +284,6 @@ def _set(attr, value):
     def build():
         session = nodriver_session(tokens=True)
         setattr(session, attr, value)
-        return session
-
-    return build
-
-
-def _on(factory, mutate):
-    def build():
-        session = factory()
-        mutate(session)
         return session
 
     return build
@@ -304,10 +312,6 @@ def _with_extra_attribute():
     session = nodriver_session()
     session.something_else = {"a": 1}
     return session
-
-
-def _attr(name, value):
-    return lambda s: setattr(s, name, value)
 
 
 ODD_SESSIONS = {
@@ -364,6 +368,9 @@ ODD_SESSIONS = {
         requests.Session,
         _add_cookie(name="a", value="x", expires=1, then=float("nan"), attr="expires"),
     ),
+    # Too deep for dill as well: the save raises what it raises with the
+    # setting unset, where a record could once have been written.
+    "api-params-too-deep-to-pickle": _on(GraftpunkSession, _attr("params", nested(600))),
     "requests-cookie-rest-object": _on(
         requests.Session,
         lambda s: s.cookies.set_cookie(_cookie(name="a", value="x", rest={"k": object()})),

@@ -42,6 +42,7 @@ from tests.unit.session_compat_cases import (
     encrypt,
     nodriver_state,
     record_bytes,
+    records_json_could_not_have_written,
     token_dicts,
 )
 
@@ -246,6 +247,21 @@ def readers(session_store):
     ids=["no-kind", "array", "not-json", "cookie-without-name"],
 )
 def test_an_invalid_record_reads_as_an_expired_session(plain, session_store):
+    store_payload(session_store, plain)
+    for name, fns in readers(session_store).items():
+        for fn in fns:
+            with pytest.raises(SessionExpiredError, match=re.escape(f"'{name}'")):
+                fn()
+
+
+@pytest.mark.parametrize(
+    "plain",
+    records_json_could_not_have_written().values(),
+    ids=records_json_could_not_have_written().keys(),
+)
+def test_a_record_graftpunk_could_not_have_written_reads_as_an_expired_session(
+    plain, session_store
+):
     store_payload(session_store, plain)
     for name, fns in readers(session_store).items():
         for fn in fns:

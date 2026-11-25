@@ -272,6 +272,32 @@ def record_bytes(
     return json.dumps(record).encode()
 
 
+def nested(depth: int) -> dict:
+    """A JSON object *depth* objects deep, built without recursion."""
+    node: dict = {}
+    for _ in range(depth - 1):
+        node = {"a": node}
+    return node
+
+
+def records_json_could_not_have_written() -> dict[str, bytes]:
+    """Hand-built records that ``json.loads`` parses and graftpunk's writer
+    never produces: a non-finite number, or nesting deeper than a reader walks."""
+
+    def api(params: dict) -> bytes:
+        record = json.loads(record_bytes("api"))
+        record["requests"]["params"] = params
+        return json.dumps(record).encode()
+
+    return {
+        "nan-top-level": record_bytes(extra={"x": float("nan")}),
+        "infinity-in-params": api({"a": float("inf")}),
+        "minus-infinity-in-params": api({"a": float("-inf")}),
+        "deep-params": api(nested(600)),
+        "deep-top-level": record_bytes(extra={"x": nested(600)}),
+    }
+
+
 def _graftpunk_imports(tree: ast.AST) -> set[str]:
     names: set[str] = set()
     for node in ast.walk(tree):

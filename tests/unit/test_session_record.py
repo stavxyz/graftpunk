@@ -411,6 +411,48 @@ def test_a_params_value_json_would_change_makes_the_session_unrecordable():
     assert refused.key == "params"
 
 
+def test_params_nested_to_the_limit_round_trip_and_one_deeper_are_unrecordable():
+    from graftpunk.session_record import MAX_DEPTH
+    from tests.unit.session_compat_cases import nested
+
+    # The params object sits two levels below the record's top.
+    deepest = requests.Session().__getstate__() | {"params": nested(MAX_DEPTH - 2)}
+    restored = record_to_state(classify(state_to_record("requests", deepest)))
+    assert restored["params"] == deepest["params"]
+    for depth in (MAX_DEPTH - 1, 5000):  # 5000 is past what json.dumps can recurse
+        state = requests.Session().__getstate__() | {"params": nested(depth)}
+        refused = state_to_record("requests", state)
+        assert isinstance(refused, Unrecordable), depth
+        assert refused.key == "params"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), "deep"], ids=["nan", "inf", "deep"])
+def test_an_extra_key_a_reader_would_refuse_is_unrecordable(value):
+    from graftpunk.session_record import MAX_DEPTH
+    from tests.unit.session_compat_cases import nested
+
+    extra = {"x": nested(MAX_DEPTH) if value == "deep" else value}
+    refused = state_to_record("browser", nodriver_state(), extra)
+    assert isinstance(refused, Unrecordable)
+    assert refused.key == "extra"
+
+
+def test_classify_takes_a_record_nested_to_the_limit_and_refuses_one_deeper():
+    from graftpunk.session_record import MAX_DEPTH
+    from tests.unit.session_compat_cases import nested
+
+    assert classify(record_bytes(extra={"x": nested(MAX_DEPTH - 1)})).extra
+    with pytest.raises(InvalidSessionRecord, match="nested more than"):
+        classify(record_bytes(extra={"x": nested(MAX_DEPTH)}))
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_classify_refuses_a_non_finite_number(literal):
+    payload = record_bytes()[:-1] + b', "x": ' + literal.encode() + b"}"
+    with pytest.raises(InvalidSessionRecord, match=literal):
+        classify(payload)
+
+
 def test_a_state_key_with_no_row_is_unrecordable_by_name():
     refused = state_to_record("browser", nodriver_state() | {"_gp_csrf_tokens": {}})
     assert isinstance(refused, Unrecordable)
