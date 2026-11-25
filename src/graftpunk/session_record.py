@@ -656,6 +656,19 @@ def state_to_record(
         return Unrecordable("extra", f"a record cannot hold it: {exc}")
 
 
+def refusal_before_state(kind: str, session: object) -> Unrecordable | None:
+    """The refusal :func:`state_to_record` would give *session*, when its
+    attributes decide it, so the caller need not run ``__getstate__``.
+
+    A selenium session's ``__getstate__`` asks the driver for its URL, a
+    WebDriver round trip with a live browser. ``BrowserSession`` reads a
+    missing ``_backend_type`` as selenium, and so does this.
+    """
+    if kind == "browser" and getattr(session, "_backend_type", "selenium") == "selenium":
+        return Unrecordable("_backend_type", _SELENIUM_REASON)
+    return None
+
+
 def record_to_state(record: Record) -> dict[str, Any]:
     """The state dict ``__setstate__`` takes for *record*'s kind.
 

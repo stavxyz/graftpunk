@@ -230,6 +230,20 @@ def selenium_session():
     return session
 
 
+@pytest.mark.parametrize("setting", ["pickle", "record"])
+def test_a_selenium_save_reads_the_driver_once_under_either_setting(
+    setting, session_store, session_format, captured_logs
+):
+    """Selenium's ``__getstate__`` asks the driver for its URL, a WebDriver
+    round trip with a live browser; the record setting decides "stays a
+    pickle" without it, so the save asks once, as the pickle setting does."""
+    session_format(setting)
+    cache_session(selenium_session(), "myshop", key=TEST_KEY)
+    assert session_store.format_of("myshop") == "pickle"
+    assert len(events(captured_logs, "driver_current_url_unavailable_during_serialization")) == 1
+    assert len(events(captured_logs, "session_not_recordable")) == (setting == "record")
+
+
 def _nan_extracted_at():
     session = nodriver_session(tokens=True)
     tokens = session._gp_cached_tokens

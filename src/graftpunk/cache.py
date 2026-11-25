@@ -54,6 +54,7 @@ from graftpunk.session_record import (
     classify,
     kind_of,
     record_to_state,
+    refusal_before_state,
     state_to_record,
 )
 from graftpunk.session_riders import SESSION_CLASS_PATHS
@@ -311,7 +312,9 @@ def _encode_fresh(session: Any, *, name: str | None = None) -> bytes:
         else:
             # pickle.dumps below calls __getstate__ again: a pickle cannot be
             # built from a state dict this side of the object's own reduce.
-            refusal = state_to_record(kind, session.__getstate__())
+            refusal = refusal_before_state(kind, session) or state_to_record(
+                kind, session.__getstate__()
+            )
         if isinstance(refusal, bytes):
             return refusal
         LOG.warning(
