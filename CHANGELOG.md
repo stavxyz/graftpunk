@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.46.0] - 2026-11-26
+
+This is a minor release of three fixes and two additions. A hand-written `login()` that drives the browser through `SitePlugin.browser_session()` or `browser_session_sync()` now caches the browser's header roles, so the commands after it send the browser's `User-Agent` and client hints instead of `python-requests/<version>` (#401), and every Selenium login launches Chrome keeping the performance log those roles are read from. A cookie value that starts and ends with `"` and holds `\"` is now stored as the browser held it through the login and every write-back. `Token.wait` sets how long a browser read waits for a page token (3 s by default), `TokenConfig.headless` lets a command's fallback browser open a visible window for a site that refuses a headless one, and a login now says which tokens it could not read.
+
+### Upgrading
+
+1. **What changes on first run is the next login, and only for some plugins.** A session cached before the upgrade keeps its cookies and header roles until a login replaces it. After the next login:
+   - A plugin with a hand-written `login()` through `browser_session()` (nodriver) or `browser_session_sync()` (Selenium) caches header roles, as a declarative plugin's login does. Its commands then send the captured navigation, xhr and form headers (the browser's `User-Agent` and `sec-ch-ua*` among them) to the origin they were captured from. A `User-Agent` the plugin stored in `session.headers` is still copied onto the loaded session after the roles' identity, so a pinned value still wins. Roles the `login()` set on the session itself (a non-empty `_gp_header_roles`) are kept. A capture that cannot start or be read logs `login_header_capture_unavailable` and the login caches as before, without roles; it never fails the login.
+   - A Selenium login, declarative or hand-written, launches Chrome with `goog:loggingPrefs = {"performance": "ALL"}` and caches header roles with observe off; before this release it did only with `--observe full`. The memory Chrome's log holds over a long login (a person solving a second factor for minutes) is unverified; the capture reads it once, when the login ends.
+   - A cookie whose value starts and ends with `"` and holds `\"` (such as `"a\"b"`) is stored as the browser holds it. Before this release the login stored it with every `\"` deleted (`"ab"`). A `Token.from_cookie` token reads the stored value, so its header now carries the value as the site's own script reads it from `document.cookie`. The `Cookie` header a command sends is unchanged: `requests` builds it and still deletes the `\"`.
+   - A login whose plugin has a `token_config` prints one warning naming each page or cookie token it did not find, and logs `login_tokens_missing` with their names. The login still succeeds and caches as before.
+2. **A page token's browser read waits as long as before, plus one read.** With the default `Token.wait` of 3.0 s a page is read at 0, 0.5, ... 3.0 s, 7 reads where 1.45.0 made 6 over 2.5 s. A token found earlier is returned at that read, as before. The Selenium login's read no longer sleeps a fixed 2 s before one read: a token already on the page is read at once, and a missing one is given up after 3 s. A page whose 30 s deadline passes keeps the tokens already read on it, where 1.45.0 dropped them.
+3. **A command's fallback browser is still headless.** `TokenConfig.headless` defaults to True; nothing opens a window unless a plugin sets it to False.
+4. **Some errors changed.** A `response_header` token whose HTTP read fails with `extraction="auto"`, or that has `extraction="browser"`, raises `TokenExtractionError` naming the header before any browser starts; 1.45.0 started the browser, which could not read it (and lost any page token on the same page) and then raised `TokenExtractionError` with the generic browser text. A token in a YAML plugin that `Token` refuses raises `PluginError` naming the file and the token's position (`token #N is invalid: ...`) where 1.45.0 raised the bare `ValueError`; plugin discovery reports both the same way. A visible fallback browser that cannot start raises `TokenExtractionError` naming `TokenConfig(headless=False)`, which a plugin command prints after `Token extraction failed:`.
+5. **New names.** `Token.wait` (a parameter of `from_meta_tag`, `from_hidden_input`, `from_js_variable` and `from_response_header`, and the YAML token keys `wait` and `extraction`); `TokenConfig.headless`; `BrowserSession(performance_log=)`; the log events `login_header_capture_unavailable` and `login_tokens_missing`; and a `reason="deadline"` field on `browser_token_pattern_not_found` and `login_token_pattern_not_found` when the page's deadline, not the token's wait, ended the read. A Selenium login's `login_token_pattern_not_found` names the token in `name`, as the nodriver login's does, where 1.45.0 used `token`. `graftpunk.plugins.login_capture` holds the login's capture helpers; `login_engine` keeps its private names `_header_only_capture`, `_start_login_capture` and `_store_header_roles` for them.
+6. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. On graftpunk-lite, use the same commands with `graftpunk-lite`. The `/graftpunk:graft` skill is unchanged (0.1.41).
+
+### Added
+
+- **`Token.wait`**: seconds a browser read polls the page for a token before giving up, more than 0 and at most 120, 3.0 by default; a bool or a non-number is refused. Tokens on one page are read together and each is given up when its own `wait` has passed, judged by the clock or by the pauses taken, whichever is more. The page's navigation deadline (30 s) gets the tokens' longest `wait` on top.
+- **`TokenConfig.headless`** (True by default): the mode of the browser a command starts for a token HTTP could not read.
+- **`BrowserSession(performance_log=None)`**: on Selenium, True launches Chrome keeping its performance log and False without it; None keeps the old rule (kept when `observe_mode` is not `off`).
+- **The YAML token keys `wait` and `extraction`.** `extraction` was documented for `Token` but the YAML loader did not read it.
+- **A warning when a login misses a token**, on the console and as `login_tokens_missing`, for page and cookie tokens. A `response_header` token is not read at login and is not reported. A hand-written `login()` through `browser_session()` still reads no tokens at login.
+
+### Changed
+
+- **Every Selenium login keeps Chrome's performance log** (`BrowserSession(performance_log=True)` from the generated login and from `browser_session_sync()`), so a Selenium login caches header roles with observe off.
+- **A page token's browser read is deadline-based** (item 2 above), on nodriver and on a Selenium login.
+
+### Fixed
+
+- **A hand-written `login()` through `browser_session()` or `browser_session_sync()` caches header roles** (#401). On nodriver the capture starts on the yielded tab after its first navigation, as the generated nodriver login's does; a page the login opens in another tab is not captured.
+- **A quoted cookie value keeps its `\"`** through the nodriver and Selenium login transfers, `update_session_cookies`, and `gp session export`. They used `RequestsCookieJar.set_cookie`, `update` and `copy`, which delete every `\"` from a value that starts and ends with `"`.
+- **A `response_header` token is no longer sent to the browser read**, which reads a page's HTML and failed on it, losing any page token on the same page.
+- **A YAML plugin's `extraction` key is read.**
+
 ## [1.45.0] - 2026-11-25
 
 This is a minor release of one opt-in addition and two fixes. A saved session can now be stored as a JSON record instead of a pickle, with `GRAFTPUNK_SESSION_FORMAT=record`. Reading a record constructs no class named by the stored bytes, and reading one for API use or for a write-back imports no browser package. `load_session_for_api`, `load_session_for_api_resolved`, and `load_session_for_api_from_bytes` read both formats and need no browser package, so a plugin command that uses its stored session and `gp http` with a stored session run on graftpunk-lite (#245, the session half; how a plugin is installed beside graftpunk-lite is the other half and stays open). A session saved under one `requests` version and loaded under another no longer keeps `User-Agent: python-requests/<version>` over the browser's (#399).

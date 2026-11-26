@@ -2442,7 +2442,7 @@ When a plugin has both `login_config` and `token_config`, tokens are extracted d
 - **Nodriver**: `_extract_and_cache_tokens_nodriver()` navigates the existing tab to token pages and extracts via regex polling
 - **Selenium**: `_extract_and_cache_tokens_selenium()` uses the existing driver to navigate and polls `driver.page_source` the same way
 
-Both backends use `_build_token_cache()` to construct `CachedToken` instances from extracted values. Token extraction during login is best-effort — failures are logged but don't prevent session caching. A page or cookie token the login did not find is named in one console warning and a `login_tokens_missing` log line (with the token names); the login still succeeds and caches, and each command reads a missing token again before it runs. A `response_header` token is not read at login and is not reported. A hand-written `login()` through `browser_session()` or `browser_session_sync()` reads no tokens at login.
+Both backends use `_build_token_cache()` to construct `CachedToken` instances from extracted values. Token extraction during login is best-effort: failures are logged but do not prevent session caching. A page or cookie token the login did not find is named in one console warning and a `login_tokens_missing` log line (with the token names); the login still succeeds and caches, and each command reads a missing token again before it runs. A `response_header` token is not read at login and is not reported. A hand-written `login()` through `browser_session()` or `browser_session_sync()` reads no tokens at login.
 
 ### Auto-Injection (Standard Flow)
 
