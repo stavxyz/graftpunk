@@ -39,7 +39,7 @@ consumes that variable.
 
 1. **Just work** — no shell profile edits, no aliases, no direnv; works
    identically from any cwd and in subprocesses that exec `gp`.
-2. **No latency for irrelevant operations** — `gp myshop export list` must
+2. **No latency for irrelevant operations**: `gp myshop export list` must
    never pay for `MYSHOP_PASSWORD=$(op read …)`; `gp --help` must never
    trigger a 1Password biometric prompt, even when command-valued
    `GRAFTPUNK_*` entries exist.
