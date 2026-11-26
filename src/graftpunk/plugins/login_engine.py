@@ -587,6 +587,7 @@ async def _extract_and_cache_tokens_nodriver(
     if tcache:
         setattr(session, _CACHE_ATTR, tcache)
         LOG.info("login_tokens_extracted", count=len(tcache))
+    _warn_missing_login_tokens(plugin, token_config, token_results)
 
 
 def _extract_and_cache_tokens_selenium(
@@ -605,7 +606,7 @@ def _extract_and_cache_tokens_selenium(
     if token_config is None:
         return
 
-    from graftpunk.tokens import _CACHE_ATTR, read_page_token
+    from graftpunk.tokens import _CACHE_ATTR, poll_page_tokens_sync
 
     token_results: dict[str, str] = {}
     for t in token_config.tokens:
@@ -614,18 +615,14 @@ def _extract_and_cache_tokens_selenium(
             if val:
                 token_results[t.name] = val
         elif t.source == "page":
+            url = _resolve_url(base_url, t.page_url)
             try:
-                session.driver.get(_resolve_url(base_url, t.page_url))
-                time.sleep(2)
-                value = read_page_token(t, session.driver.page_source)
-                if value is not None:
-                    token_results[t.name] = value
-                else:
-                    LOG.warning(
-                        "login_token_pattern_not_found",
-                        token=t.name,
-                        url=_resolve_url(base_url, t.page_url),
+                session.driver.get(url)
+                token_results.update(
+                    poll_page_tokens_sync(
+                        lambda: session.driver.page_source, [t], url, "login_token"
                     )
+                )
             except Exception as exc:  # broad by design: best-effort token extraction
                 LOG.warning("login_token_extraction_failed", token=t.name, error=str(exc))
 
@@ -633,6 +630,41 @@ def _extract_and_cache_tokens_selenium(
     if tcache:
         setattr(session, _CACHE_ATTR, tcache)
         LOG.info("login_tokens_extracted", count=len(tcache))
+    _warn_missing_login_tokens(plugin, token_config, token_results)
+
+
+def _warn_missing_login_tokens(
+    plugin: SitePlugin, token_config: Any, token_results: dict[str, str]
+) -> None:
+    """Say which tokens the login read none of, on the console and as
+    ``login_tokens_missing``. The login still succeeds: a command reads a
+    missing token again before it runs. A ``response_header`` token is never
+    read at login, so it is not reported."""
+    missing = [
+        t
+        for t in token_config.tokens
+        if t.source in ("page", "cookie") and t.name not in token_results
+    ]
+    if not missing:
+        return
+    LOG.warning(
+        "login_tokens_missing",
+        plugin=plugin.site_name,
+        tokens=[t.name for t in missing],
+    )
+    described = ", ".join(
+        f"{t.name} (cookie {t.cookie_name})"
+        if t.source == "cookie"
+        else f"{t.name} (page {t.page_url})"
+        for t in missing
+    )
+    gp_console.warn(
+        f"Logged in and saved the session, but did not find token(s) {described}. "
+        "Each command reads a missing token again before it runs (over HTTP, then in a "
+        "browser for a page token whose extraction allows it). For a page that "
+        "renders its token late, raise Token.wait; for a site that refuses a headless "
+        "browser, set TokenConfig(headless=False)."
+    )
 
 
 def generate_login_method(plugin: SitePlugin) -> Any:

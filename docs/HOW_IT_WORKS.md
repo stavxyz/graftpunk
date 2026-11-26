@@ -2403,6 +2403,8 @@ tokens:
     page_url: /dashboard
     pattern: 'data-token="([^"]+)"'
     cache_duration: 300    # Cache for 5 minutes
+    extraction: auto       # http, browser, or auto (the default)
+    wait: 15               # Seconds a browser read waits for it (3 by default)
 ```
 
 Token sources:
@@ -2411,6 +2413,10 @@ Token sources:
 - **`page`** — Fetch a page and extract via regex pattern
 
 In Python, `Token`'s constructors build these: `Token.from_cookie(cookie_name, header)`, `Token.from_response_header(response_header, request_header, page_url="/")`, `Token.from_js_variable(pattern, header, page_url="/")`, `Token.from_meta_tag(name, header, page_url="/")` for `<meta name="..." content="...">`, and `Token.from_hidden_input(name, header, page_url="/")` for `<input type="hidden" name="..." value="...">`, in a form or not, its attributes in any order and in any case. The last two are `page` tokens: each fetches `page_url` over HTTP, falls back to the browser with `extraction="auto"`, and caches the value for `cache_duration` seconds (300 by default). Both read the page with `graftpunk.page_values`, a tokenizer written to the WHATWG HTML parsing rules that does not depend on the Python release: the first element of that name in document order with a non-empty value (`document.querySelector` would return the first even when it is empty), its attributes in any order and case, quoted or not, the value with its character references decoded by the attribute rule (a named reference without `;` followed by a letter, a digit, or `=` stays as written), and no tag inside `<script>`, `<style>`, `<textarea>`, `<title>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>`, `<noscript>`, `<plaintext>`, `<template>`, or a comment. It does not model `<svg>` or `<math>` content, and it reads the page as served, so a tag a script writes is not there; when the tag's text is only inside a script or another skipped region, the `extraction="http"` error says where. Such a token has `pattern=None` and names its element in `element` (`"meta"` or `"hidden_input"`) and `element_name`; a `Token(source="page", pattern=...)` and `from_js_variable` still match their regex.
+
+**How long a browser read waits.** A page token read in a browser (a command's fallback, and the login's own read) reads the page at once and then every 0.5 s until the token is there or its `Token.wait` seconds (3.0 by default, more than 0 and at most 120) have passed, by the clock or by the pauses taken, whichever is more. With the default that is 7 reads, at 0, 0.5, ..., 3.0 s. Tokens on one page are read together, and each is given up when its own `wait` has passed. A page's navigation has 30 s, and the reads get its tokens' longest `wait` on top of that; at that deadline the read stops and keeps the tokens it found. `wait` is a parameter of `from_meta_tag`, `from_hidden_input`, `from_js_variable` and `from_response_header`, and a key of a YAML token, as is `extraction`. A cookie token ignores it. Before 1.46.0 every page was read 6 times over about 2.5 s on nodriver, and once after a fixed 2 s on a Selenium login.
+
+**The fallback browser.** The browser a command starts for a token HTTP could not read is headless unless the plugin sets `TokenConfig(tokens=..., headless=False)`, for a site that refuses a headless browser. A visible browser needs a display: one that cannot start fails the command with `Token extraction failed:` and a message naming `TokenConfig(headless=False)`. It answers a page's JavaScript dialogs in both modes. A `response_header` token is never sent to that browser, which reads a page's HTML and not a response's headers: when its HTTP read fails (`extraction="auto"`), or with `extraction="browser"`, the command fails with a `TokenExtractionError` naming the header. Before 1.46.0 such a token reached the browser, which failed to read it and any other token of the same page.
 
 ### EAFP Injection and 403 Retry
 
@@ -2434,9 +2440,9 @@ Tokens extracted during login are persisted through the session serialization li
 When a plugin has both `login_config` and `token_config`, tokens are extracted during the login flow using the already-open browser session. This avoids launching a separate browser instance for token extraction:
 
 - **Nodriver**: `_extract_and_cache_tokens_nodriver()` navigates the existing tab to token pages and extracts via regex polling
-- **Selenium**: `_extract_and_cache_tokens_selenium()` uses the existing driver to navigate and extract
+- **Selenium**: `_extract_and_cache_tokens_selenium()` uses the existing driver to navigate and polls `driver.page_source` the same way
 
-Both backends use `_build_token_cache()` to construct `CachedToken` instances from extracted values. Token extraction during login is best-effort — failures are logged but don't prevent session caching.
+Both backends use `_build_token_cache()` to construct `CachedToken` instances from extracted values. Token extraction during login is best-effort — failures are logged but don't prevent session caching. A page or cookie token the login did not find is named in one console warning and a `login_tokens_missing` log line (with the token names); the login still succeeds and caches, and each command reads a missing token again before it runs. A `response_header` token is not read at login and is not reported. A hand-written `login()` through `browser_session()` or `browser_session_sync()` reads no tokens at login.
 
 ### Auto-Injection (Standard Flow)
 
@@ -2791,7 +2797,7 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 | `BrowserCookieSession` | `cookies` | No | A `requests.Session` with `BrowserCookiesMixin` |
 | `BrowserSession` | `session` | No | Browser automation wrapper |
 | `Token` | `tokens` | Yes | Token extraction configuration |
-| `TokenConfig` | `tokens` | Yes | Collection of token extraction rules |
+| `TokenConfig` | `tokens` | Yes | Collection of token extraction rules: `tokens`, `headless` (the mode of a command's fallback browser) |
 | `CachedToken` | `tokens` | Yes | Extracted token value with TTL |
 | `PluginDiscoveryError` | `cli.plugin_commands` | Yes | Error during plugin discovery |
 | `YAMLDiscoveryError` | `plugins.yaml_loader` | Yes | Error during YAML plugin loading |
