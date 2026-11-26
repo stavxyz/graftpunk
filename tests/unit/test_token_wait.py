@@ -606,6 +606,8 @@ class TestLoginReportsMissingTokens:
             patch("graftpunk.BrowserSession", bs),
             patch("graftpunk.plugins.cli_plugin.cache_session") as cached,
             patch("graftpunk.plugins.login_engine.time.sleep"),
+            # The token poll's own pauses, so no real second passes.
+            patch("graftpunk.tokens.time.sleep"),
             patch("graftpunk.observe.capture.create_capture_backend", return_value=capture),
             capture_logs() as logs,
         ):
@@ -620,6 +622,8 @@ class TestLoginReportsMissingTokens:
         assert "X-XSRF" in err
         assert "X-Api" not in err
         assert "Token.wait" in err
+        # It prints before the session is saved, so it must not say it was.
+        assert "saved" not in err
 
     @pytest.mark.asyncio
     async def test_a_nodriver_login_warns_naming_the_missing_token(
@@ -659,3 +663,100 @@ class TestLoginReportsMissingTokens:
             _extract_and_cache_tokens_selenium(plugin, session, "https://myshop.example")
         assert not [e for e in logs if e["event"] == "login_tokens_missing"]
         assert capsys.readouterr().err == ""
+
+
+def _two_domain_jar(values: tuple[str, str]) -> requests.cookies.RequestsCookieJar:
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set("xsrf", values[0], domain="myshop.example")
+    jar.set("xsrf", values[1], domain="api.myshop.example")
+    return jar
+
+
+class TestLoginReportsTokensItCouldNotRead:
+    @pytest.mark.asyncio
+    async def test_a_nodriver_page_read_that_raises_still_warns(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from graftpunk.plugins.login_engine import _extract_and_cache_tokens_nodriver
+
+        plugin = MagicMock(site_name="myshop")
+        plugin.token_config = TokenConfig(tokens=(_token(), Token.from_cookie("sid", "X-Sid")))
+        session = MagicMock()
+        session.cookies = requests.cookies.RequestsCookieJar()
+        session.cookies.set("sid", "s1", domain="myshop.example")
+        with (
+            patch(
+                "graftpunk.tokens.extract_tokens_from_tab",
+                AsyncMock(side_effect=RuntimeError("tab closed")),
+            ),
+            capture_logs() as logs,
+        ):
+            await _extract_and_cache_tokens_nodriver(plugin, session, MagicMock(), PAGE)
+
+        assert set(getattr(session, tokens._CACHE_ATTR)) == {"X-Sid"}
+        (missing,) = [e for e in logs if e["event"] == "login_tokens_missing"]
+        assert missing["tokens"] == ["X-CSRF"]
+        err = " ".join(capsys.readouterr().err.split())
+        assert "X-CSRF" in err
+        assert "RuntimeError" in err
+
+    def test_a_selenium_page_read_that_raises_still_warns(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from graftpunk.plugins.login_engine import _extract_and_cache_tokens_selenium
+
+        plugin = MagicMock(site_name="myshop")
+        plugin.token_config = TokenConfig(tokens=(_token(),))
+        session = MagicMock()
+        session.driver.get.side_effect = RuntimeError("chromedriver went away")
+        with capture_logs() as logs:
+            _extract_and_cache_tokens_selenium(plugin, session, "https://myshop.example")
+
+        assert [e["tokens"] for e in logs if e["event"] == "login_tokens_missing"] == [["X-CSRF"]]
+        err = " ".join(capsys.readouterr().err.split())
+        assert "X-CSRF" in err
+        assert "RuntimeError" in err
+
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    @pytest.mark.asyncio
+    async def test_a_cookie_on_two_domains_with_two_values_is_reported(
+        self, backend: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from graftpunk.plugins import login_engine
+
+        plugin = MagicMock(site_name="myshop")
+        plugin.token_config = TokenConfig(tokens=(Token.from_cookie("xsrf", "X-XSRF"),))
+        session = MagicMock()
+        session.cookies = _two_domain_jar(("a", "b"))
+        with capture_logs() as logs:
+            if backend == "nodriver":
+                await login_engine._extract_and_cache_tokens_nodriver(
+                    plugin, session, MagicMock(), PAGE
+                )
+            else:
+                login_engine._extract_and_cache_tokens_selenium(plugin, session, PAGE)
+
+        assert [e["tokens"] for e in logs if e["event"] == "login_tokens_missing"] == [["X-XSRF"]]
+        err = " ".join(capsys.readouterr().err.split())
+        assert "X-XSRF" in err
+        assert "2 domains" in err
+
+    @pytest.mark.parametrize("backend", ["nodriver", "selenium"])
+    @pytest.mark.asyncio
+    async def test_a_cookie_on_two_domains_with_one_value_is_found(self, backend: str) -> None:
+        from graftpunk.plugins import login_engine
+
+        plugin = MagicMock(site_name="myshop")
+        plugin.token_config = TokenConfig(tokens=(Token.from_cookie("xsrf", "X-XSRF"),))
+        session = MagicMock()
+        session.cookies = _two_domain_jar(("same", "same"))
+        with capture_logs() as logs:
+            if backend == "nodriver":
+                await login_engine._extract_and_cache_tokens_nodriver(
+                    plugin, session, MagicMock(), PAGE
+                )
+            else:
+                login_engine._extract_and_cache_tokens_selenium(plugin, session, PAGE)
+
+        assert getattr(session, tokens._CACHE_ATTR)["X-XSRF"].value == "same"
+        assert not [e for e in logs if e["event"] == "login_tokens_missing"]

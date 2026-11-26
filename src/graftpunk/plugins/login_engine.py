@@ -573,23 +573,54 @@ async def _extract_and_cache_tokens_nodriver(
     if token_config is None:
         return
 
-    from graftpunk.tokens import _CACHE_ATTR, extract_tokens_from_tab
+    from graftpunk import tokens as gp_tokens
 
     page_tokens = [t for t in token_config.tokens if t.source == "page"]
-    token_results = await extract_tokens_from_tab(tab, page_tokens, base_url) if page_tokens else {}
+    token_results: dict[str, str] = {}
+    notes: dict[str, str] = {}
+    if page_tokens:
+        try:
+            token_results = await gp_tokens.extract_tokens_from_tab(tab, page_tokens, base_url)
+        except Exception as exc:  # broad by design: best-effort, the login already succeeded
+            LOG.warning(
+                "login_token_extraction_failed",
+                plugin=plugin.site_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            notes.update({t.name: f"the read raised {type(exc).__name__}" for t in page_tokens})
 
-    # Build token cache from page extraction results and cookie lookups
-    for t in token_config.tokens:
-        if t.source == "cookie" and t.cookie_name:
-            val = session.cookies.get(t.cookie_name)
-            if val:
-                token_results[t.name] = val
-
+    _read_cookie_tokens(session, token_config, token_results, notes)
     tcache = _build_token_cache(token_config, token_results)
     if tcache:
-        setattr(session, _CACHE_ATTR, tcache)
+        setattr(session, gp_tokens._CACHE_ATTR, tcache)
         LOG.info("login_tokens_extracted", count=len(tcache))
-    _warn_missing_login_tokens(plugin, token_config, token_results)
+    _warn_missing_login_tokens(plugin, token_config, token_results, notes)
+
+
+def _read_cookie_tokens(
+    session: Any, token_config: Any, token_results: dict[str, str], notes: dict[str, str]
+) -> None:
+    """Read each cookie token from *session*'s jar into *token_results*. A name
+    the jar holds on several domains with one value is that value; with several
+    values it is not read, and *notes* says why."""
+    from requests.cookies import CookieConflictError
+
+    for t in token_config.tokens:
+        if t.source != "cookie" or not t.cookie_name:
+            continue
+        try:
+            val = session.cookies.get(t.cookie_name)
+        except CookieConflictError:
+            values = {c.value for c in session.cookies if c.name == t.cookie_name}
+            if len(values) == 1:
+                val = values.pop()
+            else:
+                domains = {c.domain for c in session.cookies if c.name == t.cookie_name}
+                notes[t.name] = f"set on {len(domains)} domains with different values"
+                continue
+        if val:
+            token_results[t.name] = val
 
 
 def _extract_and_cache_tokens_selenium(
@@ -611,37 +642,39 @@ def _extract_and_cache_tokens_selenium(
     from graftpunk.tokens import _CACHE_ATTR, _poll_page_tokens_sync
 
     token_results: dict[str, str] = {}
+    notes: dict[str, str] = {}
     for t in token_config.tokens:
-        if t.source == "cookie" and t.cookie_name:
-            val = session.cookies.get(t.cookie_name)
-            if val:
-                token_results[t.name] = val
-        elif t.source == "page":
-            url = _resolve_url(base_url, t.page_url)
-            try:
-                session.driver.get(url)
-                token_results.update(
-                    _poll_page_tokens_sync(
-                        lambda: session.driver.page_source, [t], url, "login_token"
-                    )
-                )
-            except Exception as exc:  # broad by design: best-effort token extraction
-                LOG.warning("login_token_extraction_failed", token=t.name, error=str(exc))
+        if t.source != "page":
+            continue
+        url = _resolve_url(base_url, t.page_url)
+        try:
+            session.driver.get(url)
+            token_results.update(
+                _poll_page_tokens_sync(lambda: session.driver.page_source, [t], url, "login_token")
+            )
+        except Exception as exc:  # broad by design: best-effort token extraction
+            LOG.warning("login_token_extraction_failed", token=t.name, error=str(exc))
+            notes[t.name] = f"the read raised {type(exc).__name__}"
 
+    _read_cookie_tokens(session, token_config, token_results, notes)
     tcache = _build_token_cache(token_config, token_results)
     if tcache:
         setattr(session, _CACHE_ATTR, tcache)
         LOG.info("login_tokens_extracted", count=len(tcache))
-    _warn_missing_login_tokens(plugin, token_config, token_results)
+    _warn_missing_login_tokens(plugin, token_config, token_results, notes)
 
 
 def _warn_missing_login_tokens(
-    plugin: SitePlugin, token_config: Any, token_results: dict[str, str]
+    plugin: SitePlugin,
+    token_config: Any,
+    token_results: dict[str, str],
+    notes: dict[str, str],
 ) -> None:
     """Say which tokens the login read none of, on the console and as
-    ``login_tokens_missing``. The login still succeeds: a command reads a
-    missing token again before it runs. A ``response_header`` token is never
-    read at login, so it is not reported."""
+    ``login_tokens_missing``, with why where it is known (*notes*). It runs
+    after the read and before the session is saved; the login still succeeds,
+    and a command reads a missing token again before it runs. A
+    ``response_header`` token is never read at login, so it is not reported."""
     missing = [
         t
         for t in token_config.tokens
@@ -653,15 +686,16 @@ def _warn_missing_login_tokens(
         "login_tokens_missing",
         plugin=plugin.site_name,
         tokens=[t.name for t in missing],
+        reasons={t.name: notes[t.name] for t in missing if t.name in notes},
     )
-    described = ", ".join(
-        f"{t.name} (cookie {t.cookie_name})"
-        if t.source == "cookie"
-        else f"{t.name} (page {t.page_url})"
-        for t in missing
-    )
+
+    def describe(t: Any) -> str:
+        where = f"cookie {t.cookie_name}" if t.source == "cookie" else f"page {t.page_url}"
+        note = notes.get(t.name)
+        return f"{t.name} ({where}: {note})" if note else f"{t.name} ({where})"
+
     gp_console.warn(
-        f"Logged in and saved the session, but did not find token(s) {described}. "
+        f"The login succeeded but did not read token(s) {', '.join(map(describe, missing))}. "
         "Each command reads a missing token again before it runs (over HTTP, then in a "
         "browser for a page token whose extraction allows it). For a page that "
         "renders its token late, raise Token.wait; for a site that refuses a headless "
