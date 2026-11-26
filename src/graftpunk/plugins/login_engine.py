@@ -20,8 +20,10 @@ from graftpunk.logging import get_logger
 from graftpunk.observe.run import Redaction
 from graftpunk.plugins.cli_plugin import cache_login_session
 
-# The names these had when they lived here (1.45.0 and earlier); tests and
-# programs outside graftpunk import and patch them on this module.
+# Kept so imports of the names these had here (1.45.0 and earlier) still work.
+# A patch on this module reaches only what login_engine itself calls
+# (_start_login_capture, _store_header_roles); _start_login_capture now calls
+# login_capture.header_only_capture and logs through login_capture.LOG.
 from graftpunk.plugins.login_capture import (
     header_only_capture as _header_only_capture,  # noqa: F401
 )
@@ -1024,7 +1026,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 from graftpunk.observe.capture import create_capture_backend
 
                 _header_capture = create_capture_backend(
-                    "selenium", session.driver, record_request_bodies=False
+                    "selenium", session.driver, record_request_bodies=False, record_console=False
                 )
                 _header_capture.start_capture()
 

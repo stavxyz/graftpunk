@@ -21,11 +21,18 @@ LOG = get_logger(__name__)
 
 
 def header_only_capture(
-    backend_type: str, driver: Any, get_tab: Any, *, headless: bool = False
+    backend_type: str,
+    driver: Any,
+    get_tab: Any,
+    *,
+    headless: bool = False,
+    record_console: bool = True,
 ) -> Any:
     """A capture used only for header roles: its HAR is never written, so it keeps,
     fetches and logs about no request or response body (#308). A headless one answers JavaScript
-    dialogs, as a recorded one does (#320)."""
+    dialogs, as a recorded one does (#320). *record_console* False keeps it to
+    what the roles need: on nodriver the tab gets ``Network.enable`` and no
+    ``Runtime.enable``, and on Selenium Chrome's ``browser`` log is not read."""
     from graftpunk.observe.capture import create_capture_backend
 
     return create_capture_backend(
@@ -34,6 +41,7 @@ def header_only_capture(
         get_tab=get_tab,
         record_request_bodies=False,
         answer_dialogs=headless,
+        record_console=record_console,
     )
 
 

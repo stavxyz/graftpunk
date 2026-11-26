@@ -12,9 +12,10 @@ import inspect
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from graftpunk.plugins.cli_plugin import SitePlugin
 
@@ -43,8 +44,11 @@ class _Tab:
         self.handlers: list[tuple[Any, Any]] = []
         self.target = SimpleNamespace(url=f"{SITE}/")
         self._next = 0
+        self.sent: list[str] = []
 
-    async def send(self, _command: Any) -> None:
+    async def send(self, command: Any) -> None:
+        # A nodriver CDP command is a generator whose first item is the request.
+        self.sent.append(next(command)["method"])
         return None
 
     def add_handler(self, event_cls: Any, handler: Any) -> None:
@@ -75,9 +79,13 @@ class _NodriverSession:
 
     def __init__(self, tab: _Tab) -> None:
         self.tab = tab
-        self.driver = SimpleNamespace(get=self._open, stop=lambda: None)
+        self.driver = SimpleNamespace(get=self._open, stop=self._stop)
         self.current_url = ""
         self.transferred = False
+        self.stopped = False
+
+    def _stop(self) -> None:
+        self.stopped = True
 
     async def start_async(self) -> None:
         return None
@@ -174,6 +182,71 @@ class TestNodriverBrowserSession:
         assert stored is session
         assert "_gp_header_roles" not in vars(stored)
 
+    @pytest.mark.asyncio
+    async def test_a_capture_that_cannot_be_read_does_not_fail_the_login(self) -> None:
+        async def login(_session: Any, tab: Any) -> None:
+            await tab.get(f"{SITE}/login")
+
+        capture = MagicMock()
+        capture.start_capture_async = AsyncMock()
+        capture.get_header_roles.side_effect = RuntimeError("unreadable")
+        with (
+            patch("graftpunk.observe.capture.create_capture_backend", return_value=capture),
+            capture_logs() as logs,
+        ):
+            session, cached = await _run_nodriver(login)
+
+        assert cached.call_args.args[0] is session
+        assert "_gp_header_roles" not in vars(session)
+        assert "login_header_capture_unavailable" in [e["event"] for e in logs]
+
+    @pytest.mark.asyncio
+    async def test_an_interrupt_while_the_capture_starts_still_stops_chrome(self) -> None:
+        tab = _Tab()
+        session = _NodriverSession(tab)
+        capture = MagicMock()
+        capture.start_capture_async = AsyncMock(side_effect=KeyboardInterrupt)
+        with (
+            patch("graftpunk.BrowserSession", return_value=session),
+            patch("graftpunk.observe.capture.create_capture_backend", return_value=capture),
+            patch("graftpunk.plugins.cli_plugin.cache_session") as cached,
+            pytest.raises(KeyboardInterrupt),
+        ):
+            async with _Shop().browser_session():
+                pass
+        assert session.stopped
+        cached.assert_not_called()
+
+
+class TestCdpDomainsOnTheLoginTab:
+    """Which DevTools domains each login's header capture enables on its tab."""
+
+    @pytest.mark.asyncio
+    async def test_a_hand_written_login_enables_the_network_domain_alone(self) -> None:
+        tab_holder: list[_Tab] = []
+
+        async def login(_session: Any, tab: Any) -> None:
+            tab_holder.append(tab)
+            await tab.get(f"{SITE}/login")
+
+        session, _cached = await _run_nodriver(login)
+
+        assert session.tab.sent == ["Network.enable"]
+        assert session._gp_header_roles["navigation"]["User-Agent"] == UA
+
+    @pytest.mark.asyncio
+    async def test_the_generated_login_enables_network_and_runtime_as_in_1_45_0(self) -> None:
+        from graftpunk.plugins.login_engine import _start_login_capture
+
+        tab = _Tab()
+        capture, storage = _start_login_capture(
+            _Shop(), "nodriver", MagicMock(), "off", get_tab=lambda: tab
+        )
+        await capture.start_capture_async()
+
+        assert storage is None
+        assert tab.sent == ["Network.enable", "Runtime.enable"]
+
 
 async def _run_nodriver_raising(login_body: Any) -> None:
     tab = _Tab()
@@ -209,13 +282,19 @@ def _perf(method: str, params: dict[str, Any]) -> dict[str, str]:
 class _Driver:
     """A WebDriver double that answers get_log("performance") as ChromeDriver
     does: with the navigations' events when launched with the performance log,
-    else ``invalid argument: log type 'performance' not found``."""
+    else ``invalid argument: log type 'performance' not found``.
+
+    It refuses the ``browser`` log type the same way, the worse of the two
+    answers a ChromeDriver launched with ``goog:loggingPrefs`` holding only
+    ``performance`` might give (which one it gives is unverified without a live
+    ChromeDriver), so a capture that reads it would print a warning here."""
 
     def __init__(self, performance_log: bool) -> None:
         self.performance_log = performance_log
         self.visited: list[str] = []
         self.current_url = f"{SITE}/"
         self.quit = MagicMock()
+        self.logs_read: list[str] = []
 
     def get(self, url: str) -> None:
         self.visited.append(url)
@@ -224,8 +303,11 @@ class _Driver:
     def get_log(self, kind: str) -> list[dict[str, str]]:
         import selenium.common.exceptions
 
+        self.logs_read.append(kind)
         if kind != "performance":
-            return []
+            raise selenium.common.exceptions.InvalidArgumentException(
+                f"invalid argument: log type '{kind}' not found"
+            )
         if not self.performance_log:
             raise selenium.common.exceptions.InvalidArgumentException(
                 "invalid argument: log type 'performance' not found"
@@ -293,7 +375,47 @@ class TestSeleniumBrowserSessionSync:
         stored = cached.call_args.args[0]
         assert stored._gp_header_roles["navigation"]["User-Agent"] == UA
         assert stored._gp_header_role_origins == {"navigation": SITE}
-        assert "Performance log collection failed" not in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "Performance log collection failed" not in err
+        assert "Browser log collection failed" not in err
+        assert driver.logs_read == ["performance"]
+
+    def test_a_capture_that_cannot_start_does_not_fail_the_login(self) -> None:
+        made: list[_Driver] = []
+        with (
+            patch("graftpunk.stealth.create_stealth_driver", side_effect=_stealth(made)),
+            _no_requestium(),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                side_effect=RuntimeError("no capture"),
+            ),
+            patch("graftpunk.plugins.cli_plugin.cache_session") as cached,
+            capture_logs() as logs,
+            _Shop().browser_session_sync() as (session, driver),
+        ):
+            driver.get(f"{SITE}/login")
+
+        assert cached.call_args.args[0] is session
+        assert "_gp_header_roles" not in vars(session)
+        assert "login_header_capture_unavailable" in [e["event"] for e in logs]
+
+    def test_a_capture_that_cannot_be_drained_does_not_fail_the_login(self) -> None:
+        made: list[_Driver] = []
+        capture = MagicMock()
+        capture.stop_capture.side_effect = RuntimeError("chromedriver went away")
+        with (
+            patch("graftpunk.stealth.create_stealth_driver", side_effect=_stealth(made)),
+            _no_requestium(),
+            patch("graftpunk.observe.capture.create_capture_backend", return_value=capture),
+            patch("graftpunk.plugins.cli_plugin.cache_session") as cached,
+            capture_logs() as logs,
+            _Shop().browser_session_sync() as (session, driver),
+        ):
+            driver.get(f"{SITE}/login")
+
+        assert cached.call_args.args[0] is session
+        assert "_gp_header_roles" not in vars(session)
+        assert "login_header_capture_unavailable" in [e["event"] for e in logs]
 
     def test_roles_a_plugin_set_itself_are_kept(self) -> None:
         made: list[_Driver] = []
@@ -403,4 +525,7 @@ class TestGeneratedSeleniumLogin:
         assert made[0].performance_log is True
         stored = cached.call_args.args[0]
         assert stored._gp_header_roles["navigation"]["User-Agent"] == UA
-        assert "Performance log collection failed" not in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "Performance log collection failed" not in err
+        assert "Browser log collection failed" not in err
+        assert made[0].logs_read == ["performance"]

@@ -1408,12 +1408,16 @@ class SitePlugin:
         session = BrowserSession(backend="nodriver", headless=False)
         await session.start_async()
         tab = await session.driver.get(f"{self.base_url}/")
-        # Started after the first navigation, on that tab, as the generated
-        # nodriver login starts its capture.
-        header_capture = await _start_header_capture_async(
-            self, lambda: header_only_capture("nodriver", session.driver, lambda: tab)
-        )
         try:
+            # Started after the first navigation, on that tab, as the generated
+            # nodriver login starts its capture; inside the try, so an interrupt
+            # during its DevTools calls still stops Chrome.
+            header_capture = await _start_header_capture_async(
+                self,
+                lambda: header_only_capture(
+                    "nodriver", session.driver, lambda: tab, record_console=False
+                ),
+            )
             yield session, tab
             # Capture current URL before caching: the session's recorded domain
             # comes from it. nodriver's Tab.url is a copy that may predate the
@@ -1464,7 +1468,8 @@ class SitePlugin:
         session = BrowserSession(backend="selenium", headless=False, performance_log=True)
         try:
             header_capture = _start_header_capture(
-                self, lambda: header_only_capture("selenium", session.driver, None)
+                self,
+                lambda: header_only_capture("selenium", session.driver, None, record_console=False),
             )
             yield session, session.driver
             # Capture current URL before caching (used for domain display)
