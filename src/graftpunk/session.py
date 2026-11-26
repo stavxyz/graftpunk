@@ -40,6 +40,7 @@ from graftpunk.cookies import (
     BrowserCookiesMixin,
     _browser_cookie_domain,
     _is_http_only,
+    _set_cookie_as_is,
     _without_userinfo,
     cookie_from_browser,
     domain_from_cookies,
@@ -405,7 +406,8 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             if cookie.value is None:
                 LOG.debug("skipping_none_valued_cookie", name=cookie.name, domain=cookie.domain)
                 continue
-            self.cookies.set_cookie(cookie_from_browser(cookie))
+            # Chrome keeps and sends a quoted value as it is.
+            _set_cookie_as_is(self.cookies, cookie_from_browser(cookie))
         LOG.info("transferred_nodriver_cookies", count=len(cookies))
 
     def transfer_driver_cookies_to_session(self, *, copy_user_agent: bool | None = True) -> None:
@@ -425,7 +427,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         if copy_user_agent:
             self.copy_user_agent_from_driver()
         for cookie in self.driver.get_cookies():
-            self.cookies.set_cookie(cookie_from_browser(cookie))
+            _set_cookie_as_is(self.cookies, cookie_from_browser(cookie))
 
     async def start_async(self) -> None:
         """Start the browser asynchronously (for nodriver backend).
@@ -946,7 +948,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         for cookie in self.cookies:
             copied = copy.copy(cookie)
             copied.domain = _without_userinfo(cookie.domain)
-            exported.set_cookie(copied)
+            _set_cookie_as_is(exported, copied)
         httpie_session.cookie_jar = exported
         httpie_session.post_process_data(httpie_session)
         httpie_session.save()
