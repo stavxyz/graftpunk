@@ -1259,9 +1259,11 @@ def update_session_cookies(
         return
 
     try:
+        from graftpunk.cookies import _update_jar_as_is
         from graftpunk.session_riders import _CACHE_ATTR, _CSRF_TOKENS_ATTR
 
-        original.cookies.update(api_session.cookies)
+        # Not RequestsCookieJar.update, which changes a quoted value.
+        _update_jar_as_is(original.cookies, api_session.cookies)
         # Persist token cache and CSRF tokens from working session
         token_cache = getattr(api_session, _CACHE_ATTR, None)
         if token_cache is not None:

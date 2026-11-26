@@ -96,13 +96,13 @@ class TestFormatOverrides:
 
     def test_per_command_can_add_new_format(self) -> None:
         """Per-command override can register a format unknown to core."""
-        custom_fmt = MockFormatter("bekentree")
+        custom_fmt = MockFormatter("myshop")
         result = CommandResult(
             data="csv content",
-            format_overrides={"bekentree": custom_fmt},
+            format_overrides={"myshop": custom_fmt},
         )
         console = MagicMock(spec=Console)
-        format_output(result, "bekentree", console)
+        format_output(result, "myshop", console)
         assert custom_fmt.called
 
     def test_plugin_wide_can_add_new_format(self) -> None:

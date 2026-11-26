@@ -31,7 +31,12 @@ import requests.adapters
 from requests.cookies import RequestsCookieJar
 from requests.structures import CaseInsensitiveDict
 
-from graftpunk.cookies import _STDLIB_DEFAULT_POLICY, BrowserCookiePolicy, _policy_is_default
+from graftpunk.cookies import (
+    _STDLIB_DEFAULT_POLICY,
+    BrowserCookiePolicy,
+    _policy_is_default,
+    _set_cookie_as_is,
+)
 from graftpunk.exceptions import InvalidSessionRecord, NewerSessionRecord
 from graftpunk.session_riders import (
     _CACHE_ATTR,
@@ -290,9 +295,7 @@ def _decode_cookies(policy: Callable[[], cookiejar.CookiePolicy]) -> Callable[[A
             for arg, check in _COOKIE_ARGS.items():
                 if not check(entry[arg]):
                     raise ValueError(f"cookie {entry['name']!r} has an invalid {arg}")
-            # The base class's set_cookie: RequestsCookieJar's deletes each \" from a
-            # quoted value, which would change a value the jar already holds.
-            cookiejar.CookieJar.set_cookie(jar, cookiejar.Cookie(**entry))
+            _set_cookie_as_is(jar, cookiejar.Cookie(**entry))
         if len(jar) != len(data):
             raise ValueError("a cookie appears twice")
         return jar

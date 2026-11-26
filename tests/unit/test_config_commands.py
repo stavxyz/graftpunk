@@ -102,7 +102,7 @@ def test_set_stores_command_verbatim_and_get_resolve_evaluates(_isolated):
 
 
 def test_set_secret_literal_guardrail_warns(_isolated):
-    result = runner.invoke(app, ["config", "set", "BEK_PASSWORD", "plaintext-oops"])
+    result = runner.invoke(app, ["config", "set", "MYSHOP_PASSWORD", "plaintext-oops"])
     assert result.exit_code == 0  # warn, don't refuse
     assert (
         "warning" in (result.stderr or "").lower() or "plaintext" in (result.stderr or "").lower()

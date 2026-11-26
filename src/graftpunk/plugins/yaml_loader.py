@@ -522,17 +522,24 @@ def parse_yaml_plugin(
                     f"Plugin '{filepath}': token #{i + 1} missing required "
                     f"field(s) 'name' and/or 'source'."
                 )
-            tokens.append(
-                Token(
-                    name=token_def["name"],  # type: ignore[index]
-                    source=token_def["source"],  # type: ignore[index]
-                    pattern=token_def.get("pattern"),  # type: ignore[arg-type]
-                    cookie_name=token_def.get("cookie_name"),  # type: ignore[arg-type]
-                    response_header=token_def.get("response_header"),  # type: ignore[arg-type]
-                    page_url=token_def.get("page_url", "/"),  # type: ignore[no-matching-overload]
-                    cache_duration=token_def.get("cache_duration", 300),  # type: ignore[no-matching-overload]
+            # extraction and wait are passed only when the file sets them, so
+            # their defaults live in Token alone.
+            optional = {key: token_def[key] for key in ("extraction", "wait") if key in token_def}
+            try:
+                tokens.append(
+                    Token(
+                        name=token_def["name"],  # type: ignore[index]
+                        source=token_def["source"],  # type: ignore[index]
+                        pattern=token_def.get("pattern"),  # type: ignore[arg-type]
+                        cookie_name=token_def.get("cookie_name"),  # type: ignore[arg-type]
+                        response_header=token_def.get("response_header"),  # type: ignore[arg-type]
+                        page_url=token_def.get("page_url", "/"),  # type: ignore[no-matching-overload]
+                        cache_duration=token_def.get("cache_duration", 300),  # type: ignore[no-matching-overload]
+                        **optional,  # type: ignore[arg-type]
+                    )
                 )
-            )
+            except ValueError as exc:
+                raise PluginError(f"Plugin '{filepath}': token #{i + 1} is invalid: {exc}") from exc
         token_config = TokenConfig(tokens=tuple(tokens))
 
     # Build PluginConfig via shared factory (without mutating data dict)

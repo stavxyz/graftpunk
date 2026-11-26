@@ -1319,8 +1319,12 @@ class SeleniumCaptureBackend:
         max_body_size: int = MAX_RESPONSE_BODY_SIZE,
         bodies_dir: Path | None = None,
         record_request_bodies: bool = True,
+        record_console: bool = True,
     ) -> None:
         self._driver = driver
+        # False for a capture read only for header roles: Chrome's browser log
+        # is not read, so a driver that does not keep it prints nothing.
+        self._record_console = record_console
         self._max_body_size = max_body_size
         self._bodies_dir = bodies_dir
         # False for a capture whose HAR is never written (the login engine's
@@ -1523,6 +1527,8 @@ class SeleniumCaptureBackend:
         # Also collect "browser" log for backward compat. CDP consoleAPICalled
         # events above cover JS console output; browser logs may contain additional
         # entries (e.g. network errors) that Selenium surfaces separately.
+        if not self._record_console:
+            return
         try:
             browser_logs = self._driver.get_log("browser")
             # Same unit rule as the CDP console events (issue #158); entries
@@ -1690,8 +1696,12 @@ class NodriverCaptureBackend:
         dom_snapshots_dir: Path | None = None,
         failure_step: bool = False,
         answer_dialogs: bool = False,
+        record_console: bool = True,
     ) -> None:
         self._browser = browser
+        # False: the Runtime domain is never enabled on the tab, and no console
+        # message is kept; Network alone gives the request headers.
+        self._record_console = record_console
         # Set for a headless recording (#320): nobody can answer a page's alert,
         # confirm, prompt or beforeunload there, and one left open stops the page's
         # script and every DevTools read of the page, so the run is never saved.
@@ -1961,8 +1971,9 @@ class NodriverCaptureBackend:
                 tab.add_handler(loading_failed, self._on_loading_failed)
 
         # Console log capture
-        await shield_call(tab.send(cdp_runtime.enable()))
-        tab.add_handler(cdp_runtime.ConsoleAPICalled, self._on_console)
+        if self._record_console:
+            await shield_call(tab.send(cdp_runtime.enable()))
+            tab.add_handler(cdp_runtime.ConsoleAPICalled, self._on_console)
 
         LOG.debug("nodriver_capture_async_started")
 
@@ -3359,6 +3370,7 @@ def create_capture_backend(
     bodies_dir: Path | None = None,
     record_request_bodies: bool = True,
     answer_dialogs: bool = False,
+    record_console: bool = True,
 ) -> CaptureBackend:
     """Factory to create the appropriate capture backend.
 
@@ -3377,6 +3389,9 @@ def create_capture_backend(
             JavaScript dialog through CDP (``NodriverCaptureBackend``). Selenium
             gets its equivalent at driver launch instead
             (``graftpunk.stealth.create_stealth_driver``), so it is ignored there.
+        record_console: False for a capture read only for header roles: nodriver
+            never enables the Runtime domain, and Selenium never reads Chrome's
+            ``browser`` log.
 
     Returns:
         A CaptureBackend implementation.
@@ -3389,6 +3404,7 @@ def create_capture_backend(
             bodies_dir=bodies_dir,
             record_request_bodies=record_request_bodies,
             answer_dialogs=answer_dialogs,
+            record_console=record_console,
         )
     if backend_type == "selenium":
         if not _HAS_SELENIUM:
@@ -3399,6 +3415,7 @@ def create_capture_backend(
             max_body_size=max_body_size,
             bodies_dir=bodies_dir,
             record_request_bodies=record_request_bodies,
+            record_console=record_console,
         )
     msg = f"Unknown capture backend type: {backend_type!r}. Must be 'selenium' or 'nodriver'."
     raise ValueError(msg)

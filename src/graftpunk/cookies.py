@@ -415,6 +415,25 @@ def cookie_from_browser(record: Any) -> cookiejar.Cookie:
     )
 
 
+def _set_cookie_as_is(jar: cookiejar.CookieJar, cookie: cookiejar.Cookie) -> None:
+    """Put *cookie* in *jar* with its value exactly as given.
+
+    ``RequestsCookieJar.set_cookie`` (and its ``update`` and ``copy``, which call
+    it) deletes every ``\\"`` from a value that starts and ends with ``"``,
+    where a browser keeps and sends the value as it is. The base class's
+    ``set_cookie`` stores it unchanged.
+    """
+    cookiejar.CookieJar.set_cookie(jar, cookie)
+
+
+def _update_jar_as_is(dest: cookiejar.CookieJar, source: cookiejar.CookieJar) -> None:
+    """``dest.update(source)`` for two jars, keeping each value exactly
+    (:func:`_set_cookie_as_is`): a copy of each cookie of *source* goes into
+    *dest*, replacing one with the same domain, path and name."""
+    for cookie in source:
+        _set_cookie_as_is(dest, copy.copy(cookie))
+
+
 def _replaceable(policy: object) -> bool:
     # A default, not a choice: the standard library's class; HTTPie's as
     # earlier releases pickled it (or the stub the browser-free unpickler

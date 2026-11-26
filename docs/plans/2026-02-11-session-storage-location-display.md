@@ -118,7 +118,7 @@ If `--storage-backend s3` is passed but `GRAFTPUNK_S3_BUCKET` isn't set, the exi
 ┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ Session   ┃ Domain            ┃ Status       ┃ Cookies ┃ Last Modified    ┃ Backend ┃ Location             ┃
 ┡━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
-│ bekentree │ www.bekentree.com │ ● active     │      19 │ 2026-02-11 23:34 │ local   │ ~/.config/graftpunk… │
+│ myshop    │ myshop.example    │ ● active     │      19 │ 2026-02-11 23:34 │ local   │ ~/.config/graftpunk… │
 │ acme      │ api.acme.com      │ ● active     │       8 │ 2026-02-10 14:12 │ r2      │ r2://gp-sessions     │
 │ internal  │ dash.internal.io  │ ○ logged out │      12 │ 2026-02-09 09:00 │ s3      │ s3://my-bucket       │
 └───────────┴───────────────────┴──────────────┴─────────┴──────────────────┴─────────┴──────────────────────┘

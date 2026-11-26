@@ -8,12 +8,12 @@ session classes and so without selenium, requestium, nodriver or httpie.
 from __future__ import annotations
 
 import copy
-from http import cookiejar
 from typing import Any, NoReturn
 
 from requests.cookies import RequestsCookieJar
 from requests.structures import CaseInsensitiveDict
 
+from graftpunk.cookies import _set_cookie_as_is
 from graftpunk.session_record import FIELDS, Record, record_to_state
 from graftpunk.session_riders import SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
 
@@ -98,9 +98,7 @@ class StoredSession:
             # A legacy pickle may hold another jar type; the view reads the same cookies.
             rebuilt = RequestsCookieJar()
             for cookie in jar:
-                # The base class's set_cookie keeps the value as stored (see
-                # session_record._decode_cookies).
-                cookiejar.CookieJar.set_cookie(rebuilt, cookie)
+                _set_cookie_as_is(rebuilt, cookie)
             self._write("cookies", rebuilt)
             return rebuilt
         return jar

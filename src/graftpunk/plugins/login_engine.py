@@ -19,6 +19,20 @@ from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe.run import Redaction
 from graftpunk.plugins.cli_plugin import cache_login_session
+
+# Kept so imports of the names these had here (1.45.0 and earlier) still work.
+# A patch on this module reaches only what login_engine itself calls
+# (_start_login_capture, _store_header_roles); _start_login_capture now calls
+# login_capture.header_only_capture and logs through login_capture.LOG.
+from graftpunk.plugins.login_capture import (
+    header_only_capture as _header_only_capture,  # noqa: F401
+)
+from graftpunk.plugins.login_capture import (
+    start_login_capture as _start_login_capture,
+)
+from graftpunk.plugins.login_capture import (
+    store_header_roles as _store_header_roles,
+)
 from graftpunk.plugins.login_ready import (
     NetworkActivity,
     TargetProbe,
@@ -514,90 +528,6 @@ async def _fill_field(
     )
 
 
-def _header_only_capture(
-    backend_type: str, driver: Any, get_tab: Any, *, headless: bool = False
-) -> Any:
-    """A capture used only for header roles: its HAR is never written, so it keeps,
-    fetches and logs about no request or response body (#308). A headless one answers JavaScript
-    dialogs, as a recorded one does (#320)."""
-    from graftpunk.observe.capture import create_capture_backend
-
-    return create_capture_backend(
-        backend_type,
-        driver,
-        get_tab=get_tab,
-        record_request_bodies=False,
-        answer_dialogs=headless,
-    )
-
-
-def _start_login_capture(
-    plugin: SitePlugin,
-    backend_type: str,
-    driver: Any,
-    observe_mode: str,
-    get_tab: Any = None,
-    session_name: str | None = None,
-    headless: bool = False,
-) -> tuple[Any, Any]:
-    """Create the capture backend for a login run.
-
-    Returns ``(capture, storage)``. With ``observe_mode == "off"`` the capture
-    is the lightweight header-only one used for role extraction and storage is
-    None. Otherwise it is a full capture (bodies streamed to the run dir) and
-    storage is an ``ObserveStorage`` under the OPERATING session name --
-    ``session_name`` when the CLI computed one (``base@label``), else the
-    plugin's base name -- so ``gp --observe=full <plugin> login`` files the run
-    where the reader looks for that account (#151). Either capture of a
-    *headless* login accepts each JavaScript dialog the pages open, as a
-    headless ``gp observe go`` does (#320), through the tab's one answerer, which
-    the headless browser installed before the login page loaded.
-    """
-    from graftpunk.observe.capture import create_capture_backend
-
-    if observe_mode == "off":
-        return _header_only_capture(backend_type, driver, get_tab, headless=headless), None
-
-    # Why the login engine owns this for nodriver instead of handing
-    # observe_mode to BrowserSession like the selenium path: the nodriver
-    # capture needs a get_tab callable for the tab that the login opens, and
-    # its eager body fetch only runs from start_capture_async(), neither of
-    # which BrowserSession's sync _start_observe can provide.
-    from graftpunk.observe import OBSERVE_BASE_DIR
-    from graftpunk.observe.run import make_run_id
-    from graftpunk.observe.storage import ObserveStorage, session_dirname
-
-    # Opt-in diagnostics must never break the login: an unsafe session name or
-    # an unwritable base dir degrades to the header-only capture with a warning.
-    session_slug = session_dirname(session_name or plugin.session_name)
-    try:
-        storage = ObserveStorage(OBSERVE_BASE_DIR, session_slug, make_run_id())
-    except (ValueError, OSError) as exc:
-        LOG.warning(
-            "login_observe_unavailable",
-            plugin=plugin.site_name,
-            session_name=session_slug,
-            error=str(exc),
-            exc_type=type(exc).__name__,
-        )
-        gp_console.warn(f"Observability capture unavailable for this login: {exc}")
-        return _header_only_capture(backend_type, driver, get_tab, headless=headless), None
-    capture = create_capture_backend(
-        backend_type,
-        driver,
-        get_tab=get_tab,
-        bodies_dir=storage.run_dir / "bodies",
-        answer_dialogs=headless,
-    )
-    LOG.info(
-        "login_observe_capture_started",
-        plugin=plugin.site_name,
-        mode=observe_mode,
-        run_dir=str(storage.run_dir),
-    )
-    return capture, storage
-
-
 def _build_token_cache(
     token_config: Any,
     token_results: dict[str, str],
@@ -643,22 +573,54 @@ async def _extract_and_cache_tokens_nodriver(
     if token_config is None:
         return
 
-    from graftpunk.tokens import _CACHE_ATTR, extract_tokens_from_tab
+    from graftpunk import tokens as gp_tokens
 
     page_tokens = [t for t in token_config.tokens if t.source == "page"]
-    token_results = await extract_tokens_from_tab(tab, page_tokens, base_url) if page_tokens else {}
+    token_results: dict[str, str] = {}
+    notes: dict[str, str] = {}
+    if page_tokens:
+        try:
+            token_results = await gp_tokens.extract_tokens_from_tab(tab, page_tokens, base_url)
+        except Exception as exc:  # broad by design: best-effort, the login already succeeded
+            LOG.warning(
+                "login_token_extraction_failed",
+                plugin=plugin.site_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            notes.update({t.name: f"the read raised {type(exc).__name__}" for t in page_tokens})
 
-    # Build token cache from page extraction results and cookie lookups
-    for t in token_config.tokens:
-        if t.source == "cookie" and t.cookie_name:
-            val = session.cookies.get(t.cookie_name)
-            if val:
-                token_results[t.name] = val
-
+    _read_cookie_tokens(session, token_config, token_results, notes)
     tcache = _build_token_cache(token_config, token_results)
     if tcache:
-        setattr(session, _CACHE_ATTR, tcache)
+        setattr(session, gp_tokens._CACHE_ATTR, tcache)
         LOG.info("login_tokens_extracted", count=len(tcache))
+    _warn_missing_login_tokens(plugin, token_config, token_results, notes)
+
+
+def _read_cookie_tokens(
+    session: Any, token_config: Any, token_results: dict[str, str], notes: dict[str, str]
+) -> None:
+    """Read each cookie token from *session*'s jar into *token_results*. A name
+    the jar holds on several domains with one value is that value; with several
+    values it is not read, and *notes* says why."""
+    from requests.cookies import CookieConflictError
+
+    for t in token_config.tokens:
+        if t.source != "cookie" or not t.cookie_name:
+            continue
+        try:
+            val = session.cookies.get(t.cookie_name)
+        except CookieConflictError:
+            values = {c.value for c in session.cookies if c.name == t.cookie_name}
+            if len(values) == 1:
+                val = values.pop()
+            else:
+                domains = {c.domain for c in session.cookies if c.name == t.cookie_name}
+                notes[t.name] = f"set on {len(domains)} domains with different values"
+                continue
+        if val:
+            token_results[t.name] = val
 
 
 def _extract_and_cache_tokens_selenium(
@@ -677,49 +639,68 @@ def _extract_and_cache_tokens_selenium(
     if token_config is None:
         return
 
-    from graftpunk.tokens import _CACHE_ATTR, read_page_token
+    from graftpunk.tokens import _CACHE_ATTR, _poll_page_tokens_sync
 
     token_results: dict[str, str] = {}
+    notes: dict[str, str] = {}
     for t in token_config.tokens:
-        if t.source == "cookie" and t.cookie_name:
-            val = session.cookies.get(t.cookie_name)
-            if val:
-                token_results[t.name] = val
-        elif t.source == "page":
-            try:
-                session.driver.get(_resolve_url(base_url, t.page_url))
-                time.sleep(2)
-                value = read_page_token(t, session.driver.page_source)
-                if value is not None:
-                    token_results[t.name] = value
-                else:
-                    LOG.warning(
-                        "login_token_pattern_not_found",
-                        token=t.name,
-                        url=_resolve_url(base_url, t.page_url),
-                    )
-            except Exception as exc:  # broad by design: best-effort token extraction
-                LOG.warning("login_token_extraction_failed", token=t.name, error=str(exc))
+        if t.source != "page":
+            continue
+        url = _resolve_url(base_url, t.page_url)
+        try:
+            session.driver.get(url)
+            token_results.update(
+                _poll_page_tokens_sync(lambda: session.driver.page_source, [t], url, "login_token")
+            )
+        except Exception as exc:  # broad by design: best-effort token extraction
+            LOG.warning("login_token_extraction_failed", token=t.name, error=str(exc))
+            notes[t.name] = f"the read raised {type(exc).__name__}"
 
+    _read_cookie_tokens(session, token_config, token_results, notes)
     tcache = _build_token_cache(token_config, token_results)
     if tcache:
         setattr(session, _CACHE_ATTR, tcache)
         LOG.info("login_tokens_extracted", count=len(tcache))
+    _warn_missing_login_tokens(plugin, token_config, token_results, notes)
 
 
-def _store_header_roles(session: Any, header_capture: Any, base_url: str) -> None:
-    """Put the login's header roles on *session*, with the origin each came from.
+def _warn_missing_login_tokens(
+    plugin: SitePlugin,
+    token_config: Any,
+    token_results: dict[str, str],
+    notes: dict[str, str],
+) -> None:
+    """Say which tokens the login read none of, on the console and as
+    ``login_tokens_missing``, with why where it is known (*notes*). It runs
+    after the read and before the session is saved; the login still succeeds,
+    and a command reads a missing token again before it runs. A
+    ``response_header`` token is never read at login, so it is not reported."""
+    missing = [
+        t
+        for t in token_config.tokens
+        if t.source in ("page", "cookie") and t.name not in token_results
+    ]
+    if not missing:
+        return
+    LOG.warning(
+        "login_tokens_missing",
+        plugin=plugin.site_name,
+        tokens=[t.name for t in missing],
+        reasons={t.name: notes[t.name] for t in missing if t.name in notes},
+    )
 
-    Each role is taken from a request to *base_url*'s origin where the login
-    made one (``graftpunk.observe.headers.extract_header_roles``), and
-    ``GraftpunkSession`` sends a captured role as captured only to the origin
-    it came from (#228).
-    """
-    from graftpunk.tokens import _HEADER_ROLE_ORIGINS_ATTR, _HEADER_ROLES_ATTR
+    def describe(t: Any) -> str:
+        where = f"cookie {t.cookie_name}" if t.source == "cookie" else f"page {t.page_url}"
+        note = notes.get(t.name)
+        return f"{t.name} ({where}: {note})" if note else f"{t.name} ({where})"
 
-    setattr(session, _HEADER_ROLES_ATTR, header_capture.get_header_roles(site_url=base_url))
-    origins = header_capture.get_header_role_origins(site_url=base_url)
-    setattr(session, _HEADER_ROLE_ORIGINS_ATTR, dict(origins) if isinstance(origins, dict) else {})
+    gp_console.warn(
+        f"The login succeeded but did not read token(s) {', '.join(map(describe, missing))}. "
+        "Each command reads a missing token again before it runs (over HTTP, then in a "
+        "browser for a page token whose extraction allows it). For a page that "
+        "renders its token late, raise Token.wait; for a site that refuses a headless "
+        "browser, set TokenConfig(headless=False)."
+    )
 
 
 def generate_login_method(plugin: SitePlugin) -> Any:
@@ -1051,9 +1032,13 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
 
         # BrowserSession owns observe for selenium (its capture drains Chrome's
         # performance log, which is single-consumer), so hand it the mode and
-        # the session name the run should be filed under.
+        # the session name the run should be filed under. The header-role
+        # capture reads that log too, with observe off as well.
         browser_session = BrowserSession(
-            backend="selenium", headless=run_headless, observe_mode=observe_mode
+            backend="selenium",
+            headless=run_headless,
+            observe_mode=observe_mode,
+            performance_log=True,
         )
         # The driver is up from here on, and a Ctrl+C no longer reaches its
         # chromedriver and Chrome (#335): until the with block owns them,
@@ -1075,7 +1060,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 from graftpunk.observe.capture import create_capture_backend
 
                 _header_capture = create_capture_backend(
-                    "selenium", session.driver, record_request_bodies=False
+                    "selenium", session.driver, record_request_bodies=False, record_console=False
                 )
                 _header_capture.start_capture()
 
