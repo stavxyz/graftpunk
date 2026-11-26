@@ -126,6 +126,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         call_timeout: float | None = DEFAULT_CALL_TIMEOUT_S,
         navigate_timeout: float | None = DEFAULT_NAVIGATE_TIMEOUT_S,
         answer_dialogs: bool = True,
+        performance_log: bool | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize browser session.
@@ -157,6 +158,11 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 by ChromeDriver's ``unhandledPromptBehavior`` capability. False
                 leaves dialogs as before 1.36.1, for a program that answers
                 them itself. Ignored when visible. Default True.
+            performance_log: Selenium backend only. Launch Chrome keeping its
+                performance log, which a capture reads for the request headers
+                a login's header roles come from. None (the default) keeps it
+                only when ``observe_mode`` is not ``"off"``. Ignored by the
+                nodriver backend.
             **kwargs: Additional keyword arguments passed to requestium.Session.
 
         Raises:
@@ -234,10 +240,12 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             try:
                 # Create stealth driver directly
                 # The observe capture reads Chrome's performance log, which
-                # ChromeDriver keeps only when asked at launch; off mode pays nothing.
+                # ChromeDriver keeps only when asked at launch.
+                if performance_log is None:
+                    performance_log = observe_mode != "off"
                 self._stealth_driver = create_stealth_driver(
                     headless=headless,
-                    performance_log=observe_mode != "off",
+                    performance_log=performance_log,
                     answer_dialogs=answer_dialogs,
                 )
 

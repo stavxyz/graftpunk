@@ -412,7 +412,7 @@ class TestEngineObserve:
             patch("graftpunk.observe.OBSERVE_BASE_DIR", tmp_path),
             patch("graftpunk.observe.storage.ObserveStorage", side_effect=OSError("read-only fs")),
             patch("graftpunk.plugins.login_engine.gp_console.warn") as warn,
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_capture.LOG") as mock_log,
         ):
             capture, storage = _start_login_capture(plugin, "nodriver", MagicMock(), "full")
 

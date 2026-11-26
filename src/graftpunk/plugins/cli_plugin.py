@@ -1387,6 +1387,11 @@ class SitePlugin:
         On success (no exception), transfers cookies and caches session.
         On exception, quits browser without caching.
 
+        The session it caches carries the header roles (User-Agent, client
+        hints and the other headers the browser sent) captured from the
+        requests made on the yielded tab, as a generated login's does; roles
+        the block put on the session itself are kept.
+
         Yields:
             tuple[BrowserSession, Tab]: The browser session and active tab.
                 Tab is already navigated to self.base_url/.
@@ -1398,10 +1403,16 @@ class SitePlugin:
                 # ... custom login logic ...
         """
         from graftpunk import BrowserSession
+        from graftpunk.plugins.login_capture import header_only_capture
 
         session = BrowserSession(backend="nodriver", headless=False)
         await session.start_async()
         tab = await session.driver.get(f"{self.base_url}/")
+        # Started after the first navigation, on that tab, as the generated
+        # nodriver login starts its capture.
+        header_capture = await _start_header_capture_async(
+            self, lambda: header_only_capture("nodriver", session.driver, lambda: tab)
+        )
         try:
             yield session, tab
             # Capture current URL before caching: the session's recorded domain
@@ -1411,6 +1422,7 @@ class SitePlugin:
 
             page = await page_url_nodriver(tab)
             session.current_url = page.url if page.live else f"{self.base_url}/"
+            _keep_header_roles(self, session, header_capture)
             # Success path: transfer cookies and cache
             await session.transfer_nodriver_cookies_to_session()
             # No explicit name/identifier: the operating session scope, set by
@@ -1433,6 +1445,10 @@ class SitePlugin:
         Note: Unlike browser_session(), this does not navigate to base_url
         before yielding. The caller must navigate manually.
 
+        Chrome is launched keeping its performance log, from which the session
+        it caches gets the header roles of the requests the block made, as with
+        browser_session(); roles the block put on the session itself are kept.
+
         Yields:
             tuple[BrowserSession, WebDriver]: The browser session and selenium driver.
                 Caller must navigate to the target URL.
@@ -1443,15 +1459,20 @@ class SitePlugin:
                 # ... custom login logic ...
         """
         from graftpunk import BrowserSession
+        from graftpunk.plugins.login_capture import header_only_capture
 
-        session = BrowserSession(backend="selenium", headless=False)
+        session = BrowserSession(backend="selenium", headless=False, performance_log=True)
         try:
+            header_capture = _start_header_capture(
+                self, lambda: header_only_capture("selenium", session.driver, None)
+            )
             yield session, session.driver
             # Capture current URL before caching (used for domain display)
             try:
                 session.current_url = session.driver.current_url
             except Exception:  # noqa: BLE001
                 session.current_url = f"{self.base_url}/"
+            _keep_header_roles(self, session, header_capture, drain=True)
             # Success path: transfer cookies and cache
             session.transfer_driver_cookies_to_session()
             # Scope fallback by contract -- see browser_session() above.
@@ -1504,6 +1525,57 @@ class SitePlugin:
             return BrowserCookieSession()
         name, resolve = resolve_load_target(self.session_name, session_name)
         return load_session_for_api(name, resolve=resolve)
+
+
+def _header_capture_failed(plugin: SitePlugin, exc: Exception) -> None:
+    LOG.warning(
+        "login_header_capture_unavailable",
+        plugin=plugin.site_name,
+        error=str(exc),
+        exc_type=type(exc).__name__,
+    )
+
+
+def _start_header_capture(plugin: SitePlugin, make: Callable[[], Any]) -> Any:
+    """Start the header capture of a hand-written login, or None if it cannot
+    start. Header roles are an addition to such a login (#401), and a capture
+    that fails must not fail a login that worked without one."""
+    try:
+        capture = make()
+        capture.start_capture()
+    except Exception as exc:  # broad by design: see the docstring
+        _header_capture_failed(plugin, exc)
+        return None
+    return capture
+
+
+async def _start_header_capture_async(plugin: SitePlugin, make: Callable[[], Any]) -> Any:
+    """:func:`_start_header_capture` for nodriver, whose capture starts on the tab."""
+    try:
+        capture = make()
+        await capture.start_capture_async()
+    except Exception as exc:  # broad by design: see _start_header_capture
+        _header_capture_failed(plugin, exc)
+        return None
+    return capture
+
+
+def _keep_header_roles(
+    plugin: SitePlugin, session: Any, header_capture: Any, *, drain: bool = False
+) -> None:
+    """Store the roles *header_capture* saw on *session*, unless the login put
+    roles there itself. *drain* stops a Selenium capture first, which is when
+    it reads the performance log the roles come from."""
+    from graftpunk.plugins.login_capture import plugin_set_header_roles, store_header_roles
+
+    if header_capture is None or plugin_set_header_roles(session):
+        return
+    try:
+        if drain:
+            header_capture.stop_capture()
+        store_header_roles(session, header_capture, plugin.base_url.rstrip("/"))
+    except Exception as exc:  # broad by design: see _start_header_capture
+        _header_capture_failed(plugin, exc)
 
 
 def cache_login_session(

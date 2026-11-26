@@ -1054,6 +1054,8 @@ class TestBrowserSessionContextManager:
             instance.start_async = AsyncMock()
             instance.driver = MagicMock()
             mock_tab = AsyncMock()
+            # nodriver's Tab.add_handler is synchronous (the header capture calls it).
+            mock_tab.add_handler = MagicMock()
             instance.driver.get = AsyncMock(return_value=mock_tab)
             instance.transfer_nodriver_cookies_to_session = AsyncMock()
             instance.driver.stop = MagicMock()
