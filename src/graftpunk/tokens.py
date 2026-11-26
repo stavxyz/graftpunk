@@ -156,6 +156,15 @@ def _group_wait(tokens: list[Token]) -> float:
     return max(t.wait for t in tokens)
 
 
+class _PageDeadlineError(TimeoutError):
+    """The page's deadline passed during the reads; ``results`` holds the tokens
+    read on it before then, which the caller keeps."""
+
+    def __init__(self, results: dict[str, str]) -> None:
+        super().__init__("page token read deadline")
+        self.results = results
+
+
 async def _poll_for_tokens(
     tab: Any,
     tokens: list[Token],
@@ -174,11 +183,14 @@ async def _poll_for_tokens(
         log_prefix: Log event prefix ("browser_token" or "login_token").
         end: The loop time by which the page must have been read; a read or
             pause still running there is abandoned without being cancelled
-            (:func:`graftpunk.cdp_wait.answer_by`), and the tokens read so far
-            are returned.
+            (:func:`graftpunk.cdp_wait.answer_by`).
 
     Returns:
         Mapping of successfully extracted token names to values.
+
+    Raises:
+        TimeoutError: *end* passed; its ``results`` attribute holds the tokens
+            read before then.
     """
     loop = asyncio.get_running_loop()
     start = loop.time()
@@ -189,8 +201,7 @@ async def _poll_for_tokens(
         try:
             content = await answer_by(tab.get_content(), end=end)
         except TimeoutError:
-            _not_found(unmatched, url, log_prefix, reason="deadline")
-            return results
+            raise _PageDeadlineError(results) from None
         unmatched = _read_tokens(unmatched, content, results, url, log_prefix)
         # Time waited is the clock's, or the pauses' when those are longer, so a
         # pause that returns early cannot turn the poll into a busy loop.
@@ -201,33 +212,38 @@ async def _poll_for_tokens(
         try:
             await answer_by(tab.sleep(_TOKEN_POLL_INTERVAL), end=end)
         except TimeoutError:
-            _not_found(unmatched, url, log_prefix, reason="deadline")
-            return results
+            raise _PageDeadlineError(results) from None
         paused += _TOKEN_POLL_INTERVAL
     return results
 
 
-def poll_page_tokens_sync(
+def _poll_page_tokens_sync(
     read_html: Callable[[], str],
     tokens: list[Token],
     url: str,
     log_prefix: str,
+    *,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> dict[str, str]:
     """:func:`_poll_for_tokens` for a synchronous browser (Selenium's
     ``driver.page_source``): *read_html* is called at once, then every
     ``_TOKEN_POLL_INTERVAL`` seconds, until each token is found or its
-    ``wait`` has passed."""
-    start = time.monotonic()
+    ``wait`` has passed. *clock* and *sleep* default to ``time.monotonic``
+    and ``time.sleep``, looked up per call so a patch of either applies."""
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
+    start = clock()
     paused = 0.0
     results: dict[str, str] = {}
     unmatched = list(tokens)
     while unmatched:
         unmatched = _read_tokens(unmatched, read_html(), results, url, log_prefix)
-        unmatched, given_up = _waited_out(unmatched, max(time.monotonic() - start, paused))
+        unmatched, given_up = _waited_out(unmatched, max(clock() - start, paused))
         _not_found(given_up, url, log_prefix)
         if not unmatched:
             break
-        time.sleep(_TOKEN_POLL_INTERVAL)
+        sleep(_TOKEN_POLL_INTERVAL)
         paused += _TOKEN_POLL_INTERVAL
     return results
 
@@ -308,19 +324,18 @@ async def _extract_tokens_browser(
             try:
                 # Not asyncio.timeout: the browser is used again for the next page
                 # (graftpunk.cdp_wait says why a cancelled call would hang it).
-                end = (
-                    asyncio.get_running_loop().time()
-                    + _TOKEN_NAV_TIMEOUT
-                    + _group_wait(token_group)
-                )
+                budget = _TOKEN_NAV_TIMEOUT + _group_wait(token_group)
+                end = asyncio.get_running_loop().time() + budget
                 tab = await answer_by(browser.get(url), end=end)
                 extracted = await _poll_for_tokens(tab, token_group, url, "browser_token", end=end)
                 results.update(extracted)
-            except TimeoutError:
+            except TimeoutError as exc:
+                # A deadline during the reads keeps what they read (1.45.0 lost it).
+                results.update(getattr(exc, "results", {}))
                 LOG.warning(
                     "browser_token_navigation_timeout",
                     url=url,
-                    timeout=_TOKEN_NAV_TIMEOUT,
+                    timeout=budget,
                     token_count=len(token_group),
                 )
                 continue
@@ -383,15 +398,18 @@ async def extract_tokens_from_tab(
         try:
             # Not asyncio.timeout: the login goes on to read cookies from this
             # browser (graftpunk.cdp_wait says why a cancelled call would hang it).
-            end = asyncio.get_running_loop().time() + _TOKEN_NAV_TIMEOUT + _group_wait(token_group)
+            budget = _TOKEN_NAV_TIMEOUT + _group_wait(token_group)
+            end = asyncio.get_running_loop().time() + budget
             tab = await answer_by(tab.browser.get(url), end=end)
             extracted = await _poll_for_tokens(tab, token_group, url, "login_token", end=end)
             results.update(extracted)
-        except TimeoutError:
+        except TimeoutError as exc:
+            # A deadline during the reads keeps what they read (1.45.0 lost it).
+            results.update(getattr(exc, "results", {}))
             LOG.warning(
                 "login_token_extraction_timeout",
                 url=url,
-                timeout=_TOKEN_NAV_TIMEOUT,
+                timeout=budget,
                 token_count=len(token_group),
             )
             continue
@@ -431,7 +449,8 @@ class Token:
     element: PageValueKind | None = None
     element_name: str | None = None
     # Seconds a browser read polls the page for this token before giving up
-    # (a command's browser fallback and a login's read); ignored for a cookie.
+    # (a command's browser fallback and a login's read). A cookie token is never
+    # read in a browser, nor is a response_header token without a pattern.
     wait: float = _TOKEN_WAIT_DEFAULT
 
     def __post_init__(self) -> None:
@@ -559,7 +578,6 @@ class Token:
         page_url: str = "/",
         cache_duration: float = 300,
         extraction: Literal["http", "browser", "auto"] = "auto",
-        wait: float = _TOKEN_WAIT_DEFAULT,
     ) -> Token:
         """Create token config for response header extraction."""
         return cls(
@@ -569,7 +587,6 @@ class Token:
             page_url=page_url,
             cache_duration=cache_duration,
             extraction=extraction,
-            wait=wait,
         )
 
 
@@ -833,8 +850,9 @@ def prepare_session(
 
     # Phase 2: Batch browser extraction
     for token in browser_needed:
-        if token.source == "response_header":
-            # A browser read sees the page's HTML, never a response's headers.
+        if token.source == "response_header" and token.pattern is None:
+            # A browser read sees the page's HTML, never a response's headers; one
+            # with a pattern is matched against the page, as in 1.45.0.
             why = (
                 "extraction='browser' skips the HTTP read"
                 if token.extraction == "browser"
@@ -843,7 +861,7 @@ def prepare_session(
             raise TokenExtractionError(
                 f"Token '{token.name}' reads the response header '{token.response_header}', "
                 f"which a browser read of the page cannot see, and {why}; a response_header "
-                "token is read over HTTP only (extraction='http' or 'auto')"
+                "token without a pattern is read over HTTP only (extraction='http' or 'auto')"
             )
     if browser_needed:
         LOG.info("browser_extraction_batch", count=len(browser_needed))

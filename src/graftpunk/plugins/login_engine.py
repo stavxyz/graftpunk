@@ -608,7 +608,7 @@ def _extract_and_cache_tokens_selenium(
     if token_config is None:
         return
 
-    from graftpunk.tokens import _CACHE_ATTR, poll_page_tokens_sync
+    from graftpunk.tokens import _CACHE_ATTR, _poll_page_tokens_sync
 
     token_results: dict[str, str] = {}
     for t in token_config.tokens:
@@ -621,7 +621,7 @@ def _extract_and_cache_tokens_selenium(
             try:
                 session.driver.get(url)
                 token_results.update(
-                    poll_page_tokens_sync(
+                    _poll_page_tokens_sync(
                         lambda: session.driver.page_source, [t], url, "login_token"
                     )
                 )
