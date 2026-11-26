@@ -1,0 +1,62 @@
+{
+  "cookies": [
+    {
+      "version": 0,
+      "name": "pref",
+      "value": "caf\u00e9",
+      "port": null,
+      "port_specified": false,
+      "domain": ".myshop.example",
+      "domain_specified": true,
+      "domain_initial_dot": true,
+      "path": "/",
+      "path_specified": true,
+      "secure": false,
+      "expires": null,
+      "discard": true,
+      "comment": null,
+      "comment_url": null,
+      "rest": {
+        "HttpOnly": null
+      },
+      "rfc2109": false
+    },
+    {
+      "version": 0,
+      "name": "sid",
+      "value": "compat-sid",
+      "port": null,
+      "port_specified": false,
+      "domain": ".myshop.example",
+      "domain_specified": true,
+      "domain_initial_dot": true,
+      "path": "/",
+      "path_specified": true,
+      "secure": true,
+      "expires": 1790000000,
+      "discard": true,
+      "comment": null,
+      "comment_url": null,
+      "rest": {},
+      "rfc2109": false
+    }
+  ],
+  "headers": [
+    [
+      "User-Agent",
+      "compat/1"
+    ],
+    [
+      "Accept",
+      "*/*"
+    ],
+    [
+      "X-Compat",
+      "1"
+    ]
+  ],
+  "header_roles": {},
+  "cached_tokens": {},
+  "account": null,
+  "class": "graftpunk.session.BrowserSession"
+}

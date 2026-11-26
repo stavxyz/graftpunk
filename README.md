@@ -91,23 +91,31 @@ pip install graftpunk-lite
 ```
 
 `graftpunk-lite` is the same package (same `import graftpunk`, same version)
-without the browser stack. It replays an **already-cached** session through
-`load_session_for_api_from_bytes`, given the session's encrypted bytes and its
-key. It cannot log in, because that needs a browser. Its dependencies are
-pure-Python or ship WASM wheels, so this is the install that works under Pyodide
-and Cloudflare Python Workers
-([#121](https://github.com/stavxyz/graftpunk/issues/121)). The `gp` command is
-installed. On graftpunk-lite, `gp version`, `gp session list`,
-`gp session show`, `gp config`, `gp plugins`, `gp http` with `--no-session`, a
-plugin command that needs no session, and `load_session_for_api_from_bytes`
-work. Everything that loads a cached session from the session store
-(`load_session_for_api`, `gp http` with a session from `--session`,
-`gp session use` or `GRAFTPUNK_SESSION`, a plugin command that uses its session,
-and `gp session export`) and every command that drives a browser (recording with
-`gp observe`, and a plugin's `login` command) need `graftpunk-lite[browser]` or
-`graftpunk`; on graftpunk-lite without it, those commands print the install
-command and exit 1. `pip install 'graftpunk-lite[browser]'` adds the browser
-stack and is equivalent to `graftpunk`.
+without the browser stack. It cannot log in, because that needs a browser. It
+replays an **already-saved** session: `load_session_for_api_from_bytes` takes
+the session's encrypted bytes and its key, and `load_session_for_api` reads one
+from the session store. Both need no browser package, for a session stored in
+either format (a pickle or a record). Its dependencies are pure-Python or ship
+WASM wheels, so this is the install that works under Pyodide and Cloudflare
+Python Workers ([#121](https://github.com/stavxyz/graftpunk/issues/121)). The
+`gp` command is installed. On graftpunk-lite, `gp version`, `gp session list`,
+`gp session show`, `gp session use`, `gp config`, `gp plugins`, `gp http` (with
+or without a stored session, including one named by `GRAFTPUNK_SESSION` or
+`.gp-session`), a plugin command (with or without its stored session),
+`load_session_for_api` and `load_session_for_api_from_bytes` work. A plugin
+command that refreshes cookies or tokens saves them back from lite when the
+session is stored as a record. A stored pickle of a browser session needs the
+browser package to be written back, so the save is skipped with a
+`session_save_skipped_load_failed` warning and the command still exits 0;
+`copy_session` of it raises `RealSessionClassUnavailable` (an `ImportError`) and
+leaves the source slot as it was. A stored pickle of an API session
+(`GraftpunkSession`) or of a plain `requests.Session` needs no browser package:
+it is written back and copied as a pickle. Commands that drive a browser or need a browser session object
+(recording with `gp observe`, `gp session export`, and a plugin's `login`
+command) need `graftpunk-lite[browser]` or `graftpunk`; on graftpunk-lite
+without it, those commands print the install command and exit 1.
+`pip install 'graftpunk-lite[browser]'` adds the browser stack and is
+equivalent to `graftpunk`.
 
 Install one or the other, never both. They put the same files in the same
 place, so uninstalling either one deletes files the other needs. To switch,
@@ -117,9 +125,9 @@ uninstall the one you have first (`pip uninstall graftpunk`, then
 Plugins declare `graftpunk[browser]`, so install them where `graftpunk` is
 installed. Installing one where `graftpunk-lite` is installed, with or without
 `[browser]`, pulls `graftpunk` in beside it, the both-installed state to avoid.
-graftpunk-lite is for loading a saved session with
+graftpunk-lite is for using a saved session without a browser: with
 `load_session_for_api_from_bytes` under Pyodide or Cloudflare Python Workers, and
-for the browser-free `gp` commands above.
+through the `gp` commands above.
 
 **With cloud storage:**
 
@@ -194,8 +202,8 @@ api = load_session_for_api_from_bytes(encrypted_bytes, key=fernet_key)
 response = api.get("https://app.example.com/api/internal/documents")
 ```
 
-On graftpunk-lite, `load_session_for_api_from_bytes` works, and
-`load_session_for_api` needs `graftpunk-lite[browser]` or `graftpunk`. `key=` is
+On graftpunk-lite, `load_session_for_api_from_bytes` and `load_session_for_api`
+both work; neither needs `[browser]`. `key=` is
 optional and defaults to graftpunk's configured key sources; pass it when the
 key lives somewhere graftpunk can't see, like a Worker secret. A bad key raises
 `EncryptionError` (fix the key); an unusable session raises
@@ -476,6 +484,7 @@ gp plugin add-command mybank --from-run mybank --command "statements=GET /api/st
 | `GRAFTPUNK_STORAGE_BACKEND` | `local` | Storage: `local`, `supabase`, or `s3` |
 | `GRAFTPUNK_CONFIG_DIR` | `~/.config/graftpunk` | Config, sessions, plugins, workstation env file and encryption key location. Read from the real environment only (not from a `.env`); empty counts as unset |
 | `GRAFTPUNK_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
+| `GRAFTPUNK_SESSION_FORMAT` | `pickle` | Format of a newly saved session: `pickle` or `record` (JSON: reading it constructs no class the stored bytes name, and graftpunk-lite writes a browser session's record back, which it cannot do for its pickle). A session that cannot be a record is saved as a pickle with a warning |
 | `GRAFTPUNK_LOG_LEVEL` | `WARNING` | Logging verbosity |
 | `GRAFTPUNK_LOG_FORMAT` | `console` | Log format: `console` or `json` |
 | `GRAFTPUNK_BROWSER_EXECUTABLE_PATH` | _(system Chrome)_ | Path to a Chrome/Chromium binary for the `nodriver` backend (e.g. Chrome-for-Testing on machines/CI without a system Chrome install) |

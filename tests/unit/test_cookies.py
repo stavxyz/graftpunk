@@ -26,7 +26,7 @@ import requests
 from cryptography.fernet import Fernet
 from typer.testing import CliRunner
 
-from graftpunk import cache
+from graftpunk import cache, session_legacy
 from graftpunk.cli.session_commands import session_app
 from graftpunk.cookies import (
     _LOCALHOST_SUFFIX,
@@ -34,6 +34,7 @@ from graftpunk.cookies import (
     BrowserCookiePolicy,
     BrowserCookieSession,
     _is_secure_loopback_host,
+    _policy_is_default,
     importing_httpie,
     use_browser_cookie_policy,
 )
@@ -41,7 +42,7 @@ from graftpunk.graftpunk_session import GraftpunkSession
 from tests.unit.cli_harness import strip_ansi
 from tests.unit.test_lite_cli_hints import _cache_fixture_session
 
-_FIX = pathlib.Path(__file__).parent.parent / "fixtures"
+_FIX = pathlib.Path(__file__).parent.parent / "fixtures" / "session_compat" / "legacy"
 
 
 def test_the_secure_hosts_are_the_ones_chrome_was_measured_on() -> None:
@@ -299,7 +300,7 @@ def test_an_old_browser_session_state_restores_with_the_browser_policy(
 def test_a_stubbed_httpie_policy_is_replaced() -> None:
     """On graftpunk-lite without HTTPie the browser-free unpickler stands a stub
     in for HTTPieCookiePolicy; it has none of a policy's methods."""
-    stub = type("HTTPieCookiePolicy", (cache._Stub,), {})()
+    stub = type("HTTPieCookiePolicy", (session_legacy._Capture,), {})()
     jar = requests.cookies.RequestsCookieJar()
     jar._policy = stub
 
@@ -1529,3 +1530,44 @@ def test_the_public_names_are_the_ones_the_changelog_lists() -> None:
         "importing_httpie",
         "use_browser_cookie_policy",
     ]
+
+
+class _ProgramPolicy(cookiejar.DefaultCookiePolicy):
+    pass
+
+
+def _httpie_stub(settings: dict[str, Any]) -> object:
+    # The placeholder state_from_pickle gives a 1.21.0 jar's policy without HTTPie.
+    stub = type("HTTPieCookiePolicy", (session_legacy._Capture,), {})()
+    stub.__dict__.update(settings)
+    return stub
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        cookiejar.DefaultCookiePolicy,
+        BrowserCookiePolicy,
+        _httpie_policy,
+        lambda: _httpie_stub(vars(cookiejar.DefaultCookiePolicy())),
+    ],
+    ids=["stdlib", "browser", "httpie", "httpie-stub"],
+)
+def test_a_default_policy_is_default(make: Callable[[], object]) -> None:
+    assert _policy_is_default(make())
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        _ProgramPolicy,
+        lambda: cookiejar.DefaultCookiePolicy(blocked_domains=["idp.example.com"]),
+        lambda: BrowserCookiePolicy(strict_ns_domain=cookiejar.DefaultCookiePolicy.DomainStrict),
+        lambda: _httpie_stub(vars(cookiejar.DefaultCookiePolicy(rfc2965=True))),
+        lambda: _httpie_stub({}),
+        lambda: None,
+    ],
+    ids=["subclass", "blocked-domains", "strict-browser", "strict-stub", "empty-stub", "none"],
+)
+def test_a_chosen_policy_is_not_default(make: Callable[[], object]) -> None:
+    assert not _policy_is_default(make())

@@ -184,12 +184,93 @@ pytest tests/ -k "test_encryption" -v
 
 ### Committed fixtures
 
-`tests/fixtures/browserfree_session.{enc,key}` guard the browser-free
-session-load path (`load_session_for_api_from_bytes`, used under Pyodide /
-Cloudflare Workers). If you change `BrowserSession`'s pickled state, regenerate
-them with `python scripts/gen_browserfree_fixture.py` — see
-[`tests/fixtures/README.md`](tests/fixtures/README.md) for why the fixture has
-to be pickled by reference and what that guards.
+`tests/fixtures/session_compat/<version>/` holds sessions saved by released
+graftpunk versions, and `tests/unit/test_session_compat.py` loads each one
+through every loader. `scripts/session_compat.py` makes them and checks the
+other direction:
+
+```bash
+# Cache every case with a release (installed from PyPI into a scratch venv).
+# --out must not hold files; a new release's fixtures go to
+# tests/fixtures/session_compat/<version>.
+python scripts/session_compat.py generate --graftpunk 1.44.0 --out "$(mktemp -d)/1.44.0"
+# Can a release load a session this checkout stored? Exit 0 prints its cookies
+# and tokens; exit 3 prints the exception it raised.
+python scripts/session_compat.py read --graftpunk 1.44.0 --store DIR --name myshop
+# Write that session with this checkout first. Without --format the setting
+# is left unset, so the checkout's own default decides.
+python scripts/session_compat.py write --store DIR --name myshop [--format record]
+# Does this checkout, with the setting unset, read and write back every
+# fixture exactly as a release does? Exit 0 prints "no differences"; exit 1
+# prints each value that differs.
+python scripts/session_compat.py compare --graftpunk 1.44.0
+# What does each public reader do with each kind of stored value no session
+# can use, on a release and on this checkout? Prints every outcome; "!" marks
+# one that differs. Exits 0.
+python scripts/session_compat.py bad-payloads --graftpunk 1.44.0
+```
+
+`compare` loads every fixture under `tests/fixtures/session_compat/<version>/`
+with `load_session_for_api_from_bytes` and `load_session_for_api`, writes each
+back with `update_session_cookies` after adding a cookie, and records the API
+sessions' cookies, policy, headers and riders, the sha256 of the payload the
+write-back stored, and the class `load_session` then returns. It does this
+once with the release and once with this checkout, both with
+`PYTHONHASHSEED=0`, and prints the differences. The release is installed with
+this checkout's `uv.lock` versions of the dependencies the two share, so only
+graftpunk differs (`--no-pin` installs the newest instead); the first two
+lines of output name the graftpunk, requests, urllib3 and dill versions each
+side ran. If a release's own dependency ranges exclude a locked version, the
+install fails with uv's error and exit 2; run it with `--no-pin` then. Run it after any change to a
+loader, a write-back or the stored format, against the last release; the
+`old-reader` job runs it for 1.44.0 and the newest release. Against 1.21.0 it
+reports differences by design (that release gives API sessions another
+cookie policy and has fewer riders).
+
+`bad-payloads` builds each payload in `BAD_PAYLOADS` (an empty or unreadable
+pickle, a class that refuses its state, cookies that are not a jar, a missing
+class or module, a class that raises while restored, and invalid and newer
+records) with each side's own graftpunk, and reads it with `load_session`, the
+three API loaders, `copy_session` and `update_session_cookies`. Each line gives
+what each side returned or raised and the warning and error log lines it
+wrote. Run it after any change to a loader's error handling, against the last
+release, and make the CHANGELOG's Upgrading notes name every line marked `!`.
+
+The `old-reader` job in `.github/workflows/python-quality.yml` runs `write` and
+`read` for 1.21.0, 1.44.0 and the newest release: the default setting must
+write what each of them loads, tokens included. For 1.21.0 and 1.44.0 a record
+must also be reported expired (exit 3, `SessionExpiredError`) with the stored
+bytes unchanged; the newest release reads records, so that step is skipped
+for it.
+
+What it checks: `generate` stores one session per case with a released
+graftpunk, so the fixtures are what that release wrote, and
+`tests/unit/test_session_compat.py` loads each one through every loader with
+this checkout. `write` stores the `tokens` session with this checkout, and
+`read` loads it with a release, which proves the other direction: a session
+stored under the default setting (`pickle`) must load on 1.21.0 and 1.44.0 with
+its cookies and tokens, and a record (`write --format record`) must be refused
+as `SessionExpiredError` with the stored bytes unchanged.
+
+Run `generate` (to a scratch directory) and the `write` and `read` pair before
+any change to the stored session format, to the session record
+(`src/graftpunk/session_record.py`), or to `BrowserSession.__getstate__`, and
+add a directory under `tests/fixtures/session_compat/` when a release changes
+what a session saves. The fixtures are never regenerated in place.
+
+A change to the record layout (`FIELDS` in `src/graftpunk/session_record.py`)
+follows one rule, because a release refuses a key it does not know inside a
+block it owns and reports that record as an expired session. A new top-level
+key needs no new `RECORD_VERSION` only if a release that does not know it can
+ignore it on read, keep it unchanged through a write-back, and lose it on a
+fresh save without harm. Any other change (a key inside `riders` or
+`requests`, a changed meaning or type, a removed key) raises `RECORD_VERSION`.
+`test_the_record_layout_changes_only_with_the_version` pins the layout of each
+version and fails until the change follows the rule.
+`tests/fixtures/session_compat/legacy/` keeps the browser-free load fixture
+(`load_session_for_api_from_bytes`, used under Pyodide and Cloudflare
+Workers). See [`tests/fixtures/session_compat/README.md`](tests/fixtures/session_compat/README.md)
+for what each fixture holds and why the legacy one is pickled by reference.
 
 ### graftpunk-lite must stay browser-free
 

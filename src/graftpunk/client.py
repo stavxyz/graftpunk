@@ -437,10 +437,12 @@ class GraftpunkClient:
                 name. A pin is already validated in ``__init__``; this covers
                 a plugin whose ``session_name`` is itself illegal.
             SessionNotFoundError: If the session cannot be loaded.
-            SessionExpiredError: If the cached session cannot be unpickled.
-            ImportError: If the browser package needed to reconstruct the
-                cached session is not installed (graftpunk-lite without
-                ``[browser]``).
+            SessionExpiredError: If the stored session cannot be decrypted or
+                read.
+            NewerSessionRecord: If a newer release stored the session as a
+                record.
+            ImportError: If a class the stored pickle names raised it while
+                being restored.
             AmbiguousSessionError: If several sessions are cached for the
                 plugin's base name and nothing selects one -- an unpinned
                 client (resolved here, on first use, never at construction --

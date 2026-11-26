@@ -6,7 +6,6 @@ import asyncio
 import re
 import time
 from collections import defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -28,7 +27,30 @@ from graftpunk.exceptions import (
 )
 from graftpunk.logging import get_logger
 from graftpunk.page_values import PageValueKind, page_values, skipped_region_mentioning
-from graftpunk.session_identity import GP_ACCOUNT_ATTR, GP_SESSION_NAME_ATTR
+
+# isort: off
+# Re-exported for two reasons: a pickle names `graftpunk.tokens.CachedToken`, and
+# `plugins/login_engine.py` and programs outside graftpunk import these names from
+# here (the two identity names were importable here through 1.44.0). Guarded by
+# test_session_format_modules.
+from graftpunk.session_identity import (
+    GP_ACCOUNT_ATTR as GP_ACCOUNT_ATTR,
+    GP_SESSION_NAME_ATTR as GP_SESSION_NAME_ATTR,
+)
+from graftpunk.session_riders import (
+    _CACHE_ATTR as _CACHE_ATTR,
+    _CSRF_ORIGIN_ATTR as _CSRF_ORIGIN_ATTR,
+    _CSRF_TOKENS_ATTR as _CSRF_TOKENS_ATTR,
+    _HEADER_ROLE_ORIGINS_ATTR as _HEADER_ROLE_ORIGINS_ATTR,
+    _HEADER_ROLES_ATTR as _HEADER_ROLES_ATTR,
+    _MEMORY_ONLY_SESSION_RIDER_ATTRS as _MEMORY_ONLY_SESSION_RIDER_ATTRS,
+    PICKLED_SESSION_RIDER_ATTRS as PICKLED_SESSION_RIDER_ATTRS,
+    SESSION_RIDER_ATTRS as SESSION_RIDER_ATTRS,
+    SESSION_RIDER_DEFAULTS as SESSION_RIDER_DEFAULTS,
+    CachedToken as CachedToken,
+)
+
+# isort: on
 from graftpunk.signals import register_live_browser, unregister_live_browser
 
 LOG = get_logger(__name__)
@@ -501,27 +523,6 @@ class TokenConfig:
             raise ValueError(f"TokenConfig has duplicate token names: {set(dupes)}")
 
 
-@dataclass(frozen=True)
-class CachedToken:
-    """An extracted token value with TTL."""
-
-    name: str
-    value: str
-    extracted_at: float
-    ttl: float
-
-    def __post_init__(self) -> None:
-        if not self.name:
-            raise ValueError("CachedToken.name must be non-empty")
-        if self.ttl <= 0:
-            raise ValueError("CachedToken.ttl must be positive")
-
-    @property
-    def is_expired(self) -> bool:
-        """Check if the cached token has exceeded its TTL."""
-        return (time.time() - self.extracted_at) > self.ttl
-
-
 def _run_browser_extraction(
     session: requests.Session,
     tokens: list[Token],
@@ -629,60 +630,6 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
         return value
 
     raise ValueError(f"Unknown token source: {token.source}")
-
-
-_CACHE_ATTR = "_gp_cached_tokens"
-_CSRF_TOKENS_ATTR = "_gp_csrf_tokens"
-# The base URL prepare_session() obtained the CSRF tokens for: a token goes only
-# to that site (GraftpunkSession._inject_csrf_tokens).
-_CSRF_ORIGIN_ATTR = "_gp_csrf_origin"
-_HEADER_ROLES_ATTR = "_gp_header_roles"
-# The origin each captured header role was recorded on (role -> "https://host"):
-# GraftpunkSession sends a captured role as captured to that origin only.
-_HEADER_ROLE_ORIGINS_ATTR = "_gp_header_role_origins"
-
-# The one registry of attributes that ride a session object beside its cookies
-# and headers. Every place that moves state from one session to another
-# (BrowserSession's pickle hooks, cache._api_session_from_session) iterates
-# this instead of hand-listing, so a new rider is added in one place and
-# cannot be forgotten by one copier (#151).
-SESSION_RIDER_ATTRS: tuple[str, ...] = (
-    _CACHE_ATTR,
-    _CSRF_TOKENS_ATTR,
-    _CSRF_ORIGIN_ATTR,
-    _HEADER_ROLES_ATTR,
-    _HEADER_ROLE_ORIGINS_ATTR,
-    GP_SESSION_NAME_ATTR,
-    GP_ACCOUNT_ATTR,
-)
-
-# The value a rider takes on a session that never had one: the dict-valued
-# riders restore as a fresh empty dict (callers mutate them in place), the
-# account identifier and the loaded slot name as None. Keyed by the same
-# registry above.
-SESSION_RIDER_DEFAULTS: dict[str, Callable[[], Any]] = {
-    _CACHE_ATTR: dict,
-    _CSRF_TOKENS_ATTR: dict,
-    _CSRF_ORIGIN_ATTR: str,
-    _HEADER_ROLES_ATTR: dict,
-    _HEADER_ROLE_ORIGINS_ATTR: dict,
-    GP_SESSION_NAME_ATTR: lambda: None,
-    GP_ACCOUNT_ATTR: lambda: None,
-}
-
-# Three riders live in memory only, and the pickled subset is DERIVED by
-# excluding them, never hand-listed. CSRF tokens are per-request and go stale
-# the moment a session is put away, so a restored session re-extracts them, and
-# the origin they were obtained for goes with them.
-# The loaded slot name is stamped by the cache at load and save time, so it
-# always describes the key this copy actually came from or went to; pickling it
-# would let a blob cached under a second name carry the first one (#174).
-_MEMORY_ONLY_SESSION_RIDER_ATTRS: frozenset[str] = frozenset(
-    {_CSRF_TOKENS_ATTR, _CSRF_ORIGIN_ATTR, GP_SESSION_NAME_ATTR}
-)
-PICKLED_SESSION_RIDER_ATTRS: tuple[str, ...] = tuple(
-    attr for attr in SESSION_RIDER_ATTRS if attr not in _MEMORY_ONLY_SESSION_RIDER_ATTRS
-)
 
 
 def _store_csrf_token(session: requests.Session, name: str, value: str) -> None:

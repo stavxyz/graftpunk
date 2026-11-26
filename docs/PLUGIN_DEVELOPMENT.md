@@ -137,16 +137,25 @@ installs `graftpunk`, the full install. Install plugins into an environment with
 `graftpunk`, not `graftpunk-lite`: installing one where `graftpunk-lite` is
 already installed puts both distributions in the same environment, and
 uninstalling either then deletes files the other needs. `graftpunk-lite` is for
-loading a saved session with `load_session_for_api_from_bytes` under Pyodide or
-Cloudflare Python Workers. On graftpunk-lite, `gp version`, `gp session list`,
-`gp session show`, `gp config`, `gp plugins`, `gp http` with `--no-session`, a
-plugin command that needs no session, and `load_session_for_api_from_bytes`
-work. Everything that loads a cached session from the session store
-(`load_session_for_api`, `gp http` with a session from `--session`,
-`gp session use` or `GRAFTPUNK_SESSION`, a plugin command that uses its session,
-and `gp session export`) and every command that drives a browser (recording with
-`gp observe`, and a plugin's `login` command) need `graftpunk-lite[browser]` or
-`graftpunk`; without it, those commands print the install command and exit 1.
+using a saved session without a browser: with `load_session_for_api_from_bytes`
+under Pyodide or Cloudflare Python Workers, and through the `gp` commands below.
+On graftpunk-lite, `gp version`, `gp session list`, `gp session show`,
+`gp session use`, `gp config`, `gp plugins`, `gp http` (with or without a stored
+session, including one named by `--session`, `GRAFTPUNK_SESSION` or
+`.gp-session`), a plugin command (with or without its stored session),
+`load_session_for_api` and `load_session_for_api_from_bytes` work, for a session
+stored in either format (a pickle or a record). A plugin command that refreshes
+cookies or tokens saves them back from lite when the session is stored as a
+record. A stored pickle of a browser session needs the browser package to be
+written back, so the save is skipped with a `session_save_skipped_load_failed`
+warning and the command still exits 0; `copy_session` of it raises
+`RealSessionClassUnavailable` (an `ImportError`) and leaves the source slot as
+it was. A stored pickle of an API session (`GraftpunkSession`) or of a plain
+`requests.Session` is written back and copied as a pickle. Commands that drive a
+browser or need a browser session object (recording with `gp observe`,
+`gp session export`, and a plugin's `login` command) need
+`graftpunk-lite[browser]` or `graftpunk`; without it, those commands print the
+install command and exit 1.
 
 The file loader is for a throwaway script that imports nothing but graftpunk.
 It has two failure modes that cost real time:

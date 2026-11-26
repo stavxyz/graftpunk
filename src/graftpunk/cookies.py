@@ -431,6 +431,21 @@ def _replaceable(policy: object) -> bool:
     )
 
 
+def _policy_is_default(policy: object) -> bool:
+    """Whether *policy* is a jar's default policy with default settings.
+
+    Part of the stored session format: a session record does not store its
+    jar's policy (each loader gives the jar one by the session's kind), so a
+    jar whose policy is not this default keeps the session a pickle. Default
+    means a class :func:`_replaceable` recognises, or
+    :class:`BrowserCookiePolicy` itself, whose settings (as ``_settings``
+    reads them) equal a fresh :class:`BrowserCookiePolicy`'s.
+    """
+    if not (_replaceable(policy) or type(policy) is BrowserCookiePolicy):
+        return False
+    return _settings(policy) == _settings(BrowserCookiePolicy())
+
+
 def _browser_policy_like(policy: object) -> BrowserCookiePolicy:
     browser = BrowserCookiePolicy()
     browser.__dict__.update(_settings(policy))

@@ -596,64 +596,74 @@ class TestLoadSessionForApiSuccess:
         assert api_session.cookies.get("session_id") == "abc123"
 
 
+def _store_api_source(session_store, name, *, headers, roles=None, tokens=None):
+    """Store, under *name*, a nodriver session with no cookies and these
+    *headers*, header *roles* and cached *tokens*."""
+    import requests
+
+    from graftpunk.session import BrowserSession
+    from tests.unit.session_compat_cases import nodriver_state
+
+    state = nodriver_state()
+    state["cookies"] = requests.cookies.RequestsCookieJar()
+    state["headers"] = dict(headers)
+    state["_gp_header_roles"] = roles or {}
+    state["_gp_cached_tokens"] = tokens or {}
+    session = BrowserSession.__new__(BrowserSession)
+    session.__setstate__(state)
+    session_store.seed_plain(pickle.dumps(session), name)
+
+
 class TestLoadSessionForApiGraftpunkSession:
     """Tests for load_session_for_api returning GraftpunkSession."""
 
-    def test_load_session_for_api_returns_graftpunk_session(self, monkeypatch):
+    def test_load_session_for_api_returns_graftpunk_session(self, session_store):
         """load_session_for_api should return GraftpunkSession when roles exist."""
-        import requests
-
         from graftpunk.graftpunk_session import GraftpunkSession
 
-        mock_session = MagicMock()
-        mock_session.cookies = requests.cookies.RequestsCookieJar()
-        mock_session.headers = {"User-Agent": "test"}
-        mock_session._gp_header_roles = {"navigation": {"User-Agent": "Browser"}}
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
+        _store_api_source(
+            session_store,
+            "test",
+            headers={"User-Agent": "test"},
+            roles={"navigation": {"User-Agent": "Browser"}},
+        )
 
         api_session = load_session_for_api("test")
         assert isinstance(api_session, GraftpunkSession)
         assert api_session._gp_header_roles == {"navigation": {"User-Agent": "Browser"}}
 
-    def test_load_session_for_api_no_roles_returns_graftpunk_session(self, monkeypatch):
+    def test_load_session_for_api_no_roles_returns_graftpunk_session(self, session_store):
         """load_session_for_api returns GraftpunkSession even without roles."""
         import requests
 
         from graftpunk.graftpunk_session import GraftpunkSession
 
-        mock_session = MagicMock()
-        mock_session.cookies = requests.cookies.RequestsCookieJar()
-        mock_session.headers = {"User-Agent": "test"}
-        # Simulate old session without _gp_header_roles attribute
-        del mock_session._gp_header_roles
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
+        # An old session without _gp_header_roles: a plain requests.Session
+        # pickles no such attribute.
+        old = requests.Session()
+        old.headers = {"User-Agent": "test"}
+        session_store.seed_plain(pickle.dumps(old), "test")
 
         api_session = load_session_for_api("test")
         assert isinstance(api_session, GraftpunkSession)
         assert api_session._gp_header_roles == {}
 
-    def test_load_session_for_api_copies_token_cache(self, monkeypatch):
+    def test_load_session_for_api_copies_token_cache(self, session_store):
         """Token cache is transferred from browser session to API session."""
-        import requests
-
         from graftpunk.tokens import _CACHE_ATTR, CachedToken
-
-        mock_session = MagicMock()
-        mock_session.cookies = requests.cookies.RequestsCookieJar()
-        mock_session.headers = {"User-Agent": "test"}
-        mock_session._gp_header_roles = {}
 
         token_cache = {
             "X-CSRF": CachedToken(name="X-CSRF", value="tok123", extracted_at=1000, ttl=300)
         }
-        setattr(mock_session, _CACHE_ATTR, token_cache)
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
+        _store_api_source(
+            session_store, "cached-session", headers={"User-Agent": "test"}, tokens=token_cache
+        )
 
         api_session = load_session_for_api("cached-session")
         assert hasattr(api_session, _CACHE_ATTR)
         assert getattr(api_session, _CACHE_ATTR) == token_cache
 
-    def test_load_session_for_api_browser_identity_not_clobbered(self, monkeypatch):
+    def test_load_session_for_api_browser_identity_not_clobbered(self, session_store):
         """Browser identity headers from roles must survive browser_session.headers copy.
 
         Regression test for #52: load_session_for_api copied browser_session.headers
@@ -662,20 +672,20 @@ class TestLoadSessionForApiGraftpunkSession:
         """
         import requests
 
-        mock_session = MagicMock()
-        mock_session.cookies = requests.cookies.RequestsCookieJar()
         # Simulate a real pickled BrowserSession: its headers dict contains
         # the requests library default User-Agent.
-        mock_session.headers = requests.utils.default_headers()
-        mock_session._gp_header_roles = {
-            "navigation": {
-                "User-Agent": "Mozilla/5.0 Chrome/144.0.0.0",
-                "Accept": "text/html",
-                "sec-ch-ua": '"Chromium";v="144"',
-            }
-        }
-        del mock_session._gp_cached_tokens
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
+        _store_api_source(
+            session_store,
+            "test",
+            headers=requests.utils.default_headers(),
+            roles={
+                "navigation": {
+                    "User-Agent": "Mozilla/5.0 Chrome/144.0.0.0",
+                    "Accept": "text/html",
+                    "sec-ch-ua": '"Chromium";v="144"',
+                }
+            },
+        )
 
         api_session = load_session_for_api("test")
 
@@ -683,20 +693,19 @@ class TestLoadSessionForApiGraftpunkSession:
         assert api_session.headers["User-Agent"] == "Mozilla/5.0 Chrome/144.0.0.0"
         assert api_session.headers["sec-ch-ua"] == '"Chromium";v="144"'
 
-    def test_load_session_for_api_custom_browser_session_headers_preserved(self, monkeypatch):
+    def test_load_session_for_api_custom_browser_session_headers_preserved(self, session_store):
         """Non-default headers from browser_session.headers should still be copied."""
         import requests
 
-        mock_session = MagicMock()
-        mock_session.cookies = requests.cookies.RequestsCookieJar()
-        mock_session.headers = {
-            **requests.utils.default_headers(),
-            "X-Custom-Header": "custom-value",
-            "User-Agent": "CustomBot/1.0",  # explicitly set, not requests default
-        }
-        mock_session._gp_header_roles = {}
-        del mock_session._gp_cached_tokens
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
+        _store_api_source(
+            session_store,
+            "test",
+            headers={
+                **requests.utils.default_headers(),
+                "X-Custom-Header": "custom-value",
+                "User-Agent": "CustomBot/1.0",  # explicitly set, not requests default
+            },
+        )
 
         api_session = load_session_for_api("test")
 
@@ -704,102 +713,82 @@ class TestLoadSessionForApiGraftpunkSession:
         # Non-default UA should be copied through
         assert api_session.headers["User-Agent"] == "CustomBot/1.0"
 
-    def test_load_session_for_api_skips_x_csrf_token(self, monkeypatch):
+    def test_load_session_for_api_skips_x_csrf_token(self, session_store):
         """X-CSRF-TOKEN (Akamai sensor blob) is not copied to API session."""
         import requests
 
-        mock_session = MagicMock()
-        mock_session.cookies = requests.cookies.RequestsCookieJar()
-        mock_session.headers = {
-            **requests.utils.default_headers(),
-            "X-Custom-Header": "keep-me",
-            "X-CSRF-TOKEN": "stale-akamai-sensor-blob",
-        }
-        mock_session._gp_header_roles = {}
-        del mock_session._gp_cached_tokens
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
+        _store_api_source(
+            session_store,
+            "test",
+            headers={
+                **requests.utils.default_headers(),
+                "X-Custom-Header": "keep-me",
+                "X-CSRF-TOKEN": "stale-akamai-sensor-blob",
+            },
+        )
 
         api_session = load_session_for_api("test")
 
         assert api_session.headers.get("X-Custom-Header") == "keep-me"
         assert "X-CSRF-TOKEN" not in api_session.headers
 
-    def test_load_session_for_api_skips_x_csrf_token_case_insensitive(self, monkeypatch):
+    def test_load_session_for_api_skips_x_csrf_token_case_insensitive(self, session_store):
         """Ephemeral header filtering is case-insensitive via .lower()."""
         import requests
 
-        mock_session = MagicMock()
-        mock_session.cookies = requests.cookies.RequestsCookieJar()
-        mock_session.headers = {
-            **requests.utils.default_headers(),
-            "X-Custom-Header": "keep-me",
-            "x-Csrf-Token": "mixed-case-sensor-blob",
-        }
-        mock_session._gp_header_roles = {}
-        del mock_session._gp_cached_tokens
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
+        _store_api_source(
+            session_store,
+            "test",
+            headers={
+                **requests.utils.default_headers(),
+                "X-Custom-Header": "keep-me",
+                "x-Csrf-Token": "mixed-case-sensor-blob",
+            },
+        )
 
         api_session = load_session_for_api("test")
 
         assert api_session.headers.get("X-Custom-Header") == "keep-me"
         assert "x-Csrf-Token" not in api_session.headers
 
-    def test_load_session_for_api_no_token_cache(self, monkeypatch):
+    def test_load_session_for_api_no_token_cache(self, session_store):
         """API session works fine when browser session has no token cache."""
-        import requests
-
-        mock_session = MagicMock()
-        mock_session.cookies = requests.cookies.RequestsCookieJar()
-        mock_session.headers = {"User-Agent": "test"}
-        mock_session._gp_header_roles = {}
-        # No _gp_cached_tokens attribute
-        del mock_session._gp_cached_tokens
-        del mock_session._gp_csrf_tokens
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
+        _store_api_source(session_store, "no-cache-session", headers={"User-Agent": "test"})
 
         api_session = load_session_for_api("no-cache-session")
         from graftpunk.tokens import _CACHE_ATTR
 
         assert not hasattr(api_session, _CACHE_ATTR)
 
-    def test_load_session_for_api_copies_csrf_tokens(self, monkeypatch):
+    # CSRF tokens are a memory-only rider no stored session holds, so these two
+    # hand the API session builder a source that has them set.
+
+    def test_load_session_for_api_copies_csrf_tokens(self):
         """CSRF tokens are transferred from browser session to API session."""
-        import requests
-
+        from graftpunk.cache import _api_session_from_session
         from graftpunk.tokens import _CSRF_TOKENS_ATTR
+        from tests.unit.session_compat_cases import nodriver_session
 
-        mock_session = MagicMock()
-        mock_session.cookies = requests.cookies.RequestsCookieJar()
-        mock_session.headers = {"User-Agent": "test"}
-        mock_session._gp_header_roles = {}
-        del mock_session._gp_cached_tokens
-
+        source = nodriver_session()
         csrf_tokens = {"X-CSRF": "secret123", "X-Token": "abc"}
-        setattr(mock_session, _CSRF_TOKENS_ATTR, csrf_tokens)
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
+        setattr(source, _CSRF_TOKENS_ATTR, csrf_tokens)
 
-        api_session = load_session_for_api("csrf-session")
+        api_session = _api_session_from_session(source)
         result = getattr(api_session, _CSRF_TOKENS_ATTR, None)
         assert result == csrf_tokens
         # Should be a copy, not the same dict
         assert result is not csrf_tokens
 
-    def test_load_session_for_api_copies_empty_csrf_tokens(self, monkeypatch):
+    def test_load_session_for_api_copies_empty_csrf_tokens(self):
         """Empty CSRF tokens dict is still copied (attribute exists on api_session)."""
-        import requests
-
+        from graftpunk.cache import _api_session_from_session
         from graftpunk.tokens import _CSRF_TOKENS_ATTR
+        from tests.unit.session_compat_cases import nodriver_session
 
-        mock_session = MagicMock()
-        mock_session.cookies = requests.cookies.RequestsCookieJar()
-        mock_session.headers = {"User-Agent": "test"}
-        mock_session._gp_header_roles = {}
-        del mock_session._gp_cached_tokens
+        source = nodriver_session()
+        setattr(source, _CSRF_TOKENS_ATTR, {})
 
-        setattr(mock_session, _CSRF_TOKENS_ATTR, {})
-        monkeypatch.setattr("graftpunk.cache.load_session", lambda name, key=None: mock_session)
-
-        api_session = load_session_for_api("empty-csrf")
+        api_session = _api_session_from_session(source)
         result = getattr(api_session, _CSRF_TOKENS_ATTR, None)
         assert result == {}
 
@@ -1026,109 +1015,168 @@ class TestValidateSessionName:
 
 
 class TestUpdateSessionCookies:
-    """Tests for update_session_cookies() — persisting API session changes."""
+    """Tests for update_session_cookies(): persisting API session changes."""
 
-    def test_updates_cookies_on_cached_session(self) -> None:
+    @pytest.mark.parametrize("fmt", ["pickle", "record"])
+    def test_updates_cookies_on_cached_session(self, fmt, session_store) -> None:
         """Cookies from the API session are merged into the cached session."""
         import requests
 
-        cached_session = MagicMock()
-        cached_session.cookies = requests.cookies.RequestsCookieJar()
-        cached_session.cookies.set("original", "value")
+        from tests.unit.session_compat_cases import TEST_KEY
+
+        session_store.seed(fmt)
+        # A slot graftpunk 1.24.0 named records no account rule.
+        _get_session_storage_backend().update_session_metadata("myshop", account_rule=None)
 
         api_session = requests.Session()
-        api_session.cookies.set("original", "updated")
-        api_session.cookies.set("new_cookie", "new_value")
+        api_session.cookies.set("sid", "updated", domain=".myshop.example")
+        api_session.cookies.set("new_cookie", "new_value", domain=".myshop.example")
+        update_session_cookies(api_session, "myshop", key=TEST_KEY)
 
-        with (
-            patch("graftpunk.cache._load_session_with_metadata") as mock_load,
-            patch("graftpunk.cache.cache_session") as mock_cache,
-        ):
-            mock_load.return_value = (cached_session, MagicMock(account_rule=None))
-            update_session_cookies(api_session, "testsession")
-            mock_load.assert_called_once_with("testsession", key=None)
-            # The slot's recorded account rule is carried, so a 1.24.0 slot stays one (#293).
-            mock_cache.assert_called_once_with(
-                cached_session, "testsession", account_rule=None, key=None
-            )
+        stored = load_session("myshop", key=TEST_KEY)
+        assert {c.name: c.value for c in stored.cookies} == {
+            "sid": "updated",
+            "pref": "café",
+            "new_cookie": "new_value",
+        }
+        assert session_store.format_of("myshop") == fmt
+        # The slot's recorded account rule is carried, so a 1.24.0 slot stays one (#293).
+        assert session_store.metadata("myshop").account_rule is None
 
-    def test_load_failure_logs_warning_and_returns(self) -> None:
+    def test_load_failure_logs_warning_and_returns(self, session_store, captured_logs) -> None:
         """If loading the cached session fails, log a warning and return."""
         import requests
 
-        api_session = requests.Session()
-        with patch("graftpunk.cache._load_session_with_metadata", side_effect=Exception("corrupt")):
-            update_session_cookies(api_session, "badsession")  # Should not raise
+        from tests.unit.session_compat_cases import TEST_KEY, encrypt, events
 
-    def test_cache_failure_logs_warning_and_returns(self) -> None:
+        session_store.seed("pickle", "badsession")
+        before = encrypt(b"corrupt")
+        (session_store.root / "sessions" / "badsession" / "session.pickle").write_bytes(before)
+        update_session_cookies(requests.Session(), "badsession", key=TEST_KEY)  # Should not raise
+
+        (skipped,) = events(captured_logs, "session_save_skipped_load_failed")
+        assert skipped["session_name"] == "badsession"
+        assert skipped["reason"] == "SessionExpiredError"
+        assert session_store.raw("badsession") == before
+
+    def test_cache_failure_logs_warning_and_returns(
+        self, session_store, captured_logs, monkeypatch
+    ) -> None:
         """If re-caching fails, log a warning and return."""
         import requests
 
-        cached_session = MagicMock()
-        cached_session.cookies = requests.cookies.RequestsCookieJar()
+        from tests.unit.session_compat_cases import TEST_KEY, events
+
+        before = session_store.seed("pickle")
+
+        def disk_full(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_get_session_storage_backend(), "save_session", disk_full)
         api_session = requests.Session()
+        api_session.cookies.set("new_cookie", "new_value", domain=".myshop.example")
+        update_session_cookies(api_session, "myshop", key=TEST_KEY)  # Should not raise
 
-        with (
-            patch(
-                "graftpunk.cache._load_session_with_metadata",
-                return_value=(cached_session, MagicMock()),
-            ),
-            patch("graftpunk.cache.cache_session", side_effect=OSError("disk full")),
-        ):
-            update_session_cookies(api_session, "testsession")  # Should not raise
+        (failed,) = events(captured_logs, "session_save_failed")
+        assert failed["error"] == "disk full"
+        assert failed["reason"] == "OSError"
+        # The error-level event cache_session logged for this failure in 1.44.0.
+        (error,) = events(captured_logs, "failed_to_cache_session")
+        assert error["name"] == "myshop"
+        assert error["error"] == "disk full"
+        assert session_store.raw("myshop") == before
 
-    def test_update_session_cookies_persists_token_cache(self) -> None:
+    @pytest.mark.parametrize("fmt", ["pickle", "record"])
+    def test_update_session_cookies_persists_token_cache(self, fmt, session_store) -> None:
         """Token cache survives update_session_cookies round-trip."""
         import requests
 
         from graftpunk.tokens import _CACHE_ATTR, CachedToken
+        from tests.unit.session_compat_cases import TEST_KEY
 
-        cached_session = MagicMock()
-        cached_session.cookies = requests.cookies.RequestsCookieJar()
-
+        session_store.seed(fmt)
         api_session = requests.Session()
         token_cache = {
             "X-CSRF": CachedToken(name="X-CSRF", value="tok123", extracted_at=1000, ttl=300)
         }
         setattr(api_session, _CACHE_ATTR, token_cache)
 
-        with (
-            patch(
-                "graftpunk.cache._load_session_with_metadata",
-                return_value=(cached_session, MagicMock(account_rule=2)),
-            ) as mock_load,
-            patch("graftpunk.cache.cache_session") as mock_cache,
-        ):
-            update_session_cookies(api_session, "testsession")
+        update_session_cookies(api_session, "myshop", key=TEST_KEY)
 
-        mock_load.assert_called_once_with("testsession", key=None)
-        mock_cache.assert_called_once_with(cached_session, "testsession", account_rule=2, key=None)
-        # Verify token cache was transferred to the original session
-        assert getattr(cached_session, _CACHE_ATTR) == token_cache
+        assert getattr(load_session("myshop", key=TEST_KEY), _CACHE_ATTR) == token_cache
+        assert session_store.metadata("myshop").account_rule == 2
 
-    def test_update_session_cookies_persists_csrf_tokens(self) -> None:
-        """CSRF tokens survive update_session_cookies round-trip."""
+    @pytest.mark.parametrize("fmt", ["pickle", "record"])
+    def test_update_session_cookies_persists_csrf_tokens(
+        self, fmt, session_store, monkeypatch
+    ) -> None:
+        """CSRF tokens reach the session the write-back saves; they are
+        memory-only, so the stored bytes never hold them."""
         import requests
 
+        from graftpunk import cache
         from graftpunk.tokens import _CSRF_TOKENS_ATTR
+        from tests.unit.session_compat_cases import TEST_KEY
 
-        cached_session = MagicMock()
-        cached_session.cookies = requests.cookies.RequestsCookieJar()
-
+        session_store.seed(fmt)
         api_session = requests.Session()
         csrf_tokens = {"X-CSRF": "secret123"}
         setattr(api_session, _CSRF_TOKENS_ATTR, csrf_tokens)
 
-        with (
-            patch(
-                "graftpunk.cache._load_session_with_metadata",
-                return_value=(cached_session, MagicMock()),
-            ),
-            patch("graftpunk.cache.cache_session"),
-        ):
-            update_session_cookies(api_session, "testsession")
+        saved = []
+        encode_as = cache._encode_as
 
-        result = getattr(cached_session, _CSRF_TOKENS_ATTR)
+        def capture(session):
+            saved.append(session)
+            return encode_as(session)
+
+        monkeypatch.setattr(cache, "_encode_as", capture)
+        update_session_cookies(api_session, "myshop", key=TEST_KEY)
+
+        (session,) = saved
+        result = getattr(session, _CSRF_TOKENS_ATTR)
         assert result == csrf_tokens
         # Must be a copy to prevent aliasing between sessions
         assert result is not csrf_tokens
+        plain = session_store.plain("myshop")
+        assert session_store.format_of("myshop") == fmt
+        assert b"secret123" not in plain
+        assert b"_gp_csrf_tokens" not in plain
+
+    def test_a_write_back_to_an_invalid_name_is_refused(self, session_store, captured_logs) -> None:
+        """The name check cache_session gave a write-back through 1.44.0 still
+        runs: a slot read under a name graftpunk would not create is not
+        written."""
+        import requests
+
+        from tests.unit.session_compat_cases import TEST_KEY, events
+
+        before = session_store.seed("pickle", "My_Shop")
+        api_session = requests.Session()
+        api_session.cookies.set("new_cookie", "new_value", domain=".myshop.example")
+        update_session_cookies(api_session, "My_Shop", key=TEST_KEY)  # Should not raise
+
+        (failed,) = events(captured_logs, "session_save_failed")
+        assert failed["reason"] == "ValueError"
+        assert session_store.raw("My_Shop") == before
+        assert not events(captured_logs, "caching_session")
+
+    @pytest.mark.parametrize("fmt", ["pickle", "record"])
+    def test_a_write_back_logs_the_events_cache_session_logged(
+        self, fmt, session_store, captured_logs
+    ) -> None:
+        """The info events a write-back logged through cache_session in 1.44.0."""
+        import requests
+
+        from tests.unit.session_compat_cases import TEST_KEY, events
+
+        session_store.seed(fmt)
+        update_session_cookies(requests.Session(), "myshop", key=TEST_KEY)
+
+        (caching,) = events(captured_logs, "caching_session")
+        assert caching["name"] == "myshop"
+        assert caching["backend"] == "local"
+        (wrote,) = events(captured_logs, "wrote_session_to_backend")
+        assert wrote["name"] == "myshop"
+        assert "myshop" in wrote["location"]
+        assert len(events(captured_logs, "session_cookies_updated")) == 1

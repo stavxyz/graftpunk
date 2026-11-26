@@ -25,7 +25,7 @@ from graftpunk.public_suffix import (
     same_site,
     serialized_origin,
 )
-from graftpunk.tokens import _CSRF_ORIGIN_ATTR, _CSRF_TOKENS_ATTR, _HEADER_ROLE_ORIGINS_ATTR
+from graftpunk.session_riders import _CSRF_ORIGIN_ATTR, _CSRF_TOKENS_ATTR, _HEADER_ROLE_ORIGINS_ATTR
 
 LOG = get_logger(__name__)
 
@@ -310,9 +310,28 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
             **kwargs: Additional arguments passed to requests.Session.
         """
         super().__init__(**kwargs)
-        self._gp_header_roles: dict[str, dict[str, str]] = (
-            dict(header_roles) if header_roles else {}
-        )
+        self._init_graftpunk_state()
+        if header_roles:
+            self._gp_header_roles = dict(header_roles)
+        self.gp_base_url = base_url
+        # Apply browser identity headers (User-Agent, sec-ch-ua, etc.)
+        # BEFORE taking the snapshot so _is_user_set_header treats them
+        # as defaults rather than user-set overrides.
+        self._apply_browser_identity()
+        self._gp_default_session_headers = dict(self.headers)
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        # requests pickles only its __attrs__, so a restored session would
+        # otherwise lack every attribute below and fail on its first request.
+        super().__setstate__(state)
+        self._init_graftpunk_state()
+
+    def _init_graftpunk_state(self) -> None:
+        """Set every attribute this class adds to ``requests.Session``, at its default.
+
+        The one list of them, for ``__init__`` and ``__setstate__`` alike.
+        """
+        self._gp_header_roles: dict[str, dict[str, str]] = {}
         # Roles a plugin declared (merge_header_roles), which, unlike captured
         # ones, are sent to every origin the plugin calls.
         self._gp_declared_roles: set[str] = set()
@@ -327,13 +346,10 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         self._gp_role_handoff = threading.local()
         self._gp_csrf_tokens: dict[str, str] = {}
         self.gp_default_role: str | None = None
-        self.gp_base_url: str = base_url
-        # Apply browser identity headers (User-Agent, sec-ch-ua, etc.)
-        # BEFORE taking the snapshot so _is_user_set_header treats them
-        # as defaults rather than user-set overrides.
-        self._apply_browser_identity()
+        self.gp_base_url: str = ""
         # Snapshot the default session headers so we can distinguish
-        # user-modified headers from requests library defaults.
+        # user-modified headers from requests library defaults. __init__
+        # takes it again once the browser identity is applied.
         self._gp_default_session_headers: dict[str, str] = dict(self.headers)
 
     def headers_for(self, role: str) -> dict[str, str]:

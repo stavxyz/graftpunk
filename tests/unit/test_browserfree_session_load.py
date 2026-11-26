@@ -8,13 +8,13 @@ import dill
 import pytest
 import requests
 
-from graftpunk import cache
+from graftpunk import cache, session_legacy
 from graftpunk.encryption import encrypt_data
 from graftpunk.exceptions import EncryptionError, SessionExpiredError
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
 
-_FIX = pathlib.Path(__file__).parent.parent / "fixtures"
+_FIX = pathlib.Path(__file__).parent.parent / "fixtures" / "session_compat" / "legacy"
 
 
 def _fake_source():
@@ -42,61 +42,12 @@ def test_api_session_from_source_copies_state():
     assert getattr(api, _CSRF_TOKENS_ATTR) == {"form": "csrf123"}
 
 
-# --- Direct find_class mechanism tests -------------------------------------
+# --- A class pickled by reference whose module is gone ----------------------
 #
-# NOTE: an earlier version of this test built a "genuinely unimportable
-# class" by rewriting a local class's __module__/__qualname__ and
-# round-tripping it through dill. That does not exercise the stub path at
-# all: dill pickles a class whose module cannot be resolved BY VALUE (it
-# embeds the full class definition in the pickle stream), so on load the
-# object is reconstructed directly and find_class's except-branch is never
-# hit. The test passed without ever touching _Stub — false confidence.
-# The tests below exercise find_class and _Stub directly and deterministically,
-# plus one true by-reference round-trip (test 4) that does hit the fallback.
-# The genuine production case — a real graftpunk.session.BrowserSession
-# pickled by reference, then loaded with the browser stack absent — is
-# covered end-to-end by Task 5's A4 fixture.
-
-
-def test_find_class_stubs_genuinely_unimportable_module():
-    unpickler = cache._BrowserFreeUnpickler(io.BytesIO(b""))
-    stub_cls = unpickler.find_class("graftpunk._nonexistent_pyodide_module", "BrowserSession")
-    assert isinstance(stub_cls, type)
-    assert issubclass(stub_cls, cache._Stub)
-
-
-def test_find_class_passes_through_importable_class():
-    unpickler = cache._BrowserFreeUnpickler(io.BytesIO(b""))
-    resolved = unpickler.find_class("requests.cookies", "RequestsCookieJar")
-    assert resolved is requests.cookies.RequestsCookieJar
-
-
-def test_stub_setstate_restores_dict_state():
-    stub_cls = type("StubDictState", (cache._Stub,), {})
-    stub = stub_cls()
-    jar = requests.cookies.RequestsCookieJar()
-    jar.set("User", "dummyuser", domain="example.com")
-    stub.__setstate__({"cookies": jar, "headers": {"User-Agent": "Chrome/999"}})
-    assert stub.__dict__["cookies"] is jar
-    assert stub.__dict__["headers"] == {"User-Agent": "Chrome/999"}
-
-
-def test_stub_setstate_restores_dict_and_slotstate_tuple():
-    stub_cls = type("StubTupleState", (cache._Stub,), {})
-    stub = stub_cls()
-    stub.__setstate__(({"cookies": "c"}, {"headers": "h"}))
-    assert stub.cookies == "c"
-    assert stub.headers == "h"
-
-
-def test_stub_setstate_rejects_unknown_state_shape():
-    stub_cls = type("StubBadState", (cache._Stub,), {})
-    stub = stub_cls()
-    with pytest.raises(TypeError):
-        stub.__setstate__("not a dict or tuple")
-
-
-# --- By-reference round-trip that actually hits the stub fallback ----------
+# dill pickles a class whose module cannot be resolved BY VALUE (it embeds the
+# class definition in the pickle), so a class must be pickled while its module
+# is importable and read after the module is gone for the read to stub it.
+# The placeholder's own state handling is tested in test_session_legacy.py.
 
 
 class _ThrowawayBrowserSessionLike:
@@ -113,7 +64,7 @@ class _ThrowawayBrowserSessionLike:
         self.__dict__.update(state)
 
 
-def test_deserialize_browserfree_stub_roundtrip_by_reference():
+def test_state_from_pickle_stubs_a_class_pickled_by_reference():
     module_name = "graftpunk_test_throwaway_browser_module"
     module = types.ModuleType(module_name)
     _ThrowawayBrowserSessionLike.__module__ = module_name
@@ -135,10 +86,10 @@ def test_deserialize_browserfree_stub_roundtrip_by_reference():
         del sys.modules[module_name]
 
     # Module is now genuinely unimportable -> find_class must fall back to a stub.
-    recovered = cache._deserialize_browserfree(blob)
-    assert isinstance(recovered, cache._Stub)
-    assert recovered.cookies.get("User", domain="example.com") == "dummyuser"
-    assert recovered.headers["User-Agent"] == "Chrome/999"
+    recovered = session_legacy.state_from_pickle(blob)
+    assert recovered.unresolved == ("graftpunk_test_throwaway_browser_module.BrowserSessionLike",)
+    assert recovered.state["cookies"].get("User", domain="example.com") == "dummyuser"
+    assert recovered.state["headers"]["User-Agent"] == "Chrome/999"
 
 
 # --- load_session_for_api_from_bytes ---------------------------------------
@@ -273,14 +224,14 @@ def test_unknown_attribute_still_raises_attribute_error():
 def test_a4_fixture_decodes_browser_free(monkeypatch):
     """Whack-once guard: a real committed BrowserSession pickle (pickled BY
     REFERENCE to graftpunk.session.BrowserSession, see
-    scripts/gen_browserfree_fixture.py) must keep decoding through the
+    tests/fixtures/session_compat/README.md) must keep decoding through the
     browser-free path (cookies/headers/roles/tokens) as graftpunk/deps evolve.
 
     The CI/dev env used to run this suite has the full browser stack
     installed, so graftpunk.session IS importable here. If we just loaded the
     fixture as-is, dill would reconstruct the REAL BrowserSession via its
-    normal __setstate__ and the test would never touch cache._Stub or
-    cache._BrowserFreeUnpickler's except-branch at all -- it would pass
+    normal __setstate__ and the test would never show that
+    session_legacy's placeholder takes its place -- it would pass
     without exercising the browser-free path it's meant to guard. So we force
     the browser stack (and its transitive deps) out of sys.modules for the
     duration of this test, simulating a Pyodide/lite environment where those
@@ -305,8 +256,8 @@ def test_a4_fixture_decodes_browser_free(monkeypatch):
     from graftpunk.encryption import decrypt_data
 
     decrypted = decrypt_data(enc, key=key)
-    source = cache._deserialize_browserfree(decrypted)
-    assert isinstance(source, cache._Stub), (
+    source = session_legacy._Unpickler(io.BytesIO(decrypted)).load()
+    assert isinstance(source, session_legacy._Capture), (
         "A4 must exercise the stub fallback, not the real BrowserSession"
     )
 
@@ -362,14 +313,15 @@ def test_from_bytes_object_without_session_shape_raises_session_expired():
         cache.load_session_for_api_from_bytes(blob, key=key)
 
 
-def test_from_bytes_malformed_cookies_raises_session_expired():
+@pytest.mark.parametrize("cookies", ["not-a-jar", 5, None])
+def test_from_bytes_malformed_cookies_raises_session_expired(cookies):
     """Structurally present but unusable contents must still honour the
     documented SessionExpiredError contract rather than leaking an
     AttributeError from deep inside session construction."""
     from cryptography.fernet import Fernet
 
     key = Fernet.generate_key()
-    broken = types.SimpleNamespace(cookies="not-a-jar", headers="not-a-mapping")
+    broken = types.SimpleNamespace(cookies=cookies, headers="not-a-mapping")
     blob = Fernet(key).encrypt(dill.dumps(broken))
     with pytest.raises(SessionExpiredError):
         cache.load_session_for_api_from_bytes(blob, key=key)
@@ -377,10 +329,11 @@ def test_from_bytes_malformed_cookies_raises_session_expired():
 
 def test_a_session_saved_before_1_41_0_replays_no_header_the_client_sets_itself():
     """A BrowserSession pickled the way 1.40.1 saves it (by reference, through
-    __getstate__'s nodriver branch, as scripts/gen_browserfree_fixture.py builds
-    one), holding the role an older capture kept and the Accept-Encoding older
-    identity extraction put on its headers (#370). The restored session sends the
-    client's own Accept-Encoding, no Priority, and keeps the rest."""
+    __getstate__'s nodriver branch, as the legacy fixture in
+    tests/fixtures/session_compat/legacy/ was built), holding the role an older
+    capture kept and the Accept-Encoding older identity extraction put on its
+    headers (#370). The restored session sends the client's own
+    Accept-Encoding, no Priority, and keeps the rest."""
     from cryptography.fernet import Fernet
 
     from graftpunk.session import BrowserSession

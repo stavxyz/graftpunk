@@ -25,6 +25,16 @@ class GraftpunkSettings(BaseSettings):
         description="Session TTL in hours",
     )
 
+    session_format: Literal["pickle", "record"] = Field(
+        default="pickle",
+        description=(
+            "Format of a freshly saved session: pickle (the legacy format, "
+            "readable by every release) or record (JSON; reading it constructs "
+            "no class the stored bytes name, and graftpunk-lite can write a "
+            "browser session's record back). A write-back keeps the format it read."
+        ),
+    )
+
     # Logging configuration
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="WARNING",
