@@ -39,8 +39,8 @@ consumes that variable.
 
 1. **Just work** — no shell profile edits, no aliases, no direnv; works
    identically from any cwd and in subprocesses that exec `gp`.
-2. **No latency for irrelevant operations** — `gp bek export list` must
-   never pay for `BEK_PASSWORD=$(op read …)`; `gp --help` must never
+2. **No latency for irrelevant operations** — `gp myshop export list` must
+   never pay for `MYSHOP_PASSWORD=$(op read …)`; `gp --help` must never
    trigger a 1Password biometric prompt, even when command-valued
    `GRAFTPUNK_*` entries exist.
 3. **Optimize/cache where possible** — never evaluate the same command

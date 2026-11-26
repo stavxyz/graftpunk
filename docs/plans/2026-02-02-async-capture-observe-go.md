@@ -599,14 +599,14 @@ class TestSessionUseCommand:
     def test_sets_active_session(self, cli_runner, tmp_path):
         with patch("graftpunk.cli.session_commands.Path.cwd", return_value=tmp_path):
             with patch("graftpunk.cli.session_commands.resolve_session_name", return_value="myshop"):
-                result = cli_runner.invoke(app, ["session", "use", "bek"])
+                result = cli_runner.invoke(app, ["session", "use", "my"])
         assert result.exit_code == 0
         assert "myshop" in result.output
 
     def test_use_shows_resolved_name(self, cli_runner, tmp_path):
         with patch("graftpunk.cli.session_commands.Path.cwd", return_value=tmp_path):
             with patch("graftpunk.cli.session_commands.resolve_session_name", return_value="myshop"):
-                result = cli_runner.invoke(app, ["session", "use", "bek"])
+                result = cli_runner.invoke(app, ["session", "use", "my"])
         assert "myshop" in result.output
         assert (tmp_path / ".gp-session").read_text() == "myshop"
 
