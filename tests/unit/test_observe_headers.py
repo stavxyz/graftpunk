@@ -46,10 +46,11 @@ def test_classify_returns_none_for_css():
     assert classify_request(headers) is None
 
 
-def test_classify_sec_fetch_mode_takes_priority():
-    """sec-fetch-mode: navigate overrides Content-Type: form."""
+def test_classify_a_form_content_type_beats_a_navigate_mode():
+    """Chrome submits every HTML form with Sec-Fetch-Mode: navigate, as its wire
+    headers show; navigate first would leave no request to take the form role from."""
     headers = {"sec-fetch-mode": "navigate", "Content-Type": "application/x-www-form-urlencoded"}
-    assert classify_request(headers) == "navigation"
+    assert classify_request(headers) == "form"
 
 
 def test_classify_navigation_by_accept_html():
@@ -318,3 +319,374 @@ def test_the_login_stores_each_roles_origin_on_the_session():
     _store_header_roles(session, capture, "https://myshop.example")
     assert session._gp_header_roles["xhr"]["X-Marker"] == "own"
     assert session._gp_header_role_origins == {"xhr": "https://myshop.example"}
+
+
+# --- the headers Chrome sent, not the renderer's partial set ---
+#
+# Network.requestWillBeSent carries the renderer's request headers, which on a
+# navigation lack Accept, Accept-Language and every Sec-Fetch-* header, and on the
+# GET after a form POST's redirect still carry the POST's Content-Type and Origin
+# (read from Chrome 158 through nodriver on 2026-11-27).
+# requestWillBeSentExtraInfo carries the headers sent; the correlator keeps them
+# on the entry as _request_extra_headers. Entries below are shaped as both
+# backends store them.
+
+CHROME_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+)
+HTML_ACCEPT = (
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,"
+    "image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+)
+CLIENT_HINTS = {
+    "sec-ch-ua": '"Chromium";v="158", "Not.A/Brand";v="24", "Google Chrome";v="158"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"macOS"',
+}
+RENDERER_NAV = {"Upgrade-Insecure-Requests": "1", "User-Agent": CHROME_UA, **CLIENT_HINTS}
+RENDERER_POST = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Origin": "https://myshop.example",
+    "Referer": "https://myshop.example/login",
+    **RENDERER_NAV,
+}
+
+
+def _wire(**extra: str) -> dict[str, str]:
+    return {
+        "Accept": HTML_ACCEPT,
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+        "Host": "myshop.example",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "User-Agent": CHROME_UA,
+        **CLIENT_HINTS,
+        **extra,
+    }
+
+
+def _entry(url: str, method: str, headers: dict, wire: dict | None, ts: float) -> dict:
+    entry = {
+        "url": url,
+        "method": method,
+        "headers": dict(headers),
+        "post_data": None,
+        "has_post_data": method == "POST",
+        "timestamp": ts,
+        "sender_url": None,
+        "navigation": True,
+        "resource_type": "Document",
+        "sender_origin_only": False,
+    }
+    if wire is not None:
+        entry["_request_extra_headers"] = dict(wire)
+        entry["_request_extra_seen"] = True
+    return entry
+
+
+BROWSER_NAV_ROLE = {
+    "Accept": HTML_ACCEPT,
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "User-Agent": CHROME_UA,
+    **CLIENT_HINTS,
+}
+
+
+def test_a_page_load_is_a_navigation_role_from_the_headers_chrome_sent():
+    request_map = {
+        "1": _entry("https://myshop.example/login", "GET", RENDERER_NAV, _wire(), 1.0),
+    }
+    assert extract_header_roles(request_map, "https://myshop.example") == {
+        "navigation": BROWSER_NAV_ROLE
+    }
+
+
+def test_a_form_post_role_holds_every_header_chrome_sent_but_the_excluded():
+    wire = _wire(
+        **{
+            "Cache-Control": "max-age=0",
+            "Content-Length": "38",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://myshop.example",
+            "Referer": "https://myshop.example/login",
+            "Cookie": "sid=abc",
+        }
+    )
+    request_map = {"1": _entry("https://myshop.example/login", "POST", RENDERER_POST, wire, 1.0)}
+    assert extract_header_roles(request_map, "https://myshop.example") == {
+        "form": {**BROWSER_NAV_ROLE, "Cache-Control": "max-age=0"}
+    }
+
+
+def test_the_get_after_a_post_redirect_is_classified_from_its_own_headers():
+    """Chrome sends no Sec-Fetch-* to a plain-http site, so only Content-Type and
+    Accept tell the two apart; the renderer's stale Content-Type on the redirect
+    GET would make it a second form."""
+    from graftpunk.observe.headers import header_role_origins
+
+    no_fetch = {k: v for k, v in _wire().items() if not k.startswith("Sec-Fetch")}
+    request_map = {
+        "2:redirect:1": {
+            **_entry(
+                "http://myshop.example/login",
+                "POST",
+                RENDERER_POST,
+                {**no_fetch, "Content-Type": "application/x-www-form-urlencoded"},
+                1.0,
+            ),
+            "response": {"status": 302, "redirectURL": "http://myshop.example/home"},
+            "_redirect_hop": True,
+        },
+        "2": _entry("http://myshop.example/home", "GET", RENDERER_POST, no_fetch, 2.0),
+    }
+    roles = extract_header_roles(request_map, "http://myshop.example")
+    assert sorted(roles) == ["form", "navigation"]
+    assert roles["navigation"]["Accept"] == HTML_ACCEPT
+    assert header_role_origins(request_map, "http://myshop.example") == {
+        "form": "http://myshop.example",
+        "navigation": "http://myshop.example",
+    }
+
+
+def test_a_get_with_a_stale_form_content_type_and_no_wire_headers_is_no_form():
+    request_map = {"1": _entry("https://myshop.example/home", "GET", RENDERER_POST, None, 1.0)}
+    assert "form" not in extract_header_roles(request_map)
+
+
+def test_without_wire_headers_the_renderer_headers_are_used():
+    renderer = {**RENDERER_NAV, "Sec-Fetch-Mode": "navigate"}
+    request_map = {"1": _entry("https://myshop.example/a", "GET", renderer, None, 1.0)}
+    assert extract_header_roles(request_map)["navigation"]["User-Agent"] == CHROME_UA
+
+
+def test_excluded_and_client_set_wire_headers_stay_out_of_every_role():
+    wire_h2 = {
+        ":authority": "myshop.example",
+        ":method": "GET",
+        ":path": "/login",
+        ":scheme": "https",
+        "accept": HTML_ACCEPT,
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "accept-language": "en-US,en;q=0.9",
+        "content-length": "0",
+        "cookie": "sid=abc",
+        "priority": "u=0, i",
+        "sec-fetch-mode": "navigate",
+        "user-agent": CHROME_UA,
+        "x-csrf-token": "t0k3n",
+        "referer": "https://myshop.example/",
+        "origin": "https://myshop.example",
+        "content-type": "text/plain",
+        "host": "myshop.example",
+        "connection": "keep-alive",
+        **CLIENT_HINTS,
+    }
+    request_map = {"1": _entry("https://myshop.example/login", "GET", RENDERER_NAV, wire_h2, 1.0)}
+    (role,) = extract_header_roles(request_map).values()
+    assert {name.lower() for name in role} == {
+        "accept",
+        "accept-language",
+        "sec-fetch-mode",
+        "user-agent",
+        "sec-ch-ua",
+        "sec-ch-ua-mobile",
+        "sec-ch-ua-platform",
+    }
+
+
+def test_a_name_in_both_sets_in_another_case_is_kept_once_in_the_renderers_case():
+    wire = {"user-agent": CHROME_UA, "sec-fetch-mode": "navigate", "upgrade-insecure-requests": "1"}
+    request_map = {"1": _entry("https://myshop.example/", "GET", RENDERER_NAV, wire, 1.0)}
+    assert extract_header_roles(request_map)["navigation"] == {
+        "User-Agent": CHROME_UA,
+        "sec-fetch-mode": "navigate",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+
+def test_classify_a_navigating_form_post_is_a_form():
+    headers = {"Sec-Fetch-Mode": "navigate", "Content-Type": "multipart/form-data; boundary=x"}
+    assert classify_request(headers, method="POST") == "form"
+
+
+def test_classify_a_cors_form_body_is_xhr():
+    headers = {"Sec-Fetch-Mode": "cors", "Content-Type": "application/x-www-form-urlencoded"}
+    assert classify_request(headers, method="POST") == "xhr"
+
+
+def test_classify_a_get_is_never_a_form():
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    assert classify_request(headers, method="GET") is None
+
+
+# --- both backends: the same Chrome events give the same roles ---
+
+SITE = "https://myshop.example"
+POST_WIRE = _wire(
+    **{
+        "Cache-Control": "max-age=0",
+        "Content-Length": "38",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": SITE,
+        "Referer": f"{SITE}/login",
+    }
+)
+# A form login as Chrome reports it: the login page, the POST, its 302, the GET.
+LOGIN_EVENTS: list[tuple[str, dict]] = [
+    (
+        "Network.requestWillBeSent",
+        {
+            "requestId": "1",
+            "wallTime": 1_700_000_001.0,
+            "type": "Document",
+            "documentURL": f"{SITE}/login",
+            "request": {"url": f"{SITE}/login", "method": "GET", "headers": RENDERER_NAV},
+        },
+    ),
+    ("Network.requestWillBeSentExtraInfo", {"requestId": "1", "headers": _wire()}),
+    (
+        "Network.responseReceived",
+        {
+            "requestId": "1",
+            "response": {
+                "url": f"{SITE}/login",
+                "status": 200,
+                "statusText": "OK",
+                "headers": {"Content-Type": "text/html"},
+                "mimeType": "text/html",
+            },
+        },
+    ),
+    (
+        "Network.requestWillBeSent",
+        {
+            "requestId": "2",
+            "wallTime": 1_700_000_002.0,
+            "type": "Document",
+            "documentURL": f"{SITE}/login",
+            "request": {
+                "url": f"{SITE}/login",
+                "method": "POST",
+                "headers": RENDERER_POST,
+                "hasPostData": True,
+            },
+        },
+    ),
+    ("Network.requestWillBeSentExtraInfo", {"requestId": "2", "headers": POST_WIRE}),
+    (
+        "Network.responseReceivedExtraInfo",
+        {"requestId": "2", "statusCode": 302, "headers": {"Location": "/home"}},
+    ),
+    (
+        "Network.requestWillBeSent",
+        {
+            "requestId": "2",
+            "wallTime": 1_700_000_003.0,
+            "type": "Document",
+            "documentURL": f"{SITE}/home",
+            "redirectHasExtraInfo": True,
+            "redirectResponse": {
+                "status": 302,
+                "statusText": "Found",
+                "headers": {"Location": "/home"},
+                "mimeType": "",
+            },
+            "request": {"url": f"{SITE}/home", "method": "GET", "headers": RENDERER_POST},
+        },
+    ),
+    (
+        "Network.requestWillBeSentExtraInfo",
+        {"requestId": "2", "headers": _wire(Referer=f"{SITE}/login", Cookie="sid=abc")},
+    ),
+]
+
+
+def _nodriver_event(params: dict):
+    """A CDP event's params as nodriver's dataclasses expose them."""
+    from types import SimpleNamespace
+
+    request = params.get("request")
+    redirect = params.get("redirectResponse")
+    return SimpleNamespace(
+        request_id=params["requestId"],
+        headers=params.get("headers"),
+        status_code=params.get("statusCode"),
+        wall_time=params.get("wallTime"),
+        type_=params.get("type"),
+        document_url=params.get("documentURL"),
+        initiator=None,
+        redirect_has_extra_info=params.get("redirectHasExtraInfo", False),
+        request=request
+        and SimpleNamespace(
+            url=request["url"],
+            method=request["method"],
+            headers=request["headers"],
+            has_post_data=request.get("hasPostData", False),
+            post_data=None,
+            post_data_entries=None,
+        ),
+        redirect_response=redirect
+        and SimpleNamespace(
+            status=redirect["status"],
+            status_text=redirect["statusText"],
+            headers=redirect["headers"],
+            mime_type=redirect["mimeType"],
+        ),
+        response=params.get("response")
+        and SimpleNamespace(
+            url=params["response"]["url"],
+            status=params["response"]["status"],
+            status_text=params["response"]["statusText"],
+            headers=params["response"]["headers"],
+            mime_type=params["response"]["mimeType"],
+        ),
+    )
+
+
+def _nodriver_roles() -> tuple[dict, dict]:
+    backend = NodriverCaptureBackend(None, record_request_bodies=False, record_console=False)
+    handlers = {
+        "Network.requestWillBeSent": backend._on_request,
+        "Network.requestWillBeSentExtraInfo": backend._on_request_extra_info,
+        "Network.responseReceived": backend._on_response,
+        "Network.responseReceivedExtraInfo": backend._on_response_extra_info,
+    }
+    for method, params in LOGIN_EVENTS:
+        handlers[method](_nodriver_event(params))
+    return backend.get_header_roles(SITE), backend.get_header_role_origins(SITE)
+
+
+def _selenium_roles() -> tuple[dict, dict]:
+    import json
+    from types import SimpleNamespace
+
+    log = [
+        {"message": json.dumps({"message": {"method": method, "params": params}})}
+        for method, params in LOGIN_EVENTS
+    ]
+    driver = SimpleNamespace(get_log=lambda kind: log)
+    backend = SeleniumCaptureBackend(driver, record_request_bodies=False, record_console=False)
+    backend.start_capture()
+    backend.stop_capture()
+    return backend.get_header_roles(SITE), backend.get_header_role_origins(SITE)
+
+
+def test_both_backends_take_a_logins_roles_from_the_headers_chrome_sent():
+    expected_roles = {
+        "navigation": BROWSER_NAV_ROLE,
+        "form": {**BROWSER_NAV_ROLE, "Cache-Control": "max-age=0"},
+    }
+    expected_origins = {"navigation": SITE, "form": SITE}
+    assert _nodriver_roles() == (expected_roles, expected_origins)
+    assert _selenium_roles() == (expected_roles, expected_origins)

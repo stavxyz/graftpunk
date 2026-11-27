@@ -29,16 +29,21 @@ def kept_in_role(name: str) -> bool:
     return name.lower() not in EXCLUDED_HEADERS and not client_sets_header(name)
 
 
-def classify_request(headers: dict[str, str]) -> str | None:
+def classify_request(headers: dict[str, str], method: str | None = None) -> str | None:
     """Classify a request into a header role based on its headers.
 
     Classification priority:
-    1. sec-fetch-mode (most reliable — Chrome always sends it)
-    2. Content-Type (for form detection)
-    3. X-Requested-With / Accept heuristics (for XHR detection)
+    1. ``Sec-Fetch-Mode: cors`` is an XHR.
+    2. A form Content-Type on any other mode is a form: a browser submits a form
+       as a navigation (``Sec-Fetch-Mode: navigate``), so this comes before
+       the navigation rule. With *method* given, only a POST can be a form.
+    3. ``Sec-Fetch-Mode: navigate`` is a navigation.
+    4. X-Requested-With / Accept heuristics (for XHR detection), then an Accept
+       of ``text/html`` for a navigation.
 
     Args:
         headers: Request headers dict (case-insensitive keys expected from CDP).
+        method: The request's method, when known.
 
     Returns:
         Role name ("navigation", "xhr", or "form"), or None if not classifiable.
@@ -46,30 +51,56 @@ def classify_request(headers: dict[str, str]) -> str | None:
     # Normalize header keys to lowercase for comparison
     lower = {k.lower(): v for k, v in headers.items()}
 
-    # 1. sec-fetch-mode (highest priority)
     sec_fetch = lower.get("sec-fetch-mode", "")
-    if sec_fetch == "navigate":
-        return "navigation"
     if sec_fetch == "cors":
         return "xhr"
 
-    # 2. Content-Type for form detection
     content_type = lower.get("content-type", "")
-    if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+    form_body = (
+        "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type
+    )
+    if form_body and (method is None or method.upper() == "POST"):
         return "form"
 
-    # 3. XHR heuristics
+    if sec_fetch == "navigate":
+        return "navigation"
+
+    # XHR heuristics
     if lower.get("x-requested-with", "").lower() == "xmlhttprequest":
         return "xhr"
     accept = lower.get("accept", "")
     if "application/json" in accept:
         return "xhr"
 
-    # 4. Navigation heuristic (Accept contains text/html without sec-fetch-mode)
+    # Navigation heuristic (Accept contains text/html without sec-fetch-mode)
     if "text/html" in accept:
         return "navigation"
 
     return None
+
+
+def sent_headers(data: dict[str, Any]) -> dict[str, str]:
+    """The request headers of a capture backend's request-map entry *data* as
+    Chrome sent them.
+
+    ``Network.requestWillBeSent`` reports the renderer's headers (``headers``),
+    which lack what the network stack adds (Accept, Accept-Language, every
+    Sec-Fetch-* header on a navigation) and, on the GET after a form POST's
+    redirect, still hold the POST's Content-Type and Origin.
+    ``requestWillBeSentExtraInfo`` reports the headers sent, kept as
+    ``_request_extra_headers``; when an entry has them they are the set, so no
+    stale renderer header is kept, and each name takes the renderer's spelling
+    where the renderer has the same name in another case (HTTP/2 sends every
+    name in lower case). Without them (CDP does not promise them for every
+    request, and nodriver 0.48.1 was measured to drop most), the renderer's
+    headers are used.
+    """
+    renderer = data.get("headers") or {}
+    wire = data.get("_request_extra_headers") or {}
+    if not wire:
+        return dict(renderer)
+    spelling = {name.lower(): name for name in renderer}
+    return {spelling.get(name.lower(), name): value for name, value in wire.items()}
 
 
 def _rank(sent_to: Origin | None, site: Origin | None) -> int:
@@ -91,10 +122,10 @@ def _role_requests(
     site = origin(site_url) if site_url else None
     chosen: dict[str, tuple[int, dict[str, Any]]] = {}
     for data in request_map.values():
-        headers = data.get("headers", {})
+        headers = sent_headers(data)
         if not headers:
             continue
-        role = classify_request(headers)
+        role = classify_request(headers, data.get("method"))
         if role is None:
             continue
         rank = _rank(origin(data.get("url")), site)
@@ -108,8 +139,9 @@ def extract_header_roles(
 ) -> dict[str, dict[str, str]]:
     """Extract header roles from a capture backend's request map.
 
-    Classifies each captured request and stores the full header set (minus
-    excluded headers) of one request per role: the first one sent to
+    Classifies each captured request and stores the header set Chrome sent
+    (:func:`sent_headers`, minus excluded headers) of one request per role:
+    the first one sent to
     *site_url*'s origin (the plugin's ``base_url``), else to another origin of
     that site, else the first of all (#228). A login's first CORS request is
     often an identity provider's or a tracker's, and its headers are not the
@@ -117,8 +149,9 @@ def extract_header_roles(
 
     Args:
         request_map: The capture backend's _request_map dict. Each entry
-            has at least a "headers" key with the request header dict, and
-            a "url" for the origin preference.
+            has a "headers" key with the renderer's request headers, a
+            "_request_extra_headers" key with the headers sent when Chrome
+            reported them, a "method", and a "url" for the origin preference.
         site_url: The site's URL, or None to take each role's first request.
 
     Returns:
@@ -126,7 +159,7 @@ def extract_header_roles(
         {"navigation": {"User-Agent": "...", ...}, "xhr": {...}}.
     """
     return {
-        role: {k: v for k, v in data["headers"].items() if kept_in_role(k)}
+        role: {k: v for k, v in sent_headers(data).items() if kept_in_role(k)}
         for role, data in _role_requests(request_map, site_url).items()
     }
 

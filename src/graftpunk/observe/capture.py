@@ -937,11 +937,11 @@ class _ExtraInfoCorrelator:
       theirs.
 
     Raw headers are kept beside the entry (``_request_extra_headers`` /
-    ``_response_extra_headers``) and merged only when the HAR is built, so
-    header-role extraction keeps seeing the renderer headers it was designed
-    for. ``_request_extra_seen`` / ``_response_extra_seen`` mark an entry that
-    has been given an event (directly or from the buffer); an entry takes at
-    most one of each kind.
+    ``_response_extra_headers``): the HAR merges them over the renderer's
+    (``_build_har_entry``), and header roles are taken from the request ones
+    (``graftpunk.observe.headers.sent_headers``). ``_request_extra_seen`` /
+    ``_response_extra_seen`` mark an entry that has been given an event
+    (directly or from the buffer); an entry takes at most one of each kind.
     """
 
     def __init__(self) -> None:

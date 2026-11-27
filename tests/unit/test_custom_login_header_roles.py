@@ -21,11 +21,19 @@ from graftpunk.plugins.cli_plugin import SitePlugin
 
 UA = "Mozilla/5.0 (Macintosh) Chrome/150.0.0.0 Safari/537.36"
 SITE = "https://myshop.example"
-BROWSER_HEADERS = {
+# What Chrome reports for a page load: the renderer's headers on
+# requestWillBeSent hold no Accept and no Sec-Fetch-*, and only the headers sent,
+# on requestWillBeSentExtraInfo, say it is a navigation.
+RENDERER_HEADERS = {
     "User-Agent": UA,
     "sec-ch-ua": '"Chromium";v="150"',
+    "Upgrade-Insecure-Requests": "1",
+}
+BROWSER_HEADERS = {
+    **RENDERER_HEADERS,
     "Sec-Fetch-Mode": "navigate",
     "Accept": "text/html",
+    "Host": "myshop.example",
 }
 
 
@@ -60,17 +68,22 @@ class _Tab:
         self._next += 1
         event = SimpleNamespace(
             request_id=str(self._next),
-            request=SimpleNamespace(url=url, method="GET", headers=dict(BROWSER_HEADERS)),
+            request=SimpleNamespace(url=url, method="GET", headers=dict(RENDERER_HEADERS)),
             redirect_response=None,
             wall_time=1_700_000_000.0 + self._next,
             type_="Document",
             document_url=url,
         )
-        for event_cls, handler in self.handlers:
-            if event_cls is network.RequestWillBeSent:
-                result = handler(event)
-                if inspect.isawaitable(result):
-                    await result
+        sent = SimpleNamespace(request_id=str(self._next), headers=dict(BROWSER_HEADERS))
+        for cls, cdp_event in (
+            (network.RequestWillBeSent, event),
+            (network.RequestWillBeSentExtraInfo, sent),
+        ):
+            for event_cls, handler in self.handlers:
+                if event_cls is cls:
+                    result = handler(cdp_event)
+                    if inspect.isawaitable(result):
+                        await result
         return self
 
 
@@ -128,8 +141,9 @@ class TestNodriverBrowserSession:
 
         stored = cached.call_args.args[0]
         assert stored is session
-        assert stored._gp_header_roles["navigation"]["User-Agent"] == UA
-        assert stored._gp_header_roles["navigation"]["sec-ch-ua"] == '"Chromium";v="150"'
+        assert stored._gp_header_roles == {
+            "navigation": {k: v for k, v in BROWSER_HEADERS.items() if k != "Host"}
+        }
         assert stored._gp_header_role_origins == {"navigation": SITE}
         assert session.transferred
 
@@ -312,19 +326,27 @@ class _Driver:
             raise selenium.common.exceptions.InvalidArgumentException(
                 "invalid argument: log type 'performance' not found"
             )
-        return [
-            _perf(
-                "Network.requestWillBeSent",
-                {
-                    "requestId": str(i),
-                    "wallTime": 1_700_000_000.0 + i,
-                    "type": "Document",
-                    "documentURL": url,
-                    "request": {"url": url, "method": "GET", "headers": dict(BROWSER_HEADERS)},
-                },
+        events = []
+        for i, url in enumerate(self.visited, start=1):
+            events.append(
+                _perf(
+                    "Network.requestWillBeSent",
+                    {
+                        "requestId": str(i),
+                        "wallTime": 1_700_000_000.0 + i,
+                        "type": "Document",
+                        "documentURL": url,
+                        "request": {"url": url, "method": "GET", "headers": RENDERER_HEADERS},
+                    },
+                )
             )
-            for i, url in enumerate(self.visited, start=1)
-        ]
+            events.append(
+                _perf(
+                    "Network.requestWillBeSentExtraInfo",
+                    {"requestId": str(i), "headers": BROWSER_HEADERS},
+                )
+            )
+        return events
 
     def get_cookies(self) -> list[dict[str, Any]]:
         return []
@@ -373,7 +395,9 @@ class TestSeleniumBrowserSessionSync:
         (driver,) = made
         assert driver.performance_log is True
         stored = cached.call_args.args[0]
-        assert stored._gp_header_roles["navigation"]["User-Agent"] == UA
+        assert stored._gp_header_roles == {
+            "navigation": {k: v for k, v in BROWSER_HEADERS.items() if k != "Host"}
+        }
         assert stored._gp_header_role_origins == {"navigation": SITE}
         err = capsys.readouterr().err
         assert "Performance log collection failed" not in err
