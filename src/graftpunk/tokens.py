@@ -834,6 +834,11 @@ def _store_csrf_token(session: requests.Session, name: str, value: str) -> None:
     setattr(session, _CSRF_TOKENS_ATTR, csrf_tokens)
 
 
+# The refusals (unauthorized, forbidden, rate-limited) a site that turns away
+# headless browsers can answer with; a 404 or a 500 says nothing about the mode.
+_HEADLESS_REFUSAL_STATUSES = frozenset({401, 403, 429})
+
+
 def _browser_read_failed(
     token: Token, base_url: str, http_errors: dict[str, int], headless: bool
 ) -> str:
@@ -847,9 +852,10 @@ def _browser_read_failed(
     )
     status = http_errors.get(url)
     if status is not None:
+        refused = headless and status in _HEADLESS_REFUSAL_STATUSES
         return (
             f"Browser extraction failed for token '{token.name}': its page {url} answered "
-            f"HTTP {status}{headless_hint if headless else ''}; see the browser_token_* log "
+            f"HTTP {status}{headless_hint if refused else ''}; see the browser_token_* log "
             "lines for the per-URL result"
         )
     looks_the_same = (

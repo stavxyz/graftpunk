@@ -1066,6 +1066,17 @@ class TestTheMessageForATokenTheBrowserDidNotRead:
         assert "TokenConfig(headless=False)" in text
         assert "redirected to login" not in text
 
+    @pytest.mark.parametrize("status", [401, 403, 429])
+    def test_a_refusal_status_on_a_headless_read_gets_the_hint(self, status: int) -> None:
+        text = self._message({"https://example.com/app": status}, headless=True)
+        assert f"answered HTTP {status}; a site that refuses a headless browser" in text
+
+    @pytest.mark.parametrize("status", [400, 404, 410, 500, 503])
+    def test_another_error_status_is_named_without_the_hint(self, status: int) -> None:
+        text = self._message({"https://example.com/app": status}, headless=True)
+        assert f"its page https://example.com/app answered HTTP {status}; see the" in text
+        assert "headless" not in text
+
     def test_a_visible_read_of_a_page_that_answered_403_names_the_status_only(self) -> None:
         text = self._message({"https://example.com/app": 403}, headless=False)
         assert "https://example.com/app answered HTTP 403" in text
