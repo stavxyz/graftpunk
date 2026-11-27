@@ -963,7 +963,9 @@ class _ExtraInfoCorrelator:
       data while another candidate without it exists, or wait for one (the
       next entry for the id, else the drain's last resort). Two requests whose
       headers carry the same body evidence (two bodiless ones, or a 307 or 308
-      pair, both with a body) still swap in that order. Likewise a
+      pair, both with a body) still swap in that order. A POST whose own sent headers say
+      ``Content-Length: 0`` while CDP reported post data waits too, and is
+      attached only by the drain's last resort. Likewise a
       redirect loop (two hops
       with the same status *and* ``Location``) with one dropped event cannot
       be told apart.
