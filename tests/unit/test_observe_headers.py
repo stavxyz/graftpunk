@@ -451,9 +451,38 @@ def test_a_form_post_role_holds_every_header_chrome_sent_but_the_excluded():
         }
     )
     request_map = {"1": _entry("https://myshop.example/login", "POST", RENDERER_POST, wire, 1.0)}
-    assert extract_header_roles(request_map, "https://myshop.example") == {
-        "form": {**BROWSER_NAV_ROLE, "Cache-Control": "max-age=0"}
+    assert extract_header_roles(request_map, "https://myshop.example") == {"form": BROWSER_NAV_ROLE}
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("If-None-Match", '"abc"'),
+        ("If-Modified-Since", "Wed, 25 Nov 2026 10:00:00 GMT"),
+        ("If-Match", '"abc"'),
+        ("If-Unmodified-Since", "Wed, 25 Nov 2026 10:00:00 GMT"),
+        ("If-Range", '"abc"'),
+        ("Range", "bytes=0-99"),
+        ("Cache-Control", "max-age=0"),
+        ("Pragma", "no-cache"),
+        ("Proxy-Authorization", "Basic cHJveHk6c2VjcmV0"),
+        ("Sec-Purpose", "prefetch"),
+        ("Purpose", "prefetch"),
+    ],
+)
+@pytest.mark.parametrize("spell", [str, str.lower])
+def test_per_request_and_other_party_credential_headers_stay_out_of_roles(
+    name: str, value: str, spell
+):
+    assert name.lower() in EXCLUDED_HEADERS
+    request_map = {
+        "1": _entry(
+            "https://myshop.example/a", "GET", RENDERER_NAV, _wire(**{spell(name): value}), 1.0
+        )
     }
+    role = extract_header_roles(request_map, "https://myshop.example")["navigation"]
+    assert name.lower() not in {k.lower() for k in role}
+    assert role == BROWSER_NAV_ROLE
 
 
 def test_the_get_after_a_post_redirect_is_classified_from_its_own_headers():
@@ -893,7 +922,7 @@ def _selenium_roles() -> tuple[dict, dict]:
 def test_both_backends_take_a_logins_roles_from_the_headers_chrome_sent():
     expected_roles = {
         "navigation": BROWSER_NAV_ROLE,
-        "form": {**BROWSER_NAV_ROLE, "Cache-Control": "max-age=0"},
+        "form": BROWSER_NAV_ROLE,
     }
     expected_origins = {"navigation": SITE, "form": SITE}
     assert _nodriver_roles() == (expected_roles, expected_origins)

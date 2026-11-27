@@ -7,10 +7,14 @@ from typing import Any
 from graftpunk.client_headers import client_sets_header
 from graftpunk.public_suffix import Origin, origin, same_site, serialized_origin
 
-# Headers excluded from roles: request-specific (cookie, referer, origin,
-# content-type) or ephemeral security tokens (x-csrf-token). The ones the HTTP
-# client or the transport supplies (host, connection, accept-encoding,
-# content-length, priority, and every HTTP/2 pseudo-header) are
+# Headers excluded from roles, since a role is replayed on every later request:
+# request-specific (cookie, referer, origin, content-type), ephemeral security
+# tokens (x-csrf-token), and what Chrome's network stack adds for one request's
+# state (the conditional and range headers, cache-control and pragma on a
+# reload, sec-purpose and purpose on a prefetch), or as a credential for
+# another party (proxy-authorization, for a proxy). The ones the HTTP client
+# or the transport supplies (host, connection, accept-encoding, content-length,
+# priority, and every HTTP/2 pseudo-header) are
 # graftpunk.client_headers.client_sets_header's, checked beside this set.
 EXCLUDED_HEADERS: frozenset[str] = frozenset(
     {
@@ -19,6 +23,17 @@ EXCLUDED_HEADERS: frozenset[str] = frozenset(
         "referer",
         "origin",
         "x-csrf-token",
+        "if-none-match",
+        "if-modified-since",
+        "if-match",
+        "if-unmodified-since",
+        "if-range",
+        "range",
+        "cache-control",
+        "pragma",
+        "proxy-authorization",
+        "sec-purpose",
+        "purpose",
     }
 )
 
