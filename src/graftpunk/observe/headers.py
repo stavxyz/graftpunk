@@ -33,10 +33,11 @@ def classify_request(headers: dict[str, str], method: str | None = None) -> str 
     """Classify a request into a header role based on its headers.
 
     Classification priority:
-    1. ``Sec-Fetch-Mode: cors`` is an XHR.
-    2. A form Content-Type on any other mode is a form: a browser submits a form
-       as a navigation (``Sec-Fetch-Mode: navigate``), so this comes before
-       the navigation rule. With *method* given, only a POST can be a form.
+    1. A form Content-Type (urlencoded or multipart) is a form, in any
+       ``Sec-Fetch-Mode``: a browser submits a form as a navigation, and 1.46.0,
+       reading renderer headers that carry no mode, called a ``fetch()`` of
+       ``FormData`` a form too. With *method* given, only a POST can be a form.
+    2. ``Sec-Fetch-Mode: cors`` is an XHR.
     3. ``Sec-Fetch-Mode: navigate`` is a navigation.
     4. X-Requested-With / Accept heuristics (for XHR detection), then an Accept
        of ``text/html`` for a navigation.
@@ -51,10 +52,6 @@ def classify_request(headers: dict[str, str], method: str | None = None) -> str 
     # Normalize header keys to lowercase for comparison
     lower = {k.lower(): v for k, v in headers.items()}
 
-    sec_fetch = lower.get("sec-fetch-mode", "")
-    if sec_fetch == "cors":
-        return "xhr"
-
     content_type = lower.get("content-type", "")
     form_body = (
         "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type
@@ -62,6 +59,9 @@ def classify_request(headers: dict[str, str], method: str | None = None) -> str 
     if form_body and (method is None or method.upper() == "POST"):
         return "form"
 
+    sec_fetch = lower.get("sec-fetch-mode", "")
+    if sec_fetch == "cors":
+        return "xhr"
     if sec_fetch == "navigate":
         return "navigation"
 

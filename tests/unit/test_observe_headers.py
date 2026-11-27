@@ -547,9 +547,30 @@ def test_classify_a_navigating_form_post_is_a_form():
     assert classify_request(headers, method="POST") == "form"
 
 
-def test_classify_a_cors_form_body_is_xhr():
-    headers = {"Sec-Fetch-Mode": "cors", "Content-Type": "application/x-www-form-urlencoded"}
+@pytest.mark.parametrize(
+    "content_type", ["application/x-www-form-urlencoded", "multipart/form-data; boundary=x"]
+)
+@pytest.mark.parametrize("mode", ["cors", "navigate", "same-origin", "no-cors", None])
+def test_classify_a_form_body_post_is_a_form_in_every_mode(content_type: str, mode: str | None):
+    """1.46.0 classified a form-bodied POST as a form from the renderer headers,
+    which carry no Sec-Fetch-Mode; a fetch() of FormData stays a form in 1.46.1."""
+    headers = {"Content-Type": content_type}
+    if mode is not None:
+        headers["Sec-Fetch-Mode"] = mode
+    assert classify_request(headers, method="POST") == "form"
+
+
+def test_classify_a_json_xhr_is_still_xhr():
+    headers = {
+        "Sec-Fetch-Mode": "cors",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
     assert classify_request(headers, method="POST") == "xhr"
+    request_map = {
+        "1": _entry("https://myshop.example/api", "POST", {}, {**_wire(), **headers}, 1.0)
+    }
+    assert list(extract_header_roles(request_map)) == ["xhr"]
 
 
 def test_classify_a_get_is_never_a_form():
