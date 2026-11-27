@@ -175,6 +175,16 @@ pytest tests/unit/test_cache.py -v
 pytest tests/ -k "test_encryption" -v
 ```
 
+### A test that fails in CI and passes alone
+
+A CI runner is a loaded machine, so a test whose outcome depends on how fast the machine runs can pass on a quiet laptop and fail there. `scripts/repeat_under_load.sh` runs one test many times while busy loops hold every CPU, and counts the failures:
+
+```bash
+scripts/repeat_under_load.sh 50 tests/unit/test_login_verdict.py::TestVerdictComesLast::test_a_rate_limit_page_is_named
+```
+
+Run it before calling a CI failure a flake, and after fixing one: a fix is shown when the count drops to zero over enough runs (100 is a good number). It exits 1 when any run failed, and keeps each run's output for reading the failure. The login tests' time budgets are an example: `tests/unit/conftest.py`'s `_login_hard_end_out_of_reach` fixture moves a nodriver login wait's hard end out of reach so a slow tick cannot end the wait before its last page read.
+
 ### Writing Tests
 
 - Place unit tests in `tests/unit/`
