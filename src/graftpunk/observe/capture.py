@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import base64
 import binascii
 import contextlib
+import copy
 import datetime
 import inspect
 import json
