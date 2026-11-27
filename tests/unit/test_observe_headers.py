@@ -752,10 +752,23 @@ def test_an_sso_callback_role_says_same_origin_on_the_site_and_cross_site_elsewh
     assert "X-Marker" not in elsewhere.headers
 
 
-def test_other_roles_keep_their_sec_fetch_site():
+@pytest.mark.parametrize(
+    ("captured", "stored"),
+    [
+        ("none", "same-origin"),
+        ("cross-site", "same-origin"),
+        ("same-origin", "same-origin"),
+        ("same-site", "same-site"),
+    ],
+)
+def test_form_and_xhr_roles_store_a_relation_their_own_origin_can_have(captured: str, stored: str):
+    """A role is sent only to the origin it came from. A form posted there from
+    another site (an SSO form_post callback, a SAML POST) or typed has no such
+    relation to it; a same-site one (a sibling origin's page posting) can."""
     form_wire = _wire(**{"Content-Type": "application/x-www-form-urlencoded"})
-    form_wire["Sec-Fetch-Site"] = "none"
-    xhr_wire = {**_wire(), "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "none"}
+    form_wire["sec-fetch-site"] = captured
+    del form_wire["Sec-Fetch-Site"]
+    xhr_wire = {**_wire(), "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": captured}
     request_map = {
         "1": _nav("https://myshop.example/login", "none", 1.0),
         "2": _entry("https://myshop.example/login", "POST", RENDERER_POST, form_wire, 2.0),
@@ -763,8 +776,60 @@ def test_other_roles_keep_their_sec_fetch_site():
     }
     roles = extract_header_roles(request_map, SITE)
     assert roles["navigation"]["Sec-Fetch-Site"] == "same-origin"
-    assert roles["form"]["Sec-Fetch-Site"] == "none"
-    assert roles["xhr"]["Sec-Fetch-Site"] == "none"
+    assert roles["form"]["sec-fetch-site"] == stored
+    assert "Sec-Fetch-Site" not in roles["form"]
+    assert roles["xhr"]["Sec-Fetch-Site"] == stored
+
+
+def test_an_oidc_form_post_logins_form_role_is_replayed_as_same_origin():
+    """The identity provider's page auto-posts to the site's callback: the site's
+    own form POST is cross-site as captured, and a command's form POST to the
+    site must not say so."""
+    from graftpunk.graftpunk_session import GraftpunkSession
+    from graftpunk.observe.headers import header_role_origins
+
+    form = "application/x-www-form-urlencoded"
+
+    def posted(url: str, site: str, ts: float) -> dict:
+        wire = _wire(**{"Content-Type": form, "X-Marker": f"{url}@{ts}"})
+        wire["Sec-Fetch-Site"] = site
+        return _entry(url, "POST", RENDERER_POST, wire, ts)
+
+    request_map = {
+        "1": _nav(f"{SITE}/login", "none", 1.0),
+        "2": _nav("https://idp.other.example/authorize", "cross-site", 2.0),
+        "3": posted("https://idp.other.example/login", "same-origin", 3.0),
+        "4": posted(f"{SITE}/oidc/callback", "cross-site", 4.0),
+        "5": _nav(f"{SITE}/home", "cross-site", 5.0),
+    }
+    roles = extract_header_roles(request_map, SITE)
+    assert roles["form"]["X-Marker"] == f"{SITE}/oidc/callback@4.0"
+    assert roles["form"]["Sec-Fetch-Site"] == "same-origin"
+
+    import requests
+
+    sent: list[requests.PreparedRequest] = []
+
+    class Wire(requests.adapters.BaseAdapter):
+        def send(self, request, **kwargs):  # noqa: ANN001, ANN003, ANN201
+            sent.append(request)
+            response = requests.Response()
+            response.status_code = 200
+            response.request = request
+            response.url = request.url
+            response._content = b""
+            return response
+
+        def close(self) -> None:
+            pass
+
+    session = GraftpunkSession(header_roles=roles, base_url=SITE)
+    session._gp_header_role_origins = header_role_origins(request_map, SITE)
+    session.mount("https://", Wire())
+    session.post(f"{SITE}/cart/add", data={"sku": "1"})
+    [command] = sent
+    assert command.headers["Sec-Fetch-Site"] == "same-origin"
+    assert command.headers["Sec-Fetch-Mode"] == "navigate"
 
 
 # --- both backends: the same Chrome events give the same roles ---

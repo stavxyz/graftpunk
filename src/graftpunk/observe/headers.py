@@ -166,19 +166,29 @@ def _role_requests(
     return {role: data for role, (_key, data) in chosen.items()}
 
 
+def _stored_fetch_site(role: str, captured: str) -> str:
+    """The ``Sec-Fetch-Site`` *role* stores for a *captured* one.
+
+    A role goes only to the origin it was captured from. A navigation there is
+    same-origin: "none" would say the user typed every command's address, and a
+    captured same-site or cross-site (an SSO callback) names the page the login
+    came from; 1.46.0 sent the registered role's same-origin. A form or an XHR
+    keeps same-origin and same-site (a sibling origin's page can send one), and
+    stores same-origin for "none" or cross-site (an SSO form_post callback, a
+    SAML POST), which no command sent from the site's own pages has.
+    """
+    if role == "navigation" or captured in ("none", "cross-site"):
+        return "same-origin"
+    return captured
+
+
 def _role_headers(role: str, data: dict[str, Any]) -> dict[str, str]:
     """The headers *role* keeps of the request-map entry *data*."""
     headers = {k: v for k, v in sent_headers(data).items() if kept_in_role(k)}
-    if role == "navigation":
-        # The role goes only to the origin it was captured from, where a page
-        # load is same-origin: "none" would say the user typed every command's
-        # address, and a captured same-site or cross-site (an SSO callback)
-        # names the page the login came from. 1.46.0 sent the registered
-        # role's same-origin.
-        headers = {
-            k: "same-origin" if k.lower() == "sec-fetch-site" else v for k, v in headers.items()
-        }
-    return headers
+    return {
+        k: _stored_fetch_site(role, v) if k.lower() == "sec-fetch-site" else v
+        for k, v in headers.items()
+    }
 
 
 def extract_header_roles(
@@ -194,8 +204,8 @@ def extract_header_roles(
     often an identity provider's or a tracker's, and its headers are not the
     ones the site's own pages send. The navigation role prefers a top-level
     document to a frame's load and, after the origin order, a page load the site
-    sent to one the login typed (``Sec-Fetch-Site: none``); its
-    ``Sec-Fetch-Site`` is always stored as ``same-origin``.
+    sent to one the login typed (``Sec-Fetch-Site: none``). Each role's
+    ``Sec-Fetch-Site`` is stored as :func:`_stored_fetch_site` says.
 
     Args:
         request_map: The capture backend's _request_map dict. Each entry
