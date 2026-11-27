@@ -1074,12 +1074,19 @@ class _ExtraInfoCorrelator:
                 attached += 1
         return attached
 
+    def attach_buffered(self, request_map: dict[str, dict[str, Any]]) -> int:
+        """The last-resort attach of :meth:`log_unmatched`, without its report:
+        for header roles read while the capture still runs. Returns how many
+        events were attached; an attached event leaves the buffer, so a later
+        drain does not count it again."""
+        return self._fallback(request_map, "request") + self._fallback(request_map, "response")
+
     def log_unmatched(self, request_map: dict[str, dict[str, Any]]) -> None:
         """At drain time, attach what can still be attached as a last resort, then
         report ExtraInfo that never found its entry and redirect hops that never
         received theirs (a dropped event; measured on nodriver 0.48.1 for the
         request side)."""
-        fallback = self._fallback(request_map, "request") + self._fallback(request_map, "response")
+        fallback = self.attach_buffered(request_map)
         req = sum(len(v) for v in self._pending_request.values())
         resp = sum(len(v) for v in self._pending_response.values())
         hops = [e for e in request_map.values() if e.get("_redirect_hop")]
@@ -1854,13 +1861,17 @@ class NodriverCaptureBackend:
         return self._console_logs
 
     def get_header_roles(self, site_url: str | None = None) -> dict[str, dict[str, str]]:
-        """Return header roles classified from captured network requests."""
+        """Return header roles classified from captured network requests.
 
+        Both nodriver logins read them before the capture stops, so sent
+        headers still buffered (out of order, or unmatched) are attached first,
+        as the stop's drain would attach them."""
+        self._extra_info.attach_buffered(self._request_map)
         return _header_roles_in_order(self._request_map, site_url)
 
     def get_header_role_origins(self, site_url: str | None = None) -> dict[str, str]:
         """Return the origin each of :meth:`get_header_roles`'s roles came from."""
-
+        self._extra_info.attach_buffered(self._request_map)
         return _header_role_origins_in_order(self._request_map, site_url)
 
     def request_count(self) -> int:

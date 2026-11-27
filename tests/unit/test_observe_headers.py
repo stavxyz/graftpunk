@@ -237,7 +237,7 @@ def test_selenium_backend_get_header_roles():
 
 def test_nodriver_backend_get_header_roles():
     """NodriverCaptureBackend exposes header roles from its request map."""
-    backend = NodriverCaptureBackend.__new__(NodriverCaptureBackend)
+    backend = NodriverCaptureBackend(None, record_request_bodies=False)
     backend._request_map = {
         "1": {"headers": {"sec-fetch-mode": "cors", "Accept": "application/json"}},
     }
@@ -927,3 +927,44 @@ def test_both_backends_take_a_logins_roles_from_the_headers_chrome_sent():
     expected_origins = {"navigation": SITE, "form": SITE}
     assert _nodriver_roles() == (expected_roles, expected_origins)
     assert _selenium_roles() == (expected_roles, expected_origins)
+
+
+def test_sent_headers_still_buffered_when_the_login_ends_reach_their_entry():
+    """Chrome reported the sent headers before the request, and their :path spells
+    the query as sent (percent-encoded) where the request's URL does not, so the
+    correlator could not match them and kept them buffered. The roles are read
+    before the capture stops on nodriver, so the last-resort attach must run
+    there too."""
+    url = f"{SITE}/search?q=a b"
+    wire = {
+        ":authority": "myshop.example",
+        ":method": "GET",
+        ":path": "/search?q=a%20b",
+        ":scheme": "https",
+        **{k.lower(): v for k, v in _wire().items()},
+    }
+    events = [
+        ("Network.requestWillBeSentExtraInfo", {"requestId": "7", "headers": wire}),
+        (
+            "Network.requestWillBeSent",
+            {
+                "requestId": "7",
+                "wallTime": 1_700_000_001.0,
+                "type": "Document",
+                "documentURL": url,
+                "request": {"url": url, "method": "GET", "headers": RENDERER_NAV},
+            },
+        ),
+    ]
+    backend = NodriverCaptureBackend(None, record_request_bodies=False, record_console=False)
+    handlers = {
+        "Network.requestWillBeSent": backend._on_request,
+        "Network.requestWillBeSentExtraInfo": backend._on_request_extra_info,
+    }
+    for method, params in events:
+        handlers[method](_nodriver_event(params))
+
+    roles = backend.get_header_roles(SITE)
+    assert roles["navigation"]["accept-language"] == "en-US,en;q=0.9"
+    assert roles["navigation"]["User-Agent"] == CHROME_UA
+    assert backend.get_header_role_origins(SITE) == {"navigation": SITE}
