@@ -39,7 +39,7 @@ class TestRunBrowserExtraction:
         assert result == {"X-CSRF": "token123"}
         mock_suppress.assert_called_once()
         mock_extract.assert_awaited_once_with(
-            session, [token], "https://example.com", headless=True
+            session, [token], "https://example.com", headless=True, http_errors=None
         )
 
     def test_async_context_uses_thread_pool(self) -> None:

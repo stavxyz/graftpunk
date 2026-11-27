@@ -942,3 +942,140 @@ class TestBrowserExtractionArmsTheHandlers:
             _run_browser_extraction(requests.Session(), [_HYGIENE_TOKEN], "https://example.com")
 
         assert signal_module.getsignal(signal_module.SIGTERM) is signals._handle_termination
+
+
+# ---------------------------------------------------------------------------
+# A token page that answered an HTTP error: a site that refuses a headless
+# browser answers 403 to it, and the token is then never on the page.
+# ---------------------------------------------------------------------------
+
+
+def _status_browser(status: object) -> MagicMock:
+    """A browser whose page holds no token and whose navigation answered *status*
+    (what ``performance``'s navigation entry reports as ``responseStatus``)."""
+    browser = _hygiene_browser()
+    tab = browser.main_tab
+    tab.get_content = AsyncMock(return_value="<html><title>403 refused</title></html>")
+    if isinstance(status, BaseException):
+        tab.evaluate = AsyncMock(side_effect=status)
+    else:
+        tab.evaluate = AsyncMock(return_value=status)
+    return browser
+
+
+class TestTokenPageHttpError:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [403, 500])
+    async def test_an_error_status_on_a_page_whose_token_was_not_read_is_reported(
+        self, status: int
+    ) -> None:
+        from structlog.testing import capture_logs
+
+        from graftpunk.tokens import _extract_tokens_browser
+
+        errors: dict[str, int] = {}
+        with (
+            _patched_nodriver(AsyncMock(return_value=_status_browser(status))),
+            capture_logs() as logs,
+        ):
+            results = await _extract_tokens_browser(
+                requests.Session(),
+                [_HYGIENE_TOKEN],
+                "https://example.com",
+                http_errors=errors,
+            )
+
+        assert results == {}
+        assert errors == {"https://example.com/app": status}
+        (event,) = [e for e in logs if e["event"] == "browser_token_page_http_error"]
+        assert event["status"] == status
+        assert event["url"] == "https://example.com/app"
+        assert event["log_level"] == "warning"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [200, 304, None, "403", True, RuntimeError("closed")])
+    async def test_no_error_status_is_reported_for_a_success_or_an_unreadable_one(
+        self, status: object
+    ) -> None:
+        from graftpunk.tokens import _extract_tokens_browser
+
+        errors: dict[str, int] = {}
+        with _patched_nodriver(AsyncMock(return_value=_status_browser(status))):
+            results = await _extract_tokens_browser(
+                requests.Session(),
+                [_HYGIENE_TOKEN],
+                "https://example.com",
+                http_errors=errors,
+            )
+
+        assert results == {}
+        assert errors == {}
+
+    @pytest.mark.asyncio
+    async def test_a_page_whose_token_was_read_is_not_asked_for_its_status(self) -> None:
+        from graftpunk.tokens import _extract_tokens_browser
+
+        browser = _hygiene_browser()
+        browser.main_tab.evaluate = AsyncMock(return_value=403)
+        errors: dict[str, int] = {}
+        with _patched_nodriver(AsyncMock(return_value=browser)):
+            results = await _extract_tokens_browser(
+                requests.Session(), [_HYGIENE_TOKEN], "https://example.com", http_errors=errors
+            )
+
+        assert results == {"X-CSRF": "v1"}
+        assert errors == {}
+        browser.main_tab.evaluate.assert_not_awaited()
+
+
+def _fails_with(errors: dict[str, int]) -> object:
+    def run(_session: object, _tokens: object, _base: object, **kwargs: object) -> dict:
+        sink = kwargs.get("http_errors")
+        assert isinstance(sink, dict)
+        sink.update(errors)
+        return {}
+
+    return run
+
+
+class TestTheMessageForATokenTheBrowserDidNotRead:
+    def _message(self, errors: dict[str, int], *, headless: bool) -> str:
+        from graftpunk.exceptions import TokenExtractionError
+
+        config = TokenConfig(tokens=(_HYGIENE_TOKEN,), headless=headless)
+        with (
+            patch("graftpunk.tokens._run_browser_extraction", side_effect=_fails_with(errors)),
+            pytest.raises(TokenExtractionError) as raised,
+        ):
+            prepare_session(requests.Session(), config, "https://example.com")
+        return str(raised.value)
+
+    def test_a_headless_read_of_a_page_that_answered_403_names_the_status_and_the_setting(
+        self,
+    ) -> None:
+        text = self._message({"https://example.com/app": 403}, headless=True)
+        assert "Browser extraction failed for token 'X-CSRF'" in text
+        assert "https://example.com/app answered HTTP 403" in text
+        assert "TokenConfig(headless=False)" in text
+        assert "redirected to login" not in text
+
+    def test_a_visible_read_of_a_page_that_answered_403_names_the_status_only(self) -> None:
+        text = self._message({"https://example.com/app": 403}, headless=False)
+        assert "https://example.com/app answered HTTP 403" in text
+        assert "headless" not in text
+
+    def test_a_headless_read_without_an_error_status_says_a_refusal_looks_the_same(
+        self,
+    ) -> None:
+        text = self._message({}, headless=True)
+        assert "redirected to login (re-login) or the pattern no longer matches" in text
+        assert "refuses a headless browser" in text
+        assert "TokenConfig(headless=False)" in text
+
+    def test_a_visible_read_without_an_error_status_keeps_the_1_46_0_text(self) -> None:
+        text = self._message({}, headless=False)
+        assert text == (
+            "Browser extraction failed for token 'X-CSRF': the page may have redirected "
+            "to login (re-login) or the pattern no longer matches (update the Token "
+            "config); see the browser_token_* log lines for the per-URL result"
+        )
