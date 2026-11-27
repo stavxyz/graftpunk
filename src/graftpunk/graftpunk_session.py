@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 import requests
+from requests.structures import CaseInsensitiveDict
 
 from graftpunk.client_headers import client_sets_header
 from graftpunk.cookies import BrowserCookiesMixin
@@ -727,11 +728,12 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         role_headers = self._role_headers_for(role_name, url, method)
 
         if referer is not None:
-            role_headers["Referer"] = self._resolve_referer(referer)
+            role_headers = _layered(role_headers, {"Referer": self._resolve_referer(referer)})
 
-        # Caller headers override role headers
+        # Caller headers override role headers, matched in any case: a role
+        # captured over HTTP/2 spells every name in lower case.
         if headers:
-            role_headers.update(headers)
+            role_headers = _layered(role_headers, dict(headers))
         caller = frozenset(name.lower() for name in headers or {})
         if referer is not None:
             caller |= {"referer"}
@@ -784,7 +786,7 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
 
         # Check for explicit Accept: application/json in caller headers
         caller_headers = request.headers or {}
-        caller_accept = caller_headers.get("Accept", "")
+        caller_accept = _case_insensitive_get(dict(caller_headers), "Accept") or ""
         if "application/json" in caller_accept:
             return "xhr"
 
@@ -812,7 +814,7 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
             True if the header differs from its initial value, False otherwise.
         """
         current_value = self.headers.get(key)
-        default_value = self._gp_default_session_headers.get(key)
+        default_value = _case_insensitive_get(self._gp_default_session_headers, key)
         return current_value != default_value
 
     def _inject_csrf_tokens(
@@ -933,8 +935,10 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
             # user-modified session headers > role > session defaults.
             original_session_headers = dict(self.headers)
 
-            # Start from role headers as the base
-            merged = dict(role_headers)
+            # Start from role headers as the base, names compared in any case: a
+            # role captured over HTTP/2 holds "accept", which the session default
+            # "Accept: */*" must not replace.
+            merged = CaseInsensitiveDict(role_headers)
             # Layer session headers on top, but only if user changed them
             for key, value in original_session_headers.items():
                 if self._is_user_set_header(key):

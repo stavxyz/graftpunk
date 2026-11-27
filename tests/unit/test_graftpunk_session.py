@@ -1598,3 +1598,85 @@ class TestExplicitRolePerThread:
         assert explicit.role == "xhr"
         assert "x-requested-with" not in explicit.caller
         assert "x-requested-with" in explicit.role_headers
+
+
+# ---------------------------------------------------------------------------
+# Header names in any case. Chrome sends every name in lower case on HTTP/2,
+# and a role captured from those keeps that spelling (accept, accept-language).
+# ---------------------------------------------------------------------------
+
+_SPELLED_SITE = "https://myshop.example"
+_HTML = "text/html,*/*;q=0.8"
+
+
+def _spelled_session(roles: dict[str, dict[str, str]]) -> tuple[GraftpunkSession, _Wire]:
+    session = GraftpunkSession(header_roles=roles, base_url=_SPELLED_SITE)
+    session._gp_header_role_origins = dict.fromkeys(roles, _SPELLED_SITE)
+    wire = _Wire()
+    session.mount("https://", wire)
+    return session, wire
+
+
+def _navigation(accept_name: str) -> dict[str, str]:
+    return {
+        accept_name: _HTML,
+        "accept-language": "en-US",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "same-origin",
+        "user-agent": "Mozilla/5.0 Chrome/158",
+    }
+
+
+def _values(prepared: requests.PreparedRequest, name: str) -> list[str]:
+    return [v for k, v in prepared.headers.items() if k.lower() == name]
+
+
+class TestHeaderNamesInAnyCase:
+    @pytest.mark.parametrize("accept_name", ["accept", "Accept", "ACCEPT"])
+    @pytest.mark.parametrize("how", ["get", "role"])
+    def test_a_roles_accept_beats_the_session_default_in_any_spelling(
+        self, accept_name: str, how: str
+    ) -> None:
+        session, wire = _spelled_session({"navigation": _navigation(accept_name)})
+        if how == "get":
+            session.get(f"{_SPELLED_SITE}/orders")
+        else:
+            session.request_with_role("navigation", "GET", f"{_SPELLED_SITE}/orders")
+        [sent] = wire.sent
+        assert _values(sent, "accept") == [_HTML]
+        assert _values(sent, "accept-language") == ["en-US"]
+
+    @pytest.mark.parametrize("caller_name", ["Accept", "accept"])
+    def test_a_callers_accept_replaces_the_roles_in_any_spelling(self, caller_name: str) -> None:
+        session, wire = _spelled_session({"navigation": _navigation("accept")})
+        session.request_with_role(
+            "navigation", "GET", f"{_SPELLED_SITE}/feed", headers={caller_name: "application/xml"}
+        )
+        [sent] = wire.sent
+        assert _values(sent, "accept") == ["application/xml"]
+
+    def test_a_session_header_the_user_set_beats_the_role_in_any_spelling(self) -> None:
+        session, wire = _spelled_session({"navigation": _navigation("accept")})
+        session.headers["Accept-Language"] = "fr-FR"
+        session.get(f"{_SPELLED_SITE}/orders")
+        [sent] = wire.sent
+        assert _values(sent, "accept-language") == ["fr-FR"]
+        assert _values(sent, "accept") == [_HTML]
+
+    @pytest.mark.parametrize("caller_name", ["Accept", "accept"])
+    def test_a_json_accept_in_any_spelling_detects_xhr(self, caller_name: str) -> None:
+        session, wire = _spelled_session(
+            {"navigation": _navigation("accept"), "xhr": {"x-marker": "xhr"}}
+        )
+        session.get(f"{_SPELLED_SITE}/api", headers={caller_name: "application/json"})
+        [sent] = wire.sent
+        assert _values(sent, "x-marker") == ["xhr"]
+
+    def test_with_no_navigation_role_a_get_sends_the_registered_html_accept(self) -> None:
+        """What a 1.46.0 login that cached only a form role got on a plain get()."""
+        session, wire = _spelled_session(
+            {"form": {"User-Agent": "Mozilla/5.0 Chrome/158", "Upgrade-Insecure-Requests": "1"}}
+        )
+        session.get(f"{_SPELLED_SITE}/orders")
+        [sent] = wire.sent
+        assert _values(sent, "accept") == [get_role_headers("navigation")["Accept"]]
