@@ -183,3 +183,52 @@ def test_reaping_nothing_is_a_no_op() -> None:
     from graftpunk.backends.nodriver import reap_stopped_chrome
 
     asyncio.run(reap_stopped_chrome(None))
+
+
+def test_a_hand_written_logins_chrome_has_exited_when_its_block_ends(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``browser_session()`` ends Chrome through the session's own stop, which
+    waits for the exit, so the process is gone when the ``async with`` ends."""
+    from graftpunk.plugins.cli_plugin import SitePlugin
+    from graftpunk.session import BrowserSession
+
+    class Shop(SitePlugin):
+        site_name = "myshop"
+        session_name = "myshop"
+        help_text = "Test"
+        base_url = "https://myshop.example"
+
+    at_exit: list[int | None] = []
+
+    async def run(proc: asyncio.subprocess.Process) -> None:
+        browser = _Browser(proc)
+        session = BrowserSession(backend="nodriver", headless=False)
+        backend = session._backend_instance
+
+        async def start() -> None:
+            backend._started = True
+            backend._browser = browser
+
+        session.start_async = start  # type: ignore[method-assign]
+        session.transfer_nodriver_cookies_to_session = AsyncMock()  # type: ignore[method-assign]
+
+        async def page_url(_tab: Any) -> Any:
+            return MagicMock(live=True, url="https://myshop.example/account")
+
+        with (
+            patch("graftpunk.BrowserSession", return_value=session),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                side_effect=RuntimeError("no capture in this test"),
+            ),
+            patch("graftpunk.plugins.login_settle.page_url_nodriver", page_url),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.backends.nodriver.close_dialogs_in_new_tabs", AsyncMock()),
+        ):
+            async with Shop().browser_session():
+                assert proc.returncode is None
+        at_exit.append(proc.returncode)
+
+    _noise, _proc = _closed_loop_noise(run, monkeypatch, caplog)
+    assert at_exit == [0]

@@ -258,11 +258,12 @@ _PAGE_STATUS_JS = (
 _PAGE_STATUS_READ_S = 5.0
 
 
-async def _page_error_status(tab: Any) -> int | None:
+async def _page_error_status(tab: Any, *, within: float = _PAGE_STATUS_READ_S) -> int | None:
     """The HTTP error status (400 or above) the tab's page was answered with, or
-    None for a success or a status that cannot be read."""
+    None for a success, a status that cannot be read, or no answer in *within*
+    seconds (the read is then abandoned, not cancelled: graftpunk.cdp_wait)."""
     try:
-        end = asyncio.get_running_loop().time() + _PAGE_STATUS_READ_S
+        end = asyncio.get_running_loop().time() + within
         status = await answer_by(tab.evaluate(_PAGE_STATUS_JS, return_by_value=True), end=end)
     except Exception as exc:  # noqa: BLE001 - the status only words the error; any failure leaves it unknown
         LOG.debug("browser_token_page_status_unread", error=str(exc), exc_type=type(exc).__name__)

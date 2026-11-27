@@ -1019,6 +1019,18 @@ class TestTokenPageHttpError:
         assert errors == {}
 
     @pytest.mark.asyncio
+    async def test_a_status_read_that_never_answers_gives_up_within_its_bound(self) -> None:
+        import time
+
+        from graftpunk.tokens import _page_error_status
+
+        tab = MagicMock()
+        tab.evaluate = MagicMock(return_value=asyncio.get_running_loop().create_future())
+        began = time.monotonic()
+        assert await _page_error_status(tab, within=0.05) is None
+        assert time.monotonic() - began < 1.0
+
+    @pytest.mark.asyncio
     async def test_a_page_whose_token_was_read_is_not_asked_for_its_status(self) -> None:
         from graftpunk.tokens import _extract_tokens_browser
 
