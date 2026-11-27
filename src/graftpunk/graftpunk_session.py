@@ -266,10 +266,18 @@ _LOWER_IDENTITY_HEADERS: Final[frozenset[str]] = frozenset(
 
 def _layered(base: dict[str, str], over: dict[str, str]) -> dict[str, str]:
     """*base* with *over* merged on top, a header of *over* replacing one of
-    *base* with the same name in any case."""
-    names = {name.lower() for name in over}
-    merged = {name: value for name, value in base.items() if name.lower() not in names}
-    merged.update(over)
+    *base* with the same name in any case, in that header's place and in
+    *over*'s spelling (as a dict update did when the spellings matched), and the
+    names *base* lacks appended in *over*'s order."""
+    pending = {name.lower(): (name, value) for name, value in over.items()}
+    merged: dict[str, str] = {}
+    for name, value in base.items():
+        hit = pending.pop(name.lower(), None)
+        if hit is None:
+            merged[name] = value
+        else:
+            merged[hit[0]] = hit[1]
+    merged.update(dict(pending.values()))
     return merged
 
 

@@ -1707,3 +1707,53 @@ class TestANamedRoleIsTheOneApplied:
         assert sent.headers["Sec-Fetch-Mode"] == "cors"
         assert sent.headers["Accept"] == "text/csv"
         assert sent.headers.get("Sec-Fetch-Dest") != "document"
+
+
+class TestCallerHeadersKeepTheirSlot:
+    """A caller's header, or a referer=, replaces a role header in that header's
+    place, as 1.46.0 sent it (header names in order, read off 048efcd4 through
+    the same fake adapter)."""
+
+    @pytest.mark.parametrize(
+        ("caller", "expected"),
+        [
+            (
+                {"Sec-Fetch-Mode": "no-cors", "X-A": "1"},
+                [
+                    "User-Agent",
+                    "Accept-Encoding",
+                    "Accept",
+                    "Connection",
+                    "Sec-Fetch-Dest",
+                    "Sec-Fetch-Mode",
+                    "Sec-Fetch-Site",
+                    "X-Requested-With",
+                    "Referer",
+                    "X-A",
+                ],
+            ),
+            (
+                {"sec-fetch-mode": "no-cors"},
+                [
+                    "User-Agent",
+                    "Accept-Encoding",
+                    "Accept",
+                    "Connection",
+                    "Sec-Fetch-Dest",
+                    "sec-fetch-mode",
+                    "Sec-Fetch-Site",
+                    "X-Requested-With",
+                    "Referer",
+                ],
+            ),
+        ],
+        ids=["canonical", "lower-case"],
+    )
+    def test_the_order_is_1_46_0s(self, caller: dict[str, str], expected: list[str]) -> None:
+        session = GraftpunkSession(base_url="https://example.test")
+        wire = _Wire()
+        session.mount("https://", wire)
+        session.xhr("GET", "https://example.test/api/x", headers=caller, referer="/p")
+        [sent] = wire.sent
+        assert list(sent.headers) == expected
+        assert sent.headers["Sec-Fetch-Mode"] == "no-cors"
