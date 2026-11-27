@@ -17,7 +17,10 @@ import pytest
 
 from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
 
-pytestmark = pytest.mark.usefixtures("_fast_login_timings")
+# The nodriver wait reads the page on its deadline tick, and these tests assert on
+# what that read found, so the read must not race the 1 ms hard end that
+# _fast_login_timings leaves (see _login_hard_end_out_of_reach).
+pytestmark = pytest.mark.usefixtures("_fast_login_timings", "_login_hard_end_out_of_reach")
 
 _LANDING = "https://app.example.com/login?next=%2Fhome"
 
