@@ -114,6 +114,15 @@ class TestStreamedAndTimed:
         (entry,) = capture.get_har_entries()
         assert "_bodyNotCaptured" not in entry["response"]["content"]
 
+    def test_it_counts_the_requests_it_recorded(self, site: str) -> None:
+        session, capture = _recording()
+        assert capture.request_count() == 0
+        session.get(f"{site}/empty", timeout=5)
+        session.get(f"{site}/slow", timeout=5)
+        capture.stop_capture()
+
+        assert capture.request_count() == 2
+
     def test_a_request_is_timed_from_when_it_was_sent(self, site: str) -> None:
         session, capture = _recording()
         response = session.get(f"{site}/slow", timeout=5)

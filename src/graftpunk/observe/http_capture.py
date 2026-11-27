@@ -708,3 +708,8 @@ class HttpCaptureBackend:
     def get_header_role_origins(self, site_url: str | None = None) -> dict[str, str]:
         """Header roles are learned from browser captures only."""
         return {}
+
+    def request_count(self) -> int:
+        """Return how many requests the capture has recorded."""
+        with self._lock:
+            return self._count
