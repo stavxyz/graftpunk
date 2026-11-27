@@ -598,3 +598,83 @@ class TestGeneratedSeleniumLogin:
         assert "Performance log collection failed" not in err
         assert "Browser log collection failed" not in err
         assert made[0].logs_read == ["performance"]
+
+
+# ---------------------------------------------------------------------------
+# A capture class written to the 1.46.0 CaptureBackend protocol, which has no
+# request_count: it still satisfies the protocol, and a login with it logs the
+# empty-roles warning without the count and does not fail.
+# ---------------------------------------------------------------------------
+
+
+class _Capture146:
+    def start_capture(self) -> None:
+        return None
+
+    def stop_capture(self) -> None:
+        return None
+
+    def take_screenshot_sync(self) -> bytes | None:
+        return None
+
+    def get_har_entries(self) -> list[dict[str, Any]]:
+        return []
+
+    def get_console_logs(self) -> list[dict[str, Any]]:
+        return []
+
+    def get_header_roles(self, site_url: str | None = None) -> dict[str, dict[str, str]]:
+        return {}
+
+    def get_header_role_origins(self, site_url: str | None = None) -> dict[str, str]:
+        return {}
+
+    async def take_screenshot(self) -> bytes | None:
+        return None
+
+    async def get_page_source(self) -> str | None:
+        return None
+
+    async def start_capture_async(self) -> None:
+        return None
+
+    async def stop_capture_async(self) -> None:
+        return None
+
+
+def _empty_warnings(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in logs if e["event"] == "login_header_roles_empty"]
+
+
+class TestACaptureWrittenToThe1460Protocol:
+    def test_it_still_satisfies_the_protocol(self) -> None:
+        from graftpunk.observe.capture import CaptureBackend
+
+        assert isinstance(_Capture146(), CaptureBackend)
+
+    def test_the_generated_logins_store_warns_without_a_count(self) -> None:
+        from graftpunk.plugins.login_engine import _store_header_roles
+
+        session = SimpleNamespace()
+        with capture_logs() as logs:
+            _store_header_roles(session, _Capture146(), SITE)
+
+        (warning,) = _empty_warnings(logs)
+        assert "requests" not in warning
+        assert session._gp_header_roles == {}
+
+    @pytest.mark.asyncio
+    async def test_a_hand_written_nodriver_login_warns_and_caches(self) -> None:
+        async def login(_session: Any, tab: Any) -> None:
+            await tab.get(f"{SITE}/login")
+
+        with (
+            patch("graftpunk.observe.capture.create_capture_backend", return_value=_Capture146()),
+            capture_logs() as logs,
+        ):
+            session, cached = await _run_nodriver(login)
+
+        (warning,) = _empty_warnings(logs)
+        assert "requests" not in warning
+        assert "login_header_capture_unavailable" not in [e["event"] for e in logs]
+        assert cached.call_args.args[0] is session

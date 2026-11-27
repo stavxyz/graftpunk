@@ -1289,10 +1289,6 @@ class CaptureBackend(Protocol):
         """Return the origin each of :meth:`get_header_roles`'s roles came from."""
         ...
 
-    def request_count(self) -> int:
-        """Return how many requests the capture holds, redirect hops counted each."""
-        ...
-
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously."""
         ...

@@ -130,13 +130,16 @@ def store_header_roles(session: Any, header_capture: Any, base_url: str) -> None
     setattr(session, _HEADER_ROLE_ORIGINS_ATTR, dict(origins) if isinstance(origins, dict) else {})
     if not roles:
         # Without roles the session's commands send python-requests' User-Agent,
-        # and nothing else would say why.
+        # and nothing else would say why. request_count is on graftpunk's own
+        # backends, not on the CaptureBackend protocol, which programs implement.
+        count = getattr(header_capture, "request_count", None)
+        extra = {"requests": count()} if callable(count) else {}
         LOG.warning(
             "login_header_roles_empty",
             base_url=base_url,
-            requests=header_capture.request_count(),
             hint="No captured request could be classified as navigation, xhr or form; "
             "commands send the registered role headers and the HTTP client's User-Agent",
+            **extra,
         )
 
 
