@@ -278,7 +278,7 @@ def test_a_chrome_build_webdriver_manager_has_no_driver_for_names_it_on_the_stan
         _standard_backend(monkeypatch, "158.0.9999.1", _no_such_driver)
     text = str(raised.value)
     assert "158.0.9999.1" in text
-    assert "update Chrome" in text
+    assert "Update Chrome" in text
     assert 'backend="nodriver"' in text
 
 
@@ -299,7 +299,7 @@ def test_a_chrome_build_webdriver_manager_has_no_driver_for_names_it_on_the_stea
         create_stealth_driver(headless=True, profile_dir=tmp_path / "profile")
     text = str(raised.value)
     assert "158.0.9999.1" in text
-    assert "update Chrome" in text
+    assert "Update Chrome" in text
     assert mock_manager.call_count == 1  # no retry with the major: it picks a wrong build
     mock_chrome.assert_not_called()
 
@@ -314,3 +314,66 @@ def test_another_webdriver_manager_failure_is_not_renamed(
 
     with pytest.raises(OSError, match="disk full"):
         create_stealth_driver(headless=True, profile_dir=tmp_path / "profile")
+
+
+def _no_compatible_driver() -> str:
+    # webdriver-manager 4.1.2's text when no known-good ChromeDriver matches.
+    raise ValueError(
+        "Could not find a compatible chromedriver version for google-chrome 158.0.9999.1. "
+        "Checked Chrome for Testing endpoints: https://example.invalid/known-good.json."
+    )
+
+
+@patch("graftpunk.stealth.uc.Chrome")
+@patch("webdriver_manager.chrome.ChromeDriverManager")
+def test_webdriver_manager_4_1_2s_no_compatible_driver_is_the_same_browser_error(
+    mock_manager: MagicMock,
+    mock_chrome: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graftpunk.exceptions import BrowserError
+
+    monkeypatch.setattr("graftpunk.stealth.get_chrome_version", _versions("158.0.9999.1"))
+    mock_manager.return_value.install.side_effect = _no_compatible_driver
+
+    with pytest.raises(BrowserError) as raised:
+        create_stealth_driver(headless=True, profile_dir=tmp_path / "profile")
+    text = str(raised.value)
+    assert text.startswith(
+        "webdriver-manager has no ChromeDriver for the installed Chrome 158.0.9999.1"
+    )
+    assert "Update Chrome" in text
+    mock_chrome.assert_not_called()
+
+
+@patch("graftpunk.stealth.uc.Chrome")
+@patch("webdriver_manager.chrome.ChromeDriverManager")
+def test_without_a_known_version_the_error_names_none(
+    mock_manager: MagicMock,
+    mock_chrome: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graftpunk.exceptions import BrowserError
+
+    monkeypatch.setattr("graftpunk.stealth.get_chrome_version", _versions(None))
+    mock_manager.return_value.install.side_effect = _no_such_driver
+
+    with pytest.raises(BrowserError) as raised:
+        create_stealth_driver(headless=True, profile_dir=tmp_path / "profile")
+    text = str(raised.value)
+    assert text.startswith("webdriver-manager has no ChromeDriver for the installed Chrome (")
+    assert "None" not in text
+
+
+def test_the_standard_path_turns_no_compatible_driver_into_the_same_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graftpunk.exceptions import BrowserError
+
+    with pytest.raises(BrowserError) as raised:
+        _standard_backend(monkeypatch, "158.0.9999.1", _no_compatible_driver)
+    assert str(raised.value).startswith(
+        "webdriver-manager has no ChromeDriver for the installed Chrome 158.0.9999.1"
+    )

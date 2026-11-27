@@ -111,13 +111,17 @@ def chromedriver_version(read: Callable[..., str] | None = None) -> str | None:
 
 def no_chromedriver_error(version: str | None, exc: BaseException) -> BrowserError | None:
     """The :class:`BrowserError` for webdriver-manager's failure *exc* when it has
-    no ChromeDriver for Chrome *version* (its bare ``Exception`` reads "No such
-    driver version"), else None. Asking again with the major alone is not the
+    no ChromeDriver for Chrome *version*, else None. webdriver-manager 4.0.2
+    raises a bare ``Exception`` reading "No such driver version", and 4.1.2 a
+    ``ValueError`` reading "Could not find a compatible chromedriver version";
+    both are matched by their text. Asking again with the major alone is not the
     way out: that picks a ChromeDriver for another build."""
-    if "No such driver version" not in str(exc):
+    text = str(exc)
+    if "No such driver version" not in text and "Could not find a compatible" not in text:
         return None
+    installed = f"the installed Chrome {version}" if version else "the installed Chrome"
     return BrowserError(
-        f"webdriver-manager has no ChromeDriver for the installed Chrome {version} ({exc}). "
-        "update Chrome to a current release, which a ChromeDriver is published for, or use "
-        'the nodriver backend (backend="nodriver"), which needs no ChromeDriver.'
+        f"webdriver-manager has no ChromeDriver for {installed} ({exc}). Update Chrome to "
+        "a current release, which a ChromeDriver is published for, or use the nodriver "
+        'backend (backend="nodriver"), which needs no ChromeDriver.'
     )
