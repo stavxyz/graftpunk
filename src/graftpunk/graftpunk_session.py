@@ -222,6 +222,10 @@ def _cross_origin_headers(
         if lower == "x-requested-with" and not declared:
             continue
         adjusted[name] = fetch_site if lower == "sec-fetch-site" else value
+    if _case_insensitive_get(adjusted, "Sec-Fetch-Site") is None:
+        # A declared role may name no Sec-Fetch-Site; Chrome sends one on every
+        # request, and to another origin it is this computed relation.
+        adjusted["Sec-Fetch-Site"] = fetch_site
     cors = _case_insensitive_get(adjusted, "Sec-Fetch-Mode") == "cors"
     sends_origin = cors or method.upper() not in ("GET", "HEAD")
     if sends_origin and _case_insensitive_get(adjusted, "Origin") is None:
@@ -927,8 +931,11 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         caller |= user_set
 
         detected = self._detect_role(request) if self._gp_header_roles else None
-        if detected is not None and (
-            role_headers := self._resolve_role(detected, request.url, request.method or "GET")
+        # A role the caller named (request_with_role) fills the request, not the
+        # one auto-detection would pick from its headers.
+        applied = role_name if role_name is not None and detected is not None else detected
+        if applied is not None and (
+            role_headers := self._resolve_role(applied, request.url, request.method or "GET")
         ):
             # Apply role headers as session defaults (lowest priority).
             # Priority: request headers (caller-supplied) >
