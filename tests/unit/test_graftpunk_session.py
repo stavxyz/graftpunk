@@ -1757,3 +1757,39 @@ class TestCallerHeadersKeepTheirSlot:
         [sent] = wire.sent
         assert list(sent.headers) == expected
         assert sent.headers["Sec-Fetch-Mode"] == "no-cors"
+
+
+class TestADeclaredRoleWithNoSecFetchSite:
+    """What 1.46.0 sent for a declared role that names no Sec-Fetch-Site, read off
+    048efcd4 through the same fake adapter: the computed relation, on the site's
+    own origin and on another, whether the role was merged over the captured
+    ones (gp http) or kept beside them (commands and the client)."""
+
+    @pytest.mark.parametrize("override", [False, True], ids=["command", "gp-http"])
+    @pytest.mark.parametrize(
+        ("url", "fetch_site"),
+        [
+            ("https://myshop.example/api", "same-origin"),
+            ("https://api.myshop.example/x", "same-site"),
+        ],
+        ids=["own-origin", "other-origin"],
+    )
+    def test_it_sends_the_computed_relation(
+        self, override: bool, url: str, fetch_site: str
+    ) -> None:
+        from graftpunk.graftpunk_session import apply_plugin_context
+
+        class Plugin:
+            site_name = "declshop"
+            base_url = "https://myshop.example"
+            header_roles = {"api": {"Sec-Fetch-Mode": "cors", "X-Api-Key": "k1"}}  # noqa: RUF012
+
+        session = GraftpunkSession(header_roles={"xhr": {"Accept": "application/json"}})
+        wire = _Wire()
+        session.mount("https://", wire)
+        apply_plugin_context(session, Plugin(), declared_roles_override_captured=override)
+        session.request_with_role("api", "GET", url)
+        [sent] = wire.sent
+        assert sent.headers["Sec-Fetch-Site"] == fetch_site
+        assert sent.headers["Sec-Fetch-Mode"] == "cors"
+        assert sent.headers["X-Api-Key"] == "k1"

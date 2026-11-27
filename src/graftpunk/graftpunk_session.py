@@ -203,6 +203,19 @@ register_role(
 )
 
 
+def _with_fetch_site(headers: dict[str, str], fetch_site: str) -> dict[str, str]:
+    """*headers* with ``Sec-Fetch-Site: <fetch_site>`` added when they name none.
+
+    A role a plugin declared may name no Sec-Fetch-Site; Chrome sends one on
+    every request, and 1.46.0 sent the computed relation for such a role on
+    every origin (it came from the auto-detected role layered under it). The
+    one rule for the site's own origin (``same-origin``) and another
+    (``_cross_origin_headers``)."""
+    if _case_insensitive_get(headers, "Sec-Fetch-Site") is not None:
+        return headers
+    return {**headers, "Sec-Fetch-Site": fetch_site}
+
+
 def _cross_origin_headers(
     headers: dict[str, str], *, fetch_site: str, origin: str, method: str, declared: bool
 ) -> dict[str, str]:
@@ -222,10 +235,7 @@ def _cross_origin_headers(
         if lower == "x-requested-with" and not declared:
             continue
         adjusted[name] = fetch_site if lower == "sec-fetch-site" else value
-    if _case_insensitive_get(adjusted, "Sec-Fetch-Site") is None:
-        # A declared role may name no Sec-Fetch-Site; Chrome sends one on every
-        # request, and to another origin it is this computed relation.
-        adjusted["Sec-Fetch-Site"] = fetch_site
+    adjusted = _with_fetch_site(adjusted, fetch_site)
     cors = _case_insensitive_get(adjusted, "Sec-Fetch-Mode") == "cors"
     sends_origin = cors or method.upper() not in ("GET", "HEAD")
     if sends_origin and _case_insensitive_get(adjusted, "Origin") is None:
@@ -509,13 +519,13 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
         if cross is None:
             if declared:
                 assert captured is not None
-                return dict(captured)
+                return _with_fetch_site(dict(captured), "same-origin")
             if captured is not None and get_role_headers(role_name) is None:
                 LOG.debug("captured_role_not_sent_to_another_origin", role=role_name)
                 return {}
             if captured is None and plugin_role is not None and get_role_headers(role_name) is None:
                 # A name only the plugin declares, named by the request.
-                return dict(plugin_role)
+                return _with_fetch_site(dict(plugin_role), "same-origin")
         else:
             fetch_site, base_origin = cross
             declared_headers = captured if declared else plugin_role
