@@ -2316,7 +2316,7 @@ class TestBrowserSessionErrorPaths:
             # Cookies NOT transferred, session NOT cached
             instance.transfer_nodriver_cookies_to_session.assert_not_called()
             mock_cache.assert_not_called()
-            # Chrome ending on this path: tests/unit/test_stopped_chrome_reaped.py.
+            # That a raising login still stops Chrome: test_custom_login_header_roles.py.
 
     def test_browser_session_sync_no_cache_on_exception(self) -> None:
         """On exception in sync context, cookies NOT transferred but cleanup happens."""

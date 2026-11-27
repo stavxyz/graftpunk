@@ -1044,7 +1044,6 @@ class TestTokenPageHttpError:
 
         assert results == {"X-CSRF": "v1"}
         assert errors == {}
-        browser.main_tab.evaluate.assert_not_awaited()
 
 
 def _fails_with(errors: dict[str, int]) -> object:

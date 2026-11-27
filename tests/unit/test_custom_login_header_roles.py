@@ -309,6 +309,7 @@ async def _run_nodriver_raising(login_body: Any) -> None:
             cached.assert_not_called()
             assert "_gp_header_roles" not in vars(session)
             assert not session.transferred
+            assert session.stopped
 
 
 # ---------------------------------------------------------------------------
