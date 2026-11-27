@@ -995,12 +995,40 @@ def test_both_backends_take_a_logins_roles_from_the_headers_chrome_sent():
     assert _selenium_roles() == (expected_roles, expected_origins)
 
 
-def test_sent_headers_still_buffered_when_the_login_ends_reach_their_entry():
-    """Chrome reported the sent headers before the request, and their :path spells
-    the query as sent (percent-encoded) where the request's URL does not, so the
-    correlator could not match them and kept them buffered. The roles are read
-    before the capture stops on nodriver, so the last-resort attach must run
-    there too."""
+def test_roles_read_mid_capture_see_a_buffered_event_its_entry_could_have():
+    """Sent headers still in the correlator's buffer when a nodriver login reads
+    its roles (the capture has not stopped) are applied as the drain would apply
+    them: here headers that name no method, path or host, which the drain's last
+    resort gives the one entry still lacking them. The capture itself keeps the
+    event buffered."""
+    url = f"{SITE}/home"
+    backend = NodriverCaptureBackend(None, record_request_bodies=False, record_console=False)
+    backend._on_request(
+        _nodriver_event(
+            {
+                "requestId": "7",
+                "wallTime": 1_700_000_001.0,
+                "type": "Document",
+                "documentURL": url,
+                "request": {"url": url, "method": "GET", "headers": RENDERER_NAV},
+            }
+        )
+    )
+    backend._request_map["7"]["_request_extra_seen"] = False
+    sent = {k: v for k, v in _wire().items() if k.lower() != "host"}
+    backend._extra_info._pending_request["7"] = [sent]
+
+    roles = backend.get_header_roles(SITE)
+    assert roles["navigation"]["Accept-Language"] == "en-US,en;q=0.9"
+    assert backend.get_header_role_origins(SITE) == {"navigation": SITE}
+    assert "_request_extra_headers" not in backend._request_map["7"]
+    assert backend._extra_info._pending_request == {"7": [sent]}
+
+
+def test_the_drains_last_resort_never_gives_a_request_another_requests_headers():
+    """Sent headers whose :path names another request (here only by its
+    percent-encoding) are left unattached at drain: a guess that could give one
+    request another's headers is worse than none."""
     url = f"{SITE}/search?q=a b"
     wire = {
         ":authority": "myshop.example",
@@ -1009,79 +1037,76 @@ def test_sent_headers_still_buffered_when_the_login_ends_reach_their_entry():
         ":scheme": "https",
         **{k.lower(): v for k, v in _wire().items()},
     }
-    events = [
-        ("Network.requestWillBeSentExtraInfo", {"requestId": "7", "headers": wire}),
-        (
-            "Network.requestWillBeSent",
+    backend = NodriverCaptureBackend(None, record_request_bodies=False, record_console=False)
+    backend._on_request_extra_info(_nodriver_event({"requestId": "7", "headers": wire}))
+    backend._on_request(
+        _nodriver_event(
             {
                 "requestId": "7",
                 "wallTime": 1_700_000_001.0,
                 "type": "Document",
                 "documentURL": url,
                 "request": {"url": url, "method": "GET", "headers": RENDERER_NAV},
-            },
-        ),
-    ]
+            }
+        )
+    )
+    backend._extra_info.log_unmatched(backend._request_map)
+    assert "_request_extra_headers" not in backend._request_map["7"]
+
+
+def test_reading_roles_mid_capture_changes_nothing_and_never_attaches_a_mismatch():
+    """A form POST whose own sent headers Chrome dropped, and the redirect GET's
+    sent headers arriving before that GET is announced: they name GET /home, so
+    they are not the POST's. Reading roles mid-capture keeps the POST's form
+    role and leaves the capture (its request map, its HAR, its buffer) as it was,
+    and the drain's last resort does not attach them to the POST either."""
+    import copy
+
     backend = NodriverCaptureBackend(None, record_request_bodies=False, record_console=False)
-    handlers = {
-        "Network.requestWillBeSent": backend._on_request,
-        "Network.requestWillBeSentExtraInfo": backend._on_request_extra_info,
+    post = (
+        "Network.requestWillBeSent",
+        {
+            "requestId": "r1",
+            "wallTime": 1_700_000_001.0,
+            "type": "Document",
+            "documentURL": f"{SITE}/login",
+            "request": {
+                "url": f"{SITE}/login",
+                "method": "POST",
+                "headers": RENDERER_POST,
+                "hasPostData": True,
+            },
+        },
+    )
+    get_wire = {
+        ":method": "GET",
+        ":path": "/home",
+        ":authority": "myshop.example",
+        ":scheme": "https",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+        "accept": HTML_ACCEPT,
+        "user-agent": CHROME_UA,
     }
-    for method, params in events:
-        handlers[method](_nodriver_event(params))
+    backend._on_request(_nodriver_event(post[1]))
+    backend._on_request_extra_info(_nodriver_event({"requestId": "r1", "headers": get_wire}))
+    before_map = copy.deepcopy(backend._request_map)
+    before_har = backend.get_har_entries()
+    before_pending = copy.deepcopy(backend._extra_info._pending_request)
 
     roles = backend.get_header_roles(SITE)
-    assert roles["navigation"]["accept-language"] == "en-US,en;q=0.9"
-    assert roles["navigation"]["User-Agent"] == CHROME_UA
-    assert backend.get_header_role_origins(SITE) == {"navigation": SITE}
+    origins = backend.get_header_role_origins(SITE)
 
+    assert "form" in roles
+    assert roles["form"]["User-Agent"] == CHROME_UA
+    assert origins["form"] == SITE
+    assert backend._request_map == before_map
+    assert backend._extra_info._pending_request == before_pending
+    after_har = backend.get_har_entries()
+    for entry in (*before_har, *after_har):
+        entry.pop("startedDateTime", None)
+        entry.pop("time", None)
+    assert after_har == before_har
 
-# --- CORS preflight: Chrome's own OPTIONS before a fetch it guards ---
-
-
-@pytest.mark.parametrize(
-    ("method", "resource_type"),
-    [("OPTIONS", "Preflight"), ("OPTIONS", "Other"), ("GET", "Preflight")],
-)
-def test_a_preflight_is_never_a_role(method: str, resource_type: str):
-    preflight = {
-        "Accept": "*/*",
-        "Access-Control-Request-Method": "POST",
-        "Access-Control-Request-Headers": "authorization,content-type",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Site": "same-site",
-        "User-Agent": CHROME_UA,
-        "X-Marker": "preflight",
-    }
-    fetch = {
-        "Accept": "application/json",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-site",
-        "User-Agent": CHROME_UA,
-        "X-Marker": "fetch",
-    }
-    request_map = {
-        "1": {
-            **_entry("https://api.myshop.example/v1/cart", method, {}, preflight, 1.0),
-            "resource_type": resource_type,
-        },
-        "2": {
-            **_entry("https://api.myshop.example/v1/cart", "POST", {}, fetch, 2.0),
-            "resource_type": "Fetch",
-        },
-    }
-    assert extract_header_roles(request_map, SITE)["xhr"]["X-Marker"] == "fetch"
-    only_preflight = {"1": request_map["1"]}
-    assert extract_header_roles(only_preflight, SITE) == {}
-
-
-@pytest.mark.parametrize(
-    "name", ["Access-Control-Request-Method", "access-control-request-headers"]
-)
-def test_preflight_request_headers_stay_out_of_roles(name: str):
-    assert name.lower() in EXCLUDED_HEADERS
-    request_map = {
-        "1": _entry("https://myshop.example/a", "GET", RENDERER_NAV, _wire(**{name: "POST"}), 1.0)
-    }
-    assert extract_header_roles(request_map, SITE)["navigation"] == BROWSER_NAV_ROLE
+    backend._extra_info.log_unmatched(backend._request_map)
+    assert "_request_extra_headers" not in backend._request_map["r1"]

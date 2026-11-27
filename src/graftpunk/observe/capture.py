@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import base64
 import binascii
 import contextlib
@@ -1058,7 +1059,9 @@ class _ExtraInfoCorrelator:
 
     def _fallback(self, request_map: dict[str, dict[str, Any]], kind: str) -> int:
         """Last resort at drain: a buffered event whose id has exactly one entry
-        still lacking that kind is attached there. Returns how many were."""
+        still lacking that kind is attached there, unless it is request headers
+        that name another request (``_request_headers_match`` is False: another
+        method or path). Returns how many were."""
         pending: dict[str, list[Any]] = (
             self._pending_request if kind == "request" else self._pending_response
         )
@@ -1068,18 +1071,30 @@ class _ExtraInfoCorrelator:
                 e for e in self._chain(request_map, request_id) if not e.get(f"_{kind}_extra_seen")
             ]
             if len(lacking) == 1 and len(pending[request_id]) == 1:
-                item = pending.pop(request_id)[0]
+                item = pending[request_id][0]
                 headers = item[0] if kind == "response" else item
+                if kind == "request" and _request_headers_match(headers, lacking[0]) is False:
+                    continue
+                pending.pop(request_id)
                 self._attach(lacking[0], kind, headers)
                 attached += 1
         return attached
 
     def attach_buffered(self, request_map: dict[str, dict[str, Any]]) -> int:
-        """The last-resort attach of :meth:`log_unmatched`, without its report:
-        for header roles read while the capture still runs. Returns how many
-        events were attached; an attached event leaves the buffer, so a later
-        drain does not count it again."""
+        """The last-resort attach of :meth:`log_unmatched`, without its report.
+        Returns how many events were attached; an attached event leaves the
+        buffer, so a later drain does not count it again."""
         return self._fallback(request_map, "request") + self._fallback(request_map, "response")
+
+    def tentative_view(self, request_map: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """*request_map* as the drain would leave it, for header roles read while
+        the capture still runs: a copy of each entry with the buffered events
+        attached as a last resort, by a copy of this correlator. The capture's own
+        map and buffer are untouched, so an event that arrives later still finds
+        its entry, and the HAR is what the drain makes it."""
+        view = {key: dict(entry) for key, entry in request_map.items()}
+        copy.deepcopy(self).attach_buffered(view)
+        return view
 
     def log_unmatched(self, request_map: dict[str, dict[str, Any]]) -> None:
         """At drain time, attach what can still be attached as a last resort, then
@@ -1863,16 +1878,16 @@ class NodriverCaptureBackend:
     def get_header_roles(self, site_url: str | None = None) -> dict[str, dict[str, str]]:
         """Return header roles classified from captured network requests.
 
-        Both nodriver logins read them before the capture stops, so sent
-        headers still buffered (out of order, or unmatched) are attached first,
-        as the stop's drain would attach them."""
-        self._extra_info.attach_buffered(self._request_map)
-        return _header_roles_in_order(self._request_map, site_url)
+        Both nodriver logins read them before the capture stops, so they are
+        read from the map as the stop's drain would leave it
+        (``_ExtraInfoCorrelator.tentative_view``), the capture left as it is."""
+        return _header_roles_in_order(self._extra_info.tentative_view(self._request_map), site_url)
 
     def get_header_role_origins(self, site_url: str | None = None) -> dict[str, str]:
         """Return the origin each of :meth:`get_header_roles`'s roles came from."""
-        self._extra_info.attach_buffered(self._request_map)
-        return _header_role_origins_in_order(self._request_map, site_url)
+        return _header_role_origins_in_order(
+            self._extra_info.tentative_view(self._request_map), site_url
+        )
 
     def request_count(self) -> int:
         """Return how many requests the capture holds, redirect hops counted each."""
