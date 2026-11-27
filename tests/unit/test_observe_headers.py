@@ -1033,3 +1033,54 @@ def test_sent_headers_still_buffered_when_the_login_ends_reach_their_entry():
     assert roles["navigation"]["accept-language"] == "en-US,en;q=0.9"
     assert roles["navigation"]["User-Agent"] == CHROME_UA
     assert backend.get_header_role_origins(SITE) == {"navigation": SITE}
+
+
+# --- CORS preflight: Chrome's own OPTIONS before a fetch it guards ---
+
+
+@pytest.mark.parametrize(
+    ("method", "resource_type"),
+    [("OPTIONS", "Preflight"), ("OPTIONS", "Other"), ("GET", "Preflight")],
+)
+def test_a_preflight_is_never_a_role(method: str, resource_type: str):
+    preflight = {
+        "Accept": "*/*",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Site": "same-site",
+        "User-Agent": CHROME_UA,
+        "X-Marker": "preflight",
+    }
+    fetch = {
+        "Accept": "application/json",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "User-Agent": CHROME_UA,
+        "X-Marker": "fetch",
+    }
+    request_map = {
+        "1": {
+            **_entry("https://api.myshop.example/v1/cart", method, {}, preflight, 1.0),
+            "resource_type": resource_type,
+        },
+        "2": {
+            **_entry("https://api.myshop.example/v1/cart", "POST", {}, fetch, 2.0),
+            "resource_type": "Fetch",
+        },
+    }
+    assert extract_header_roles(request_map, SITE)["xhr"]["X-Marker"] == "fetch"
+    only_preflight = {"1": request_map["1"]}
+    assert extract_header_roles(only_preflight, SITE) == {}
+
+
+@pytest.mark.parametrize(
+    "name", ["Access-Control-Request-Method", "access-control-request-headers"]
+)
+def test_preflight_request_headers_stay_out_of_roles(name: str):
+    assert name.lower() in EXCLUDED_HEADERS
+    request_map = {
+        "1": _entry("https://myshop.example/a", "GET", RENDERER_NAV, _wire(**{name: "POST"}), 1.0)
+    }
+    assert extract_header_roles(request_map, SITE)["navigation"] == BROWSER_NAV_ROLE

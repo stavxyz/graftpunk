@@ -11,8 +11,9 @@ from graftpunk.public_suffix import Origin, origin, same_site, serialized_origin
 # request-specific (cookie, referer, origin, content-type), ephemeral security
 # tokens (x-csrf-token), and what Chrome's network stack adds for one request's
 # state (the conditional and range headers, cache-control and pragma on a
-# reload, sec-purpose and purpose on a prefetch), or as a credential for
-# another party (proxy-authorization, for a proxy). The ones the HTTP client
+# reload, sec-purpose and purpose on a prefetch, the access-control-request
+# pair on a CORS preflight), or as a credential for another party
+# (proxy-authorization, for a proxy). The ones the HTTP client
 # or the transport supplies (host, connection, accept-encoding, content-length,
 # priority, and every HTTP/2 pseudo-header) are
 # graftpunk.client_headers.client_sets_header's, checked beside this set.
@@ -34,6 +35,8 @@ EXCLUDED_HEADERS: frozenset[str] = frozenset(
         "proxy-authorization",
         "sec-purpose",
         "purpose",
+        "access-control-request-method",
+        "access-control-request-headers",
     }
 )
 
@@ -143,6 +146,13 @@ def _navigation_key(headers: dict[str, str], rank: int) -> tuple[bool, int, bool
     return (framed, rank, _header(headers, "sec-fetch-site") == "none")
 
 
+def _preflight(data: dict[str, Any]) -> bool:
+    """Whether request-map entry *data* is a CORS preflight, which Chrome sends on
+    its own before the request it guards and no page or command sends."""
+    method = str(data.get("method") or "").upper()
+    return method == "OPTIONS" or data.get("resource_type") == "Preflight"
+
+
 def _role_requests(
     request_map: dict[str, dict[str, Any]], site_url: str | None
 ) -> dict[str, dict[str, Any]]:
@@ -153,6 +163,8 @@ def _role_requests(
     site = origin(site_url) if site_url else None
     chosen: dict[str, tuple[tuple[bool, int, bool], dict[str, Any]]] = {}
     for data in request_map.values():
+        if _preflight(data):
+            continue
         headers = sent_headers(data)
         if not headers:
             continue
