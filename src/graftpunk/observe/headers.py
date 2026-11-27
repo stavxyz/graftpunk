@@ -113,10 +113,19 @@ def _rank(sent_to: Origin | None, site: Origin | None) -> int:
     return 2
 
 
-def _typed(headers: dict[str, str]) -> bool:
-    """Whether *headers* say the user typed the address (``Sec-Fetch-Site: none``),
-    as Chrome 158 said of a page a login opened with nodriver's ``Tab.get``."""
-    return any(k.lower() == "sec-fetch-site" and v == "none" for k, v in headers.items())
+def _header(headers: dict[str, str], name: str) -> str | None:
+    return next((v for k, v in headers.items() if k.lower() == name), None)
+
+
+def _navigation_key(headers: dict[str, str], rank: int) -> tuple[bool, int, bool]:
+    """Sort key of a navigation request, best first: a top-level document load
+    before a frame's, then the origin rank, then a load the site sent before
+    one the login opened as a typed address (``Sec-Fetch-Site: none``, which
+    Chrome 158 sent for nodriver's ``Tab.get``). No ``Sec-Fetch-Dest`` (no sent
+    headers, or a site Chrome sends no ``Sec-Fetch-*`` to) counts as a document."""
+    dest = _header(headers, "sec-fetch-dest")
+    framed = dest is not None and dest != "document"
+    return (framed, rank, _header(headers, "sec-fetch-site") == "none")
 
 
 def _role_requests(
@@ -125,10 +134,9 @@ def _role_requests(
     """The request each role is taken from: per role, the first request in
     *request_map* order sent to *site_url*'s origin, else the first to another
     origin of its site, else the first of all. Without a *site_url*, the first.
-    For the navigation role a page load the site sent (any ``Sec-Fetch-Site``
-    but ``none``) comes before a typed one, by the same order."""
+    The navigation role is chosen by :func:`_navigation_key`."""
     site = origin(site_url) if site_url else None
-    chosen: dict[str, tuple[tuple[bool, int], dict[str, Any]]] = {}
+    chosen: dict[str, tuple[tuple[bool, int, bool], dict[str, Any]]] = {}
     for data in request_map.values():
         headers = sent_headers(data)
         if not headers:
@@ -136,7 +144,8 @@ def _role_requests(
         role = classify_request(headers, data.get("method"))
         if role is None:
             continue
-        key = (role == "navigation" and _typed(headers), _rank(origin(data.get("url")), site))
+        rank = _rank(origin(data.get("url")), site)
+        key = _navigation_key(headers, rank) if role == "navigation" else (False, rank, False)
         if role not in chosen or key < chosen[role][0]:
             chosen[role] = (key, data)
     return {role: data for role, (_key, data) in chosen.items()}
@@ -145,9 +154,12 @@ def _role_requests(
 def _role_headers(role: str, data: dict[str, Any]) -> dict[str, str]:
     """The headers *role* keeps of the request-map entry *data*."""
     headers = {k: v for k, v in sent_headers(data).items() if kept_in_role(k)}
-    if role == "navigation" and _typed(headers):
-        # Replayed, "none" would say the user typed every command's address;
-        # 1.46.0 sent the registered role's same-origin, and so does this.
+    if role == "navigation":
+        # The role goes only to the origin it was captured from, where a page
+        # load is same-origin: "none" would say the user typed every command's
+        # address, and a captured same-site or cross-site (an SSO callback)
+        # names the page the login came from. 1.46.0 sent the registered
+        # role's same-origin.
         headers = {
             k: "same-origin" if k.lower() == "sec-fetch-site" else v for k, v in headers.items()
         }
@@ -165,9 +177,10 @@ def extract_header_roles(
     *site_url*'s origin (the plugin's ``base_url``), else to another origin of
     that site, else the first of all (#228). A login's first CORS request is
     often an identity provider's or a tracker's, and its headers are not the
-    ones the site's own pages send. The navigation role prefers a page load
-    the site sent to one the login typed (``Sec-Fetch-Site: none``), and when
-    it has only typed ones it stores ``Sec-Fetch-Site: same-origin``.
+    ones the site's own pages send. The navigation role prefers a top-level
+    document to a frame's load and, after the origin order, a page load the site
+    sent to one the login typed (``Sec-Fetch-Site: none``); its
+    ``Sec-Fetch-Site`` is always stored as ``same-origin``.
 
     Args:
         request_map: The capture backend's _request_map dict. Each entry

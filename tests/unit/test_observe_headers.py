@@ -1,5 +1,7 @@
 """Tests for header role classification and extraction."""
 
+import pytest
+
 from graftpunk.observe.capture import NodriverCaptureBackend, SeleniumCaptureBackend
 from graftpunk.observe.headers import EXCLUDED_HEADERS, classify_request, extract_header_roles
 
@@ -562,9 +564,12 @@ def test_classify_a_get_is_never_a_form():
 # registered navigation role's same-origin, and 1.46.1 keeps that.
 
 
-def _nav(url: str, site: str, ts: float, *, spelling: str = "Sec-Fetch-Site") -> dict:
+def _nav(
+    url: str, site: str, ts: float, *, spelling: str = "Sec-Fetch-Site", dest: str = "document"
+) -> dict:
     wire = {k: v for k, v in _wire().items() if k != "Sec-Fetch-Site"}
     wire[spelling] = site
+    wire["Sec-Fetch-Dest"] = dest
     return _entry(url, "GET", RENDERER_NAV, {**wire, "X-Marker": f"{site}@{ts}"}, ts)
 
 
@@ -600,12 +605,101 @@ def test_a_page_load_the_site_sent_is_preferred_to_a_typed_one():
     assert header_role_origins(request_map, SITE) == {"navigation": SITE}
 
 
-def test_a_typed_load_of_the_site_loses_to_a_sent_load_of_another_origin():
+def test_a_typed_load_of_the_site_beats_a_sent_load_of_another_origin():
+    """The origin rank comes before typed or sent: the site's own page load is the
+    one whose headers its commands should look like."""
     request_map = {
         "1": _nav("https://myshop.example/login", "none", 1.0),
         "2": _nav("https://api.myshop.example/start", "same-site", 2.0),
     }
-    assert extract_header_roles(request_map, SITE)["navigation"]["X-Marker"] == "same-site@2.0"
+    role = extract_header_roles(request_map, SITE)["navigation"]
+    assert role["X-Marker"] == "none@1.0"
+    assert role["Sec-Fetch-Site"] == "same-origin"
+
+
+def test_a_typed_site_load_beats_a_cross_site_frame_navigation():
+    """A challenge widget's frame (a reCAPTCHA-style anchor) is a navigation Chrome
+    sent, to another site, inside the page."""
+    from graftpunk.observe.headers import header_role_origins
+
+    request_map = {
+        "1": _nav("https://myshop.example/login", "none", 1.0),
+        "2": _nav("https://captcha.other.example/anchor", "cross-site", 2.0, dest="iframe"),
+    }
+    assert extract_header_roles(request_map, SITE)["navigation"]["X-Marker"] == "none@1.0"
+    assert header_role_origins(request_map, SITE) == {"navigation": SITE}
+
+
+def test_a_typed_document_beats_a_same_origin_iframe():
+    request_map = {
+        "1": _nav("https://myshop.example/login", "none", 1.0),
+        "2": _nav("https://myshop.example/widget", "same-origin", 2.0, dest="iframe"),
+    }
+    role = extract_header_roles(request_map, SITE)["navigation"]
+    assert role["X-Marker"] == "none@1.0"
+    assert role["Sec-Fetch-Dest"] == "document"
+
+
+@pytest.mark.parametrize("dest", ["frame", "iframe", "embed", "object"])
+def test_any_document_beats_a_framed_load(dest: str):
+    request_map = {
+        "1": _nav("https://myshop.example/inner", "same-origin", 1.0, dest=dest),
+        "2": _nav("https://other.example/page", "cross-site", 2.0),
+    }
+    assert extract_header_roles(request_map, SITE)["navigation"]["X-Marker"] == "cross-site@2.0"
+
+
+@pytest.mark.parametrize("captured", ["none", "same-site", "cross-site", "same-origin"])
+def test_the_navigation_role_always_stores_same_origin(captured: str):
+    request_map = {"1": _nav("https://myshop.example/a", captured, 1.0, spelling="sec-fetch-site")}
+    role = extract_header_roles(request_map, SITE)["navigation"]
+    assert role["sec-fetch-site"] == "same-origin"
+    assert "Sec-Fetch-Site" not in role
+
+
+def test_an_sso_callback_role_says_same_origin_on_the_site_and_cross_site_elsewhere():
+    """The site's page load after an identity provider sends the browser back is
+    cross-site as captured; replayed on the site it is a same-origin load, and a
+    request to the provider still gets the computed relation."""
+    from graftpunk.graftpunk_session import GraftpunkSession
+    from graftpunk.observe.headers import header_role_origins
+
+    request_map = {
+        "1": _nav("https://myshop.example/login", "none", 1.0),
+        "2": _nav("https://sso.other.example/authorize", "cross-site", 2.0),
+        "3": _nav("https://myshop.example/callback", "cross-site", 3.0),
+    }
+    roles = extract_header_roles(request_map, SITE)
+    assert roles["navigation"]["X-Marker"] == "cross-site@3.0"
+    assert roles["navigation"]["Sec-Fetch-Site"] == "same-origin"
+
+    import requests
+
+    sent: list[requests.PreparedRequest] = []
+
+    class Wire(requests.adapters.BaseAdapter):
+        def send(self, request, **kwargs):  # noqa: ANN001, ANN003, ANN201
+            sent.append(request)
+            response = requests.Response()
+            response.status_code = 200
+            response.request = request
+            response.url = request.url
+            response._content = b""
+            return response
+
+        def close(self) -> None:
+            pass
+
+    session = GraftpunkSession(header_roles=roles, base_url=SITE)
+    session._gp_header_role_origins = header_role_origins(request_map, SITE)
+    session.mount("https://", Wire())
+    session.navigate("GET", f"{SITE}/orders")
+    session.navigate("GET", "https://sso.other.example/account")
+    on_site, elsewhere = sent
+    assert on_site.headers["Sec-Fetch-Site"] == "same-origin"
+    assert on_site.headers["X-Marker"] == "cross-site@3.0"
+    assert elsewhere.headers["Sec-Fetch-Site"] == "cross-site"
+    assert "X-Marker" not in elsewhere.headers
 
 
 def test_other_roles_keep_their_sec_fetch_site():
