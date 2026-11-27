@@ -4,39 +4,58 @@
 # shared runner is a loaded machine.
 #
 # Usage: scripts/repeat_under_load.sh [-l LOOPS] N TEST_ID
-#   N        how many times to run TEST_ID
+#   N        how many times to run TEST_ID (a whole number, at least 1)
 #   TEST_ID  a pytest node id, for example
 #            tests/unit/test_login_verdict.py::TestVerdictComesLast::test_a_rate_limit_page_is_named
 #   -l LOOPS how many busy loops to start (default: the number of CPUs)
 #
-# Prints "runs=N failures=F" and exits 1 when any run failed. Each run's output
-# is kept in a temporary directory, printed at the end, for reading a failure.
+# Each run is `uv run -p 3.12 --all-extras pytest`, the interpreter and extras
+# the project's own checks use, so a mismatched venv cannot pose as a flake.
+# Prints "runs=N failures=F" and exits 0 when every run passed, 1 when any run
+# failed, and 2 on a usage error. Ctrl+C stops the busy loops and exits 130.
+# Each run's output is kept in a temporary directory, printed at the end.
 set -u
+
+usage() {
+  echo "usage: scripts/repeat_under_load.sh [-l LOOPS] N TEST_ID" >&2
+  exit 2
+}
+is_count() { case "$1" in '' | *[!0-9]* | 0 | 0*) return 1 ;; *) return 0 ;; esac; }
 
 loops="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 if [ "${1:-}" = "-l" ]; then
-  loops="${2:?-l needs a number}"
+  [ "$#" -ge 2 ] || usage
+  loops="$2"
   shift 2
 fi
-n="${1:?usage: scripts/repeat_under_load.sh [-l LOOPS] N TEST_ID}"
-test_id="${2:?usage: scripts/repeat_under_load.sh [-l LOOPS] N TEST_ID}"
+[ "$#" -eq 2 ] || usage
+n="$1"
+test_id="$2"
+is_count "$n" || { echo "N must be a whole number of at least 1, got: $n" >&2; exit 2; }
+is_count "$loops" || { echo "LOOPS must be a whole number of at least 1, got: $loops" >&2; exit 2; }
 
 cd "$(dirname "$0")/.." || exit 2
 out="$(mktemp -d)"
 pids=()
 stop() { [ "${#pids[@]}" -gt 0 ] && kill "${pids[@]}" 2>/dev/null; }
-trap stop EXIT INT TERM
-for _ in $(seq "$loops"); do
+trap stop EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+i=0
+while [ "$i" -lt "$loops" ]; do
   ( while :; do :; done ) &
   pids+=($!)
+  i=$((i + 1))
 done
 
 failures=0
-for i in $(seq "$n"); do
-  if ! NO_COLOR=1 PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python -m pytest -q -n 0 \
+i=1
+while [ "$i" -le "$n" ]; do
+  if ! NO_COLOR=1 PYTHONDONTWRITEBYTECODE=1 uv run -q -p 3.12 --all-extras python -m pytest -q -n 0 \
       -p no:cacheprovider "$test_id" >"$out/run-$i.txt" 2>&1; then
     failures=$((failures + 1))
   fi
+  i=$((i + 1))
 done
 
 echo "runs=$n failures=$failures (busy loops: $loops; output in $out)"
