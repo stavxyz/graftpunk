@@ -248,8 +248,9 @@ def _poll_page_tokens_sync(
     return results
 
 
-# The HTTP status of the tab's document, which Chrome reports on the navigation
-# timing entry; 0 or absent when it does not know it (a page from cache, say).
+# The HTTP status of the tab's document, from the navigation timing entry's
+# responseStatus (read as 403 from Chrome 158, headless, on 2026-11-27); 0 when
+# the page has no such entry or the entry has no status.
 _PAGE_STATUS_JS = (
     "(function () { var e = performance.getEntriesByType('navigation')[0];"
     " return (e && e.responseStatus) || 0; })()"
