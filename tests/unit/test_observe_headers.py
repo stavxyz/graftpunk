@@ -321,6 +321,31 @@ def test_the_login_stores_each_roles_origin_on_the_session():
     assert session._gp_header_role_origins == {"xhr": "https://myshop.example"}
 
 
+def test_a_generated_login_whose_capture_found_no_roles_warns_with_the_requests_seen():
+    from types import SimpleNamespace
+
+    from structlog.testing import capture_logs
+
+    from graftpunk.plugins.login_engine import _store_header_roles
+
+    for backend in (
+        NodriverCaptureBackend(None, record_request_bodies=False),
+        SeleniumCaptureBackend(None, record_request_bodies=False),
+    ):
+        backend._request_map = {
+            "1": {"url": "https://myshop.example/logo.png", "headers": {"Accept": "image/png"}},
+            "2": {"url": "https://myshop.example/app.css", "headers": {"Accept": "text/css"}},
+        }
+        session = SimpleNamespace()
+        with capture_logs() as logs:
+            _store_header_roles(session, backend, "https://myshop.example")
+        empty = [e for e in logs if e["event"] == "login_header_roles_empty"]
+        assert len(empty) == 1
+        assert empty[0]["log_level"] == "warning"
+        assert empty[0]["requests"] == 2
+        assert session._gp_header_roles == {}
+
+
 # --- the headers Chrome sent, not the renderer's partial set ---
 #
 # Network.requestWillBeSent carries the renderer's request headers, which on a

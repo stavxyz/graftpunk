@@ -1289,6 +1289,10 @@ class CaptureBackend(Protocol):
         """Return the origin each of :meth:`get_header_roles`'s roles came from."""
         ...
 
+    def request_count(self) -> int:
+        """Return how many requests the capture holds, redirect hops counted each."""
+        ...
+
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously."""
         ...
@@ -1589,6 +1593,10 @@ class SeleniumCaptureBackend:
 
         return _header_role_origins_in_order(self._request_map, site_url)
 
+    def request_count(self) -> int:
+        """Return how many requests the capture holds, redirect hops counted each."""
+        return len(self._request_map)
+
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously (wraps sync method)."""
         return self.take_screenshot_sync()
@@ -1858,6 +1866,10 @@ class NodriverCaptureBackend:
         """Return the origin each of :meth:`get_header_roles`'s roles came from."""
 
         return _header_role_origins_in_order(self._request_map, site_url)
+
+    def request_count(self) -> int:
+        """Return how many requests the capture holds, redirect hops counted each."""
+        return len(self._request_map)
 
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously via nodriver.

@@ -173,6 +173,31 @@ class TestNodriverBrowserSession:
         assert cached.call_args.args[0]._gp_header_roles["navigation"]["User-Agent"] == UA
 
     @pytest.mark.asyncio
+    async def test_a_capture_that_found_no_roles_warns_once_and_the_login_caches(self) -> None:
+        async def login(_session: Any, _tab: Any) -> None:
+            return None
+
+        with capture_logs() as logs:
+            session, cached = await _run_nodriver(login)
+
+        empty = [e for e in logs if e["event"] == "login_header_roles_empty"]
+        assert len(empty) == 1
+        assert empty[0]["log_level"] == "warning"
+        assert empty[0]["requests"] == 0
+        assert cached.call_args.args[0] is session
+        assert session._gp_header_roles == {}
+
+    @pytest.mark.asyncio
+    async def test_a_capture_that_found_roles_does_not_warn(self) -> None:
+        async def login(_session: Any, tab: Any) -> None:
+            await tab.get(f"{SITE}/login")
+
+        with capture_logs() as logs:
+            await _run_nodriver(login)
+
+        assert "login_header_roles_empty" not in [e["event"] for e in logs]
+
+    @pytest.mark.asyncio
     async def test_a_login_that_raises_caches_nothing_and_stores_no_roles(self) -> None:
         async def login(_session: Any, tab: Any) -> None:
             await tab.get(f"{SITE}/login")
@@ -454,6 +479,23 @@ class TestSeleniumBrowserSessionSync:
             session._gp_header_roles = mine
 
         assert cached.call_args.args[0]._gp_header_roles is mine
+
+    def test_a_capture_that_found_no_roles_warns_once_and_the_login_caches(self) -> None:
+        made: list[_Driver] = []
+        with (
+            patch("graftpunk.stealth.create_stealth_driver", side_effect=_stealth(made)),
+            _no_requestium(),
+            patch("graftpunk.plugins.cli_plugin.cache_session") as cached,
+            capture_logs() as logs,
+            _Shop().browser_session_sync() as (session, _driver),
+        ):
+            pass
+
+        empty = [e for e in logs if e["event"] == "login_header_roles_empty"]
+        assert len(empty) == 1
+        assert empty[0]["log_level"] == "warning"
+        assert empty[0]["requests"] == 0
+        assert cached.call_args.args[0] is session
 
     def test_a_login_that_raises_caches_nothing(self) -> None:
         made: list[_Driver] = []
