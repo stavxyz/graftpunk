@@ -1048,7 +1048,7 @@ class _Interactive:
         where = "graftpunk.cli.observe_browser"
         stack.enter_context(patch(f"{where}.setup_observe_session", self.setup))
         stack.enter_context(patch(f"{where}.save_observe_run", self.save))
-        stack.enter_context(patch(f"{where}.stop_observe_browser"))
+        stack.enter_context(patch(f"{where}.end_observe_browser", new_callable=AsyncMock))
         stack.enter_context(patch(f"{where}.console", self.console))
         stack.enter_context(patch(f"{where}._throwaway_password", lambda: _THROWAWAY))
         return stack

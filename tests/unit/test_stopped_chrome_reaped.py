@@ -140,6 +140,45 @@ def test_an_observe_browser_is_reaped_before_its_loop_closes(
     assert proc.returncode == 0
 
 
+@pytest.mark.parametrize("where", ["graftpunk.cli.observe_browser", "graftpunk.tokens"])
+def test_chrome_has_exited_before_its_temp_profile_is_removed(
+    where: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Removing the profile of a Chrome still running races its writes to it."""
+    from graftpunk.cli.observe_browser import end_observe_browser
+    from graftpunk.tokens import Token, _extract_tokens_browser
+
+    at_removal: list[int | None] = []
+
+    async def run(proc: asyncio.subprocess.Process) -> None:
+        browser = _Browser(proc)
+        with patch(
+            f"{where}.remove_browser_temp_profile",
+            lambda _browser: at_removal.append(proc.returncode),
+        ):
+            if where == "graftpunk.tokens":
+                token = Token(name="X", source="page", pattern=r'csrf = "([^"]+)"')
+                with (
+                    patch("graftpunk.tokens.nodriver_start", AsyncMock(return_value=browser)),
+                    patch(
+                        "graftpunk.session.inject_cookies_to_nodriver",
+                        new_callable=AsyncMock,
+                        return_value=(0, 0),
+                    ),
+                    patch("graftpunk.tokens.answer_dialogs", AsyncMock()),
+                    patch("graftpunk.tokens.answer_dialogs_in_new_tabs", AsyncMock()),
+                    patch("graftpunk.tokens.close_dialogs_in_new_tabs", AsyncMock()),
+                    patch("graftpunk.tokens.prepare_browser_launch", lambda: None),
+                ):
+                    await _extract_tokens_browser(requests.Session(), [token], "https://x.example")
+            else:
+                with patch("graftpunk.cli.observe_browser.close_dialogs_in_new_tabs", AsyncMock()):
+                    await end_observe_browser(browser, MagicMock())
+
+    _noise, _proc = _closed_loop_noise(run, monkeypatch, caplog)
+    assert at_removal == [0]
+
+
 def test_reaping_nothing_is_a_no_op() -> None:
     from graftpunk.backends.nodriver import reap_stopped_chrome
 
