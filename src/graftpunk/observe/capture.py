@@ -866,10 +866,22 @@ def _same_url(a: str | None, b: str | None, base: str | None = None) -> bool:
 
 
 def _sends_a_body(headers: Mapping[str, str]) -> bool:
-    """Whether sent *headers* carry a request body: a ``Content-Type``, or a
-    ``Content-Length`` other than 0."""
-    lower = {k.lower(): str(v).strip() for k, v in headers.items()}
-    return "content-type" in lower or lower.get("content-length", "0") not in ("", "0")
+    """Whether sent *headers* carry a request body: a ``Content-Length`` above 0.
+    A ``Content-Type`` alone is not one: single-page apps name one on every
+    fetch, GETs included."""
+    for name, value in headers.items():
+        if name.lower() == "content-length":
+            try:
+                return int(str(value).strip()) > 0
+            except ValueError:
+                return False
+    return False
+
+
+def _http1(headers: Mapping[str, str]) -> bool:
+    """Whether sent *headers* are HTTP/1.1's: no ``:method`` pseudo-header. On
+    HTTP/2 the pseudo-headers name the request, and decide alone."""
+    return not any(name.lower() == ":method" for name in headers)
 
 
 def _request_headers_match(headers: Mapping[str, str], entry: dict[str, Any]) -> bool | None:
@@ -877,15 +889,20 @@ def _request_headers_match(headers: Mapping[str, str], entry: dict[str, Any]) ->
 
     HTTP/2 wire headers carry ``:method``/``:authority``/``:path``; HTTP/1.1
     carries only ``Host``. Compare whatever is present against the entry's URL
-    and method; with nothing to compare, return None. Headers that carry a body
-    never belong to a GET or HEAD: on HTTP/1.1 they are what tells a POST's from
-    the redirect GET's that follows it. An entry synthesized from a response
+    and method; with nothing to compare, return None. On HTTP/1.1 (no
+    ``:method``), headers with a body (``Content-Length`` above 0) never belong to
+    a GET or HEAD: they are what tells a POST's from the redirect GET's that
+    follows it. An entry synthesized from a response
     alone (``_from_response_only``) has a guessed method and the final URL, so
     nothing about it can be compared: also None.
     """
     if entry.get("_from_response_only"):
         return None
-    if _sends_a_body(headers) and str(entry.get("method", "GET")).upper() in ("GET", "HEAD"):
+    if (
+        _http1(headers)
+        and _sends_a_body(headers)
+        and str(entry.get("method", "GET")).upper() in ("GET", "HEAD")
+    ):
         return False
     lower = {k.lower(): v for k, v in headers.items()}
     parsed = urllib.parse.urlsplit(entry.get("url", ""))
@@ -940,9 +957,13 @@ class _ExtraInfoCorrelator:
       request ExtraInfo arriving late swaps with the successor's (each lands on
       the other). A Selenium login's performance log was measured on
       2026-11-27 delivering a POST's request ExtraInfo after its redirect GET
-      was announced; the body headers (``Content-Type``, a ``Content-Length``
-      above 0) keep those apart, since sent headers with a body never match a
-      GET or HEAD. Two bodiless requests in that order still swap. Likewise a
+      was announced. On HTTP/1.1 the body evidence (a ``Content-Length`` above
+      0) keeps a POST and a GET apart both ways: sent headers with a body never
+      match a GET or HEAD, and bodiless ones never go to an entry with post
+      data while another candidate without it exists, or wait for one (the
+      next entry for the id, else the drain's last resort). Two requests whose
+      headers carry the same body evidence (two bodiless ones, or a 307 or 308
+      pair, both with a body) still swap in that order. Likewise a
       redirect loop (two hops
       with the same status *and* ``Location``) with one dropped event cannot
       be told apart.
@@ -1027,15 +1048,19 @@ class _ExtraInfoCorrelator:
         if not candidates:
             self._pending_request.setdefault(request_id, []).append(headers)
             return
+        if _http1(headers) and not _sends_a_body(headers):
+            # Bodiless HTTP/1.1 headers are not a body-carrying POST's: they go to
+            # another candidate, or wait for the next entry (a redirect's GET
+            # announced after its sent headers arrived).
+            candidates = [e for e in candidates if not e.get("has_post_data")]
+            if not candidates:
+                self._pending_request.setdefault(request_id, []).append(headers)
+                return
         verdicts = [_request_headers_match(headers, e) for e in candidates]
         matched = [e for e, ok in zip(candidates, verdicts, strict=True) if ok]
         if matched:
             # Several equal matches (HTTP/1.1, same host) are undeterminable too:
             # candidates are in chain order, so the last match is the live request.
-            # Headers with no body are not a body-carrying POST's when another
-            # candidate can have them.
-            if len(matched) > 1 and not _sends_a_body(headers):
-                matched = [e for e in matched if not e.get("has_post_data")] or matched
             self._attach(matched[-1], "request", headers)
         elif all(v is None for v in verdicts):
             self._attach(candidates[-1], "request", headers)  # prefer the live request

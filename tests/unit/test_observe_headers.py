@@ -1217,14 +1217,14 @@ _LATE_POST_EVENTS: list[tuple[str, dict]] = [
 ]
 
 
-def _late_post_backend(kind: str):
+def _late_post_backend(kind: str, events: list[tuple[str, dict]] | None = None):
     import json
     from types import SimpleNamespace
 
     if kind == "selenium":
         log = [
             {"message": json.dumps({"message": {"method": method, "params": params}})}
-            for method, params in _LATE_POST_EVENTS
+            for method, params in events or _LATE_POST_EVENTS
         ]
         backend = SeleniumCaptureBackend(
             SimpleNamespace(get_log=lambda _kind: log),
@@ -1241,7 +1241,7 @@ def _late_post_backend(kind: str):
         "Network.responseReceived": backend._on_response,
         "Network.responseReceivedExtraInfo": backend._on_response_extra_info,
     }
-    for method, params in _LATE_POST_EVENTS:
+    for method, params in events or _LATE_POST_EVENTS:
         handlers[method](_nodriver_event(params))
     return backend
 
@@ -1323,3 +1323,146 @@ def test_preflight_request_headers_stay_out_of_roles(name: str):
         "1": _entry("https://myshop.example/a", "GET", RENDERER_NAV, _wire(**{name: "POST"}), 1.0)
     }
     assert extract_header_roles(request_map, SITE)["navigation"] == BROWSER_NAV_ROLE
+
+
+# --- a GET that names a Content-Type and sends no body ---
+#
+# Single-page apps set Content-Type: application/json on every fetch, GETs
+# included. That is not a body: only a Content-Length above 0 is, and on HTTP/2
+# the :method pseudo-header decides.
+
+_XHR_SENT = {
+    "Host": "127.0.0.1:8080",
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Site": "same-origin",
+    "User-Agent": CHROME_UA,
+    "X-Marker": "api",
+}
+_XHR_SENT_H2 = {
+    **{k.lower(): v for k, v in _XHR_SENT.items() if k != "Host"},
+    ":method": "GET",
+    ":path": "/api",
+    ":authority": "127.0.0.1:8080",
+    ":scheme": "http",
+}
+
+
+@pytest.mark.parametrize("sent", [_XHR_SENT, _XHR_SENT_H2], ids=["http1", "http2"])
+def test_a_get_naming_a_content_type_without_a_body_keeps_its_sent_headers(sent: dict):
+    import json
+    from types import SimpleNamespace
+
+    from graftpunk.observe.capture import _request_headers_match
+
+    assert _request_headers_match(sent, {"url": f"{_H1}/api", "method": "GET"}) is not False
+    events = [
+        (
+            "Network.requestWillBeSent",
+            {
+                "requestId": "4",
+                "wallTime": 1_700_000_001.0,
+                "type": "XHR",
+                "documentURL": f"{_H1}/app",
+                "request": {"url": f"{_H1}/api", "method": "GET", "headers": {}},
+            },
+        ),
+        ("Network.requestWillBeSentExtraInfo", {"requestId": "4", "headers": sent}),
+        ("Network.responseReceivedExtraInfo", {"requestId": "4", "headers": {}, "statusCode": 200}),
+        (
+            "Network.responseReceived",
+            {
+                "requestId": "4",
+                "response": {
+                    "url": f"{_H1}/api",
+                    "status": 200,
+                    "statusText": "OK",
+                    "headers": {},
+                    "mimeType": "application/json",
+                },
+            },
+        ),
+    ]
+    log = [{"message": json.dumps({"message": {"method": m, "params": p}})} for m, p in events]
+    backend = SeleniumCaptureBackend(
+        SimpleNamespace(get_log=lambda _kind: log),
+        record_request_bodies=False,
+        record_console=False,
+    )
+    backend.start_capture()
+    backend.stop_capture()
+    roles = backend.get_header_roles(_H1)
+    assert {k.lower(): v for k, v in roles["xhr"].items()}["x-marker"] == "api"
+    (entry,) = backend.get_har_entries()
+    assert "x-marker" in {h["name"].lower() for h in entry["request"]["headers"]}
+
+
+def test_on_http2_the_pseudo_headers_decide_not_the_body_evidence():
+    from graftpunk.observe.capture import _request_headers_match
+
+    sent = {**_XHR_SENT_H2, "content-length": "12", ":method": "GET"}
+    assert _request_headers_match(sent, {"url": f"{_H1}/api", "method": "GET"}) is True
+
+
+# --- a redirect GET's sent headers before the GET is announced (HTTP/1.1) ---
+
+
+def test_a_continuations_early_sent_headers_wait_for_it_rather_than_land_on_the_post():
+    """The redirect GET's sent headers arrive while only the POST is announced,
+    then the GET is announced, then the POST's own: bodiless headers on HTTP/1.1
+    are not a body-carrying POST's, so they wait for the GET."""
+    events = [
+        _LATE_POST_EVENTS[0],
+        ("Network.requestWillBeSentExtraInfo", {"requestId": "R", "headers": _GET_SENT}),
+        _LATE_POST_EVENTS[1],
+        ("Network.requestWillBeSentExtraInfo", {"requestId": "R", "headers": _POST_SENT}),
+        *_LATE_POST_EVENTS[3:4],
+        *_LATE_POST_EVENTS[5:],
+    ]
+    for kind in ("selenium", "nodriver"):
+        backend = _late_post_backend(kind, events)
+        roles = backend.get_header_roles(_H1)
+        assert roles["form"]["X-Marker"] == "post", kind
+        assert roles["navigation"]["X-Marker"] == "get", kind
+        by_method = {e["request"]["method"]: e["request"] for e in backend.get_har_entries()}
+        post = {h["name"].lower(): h["value"] for h in by_method["POST"]["headers"]}
+        get = {h["name"].lower(): h["value"] for h in by_method["GET"]["headers"]}
+        assert post["x-marker"] == "post" and get["x-marker"] == "get", kind
+
+
+def test_the_measured_selenium_late_post_log_keeps_post_and_get_apart():
+    """The performance log of a live Selenium login whose POST's sent headers came
+    after the redirect GET was announced (tests/fixtures/README.md says how it
+    was trimmed): the POST keeps its body headers, the GET gets its own, and the
+    login has both roles."""
+    import json
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    fixture = Path(__file__).parents[1] / "fixtures" / "selenium_late_post_perflog.json"
+    events = json.loads(fixture.read_text())["events"]
+    log = [{"message": json.dumps({"message": e})} for e in events]
+    backend = SeleniumCaptureBackend(
+        SimpleNamespace(get_log=lambda _kind: log),
+        record_request_bodies=False,
+        record_console=False,
+    )
+    backend.start_capture()
+    backend.stop_capture()
+
+    roles = backend.get_header_roles(_H1)
+    assert sorted(roles) == ["form", "navigation"]
+    entries = {
+        (e["request"]["method"], e["request"]["url"]): {
+            h["name"].lower(): h["value"] for h in e["request"]["headers"]
+        }
+        for e in backend.get_har_entries()
+    }
+    post = entries[("POST", f"{_H1}/login")]
+    home = entries[("GET", f"{_H1}/home")]
+    assert post["content-type"] == "application/x-www-form-urlencoded"
+    assert int(post["content-length"]) > 0
+    assert "content-length" not in home
+    assert "cookie" in home

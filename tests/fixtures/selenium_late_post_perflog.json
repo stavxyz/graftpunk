@@ -1,0 +1,297 @@
+{
+ "source": "A Selenium login's performance log, Chrome 158, local http site, 2026-11-27; trimmed to the site's Network events, values replaced",
+ "events": [
+  {
+   "method": "Network.requestWillBeSent",
+   "params": {
+    "requestId": "510683",
+    "wallTime": 1795811274.101229,
+    "type": "Document",
+    "redirectHasExtraInfo": false,
+    "documentURL": "http://127.0.0.1:8080/login",
+    "request": {
+     "url": "http://127.0.0.1:8080/login",
+     "method": "GET",
+     "headers": {
+      "Accept-Language": "placeholder",
+      "Upgrade-Insecure-Requests": "1",
+      "User-Agent": "Mozilla/5.0 Chrome/158.0.0.0"
+     },
+     "hasPostData": false
+    }
+   }
+  },
+  {
+   "method": "Network.requestWillBeSentExtraInfo",
+   "params": {
+    "requestId": "510683",
+    "headers": {
+     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+     "Accept-Encoding": "placeholder",
+     "Accept-Language": "placeholder",
+     "Connection": "placeholder",
+     "Host": "127.0.0.1:8080",
+     "Sec-Fetch-Dest": "document",
+     "Sec-Fetch-Mode": "navigate",
+     "Sec-Fetch-Site": "none",
+     "Sec-Fetch-User": "placeholder",
+     "Upgrade-Insecure-Requests": "1",
+     "User-Agent": "Mozilla/5.0 Chrome/158.0.0.0"
+    }
+   }
+  },
+  {
+   "method": "Network.responseReceivedExtraInfo",
+   "params": {
+    "requestId": "510683",
+    "statusCode": 200,
+    "headers": {
+     "Content-Length": "267",
+     "Content-Type": "text/html",
+     "Date": "placeholder",
+     "Server": "placeholder"
+    }
+   }
+  },
+  {
+   "method": "Network.responseReceived",
+   "params": {
+    "requestId": "510683",
+    "type": "Document",
+    "response": {
+     "url": "http://127.0.0.1:8080/login",
+     "status": 200,
+     "statusText": "OK",
+     "headers": {
+      "Content-Length": "267",
+      "Content-Type": "text/html",
+      "Date": "placeholder",
+      "Server": "placeholder"
+     },
+     "mimeType": "text/html"
+    }
+   }
+  },
+  {
+   "method": "Network.requestWillBeSent",
+   "params": {
+    "requestId": "6236.2",
+    "wallTime": 1795811274.178685,
+    "type": "Other",
+    "redirectHasExtraInfo": false,
+    "documentURL": "http://127.0.0.1:8080/login",
+    "request": {
+     "url": "http://127.0.0.1:8080/favicon.ico",
+     "method": "GET",
+     "headers": {
+      "Accept-Language": "placeholder",
+      "Referer": "placeholder",
+      "User-Agent": "Mozilla/5.0 Chrome/158.0.0.0"
+     },
+     "hasPostData": false
+    }
+   }
+  },
+  {
+   "method": "Network.requestWillBeSentExtraInfo",
+   "params": {
+    "requestId": "6236.2",
+    "headers": {
+     "Accept": "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+     "Accept-Encoding": "placeholder",
+     "Accept-Language": "placeholder",
+     "Connection": "placeholder",
+     "Host": "127.0.0.1:8080",
+     "Referer": "placeholder",
+     "Sec-Fetch-Dest": "image",
+     "Sec-Fetch-Mode": "no-cors",
+     "Sec-Fetch-Site": "same-origin",
+     "User-Agent": "Mozilla/5.0 Chrome/158.0.0.0"
+    }
+   }
+  },
+  {
+   "method": "Network.responseReceivedExtraInfo",
+   "params": {
+    "requestId": "6236.2",
+    "statusCode": 404,
+    "headers": {
+     "Content-Length": "9",
+     "Content-Type": "text/html",
+     "Date": "placeholder",
+     "Server": "placeholder"
+    }
+   }
+  },
+  {
+   "method": "Network.responseReceived",
+   "params": {
+    "requestId": "6236.2",
+    "type": "Other",
+    "response": {
+     "url": "http://127.0.0.1:8080/favicon.ico",
+     "status": 404,
+     "statusText": "Not Found",
+     "headers": {
+      "Content-Length": "9",
+      "Content-Type": "text/html",
+      "Date": "placeholder",
+      "Server": "placeholder"
+     },
+     "mimeType": "text/html"
+    }
+   }
+  },
+  {
+   "method": "Network.requestWillBeSent",
+   "params": {
+    "requestId": "CAF722",
+    "wallTime": 1795811274.504922,
+    "type": "Document",
+    "redirectHasExtraInfo": false,
+    "documentURL": "http://127.0.0.1:8080/login",
+    "request": {
+     "url": "http://127.0.0.1:8080/login",
+     "method": "POST",
+     "headers": {
+      "Accept-Language": "placeholder",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Origin": "placeholder",
+      "Referer": "placeholder",
+      "Upgrade-Insecure-Requests": "1",
+      "User-Agent": "Mozilla/5.0 Chrome/158.0.0.0"
+     },
+     "hasPostData": true
+    }
+   }
+  },
+  {
+   "method": "Network.requestWillBeSent",
+   "params": {
+    "requestId": "CAF722",
+    "wallTime": 1795811274.506793,
+    "type": "Document",
+    "redirectHasExtraInfo": true,
+    "documentURL": "http://127.0.0.1:8080/home",
+    "request": {
+     "url": "http://127.0.0.1:8080/home",
+     "method": "GET",
+     "headers": {
+      "Accept-Language": "placeholder",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Origin": "placeholder",
+      "Referer": "placeholder",
+      "Upgrade-Insecure-Requests": "1",
+      "User-Agent": "Mozilla/5.0 Chrome/158.0.0.0"
+     },
+     "hasPostData": false
+    },
+    "redirectResponse": {
+     "status": 302,
+     "statusText": "Found",
+     "headers": {
+      "Content-Length": "0",
+      "Content-Type": "text/html",
+      "Date": "placeholder",
+      "Location": "/home",
+      "Server": "placeholder"
+     },
+     "mimeType": "text/html"
+    }
+   }
+  },
+  {
+   "method": "Network.requestWillBeSentExtraInfo",
+   "params": {
+    "requestId": "CAF722",
+    "headers": {
+     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+     "Accept-Encoding": "placeholder",
+     "Accept-Language": "placeholder",
+     "Cache-Control": "placeholder",
+     "Connection": "placeholder",
+     "Content-Length": "41",
+     "Content-Type": "application/x-www-form-urlencoded",
+     "Host": "127.0.0.1:8080",
+     "Origin": "placeholder",
+     "Referer": "placeholder",
+     "Sec-Fetch-Dest": "document",
+     "Sec-Fetch-Mode": "navigate",
+     "Sec-Fetch-Site": "same-origin",
+     "Sec-Fetch-User": "placeholder",
+     "Upgrade-Insecure-Requests": "1",
+     "User-Agent": "Mozilla/5.0 Chrome/158.0.0.0"
+    }
+   }
+  },
+  {
+   "method": "Network.responseReceivedExtraInfo",
+   "params": {
+    "requestId": "CAF722",
+    "statusCode": 302,
+    "headers": {
+     "Content-Length": "0",
+     "Content-Type": "text/html",
+     "Date": "placeholder",
+     "Location": "/home",
+     "Server": "placeholder",
+     "Set-Cookie": "placeholder=1"
+    }
+   }
+  },
+  {
+   "method": "Network.requestWillBeSentExtraInfo",
+   "params": {
+    "requestId": "CAF722",
+    "headers": {
+     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+     "Accept-Encoding": "placeholder",
+     "Accept-Language": "placeholder",
+     "Cache-Control": "placeholder",
+     "Connection": "placeholder",
+     "Cookie": "placeholder=1",
+     "Host": "127.0.0.1:8080",
+     "Referer": "placeholder",
+     "Sec-Fetch-Dest": "document",
+     "Sec-Fetch-Mode": "navigate",
+     "Sec-Fetch-Site": "same-origin",
+     "Sec-Fetch-User": "placeholder",
+     "Upgrade-Insecure-Requests": "1",
+     "User-Agent": "Mozilla/5.0 Chrome/158.0.0.0"
+    }
+   }
+  },
+  {
+   "method": "Network.responseReceivedExtraInfo",
+   "params": {
+    "requestId": "CAF722",
+    "statusCode": 200,
+    "headers": {
+     "Content-Length": "443",
+     "Content-Type": "text/html",
+     "Date": "placeholder",
+     "Server": "placeholder"
+    }
+   }
+  },
+  {
+   "method": "Network.responseReceived",
+   "params": {
+    "requestId": "CAF722",
+    "type": "Document",
+    "response": {
+     "url": "http://127.0.0.1:8080/home",
+     "status": 200,
+     "statusText": "OK",
+     "headers": {
+      "Content-Length": "443",
+      "Content-Type": "text/html",
+      "Date": "placeholder",
+      "Server": "placeholder"
+     },
+     "mimeType": "text/html"
+    }
+   }
+  }
+ ]
+}
