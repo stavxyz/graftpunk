@@ -185,6 +185,17 @@ scripts/repeat_under_load.sh 50 tests/unit/test_login_verdict.py::TestVerdictCom
 
 Run it before calling a CI failure a flake, and after fixing one. It first runs the test once with no load and stops with exit 2 if that fails, since a test that fails unloaded is broken rather than flaky. The default load is four busy loops per CPU; one per CPU was too light to reproduce the login-wait race this script was written for (0 failures in 30 runs at 10 loops, 4 in 40 at 40 loops). So a fix is shown when the same load that reproduced the failure before the fix gives zero failures over enough runs (100 is a good number); zero at a load that never reproduced it shows nothing. It exits 1 when any run failed, and keeps each run's output for reading the failure. The login tests' time budgets are an example: `tests/unit/conftest.py`'s `_login_hard_end_out_of_reach` fixture moves a nodriver login wait's hard end out of reach so a slow tick cannot end the wait before its last page read.
 
+### Does a session still send what the last release sent?
+
+`scripts/header_parity.py` answers that for `GraftpunkSession`. It runs a fixed set of request cases (no roles, captured roles in canonical and HTTP/2 spelling, declared roles for commands and for `gp http`, `request_with_role` with caller headers and `referer=`, a default role, a header the user set, on the site's origin, another origin of its site, and another site) against a `git archive` of a ref and against the checkout. Each case goes through a fake requests adapter that records the request and answers 200, so nothing leaves the machine. It prints every header that differs (value, spelling, added, gone, or the order of the names). A difference the release means to make is listed in `scripts/header_parity_allowed.json` with its case pattern, the headers allowed to differ, and a one-line reason.
+
+```bash
+python scripts/header_parity.py                 # against v1.46.0, the default
+python scripts/header_parity.py --ref v1.45.0   # against another release
+```
+
+Run it after any change to `src/graftpunk/graftpunk_session.py` or `src/graftpunk/observe/headers.py`. It exits 0 when every difference is allowed, 1 when one is not, and 2 on a usage error (a ref git cannot archive, an unreadable allowlist). A new difference is either a bug or an entry for the allowlist and the changelog, never both unstated.
+
 ### Writing Tests
 
 - Place unit tests in `tests/unit/`

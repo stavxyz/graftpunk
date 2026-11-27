@@ -1,0 +1,23 @@
+{
+  "allowed": [
+    {
+      "case": "http2 own *",
+      "headers": ["accept", "accept-language"],
+      "reason": "a role captured over HTTP/2 holds lower-case names; they now beat the session defaults (Accept: */*) in any case and keep their spelling"
+    },
+    {
+      "case": "* get json lower",
+      "headers": [
+        "origin",
+        "sec-fetch-dest",
+        "sec-fetch-mode",
+        "sec-fetch-site",
+        "sec-fetch-user",
+        "upgrade-insecure-requests",
+        "x-requested-with",
+        "<order>"
+      ],
+      "reason": "a caller's Accept: application/json in lower case now selects the xhr role, as the canonical spelling always did"
+    }
+  ]
+}
