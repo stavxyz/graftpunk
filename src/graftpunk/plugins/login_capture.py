@@ -118,13 +118,29 @@ def store_header_roles(session: Any, header_capture: Any, base_url: str) -> None
     Each role is taken from a request to *base_url*'s origin where the login
     made one (``graftpunk.observe.headers.extract_header_roles``), and
     ``GraftpunkSession`` sends a captured role as captured only to the origin
-    it came from (#228).
+    it came from (#228). A capture that found no role logs
+    ``login_header_roles_empty`` with the number of requests it held; the
+    login goes on.
     """
     from graftpunk.tokens import _HEADER_ROLE_ORIGINS_ATTR, _HEADER_ROLES_ATTR
 
-    setattr(session, _HEADER_ROLES_ATTR, header_capture.get_header_roles(site_url=base_url))
+    roles = header_capture.get_header_roles(site_url=base_url)
+    setattr(session, _HEADER_ROLES_ATTR, roles)
     origins = header_capture.get_header_role_origins(site_url=base_url)
     setattr(session, _HEADER_ROLE_ORIGINS_ATTR, dict(origins) if isinstance(origins, dict) else {})
+    if not roles:
+        # Without roles the session's commands send python-requests' User-Agent,
+        # and nothing else would say why. request_count is on graftpunk's own
+        # backends, not on the CaptureBackend protocol, which programs implement.
+        count = getattr(header_capture, "request_count", None)
+        extra = {"requests": count()} if callable(count) else {}
+        LOG.warning(
+            "login_header_roles_empty",
+            base_url=base_url,
+            hint="No captured request could be classified as navigation, xhr or form; "
+            "commands send the registered role headers and the HTTP client's User-Agent",
+            **extra,
+        )
 
 
 def plugin_set_header_roles(session: Any) -> bool:

@@ -21,11 +21,19 @@ from graftpunk.plugins.cli_plugin import SitePlugin
 
 UA = "Mozilla/5.0 (Macintosh) Chrome/150.0.0.0 Safari/537.36"
 SITE = "https://myshop.example"
-BROWSER_HEADERS = {
+# What Chrome reports for a page load: the renderer's headers on
+# requestWillBeSent hold no Accept and no Sec-Fetch-*, and only the headers sent,
+# on requestWillBeSentExtraInfo, say it is a navigation.
+RENDERER_HEADERS = {
     "User-Agent": UA,
     "sec-ch-ua": '"Chromium";v="150"',
+    "Upgrade-Insecure-Requests": "1",
+}
+BROWSER_HEADERS = {
+    **RENDERER_HEADERS,
     "Sec-Fetch-Mode": "navigate",
     "Accept": "text/html",
+    "Host": "myshop.example",
 }
 
 
@@ -60,17 +68,22 @@ class _Tab:
         self._next += 1
         event = SimpleNamespace(
             request_id=str(self._next),
-            request=SimpleNamespace(url=url, method="GET", headers=dict(BROWSER_HEADERS)),
+            request=SimpleNamespace(url=url, method="GET", headers=dict(RENDERER_HEADERS)),
             redirect_response=None,
             wall_time=1_700_000_000.0 + self._next,
             type_="Document",
             document_url=url,
         )
-        for event_cls, handler in self.handlers:
-            if event_cls is network.RequestWillBeSent:
-                result = handler(event)
-                if inspect.isawaitable(result):
-                    await result
+        sent = SimpleNamespace(request_id=str(self._next), headers=dict(BROWSER_HEADERS))
+        for cls, cdp_event in (
+            (network.RequestWillBeSent, event),
+            (network.RequestWillBeSentExtraInfo, sent),
+        ):
+            for event_cls, handler in self.handlers:
+                if event_cls is cls:
+                    result = handler(cdp_event)
+                    if inspect.isawaitable(result):
+                        await result
         return self
 
 
@@ -79,12 +92,14 @@ class _NodriverSession:
 
     def __init__(self, tab: _Tab) -> None:
         self.tab = tab
-        self.driver = SimpleNamespace(get=self._open, stop=self._stop)
+        # No driver.stop: nodriver's returns before Chrome exits, and the login
+        # must end Chrome through the session's own stop, which waits for it.
+        self.driver = SimpleNamespace(get=self._open)
         self.current_url = ""
         self.transferred = False
         self.stopped = False
 
-    def _stop(self) -> None:
+    async def _quit_async(self) -> None:
         self.stopped = True
 
     async def start_async(self) -> None:
@@ -128,10 +143,12 @@ class TestNodriverBrowserSession:
 
         stored = cached.call_args.args[0]
         assert stored is session
-        assert stored._gp_header_roles["navigation"]["User-Agent"] == UA
-        assert stored._gp_header_roles["navigation"]["sec-ch-ua"] == '"Chromium";v="150"'
+        assert stored._gp_header_roles == {
+            "navigation": {k: v for k, v in BROWSER_HEADERS.items() if k != "Host"}
+        }
         assert stored._gp_header_role_origins == {"navigation": SITE}
         assert session.transferred
+        assert session.stopped
 
     @pytest.mark.asyncio
     async def test_roles_a_plugin_set_itself_are_kept(self) -> None:
@@ -157,6 +174,31 @@ class TestNodriverBrowserSession:
         _session, cached = await _run_nodriver(login)
 
         assert cached.call_args.args[0]._gp_header_roles["navigation"]["User-Agent"] == UA
+
+    @pytest.mark.asyncio
+    async def test_a_capture_that_found_no_roles_warns_once_and_the_login_caches(self) -> None:
+        async def login(_session: Any, _tab: Any) -> None:
+            return None
+
+        with capture_logs() as logs:
+            session, cached = await _run_nodriver(login)
+
+        empty = [e for e in logs if e["event"] == "login_header_roles_empty"]
+        assert len(empty) == 1
+        assert empty[0]["log_level"] == "warning"
+        assert empty[0]["requests"] == 0
+        assert cached.call_args.args[0] is session
+        assert session._gp_header_roles == {}
+
+    @pytest.mark.asyncio
+    async def test_a_capture_that_found_roles_does_not_warn(self) -> None:
+        async def login(_session: Any, tab: Any) -> None:
+            await tab.get(f"{SITE}/login")
+
+        with capture_logs() as logs:
+            await _run_nodriver(login)
+
+        assert "login_header_roles_empty" not in [e["event"] for e in logs]
 
     @pytest.mark.asyncio
     async def test_a_login_that_raises_caches_nothing_and_stores_no_roles(self) -> None:
@@ -267,6 +309,7 @@ async def _run_nodriver_raising(login_body: Any) -> None:
             cached.assert_not_called()
             assert "_gp_header_roles" not in vars(session)
             assert not session.transferred
+            assert session.stopped
 
 
 # ---------------------------------------------------------------------------
@@ -312,19 +355,27 @@ class _Driver:
             raise selenium.common.exceptions.InvalidArgumentException(
                 "invalid argument: log type 'performance' not found"
             )
-        return [
-            _perf(
-                "Network.requestWillBeSent",
-                {
-                    "requestId": str(i),
-                    "wallTime": 1_700_000_000.0 + i,
-                    "type": "Document",
-                    "documentURL": url,
-                    "request": {"url": url, "method": "GET", "headers": dict(BROWSER_HEADERS)},
-                },
+        events = []
+        for i, url in enumerate(self.visited, start=1):
+            events.append(
+                _perf(
+                    "Network.requestWillBeSent",
+                    {
+                        "requestId": str(i),
+                        "wallTime": 1_700_000_000.0 + i,
+                        "type": "Document",
+                        "documentURL": url,
+                        "request": {"url": url, "method": "GET", "headers": RENDERER_HEADERS},
+                    },
+                )
             )
-            for i, url in enumerate(self.visited, start=1)
-        ]
+            events.append(
+                _perf(
+                    "Network.requestWillBeSentExtraInfo",
+                    {"requestId": str(i), "headers": BROWSER_HEADERS},
+                )
+            )
+        return events
 
     def get_cookies(self) -> list[dict[str, Any]]:
         return []
@@ -373,7 +424,9 @@ class TestSeleniumBrowserSessionSync:
         (driver,) = made
         assert driver.performance_log is True
         stored = cached.call_args.args[0]
-        assert stored._gp_header_roles["navigation"]["User-Agent"] == UA
+        assert stored._gp_header_roles == {
+            "navigation": {k: v for k, v in BROWSER_HEADERS.items() if k != "Host"}
+        }
         assert stored._gp_header_role_origins == {"navigation": SITE}
         err = capsys.readouterr().err
         assert "Performance log collection failed" not in err
@@ -430,6 +483,23 @@ class TestSeleniumBrowserSessionSync:
             session._gp_header_roles = mine
 
         assert cached.call_args.args[0]._gp_header_roles is mine
+
+    def test_a_capture_that_found_no_roles_warns_once_and_the_login_caches(self) -> None:
+        made: list[_Driver] = []
+        with (
+            patch("graftpunk.stealth.create_stealth_driver", side_effect=_stealth(made)),
+            _no_requestium(),
+            patch("graftpunk.plugins.cli_plugin.cache_session") as cached,
+            capture_logs() as logs,
+            _Shop().browser_session_sync() as (session, _driver),
+        ):
+            pass
+
+        empty = [e for e in logs if e["event"] == "login_header_roles_empty"]
+        assert len(empty) == 1
+        assert empty[0]["log_level"] == "warning"
+        assert empty[0]["requests"] == 0
+        assert cached.call_args.args[0] is session
 
     def test_a_login_that_raises_caches_nothing(self) -> None:
         made: list[_Driver] = []
@@ -529,3 +599,83 @@ class TestGeneratedSeleniumLogin:
         assert "Performance log collection failed" not in err
         assert "Browser log collection failed" not in err
         assert made[0].logs_read == ["performance"]
+
+
+# ---------------------------------------------------------------------------
+# A capture class written to the 1.46.0 CaptureBackend protocol, which has no
+# request_count: it still satisfies the protocol, and a login with it logs the
+# empty-roles warning without the count and does not fail.
+# ---------------------------------------------------------------------------
+
+
+class _Capture146:
+    def start_capture(self) -> None:
+        return None
+
+    def stop_capture(self) -> None:
+        return None
+
+    def take_screenshot_sync(self) -> bytes | None:
+        return None
+
+    def get_har_entries(self) -> list[dict[str, Any]]:
+        return []
+
+    def get_console_logs(self) -> list[dict[str, Any]]:
+        return []
+
+    def get_header_roles(self, site_url: str | None = None) -> dict[str, dict[str, str]]:
+        return {}
+
+    def get_header_role_origins(self, site_url: str | None = None) -> dict[str, str]:
+        return {}
+
+    async def take_screenshot(self) -> bytes | None:
+        return None
+
+    async def get_page_source(self) -> str | None:
+        return None
+
+    async def start_capture_async(self) -> None:
+        return None
+
+    async def stop_capture_async(self) -> None:
+        return None
+
+
+def _empty_warnings(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in logs if e["event"] == "login_header_roles_empty"]
+
+
+class TestACaptureWrittenToThe1460Protocol:
+    def test_it_still_satisfies_the_protocol(self) -> None:
+        from graftpunk.observe.capture import CaptureBackend
+
+        assert isinstance(_Capture146(), CaptureBackend)
+
+    def test_the_generated_logins_store_warns_without_a_count(self) -> None:
+        from graftpunk.plugins.login_engine import _store_header_roles
+
+        session = SimpleNamespace()
+        with capture_logs() as logs:
+            _store_header_roles(session, _Capture146(), SITE)
+
+        (warning,) = _empty_warnings(logs)
+        assert "requests" not in warning
+        assert session._gp_header_roles == {}
+
+    @pytest.mark.asyncio
+    async def test_a_hand_written_nodriver_login_warns_and_caches(self) -> None:
+        async def login(_session: Any, tab: Any) -> None:
+            await tab.get(f"{SITE}/login")
+
+        with (
+            patch("graftpunk.observe.capture.create_capture_backend", return_value=_Capture146()),
+            capture_logs() as logs,
+        ):
+            session, cached = await _run_nodriver(login)
+
+        (warning,) = _empty_warnings(logs)
+        assert "requests" not in warning
+        assert "login_header_capture_unavailable" not in [e["event"] for e in logs]
+        assert cached.call_args.args[0] is session

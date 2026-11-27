@@ -475,7 +475,7 @@ class TestObserveGoScrubs:
         with (
             patch(f"{where}.setup_observe_session", AsyncMock(return_value=observed)),
             patch(f"{where}.save_observe_run", new_callable=AsyncMock) as save,
-            patch(f"{where}.stop_observe_browser"),
+            patch(f"{where}.end_observe_browser", new_callable=AsyncMock),
         ):
             await run_observe_go("myshop", f"{_HOST}/login", 0.0, 1024)
 

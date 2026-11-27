@@ -248,12 +248,38 @@ def _poll_page_tokens_sync(
     return results
 
 
+# The HTTP status of the tab's document, from the navigation timing entry's
+# responseStatus (read as 403 from Chrome 158, headless, on 2026-11-27); 0 when
+# the page has no such entry or the entry has no status.
+_PAGE_STATUS_JS = (
+    "(function () { var e = performance.getEntriesByType('navigation')[0];"
+    " return (e && e.responseStatus) || 0; })()"
+)
+_PAGE_STATUS_READ_S = 5.0
+
+
+async def _page_error_status(tab: Any, *, within: float = _PAGE_STATUS_READ_S) -> int | None:
+    """The HTTP error status (400 or above) the tab's page was answered with, or
+    None for a success, a status that cannot be read, or no answer in *within*
+    seconds (the read is then abandoned, not cancelled: graftpunk.cdp_wait)."""
+    try:
+        end = asyncio.get_running_loop().time() + within
+        status = await answer_by(tab.evaluate(_PAGE_STATUS_JS, return_by_value=True), end=end)
+    except Exception as exc:  # noqa: BLE001 - the status only words the error; any failure leaves it unknown
+        LOG.debug("browser_token_page_status_unread", error=str(exc), exc_type=type(exc).__name__)
+        return None
+    if isinstance(status, int) and not isinstance(status, bool) and status >= 400:
+        return status
+    return None
+
+
 async def _extract_tokens_browser(
     session: requests.Session,
     tokens: list[Token],
     base_url: str,
     *,
     headless: bool = True,
+    http_errors: dict[str, int] | None = None,
 ) -> dict[str, str]:
     """Extract multiple tokens using a single nodriver browser session.
 
@@ -266,6 +292,9 @@ async def _extract_tokens_browser(
         tokens: List of ``page`` Token configs to extract.
         base_url: Plugin's base URL for resolving relative page_url paths.
         headless: ``TokenConfig.headless``.
+        http_errors: Filled with each page URL whose tokens were not all read
+            and whose document was answered with an HTTP error status, and
+            that status.
 
     Returns:
         Mapping of token name to extracted value. Missing keys indicate
@@ -329,6 +358,18 @@ async def _extract_tokens_browser(
                 tab = await answer_by(browser.get(url), end=end)
                 extracted = await _poll_for_tokens(tab, token_group, url, "browser_token", end=end)
                 results.update(extracted)
+                if http_errors is not None and any(t.name not in results for t in token_group):
+                    # Read after the full wait, not before: a challenge page can
+                    # answer 403 and then load the real page with its token.
+                    status = await _page_error_status(tab)
+                    if status is not None:
+                        http_errors[url] = status
+                        LOG.warning(
+                            "browser_token_page_http_error",
+                            url=url,
+                            status=status,
+                            headless=headless,
+                        )
             except TimeoutError as exc:
                 # A deadline during the reads keeps what they read (1.45.0 lost it).
                 results.update(getattr(exc, "results", {}))
@@ -357,6 +398,10 @@ async def _extract_tokens_browser(
         # iterates the registry the deregister call removes this browser from,
         # so without the last call every token extraction leaks one directory
         # (#96).
+        from graftpunk.backends.nodriver import reap_stopped_chrome
+
+        # Read before the stop, which sets it to None when it cannot signal Chrome.
+        proc = getattr(browser, "_process", None)
         try:
             # Before Chrome ends, on the loop the answerer's listener runs on (#353).
             await close_dialogs_in_new_tabs(browser)
@@ -364,9 +409,12 @@ async def _extract_tokens_browser(
             try:
                 browser.stop()
             finally:
-                _deregister_nodriver_browser(browser)
-                unregister_live_browser(handle)
-                remove_browser_temp_profile(browser)
+                try:
+                    await reap_stopped_chrome(proc)
+                finally:
+                    _deregister_nodriver_browser(browser)
+                    unregister_live_browser(handle)
+                    remove_browser_temp_profile(browser)
 
 
 async def extract_tokens_from_tab(
@@ -660,6 +708,7 @@ def _run_browser_extraction(
     base_url: str,
     *,
     headless: bool = True,
+    http_errors: dict[str, int] | None = None,
 ) -> dict[str, str]:
     """Run browser extraction, handling sync/async context detection.
 
@@ -668,6 +717,7 @@ def _run_browser_extraction(
         tokens: Tokens needing browser extraction.
         base_url: Plugin's base URL.
         headless: ``TokenConfig.headless``.
+        http_errors: Passed to :func:`_extract_tokens_browser`.
 
     Returns:
         Mapping of token name to extracted value.
@@ -678,7 +728,9 @@ def _run_browser_extraction(
     # (#96).
     arm_termination_handlers()
 
-    coro = _extract_tokens_browser(session, tokens, base_url, headless=headless)
+    coro = _extract_tokens_browser(
+        session, tokens, base_url, headless=headless, http_errors=http_errors
+    )
 
     try:
         asyncio.get_running_loop()
@@ -783,6 +835,42 @@ def _store_csrf_token(session: requests.Session, name: str, value: str) -> None:
     setattr(session, _CSRF_TOKENS_ATTR, csrf_tokens)
 
 
+# The refusals (unauthorized, forbidden, rate-limited) a site that turns away
+# headless browsers can answer with; a 404 or a 500 says nothing about the mode.
+_HEADLESS_REFUSAL_STATUSES = frozenset({401, 403, 429})
+
+
+def _browser_read_failed(
+    token: Token, base_url: str, http_errors: dict[str, int], headless: bool
+) -> str:
+    """The error text for a *token* a command's browser read did not find: the
+    HTTP error its page was answered with when the read saw one, and, for a
+    headless read, the setting a site refusing headless browsers needs."""
+    url = f"{base_url.rstrip('/')}{token.page_url}"
+    headless_hint = (
+        "; a site that refuses a headless browser answers this way, and "
+        "TokenConfig(headless=False) reads the page in a visible one"
+    )
+    status = http_errors.get(url)
+    if status is not None:
+        refused = headless and status in _HEADLESS_REFUSAL_STATUSES
+        return (
+            f"Browser extraction failed for token '{token.name}': its page {url} answered "
+            f"HTTP {status}{headless_hint if refused else ''}; see the browser_token_* log "
+            "lines for the per-URL result"
+        )
+    looks_the_same = (
+        "; a site that refuses a headless browser can look the same, and "
+        "TokenConfig(headless=False) is the setting to try"
+    )
+    return (
+        f"Browser extraction failed for token '{token.name}': the page may have redirected "
+        "to login (re-login) or the pattern no longer matches (update the Token config)"
+        f"{looks_the_same if headless else ''}; see the browser_token_* log lines for the "
+        "per-URL result"
+    )
+
+
 def prepare_session(
     session: requests.Session,
     token_config: TokenConfig,
@@ -865,17 +953,20 @@ def prepare_session(
             )
     if browser_needed:
         LOG.info("browser_extraction_batch", count=len(browser_needed))
+        http_errors: dict[str, int] = {}
         results = _run_browser_extraction(
-            session, browser_needed, base_url, headless=token_config.headless
+            session,
+            browser_needed,
+            base_url,
+            headless=token_config.headless,
+            http_errors=http_errors,
         )
 
         for token in browser_needed:
             value = results.get(token.name)
             if value is None:
                 raise TokenExtractionError(
-                    f"Browser extraction failed for token '{token.name}': the page may have "
-                    "redirected to login (re-login) or the pattern no longer matches (update "
-                    "the Token config); see the browser_token_* log lines for the per-URL result"
+                    _browser_read_failed(token, base_url, http_errors, token_config.headless)
                 )
             cache[token.name] = CachedToken(
                 name=token.name,

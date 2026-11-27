@@ -413,6 +413,24 @@ def _running_loop() -> asyncio.AbstractEventLoop | None:
         return None
 
 
+async def reap_stopped_chrome(proc: Any) -> None:
+    """After nodriver's ``Browser.stop()``, on the loop that started Chrome: wait
+    for Chrome's exit status (``_reap_browser_process``) and close the subprocess
+    transport (``_close_transport``). *proc* is ``browser._process`` read before
+    the stop, which can set it to None. None is a no-op.
+
+    For a browser started with ``nodriver.start()`` rather than through
+    ``NoDriverBackend``, whose own stop does this: without it, the loop closes
+    while Chrome is still exiting, and the interpreter prints ``Loop ... that
+    handles pid ... is closed`` and ``Exception ignored in
+    BaseSubprocessTransport.__del__ ... Event loop is closed``.
+    """
+    if proc is None:
+        return
+    await _reap_browser_process(proc)
+    _close_transport(proc)
+
+
 def _close_transport(proc: Any) -> None:
     """Close the asyncio subprocess transport behind *proc*, now or on its loop. Never raises.
 

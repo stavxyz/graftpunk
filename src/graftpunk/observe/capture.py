@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import copy
 import datetime
 import inspect
 import json
@@ -864,17 +865,41 @@ def _same_url(a: str | None, b: str | None, base: str | None = None) -> bool:
     )
 
 
+def _sends_a_body(headers: Mapping[str, str]) -> bool:
+    """Whether sent *headers* are a request's with a body: they hold a
+    ``Content-Length``, whatever its value. Chrome sent one with each POST and
+    none with a GET in the measured logs; HTTP has a client send ``0`` for a
+    POST with an empty body (unverified for Chrome). A ``Content-Type`` alone is
+    not the evidence: single-page apps name one on every fetch, GETs included."""
+    return any(name.lower() == "content-length" for name in headers)
+
+
+def _http1(headers: Mapping[str, str]) -> bool:
+    """Whether sent *headers* are HTTP/1.1's: no ``:method`` pseudo-header. On
+    HTTP/2 the pseudo-headers name the request, and decide alone."""
+    return not any(name.lower() == ":method" for name in headers)
+
+
 def _request_headers_match(headers: Mapping[str, str], entry: dict[str, Any]) -> bool | None:
     """Does a request ExtraInfo belong to ``entry``? None when undeterminable.
 
     HTTP/2 wire headers carry ``:method``/``:authority``/``:path``; HTTP/1.1
     carries only ``Host``. Compare whatever is present against the entry's URL
-    and method; with nothing to compare, return None. An entry synthesized from
-    a response alone (``_from_response_only``) has a guessed method and the
-    final URL, so nothing about it can be compared: also None.
+    and method; with nothing to compare, return None. On HTTP/1.1 (no
+    ``:method``), headers holding a ``Content-Length`` never belong to a GET or
+    HEAD: they are what tells a POST's from the redirect GET's that
+    follows it. An entry synthesized from a response
+    alone (``_from_response_only``) has a guessed method and the final URL, so
+    nothing about it can be compared: also None.
     """
     if entry.get("_from_response_only"):
         return None
+    if (
+        _http1(headers)
+        and _sends_a_body(headers)
+        and str(entry.get("method", "GET")).upper() in ("GET", "HEAD")
+    ):
+        return False
     lower = {k.lower(): v for k, v in headers.items()}
     parsed = urllib.parse.urlsplit(entry.get("url", ""))
     checks: list[bool] = []
@@ -926,7 +951,16 @@ class _ExtraInfoCorrelator:
       announced), the event is buffered and applied when the next entry for
       the id is created. This is the residual ambiguity: on HTTP/1.1, a hop's
       request ExtraInfo arriving late swaps with the successor's (each lands on
-      the other) -- an order never observed. Likewise a redirect loop (two hops
+      the other). A Selenium login's performance log was measured on
+      2026-11-27 delivering a POST's request ExtraInfo after its redirect GET
+      was announced. On HTTP/1.1 the body evidence (the presence of a
+      ``Content-Length``: see ``_sends_a_body``) keeps a POST and a GET apart both ways: sent
+      headers with one never match a GET or HEAD, and headers without one never
+      go to an entry with post data, and wait for another candidate instead (the
+      next entry for the id, else the drain's last resort). Two requests whose
+      headers carry the same body evidence (two GETs, or a 307 or 308 pair of
+      POSTs) still swap in that order. Likewise a
+      redirect loop (two hops
       with the same status *and* ``Location``) with one dropped event cannot
       be told apart.
     - At drain, anything still buffered whose id has exactly one entry lacking
@@ -937,11 +971,11 @@ class _ExtraInfoCorrelator:
       theirs.
 
     Raw headers are kept beside the entry (``_request_extra_headers`` /
-    ``_response_extra_headers``) and merged only when the HAR is built, so
-    header-role extraction keeps seeing the renderer headers it was designed
-    for. ``_request_extra_seen`` / ``_response_extra_seen`` mark an entry that
-    has been given an event (directly or from the buffer); an entry takes at
-    most one of each kind.
+    ``_response_extra_headers``): the HAR merges them over the renderer's
+    (``_build_har_entry``), and header roles are taken from the request ones
+    (``graftpunk.observe.headers.sent_headers``). ``_request_extra_seen`` /
+    ``_response_extra_seen`` mark an entry that has been given an event
+    (directly or from the buffer); an entry takes at most one of each kind.
     """
 
     def __init__(self) -> None:
@@ -1010,6 +1044,14 @@ class _ExtraInfoCorrelator:
         if not candidates:
             self._pending_request.setdefault(request_id, []).append(headers)
             return
+        if _http1(headers) and not _sends_a_body(headers):
+            # HTTP/1.1 headers with no Content-Length are not a POST's: they go
+            # to another candidate, or wait for the next entry (a redirect's GET
+            # announced after its sent headers arrived).
+            candidates = [e for e in candidates if not e.get("has_post_data")]
+            if not candidates:
+                self._pending_request.setdefault(request_id, []).append(headers)
+                return
         verdicts = [_request_headers_match(headers, e) for e in candidates]
         matched = [e for e, ok in zip(candidates, verdicts, strict=True) if ok]
         if matched:
@@ -1058,7 +1100,9 @@ class _ExtraInfoCorrelator:
 
     def _fallback(self, request_map: dict[str, dict[str, Any]], kind: str) -> int:
         """Last resort at drain: a buffered event whose id has exactly one entry
-        still lacking that kind is attached there. Returns how many were."""
+        still lacking that kind is attached there, unless it is request headers
+        that name another request (``_request_headers_match`` is False: another
+        method or path). Returns how many were."""
         pending: dict[str, list[Any]] = (
             self._pending_request if kind == "request" else self._pending_response
         )
@@ -1068,18 +1112,37 @@ class _ExtraInfoCorrelator:
                 e for e in self._chain(request_map, request_id) if not e.get(f"_{kind}_extra_seen")
             ]
             if len(lacking) == 1 and len(pending[request_id]) == 1:
-                item = pending.pop(request_id)[0]
+                item = pending[request_id][0]
                 headers = item[0] if kind == "response" else item
+                if kind == "request" and _request_headers_match(headers, lacking[0]) is False:
+                    continue
+                pending.pop(request_id)
                 self._attach(lacking[0], kind, headers)
                 attached += 1
         return attached
+
+    def attach_buffered(self, request_map: dict[str, dict[str, Any]]) -> int:
+        """The last-resort attach of :meth:`log_unmatched`, without its report.
+        Returns how many events were attached; an attached event leaves the
+        buffer, so a later drain does not count it again."""
+        return self._fallback(request_map, "request") + self._fallback(request_map, "response")
+
+    def tentative_view(self, request_map: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """*request_map* as the drain would leave it, for header roles read while
+        the capture still runs: a copy of each entry with the buffered events
+        attached as a last resort, by a copy of this correlator. The capture's own
+        map and buffer are untouched, so an event that arrives later still finds
+        its entry, and the HAR is what the drain makes it."""
+        view = {key: dict(entry) for key, entry in request_map.items()}
+        copy.deepcopy(self).attach_buffered(view)
+        return view
 
     def log_unmatched(self, request_map: dict[str, dict[str, Any]]) -> None:
         """At drain time, attach what can still be attached as a last resort, then
         report ExtraInfo that never found its entry and redirect hops that never
         received theirs (a dropped event; measured on nodriver 0.48.1 for the
         request side)."""
-        fallback = self._fallback(request_map, "request") + self._fallback(request_map, "response")
+        fallback = self.attach_buffered(request_map)
         req = sum(len(v) for v in self._pending_request.values())
         resp = sum(len(v) for v in self._pending_response.values())
         hops = [e for e in request_map.values() if e.get("_redirect_hop")]
@@ -1589,6 +1652,10 @@ class SeleniumCaptureBackend:
 
         return _header_role_origins_in_order(self._request_map, site_url)
 
+    def request_count(self) -> int:
+        """Return how many requests the capture holds, redirect hops counted each."""
+        return len(self._request_map)
+
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously (wraps sync method)."""
         return self.take_screenshot_sync()
@@ -1850,14 +1917,22 @@ class NodriverCaptureBackend:
         return self._console_logs
 
     def get_header_roles(self, site_url: str | None = None) -> dict[str, dict[str, str]]:
-        """Return header roles classified from captured network requests."""
+        """Return header roles classified from captured network requests.
 
-        return _header_roles_in_order(self._request_map, site_url)
+        Both nodriver logins read them before the capture stops, so they are
+        read from the map as the stop's drain would leave it
+        (``_ExtraInfoCorrelator.tentative_view``), the capture left as it is."""
+        return _header_roles_in_order(self._extra_info.tentative_view(self._request_map), site_url)
 
     def get_header_role_origins(self, site_url: str | None = None) -> dict[str, str]:
         """Return the origin each of :meth:`get_header_roles`'s roles came from."""
+        return _header_role_origins_in_order(
+            self._extra_info.tentative_view(self._request_map), site_url
+        )
 
-        return _header_role_origins_in_order(self._request_map, site_url)
+    def request_count(self) -> int:
+        """Return how many requests the capture holds, redirect hops counted each."""
+        return len(self._request_map)
 
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously via nodriver.

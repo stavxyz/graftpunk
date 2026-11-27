@@ -22,7 +22,7 @@ from graftpunk.browser_launch import (
     prepare_selenium_launch,
     selenium_in_own_session,
 )
-from graftpunk.chrome import get_chrome_version
+from graftpunk.chrome import chromedriver_version, get_chrome_version, no_chromedriver_error
 from graftpunk.chrome_orphans import owner_switch
 from graftpunk.config import get_settings
 from graftpunk.exceptions import ChromeDriverError
@@ -195,13 +195,18 @@ def create_stealth_driver(
     if performance_log:
         options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
-    # Detect Chrome version for matching ChromeDriver
+    # Detect Chrome version for matching ChromeDriver: the full version for
+    # webdriver-manager (chromedriver_version says why), the major for
+    # undetected-chromedriver's version_main.
+    driver_version = chromedriver_version(get_chrome_version)
     try:
-        chrome_version = int(get_chrome_version(major=True))
-        LOG.info("detected_chrome_version_for_driver", version=chrome_version)
-    except (ChromeDriverError, ValueError) as exc:
-        LOG.warning("chrome_version_detection_failed", error=str(exc))
+        chrome_version = int(driver_version.split(".")[0]) if driver_version else None
+    except ValueError:
         chrome_version = None
+    if chrome_version is None:
+        LOG.warning("chrome_version_detection_failed", version=driver_version)
+    else:
+        LOG.info("detected_chrome_version_for_driver", version=driver_version)
 
     # undetected-chromedriver's own download is the mac-x64 build on every
     # Mac (its Patcher has no arm64 branch). On Apple Silicon that driver runs
@@ -209,9 +214,14 @@ def create_stealth_driver(
     # Chrome is an Intel app. webdriver-manager resolves the host's
     # architecture, so the driver comes from there and undetected-chromedriver
     # only patches it (#356).
-    driver_path = webdriver_manager.chrome.ChromeDriverManager(
-        driver_version=str(chrome_version) if chrome_version is not None else None
-    ).install()
+    asked = driver_version if chrome_version is not None else None
+    try:
+        driver_path = webdriver_manager.chrome.ChromeDriverManager(driver_version=asked).install()
+    except Exception as exc:  # webdriver-manager raises a bare Exception for this
+        error = no_chromedriver_error(asked, exc)
+        if error is None:
+            raise
+        raise error from exc
     LOG.info("chromedriver_resolved", path=driver_path)
     _patch_driver(driver_path)
 

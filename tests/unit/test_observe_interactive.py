@@ -969,14 +969,15 @@ class TestObserveBrowserHygiene:
 
         assert not profile.exists()
 
-    def test_a_stop_that_raises_still_releases_the_browser(
+    @pytest.mark.asyncio
+    async def test_a_stop_that_raises_still_releases_the_browser(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The unregister and the profile removal sit in a finally behind the stop."""
         import tempfile
 
         from graftpunk.browser_launch import NodriverBrowserHandle
-        from graftpunk.cli.observe_browser import stop_observe_browser
+        from graftpunk.cli.observe_browser import end_observe_browser
         from graftpunk.signals import live_browsers, register_live_browser
 
         temp_root = tmp_path / "tmp"
@@ -989,8 +990,11 @@ class TestObserveBrowserHygiene:
         handle = NodriverBrowserHandle(browser)
         register_live_browser(handle)
 
-        with pytest.raises(ValueError, match="stop blew up"):
-            stop_observe_browser(browser, handle)
+        with (
+            patch("graftpunk.cli.observe_browser.close_dialogs_in_new_tabs", AsyncMock()),
+            pytest.raises(ValueError, match="stop blew up"),
+        ):
+            await end_observe_browser(browser, handle)
 
         assert handle not in live_browsers()
         assert not profile.exists()

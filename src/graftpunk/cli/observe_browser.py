@@ -63,31 +63,34 @@ class ObserveSession:
     own_session: bool = True
 
 
-def stop_observe_browser(browser: Any, handle: NodriverBrowserHandle) -> None:
+async def end_observe_browser(browser: Any, handle: NodriverBrowserHandle) -> None:
     """Stop the observe browser, leave the signal registry, and delete its temp profile.
 
-    nodriver removes that directory only from its own atexit handler, which
-    never runs for a browser we stopped ourselves, so every observe run used to
-    leak one directory under the temp dir (#96). The orderly stop path is where
-    that deletion belongs; the signal handler does not do it. Unregistering and
-    removing the profile happen in the finally, so a raising stop still leaves
-    both done.
+    The browser's new-tab dialog answerer is closed first, on this loop: its
+    connection keeps auto-attach on until it is closed (#353). After the stop,
+    Chrome's exit is waited for (``reap_stopped_chrome``) before the profile is
+    removed, since Chrome writes to it until it exits. nodriver removes that
+    directory only from its own atexit handler, which never runs for a browser
+    we stopped ourselves, so every observe run used to leak one directory under
+    the temp dir (#96). The orderly stop path is where that deletion belongs;
+    the signal handler does not do it. Unregistering and removing the profile
+    happen in a finally, so a raising stop still leaves both done.
     """
-    try:
-        browser.stop()
-    finally:
-        signals.unregister_live_browser(handle)
-        remove_browser_temp_profile(browser)
+    from graftpunk.backends.nodriver import reap_stopped_chrome
 
-
-async def end_observe_browser(browser: Any, handle: NodriverBrowserHandle) -> None:
-    """Close the browser's new-tab dialog answerer on this loop, then
-    :func:`stop_observe_browser`: the answerer's connection keeps auto-attach on
-    until it is closed (#353)."""
+    # Read before the stop, which sets it to None when it cannot signal Chrome.
+    proc = getattr(browser, "_process", None)
     try:
         await close_dialogs_in_new_tabs(browser)
     finally:
-        stop_observe_browser(browser, handle)
+        try:
+            browser.stop()
+        finally:
+            try:
+                await reap_stopped_chrome(proc)
+            finally:
+                signals.unregister_live_browser(handle)
+                remove_browser_temp_profile(browser)
 
 
 async def setup_observe_session(
