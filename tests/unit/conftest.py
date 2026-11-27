@@ -415,6 +415,24 @@ def _fast_login_timings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("graftpunk.plugins.login_ready._READY_POLL_INTERVAL", 0.001)
 
 
+@pytest.fixture()
+def _login_hard_end_out_of_reach(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Move the nodriver post-submit wait's hard end 30 s past its deadline.
+
+    The hard end is one poll interval past the deadline, which is 1 ms under
+    ``_fast_login_timings``, so a worker stall across the deadline (CPU load, or
+    a gen-2 collection in a full run, which holds every thread for up to about
+    0.6 s) ends the wait before the deadline tick reads the page, as it should.
+    A test about what the reads find, not about that bound, then fails on its own
+    timing: the verdict says no page could be read instead of naming what the
+    page showed. With the end out of reach the wait still ends on its deadline
+    tick, and a page double that answers at once is always read.
+    """
+    monkeypatch.setattr(
+        "graftpunk.plugins.login_settle._hard_end", lambda deadline: deadline + 30.0
+    )
+
+
 class FakeCdpTab:
     """A tab whose ``send`` drives nodriver's real CDP generator protocol.
 
