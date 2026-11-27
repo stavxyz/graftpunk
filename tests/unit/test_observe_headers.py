@@ -691,12 +691,13 @@ def test_a_typed_document_beats_a_same_origin_iframe():
 
 
 @pytest.mark.parametrize("dest", ["frame", "iframe", "embed", "object"])
-def test_any_document_beats_a_framed_load(dest: str):
-    request_map = {
-        "1": _nav("https://myshop.example/inner", "same-origin", 1.0, dest=dest),
-        "2": _nav("https://other.example/page", "cross-site", 2.0),
-    }
-    assert extract_header_roles(request_map, SITE)["navigation"]["X-Marker"] == "cross-site@2.0"
+def test_a_framed_load_is_never_the_navigation_role(dest: str):
+    """A frame's headers are not the page's: a login whose only page loads were
+    framed caches no navigation role, as 1.46.0 cached none for it."""
+    framed = {"1": _nav("https://myshop.example/inner", "same-origin", 1.0, dest=dest)}
+    assert extract_header_roles(framed, SITE) == {}
+    with_document = {**framed, "2": _nav("https://other.example/page", "cross-site", 2.0)}
+    assert extract_header_roles(with_document, SITE)["navigation"]["X-Marker"] == "cross-site@2.0"
 
 
 @pytest.mark.parametrize("captured", ["none", "same-site", "cross-site", "same-origin"])

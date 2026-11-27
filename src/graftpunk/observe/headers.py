@@ -135,15 +135,20 @@ def _header(headers: dict[str, str], name: str) -> str | None:
     return next((v for k, v in headers.items() if k.lower() == name), None)
 
 
-def _navigation_key(headers: dict[str, str], rank: int) -> tuple[bool, int, bool]:
-    """Sort key of a navigation request, best first: a top-level document load
-    before a frame's, then the origin rank, then a load the site sent before
-    one the login opened as a typed address (``Sec-Fetch-Site: none``, which
-    Chrome 158 sent for nodriver's ``Tab.get``). No ``Sec-Fetch-Dest`` (no sent
-    headers, or a site Chrome sends no ``Sec-Fetch-*`` to) counts as a document."""
+def _framed(headers: dict[str, str]) -> bool:
+    """Whether *headers* are a frame's, iframe's, embed's or object's load, whose
+    headers are not the page's. No ``Sec-Fetch-Dest`` (no sent headers, or a site
+    Chrome sends no ``Sec-Fetch-*`` to) counts as a top-level document."""
     dest = _header(headers, "sec-fetch-dest")
-    framed = dest is not None and dest != "document"
-    return (framed, rank, _header(headers, "sec-fetch-site") == "none")
+    return dest is not None and dest != "document"
+
+
+def _navigation_key(headers: dict[str, str], rank: int) -> tuple[int, bool]:
+    """Sort key of a top-level navigation request, best first: the origin rank,
+    then a load the site sent before one the login opened as a typed address
+    (``Sec-Fetch-Site: none``, which Chrome 158 sent for nodriver's
+    ``Tab.get``)."""
+    return (rank, _header(headers, "sec-fetch-site") == "none")
 
 
 def _preflight(data: dict[str, Any]) -> bool:
@@ -159,9 +164,10 @@ def _role_requests(
     """The request each role is taken from: per role, the first request in
     *request_map* order sent to *site_url*'s origin, else the first to another
     origin of its site, else the first of all. Without a *site_url*, the first.
-    The navigation role is chosen by :func:`_navigation_key`."""
+    The navigation role is chosen by :func:`_navigation_key`, from top-level
+    documents only (:func:`_framed`)."""
     site = origin(site_url) if site_url else None
-    chosen: dict[str, tuple[tuple[bool, int, bool], dict[str, Any]]] = {}
+    chosen: dict[str, tuple[tuple[int, bool], dict[str, Any]]] = {}
     for data in request_map.values():
         if _preflight(data):
             continue
@@ -169,10 +175,10 @@ def _role_requests(
         if not headers:
             continue
         role = classify_request(headers, data.get("method"))
-        if role is None:
+        if role is None or (role == "navigation" and _framed(headers)):
             continue
         rank = _rank(origin(data.get("url")), site)
-        key = _navigation_key(headers, rank) if role == "navigation" else (False, rank, False)
+        key = _navigation_key(headers, rank) if role == "navigation" else (rank, False)
         if role not in chosen or key < chosen[role][0]:
             chosen[role] = (key, data)
     return {role: data for role, (_key, data) in chosen.items()}
@@ -214,9 +220,10 @@ def extract_header_roles(
     *site_url*'s origin (the plugin's ``base_url``), else to another origin of
     that site, else the first of all (#228). A login's first CORS request is
     often an identity provider's or a tracker's, and its headers are not the
-    ones the site's own pages send. The navigation role prefers a top-level
-    document to a frame's load and, after the origin order, a page load the site
-    sent to one the login typed (``Sec-Fetch-Site: none``). Each role's
+    ones the site's own pages send. The navigation role is taken from a
+    top-level document, never a frame's load, preferring, after the origin
+    order, a page load the site sent to one the login typed
+    (``Sec-Fetch-Site: none``). Each role's
     ``Sec-Fetch-Site`` is stored as :func:`_stored_fetch_site` says.
 
     Args:
