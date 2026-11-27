@@ -1434,7 +1434,10 @@ class SitePlugin:
             cache_login_session(self, session)
         finally:
             try:
-                session.driver.stop()
+                # The backend's stop, as ``async with BrowserSession`` uses: it waits
+                # for Chrome to exit and closes its subprocess transport while this
+                # loop runs, so nothing is collected on a closed loop afterwards.
+                await session._quit_async()
             except Exception as cleanup_exc:
                 LOG.exception("browser_session_cleanup_failed", error=str(cleanup_exc))
 

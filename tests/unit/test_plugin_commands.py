@@ -1058,7 +1058,7 @@ class TestBrowserSessionContextManager:
             mock_tab.add_handler = MagicMock()
             instance.driver.get = AsyncMock(return_value=mock_tab)
             instance.transfer_nodriver_cookies_to_session = AsyncMock()
-            instance.driver.stop = MagicMock()
+            instance._quit_async = AsyncMock()
 
             async with plugin.browser_session() as (session, tab):
                 assert session is instance
@@ -2306,7 +2306,7 @@ class TestBrowserSessionErrorPaths:
             instance.start_async = AsyncMock()
             instance.driver = MagicMock()
             instance.driver.get = AsyncMock(return_value=MagicMock())
-            instance.driver.stop = MagicMock()
+            instance._quit_async = AsyncMock()
             instance.transfer_nodriver_cookies_to_session = AsyncMock()
 
             with pytest.raises(ValueError, match="test error"):
@@ -2317,7 +2317,7 @@ class TestBrowserSessionErrorPaths:
             instance.transfer_nodriver_cookies_to_session.assert_not_called()
             mock_cache.assert_not_called()
             # But cleanup DID happen
-            instance.driver.stop.assert_called_once()
+            instance._quit_async.assert_awaited_once()
 
     def test_browser_session_sync_no_cache_on_exception(self) -> None:
         """On exception in sync context, cookies NOT transferred but cleanup happens."""

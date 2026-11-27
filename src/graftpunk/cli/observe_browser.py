@@ -84,10 +84,17 @@ async def end_observe_browser(browser: Any, handle: NodriverBrowserHandle) -> No
     """Close the browser's new-tab dialog answerer on this loop, then
     :func:`stop_observe_browser`: the answerer's connection keeps auto-attach on
     until it is closed (#353)."""
+    from graftpunk.backends.nodriver import reap_stopped_chrome
+
+    # Read before the stop, which sets it to None when it cannot signal Chrome.
+    proc = getattr(browser, "_process", None)
     try:
         await close_dialogs_in_new_tabs(browser)
     finally:
-        stop_observe_browser(browser, handle)
+        try:
+            stop_observe_browser(browser, handle)
+        finally:
+            await reap_stopped_chrome(proc)
 
 
 async def setup_observe_session(

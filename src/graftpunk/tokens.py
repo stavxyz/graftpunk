@@ -396,6 +396,10 @@ async def _extract_tokens_browser(
         # iterates the registry the deregister call removes this browser from,
         # so without the last call every token extraction leaks one directory
         # (#96).
+        from graftpunk.backends.nodriver import reap_stopped_chrome
+
+        # Read before the stop, which sets it to None when it cannot signal Chrome.
+        proc = getattr(browser, "_process", None)
         try:
             # Before Chrome ends, on the loop the answerer's listener runs on (#353).
             await close_dialogs_in_new_tabs(browser)
@@ -403,9 +407,12 @@ async def _extract_tokens_browser(
             try:
                 browser.stop()
             finally:
-                _deregister_nodriver_browser(browser)
-                unregister_live_browser(handle)
-                remove_browser_temp_profile(browser)
+                try:
+                    await reap_stopped_chrome(proc)
+                finally:
+                    _deregister_nodriver_browser(browser)
+                    unregister_live_browser(handle)
+                    remove_browser_temp_profile(browser)
 
 
 async def extract_tokens_from_tab(

@@ -92,12 +92,14 @@ class _NodriverSession:
 
     def __init__(self, tab: _Tab) -> None:
         self.tab = tab
-        self.driver = SimpleNamespace(get=self._open, stop=self._stop)
+        # No driver.stop: nodriver's returns before Chrome exits, and the login
+        # must end Chrome through the session's own stop, which waits for it.
+        self.driver = SimpleNamespace(get=self._open)
         self.current_url = ""
         self.transferred = False
         self.stopped = False
 
-    def _stop(self) -> None:
+    async def _quit_async(self) -> None:
         self.stopped = True
 
     async def start_async(self) -> None:
@@ -146,6 +148,7 @@ class TestNodriverBrowserSession:
         }
         assert stored._gp_header_role_origins == {"navigation": SITE}
         assert session.transferred
+        assert session.stopped
 
     @pytest.mark.asyncio
     async def test_roles_a_plugin_set_itself_are_kept(self) -> None:

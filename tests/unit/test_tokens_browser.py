@@ -51,6 +51,7 @@ class TestExtractTokensBrowser:
         mock_tab.get_content = AsyncMock(return_value='<html>var csrf = "tok123";</html>')
 
         mock_browser = AsyncMock()
+        mock_browser._process = None  # no subprocess for the stop to reap
         mock_browser.get = AsyncMock(return_value=mock_tab)
         mock_browser.stop = MagicMock()
         mock_browser.main_tab = mock_tab
@@ -92,6 +93,7 @@ class TestExtractTokensBrowser:
         mock_tab = _AwaitableMock()
         mock_tab.get_content = AsyncMock(return_value='csrf = "aaa"; nonce = "bbb";')
         mock_browser = AsyncMock()
+        mock_browser._process = None  # no subprocess for the stop to reap
         mock_browser.get = AsyncMock(return_value=mock_tab)
         mock_browser.stop = MagicMock()
         mock_browser.main_tab = mock_tab
@@ -136,6 +138,7 @@ class TestExtractTokensBrowser:
         mock_tab_good.get_content = AsyncMock(return_value='csrf = "val1";')
 
         mock_browser = AsyncMock()
+        mock_browser._process = None  # no subprocess for the stop to reap
         mock_browser.get = AsyncMock(side_effect=[mock_tab_good, RuntimeError("Navigation failed")])
         mock_browser.stop = MagicMock()
         mock_browser.main_tab = _AwaitableMock()
@@ -188,6 +191,7 @@ class TestExtractTokensBrowser:
             return mock_tab_fast
 
         mock_browser = AsyncMock()
+        mock_browser._process = None  # no subprocess for the stop to reap
         mock_browser.get = _side_effect
         mock_browser.stop = MagicMock()
         mock_browser.main_tab = _AwaitableMock()
@@ -225,6 +229,7 @@ class TestExtractTokensBrowser:
         mock_tab = _AwaitableMock()
         mock_tab.get_content = AsyncMock(return_value="<html>no token here</html>")
         mock_browser = AsyncMock()
+        mock_browser._process = None  # no subprocess for the stop to reap
         mock_browser.get = AsyncMock(return_value=mock_tab)
         mock_browser.stop = MagicMock()
         mock_browser.main_tab = mock_tab
@@ -259,6 +264,7 @@ class TestExtractTokensBrowser:
         mock_tab = _AwaitableMock()
         mock_tab.get_content = AsyncMock(return_value='csrf = "v1";')
         mock_browser = AsyncMock()
+        mock_browser._process = None  # no subprocess for the stop to reap
         mock_browser.get = AsyncMock(return_value=mock_tab)
         mock_browser.stop = MagicMock()
         mock_browser.main_tab = mock_tab
@@ -289,6 +295,7 @@ class TestExtractTokensBrowser:
         )
 
         mock_browser = AsyncMock()
+        mock_browser._process = None  # no subprocess for the stop to reap
         mock_browser.stop = MagicMock()
         mock_browser.main_tab = _AwaitableMock()
 
