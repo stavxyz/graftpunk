@@ -1270,8 +1270,30 @@ def test_sent_headers_with_a_body_never_match_a_get_or_head():
     for method in ("GET", "HEAD"):
         entry = {"url": f"{_H1}/home", "method": method}
         assert _request_headers_match(_POST_SENT, entry) is False
-        assert _request_headers_match({"Host": "127.0.0.1:8080", "Content-Length": "0"}, entry)
+        # A Content-Length of 0 is a POST's too: Chrome sends none on a GET or
+        # HEAD, so its presence, not its value, is the body evidence.
+        assert (
+            _request_headers_match({"Host": "127.0.0.1:8080", "Content-Length": "0"}, entry)
+            is False
+        )
+        assert _request_headers_match({"Host": "127.0.0.1:8080"}, entry) is True
     assert _request_headers_match(_POST_SENT, {"url": f"{_H1}/login", "method": "POST"})
+
+
+@pytest.mark.parametrize("kind", ["selenium", "nodriver"])
+def test_a_post_with_an_empty_body_keeps_its_own_late_sent_headers(kind: str):
+    """A POST whose body is empty still sends Content-Length: 0, which the
+    redirect GET does not, so the two stay apart in the late order too."""
+    empty = {**_POST_SENT, "Content-Length": "0"}
+    events = [
+        *_LATE_POST_EVENTS[:2],
+        ("Network.requestWillBeSentExtraInfo", {"requestId": "R", "headers": empty}),
+        *_LATE_POST_EVENTS[3:],
+    ]
+    backend = _late_post_backend(kind, events)
+    roles = backend.get_header_roles(_H1)
+    assert roles["form"]["X-Marker"] == "post"
+    assert roles["navigation"]["X-Marker"] == "get"
 
 
 # --- CORS preflight: Chrome's own OPTIONS before a fetch it guards ---

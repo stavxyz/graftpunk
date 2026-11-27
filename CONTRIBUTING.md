@@ -196,6 +196,16 @@ python scripts/header_parity.py --ref v1.45.0   # against another release
 
 Run it after any change to `src/graftpunk/graftpunk_session.py` or `src/graftpunk/observe/headers.py`. It exits 0 when every difference is allowed, 1 when one is not, and 2 on a usage error (a ref git cannot archive, an unreadable allowlist). A new difference is either a bug or an entry for the allowlist and the changelog, never both unstated.
 
+### Does the ExtraInfo correlator still give each request its own sent headers?
+
+`scripts/correlator_sweep.py` replays every order of the CDP events of several two-hop request chains (a form POST and its redirect GET on HTTP/1.1 and HTTP/2, POSTs with an empty body, 307 and 308 POST pairs, XHR GETs that name a `Content-Type`), with each chain's request `ExtraInfo` dropped in turn, through `SeleniumCaptureBackend`, in a `git archive` of each ref and in the checkout. For every order it records which entry holds whose sent headers and the header roles, read mid-capture and after the drain, and compares.
+
+```bash
+python scripts/correlator_sweep.py --ref v1.46.0 --ref <the branch's base>
+```
+
+Run it after any change to `_ExtraInfoCorrelator` or `_request_headers_match` in `src/graftpunk/observe/capture.py`. It exits 0 when no order is worse in the checkout than in every ref (more entries holding another request's headers, or a role lost where the ref attributed every entry rightly), 1 otherwise, and 2 on a usage error. It prints, per chain, the reads each side got wrong, so a residual both sides share (two GETs, or a 307 pair, whose sent headers carry the same body evidence) shows as equal counts.
+
 ### Writing Tests
 
 - Place unit tests in `tests/unit/`

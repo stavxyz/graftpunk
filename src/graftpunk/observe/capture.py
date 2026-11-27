@@ -866,16 +866,12 @@ def _same_url(a: str | None, b: str | None, base: str | None = None) -> bool:
 
 
 def _sends_a_body(headers: Mapping[str, str]) -> bool:
-    """Whether sent *headers* carry a request body: a ``Content-Length`` above 0.
-    A ``Content-Type`` alone is not one: single-page apps name one on every
-    fetch, GETs included."""
-    for name, value in headers.items():
-        if name.lower() == "content-length":
-            try:
-                return int(str(value).strip()) > 0
-            except ValueError:
-                return False
-    return False
+    """Whether sent *headers* are a request's with a body: they hold a
+    ``Content-Length``, whatever its value. Chrome sent one with each POST and
+    none with a GET in the measured logs; HTTP has a client send ``0`` for a
+    POST with an empty body (unverified for Chrome). A ``Content-Type`` alone is
+    not the evidence: single-page apps name one on every fetch, GETs included."""
+    return any(name.lower() == "content-length" for name in headers)
 
 
 def _http1(headers: Mapping[str, str]) -> bool:
@@ -890,8 +886,8 @@ def _request_headers_match(headers: Mapping[str, str], entry: dict[str, Any]) ->
     HTTP/2 wire headers carry ``:method``/``:authority``/``:path``; HTTP/1.1
     carries only ``Host``. Compare whatever is present against the entry's URL
     and method; with nothing to compare, return None. On HTTP/1.1 (no
-    ``:method``), headers with a body (``Content-Length`` above 0) never belong to
-    a GET or HEAD: they are what tells a POST's from the redirect GET's that
+    ``:method``), headers holding a ``Content-Length`` never belong to a GET or
+    HEAD: they are what tells a POST's from the redirect GET's that
     follows it. An entry synthesized from a response
     alone (``_from_response_only``) has a guessed method and the final URL, so
     nothing about it can be compared: also None.
@@ -957,15 +953,13 @@ class _ExtraInfoCorrelator:
       request ExtraInfo arriving late swaps with the successor's (each lands on
       the other). A Selenium login's performance log was measured on
       2026-11-27 delivering a POST's request ExtraInfo after its redirect GET
-      was announced. On HTTP/1.1 the body evidence (a ``Content-Length`` above
-      0) keeps a POST and a GET apart both ways: sent headers with a body never
-      match a GET or HEAD, and bodiless ones never go to an entry with post
-      data while another candidate without it exists, or wait for one (the
+      was announced. On HTTP/1.1 the body evidence (the presence of a
+      ``Content-Length``: see ``_sends_a_body``) keeps a POST and a GET apart both ways: sent
+      headers with one never match a GET or HEAD, and headers without one never
+      go to an entry with post data, and wait for another candidate instead (the
       next entry for the id, else the drain's last resort). Two requests whose
-      headers carry the same body evidence (two bodiless ones, or a 307 or 308
-      pair, both with a body) still swap in that order. A POST whose own sent headers say
-      ``Content-Length: 0`` while CDP reported post data waits too, and is
-      attached only by the drain's last resort. Likewise a
+      headers carry the same body evidence (two GETs, or a 307 or 308 pair of
+      POSTs) still swap in that order. Likewise a
       redirect loop (two hops
       with the same status *and* ``Location``) with one dropped event cannot
       be told apart.
@@ -1051,8 +1045,8 @@ class _ExtraInfoCorrelator:
             self._pending_request.setdefault(request_id, []).append(headers)
             return
         if _http1(headers) and not _sends_a_body(headers):
-            # Bodiless HTTP/1.1 headers are not a body-carrying POST's: they go to
-            # another candidate, or wait for the next entry (a redirect's GET
+            # HTTP/1.1 headers with no Content-Length are not a POST's: they go
+            # to another candidate, or wait for the next entry (a redirect's GET
             # announced after its sent headers arrived).
             candidates = [e for e in candidates if not e.get("has_post_data")]
             if not candidates:
