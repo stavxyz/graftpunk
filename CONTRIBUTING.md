@@ -183,7 +183,7 @@ A CI runner is a loaded machine, so a test whose outcome depends on how fast the
 scripts/repeat_under_load.sh 50 tests/unit/test_login_verdict.py::TestVerdictComesLast::test_a_rate_limit_page_is_named
 ```
 
-Run it before calling a CI failure a flake, and after fixing one: a fix is shown when the count drops to zero over enough runs (100 is a good number). It exits 1 when any run failed, and keeps each run's output for reading the failure. The login tests' time budgets are an example: `tests/unit/conftest.py`'s `_login_hard_end_out_of_reach` fixture moves a nodriver login wait's hard end out of reach so a slow tick cannot end the wait before its last page read.
+Run it before calling a CI failure a flake, and after fixing one. It first runs the test once with no load and stops with exit 2 if that fails, since a test that fails unloaded is broken rather than flaky. The default load is four busy loops per CPU; one per CPU was too light to reproduce the login-wait race this script was written for (0 failures in 30 runs at 10 loops, 4 in 40 at 40 loops). So a fix is shown when the same load that reproduced the failure before the fix gives zero failures over enough runs (100 is a good number); zero at a load that never reproduced it shows nothing. It exits 1 when any run failed, and keeps each run's output for reading the failure. The login tests' time budgets are an example: `tests/unit/conftest.py`'s `_login_hard_end_out_of_reach` fixture moves a nodriver login wait's hard end out of reach so a slow tick cannot end the wait before its last page read.
 
 ### Writing Tests
 

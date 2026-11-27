@@ -7,12 +7,17 @@
 #   N        how many times to run TEST_ID (a whole number, at least 1)
 #   TEST_ID  a pytest node id, for example
 #            tests/unit/test_login_verdict.py::TestVerdictComesLast::test_a_rate_limit_page_is_named
-#   -l LOOPS how many busy loops to start (default: the number of CPUs)
+#   -l LOOPS how many busy loops to start (default: four per CPU; one per CPU
+#            was too light to reproduce a known 0.2 s login-wait race)
 #
 # Each run is `uv run -p 3.12 --all-extras pytest`, the interpreter and extras
 # the project's own checks use, so a mismatched venv cannot pose as a flake.
+# The test is first run once with no load: a test that fails then is broken,
+# not flaky, and the script exits 2 without starting the load. Zero failures
+# shows little unless the same load reproduced the failure before the fix.
 # Prints "runs=N failures=F" and exits 0 when every run passed, 1 when any run
-# failed, and 2 on a usage error. Ctrl+C stops the busy loops and exits 130.
+# failed, and 2 on a usage error or an unloaded failure. Ctrl+C stops the busy
+# loops and the running test and exits 130.
 # Each run's output is kept in a temporary directory, printed at the end.
 set -u
 
@@ -22,7 +27,7 @@ usage() {
 }
 is_count() { case "$1" in '' | *[!0-9]* | 0 | 0*) return 1 ;; *) return 0 ;; esac; }
 
-loops="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+loops=$(( $(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4) * 4 ))
 if [ "${1:-}" = "-l" ]; then
   [ "$#" -ge 2 ] || usage
   loops="$2"
@@ -37,10 +42,29 @@ is_count "$loops" || { echo "LOOPS must be a whole number of at least 1, got: $l
 cd "$(dirname "$0")/.." || exit 2
 out="$(mktemp -d)"
 pids=()
-stop() { [ "${#pids[@]}" -gt 0 ] && kill "${pids[@]}" 2>/dev/null; }
+child=""
+stop() {
+  [ -n "$child" ] && kill "$child" 2>/dev/null
+  [ "${#pids[@]}" -gt 0 ] && kill "${pids[@]}" 2>/dev/null
+}
+run_once() {
+  NO_COLOR=1 PYTHONDONTWRITEBYTECODE=1 uv run -q -p 3.12 --all-extras python -m pytest -q -n 0 \
+    -p no:cacheprovider "$test_id" >"$1" 2>&1 &
+  child=$!
+  wait "$child"
+  local code=$?
+  child=""
+  return "$code"
+}
 trap stop EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+if ! run_once "$out/unloaded.txt"; then
+  echo "the test fails with no load, so this is not a timing failure; see $out/unloaded.txt" >&2
+  exit 2
+fi
+
 i=0
 while [ "$i" -lt "$loops" ]; do
   ( while :; do :; done ) &
@@ -51,8 +75,7 @@ done
 failures=0
 i=1
 while [ "$i" -le "$n" ]; do
-  if ! NO_COLOR=1 PYTHONDONTWRITEBYTECODE=1 uv run -q -p 3.12 --all-extras python -m pytest -q -n 0 \
-      -p no:cacheprovider "$test_id" >"$out/run-$i.txt" 2>&1; then
+  if ! run_once "$out/run-$i.txt"; then
     failures=$((failures + 1))
   fi
   i=$((i + 1))
