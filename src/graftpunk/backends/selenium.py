@@ -236,11 +236,15 @@ class SeleniumBackend:
         from selenium import webdriver
 
         try:
-            chrome_version = get_chrome_version(major=True)
-            LOG.info("detected_chrome_version", version=chrome_version)
-        except ChromeDriverError as exc:
-            LOG.error("chrome_version_detection_failed", error=str(exc))
-            raise BrowserError(f"Failed to detect Chrome version: {exc}") from exc
+            # The full version, not the major alone: see chromedriver_version.
+            chrome_version = get_chrome_version(major=False)
+        except ChromeDriverError:
+            try:
+                chrome_version = get_chrome_version(major=True)
+            except ChromeDriverError as exc:
+                LOG.error("chrome_version_detection_failed", error=str(exc))
+                raise BrowserError(f"Failed to detect Chrome version: {exc}") from exc
+        LOG.info("detected_chrome_version", version=chrome_version)
 
         # Get ChromeDriver path - wrap in try/except for network/permission errors
         try:

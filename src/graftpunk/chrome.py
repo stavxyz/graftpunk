@@ -2,6 +2,7 @@
 
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from graftpunk.exceptions import ChromeDriverError
@@ -85,3 +86,24 @@ def get_chrome_version(major: bool = True) -> str:
         pass
 
     raise ChromeDriverError("Chrome not found. Please install Google Chrome or Chromium.")
+
+
+def chromedriver_version(read: Callable[..., str] | None = None) -> str | None:
+    """The ChromeDriver version to ask webdriver-manager for: the installed
+    Chrome's full version, else its major version, else None (webdriver-manager
+    then detects Chrome itself).
+
+    webdriver-manager 4.0.2 and 4.1.2 pick the last known-good ChromeDriver
+    whose version string contains the first three parts of the version given
+    (``get_url_for_version_and_platform``), so a bare major matches any build
+    holding those digits: "158" matched "160.0.8158.0", a ChromeDriver Chrome
+    158 refuses. The full version matches the same build only. *read* is the
+    version reader, :func:`get_chrome_version` by default.
+    """
+    read = read or get_chrome_version
+    for major in (False, True):
+        try:
+            return read(major=major)
+        except ChromeDriverError as exc:
+            LOG.debug("chrome_version_for_driver_unread", major=major, error=str(exc))
+    return None

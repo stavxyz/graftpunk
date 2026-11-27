@@ -687,7 +687,7 @@ class TestSeleniumBackendStandardMode:
         backend = SeleniumBackend(use_stealth=False, headless=True)
         backend.start()
 
-        mock_version.assert_called_once_with(major=True)
+        mock_version.assert_called_once_with(major=False)
         mock_manager.assert_called_once_with(driver_version="120")
         assert backend.is_running is True
 
