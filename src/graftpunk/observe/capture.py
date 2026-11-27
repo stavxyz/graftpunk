@@ -865,17 +865,28 @@ def _same_url(a: str | None, b: str | None, base: str | None = None) -> bool:
     )
 
 
+def _sends_a_body(headers: Mapping[str, str]) -> bool:
+    """Whether sent *headers* carry a request body: a ``Content-Type``, or a
+    ``Content-Length`` other than 0."""
+    lower = {k.lower(): str(v).strip() for k, v in headers.items()}
+    return "content-type" in lower or lower.get("content-length", "0") not in ("", "0")
+
+
 def _request_headers_match(headers: Mapping[str, str], entry: dict[str, Any]) -> bool | None:
     """Does a request ExtraInfo belong to ``entry``? None when undeterminable.
 
     HTTP/2 wire headers carry ``:method``/``:authority``/``:path``; HTTP/1.1
     carries only ``Host``. Compare whatever is present against the entry's URL
-    and method; with nothing to compare, return None. An entry synthesized from
-    a response alone (``_from_response_only``) has a guessed method and the
-    final URL, so nothing about it can be compared: also None.
+    and method; with nothing to compare, return None. Headers that carry a body
+    never belong to a GET or HEAD: on HTTP/1.1 they are what tells a POST's from
+    the redirect GET's that follows it. An entry synthesized from a response
+    alone (``_from_response_only``) has a guessed method and the final URL, so
+    nothing about it can be compared: also None.
     """
     if entry.get("_from_response_only"):
         return None
+    if _sends_a_body(headers) and str(entry.get("method", "GET")).upper() in ("GET", "HEAD"):
+        return False
     lower = {k.lower(): v for k, v in headers.items()}
     parsed = urllib.parse.urlsplit(entry.get("url", ""))
     checks: list[bool] = []
@@ -927,7 +938,12 @@ class _ExtraInfoCorrelator:
       announced), the event is buffered and applied when the next entry for
       the id is created. This is the residual ambiguity: on HTTP/1.1, a hop's
       request ExtraInfo arriving late swaps with the successor's (each lands on
-      the other) -- an order never observed. Likewise a redirect loop (two hops
+      the other). A Selenium login's performance log was measured on
+      2026-11-27 delivering a POST's request ExtraInfo after its redirect GET
+      was announced; the body headers (``Content-Type``, a ``Content-Length``
+      above 0) keep those apart, since sent headers with a body never match a
+      GET or HEAD. Two bodiless requests in that order still swap. Likewise a
+      redirect loop (two hops
       with the same status *and* ``Location``) with one dropped event cannot
       be told apart.
     - At drain, anything still buffered whose id has exactly one entry lacking
@@ -1016,6 +1032,10 @@ class _ExtraInfoCorrelator:
         if matched:
             # Several equal matches (HTTP/1.1, same host) are undeterminable too:
             # candidates are in chain order, so the last match is the live request.
+            # Headers with no body are not a body-carrying POST's when another
+            # candidate can have them.
+            if len(matched) > 1 and not _sends_a_body(headers):
+                matched = [e for e in matched if not e.get("has_post_data")] or matched
             self._attach(matched[-1], "request", headers)
         elif all(v is None for v in verdicts):
             self._attach(candidates[-1], "request", headers)  # prefer the live request

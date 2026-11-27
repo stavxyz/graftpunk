@@ -1110,3 +1110,165 @@ def test_reading_roles_mid_capture_changes_nothing_and_never_attaches_a_mismatch
 
     backend._extra_info.log_unmatched(backend._request_map)
     assert "_request_extra_headers" not in backend._request_map["r1"]
+
+
+# --- HTTP/1.1: the POST's sent headers after the redirect GET is announced ---
+#
+# The order a Selenium login's performance log delivered on 2026-11-27 (Chrome
+# 158, a local http site, values replaced): the POST and the redirect GET are
+# both announced before the POST's requestWillBeSentExtraInfo. On HTTP/1.1 the
+# sent headers name only the Host, so the body headers are what tell them apart.
+
+_H1 = "http://127.0.0.1:8080"
+_POST_RENDERER = {
+    "Accept-Language": "en-US,en;q=0.9",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Origin": _H1,
+    "Referer": f"{_H1}/login",
+    "Upgrade-Insecure-Requests": "1",
+    "User-Agent": CHROME_UA,
+}
+
+
+def _h1_sent(**extra: str) -> dict[str, str]:
+    return {
+        "Accept": HTML_ACCEPT,
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "max-age=0",
+        "Connection": "keep-alive",
+        "Host": "127.0.0.1:8080",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "User-Agent": CHROME_UA,
+        **extra,
+    }
+
+
+_POST_SENT = _h1_sent(
+    **{
+        "Content-Length": "41",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": _H1,
+        "Referer": f"{_H1}/login",
+        "X-Marker": "post",
+    }
+)
+_GET_SENT = _h1_sent(**{"Cookie": "sid=placeholder", "Referer": f"{_H1}/login", "X-Marker": "get"})
+_LATE_POST_EVENTS: list[tuple[str, dict]] = [
+    (
+        "Network.requestWillBeSent",
+        {
+            "requestId": "R",
+            "wallTime": 1_700_000_001.0,
+            "type": "Document",
+            "documentURL": f"{_H1}/login",
+            "request": {
+                "url": f"{_H1}/login",
+                "method": "POST",
+                "headers": _POST_RENDERER,
+                "hasPostData": True,
+            },
+        },
+    ),
+    (
+        "Network.requestWillBeSent",
+        {
+            "requestId": "R",
+            "wallTime": 1_700_000_002.0,
+            "type": "Document",
+            "documentURL": f"{_H1}/home",
+            "redirectHasExtraInfo": True,
+            "redirectResponse": {
+                "status": 302,
+                "statusText": "Found",
+                "headers": {"Location": "/home"},
+                "mimeType": "text/html",
+            },
+            "request": {"url": f"{_H1}/home", "method": "GET", "headers": _POST_RENDERER},
+        },
+    ),
+    ("Network.requestWillBeSentExtraInfo", {"requestId": "R", "headers": _POST_SENT}),
+    (
+        "Network.responseReceivedExtraInfo",
+        {"requestId": "R", "statusCode": 302, "headers": {"Location": "/home"}},
+    ),
+    ("Network.requestWillBeSentExtraInfo", {"requestId": "R", "headers": _GET_SENT}),
+    (
+        "Network.responseReceivedExtraInfo",
+        {"requestId": "R", "statusCode": 200, "headers": {"Content-Type": "text/html"}},
+    ),
+    (
+        "Network.responseReceived",
+        {
+            "requestId": "R",
+            "response": {
+                "url": f"{_H1}/home",
+                "status": 200,
+                "statusText": "OK",
+                "headers": {"Content-Type": "text/html"},
+                "mimeType": "text/html",
+            },
+        },
+    ),
+]
+
+
+def _late_post_backend(kind: str):
+    import json
+    from types import SimpleNamespace
+
+    if kind == "selenium":
+        log = [
+            {"message": json.dumps({"message": {"method": method, "params": params}})}
+            for method, params in _LATE_POST_EVENTS
+        ]
+        backend = SeleniumCaptureBackend(
+            SimpleNamespace(get_log=lambda _kind: log),
+            record_request_bodies=False,
+            record_console=False,
+        )
+        backend.start_capture()
+        backend.stop_capture()
+        return backend
+    backend = NodriverCaptureBackend(None, record_request_bodies=False, record_console=False)
+    handlers = {
+        "Network.requestWillBeSent": backend._on_request,
+        "Network.requestWillBeSentExtraInfo": backend._on_request_extra_info,
+        "Network.responseReceived": backend._on_response,
+        "Network.responseReceivedExtraInfo": backend._on_response_extra_info,
+    }
+    for method, params in _LATE_POST_EVENTS:
+        handlers[method](_nodriver_event(params))
+    return backend
+
+
+@pytest.mark.parametrize("kind", ["selenium", "nodriver"])
+def test_a_posts_late_sent_headers_stay_on_the_post(kind: str):
+    backend = _late_post_backend(kind)
+
+    roles = backend.get_header_roles(_H1)
+    assert roles["form"]["X-Marker"] == "post"
+    assert roles["navigation"]["X-Marker"] == "get"
+
+    by_method = {e["request"]["method"]: e["request"] for e in backend.get_har_entries()}
+    post_headers = {h["name"].lower(): h["value"] for h in by_method["POST"]["headers"]}
+    get_headers = {h["name"].lower(): h["value"] for h in by_method["GET"]["headers"]}
+    assert post_headers["content-length"] == "41"
+    assert post_headers["x-marker"] == "post"
+    assert get_headers["x-marker"] == "get"
+    assert "content-length" not in get_headers
+    assert get_headers["cookie"] == "sid=placeholder"
+
+
+def test_sent_headers_with_a_body_never_match_a_get_or_head():
+    from graftpunk.observe.capture import _request_headers_match
+
+    for method in ("GET", "HEAD"):
+        entry = {"url": f"{_H1}/home", "method": method}
+        assert _request_headers_match(_POST_SENT, entry) is False
+        assert _request_headers_match({"Host": "127.0.0.1:8080", "Content-Length": "0"}, entry)
+    assert _request_headers_match(_POST_SENT, {"url": f"{_H1}/login", "method": "POST"})
