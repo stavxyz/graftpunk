@@ -138,3 +138,128 @@ def test_it_refuses_to_replace_an_existing_output_unless_forced(
     code, _out = _run(tmp_path, "--force")
     assert code == 0
     assert json.loads(out.read_text())["events"]
+
+
+def test_nothing_of_another_host_is_kept(tmp_path: Path) -> None:
+    """A login redirected (same request id) to an identity provider, and a tracker
+    whose query names the local site: only the local site's events stay, and no
+    value naming another host survives."""
+    local = "http://127.0.0.1:5555"
+    outside = "https://idp.outside.example"
+    events = [
+        {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": "AAA1",
+                "request": {
+                    "url": f"{local}/login",
+                    "method": "POST",
+                    "headers": {},
+                    "hasPostData": True,
+                },
+            },
+        },
+        {
+            "method": "Network.requestWillBeSentExtraInfo",
+            "params": {
+                "requestId": "AAA1",
+                "headers": {"Host": "127.0.0.1:5555", "Content-Length": "9"},
+            },
+        },
+        {
+            "method": "Network.responseReceivedExtraInfo",
+            "params": {
+                "requestId": "AAA1",
+                "statusCode": 302,
+                "headers": {"Location": f"{outside}/authorize?client_id=secretclient"},
+            },
+        },
+        {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": "AAA1",
+                "documentURL": f"{outside}/authorize?client_id=secretclient",
+                "request": {
+                    "url": f"{outside}/authorize?client_id=secretclient",
+                    "method": "GET",
+                    "headers": {},
+                },
+                "redirectResponse": {
+                    "url": f"{local}/login",
+                    "status": 302,
+                    "headers": {"Location": f"{outside}/authorize?client_id=secretclient"},
+                    "mimeType": "",
+                },
+            },
+        },
+        {
+            "method": "Network.requestWillBeSentExtraInfo",
+            "params": {"requestId": "AAA1", "headers": {"Host": "idp.outside.example"}},
+        },
+        {
+            "method": "Network.responseReceivedExtraInfo",
+            "params": {"requestId": "AAA1", "statusCode": 200, "headers": {"Server": "idp"}},
+        },
+        {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": "BBB2",
+                "request": {
+                    "url": f"https://tracker.outside.example/p?ref={local}/login",
+                    "method": "GET",
+                    "headers": {},
+                },
+            },
+        },
+    ]
+    log = tmp_path / "perflog.json"
+    log.write_text(json.dumps({"events": events}))
+    out = tmp_path / "out.json"
+    assert _script().main([str(log), str(out)]) == 0
+    text = out.read_text()
+    for needle in ("outside.example", "secretclient", "tracker", "idp"):
+        assert needle not in text, needle
+    kept = json.loads(text)["events"]
+    assert [(e["method"], e["params"].get("statusCode")) for e in kept] == [
+        ("Network.requestWillBeSent", None),
+        ("Network.requestWillBeSentExtraInfo", None),
+        ("Network.responseReceivedExtraInfo", 302),
+    ]
+    assert kept[2]["params"]["headers"] == {"Location": "placeholder"}
+
+
+def test_http2_pseudo_headers_and_x_requested_with_keep_their_values(tmp_path: Path) -> None:
+    events = [
+        {
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": "C1",
+                "request": {"url": "http://127.0.0.1:5555/api", "method": "GET", "headers": {}},
+            },
+        },
+        {
+            "method": "Network.requestWillBeSentExtraInfo",
+            "params": {
+                "requestId": "C1",
+                "headers": {
+                    ":method": "GET",
+                    ":path": "/api",
+                    ":authority": "127.0.0.1:5555",
+                    ":scheme": "http",
+                    "x-requested-with": "XMLHttpRequest",
+                },
+            },
+        },
+    ]
+    log = tmp_path / "perflog.json"
+    log.write_text(json.dumps({"events": events}))
+    out = tmp_path / "out.json"
+    assert _script().main([str(log), str(out)]) == 0
+    sent = json.loads(out.read_text())["events"][1]["params"]["headers"]
+    assert sent == {
+        ":method": "GET",
+        ":path": "/api",
+        ":authority": "127.0.0.1:8080",
+        ":scheme": "http",
+        "x-requested-with": "XMLHttpRequest",
+    }

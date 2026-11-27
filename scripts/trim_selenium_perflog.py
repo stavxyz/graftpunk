@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,10 @@ from typing import Any
 # becomes a placeholder, since a log can hold an account's data.
 KEEP = frozenset(
     {
+        ":authority",
+        ":method",
+        ":path",
+        ":scheme",
         "accept",
         "content-length",
         "content-type",
@@ -33,6 +38,7 @@ KEEP = frozenset(
         "sec-fetch-mode",
         "sec-fetch-site",
         "upgrade-insecure-requests",
+        "x-requested-with",
     }
 )
 EVENTS = frozenset(
@@ -49,55 +55,98 @@ DEFAULT_SOURCE = (
 
 
 def _site_port(events: list[dict[str, Any]]) -> str | None:
+    """The port of the first request announced to 127.0.0.1 by its own URL."""
     for event in events:
         if event.get("method") != "Network.requestWillBeSent":
             continue
-        url = event["params"]["request"]["url"]
-        if "://127.0.0.1:" in url:
-            return url.split("://127.0.0.1:")[1].split("/")[0]
+        parts = urllib.parse.urlsplit(event["params"]["request"]["url"])
+        if parts.hostname == "127.0.0.1" and parts.port:
+            return str(parts.port)
     return None
 
 
+def _host_port(url: str) -> str | None:
+    """*url*'s ``host:port`` (the port written out), or None for a relative URL."""
+    parts = urllib.parse.urlsplit(url)
+    if not parts.hostname:
+        return None
+    port = parts.port or {"http": 80, "https": 443}.get(parts.scheme)
+    return f"{parts.hostname}:{port}"
+
+
 def trim(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*events* trimmed as the module docstring says, in their order."""
+    """*events* trimmed as the module docstring says, in their order.
+
+    An event is kept only when the request it is about is the local site's:
+    a request or response by its own URL, sent headers by their ``Host`` or
+    ``:authority``, and response headers by the URL last announced for their
+    request id (a redirect to another host reuses the id). Any kept value that
+    names another host becomes a placeholder."""
     port = _site_port(events)
     if port is None:
         return []
     here = f"127.0.0.1:{port}"
 
+    def local_url(url: str) -> bool:
+        return _host_port(url) == here
+
     def site(text: str) -> str:
         return text.replace(here, "127.0.0.1:8080")
 
+    def value(text: str) -> str:
+        """*text* for the fixture: the site rewritten, a URL of another host, or
+        a host other than the site, a placeholder."""
+        if "://" in text and not local_url(text):
+            return "placeholder"
+        return site(text)
+
     def headers(given: dict[str, Any] | None) -> dict[str, str]:
         out: dict[str, str] = {}
-        for name, value in (given or {}).items():
+        for name, raw in (given or {}).items():
             lower = name.lower()
             if lower in ("cookie", "set-cookie"):
                 out[name] = "placeholder=1"
+            elif lower in ("host", ":authority"):
+                out[name] = site(str(raw)) if str(raw) == here else "placeholder"
             elif lower in KEEP:
-                out[name] = site(str(value))
+                out[name] = value(str(raw))
             elif lower == "user-agent":
                 out[name] = "Mozilla/5.0 Chrome/158.0.0.0"
             else:
                 out[name] = "placeholder"
         return out
 
-    ids = {
-        e["params"]["requestId"]
-        for e in events
-        if e.get("method") == "Network.requestWillBeSent" and here in e["params"]["request"]["url"]
-    }
+    def sent_to_site(sent: dict[str, Any] | None) -> bool | None:
+        for name, raw in (sent or {}).items():
+            if name.lower() in ("host", ":authority"):
+                return str(raw) == here
+        return None
+
+    announced: dict[str, bool] = {}  # request id -> whether its last URL is the site's
     out: list[dict[str, Any]] = []
     for event in events:
         method, params = event.get("method"), event.get("params", {})
-        if method not in EVENTS or params.get("requestId") not in ids:
+        if method not in EVENTS:
             continue
-        kept: dict[str, Any] = {"requestId": params["requestId"][-6:]}
+        rid = params.get("requestId")
+        if method == "Network.requestWillBeSent":
+            keep = local_url(params["request"]["url"])
+            announced[rid] = keep
+        elif method == "Network.responseReceived":
+            keep = local_url(params["response"]["url"])
+        elif method == "Network.requestWillBeSentExtraInfo":
+            to_site = sent_to_site(params.get("headers"))
+            keep = announced.get(rid, False) if to_site is None else to_site
+        else:
+            keep = announced.get(rid, False)
+        if not keep:
+            continue
+        kept: dict[str, Any] = {"requestId": rid[-6:]}
         for key in ("wallTime", "type", "redirectHasExtraInfo", "statusCode"):
             if key in params:
                 kept[key] = params[key]
         if "documentURL" in params:
-            kept["documentURL"] = site(params["documentURL"])
+            kept["documentURL"] = value(params["documentURL"])
         if "request" in params:
             request = params["request"]
             # postData and postDataEntries are left out: a login's body holds
@@ -112,7 +161,7 @@ def trim(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if key in params:
                 response = params[key]
                 kept[key] = {
-                    **({"url": site(response["url"])} if "url" in response else {}),
+                    **({"url": value(response["url"])} if "url" in response else {}),
                     "status": response["status"],
                     "statusText": response.get("statusText", ""),
                     "headers": headers(response.get("headers")),
