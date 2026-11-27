@@ -12,8 +12,11 @@ Usage: python scripts/correlator_sweep.py --ref REF [--ref REF ...] [--checkout 
 It prints, per chain and ref, how many reads the checkout does worse in (more
 entries holding another request's sent headers, or, where the ref attributed
 every entry rightly, a role lost or a role missing a header the ref's had), how
-many it has fewer wrong attributions in, and how many it builds a role in that
-the ref did not build, with examples of the worse ones. A role the ref built from another
+many it has fewer entries holding another request's headers in (a read can go
+from two such entries to one, so this is not the difference of the two ``wrong
+in`` counts, which count reads with any), and how many it builds a role in that
+the ref did not build (every read, against a ref that builds no role from sent
+headers), with examples of the worse ones. A role the ref built from another
 request's headers and the checkout does not have is counted apart, as
 ``dropped a misattributed role``, not as worse.
 Exit 0 when no order is worse than in any ref, 1 when one is, 2 on a usage
@@ -354,9 +357,9 @@ def main(argv: list[str] | None = None) -> int:
         for chain, c in compare(base, head).items():
             print(
                 f"{chain}: {c['orders']} reads, {ref} wrong in {c['base_wrong']}, checkout wrong "
-                f"in {c['head_wrong']}, worse {c['worse']}, fewer wrong {c['fewer_wrong']}, "
-                f"gained a role {c['gained_role']}, dropped a misattributed role "
-                f"{c['dropped_misattributed']}"
+                f"in {c['head_wrong']}, worse {c['worse']}, fewer wrong entries in "
+                f"{c['fewer_wrong']}, gained a role {c['gained_role']}, "
+                f"dropped a misattributed role {c['dropped_misattributed']}"
             )
             for example in c["examples"]:
                 print(f"   worse: {example}")

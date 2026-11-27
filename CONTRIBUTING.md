@@ -204,7 +204,7 @@ Run it after any change to `src/graftpunk/graftpunk_session.py` or `src/graftpun
 python scripts/correlator_sweep.py --ref v1.46.0 --ref <the branch's base>
 ```
 
-Run it after any change to `_ExtraInfoCorrelator` or `_request_headers_match` in `src/graftpunk/observe/capture.py`. It exits 0 when no order is worse in the checkout than in every ref (more entries holding another request's headers, or a role lost where the ref attributed every entry rightly), 1 otherwise, and 2 on a usage error. It prints, per chain, the reads each side got wrong, so a residual both sides share (two GETs, or a 307 pair, whose sent headers carry the same body evidence) shows as equal counts.
+Run it after any change to `_ExtraInfoCorrelator` or `_request_headers_match` in `src/graftpunk/observe/capture.py`. It exits 0 when no order is worse in the checkout than in any ref (more entries holding another request's headers, or, where the ref attributed every entry rightly, a role lost or a role missing a header the ref's had), 1 otherwise, and 2 on a usage error. Each line also counts the reads with fewer entries holding another request's headers, the reads where the checkout builds a role the ref did not, and the roles the ref built from another request's headers that the checkout drops. It prints, per chain, the reads each side got wrong, so a residual both sides share (two GETs, or a 307 pair, whose sent headers carry the same body evidence) shows as equal counts.
 
 ### Writing Tests
 
@@ -401,7 +401,7 @@ class MySitePlugin(SitePlugin):
     backend = "nodriver"  # or "selenium"
     api_version = 1
 
-    # Declarative login — auto-generates `gp mysite login`
+    # Declarative login: auto-generates `gp mysite login`
     login_config = LoginConfig(
         url="/login",
         fields={"username": "#email", "password": "#password"},

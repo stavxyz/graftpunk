@@ -73,3 +73,43 @@ def test_dropping_a_role_the_ref_built_from_wrong_headers_is_counted_apart():
     counts = _run([(ref, checkout)])
     assert counts["dropped_misattributed"] == 2
     assert counts["worse"] == 0
+
+
+def test_a_lost_role_is_not_counted_as_gained():
+    ref = _snap(["A<-A"], {"form": ["Accept"], "navigation": ["Accept"]})
+    checkout = _snap(["A<-A"], {"navigation": ["Accept"]})
+    counts = _run([(ref, checkout)])
+    assert counts["gained_role"] == 0
+    assert counts["worse"] == 2
+
+
+def test_a_role_missing_a_header_the_ref_had_is_worse():
+    ref = _snap(["A<-A"], {"form": ["Accept", "Content-Type"]})
+    checkout = _snap(["A<-A"], {"form": ["Accept"]})
+    counts = _run([(ref, checkout)])
+    assert counts["worse"] == 2
+    assert counts["dropped_misattributed"] == 0
+
+
+def test_equal_wrongness_with_a_dropped_role_is_counted_apart():
+    ref = _snap(["A<-B", "B<-A"], {"form": ["Accept"]})
+    checkout = _snap(["A<-B", "B<-A"], {})
+    counts = _run([(ref, checkout)])
+    assert counts["dropped_misattributed"] == 2
+    assert counts["worse"] == 0
+
+
+def test_base_and_head_wrong_count_their_own_side():
+    ref = _snap(["A<-B", "B<-A"], {"form": ["Accept"]})
+    checkout = _snap(["A<-A", "B<-B"], {"form": ["Accept"]})
+    counts = _run([(ref, checkout)])
+    assert counts["base_wrong"] == 2
+    assert counts["head_wrong"] == 0
+
+
+def test_at_most_three_worse_examples_are_kept():
+    ref = _snap(["A<-A", "B<-B"], {"form": ["Accept"]})
+    checkout = _snap(["A<-B", "B<-A"], {"form": ["Accept"]})
+    counts = _run([(ref, checkout), (ref, checkout)])
+    assert counts["worse"] == 4
+    assert len(counts["examples"]) == 3
