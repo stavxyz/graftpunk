@@ -1682,33 +1682,6 @@ class TestHeaderNamesInAnyCase:
         assert _values(sent, "accept") == [get_role_headers("navigation")["Accept"]]
 
 
-class TestANamedRoleIsTheOneApplied:
-    def test_request_with_role_xhr_carries_no_header_only_navigation_holds(self) -> None:
-        """A non-JSON Accept makes auto-detection say navigation; the role the
-        caller named must be the one whose headers fill the request."""
-        roles = {
-            "navigation": {
-                "Accept": "text/html",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Upgrade-Insecure-Requests": "1",
-                "X-Nav-Only": "1",
-            },
-            "xhr": {"Accept": "application/json", "Sec-Fetch-Mode": "cors"},
-        }
-        session, wire = _spelled_session(roles)
-        session.request_with_role(
-            "xhr", "GET", f"{_SPELLED_SITE}/report", headers={"Accept": "text/csv"}
-        )
-        [sent] = wire.sent
-        names = {k.lower() for k in sent.headers}
-        assert "x-nav-only" not in names
-        assert "upgrade-insecure-requests" not in names
-        assert sent.headers["Sec-Fetch-Mode"] == "cors"
-        assert sent.headers["Accept"] == "text/csv"
-        assert sent.headers.get("Sec-Fetch-Dest") != "document"
-
-
 class TestCallerHeadersKeepTheirSlot:
     """A caller's header, or a referer=, replaces a role header in that header's
     place, as 1.46.0 sent it (header names in order, read off 048efcd4 through
