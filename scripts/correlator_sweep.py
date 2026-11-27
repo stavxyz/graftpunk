@@ -11,8 +11,9 @@ Usage: python scripts/correlator_sweep.py --ref REF [--ref REF ...] [--checkout 
 
 It prints, per chain and ref, how many reads the checkout does worse in (more
 entries holding another request's sent headers, or, where the ref attributed
-every entry rightly, a role lost or a role missing a header the ref's had) and
-better in, with examples of the worse ones. A role the ref built from another
+every entry rightly, a role lost or a role missing a header the ref's had), how
+many it has fewer wrong attributions in, and how many it builds a role in that
+the ref did not build, with examples of the worse ones. A role the ref built from another
 request's headers and the checkout does not have is counted apart, as
 ``dropped a misattributed role``, not as worse.
 Exit 0 when no order is worse than in any ref, 1 when one is, 2 on a usage
@@ -266,14 +267,16 @@ def wrong(snap: dict[str, Any]) -> int:
 
 
 def compare(base: dict[str, Any], head: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Per chain: orders, worse and better counts, and up to three worse examples."""
+    """Per chain: orders, how many reads were worse, had fewer wrong attributions, or
+    gained a role, and up to three worse examples."""
     summary: dict[str, dict[str, Any]] = collections.defaultdict(
         lambda: {
             "orders": 0,
             "base_wrong": 0,
             "head_wrong": 0,
             "worse": 0,
-            "better": 0,
+            "fewer_wrong": 0,
+            "gained_role": 0,
             "dropped_misattributed": 0,
             "examples": [],
         }
@@ -299,8 +302,12 @@ def compare(base: dict[str, Any], head: dict[str, Any]) -> dict[str, dict[str, A
                 c["worse"] += 1
                 if len(c["examples"]) < 3:
                     c["examples"].append(f"{phase} {key}: {a['entries']} -> {b['entries']}")
-            if wb < wa or set(b["roles"]) - set(a["roles"]):
-                c["better"] += 1
+            # Counted apart: a checkout that builds a role the ref never built gains one in
+            # every read, which says nothing about whether it attributes headers better.
+            if wb < wa:
+                c["fewer_wrong"] += 1
+            if set(b["roles"]) - set(a["roles"]):
+                c["gained_role"] += 1
     return dict(summary)
 
 
@@ -347,8 +354,9 @@ def main(argv: list[str] | None = None) -> int:
         for chain, c in compare(base, head).items():
             print(
                 f"{chain}: {c['orders']} reads, {ref} wrong in {c['base_wrong']}, checkout wrong "
-                f"in {c['head_wrong']}, worse {c['worse']}, better {c['better']}, dropped a "
-                f"misattributed role {c['dropped_misattributed']}"
+                f"in {c['head_wrong']}, worse {c['worse']}, fewer wrong {c['fewer_wrong']}, "
+                f"gained a role {c['gained_role']}, dropped a misattributed role "
+                f"{c['dropped_misattributed']}"
             )
             for example in c["examples"]:
                 print(f"   worse: {example}")
