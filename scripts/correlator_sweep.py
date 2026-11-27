@@ -16,9 +16,10 @@ many it has fewer entries holding another request's headers in (a read can go
 from two such entries to one, so this is not the difference of the two ``wrong
 in`` counts, which count reads with any), and how many it builds a role in that
 the ref did not build (every read, against a ref that builds no role from sent
-headers), with examples of the worse ones. A role the ref built from another
-request's headers and the checkout does not have is counted apart, as
-``dropped a misattributed role``, not as worse.
+headers), with examples of the worse ones. A read where the ref already had an
+entry holding another request's headers and the checkout, no worse, lost a role
+or a role's header is counted apart, as ``dropped a misattributed role``, not as
+worse.
 Exit 0 when no order is worse than in any ref, 1 when one is, 2 on a usage
 error (a ref git cannot archive).
 """
@@ -270,8 +271,8 @@ def wrong(snap: dict[str, Any]) -> int:
 
 
 def compare(base: dict[str, Any], head: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Per chain: orders, how many reads were worse, had fewer wrong attributions, or
-    gained a role, and up to three worse examples."""
+    """Per chain: reads, how many were worse, had fewer wrong entries, gained a role,
+    or dropped a misattributed role, and up to three worse examples."""
     summary: dict[str, dict[str, Any]] = collections.defaultdict(
         lambda: {
             "orders": 0,

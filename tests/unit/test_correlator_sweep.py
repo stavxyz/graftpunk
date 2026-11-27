@@ -113,3 +113,43 @@ def test_at_most_three_worse_examples_are_kept():
     counts = _run([(ref, checkout), (ref, checkout)])
     assert counts["worse"] == 4
     assert len(counts["examples"]) == 3
+
+
+def test_equal_wrongness_with_the_same_roles_counts_nothing():
+    ref = _snap(["A<-B"], {"form": ["Accept"]})
+    counts = _run([(ref, ref)])
+    assert counts["orders"] == 2
+    assert counts["dropped_misattributed"] == 0
+    assert counts["worse"] == 0
+
+
+def test_a_header_dropped_from_a_role_the_ref_built_wrongly_is_counted_apart():
+    ref = _snap(["A<-B"], {"form": ["Accept", "Content-Type"]})
+    checkout = _snap(["A<-B"], {"form": ["Accept"]})
+    counts = _run([(ref, checkout)])
+    assert counts["dropped_misattributed"] == 2
+    assert counts["worse"] == 0
+
+
+def test_more_wrong_with_a_dropped_role_is_worse():
+    ref = _snap(["A<-B", "B<-B"], {"form": ["Accept"]})
+    checkout = _snap(["A<-B", "B<-A"], {})
+    counts = _run([(ref, checkout)])
+    assert counts["worse"] == 2
+    assert counts["dropped_misattributed"] == 0
+
+
+def test_two_wrong_entries_down_to_one_is_fewer_wrong():
+    ref = _snap(["A<-B", "B<-A"], {"form": ["Accept"]})
+    checkout = _snap(["A<-B", "B<-B"], {"form": ["Accept"]})
+    counts = _run([(ref, checkout)])
+    assert counts["fewer_wrong"] == 2
+    assert counts["base_wrong"] == counts["head_wrong"] == 2
+    assert counts["worse"] == 0
+
+
+def test_a_worse_example_shows_both_sides():
+    ref = _snap(["A<-A", "B<-B"], {"form": ["Accept"]})
+    checkout = _snap(["A<-B", "B<-A"], {"form": ["Accept"]})
+    counts = _run([(ref, checkout)])
+    assert counts["examples"][0] == "mid chain | order 0: ['A<-A', 'B<-B'] -> ['A<-B', 'B<-A']"
