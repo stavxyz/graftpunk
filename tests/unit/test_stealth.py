@@ -183,25 +183,24 @@ def test_elsewhere_the_driver_is_patched_but_not_signed(
 # ---------------------------------------------------------------------------
 
 
-def _versions(full: str | None, major: str | None):
-    def read(major: bool = True) -> str:
-        value = major_value if major else full
-        if value is None:
-            raise ChromeDriverError("Chrome not found")
-        return value
+def _versions(full: str | None):
+    """A Chrome version reader that answers *full*, or fails, and counts its calls."""
+    calls: list[bool] = []
 
-    major_value = major
+    def read(major: bool = True) -> str:
+        calls.append(major)
+        if full is None:
+            raise ChromeDriverError("Chrome not found")
+        return full.split(".")[0] if major else full
+
+    read.calls = calls  # type: ignore[attr-defined]
     return read
 
 
 @pytest.mark.parametrize(
-    ("full", "major", "driver_version", "version_main"),
-    [
-        ("158.0.8127.37", "158", "158.0.8127.37", 158),
-        (None, "158", "158", 158),
-        (None, None, None, None),
-    ],
-    ids=["full", "major-only", "none"],
+    ("full", "driver_version", "version_main"),
+    [("158.0.8127.37", "158.0.8127.37", 158), (None, None, None)],
+    ids=["full", "none"],
 )
 @patch("graftpunk.stealth.uc.Chrome")
 @patch("webdriver_manager.chrome.ChromeDriverManager")
@@ -209,7 +208,6 @@ def test_the_stealth_driver_asks_webdriver_manager_for_chromes_full_version(
     mock_manager: MagicMock,
     mock_chrome: MagicMock,
     full: str | None,
-    major: str | None,
     driver_version: str | None,
     version_main: int | None,
     tmp_path: Path,
@@ -217,7 +215,8 @@ def test_the_stealth_driver_asks_webdriver_manager_for_chromes_full_version(
     codesign_log: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("graftpunk.stealth.get_chrome_version", _versions(full, major))
+    read = _versions(full)
+    monkeypatch.setattr("graftpunk.stealth.get_chrome_version", read)
     mock_manager.return_value.install.return_value = str(wdm_driver)
     mock_chrome.return_value = _started_chrome()
 
@@ -225,16 +224,10 @@ def test_the_stealth_driver_asks_webdriver_manager_for_chromes_full_version(
 
     assert mock_manager.call_args.kwargs == {"driver_version": driver_version}
     assert mock_chrome.call_args.kwargs["version_main"] == version_main
+    assert read.calls == [False]  # read once: the major fails exactly when the full does
 
 
-@pytest.mark.parametrize(
-    ("full", "major", "driver_version"),
-    [("158.0.8127.37", "158", "158.0.8127.37"), (None, "158", "158")],
-    ids=["full", "major-only"],
-)
-def test_the_standard_selenium_driver_asks_for_chromes_full_version(
-    full: str | None, major: str | None, driver_version: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _standard_backend(monkeypatch: pytest.MonkeyPatch, full: str | None, install) -> list:
     from graftpunk.backends.selenium import SeleniumBackend
 
     asked: list[str | None] = []
@@ -242,14 +235,82 @@ def test_the_standard_selenium_driver_asks_for_chromes_full_version(
     def manager(driver_version: str | None) -> MagicMock:
         asked.append(driver_version)
         made = MagicMock()
-        made.install.return_value = "/path/to/chromedriver"
+        made.install.side_effect = install
         return made
 
-    monkeypatch.setattr("graftpunk.backends.selenium.get_chrome_version", _versions(full, major))
+    monkeypatch.setattr("graftpunk.backends.selenium.get_chrome_version", _versions(full))
     monkeypatch.setattr(
         "graftpunk.backends.selenium.webdriver_manager.chrome.ChromeDriverManager", manager
     )
     with patch("selenium.webdriver.Chrome", return_value=MagicMock()):
         SeleniumBackend(use_stealth=False, headless=True).start()
+    return asked
 
-    assert asked == [driver_version]
+
+def test_the_standard_selenium_driver_asks_for_chromes_full_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked = _standard_backend(monkeypatch, "158.0.8127.37", lambda: "/path/to/chromedriver")
+    assert asked == ["158.0.8127.37"]
+
+
+def test_the_standard_selenium_driver_without_a_chrome_version_is_a_browser_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graftpunk.exceptions import BrowserError
+
+    with pytest.raises(BrowserError, match="Failed to detect Chrome version"):
+        _standard_backend(monkeypatch, None, lambda: "/path/to/chromedriver")
+
+
+def _no_such_driver() -> str:
+    # webdriver-manager 4.0.2 and 4.1.2 raise a bare Exception with this text
+    # when no known-good ChromeDriver matches the version asked for.
+    raise Exception("No such driver version 158.0.9999.1 for mac-arm64")  # noqa: TRY002
+
+
+def test_a_chrome_build_webdriver_manager_has_no_driver_for_names_it_on_the_standard_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graftpunk.exceptions import BrowserError
+
+    with pytest.raises(BrowserError) as raised:
+        _standard_backend(monkeypatch, "158.0.9999.1", _no_such_driver)
+    text = str(raised.value)
+    assert "158.0.9999.1" in text
+    assert "update Chrome" in text
+    assert 'backend="nodriver"' in text
+
+
+@patch("graftpunk.stealth.uc.Chrome")
+@patch("webdriver_manager.chrome.ChromeDriverManager")
+def test_a_chrome_build_webdriver_manager_has_no_driver_for_names_it_on_the_stealth_path(
+    mock_manager: MagicMock,
+    mock_chrome: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graftpunk.exceptions import BrowserError
+
+    monkeypatch.setattr("graftpunk.stealth.get_chrome_version", _versions("158.0.9999.1"))
+    mock_manager.return_value.install.side_effect = _no_such_driver
+
+    with pytest.raises(BrowserError) as raised:
+        create_stealth_driver(headless=True, profile_dir=tmp_path / "profile")
+    text = str(raised.value)
+    assert "158.0.9999.1" in text
+    assert "update Chrome" in text
+    assert mock_manager.call_count == 1  # no retry with the major: it picks a wrong build
+    mock_chrome.assert_not_called()
+
+
+@patch("graftpunk.stealth.uc.Chrome")
+@patch("webdriver_manager.chrome.ChromeDriverManager")
+def test_another_webdriver_manager_failure_is_not_renamed(
+    mock_manager: MagicMock, mock_chrome: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("graftpunk.stealth.get_chrome_version", _versions("158.0.8127.37"))
+    mock_manager.return_value.install.side_effect = OSError("disk full")
+
+    with pytest.raises(OSError, match="disk full"):
+        create_stealth_driver(headless=True, profile_dir=tmp_path / "profile")

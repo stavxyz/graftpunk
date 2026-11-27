@@ -22,7 +22,7 @@ from graftpunk.browser_launch import (
     prepare_selenium_launch,
     selenium_in_own_session,
 )
-from graftpunk.chrome import chromedriver_version, get_chrome_version
+from graftpunk.chrome import chromedriver_version, get_chrome_version, no_chromedriver_error
 from graftpunk.chrome_orphans import owner_switch
 from graftpunk.config import get_settings
 from graftpunk.exceptions import ChromeDriverError
@@ -214,9 +214,14 @@ def create_stealth_driver(
     # Chrome is an Intel app. webdriver-manager resolves the host's
     # architecture, so the driver comes from there and undetected-chromedriver
     # only patches it (#356).
-    driver_path = webdriver_manager.chrome.ChromeDriverManager(
-        driver_version=driver_version if chrome_version is not None else None
-    ).install()
+    asked = driver_version if chrome_version is not None else None
+    try:
+        driver_path = webdriver_manager.chrome.ChromeDriverManager(driver_version=asked).install()
+    except Exception as exc:  # webdriver-manager raises a bare Exception for this
+        error = no_chromedriver_error(asked, exc)
+        if error is None:
+            raise
+        raise error from exc
     LOG.info("chromedriver_resolved", path=driver_path)
     _patch_driver(driver_path)
 

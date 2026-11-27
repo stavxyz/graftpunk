@@ -30,9 +30,9 @@ from graftpunk.browser_launch import (
     prepare_selenium_launch,
     release_selenium_processes,
 )
-from graftpunk.chrome import get_chrome_version
+from graftpunk.chrome import chromedriver_version, get_chrome_version, no_chromedriver_error
 from graftpunk.chrome_orphans import owner_switch
-from graftpunk.exceptions import BrowserError, ChromeDriverError
+from graftpunk.exceptions import BrowserError
 from graftpunk.logging import get_logger
 
 if TYPE_CHECKING:
@@ -235,15 +235,14 @@ class SeleniumBackend:
         """Start browser with standard Selenium (no stealth)."""
         from selenium import webdriver
 
-        try:
-            # The full version, not the major alone: see chromedriver_version.
-            chrome_version = get_chrome_version(major=False)
-        except ChromeDriverError:
-            try:
-                chrome_version = get_chrome_version(major=True)
-            except ChromeDriverError as exc:
-                LOG.error("chrome_version_detection_failed", error=str(exc))
-                raise BrowserError(f"Failed to detect Chrome version: {exc}") from exc
+        # The full version, not the major alone: see chromedriver_version.
+        chrome_version = chromedriver_version(get_chrome_version)
+        if chrome_version is None:
+            LOG.error("chrome_version_detection_failed")
+            raise BrowserError(
+                "Failed to detect Chrome version: Chrome not found. Please install Google "
+                "Chrome or Chromium."
+            )
         LOG.info("detected_chrome_version", version=chrome_version)
 
         # Get ChromeDriver path - wrap in try/except for network/permission errors
@@ -253,6 +252,9 @@ class SeleniumBackend:
             ).install()
         except Exception as exc:
             LOG.error("chromedriver_install_failed", error=str(exc))
+            no_driver = no_chromedriver_error(chrome_version, exc)
+            if no_driver is not None:
+                raise no_driver from exc
             raise BrowserError(f"Failed to install ChromeDriver: {exc}") from exc
 
         # Configure options
