@@ -113,14 +113,22 @@ def _rank(sent_to: Origin | None, site: Origin | None) -> int:
     return 2
 
 
+def _typed(headers: dict[str, str]) -> bool:
+    """Whether *headers* say the user typed the address (``Sec-Fetch-Site: none``),
+    as Chrome 158 said of a page a login opened with nodriver's ``Tab.get``."""
+    return any(k.lower() == "sec-fetch-site" and v == "none" for k, v in headers.items())
+
+
 def _role_requests(
     request_map: dict[str, dict[str, Any]], site_url: str | None
 ) -> dict[str, dict[str, Any]]:
     """The request each role is taken from: per role, the first request in
     *request_map* order sent to *site_url*'s origin, else the first to another
-    origin of its site, else the first of all. Without a *site_url*, the first."""
+    origin of its site, else the first of all. Without a *site_url*, the first.
+    For the navigation role a page load the site sent (any ``Sec-Fetch-Site``
+    but ``none``) comes before a typed one, by the same order."""
     site = origin(site_url) if site_url else None
-    chosen: dict[str, tuple[int, dict[str, Any]]] = {}
+    chosen: dict[str, tuple[tuple[bool, int], dict[str, Any]]] = {}
     for data in request_map.values():
         headers = sent_headers(data)
         if not headers:
@@ -128,10 +136,22 @@ def _role_requests(
         role = classify_request(headers, data.get("method"))
         if role is None:
             continue
-        rank = _rank(origin(data.get("url")), site)
-        if role not in chosen or rank < chosen[role][0]:
-            chosen[role] = (rank, data)
-    return {role: data for role, (_rank_, data) in chosen.items()}
+        key = (role == "navigation" and _typed(headers), _rank(origin(data.get("url")), site))
+        if role not in chosen or key < chosen[role][0]:
+            chosen[role] = (key, data)
+    return {role: data for role, (_key, data) in chosen.items()}
+
+
+def _role_headers(role: str, data: dict[str, Any]) -> dict[str, str]:
+    """The headers *role* keeps of the request-map entry *data*."""
+    headers = {k: v for k, v in sent_headers(data).items() if kept_in_role(k)}
+    if role == "navigation" and _typed(headers):
+        # Replayed, "none" would say the user typed every command's address;
+        # 1.46.0 sent the registered role's same-origin, and so does this.
+        headers = {
+            k: "same-origin" if k.lower() == "sec-fetch-site" else v for k, v in headers.items()
+        }
+    return headers
 
 
 def extract_header_roles(
@@ -145,7 +165,9 @@ def extract_header_roles(
     *site_url*'s origin (the plugin's ``base_url``), else to another origin of
     that site, else the first of all (#228). A login's first CORS request is
     often an identity provider's or a tracker's, and its headers are not the
-    ones the site's own pages send.
+    ones the site's own pages send. The navigation role prefers a page load
+    the site sent to one the login typed (``Sec-Fetch-Site: none``), and when
+    it has only typed ones it stores ``Sec-Fetch-Site: same-origin``.
 
     Args:
         request_map: The capture backend's _request_map dict. Each entry
@@ -159,7 +181,7 @@ def extract_header_roles(
         {"navigation": {"User-Agent": "...", ...}, "xhr": {...}}.
     """
     return {
-        role: {k: v for k, v in sent_headers(data).items() if kept_in_role(k)}
+        role: _role_headers(role, data)
         for role, data in _role_requests(request_map, site_url).items()
     }
 

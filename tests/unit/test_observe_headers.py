@@ -555,6 +555,74 @@ def test_classify_a_get_is_never_a_form():
     assert classify_request(headers, method="GET") is None
 
 
+# --- Sec-Fetch-Site: none says the user typed the address ---
+#
+# A page a login opens with Tab.get is sent as a typed address is. A command
+# replaying that would claim the same of every request; 1.46.0 sent the
+# registered navigation role's same-origin, and 1.46.1 keeps that.
+
+
+def _nav(url: str, site: str, ts: float, *, spelling: str = "Sec-Fetch-Site") -> dict:
+    wire = {k: v for k, v in _wire().items() if k != "Sec-Fetch-Site"}
+    wire[spelling] = site
+    return _entry(url, "GET", RENDERER_NAV, {**wire, "X-Marker": f"{site}@{ts}"}, ts)
+
+
+def test_a_navigation_role_from_only_typed_page_loads_says_same_origin():
+    request_map = {
+        "1": _nav("https://myshop.example/login", "none", 1.0),
+        "2": _nav("https://myshop.example/home", "none", 2.0),
+    }
+    role = extract_header_roles(request_map, SITE)["navigation"]
+    assert role["Sec-Fetch-Site"] == "same-origin"
+    assert role["X-Marker"] == "none@1.0"
+
+
+def test_the_rewrite_keeps_the_captured_spelling():
+    request_map = {"1": _nav("https://myshop.example/", "none", 1.0, spelling="sec-fetch-site")}
+    role = extract_header_roles(request_map, SITE)["navigation"]
+    assert role["sec-fetch-site"] == "same-origin"
+    assert "Sec-Fetch-Site" not in role
+
+
+def test_a_page_load_the_site_sent_is_preferred_to_a_typed_one():
+    from graftpunk.observe.headers import header_role_origins
+
+    request_map = {
+        "1": _nav("https://myshop.example/login", "none", 1.0),
+        "2": _nav("https://sso.other.example/authorize", "cross-site", 2.0),
+        "3": _nav("https://api.myshop.example/start", "same-site", 3.0),
+        "4": _nav("https://myshop.example/home", "same-origin", 4.0),
+        "5": _nav("https://myshop.example/later", "same-origin", 5.0),
+    }
+    role = extract_header_roles(request_map, SITE)["navigation"]
+    assert role["X-Marker"] == "same-origin@4.0"
+    assert header_role_origins(request_map, SITE) == {"navigation": SITE}
+
+
+def test_a_typed_load_of_the_site_loses_to_a_sent_load_of_another_origin():
+    request_map = {
+        "1": _nav("https://myshop.example/login", "none", 1.0),
+        "2": _nav("https://api.myshop.example/start", "same-site", 2.0),
+    }
+    assert extract_header_roles(request_map, SITE)["navigation"]["X-Marker"] == "same-site@2.0"
+
+
+def test_other_roles_keep_their_sec_fetch_site():
+    form_wire = _wire(**{"Content-Type": "application/x-www-form-urlencoded"})
+    form_wire["Sec-Fetch-Site"] = "none"
+    xhr_wire = {**_wire(), "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "none"}
+    request_map = {
+        "1": _nav("https://myshop.example/login", "none", 1.0),
+        "2": _entry("https://myshop.example/login", "POST", RENDERER_POST, form_wire, 2.0),
+        "3": _entry("https://myshop.example/api", "GET", RENDERER_NAV, xhr_wire, 3.0),
+    }
+    roles = extract_header_roles(request_map, SITE)
+    assert roles["navigation"]["Sec-Fetch-Site"] == "same-origin"
+    assert roles["form"]["Sec-Fetch-Site"] == "none"
+    assert roles["xhr"]["Sec-Fetch-Site"] == "none"
+
+
 # --- both backends: the same Chrome events give the same roles ---
 
 SITE = "https://myshop.example"
