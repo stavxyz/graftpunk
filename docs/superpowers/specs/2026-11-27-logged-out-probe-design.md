@@ -162,3 +162,13 @@ Assertions: each class is as listed; the server log never shows the skipped requ
 7. The declarative session check is its own spec, after the probe has run on real sites (#407).
 
 Also agreed: the two guessing rules above are dropped.
+
+## Amendments from planning (2026-11-28)
+
+Writing the plan (`docs/superpowers/plans/2026-11-27-logged-out-probe.md`, Rulings) found five places where this spec contradicts itself or cannot be built as written. The plan's rulings stand; this section records them so the spec and the plan agree.
+
+1. An off-scope redirect is a `ProbeResponse` whose `offsite_host` is set, not a `NotProbed`: only `classify` can produce `redirect_offsite` with its host. `send` does not request that hop.
+2. `--limit` is applied by `select` (rows past it are skips with reason `over_limit`, so `--dry-run` prints the true count), and `--delay` by `send`.
+3. `to_json` and `write_logged_out` also take the outcomes, because the header names sent and whether a proxy was used come from the responses.
+4. `empty_data` compares paths only while both sides are objects and depth is under 3; a parent object that is non-empty on both sides is descended into, not counted as a path still holding a value.
+5. The file stores emptied path names and an `emptied_count`, not whether each path was null, `[]`, `{}`, or missing, so a digest line reads `empty_data (data.viewer, data.orders)`; the ranking compares `emptied_count`.
