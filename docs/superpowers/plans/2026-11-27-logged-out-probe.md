@@ -79,7 +79,7 @@ Inputs the spec is silent on that a user will hit. Each has a test in the task n
 - Create: `src/graftpunk/har/model.py`
 - Modify: `src/graftpunk/har/digest.py` (lines 163-170 `INTERNAL`/`OMIT_EMPTY`, 180-181 caps, 238-261 auth and logout patterns, 332-350 `ShapeNode`, 531-537 `endpoint_key`, 1366-1397 `_shape_of`, the two `_shape_of` call sites at 1429 and 1445, 2819 and 4223 regex uses, 4962-4994 `_out_of_scope_cookies`)
 - Modify: `src/graftpunk/har/paths.py` (append the predicates)
-- Modify: `tests/unit/test_har_digest.py:30-31` (import the caps from `har/model.py`)
+- Modify: `tests/unit/test_har_digest.py:30-31` (`    _SHAPE_MAX_DEPTH,`), to import the caps from `har/model.py`
 - Create: `tests/unit/test_har_model.py`, `tests/unit/test_har_layering.py`, `tests/unit/test_digest_unprobed_golden.py`, `tests/fixtures/digest_without_logged_out.json`
 - Modify: `tests/fixtures/README.md` (one entry for the golden)
 
@@ -185,7 +185,7 @@ git commit -m "refactor: move ShapeNode, endpoint_key and the field markers into
 ### Task 2: Every definition of a GraphQL document
 
 **Files:**
-- Modify: `src/graftpunk/har/graphql.py:500-524` (`document_operation`, `__all__`)
+- Modify: `src/graftpunk/har/graphql.py:500-524` (`def document_operation(`), and its `__all__`
 - Test: `tests/unit/test_graphql_operations.py`
 
 **Interfaces:**
@@ -631,7 +631,7 @@ git commit -m "feat: select the requests a logged-out probe replays, with every 
 
 **Files:**
 - Create: `src/graftpunk/observe/probe.py`
-- Create: `tests/unit/probe_site.py`, `tests/unit/test_observe_probe_send.py`; modify `tests/unit/conftest.py:32` (import `probe_site`)
+- Create: `tests/unit/probe_site.py`, `tests/unit/test_observe_probe_send.py`; modify `tests/unit/conftest.py:32` (`observe_http_site`), to import `probe_site` beside it
 
 **Interfaces:**
 - Consumes: `ProbePlan`, `ProbeItem` (Task 5); `ProbeResponse`, `NotProbed`, `classify`, `runtime_catches` (Task 3); `normalize_media_type`, `normal_host`.
